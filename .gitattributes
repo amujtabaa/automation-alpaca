@@ -1,0 +1,4 @@
+# Normalize line endings: store everything as LF in the repo, regardless of the
+# contributor's OS. Prevents spurious "whole file changed" diffs on Windows
+# (where core.autocrlf can otherwise rewrite endings on checkout/commit).
+* text=auto eol=lf
