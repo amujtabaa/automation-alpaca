@@ -348,30 +348,72 @@ class InMemoryStateStore(StateStore):
             if order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
             current = order.status
-            same = new_status is current
-            if not same and new_status not in _ORDER_TRANSITIONS.get(current, set()):
+            status_changed = new_status is not current
+            if status_changed and new_status not in _ORDER_TRANSITIONS.get(
+                current, set()
+            ):
                 raise OrderTransitionError(
                     f"illegal order transition {current.value} -> {new_status.value}"
                 )
-            if filled_quantity is not None:
+            qty_changed = (
+                filled_quantity is not None
+                and filled_quantity != order.filled_quantity
+            )
+            broker_changed = (
+                broker_order_id is not None
+                and broker_order_id != order.broker_order_id
+            )
+
+            # True no-op (status unchanged and nothing else changed): write no
+            # audit row and mutate nothing — same rule transition_candidate uses.
+            if not status_changed and not qty_changed and not broker_changed:
+                return order.model_copy(deep=True)
+
+            previous_filled = order.filled_quantity
+            if qty_changed:
                 order.filled_quantity = filled_quantity
-            if broker_order_id is not None:
+            if broker_changed:
                 order.broker_order_id = broker_order_id
-            if not same:
+            if status_changed:
                 order.status = new_status
                 ts_field = _ORDER_TIMESTAMP.get(new_status)
                 if ts_field and getattr(order, ts_field) is None:
                     setattr(order, ts_field, utcnow())
             order.updated_at = utcnow()
-            self._append_event_unlocked(
-                "order_transition",
-                message=f"order {current.value} -> {new_status.value}",
-                symbol=order.symbol,
-                candidate_id=order.candidate_id,
-                order_id=order.id,
-                payload={"from": current.value, "to": new_status.value},
-                session_id=order.session_id,
-            )
+
+            if status_changed:
+                self._append_event_unlocked(
+                    "order_transition",
+                    message=f"order {current.value} -> {new_status.value}",
+                    symbol=order.symbol,
+                    candidate_id=order.candidate_id,
+                    order_id=order.id,
+                    payload={"from": current.value, "to": new_status.value},
+                    session_id=order.session_id,
+                )
+            else:
+                # Same status, but fill progressed (or broker id assigned). Not a
+                # no-op — record it with the before/after quantity, not a generic
+                # same-status row (D-008).
+                payload: dict[str, Any] = {
+                    "status": current.value,
+                    "previous_filled_quantity": previous_filled,
+                    "filled_quantity": order.filled_quantity,
+                }
+                if broker_changed:
+                    payload["broker_order_id"] = broker_order_id
+                self._append_event_unlocked(
+                    "order_fill_progress",
+                    message=(
+                        f"order {order.symbol} fill progress "
+                        f"{previous_filled} -> {order.filled_quantity}"
+                    ),
+                    symbol=order.symbol,
+                    candidate_id=order.candidate_id,
+                    order_id=order.id,
+                    payload=payload,
+                    session_id=order.session_id,
+                )
             return order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #

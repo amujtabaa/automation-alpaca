@@ -113,6 +113,7 @@ class EventType(str, Enum):
 
     ORDER_CREATED = "order_created"
     ORDER_TRANSITION = "order_transition"
+    ORDER_FILL_PROGRESS = "order_fill_progress"
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
