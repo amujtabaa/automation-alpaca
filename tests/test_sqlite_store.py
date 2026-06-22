@@ -72,6 +72,13 @@ async def test_oversell_rejected_in_sqlite(tmp_path):
     with pytest.raises(NegativePositionError):
         await store.append_fill(order.id, "AAPL", OrderSide.SELL, 200, 1.0)
     assert (await store.get_position("AAPL")).quantity == 100
+    # The rejection is persisted as an audit event (not silent), just like the
+    # in-memory store.
+    rejects = [
+        e for e in await store.list_events()
+        if e.event_type == "fill_rejected_negative_position"
+    ]
+    assert len(rejects) == 1
     await store.close()
 
 

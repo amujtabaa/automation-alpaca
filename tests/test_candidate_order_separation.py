@@ -17,7 +17,7 @@ from app.models import (
     OrderSide,
     OrderStatus,
 )
-from app.store.base import CandidateTransitionError
+from app.store.base import CandidateTransitionError, OrderTransitionError
 
 pytestmark = pytest.mark.anyio
 
@@ -80,6 +80,14 @@ async def test_approve_reject_are_idempotent(store):
     once = await store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
     twice = await store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
     assert once.status is twice.status is CandidateStatus.APPROVED
+    # Idempotency must not double-write: the no-op second approve records no
+    # extra transition event.
+    transitions = [
+        e
+        for e in await store.list_events()
+        if e.event_type == "candidate_transition" and e.candidate_id == candidate.id
+    ]
+    assert len(transitions) == 1
 
 
 async def test_rejected_candidate_cannot_be_approved(store):
@@ -98,3 +106,13 @@ async def test_order_status_is_independent_of_candidate(store):
     # The candidate's status is untouched by the order moving forward.
     fresh = await store.get_candidate(candidate.id)
     assert fresh.status is CandidateStatus.PENDING
+
+
+async def test_illegal_order_transition_raises(store):
+    candidate = await store.create_candidate("AAPL")
+    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
+    # created -> filled is not legal; an order must pass through submitted first
+    # (submitted != filled, Rule 6).
+    with pytest.raises(OrderTransitionError):
+        await store.transition_order(order.id, OrderStatus.FILLED)
+    assert (await store.get_order(order.id)).status is OrderStatus.CREATED
