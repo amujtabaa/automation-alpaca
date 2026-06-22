@@ -1,0 +1,582 @@
+"""In-memory StateStore — used by unit tests, never touches disk or network.
+
+All mutating operations run under a single ``asyncio.Lock``. Because there is no
+crash-durability concern in memory, that lock *is* the atomicity guarantee here:
+a multi-row mutation (e.g. a transition plus its audit event) happens entirely
+inside one ``async with self._lock`` block, so it is all-or-nothing exactly like
+``SqliteStateStore``'s SQL transaction (see ``docs/02_DATA_AND_PERSISTENCE.md``,
+"Mutating Operations Are Atomic").
+
+The lock is **not** reentrant, so public methods acquire it once and then call
+private ``*_unlocked`` helpers (which never re-acquire it) to do the raw work,
+including writing audit events.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import date
+from typing import Any, Optional
+
+from app.models import (
+    Candidate,
+    CandidateStatus,
+    Event,
+    Fill,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+    SessionRecord,
+    SessionStatus,
+    SessionType,
+    TradingMode,
+    WatchlistSymbol,
+    utcnow,
+)
+from app.position import fold_fills, would_go_negative
+from app.store.base import (
+    CandidateTransitionError,
+    FillAppendResult,
+    OrderTransitionError,
+    StateStore,
+    UnknownEntityError,
+    normalize_symbol,
+)
+from app.store.transitions import (
+    CANDIDATE_TIMESTAMP as _CANDIDATE_TIMESTAMP,
+    CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
+    ORDER_TIMESTAMP as _ORDER_TIMESTAMP,
+    ORDER_TRANSITIONS as _ORDER_TRANSITIONS,
+)
+
+
+class InMemoryStateStore(StateStore):
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._watchlist: dict[str, WatchlistSymbol] = {}
+        self._candidates: dict[str, Candidate] = {}
+        self._orders: dict[str, Order] = {}
+        self._fills: list[Fill] = []  # append-only, insertion order
+        self._fill_source_ids: set[str] = set()
+        self._events: list[Event] = []  # append-only, insertion order
+        self._sessions: list[SessionRecord] = []
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+    async def initialize(self) -> None:
+        async with self._lock:
+            self._ensure_current_session_unlocked()
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers (assume the lock is held)
+    # ------------------------------------------------------------------ #
+    def _append_event_unlocked(
+        self,
+        event_type: str,
+        *,
+        message: str = "",
+        symbol: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        fill_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ) -> Event:
+        event = Event(
+            event_type=str(event_type),
+            message=message,
+            symbol=symbol,
+            candidate_id=candidate_id,
+            order_id=order_id,
+            fill_id=fill_id,
+            payload=payload or {},
+            session_id=session_id,
+        )
+        self._events.append(event)
+        return event.model_copy(deep=True)
+
+    def _ensure_current_session_unlocked(self) -> SessionRecord:
+        for session in reversed(self._sessions):
+            if session.status is SessionStatus.ACTIVE:
+                return session
+        today = utcnow().date().isoformat()
+        session = SessionRecord(session_date=today, mode=TradingMode.PAPER)
+        self._sessions.append(session)
+        self._append_event_unlocked(
+            "session_opened",
+            message=f"session opened for {today}",
+            session_id=session.id,
+        )
+        return session
+
+    def _fills_for_symbol_unlocked(self, symbol: str) -> list[Fill]:
+        return [f for f in self._fills if f.symbol == symbol]
+
+    def _position_unlocked(self, symbol: str) -> Position:
+        return fold_fills(symbol, self._fills_for_symbol_unlocked(symbol))
+
+    # ------------------------------------------------------------------ #
+    # Watchlist
+    # ------------------------------------------------------------------ #
+    async def add_watchlist_symbol(
+        self, symbol: str, *, armed: bool = False
+    ) -> WatchlistSymbol:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            existing = self._watchlist.get(key)
+            if existing is not None:
+                return existing.model_copy(deep=True)
+            now = utcnow()
+            entry = WatchlistSymbol(
+                symbol=key,
+                armed=armed,
+                added_at=now,
+                updated_at=now,
+                armed_at=now if armed else None,
+            )
+            self._watchlist[key] = entry
+            self._append_event_unlocked(
+                "watchlist_added", message=f"{key} added", symbol=key
+            )
+            return entry.model_copy(deep=True)
+
+    async def list_watchlist(self) -> list[WatchlistSymbol]:
+        async with self._lock:
+            return [e.model_copy(deep=True) for e in self._watchlist.values()]
+
+    async def get_watchlist_symbol(self, symbol: str) -> Optional[WatchlistSymbol]:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            entry = self._watchlist.get(key)
+            return entry.model_copy(deep=True) if entry else None
+
+    async def set_watchlist_armed(self, symbol: str, armed: bool) -> WatchlistSymbol:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            entry = self._watchlist.get(key)
+            if entry is None:
+                raise UnknownEntityError(f"watchlist symbol {key} not found")
+            entry.armed = armed
+            entry.armed_at = utcnow() if armed else None
+            entry.updated_at = utcnow()
+            self._append_event_unlocked(
+                "watchlist_armed" if armed else "watchlist_disarmed",
+                message=f"{key} {'armed' if armed else 'disarmed'}",
+                symbol=key,
+            )
+            return entry.model_copy(deep=True)
+
+    async def remove_watchlist_symbol(self, symbol: str) -> bool:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            if key not in self._watchlist:
+                return False
+            del self._watchlist[key]
+            self._append_event_unlocked(
+                "watchlist_removed", message=f"{key} removed", symbol=key
+            )
+            return True
+
+    # ------------------------------------------------------------------ #
+    # Candidates
+    # ------------------------------------------------------------------ #
+    async def create_candidate(
+        self,
+        symbol: str,
+        *,
+        strategy: Optional[str] = None,
+        reason: Optional[str] = None,
+        risk_decision: Optional[str] = None,
+        suggested_quantity: Optional[int] = None,
+        suggested_limit_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Candidate:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            candidate = Candidate(
+                symbol=key,
+                strategy=strategy,
+                reason=reason,
+                risk_decision=risk_decision,
+                suggested_quantity=suggested_quantity,
+                suggested_limit_price=suggested_limit_price,
+                session_id=session_id,
+            )
+            self._candidates[candidate.id] = candidate
+            self._append_event_unlocked(
+                "candidate_created",
+                message=f"candidate created for {key}",
+                symbol=key,
+                candidate_id=candidate.id,
+                session_id=session_id,
+            )
+            return candidate.model_copy(deep=True)
+
+    async def list_candidates(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        status: Optional[CandidateStatus] = None,
+    ) -> list[Candidate]:
+        async with self._lock:
+            out = []
+            for c in self._candidates.values():
+                if session_id is not None and c.session_id != session_id:
+                    continue
+                if status is not None and c.status is not status:
+                    continue
+                out.append(c.model_copy(deep=True))
+            return out
+
+    async def get_candidate(self, candidate_id: str) -> Optional[Candidate]:
+        async with self._lock:
+            c = self._candidates.get(candidate_id)
+            return c.model_copy(deep=True) if c else None
+
+    async def transition_candidate(
+        self,
+        candidate_id: str,
+        new_status: CandidateStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> Candidate:
+        async with self._lock:
+            candidate = self._candidates.get(candidate_id)
+            if candidate is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            current = candidate.status
+            if new_status is current:
+                # Idempotent no-op (e.g. approving an already-approved candidate).
+                if order_id is not None and candidate.order_id is None:
+                    candidate.order_id = order_id
+                return candidate.model_copy(deep=True)
+            if new_status not in _CANDIDATE_TRANSITIONS.get(current, set()):
+                raise CandidateTransitionError(
+                    f"illegal candidate transition {current.value} -> "
+                    f"{new_status.value}"
+                )
+            candidate.status = new_status
+            candidate.updated_at = utcnow()
+            ts_field = _CANDIDATE_TIMESTAMP.get(new_status)
+            if ts_field:
+                setattr(candidate, ts_field, utcnow())
+            if new_status is CandidateStatus.ORDERED and order_id is not None:
+                candidate.order_id = order_id
+            self._append_event_unlocked(
+                "candidate_transition",
+                message=f"candidate {current.value} -> {new_status.value}",
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                order_id=order_id,
+                payload={"from": current.value, "to": new_status.value},
+                session_id=candidate.session_id,
+            )
+            return candidate.model_copy(deep=True)
+
+    # ------------------------------------------------------------------ #
+    # Orders
+    # ------------------------------------------------------------------ #
+    async def create_order(
+        self,
+        candidate_id: str,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        *,
+        order_type: OrderType = OrderType.LIMIT,
+        limit_price: Optional[float] = None,
+        replaces_order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Order:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            order = Order(
+                candidate_id=candidate_id,
+                symbol=key,
+                side=OrderSide(side),
+                order_type=OrderType(order_type),
+                quantity=quantity,
+                limit_price=limit_price,
+                replaces_order_id=replaces_order_id,
+                session_id=session_id,
+            )
+            self._orders[order.id] = order
+            self._append_event_unlocked(
+                "order_created",
+                message=f"order created for {key}",
+                symbol=key,
+                candidate_id=candidate_id,
+                order_id=order.id,
+                session_id=session_id,
+            )
+            return order.model_copy(deep=True)
+
+    async def list_orders(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+    ) -> list[Order]:
+        async with self._lock:
+            out = []
+            for o in self._orders.values():
+                if session_id is not None and o.session_id != session_id:
+                    continue
+                if candidate_id is not None and o.candidate_id != candidate_id:
+                    continue
+                out.append(o.model_copy(deep=True))
+            return out
+
+    async def get_order(self, order_id: str) -> Optional[Order]:
+        async with self._lock:
+            o = self._orders.get(order_id)
+            return o.model_copy(deep=True) if o else None
+
+    async def transition_order(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        filled_quantity: Optional[int] = None,
+        broker_order_id: Optional[str] = None,
+    ) -> Order:
+        async with self._lock:
+            order = self._orders.get(order_id)
+            if order is None:
+                raise UnknownEntityError(f"order {order_id} not found")
+            current = order.status
+            same = new_status is current
+            if not same and new_status not in _ORDER_TRANSITIONS.get(current, set()):
+                raise OrderTransitionError(
+                    f"illegal order transition {current.value} -> {new_status.value}"
+                )
+            if filled_quantity is not None:
+                order.filled_quantity = filled_quantity
+            if broker_order_id is not None:
+                order.broker_order_id = broker_order_id
+            if not same:
+                order.status = new_status
+                ts_field = _ORDER_TIMESTAMP.get(new_status)
+                if ts_field and getattr(order, ts_field) is None:
+                    setattr(order, ts_field, utcnow())
+            order.updated_at = utcnow()
+            self._append_event_unlocked(
+                "order_transition",
+                message=f"order {current.value} -> {new_status.value}",
+                symbol=order.symbol,
+                candidate_id=order.candidate_id,
+                order_id=order.id,
+                payload={"from": current.value, "to": new_status.value},
+                session_id=order.session_id,
+            )
+            return order.model_copy(deep=True)
+
+    # ------------------------------------------------------------------ #
+    # Fills (append-only) — the only mutation of position
+    # ------------------------------------------------------------------ #
+    async def append_fill(
+        self,
+        order_id: str,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        price: float,
+        *,
+        source_fill_id: Optional[str] = None,
+        filled_at: Optional[Any] = None,
+        session_id: Optional[str] = None,
+    ) -> FillAppendResult:
+        key = normalize_symbol(symbol)
+        side = OrderSide(side)
+        async with self._lock:
+            # 1) Duplicate protection (makes append idempotent, not optional).
+            if source_fill_id is not None and source_fill_id in self._fill_source_ids:
+                event = self._append_event_unlocked(
+                    "fill_duplicate_ignored",
+                    message=(
+                        f"duplicate fill {source_fill_id} for {key} ignored"
+                    ),
+                    symbol=key,
+                    order_id=order_id,
+                    payload={"source_fill_id": source_fill_id},
+                    session_id=session_id,
+                )
+                return FillAppendResult(status="duplicate", fill=None, event=event)
+
+            # 2) Long-only integrity: a sell can never drive quantity negative.
+            current = self._position_unlocked(key)
+            if would_go_negative(current.quantity, side, quantity):
+                event = self._append_event_unlocked(
+                    "fill_rejected_negative_position",
+                    message=(
+                        f"sell of {quantity} {key} rejected: exceeds current "
+                        f"quantity {current.quantity}"
+                    ),
+                    symbol=key,
+                    order_id=order_id,
+                    payload={
+                        "attempted_sell": quantity,
+                        "current_quantity": current.quantity,
+                    },
+                    session_id=session_id,
+                )
+                from app.position import NegativePositionError
+
+                raise NegativePositionError(key, current.quantity, quantity)
+
+            # 3) Append the fill and record it.
+            fill = Fill(
+                order_id=order_id,
+                symbol=key,
+                side=side,
+                quantity=quantity,
+                price=price,
+                source_fill_id=source_fill_id,
+                filled_at=filled_at or utcnow(),
+            )
+            self._fills.append(fill)
+            if source_fill_id is not None:
+                self._fill_source_ids.add(source_fill_id)
+            event = self._append_event_unlocked(
+                "fill_appended",
+                message=f"fill {fill.quantity} {key} @ {fill.price}",
+                symbol=key,
+                order_id=order_id,
+                fill_id=fill.id,
+                payload={"side": side.value, "quantity": quantity, "price": price},
+                session_id=session_id,
+            )
+            return FillAppendResult(
+                status="appended", fill=fill.model_copy(deep=True), event=event
+            )
+
+    async def list_fills(
+        self, *, symbol: Optional[str] = None, order_id: Optional[str] = None
+    ) -> list[Fill]:
+        key = normalize_symbol(symbol) if symbol else None
+        async with self._lock:
+            out = []
+            for f in self._fills:
+                if key is not None and f.symbol != key:
+                    continue
+                if order_id is not None and f.order_id != order_id:
+                    continue
+                out.append(f.model_copy(deep=True))
+            return out
+
+    # ------------------------------------------------------------------ #
+    # Positions (derived)
+    # ------------------------------------------------------------------ #
+    async def get_position(self, symbol: str) -> Position:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            return self._position_unlocked(key)
+
+    async def list_positions(self) -> list[Position]:
+        async with self._lock:
+            symbols = sorted({f.symbol for f in self._fills})
+            return [self._position_unlocked(s) for s in symbols]
+
+    # ------------------------------------------------------------------ #
+    # Events
+    # ------------------------------------------------------------------ #
+    async def append_event(
+        self,
+        event_type: str,
+        *,
+        message: str = "",
+        symbol: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        fill_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ) -> Event:
+        async with self._lock:
+            return self._append_event_unlocked(
+                event_type,
+                message=message,
+                symbol=symbol,
+                candidate_id=candidate_id,
+                order_id=order_id,
+                fill_id=fill_id,
+                payload=payload,
+                session_id=session_id,
+            )
+
+    async def list_events(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[Event]:
+        async with self._lock:
+            out = [
+                e.model_copy(deep=True)
+                for e in self._events
+                if session_id is None or e.session_id == session_id
+            ]
+            if limit is not None:
+                out = out[-limit:]
+            return out
+
+    # ------------------------------------------------------------------ #
+    # Sessions / control flags
+    # ------------------------------------------------------------------ #
+    async def get_current_session(self) -> SessionRecord:
+        async with self._lock:
+            return self._ensure_current_session_unlocked().model_copy(deep=True)
+
+    async def get_session_by_date(self, day: date) -> Optional[SessionRecord]:
+        target = day.isoformat()
+        async with self._lock:
+            for session in reversed(self._sessions):
+                if session.session_date == target:
+                    return session.model_copy(deep=True)
+            return None
+
+    async def list_sessions(self) -> list[SessionRecord]:
+        async with self._lock:
+            return [s.model_copy(deep=True) for s in self._sessions]
+
+    async def set_session_type(self, session_type: SessionType) -> SessionRecord:
+        async with self._lock:
+            session = self._ensure_current_session_unlocked()
+            session.session_type = SessionType(session_type)
+            session.updated_at = utcnow()
+            self._append_event_unlocked(
+                "session_opened",
+                message=f"session type set to {session.session_type.value}",
+                session_id=session.id,
+                payload={"session_type": session.session_type.value},
+            )
+            return session.model_copy(deep=True)
+
+    async def set_kill_switch(self, engaged: bool) -> SessionRecord:
+        async with self._lock:
+            session = self._ensure_current_session_unlocked()
+            session.kill_switch = engaged
+            session.updated_at = utcnow()
+            self._append_event_unlocked(
+                "kill_switch_engaged" if engaged else "kill_switch_released",
+                message=f"kill switch {'engaged' if engaged else 'released'}",
+                session_id=session.id,
+                payload={"kill_switch": engaged},
+            )
+            return session.model_copy(deep=True)
+
+    async def set_buys_paused(self, paused: bool) -> SessionRecord:
+        async with self._lock:
+            session = self._ensure_current_session_unlocked()
+            session.buys_paused = paused
+            session.updated_at = utcnow()
+            self._append_event_unlocked(
+                "buys_paused" if paused else "buys_resumed",
+                message=f"buys {'paused' if paused else 'resumed'}",
+                session_id=session.id,
+                payload={"buys_paused": paused},
+            )
+            return session.model_copy(deep=True)

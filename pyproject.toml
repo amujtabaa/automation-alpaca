@@ -1,0 +1,8 @@
+# No build-system section on purpose: this is an application repo, not an
+# installable package. This file only configures the test runner.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Async tests use the bundled anyio plugin (see tests/conftest.py for the
+# asyncio-only backend fixture). Unit tests remain IO-free (Rule 9).

@@ -1,0 +1,17 @@
+# Alpaca Clean-Sheet CAPI Option 2.5 — backend + cockpit dependencies.
+# Paper-first beta: there is intentionally NO Alpaca SDK and NO credentials
+# dependency here (no network path to Alpaca exists yet — Phase 4).
+
+# Backend (the durable engine)
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
+
+# Cockpit (thin Streamlit client) + its HTTP calls to the backend
+streamlit>=1.30
+requests>=2.31
+
+# Tests (unit tests are IO-free; httpx drives the FastAPI TestClient)
+pytest>=8.0
+httpx>=0.27
+anyio>=4.0

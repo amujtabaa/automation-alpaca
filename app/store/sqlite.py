@@ -1,0 +1,1075 @@
+"""SQLite-backed StateStore — the durable store the running app uses.
+
+One local SQLite file, accessed only through this class. Design points that
+satisfy ``docs/02_DATA_AND_PERSISTENCE.md``:
+
+* **Idempotent schema** — ``CREATE TABLE IF NOT EXISTS`` on every startup.
+* **Atomic multi-row writes** — every method that writes more than one row wraps
+  the writes in a single ``BEGIN``/``COMMIT`` (rolled back on failure), so a
+  crash mid-write can't leave the audit trail inconsistent with the state it
+  describes.
+* **Append-only fills** — there is no UPDATE or DELETE issued against ``fills``
+  anywhere in this file. ``source_fill_id`` carries a UNIQUE constraint; SQLite
+  treats NULLs as distinct, so it means "unique when present".
+* **Position is derived** — there is no positions table; positions are folded
+  from the fill rows via the shared :func:`app.position.fold_fills`, the exact
+  same code path the in-memory store uses (Rule 7).
+
+The ``sqlite3`` driver is synchronous; calls are made under an ``asyncio.Lock``
+that serializes them, so a single shared connection is safe and each
+transaction runs alone. This is single-user localhost — the lock, not threads,
+is the concurrency model (see ``docs/01_ARCHITECTURE.md``).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Iterator, Optional
+
+from app.models import (
+    Candidate,
+    CandidateStatus,
+    Event,
+    Fill,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+    SessionRecord,
+    SessionStatus,
+    SessionType,
+    TradingMode,
+    WatchlistSymbol,
+    utcnow,
+)
+from app.position import NegativePositionError, fold_fills, would_go_negative
+from app.store.base import (
+    CandidateTransitionError,
+    FillAppendResult,
+    OrderTransitionError,
+    StateStore,
+    UnknownEntityError,
+    normalize_symbol,
+)
+from app.store.transitions import (
+    CANDIDATE_TIMESTAMP,
+    CANDIDATE_TRANSITIONS,
+    ORDER_TIMESTAMP,
+    ORDER_TRANSITIONS,
+)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS watchlist (
+    symbol     TEXT PRIMARY KEY,
+    armed      INTEGER NOT NULL DEFAULT 0,
+    added_at   TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    armed_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS candidates (
+    id                    TEXT PRIMARY KEY,
+    symbol                TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    strategy              TEXT,
+    reason                TEXT,
+    risk_decision         TEXT,
+    suggested_quantity    INTEGER,
+    suggested_limit_price REAL,
+    session_id            TEXT,
+    order_id              TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    approved_at           TEXT,
+    rejected_at           TEXT,
+    expired_at            TEXT,
+    ordered_at            TEXT
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id                TEXT PRIMARY KEY,
+    candidate_id      TEXT NOT NULL,
+    symbol            TEXT NOT NULL,
+    side              TEXT NOT NULL,
+    order_type        TEXT NOT NULL,
+    quantity          INTEGER NOT NULL,
+    limit_price       REAL,
+    status            TEXT NOT NULL,
+    filled_quantity   INTEGER NOT NULL DEFAULT 0,
+    replaces_order_id TEXT,
+    broker_order_id   TEXT,
+    session_id        TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    submitted_at      TEXT,
+    filled_at         TEXT,
+    canceled_at       TEXT,
+    rejected_at       TEXT
+);
+
+-- Append-only. No UPDATE/DELETE is ever issued against this table.
+-- source_fill_id UNIQUE => "unique when present" (SQLite treats NULLs distinct).
+CREATE TABLE IF NOT EXISTS fills (
+    id             TEXT PRIMARY KEY,
+    order_id       TEXT NOT NULL,
+    symbol         TEXT NOT NULL,
+    side           TEXT NOT NULL,
+    quantity       INTEGER NOT NULL,
+    price          REAL NOT NULL,
+    source_fill_id TEXT UNIQUE,
+    filled_at      TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol);
+
+CREATE TABLE IF NOT EXISTS events (
+    id           TEXT PRIMARY KEY,
+    event_type   TEXT NOT NULL,
+    message      TEXT NOT NULL DEFAULT '',
+    symbol       TEXT,
+    candidate_id TEXT,
+    order_id     TEXT,
+    fill_id      TEXT,
+    payload      TEXT NOT NULL DEFAULT '{}',
+    session_id   TEXT,
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id           TEXT PRIMARY KEY,
+    session_date TEXT NOT NULL,
+    mode         TEXT NOT NULL,
+    session_type TEXT,
+    status       TEXT NOT NULL,
+    kill_switch  INTEGER NOT NULL DEFAULT 0,
+    buys_paused  INTEGER NOT NULL DEFAULT 0,
+    opened_at    TEXT NOT NULL,
+    closed_at    TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+"""
+
+
+def _dt(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value is not None else None
+
+
+def _bit(value: bool) -> int:
+    return 1 if value else 0
+
+
+class SqliteStateStore(StateStore):
+    def __init__(self, db_path: Path | str) -> None:
+        self._db_path = Path(db_path)
+        self._lock = asyncio.Lock()
+        self._conn: Optional[sqlite3.Connection] = None
+
+    # ------------------------------------------------------------------ #
+    # Connection / transactions
+    # ------------------------------------------------------------------ #
+    def _connect(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(
+                str(self._db_path), check_same_thread=False
+            )
+            conn.row_factory = sqlite3.Row
+            conn.isolation_level = None  # autocommit; we manage BEGIN/COMMIT
+            self._conn = conn
+        return self._conn
+
+    @contextmanager
+    def _tx(self) -> Iterator[sqlite3.Cursor]:
+        """Run a multi-row write atomically. Commits on success, rolls back on
+        any exception. Callers already hold ``self._lock``."""
+
+        conn = self._connect()
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        try:
+            yield cur
+            cur.execute("COMMIT")
+        except BaseException:
+            cur.execute("ROLLBACK")
+            raise
+        finally:
+            cur.close()
+
+    async def initialize(self) -> None:
+        async with self._lock:
+            conn = self._connect()
+            conn.executescript(SCHEMA)
+            self._ensure_current_session_locked()
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+    # ------------------------------------------------------------------ #
+    # Row -> model mappers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _watchlist(row: sqlite3.Row) -> WatchlistSymbol:
+        return WatchlistSymbol(
+            symbol=row["symbol"],
+            armed=bool(row["armed"]),
+            added_at=row["added_at"],
+            updated_at=row["updated_at"],
+            armed_at=row["armed_at"],
+        )
+
+    @staticmethod
+    def _candidate(row: sqlite3.Row) -> Candidate:
+        return Candidate(
+            id=row["id"],
+            symbol=row["symbol"],
+            status=row["status"],
+            strategy=row["strategy"],
+            reason=row["reason"],
+            risk_decision=row["risk_decision"],
+            suggested_quantity=row["suggested_quantity"],
+            suggested_limit_price=row["suggested_limit_price"],
+            session_id=row["session_id"],
+            order_id=row["order_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            approved_at=row["approved_at"],
+            rejected_at=row["rejected_at"],
+            expired_at=row["expired_at"],
+            ordered_at=row["ordered_at"],
+        )
+
+    @staticmethod
+    def _order(row: sqlite3.Row) -> Order:
+        return Order(
+            id=row["id"],
+            candidate_id=row["candidate_id"],
+            symbol=row["symbol"],
+            side=row["side"],
+            order_type=row["order_type"],
+            quantity=row["quantity"],
+            limit_price=row["limit_price"],
+            status=row["status"],
+            filled_quantity=row["filled_quantity"],
+            replaces_order_id=row["replaces_order_id"],
+            broker_order_id=row["broker_order_id"],
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            submitted_at=row["submitted_at"],
+            filled_at=row["filled_at"],
+            canceled_at=row["canceled_at"],
+            rejected_at=row["rejected_at"],
+        )
+
+    @staticmethod
+    def _fill(row: sqlite3.Row) -> Fill:
+        return Fill(
+            id=row["id"],
+            order_id=row["order_id"],
+            symbol=row["symbol"],
+            side=row["side"],
+            quantity=row["quantity"],
+            price=row["price"],
+            source_fill_id=row["source_fill_id"],
+            filled_at=row["filled_at"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _event(row: sqlite3.Row) -> Event:
+        return Event(
+            id=row["id"],
+            event_type=row["event_type"],
+            message=row["message"],
+            symbol=row["symbol"],
+            candidate_id=row["candidate_id"],
+            order_id=row["order_id"],
+            fill_id=row["fill_id"],
+            payload=json.loads(row["payload"]) if row["payload"] else {},
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _session(row: sqlite3.Row) -> SessionRecord:
+        return SessionRecord(
+            id=row["id"],
+            session_date=row["session_date"],
+            mode=row["mode"],
+            session_type=row["session_type"],
+            status=row["status"],
+            kill_switch=bool(row["kill_switch"]),
+            buys_paused=bool(row["buys_paused"]),
+            opened_at=row["opened_at"],
+            closed_at=row["closed_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    # ------------------------------------------------------------------ #
+    # Insert helpers (operate on a cursor inside a transaction)
+    # ------------------------------------------------------------------ #
+    def _insert_event(
+        self,
+        cur: sqlite3.Cursor,
+        event_type: str,
+        *,
+        message: str = "",
+        symbol: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        fill_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ) -> Event:
+        event = Event(
+            event_type=str(event_type),
+            message=message,
+            symbol=symbol,
+            candidate_id=candidate_id,
+            order_id=order_id,
+            fill_id=fill_id,
+            payload=payload or {},
+            session_id=session_id,
+        )
+        cur.execute(
+            """INSERT INTO events
+               (id, event_type, message, symbol, candidate_id, order_id,
+                fill_id, payload, session_id, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event.id,
+                event.event_type,
+                event.message,
+                event.symbol,
+                event.candidate_id,
+                event.order_id,
+                event.fill_id,
+                json.dumps(event.payload),
+                event.session_id,
+                _dt(event.created_at),
+            ),
+        )
+        return event
+
+    def _read_one(self, sql: str, params: tuple) -> Optional[sqlite3.Row]:
+        return self._connect().execute(sql, params).fetchone()
+
+    def _read_all(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        return self._connect().execute(sql, params).fetchall()
+
+    # ------------------------------------------------------------------ #
+    # Sessions — current-session bootstrap used by several methods
+    # ------------------------------------------------------------------ #
+    def _ensure_current_session_locked(self) -> SessionRecord:
+        row = self._read_one(
+            "SELECT * FROM sessions WHERE status = ? ORDER BY rowid DESC LIMIT 1",
+            (SessionStatus.ACTIVE.value,),
+        )
+        if row is not None:
+            return self._session(row)
+        today = utcnow().date().isoformat()
+        session = SessionRecord(session_date=today, mode=TradingMode.PAPER)
+        with self._tx() as cur:
+            self._insert_session(cur, session)
+            self._insert_event(
+                cur,
+                "session_opened",
+                message=f"session opened for {today}",
+                session_id=session.id,
+            )
+        return session
+
+    def _insert_session(self, cur: sqlite3.Cursor, s: SessionRecord) -> None:
+        cur.execute(
+            """INSERT INTO sessions
+               (id, session_date, mode, session_type, status, kill_switch,
+                buys_paused, opened_at, closed_at, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                s.id,
+                s.session_date,
+                s.mode.value,
+                s.session_type.value if s.session_type else None,
+                s.status.value,
+                _bit(s.kill_switch),
+                _bit(s.buys_paused),
+                _dt(s.opened_at),
+                _dt(s.closed_at),
+                _dt(s.created_at),
+                _dt(s.updated_at),
+            ),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Watchlist
+    # ------------------------------------------------------------------ #
+    async def add_watchlist_symbol(
+        self, symbol: str, *, armed: bool = False
+    ) -> WatchlistSymbol:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            existing = self._read_one(
+                "SELECT * FROM watchlist WHERE symbol = ?", (key,)
+            )
+            if existing is not None:
+                return self._watchlist(existing)
+            now = utcnow()
+            entry = WatchlistSymbol(
+                symbol=key,
+                armed=armed,
+                added_at=now,
+                updated_at=now,
+                armed_at=now if armed else None,
+            )
+            with self._tx() as cur:
+                cur.execute(
+                    """INSERT INTO watchlist (symbol, armed, added_at, updated_at,
+                       armed_at) VALUES (?,?,?,?,?)""",
+                    (
+                        entry.symbol,
+                        _bit(entry.armed),
+                        _dt(entry.added_at),
+                        _dt(entry.updated_at),
+                        _dt(entry.armed_at),
+                    ),
+                )
+                self._insert_event(
+                    cur, "watchlist_added", message=f"{key} added", symbol=key
+                )
+            return entry
+
+    async def list_watchlist(self) -> list[WatchlistSymbol]:
+        async with self._lock:
+            rows = self._read_all("SELECT * FROM watchlist ORDER BY symbol")
+            return [self._watchlist(r) for r in rows]
+
+    async def get_watchlist_symbol(self, symbol: str) -> Optional[WatchlistSymbol]:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            row = self._read_one("SELECT * FROM watchlist WHERE symbol = ?", (key,))
+            return self._watchlist(row) if row else None
+
+    async def set_watchlist_armed(self, symbol: str, armed: bool) -> WatchlistSymbol:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            row = self._read_one("SELECT * FROM watchlist WHERE symbol = ?", (key,))
+            if row is None:
+                raise UnknownEntityError(f"watchlist symbol {key} not found")
+            entry = self._watchlist(row)
+            entry.armed = armed
+            entry.armed_at = utcnow() if armed else None
+            entry.updated_at = utcnow()
+            with self._tx() as cur:
+                cur.execute(
+                    "UPDATE watchlist SET armed=?, armed_at=?, updated_at=? "
+                    "WHERE symbol=?",
+                    (_bit(armed), _dt(entry.armed_at), _dt(entry.updated_at), key),
+                )
+                self._insert_event(
+                    cur,
+                    "watchlist_armed" if armed else "watchlist_disarmed",
+                    message=f"{key} {'armed' if armed else 'disarmed'}",
+                    symbol=key,
+                )
+            return entry
+
+    async def remove_watchlist_symbol(self, symbol: str) -> bool:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            row = self._read_one("SELECT * FROM watchlist WHERE symbol = ?", (key,))
+            if row is None:
+                return False
+            with self._tx() as cur:
+                cur.execute("DELETE FROM watchlist WHERE symbol = ?", (key,))
+                self._insert_event(
+                    cur, "watchlist_removed", message=f"{key} removed", symbol=key
+                )
+            return True
+
+    # ------------------------------------------------------------------ #
+    # Candidates
+    # ------------------------------------------------------------------ #
+    async def create_candidate(
+        self,
+        symbol: str,
+        *,
+        strategy: Optional[str] = None,
+        reason: Optional[str] = None,
+        risk_decision: Optional[str] = None,
+        suggested_quantity: Optional[int] = None,
+        suggested_limit_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Candidate:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            candidate = Candidate(
+                symbol=key,
+                strategy=strategy,
+                reason=reason,
+                risk_decision=risk_decision,
+                suggested_quantity=suggested_quantity,
+                suggested_limit_price=suggested_limit_price,
+                session_id=session_id,
+            )
+            with self._tx() as cur:
+                self._insert_candidate(cur, candidate)
+                self._insert_event(
+                    cur,
+                    "candidate_created",
+                    message=f"candidate created for {key}",
+                    symbol=key,
+                    candidate_id=candidate.id,
+                    session_id=session_id,
+                )
+            return candidate
+
+    def _insert_candidate(self, cur: sqlite3.Cursor, c: Candidate) -> None:
+        cur.execute(
+            """INSERT INTO candidates
+               (id, symbol, status, strategy, reason, risk_decision,
+                suggested_quantity, suggested_limit_price, session_id, order_id,
+                created_at, updated_at, approved_at, rejected_at, expired_at,
+                ordered_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                c.id,
+                c.symbol,
+                c.status.value,
+                c.strategy,
+                c.reason,
+                c.risk_decision,
+                c.suggested_quantity,
+                c.suggested_limit_price,
+                c.session_id,
+                c.order_id,
+                _dt(c.created_at),
+                _dt(c.updated_at),
+                _dt(c.approved_at),
+                _dt(c.rejected_at),
+                _dt(c.expired_at),
+                _dt(c.ordered_at),
+            ),
+        )
+
+    async def list_candidates(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        status: Optional[CandidateStatus] = None,
+    ) -> list[Candidate]:
+        clauses, params = [], []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(CandidateStatus(status).value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with self._lock:
+            rows = self._read_all(
+                f"SELECT * FROM candidates{where} ORDER BY rowid", tuple(params)
+            )
+            return [self._candidate(r) for r in rows]
+
+    async def get_candidate(self, candidate_id: str) -> Optional[Candidate]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
+            )
+            return self._candidate(row) if row else None
+
+    async def transition_candidate(
+        self,
+        candidate_id: str,
+        new_status: CandidateStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> Candidate:
+        new_status = CandidateStatus(new_status)
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
+            )
+            if row is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            candidate = self._candidate(row)
+            current = candidate.status
+            if new_status is current:
+                if order_id is not None and candidate.order_id is None:
+                    candidate.order_id = order_id
+                    with self._tx() as cur:
+                        cur.execute(
+                            "UPDATE candidates SET order_id=? WHERE id=?",
+                            (order_id, candidate.id),
+                        )
+                return candidate
+            if new_status not in CANDIDATE_TRANSITIONS.get(current, set()):
+                raise CandidateTransitionError(
+                    f"illegal candidate transition {current.value} -> "
+                    f"{new_status.value}"
+                )
+            candidate.status = new_status
+            candidate.updated_at = utcnow()
+            ts_field = CANDIDATE_TIMESTAMP.get(new_status)
+            if ts_field:
+                setattr(candidate, ts_field, utcnow())
+            if new_status is CandidateStatus.ORDERED and order_id is not None:
+                candidate.order_id = order_id
+            with self._tx() as cur:
+                cur.execute(
+                    """UPDATE candidates SET status=?, updated_at=?, order_id=?,
+                       approved_at=?, rejected_at=?, expired_at=?, ordered_at=?
+                       WHERE id=?""",
+                    (
+                        candidate.status.value,
+                        _dt(candidate.updated_at),
+                        candidate.order_id,
+                        _dt(candidate.approved_at),
+                        _dt(candidate.rejected_at),
+                        _dt(candidate.expired_at),
+                        _dt(candidate.ordered_at),
+                        candidate.id,
+                    ),
+                )
+                self._insert_event(
+                    cur,
+                    "candidate_transition",
+                    message=f"candidate {current.value} -> {new_status.value}",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate.id,
+                    order_id=order_id,
+                    payload={"from": current.value, "to": new_status.value},
+                    session_id=candidate.session_id,
+                )
+            return candidate
+
+    # ------------------------------------------------------------------ #
+    # Orders
+    # ------------------------------------------------------------------ #
+    async def create_order(
+        self,
+        candidate_id: str,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        *,
+        order_type: OrderType = OrderType.LIMIT,
+        limit_price: Optional[float] = None,
+        replaces_order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Order:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            order = Order(
+                candidate_id=candidate_id,
+                symbol=key,
+                side=OrderSide(side),
+                order_type=OrderType(order_type),
+                quantity=quantity,
+                limit_price=limit_price,
+                replaces_order_id=replaces_order_id,
+                session_id=session_id,
+            )
+            with self._tx() as cur:
+                self._insert_order(cur, order)
+                self._insert_event(
+                    cur,
+                    "order_created",
+                    message=f"order created for {key}",
+                    symbol=key,
+                    candidate_id=candidate_id,
+                    order_id=order.id,
+                    session_id=session_id,
+                )
+            return order
+
+    def _insert_order(self, cur: sqlite3.Cursor, o: Order) -> None:
+        cur.execute(
+            """INSERT INTO orders
+               (id, candidate_id, symbol, side, order_type, quantity, limit_price,
+                status, filled_quantity, replaces_order_id, broker_order_id,
+                session_id, created_at, updated_at, submitted_at, filled_at,
+                canceled_at, rejected_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                o.id,
+                o.candidate_id,
+                o.symbol,
+                o.side.value,
+                o.order_type.value,
+                o.quantity,
+                o.limit_price,
+                o.status.value,
+                o.filled_quantity,
+                o.replaces_order_id,
+                o.broker_order_id,
+                o.session_id,
+                _dt(o.created_at),
+                _dt(o.updated_at),
+                _dt(o.submitted_at),
+                _dt(o.filled_at),
+                _dt(o.canceled_at),
+                _dt(o.rejected_at),
+            ),
+        )
+
+    async def list_orders(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+    ) -> list[Order]:
+        clauses, params = [], []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if candidate_id is not None:
+            clauses.append("candidate_id = ?")
+            params.append(candidate_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with self._lock:
+            rows = self._read_all(
+                f"SELECT * FROM orders{where} ORDER BY rowid", tuple(params)
+            )
+            return [self._order(r) for r in rows]
+
+    async def get_order(self, order_id: str) -> Optional[Order]:
+        async with self._lock:
+            row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
+            return self._order(row) if row else None
+
+    async def transition_order(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        filled_quantity: Optional[int] = None,
+        broker_order_id: Optional[str] = None,
+    ) -> Order:
+        new_status = OrderStatus(new_status)
+        async with self._lock:
+            row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
+            if row is None:
+                raise UnknownEntityError(f"order {order_id} not found")
+            order = self._order(row)
+            current = order.status
+            same = new_status is current
+            if not same and new_status not in ORDER_TRANSITIONS.get(current, set()):
+                raise OrderTransitionError(
+                    f"illegal order transition {current.value} -> {new_status.value}"
+                )
+            if filled_quantity is not None:
+                order.filled_quantity = filled_quantity
+            if broker_order_id is not None:
+                order.broker_order_id = broker_order_id
+            if not same:
+                order.status = new_status
+                ts_field = ORDER_TIMESTAMP.get(new_status)
+                if ts_field and getattr(order, ts_field) is None:
+                    setattr(order, ts_field, utcnow())
+            order.updated_at = utcnow()
+            with self._tx() as cur:
+                cur.execute(
+                    """UPDATE orders SET status=?, filled_quantity=?,
+                       broker_order_id=?, updated_at=?, submitted_at=?, filled_at=?,
+                       canceled_at=?, rejected_at=? WHERE id=?""",
+                    (
+                        order.status.value,
+                        order.filled_quantity,
+                        order.broker_order_id,
+                        _dt(order.updated_at),
+                        _dt(order.submitted_at),
+                        _dt(order.filled_at),
+                        _dt(order.canceled_at),
+                        _dt(order.rejected_at),
+                        order.id,
+                    ),
+                )
+                self._insert_event(
+                    cur,
+                    "order_transition",
+                    message=f"order {current.value} -> {new_status.value}",
+                    symbol=order.symbol,
+                    candidate_id=order.candidate_id,
+                    order_id=order.id,
+                    payload={"from": current.value, "to": new_status.value},
+                    session_id=order.session_id,
+                )
+            return order
+
+    # ------------------------------------------------------------------ #
+    # Fills (append-only)
+    # ------------------------------------------------------------------ #
+    async def append_fill(
+        self,
+        order_id: str,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        price: float,
+        *,
+        source_fill_id: Optional[str] = None,
+        filled_at: Optional[Any] = None,
+        session_id: Optional[str] = None,
+    ) -> FillAppendResult:
+        key = normalize_symbol(symbol)
+        side = OrderSide(side)
+        async with self._lock:
+            # 1) Duplicate protection.
+            if source_fill_id is not None:
+                dup = self._read_one(
+                    "SELECT 1 FROM fills WHERE source_fill_id = ?",
+                    (source_fill_id,),
+                )
+                if dup is not None:
+                    with self._tx() as cur:
+                        event = self._insert_event(
+                            cur,
+                            "fill_duplicate_ignored",
+                            message=f"duplicate fill {source_fill_id} for {key} ignored",
+                            symbol=key,
+                            order_id=order_id,
+                            payload={"source_fill_id": source_fill_id},
+                            session_id=session_id,
+                        )
+                    return FillAppendResult(status="duplicate", fill=None, event=event)
+
+            # 2) Long-only integrity check.
+            current = self._position_locked(key)
+            if would_go_negative(current.quantity, side, quantity):
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur,
+                        "fill_rejected_negative_position",
+                        message=(
+                            f"sell of {quantity} {key} rejected: exceeds current "
+                            f"quantity {current.quantity}"
+                        ),
+                        symbol=key,
+                        order_id=order_id,
+                        payload={
+                            "attempted_sell": quantity,
+                            "current_quantity": current.quantity,
+                        },
+                        session_id=session_id,
+                    )
+                # Event committed; now surface the rejection.
+                raise NegativePositionError(key, current.quantity, quantity)
+
+            # 3) Append.
+            fill = Fill(
+                order_id=order_id,
+                symbol=key,
+                side=side,
+                quantity=quantity,
+                price=price,
+                source_fill_id=source_fill_id,
+                filled_at=filled_at or utcnow(),
+            )
+            with self._tx() as cur:
+                cur.execute(
+                    """INSERT INTO fills
+                       (id, order_id, symbol, side, quantity, price,
+                        source_fill_id, filled_at, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (
+                        fill.id,
+                        fill.order_id,
+                        fill.symbol,
+                        fill.side.value,
+                        fill.quantity,
+                        fill.price,
+                        fill.source_fill_id,
+                        _dt(fill.filled_at),
+                        _dt(fill.created_at),
+                    ),
+                )
+                event = self._insert_event(
+                    cur,
+                    "fill_appended",
+                    message=f"fill {fill.quantity} {key} @ {fill.price}",
+                    symbol=key,
+                    order_id=order_id,
+                    fill_id=fill.id,
+                    payload={"side": side.value, "quantity": quantity, "price": price},
+                    session_id=session_id,
+                )
+            return FillAppendResult(status="appended", fill=fill, event=event)
+
+    async def list_fills(
+        self, *, symbol: Optional[str] = None, order_id: Optional[str] = None
+    ) -> list[Fill]:
+        clauses, params = [], []
+        if symbol is not None:
+            clauses.append("symbol = ?")
+            params.append(normalize_symbol(symbol))
+        if order_id is not None:
+            clauses.append("order_id = ?")
+            params.append(order_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with self._lock:
+            rows = self._read_all(
+                f"SELECT * FROM fills{where} ORDER BY rowid", tuple(params)
+            )
+            return [self._fill(r) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Positions (derived)
+    # ------------------------------------------------------------------ #
+    def _position_locked(self, symbol: str) -> Position:
+        rows = self._read_all(
+            "SELECT * FROM fills WHERE symbol = ? ORDER BY rowid", (symbol,)
+        )
+        return fold_fills(symbol, [self._fill(r) for r in rows])
+
+    async def get_position(self, symbol: str) -> Position:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            return self._position_locked(key)
+
+    async def list_positions(self) -> list[Position]:
+        async with self._lock:
+            rows = self._read_all(
+                "SELECT DISTINCT symbol FROM fills ORDER BY symbol"
+            )
+            return [self._position_locked(r["symbol"]) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Events
+    # ------------------------------------------------------------------ #
+    async def append_event(
+        self,
+        event_type: str,
+        *,
+        message: str = "",
+        symbol: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        fill_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ) -> Event:
+        async with self._lock:
+            with self._tx() as cur:
+                return self._insert_event(
+                    cur,
+                    event_type,
+                    message=message,
+                    symbol=symbol,
+                    candidate_id=candidate_id,
+                    order_id=order_id,
+                    fill_id=fill_id,
+                    payload=payload,
+                    session_id=session_id,
+                )
+
+    async def list_events(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[Event]:
+        clauses, params = [], []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with self._lock:
+            rows = self._read_all(
+                f"SELECT * FROM events{where} ORDER BY rowid", tuple(params)
+            )
+            events = [self._event(r) for r in rows]
+            if limit is not None:
+                events = events[-limit:]
+            return events
+
+    # ------------------------------------------------------------------ #
+    # Sessions / control flags
+    # ------------------------------------------------------------------ #
+    async def get_current_session(self) -> SessionRecord:
+        async with self._lock:
+            return self._ensure_current_session_locked()
+
+    async def get_session_by_date(self, day: date) -> Optional[SessionRecord]:
+        target = day.isoformat()
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM sessions WHERE session_date = ? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (target,),
+            )
+            return self._session(row) if row else None
+
+    async def list_sessions(self) -> list[SessionRecord]:
+        async with self._lock:
+            rows = self._read_all("SELECT * FROM sessions ORDER BY rowid")
+            return [self._session(r) for r in rows]
+
+    async def set_session_type(self, session_type: SessionType) -> SessionRecord:
+        session_type = SessionType(session_type)
+        async with self._lock:
+            session = self._ensure_current_session_locked()
+            session.session_type = session_type
+            session.updated_at = utcnow()
+            with self._tx() as cur:
+                cur.execute(
+                    "UPDATE sessions SET session_type=?, updated_at=? WHERE id=?",
+                    (session_type.value, _dt(session.updated_at), session.id),
+                )
+                self._insert_event(
+                    cur,
+                    "session_opened",
+                    message=f"session type set to {session_type.value}",
+                    session_id=session.id,
+                    payload={"session_type": session_type.value},
+                )
+            return session
+
+    async def set_kill_switch(self, engaged: bool) -> SessionRecord:
+        async with self._lock:
+            session = self._ensure_current_session_locked()
+            session.kill_switch = engaged
+            session.updated_at = utcnow()
+            with self._tx() as cur:
+                cur.execute(
+                    "UPDATE sessions SET kill_switch=?, updated_at=? WHERE id=?",
+                    (_bit(engaged), _dt(session.updated_at), session.id),
+                )
+                self._insert_event(
+                    cur,
+                    "kill_switch_engaged" if engaged else "kill_switch_released",
+                    message=f"kill switch {'engaged' if engaged else 'released'}",
+                    session_id=session.id,
+                    payload={"kill_switch": engaged},
+                )
+            return session
+
+    async def set_buys_paused(self, paused: bool) -> SessionRecord:
+        async with self._lock:
+            session = self._ensure_current_session_locked()
+            session.buys_paused = paused
+            session.updated_at = utcnow()
+            with self._tx() as cur:
+                cur.execute(
+                    "UPDATE sessions SET buys_paused=?, updated_at=? WHERE id=?",
+                    (_bit(paused), _dt(session.updated_at), session.id),
+                )
+                self._insert_event(
+                    cur,
+                    "buys_paused" if paused else "buys_resumed",
+                    message=f"buys {'paused' if paused else 'resumed'}",
+                    session_id=session.id,
+                    payload={"buys_paused": paused},
+                )
+            return session
