@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+*.egg-info/
+.eggs/
+
+# SQLite database (created at runtime, not committed)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Credentials / environment
+.env
+.env.local
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code local/personal files (not shared with the team)
+CLAUDE.local.md
+.claude/settings.local.json
