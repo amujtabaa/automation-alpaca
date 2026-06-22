@@ -38,6 +38,20 @@ Use when reviewing Codex or Claude Code output.
 - [ ] Order-transition audit events do not fire on true no-ops; a
       `filled_quantity` change without a status change is still recorded,
       with the before/after quantity in the payload.
+- [ ] A calendar date has at most one session; `get_current_session` does not
+      create a second same-date session after one is closed, and
+      `get_session_by_date` returns the correct (closed) session post-close.
+- [ ] `append_fill` rejects `quantity <= 0`, `price <= 0`, unknown `order_id`,
+      and symbol/side mismatch against the order; cumulative fills cannot
+      exceed order quantity. Rejections write an audit event, append no fill,
+      and leave position unchanged.
+- [ ] `create_order` rejects an unknown `candidate_id` and a symbol that
+      doesn't match the candidate.
+- [ ] `transition_order` enforces `0 <= filled_quantity <= order.quantity`
+      and monotonic non-decreasing fill progress.
+- [ ] Same-status candidate no-ops do not mutate `order_id` or write an event.
+- [ ] Validation behavior is identical across `InMemoryStateStore` and
+      `SqliteStateStore` (parity tests via `any_store`).
 
 ## Persistence
 - [ ] State accessed only through the `StateStore` interface.

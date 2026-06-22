@@ -49,6 +49,62 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-010 — Store entrypoints validate inputs; the fill table never holds corrupt data
+**Decision.** `append_fill`, `create_order`, and `transition_order` validate
+their inputs at the store boundary (both implementations), rejecting
+malformed values before any row is written or position is mutated:
+- **Fills:** `quantity > 0` and `price > 0`; the referenced `order_id` must
+  exist; the fill's symbol and side must match the order's; cumulative filled
+  quantity for an order may not exceed the order's quantity. Duplicate
+  detection and oversell rejection (D-006) are preserved.
+- **Orders:** `create_order` requires the referenced `candidate_id` to exist
+  and the order symbol to match the candidate's symbol. (It does **not** yet
+  require the candidate to be `APPROVED` — that lifecycle rule belongs to
+  Phase 3's Approval Gate; adding it to `create_order` now would pre-empt a
+  decision the gate owns. Existence + symbol match are the uncontroversial
+  half and go in now.)
+- **Order transitions:** `filled_quantity` must satisfy
+  `0 <= filled_quantity <= order.quantity` and must be monotonic
+  non-decreasing (no broker-correction path exists in beta). D-008's audit
+  behavior is preserved.
+Rejections write a clear rejection audit event (consistent type across both
+stores) and raise; they never append a fill/`fill_appended` event or mutate
+position.
+**Why.** A red-team pass found `append_fill` accepted negative/zero quantity
+and price (a negative buy creates a negative position; a negative price
+creates negative cost basis — both directly corrupt the derived-position
+truth the whole architecture treats as sacred), accepted fills for
+nonexistent/mismatched orders, and `create_order` accepted nonexistent
+candidates. These are input-boundary holes, distinct from the lifecycle/
+temporal correctness the prior rounds focused on — the happy paths and
+intended invariants were enforced, but hostile inputs weren't rejected.
+Validating at the store boundary (not only the model) keeps both
+implementations consistent and produces predictable `StoreError`s. Done now,
+before Phase 3 generates real candidates/orders/fills, because corrupt
+foundational data is far cheaper to prevent than to reconcile later.
+
+### D-009 — One session per calendar date; no auto-create after close
+**Decision.** A calendar date has at most one session. `get_current_session`
+must **not** conjure a new session when the only session for today is already
+`closed` — closing a session ends the trading day; there is no active session
+again until a genuinely new day (or, later, an explicit open). `GET
+/api/session` returns the closed session's state in that window rather than
+silently creating a fresh active one. `get_session_by_date` therefore has an
+unambiguous answer for every date.
+**Why.** A red-team trace found that after `POST /api/session/close`, any
+later `get_current_session` call — which `GET /api/session` makes on every
+Session Control render — created a *second* session for the same date. With
+two same-date sessions, `get_session_by_date` (newest-first / `ORDER BY rowid
+DESC LIMIT 1`) returned the fresh empty active one, so `GET
+/api/review?date=today` showed an empty session and the snapshots captured at
+close became invisible by date. This is a temporal-interaction bug (no single
+malformed call; it lives in the close → view → review sequence) and directly
+undermines the D-007 snapshot mechanism it was meant to make reliable. The
+"no auto-create after close" rule matches the manual-close model: you closed
+the day, so there is no active session until the next one starts. (Automatic
+next-session opening tied to a session window remains deferred to whenever the
+Phase 4/5 monitoring loop exists.)
+
 ### D-008 — Order-transition audit events must not fire on true no-ops
 **Decision.** `transition_order` (and any future order-mutating method) must
 not write a new audit event when the call is a genuine no-op (status
