@@ -1,0 +1,99 @@
+"""SqliteStateStore: schema, persistence, atomic rollback, and parity.
+
+This exercises the real on-disk implementation (a temp file), which is fine —
+it's testing our storage code, not Alpaca, so it is not env-gated. Unit tests
+elsewhere remain IO-free via the in-memory store.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.models import OrderSide
+from app.position import NegativePositionError
+from app.store.sqlite import SqliteStateStore
+
+pytestmark = pytest.mark.anyio
+
+
+async def _fresh(tmp_path):
+    store = SqliteStateStore(tmp_path / "app.db")
+    await store.initialize()
+    return store
+
+
+async def test_schema_creation_is_idempotent(tmp_path):
+    path = tmp_path / "app.db"
+    s1 = SqliteStateStore(path)
+    await s1.initialize()
+    await s1.initialize()  # second startup must not error
+    await s1.add_watchlist_symbol("AAPL")
+    await s1.close()
+    assert path.exists()
+
+
+async def test_data_survives_reopen(tmp_path):
+    store = await _fresh(tmp_path)
+    candidate = await store.create_candidate("AAPL")
+    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 200)
+    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
+    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 2.0)
+    await store.set_kill_switch(True)
+    await store.close()
+
+    # "Restart": a brand-new store over the same file.
+    reopened = SqliteStateStore(tmp_path / "app.db")
+    await reopened.initialize()
+    position = await reopened.get_position("AAPL")
+    assert position.quantity == 200
+    assert position.average_price == pytest.approx(1.5)
+    assert (await reopened.get_current_session()).kill_switch is True
+    await reopened.close()
+
+
+async def test_duplicate_fill_protection_in_sqlite(tmp_path):
+    store = await _fresh(tmp_path)
+    candidate = await store.create_candidate("AAPL")
+    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="x")
+    dup = await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 100, 9.0, source_fill_id="x"
+    )
+    assert dup.status == "duplicate"
+    assert len(await store.list_fills(symbol="AAPL")) == 1
+    await store.close()
+
+
+async def test_oversell_rejected_in_sqlite(tmp_path):
+    store = await _fresh(tmp_path)
+    candidate = await store.create_candidate("AAPL")
+    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
+    with pytest.raises(NegativePositionError):
+        await store.append_fill(order.id, "AAPL", OrderSide.SELL, 200, 1.0)
+    assert (await store.get_position("AAPL")).quantity == 100
+    await store.close()
+
+
+async def test_multi_row_write_is_atomic_rolls_back(tmp_path):
+    """If the audit-event write fails mid-transaction, the fill insert that
+    shares the transaction must roll back too — all or nothing."""
+
+    store = await _fresh(tmp_path)
+    candidate = await store.create_candidate("AAPL")
+    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+
+    original = store._insert_event
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated mid-transaction failure")
+
+    store._insert_event = boom
+    with pytest.raises(RuntimeError):
+        await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
+    store._insert_event = original  # restore
+
+    # The fill row was rolled back with the failed event — nothing persisted.
+    assert await store.list_fills(symbol="AAPL") == []
+    assert (await store.get_position("AAPL")).quantity == 0
+    await store.close()
