@@ -46,7 +46,9 @@ async def test_duplicate_source_fill_id_is_ignored(store):
 
 async def test_distinct_source_fill_ids_both_append(store):
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    # Order is sized for both fills (cumulative 200) so the distinct-id check is
+    # what's exercised, not the cumulative-quantity guard (D-010).
+    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 200)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="a")
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="b")
     assert len(await store.list_fills(symbol="AAPL")) == 2
@@ -55,7 +57,7 @@ async def test_distinct_source_fill_ids_both_append(store):
 async def test_null_source_fill_id_is_not_deduped(store):
     """Fills without a source id are distinct facts, not duplicates."""
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 200)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
     assert len(await store.list_fills(symbol="AAPL")) == 2

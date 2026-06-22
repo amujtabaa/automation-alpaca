@@ -77,12 +77,15 @@ async def test_close_excludes_flat_positions(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    order = await any_store.create_order(
+    buy_order = await any_store.create_order(
         cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
     )
-    await any_store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,
+    sell_order = await any_store.create_order(
+        cand.id, "AAPL", OrderSide.SELL, 100, session_id=session.id
+    )
+    await any_store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0,
                                 session_id=session.id)
-    await any_store.append_fill(order.id, "AAPL", OrderSide.SELL, 100, 2.0,
+    await any_store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 100, 2.0,
                                 session_id=session.id)
     await any_store.close_session()
     # Fully exited -> no snapshot row for it.

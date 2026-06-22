@@ -118,6 +118,7 @@ class EventType(str, Enum):
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
     FILL_REJECTED_NEGATIVE = "fill_rejected_negative_position"
+    FILL_REJECTED_INVALID = "fill_rejected_invalid"
 
     KILL_SWITCH_ENGAGED = "kill_switch_engaged"
     KILL_SWITCH_RELEASED = "kill_switch_released"

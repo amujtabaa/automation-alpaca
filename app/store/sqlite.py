@@ -53,6 +53,8 @@ from app.position import NegativePositionError, fold_fills, would_go_negative
 from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
+    InvalidFillError,
+    InvalidOrderError,
     OrderTransitionError,
     SessionAlreadyClosedError,
     StateStore,
@@ -64,6 +66,12 @@ from app.store.transitions import (
     CANDIDATE_TRANSITIONS,
     ORDER_TIMESTAMP,
     ORDER_TRANSITIONS,
+)
+from app.store.validation import (
+    fill_order_match_reason,
+    fill_value_reason,
+    filled_quantity_reason,
+    order_candidate_match_reason,
 )
 
 SCHEMA = """
@@ -420,13 +428,18 @@ class SqliteStateStore(StateStore):
     # Sessions — current-session bootstrap used by several methods
     # ------------------------------------------------------------------ #
     def _ensure_current_session_locked(self) -> SessionRecord:
+        # One session per calendar date (D-009): return today's session if it
+        # exists — active *or* closed — and only create one when today has none.
+        # A closed today-session must NOT trigger creating a second; closing
+        # ends the trading day until a genuinely new one starts.
+        today = utcnow().date().isoformat()
         row = self._read_one(
-            "SELECT * FROM sessions WHERE status = ? ORDER BY rowid DESC LIMIT 1",
-            (SessionStatus.ACTIVE.value,),
+            "SELECT * FROM sessions WHERE session_date = ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (today,),
         )
         if row is not None:
             return self._session(row)
-        today = utcnow().date().isoformat()
         session = SessionRecord(session_date=today, mode=TradingMode.PAPER)
         with self._tx() as cur:
             self._insert_session(cur, session)
@@ -472,6 +485,7 @@ class SqliteStateStore(StateStore):
             )
             if existing is not None:
                 return self._watchlist(existing)
+            session = self._ensure_current_session_locked()
             now = utcnow()
             entry = WatchlistSymbol(
                 symbol=key,
@@ -493,7 +507,11 @@ class SqliteStateStore(StateStore):
                     ),
                 )
                 self._insert_event(
-                    cur, "watchlist_added", message=f"{key} added", symbol=key
+                    cur,
+                    "watchlist_added",
+                    message=f"{key} added",
+                    symbol=key,
+                    session_id=session.id,
                 )
             return entry
 
@@ -514,6 +532,7 @@ class SqliteStateStore(StateStore):
             row = self._read_one("SELECT * FROM watchlist WHERE symbol = ?", (key,))
             if row is None:
                 raise UnknownEntityError(f"watchlist symbol {key} not found")
+            session = self._ensure_current_session_locked()
             entry = self._watchlist(row)
             entry.armed = armed
             entry.armed_at = utcnow() if armed else None
@@ -529,6 +548,7 @@ class SqliteStateStore(StateStore):
                     "watchlist_armed" if armed else "watchlist_disarmed",
                     message=f"{key} {'armed' if armed else 'disarmed'}",
                     symbol=key,
+                    session_id=session.id,
                 )
             return entry
 
@@ -538,10 +558,15 @@ class SqliteStateStore(StateStore):
             row = self._read_one("SELECT * FROM watchlist WHERE symbol = ?", (key,))
             if row is None:
                 return False
+            session = self._ensure_current_session_locked()
             with self._tx() as cur:
                 cur.execute("DELETE FROM watchlist WHERE symbol = ?", (key,))
                 self._insert_event(
-                    cur, "watchlist_removed", message=f"{key} removed", symbol=key
+                    cur,
+                    "watchlist_removed",
+                    message=f"{key} removed",
+                    symbol=key,
+                    session_id=session.id,
                 )
             return True
 
@@ -561,6 +586,10 @@ class SqliteStateStore(StateStore):
     ) -> Candidate:
         key = normalize_symbol(symbol)
         async with self._lock:
+            # Default to the active session so close/expiry and date-scoped
+            # review see this candidate (Fix 7). An explicit session_id wins.
+            if session_id is None:
+                session_id = self._ensure_current_session_locked().id
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -654,13 +683,10 @@ class SqliteStateStore(StateStore):
             candidate = self._candidate(row)
             current = candidate.status
             if new_status is current:
-                if order_id is not None and candidate.order_id is None:
-                    candidate.order_id = order_id
-                    with self._tx() as cur:
-                        cur.execute(
-                            "UPDATE candidates SET order_id=? WHERE id=?",
-                            (order_id, candidate.id),
-                        )
+                # Idempotent no-op: write no event and mutate nothing —
+                # including order_id, which is set only on the real
+                # APPROVED -> ORDERED transition. A stray order_id arg is
+                # ignored, not applied (Fix 6 / D-008 philosophy).
                 return candidate
             if new_status not in CANDIDATE_TRANSITIONS.get(current, set()):
                 raise CandidateTransitionError(
@@ -719,6 +745,20 @@ class SqliteStateStore(StateStore):
     ) -> Order:
         key = normalize_symbol(symbol)
         async with self._lock:
+            # Validate the order against its candidate (Fix 4). Existence +
+            # symbol match only — the approved-only rule and the auto-ORDERED
+            # transition belong to Phase 3's Approval Gate (D-010), not here.
+            cand_row = self._read_one(
+                "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
+            )
+            if cand_row is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            mismatch = order_candidate_match_reason(self._candidate(cand_row), key)
+            if mismatch is not None:
+                raise InvalidOrderError(
+                    f"order symbol {key} does not match candidate "
+                    f"{cand_row['symbol']} ({mismatch})"
+                )
             order = Order(
                 candidate_id=candidate_id,
                 symbol=key,
@@ -819,6 +859,17 @@ class SqliteStateStore(StateStore):
                 raise OrderTransitionError(
                     f"illegal order transition {current.value} -> {new_status.value}"
                 )
+            # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward
+            # progress raises and writes nothing; D-008 audit behavior below is
+            # untouched. Equality is allowed (handled as a no-op).
+            if filled_quantity is not None:
+                bad = filled_quantity_reason(order, filled_quantity)
+                if bad is not None:
+                    raise InvalidOrderError(
+                        f"invalid filled_quantity {filled_quantity} for order "
+                        f"{order.id} (qty {order.quantity}, current "
+                        f"{order.filled_quantity}): {bad}"
+                    )
             qty_changed = (
                 filled_quantity is not None
                 and filled_quantity != order.filled_quantity
@@ -913,7 +964,46 @@ class SqliteStateStore(StateStore):
         key = normalize_symbol(symbol)
         side = OrderSide(side)
         async with self._lock:
-            # 1) Duplicate protection.
+            # 1) Intrinsic value validation (Fix 1): a non-positive quantity or
+            #    price would corrupt derived-position truth. Reject up front.
+            value_reason = fill_value_reason(quantity, price)
+            if value_reason is not None:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur,
+                        "fill_rejected_invalid",
+                        message=f"fill for {key} rejected: {value_reason}",
+                        symbol=key,
+                        order_id=order_id,
+                        payload={
+                            "reason": value_reason,
+                            "quantity": quantity,
+                            "price": price,
+                        },
+                        session_id=session_id,
+                    )
+                raise InvalidFillError(f"invalid fill for {key}: {value_reason}")
+
+            # 2) The referenced order must exist (Fix 2).
+            order_row = self._read_one(
+                "SELECT * FROM orders WHERE id = ?", (order_id,)
+            )
+            if order_row is None:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur,
+                        "fill_rejected_invalid",
+                        message=f"fill rejected: unknown order {order_id}",
+                        symbol=key,
+                        order_id=order_id,
+                        payload={"reason": "unknown_order"},
+                        session_id=session_id,
+                    )
+                raise UnknownEntityError(f"order {order_id} not found")
+            order = self._order(order_row)
+
+            # 3) Duplicate protection. A replay short-circuits here before the
+            #    cumulative check, so it is never mistaken for an overfill.
             if source_fill_id is not None:
                 dup = self._read_one(
                     "SELECT 1 FROM fills WHERE source_fill_id = ?",
@@ -932,7 +1022,40 @@ class SqliteStateStore(StateStore):
                         )
                     return FillAppendResult(status="duplicate", fill=None, event=event)
 
-            # 2) Long-only integrity check.
+            # 4) Symbol/side match + cumulative-quantity vs the order (Fix 2).
+            prior_row = self._read_one(
+                "SELECT COALESCE(SUM(quantity), 0) AS total FROM fills "
+                "WHERE order_id = ?",
+                (order_id,),
+            )
+            prior_filled = prior_row["total"] if prior_row else 0
+            match_reason = fill_order_match_reason(
+                order, key, side, quantity, prior_filled
+            )
+            if match_reason is not None:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur,
+                        "fill_rejected_invalid",
+                        message=f"fill for {key} rejected: {match_reason}",
+                        symbol=key,
+                        order_id=order_id,
+                        payload={
+                            "reason": match_reason,
+                            "order_symbol": order.symbol,
+                            "order_side": OrderSide(order.side).value,
+                            "order_quantity": order.quantity,
+                            "prior_filled_quantity": prior_filled,
+                            "quantity": quantity,
+                        },
+                        session_id=session_id,
+                    )
+                raise InvalidFillError(
+                    f"fill for {key} inconsistent with order {order_id}: "
+                    f"{match_reason}"
+                )
+
+            # 5) Long-only integrity check.
             current = self._position_locked(key)
             if would_go_negative(current.quantity, side, quantity):
                 with self._tx() as cur:
@@ -954,7 +1077,7 @@ class SqliteStateStore(StateStore):
                 # Event committed; now surface the rejection.
                 raise NegativePositionError(key, current.quantity, quantity)
 
-            # 3) Append.
+            # 6) Append.
             fill = Fill(
                 order_id=order_id,
                 symbol=key,

@@ -69,10 +69,12 @@ async def test_duplicate_fill_protection_in_sqlite(tmp_path):
 async def test_oversell_rejected_in_sqlite(tmp_path):
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
-    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
+    buy_order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    await store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0)
+    # Sell through a side-matched order so the long-only guard is what rejects.
+    sell_order = await store.create_order(candidate.id, "AAPL", OrderSide.SELL, 200)
     with pytest.raises(NegativePositionError):
-        await store.append_fill(order.id, "AAPL", OrderSide.SELL, 200, 1.0)
+        await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 200, 1.0)
     assert (await store.get_position("AAPL")).quantity == 100
     # The rejection is persisted as an audit event (not silent), just like the
     # in-memory store.

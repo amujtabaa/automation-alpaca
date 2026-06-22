@@ -36,10 +36,12 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.position import fold_fills, would_go_negative
+from app.position import NegativePositionError, fold_fills, would_go_negative
 from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
+    InvalidFillError,
+    InvalidOrderError,
     OrderTransitionError,
     SessionAlreadyClosedError,
     StateStore,
@@ -51,6 +53,12 @@ from app.store.transitions import (
     CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
     ORDER_TIMESTAMP as _ORDER_TIMESTAMP,
     ORDER_TRANSITIONS as _ORDER_TRANSITIONS,
+)
+from app.store.validation import (
+    fill_order_match_reason,
+    fill_value_reason,
+    filled_quantity_reason,
+    order_candidate_match_reason,
 )
 
 
@@ -102,10 +110,14 @@ class InMemoryStateStore(StateStore):
         return event.model_copy(deep=True)
 
     def _ensure_current_session_unlocked(self) -> SessionRecord:
-        for session in reversed(self._sessions):
-            if session.status is SessionStatus.ACTIVE:
-                return session
+        # One session per calendar date (D-009). If today already has a session
+        # — active *or* closed — return it; never conjure a second one. Closing
+        # a session ends the trading day, so a closed today-session is a valid
+        # thing to return (and to show in the UI) until a genuinely new day.
         today = utcnow().date().isoformat()
+        for session in reversed(self._sessions):
+            if session.session_date == today:
+                return session
         session = SessionRecord(session_date=today, mode=TradingMode.PAPER)
         self._sessions.append(session)
         self._append_event_unlocked(
@@ -132,6 +144,7 @@ class InMemoryStateStore(StateStore):
             existing = self._watchlist.get(key)
             if existing is not None:
                 return existing.model_copy(deep=True)
+            session = self._ensure_current_session_unlocked()
             now = utcnow()
             entry = WatchlistSymbol(
                 symbol=key,
@@ -142,7 +155,10 @@ class InMemoryStateStore(StateStore):
             )
             self._watchlist[key] = entry
             self._append_event_unlocked(
-                "watchlist_added", message=f"{key} added", symbol=key
+                "watchlist_added",
+                message=f"{key} added",
+                symbol=key,
+                session_id=session.id,
             )
             return entry.model_copy(deep=True)
 
@@ -162,6 +178,7 @@ class InMemoryStateStore(StateStore):
             entry = self._watchlist.get(key)
             if entry is None:
                 raise UnknownEntityError(f"watchlist symbol {key} not found")
+            session = self._ensure_current_session_unlocked()
             entry.armed = armed
             entry.armed_at = utcnow() if armed else None
             entry.updated_at = utcnow()
@@ -169,6 +186,7 @@ class InMemoryStateStore(StateStore):
                 "watchlist_armed" if armed else "watchlist_disarmed",
                 message=f"{key} {'armed' if armed else 'disarmed'}",
                 symbol=key,
+                session_id=session.id,
             )
             return entry.model_copy(deep=True)
 
@@ -177,9 +195,13 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             if key not in self._watchlist:
                 return False
+            session = self._ensure_current_session_unlocked()
             del self._watchlist[key]
             self._append_event_unlocked(
-                "watchlist_removed", message=f"{key} removed", symbol=key
+                "watchlist_removed",
+                message=f"{key} removed",
+                symbol=key,
+                session_id=session.id,
             )
             return True
 
@@ -199,6 +221,10 @@ class InMemoryStateStore(StateStore):
     ) -> Candidate:
         key = normalize_symbol(symbol)
         async with self._lock:
+            # Default to the active session so close/expiry and date-scoped
+            # review see this candidate (Fix 7). An explicit session_id wins.
+            if session_id is None:
+                session_id = self._ensure_current_session_unlocked().id
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -252,9 +278,11 @@ class InMemoryStateStore(StateStore):
                 raise UnknownEntityError(f"candidate {candidate_id} not found")
             current = candidate.status
             if new_status is current:
-                # Idempotent no-op (e.g. approving an already-approved candidate).
-                if order_id is not None and candidate.order_id is None:
-                    candidate.order_id = order_id
+                # Idempotent no-op (e.g. approving an already-approved
+                # candidate): write no event and mutate nothing — including
+                # order_id, which is set only on the real APPROVED -> ORDERED
+                # transition. A stray order_id arg here is ignored, not applied
+                # (Fix 6 / D-008 philosophy).
                 return candidate.model_copy(deep=True)
             if new_status not in _CANDIDATE_TRANSITIONS.get(current, set()):
                 raise CandidateTransitionError(
@@ -296,6 +324,18 @@ class InMemoryStateStore(StateStore):
     ) -> Order:
         key = normalize_symbol(symbol)
         async with self._lock:
+            # Validate the order against its candidate (Fix 4). Existence +
+            # symbol match only — the approved-only rule and the auto-ORDERED
+            # transition belong to Phase 3's Approval Gate (D-010), not here.
+            candidate = self._candidates.get(candidate_id)
+            if candidate is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            mismatch = order_candidate_match_reason(candidate, key)
+            if mismatch is not None:
+                raise InvalidOrderError(
+                    f"order symbol {key} does not match candidate "
+                    f"{candidate.symbol} ({mismatch})"
+                )
             order = Order(
                 candidate_id=candidate_id,
                 symbol=key,
@@ -358,6 +398,17 @@ class InMemoryStateStore(StateStore):
                 raise OrderTransitionError(
                     f"illegal order transition {current.value} -> {new_status.value}"
                 )
+            # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward
+            # progress raises and writes nothing; D-008 audit behavior below is
+            # untouched. Equality is allowed (handled as a no-op).
+            if filled_quantity is not None:
+                bad = filled_quantity_reason(order, filled_quantity)
+                if bad is not None:
+                    raise InvalidOrderError(
+                        f"invalid filled_quantity {filled_quantity} for order "
+                        f"{order.id} (qty {order.quantity}, current "
+                        f"{order.filled_quantity}): {bad}"
+                    )
             qty_changed = (
                 filled_quantity is not None
                 and filled_quantity != order.filled_quantity
@@ -437,7 +488,41 @@ class InMemoryStateStore(StateStore):
         key = normalize_symbol(symbol)
         side = OrderSide(side)
         async with self._lock:
-            # 1) Duplicate protection (makes append idempotent, not optional).
+            # 1) Intrinsic value validation (Fix 1): a non-positive quantity or
+            #    price would corrupt derived-position truth. Reject before any
+            #    state is touched; record why.
+            value_reason = fill_value_reason(quantity, price)
+            if value_reason is not None:
+                self._append_event_unlocked(
+                    "fill_rejected_invalid",
+                    message=f"fill for {key} rejected: {value_reason}",
+                    symbol=key,
+                    order_id=order_id,
+                    payload={
+                        "reason": value_reason,
+                        "quantity": quantity,
+                        "price": price,
+                    },
+                    session_id=session_id,
+                )
+                raise InvalidFillError(f"invalid fill for {key}: {value_reason}")
+
+            # 2) The referenced order must exist (Fix 2).
+            order = self._orders.get(order_id)
+            if order is None:
+                self._append_event_unlocked(
+                    "fill_rejected_invalid",
+                    message=f"fill rejected: unknown order {order_id}",
+                    symbol=key,
+                    order_id=order_id,
+                    payload={"reason": "unknown_order"},
+                    session_id=session_id,
+                )
+                raise UnknownEntityError(f"order {order_id} not found")
+
+            # 3) Duplicate protection (makes append idempotent, not optional).
+            #    A replay of an already-accepted fill short-circuits here before
+            #    the cumulative check, so it is never mistaken for an overfill.
             if source_fill_id is not None and source_fill_id in self._fill_source_ids:
                 event = self._append_event_unlocked(
                     "fill_duplicate_ignored",
@@ -451,7 +536,35 @@ class InMemoryStateStore(StateStore):
                 )
                 return FillAppendResult(status="duplicate", fill=None, event=event)
 
-            # 2) Long-only integrity: a sell can never drive quantity negative.
+            # 4) Symbol/side match + cumulative-quantity vs the order (Fix 2).
+            prior_filled = sum(
+                f.quantity for f in self._fills if f.order_id == order_id
+            )
+            match_reason = fill_order_match_reason(
+                order, key, side, quantity, prior_filled
+            )
+            if match_reason is not None:
+                self._append_event_unlocked(
+                    "fill_rejected_invalid",
+                    message=f"fill for {key} rejected: {match_reason}",
+                    symbol=key,
+                    order_id=order_id,
+                    payload={
+                        "reason": match_reason,
+                        "order_symbol": order.symbol,
+                        "order_side": OrderSide(order.side).value,
+                        "order_quantity": order.quantity,
+                        "prior_filled_quantity": prior_filled,
+                        "quantity": quantity,
+                    },
+                    session_id=session_id,
+                )
+                raise InvalidFillError(
+                    f"fill for {key} inconsistent with order {order_id}: "
+                    f"{match_reason}"
+                )
+
+            # 5) Long-only integrity: a sell can never drive quantity negative.
             current = self._position_unlocked(key)
             if would_go_negative(current.quantity, side, quantity):
                 event = self._append_event_unlocked(
@@ -468,11 +581,9 @@ class InMemoryStateStore(StateStore):
                     },
                     session_id=session_id,
                 )
-                from app.position import NegativePositionError
-
                 raise NegativePositionError(key, current.quantity, quantity)
 
-            # 3) Append the fill and record it.
+            # 6) Append the fill and record it.
             fill = Fill(
                 order_id=order_id,
                 symbol=key,

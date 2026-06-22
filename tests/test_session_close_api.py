@@ -43,8 +43,10 @@ async def test_review_closed_returns_snapshot_active_returns_live():
     async with client:
         session = await store.get_current_session()
         candidate = await store.create_candidate("AAPL", session_id=session.id)
+        # Order sized for both buy fills (cumulative 200): the first fills 100
+        # before close, the second (post-close) moves the live fold to 200.
         order = await store.create_order(
-            candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+            candidate.id, "AAPL", OrderSide.BUY, 200, session_id=session.id
         )
         await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,
                                 session_id=session.id)
@@ -68,3 +70,38 @@ async def test_review_closed_returns_snapshot_active_returns_live():
         assert closed["positions"][0]["quantity"] == 100
         # Fills are scoped to this session.
         assert len(closed["fills"]) == 2
+
+
+async def test_get_session_between_close_and_review_keeps_snapshots_visible():
+    """D-009 regression: a GET /api/session call between close and review must
+    not spawn a second same-date session that hides the close-time snapshots.
+
+    This interleaving is exactly what the original test above never exercises —
+    it goes close -> review without the GET /api/session that Session Control
+    issues on every render.
+    """
+
+    client, store = await _app_client()
+    async with client:
+        session = await store.get_current_session()
+        candidate = await store.create_candidate("AAPL", session_id=session.id)
+        order = await store.create_order(
+            candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+        )
+        await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,
+                                session_id=session.id)
+        date = session.session_date
+
+        assert (await client.post("/api/session/close")).status_code == 200
+
+        # The call that used to create a second active session for today.
+        sess = (await client.get("/api/session")).json()
+        assert sess["status"] == "closed"
+        assert sess["id"] == session.id
+
+        review = (await client.get("/api/review", params={"date": date})).json()
+        assert review["session"]["status"] == "closed"
+        assert review["session"]["id"] == session.id
+        # Snapshots captured at close are still visible by date.
+        assert [p["symbol"] for p in review["positions"]] == ["AAPL"]
+        assert review["positions"][0]["quantity"] == 100

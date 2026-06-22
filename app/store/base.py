@@ -74,6 +74,30 @@ class OrderTransitionError(StoreError):
     """An illegal order lifecycle transition was attempted."""
 
 
+class InvalidFillError(StoreError):
+    """A fill was rejected at the store boundary for a bad value or a mismatch
+    against its order (D-010).
+
+    Covers: non-positive ``quantity``/``price``; a fill whose symbol or side
+    does not match the referenced order; and cumulative filled quantity for an
+    order exceeding the order's quantity. A *missing* order is reported as
+    :class:`UnknownEntityError`, and a sell that would go short remains
+    :class:`~app.position.NegativePositionError`; this error is specifically
+    "the fill itself is malformed or inconsistent with its order."
+    """
+
+
+class InvalidOrderError(StoreError):
+    """An order operation was rejected for invalid inputs (D-010).
+
+    Raised by ``create_order`` when the order's symbol does not match its
+    candidate, and by ``transition_order`` when ``filled_quantity`` is out of
+    range (`0 <= filled_quantity <= order.quantity`) or would move backward
+    (no broker-correction path exists in beta). A *missing* candidate is
+    reported as :class:`UnknownEntityError`.
+    """
+
+
 class SessionAlreadyClosedError(StoreError):
     """``close_session`` was called on a session that is already closed.
 
