@@ -10,6 +10,10 @@ ENV/
 *.egg-info/
 .eggs/
 
+# Pytest temp basetemp (used on Windows when the default temp dir errors)
+.pytest_tmp/
+.pytest_cache/
+
 # SQLite database (created at runtime, not committed)
 data/
 *.db
