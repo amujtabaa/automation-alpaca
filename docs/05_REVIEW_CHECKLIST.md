@@ -29,6 +29,15 @@ Use when reviewing Codex or Claude Code output.
 - [ ] Derived position follows the average-cost folding formula in `02`; a
       sell that would take quantity negative is rejected as a data-integrity
       error, not treated as a short position.
+- [ ] Session close (manual trigger) expires open candidates, snapshots
+      positions into `position_snapshots`, and marks the session closed.
+- [ ] `GET /api/review?date=` returns the live view for the active session
+      and the stored snapshot for a closed one — not today's live data
+      regardless of the requested date.
+- [ ] Fills carry `session_id` and are filterable by it directly.
+- [ ] Order-transition audit events do not fire on true no-ops; a
+      `filled_quantity` change without a status change is still recorded,
+      with the before/after quantity in the payload.
 
 ## Persistence
 - [ ] State accessed only through the `StateStore` interface.

@@ -99,7 +99,8 @@ All persist across days and are queryable by session/date:
 - orders (broker-order lifecycle, linked to the candidate that produced them)
 - fills (append-only, linked to the order; carries `source_fill_id` for
   duplicate protection)
-- positions (derived view + snapshots for fast review)
+- positions (derived view + a `position_snapshots` table populated at session
+  close — see "Session Close Mechanics" below)
 - events / audit log (append-only)
 - session records (for `/api/review?date=...`)
 
@@ -145,7 +146,16 @@ created ──submit──▶ submitted ──┬──▶ partially_filled ─�
 - Only a `fill` event advances an order toward `filled`/`partially_filled`,
   and only a fill writes to the fill table — the only thing that changes a
   position (Rule 7).
-- Every transition writes an audit/event row.
+- **A transition call that doesn't change status is a no-op and writes no new
+  audit row** — same rule as the candidate lifecycle above. This matters in
+  practice: Phase 4's reconciliation polling will call this repeatedly as an
+  order sits at `partially_filled` while more fills arrive, and a same-status
+  call shouldn't spam the log. When `filled_quantity` changes *without* a
+  status change (the normal partial-fill case), that's still meaningful —
+  record it, with the before/after `filled_quantity` in the payload, rather
+  than silently dropping it or logging a generic same-status event with no
+  indication anything actually happened.
+- Every genuine transition writes an audit/event row.
 
 ### Fill
 
@@ -163,8 +173,47 @@ loss on restart.
   `expired`, not deleted.
 - **Stale market-derived features** (last price, % move, spread) are recomputed
   on the monitoring cadence; they are working data, not durable records.
-- **Session close:** ends the active session, expires open candidates, and snapshots
-  the day for review. Positions and fills carry forward.
+- **Session close:** see "Session Close Mechanics" below.
+
+## Session Close Mechanics
+
+Closing a session was previously described only by what it should accomplish,
+not how. The Phase 1/1.5/2 build round exposed the gap concretely: the review
+endpoint had nothing point-in-time to read for a past date, because nothing
+ever captured "what the world looked like" at the moment a session ended.
+
+**`POST /api/session/close` (manual in beta; an automatic trigger tied to the
+session window is a later phase, once a monitoring loop exists to drive it)
+does, atomically:**
+
+1. Every candidate still `pending` or `approved` (not yet `ordered`)
+   transitions to `expired`. This is the trigger for the `expire` transition
+   referenced above — it doesn't happen on a timer in beta, only on close.
+2. Current positions (the live fold over fills, exactly what
+   `GET /api/positions` returns right now) are written to a
+   **`position_snapshots`** table, keyed by `session_id`. This is the
+   "snapshots for fast review" already named in "Persisted Entities" above,
+   now given an actual shape: `session_id`, `symbol`, `quantity`, `cost_basis`,
+   `average_price`, `captured_at`. One row per symbol with a nonzero position
+   at close.
+3. The session's `status` becomes `closed`, with a `closed_at` timestamp.
+4. An audit event records the close, including how many candidates were
+   expired.
+
+**`GET /api/review?date=` reads accordingly:** for the *active* session (today,
+or whatever date is currently open), it returns the live derived view, same as
+today's behavior. For a *closed* (past) session, it returns that session's
+`position_snapshots` rows instead of re-folding the full fill history — giving
+an accurate point-in-time answer instead of today's live position. Fills
+for a past date are filtered to that session directly (see below), not
+returned in full regardless of date, which is what the build round's review
+endpoint currently does.
+
+**Fills gain a `session_id` field.** `append_fill` already accepts a
+`session_id` parameter (it was being threaded through to the audit event), but
+the `Fill` model itself never stored it, so fills couldn't be filtered by
+session without a join through `Order`. Storing it directly on the fill row
+makes date-scoped review a direct filter, not a join.
 
 ## Lifecycle — What "Deleted" Means
 

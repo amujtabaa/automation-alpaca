@@ -34,6 +34,13 @@ ordered). Broker-execution states (`submitted`, `partially_filled`, `filled`,
 `canceled`, `rejected`) belong to the Order, not the Candidate — do not add
 them to the candidate's status field. See `docs/02_DATA_AND_PERSISTENCE.md`.
 
+## Git Workflow
+One feature branch per phase, off `master`, with incremental commits per
+logical unit rather than one commit at the end. Run the full test suite
+before merging. A self-review is not a substitute for an independent one —
+significant findings should get a fresh read of the diff before merging to
+`master`, not just self-adjudication by whichever agent wrote the code.
+
 ## Stack
 Python 3.12+, FastAPI, Pydantic v2, SQLite (via `StateStore`), Streamlit,
 pytest.

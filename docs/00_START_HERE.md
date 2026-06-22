@@ -49,6 +49,49 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-008 — Order-transition audit events must not fire on true no-ops
+**Decision.** `transition_order` (and any future order-mutating method) must
+not write a new audit event when the call is a genuine no-op (status
+unchanged, no other field changed) — matching the rule `transition_candidate`
+already follows correctly. When `filled_quantity` changes without a status
+change (the normal repeated-partial-fill case during Phase 4 reconciliation),
+that's still a meaningful event and must be recorded, with the before/after
+quantity in the payload.
+**Why.** The first build round's implementation wrote an `order_transition`
+event on every call regardless of whether anything changed, identically in
+both `InMemoryStateStore` and `SqliteStateStore` (confirmed by direct code
+review, not just the build's own self-review — its adversarial-review pass
+missed this). Phase 4's polling-based reconciliation calls
+`transition_order(..., PARTIALLY_FILLED)` repeatedly as fills accumulate
+against one order; left as-is, the audit log fills with generic
+"partially_filled → partially_filled" rows that don't show the one thing
+that's actually interesting — how much has filled so far — which undermines
+the audit log's whole purpose.
+
+### D-007 — Session close is an explicit, manually-triggered lifecycle event; positions get a snapshot table; fills get session_id
+**Decision.** `POST /api/session/close` (new endpoint, manual in beta) atomically: (1)
+transitions every `pending`/`approved` candidate to `expired`, (2) writes the
+current derived positions into a new `position_snapshots` table keyed by
+`session_id`, (3) marks the session `closed`. `GET /api/review?date=` returns
+the live derived view for the active session and the stored snapshot for a
+closed one. `Fill` gains a `session_id` field (the parameter already existed
+on `append_fill` but was never persisted onto the row) so fills are
+date-filterable directly, without a join through `Order`. Automatic
+close — tied to the session window ending — is deferred to whenever a
+monitoring loop exists to drive it (Phase 4/5); beta only provides the manual
+trigger.
+**Why.** `02_DATA_AND_PERSISTENCE.md` always described what closing a session
+should *accomplish* ("expires open candidates, and snapshots the day for
+review") but the original API contract in `01_ARCHITECTURE.md` never defined
+an endpoint that does it, and nothing implemented the snapshot table the
+persisted-entities list had already named. This surfaced concretely once real
+code existed: the review endpoint built in the first round returns today's
+live position and the entire all-time fill history for *any* requested date,
+because there was nothing point-in-time to read instead. Building the
+snapshot mechanism now, before Phase 3/4 generate real candidates and fills,
+is cheaper than retrofitting point-in-time accuracy after real trading history
+exists.
+
 ### D-006 — Candidate/order split, fill dedup, transactional writes, precise position formula
 **Decision.** Four refinements to Phase 1.5, adapted from concerns raised
 against an analogous (but multi-broker) Webull/IBKR sibling project, applied

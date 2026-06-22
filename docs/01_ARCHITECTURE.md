@@ -137,6 +137,7 @@ UI-agnostic so Dash can later call the same endpoints unchanged.
 ```text
 GET    /api/health
 GET    /api/session
+POST   /api/session/close              # manual now; automatic trigger is a later phase
 
 POST   /api/watchlist
 GET    /api/watchlist
@@ -162,4 +163,7 @@ POST   /api/controls/resume-buys
 ```
 
 `/api/review` is added to serve the across-days history requirement
-(see `02_DATA_AND_PERSISTENCE.md`).
+(see `02_DATA_AND_PERSISTENCE.md`). `/api/session/close` was missing from the
+original contract — the Phase 1/1.5/2 build round exposed that nothing defined
+how a session ends, even though `02_DATA_AND_PERSISTENCE.md` always described
+what closing should *do* (expire open candidates, snapshot positions).

@@ -28,6 +28,15 @@ a disposable thin cockpit.
 - call Alpaca from Streamlit,
 - add Dash/React unless requested.
 
+## Git Workflow (established in the Phase 1/1.5/2 round, keep using it)
+One feature branch per phase (e.g. `phase1-1.5-2-implementation`), off
+`master`. Commit incrementally per logical unit, not one commit at the end.
+Run the test suite and a self-review before declaring done. Merge to `master`
+only after tests pass — but a self-review is not a substitute for an
+independent one; significant findings should be checked by a fresh read of
+the diff (this Claude Project, or a separate Claude Code session) before
+merging, not just adjudicated by the same session that wrote the code.
+
 ## Always Preserve
 - backend-owned, persisted state (SQLite via the `StateStore` interface;
   in-memory implementation for tests — see `docs/02_DATA_AND_PERSISTENCE.md`),
