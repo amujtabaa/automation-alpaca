@@ -11,6 +11,7 @@ from app.config import Settings
 from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
+    SessionAlreadyClosedError,
     StateStore,
     StoreError,
     UnknownEntityError,
@@ -25,6 +26,7 @@ __all__ = [
     "FillAppendResult",
     "StoreError",
     "CandidateTransitionError",
+    "SessionAlreadyClosedError",
     "UnknownEntityError",
     "create_state_store",
 ]

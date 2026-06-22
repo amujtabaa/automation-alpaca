@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_store
 from app.api.schemas import ReviewResponse
-from app.models import utcnow
+from app.models import Position, SessionStatus, utcnow
 from app.store.base import StateStore
 
 router = APIRouter(prefix="/api", tags=["review"])
@@ -44,11 +44,27 @@ async def review(
     candidates = await store.list_candidates(session_id=session.id)
     orders = await store.list_orders(session_id=session.id)
     events = await store.list_events(session_id=session.id)
-    # Fills/positions are derived from the append-only fill history. Positions
-    # carry forward across sessions (they are not date-scoped), so the current
-    # derived view is returned.
-    positions = await store.list_positions()
-    fills = await store.list_fills()
+    # Fills are scoped to this session directly (D-007), not returned in full
+    # regardless of date.
+    fills = await store.list_fills(session_id=session.id)
+
+    if session.status is SessionStatus.CLOSED:
+        # Point-in-time: return the snapshot captured at close, not today's live
+        # fold over the full fill history.
+        snapshots = await store.list_position_snapshots(session.id)
+        positions = [
+            Position(
+                symbol=s.symbol,
+                quantity=s.quantity,
+                cost_basis=s.cost_basis,
+                average_price=s.average_price,
+                updated_at=s.captured_at,
+            )
+            for s in snapshots
+        ]
+    else:
+        # Active session: the live derived view, same as before.
+        positions = await store.list_positions()
 
     return ReviewResponse(
         date=target.isoformat(),

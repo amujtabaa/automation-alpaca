@@ -28,6 +28,7 @@ from app.models import (
     OrderStatus,
     OrderType,
     Position,
+    PositionSnapshot,
     SessionRecord,
     SessionStatus,
     SessionType,
@@ -40,6 +41,7 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     OrderTransitionError,
+    SessionAlreadyClosedError,
     StateStore,
     UnknownEntityError,
     normalize_symbol,
@@ -62,6 +64,7 @@ class InMemoryStateStore(StateStore):
         self._fill_source_ids: set[str] = set()
         self._events: list[Event] = []  # append-only, insertion order
         self._sessions: list[SessionRecord] = []
+        self._position_snapshots: list[PositionSnapshot] = []
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -477,6 +480,7 @@ class InMemoryStateStore(StateStore):
                 quantity=quantity,
                 price=price,
                 source_fill_id=source_fill_id,
+                session_id=session_id,
                 filled_at=filled_at or utcnow(),
             )
             self._fills.append(fill)
@@ -496,7 +500,11 @@ class InMemoryStateStore(StateStore):
             )
 
     async def list_fills(
-        self, *, symbol: Optional[str] = None, order_id: Optional[str] = None
+        self,
+        *,
+        symbol: Optional[str] = None,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> list[Fill]:
         key = normalize_symbol(symbol) if symbol else None
         async with self._lock:
@@ -505,6 +513,8 @@ class InMemoryStateStore(StateStore):
                 if key is not None and f.symbol != key:
                     continue
                 if order_id is not None and f.order_id != order_id:
+                    continue
+                if session_id is not None and f.session_id != session_id:
                     continue
                 out.append(f.model_copy(deep=True))
             return out
@@ -622,3 +632,105 @@ class InMemoryStateStore(StateStore):
                 payload={"buys_paused": paused},
             )
             return session.model_copy(deep=True)
+
+    async def close_session(
+        self, session_id: Optional[str] = None
+    ) -> SessionRecord:
+        async with self._lock:
+            if session_id is None:
+                # The active session, but do NOT auto-create one — closing when
+                # nothing is active means there is nothing to close.
+                session = next(
+                    (
+                        s
+                        for s in reversed(self._sessions)
+                        if s.status is SessionStatus.ACTIVE
+                    ),
+                    None,
+                )
+                if session is None:
+                    raise SessionAlreadyClosedError("no active session to close")
+            else:
+                session = next(
+                    (s for s in self._sessions if s.id == session_id), None
+                )
+                if session is None:
+                    raise UnknownEntityError(f"session {session_id} not found")
+                if session.status is SessionStatus.CLOSED:
+                    raise SessionAlreadyClosedError(
+                        f"session {session.id} is already closed"
+                    )
+
+            now = utcnow()
+
+            # 1) Expire open (pending/approved) candidates in this session.
+            expired = 0
+            for candidate in self._candidates.values():
+                if candidate.session_id == session.id and candidate.status in (
+                    CandidateStatus.PENDING,
+                    CandidateStatus.APPROVED,
+                ):
+                    prev = candidate.status
+                    candidate.status = CandidateStatus.EXPIRED
+                    candidate.expired_at = now
+                    candidate.updated_at = now
+                    expired += 1
+                    self._append_event_unlocked(
+                        "candidate_transition",
+                        message=f"candidate {prev.value} -> expired (session close)",
+                        symbol=candidate.symbol,
+                        candidate_id=candidate.id,
+                        payload={
+                            "from": prev.value,
+                            "to": "expired",
+                            "reason": "session_close",
+                        },
+                        session_id=session.id,
+                    )
+
+            # 2) Snapshot every nonzero position (the live fold over fills).
+            snapshots = 0
+            for sym in sorted({f.symbol for f in self._fills}):
+                pos = self._position_unlocked(sym)
+                if pos.quantity != 0:
+                    self._position_snapshots.append(
+                        PositionSnapshot(
+                            session_id=session.id,
+                            symbol=pos.symbol,
+                            quantity=pos.quantity,
+                            cost_basis=pos.cost_basis,
+                            average_price=pos.average_price,
+                            captured_at=now,
+                        )
+                    )
+                    snapshots += 1
+
+            # 3) Mark the session closed.
+            session.status = SessionStatus.CLOSED
+            session.closed_at = now
+            session.updated_at = now
+
+            # 4) One audit event for the close.
+            self._append_event_unlocked(
+                "session_closed",
+                message=(
+                    f"session closed ({expired} candidates expired, "
+                    f"{snapshots} positions snapshotted)"
+                ),
+                session_id=session.id,
+                payload={
+                    "expired_candidates": expired,
+                    "position_snapshots": snapshots,
+                },
+            )
+            return session.model_copy(deep=True)
+
+    async def list_position_snapshots(
+        self, session_id: str
+    ) -> list[PositionSnapshot]:
+        async with self._lock:
+            return [
+                s.model_copy(deep=True)
+                for s in self._position_snapshots
+                if s.session_id == session_id
+            ]

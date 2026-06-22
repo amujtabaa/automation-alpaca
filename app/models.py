@@ -222,6 +222,11 @@ class Fill(_Entity):
     # ignore duplicate observations during polling-based reconciliation.
     source_fill_id: Optional[str] = None
 
+    # The session this fill belongs to. Stored on the row (not only threaded to
+    # the audit event) so fills are date-filterable directly, without a join
+    # through Order (D-007).
+    session_id: Optional[str] = None
+
     filled_at: datetime = Field(default_factory=utcnow)
     created_at: datetime = Field(default_factory=utcnow)
 
@@ -238,6 +243,24 @@ class Position(_Entity):
     cost_basis: float = 0.0
     average_price: Optional[float] = None
     updated_at: Optional[datetime] = None  # timestamp of the most recent fill
+
+
+class PositionSnapshot(_Entity):
+    """A point-in-time copy of a position, captured at session close.
+
+    Lets ``GET /api/review?date=`` answer "what did this position look like when
+    the session ended" for a *closed* session, instead of re-folding today's
+    live fill history (D-007). One row per symbol with a nonzero position at
+    close.
+    """
+
+    id: str = Field(default_factory=new_id)
+    session_id: str
+    symbol: str
+    quantity: int
+    cost_basis: float
+    average_price: Optional[float] = None
+    captured_at: datetime = Field(default_factory=utcnow)
 
 
 class Event(_Entity):

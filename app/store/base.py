@@ -34,6 +34,7 @@ from app.models import (
     OrderStatus,
     OrderType,
     Position,
+    PositionSnapshot,
     SessionRecord,
     SessionType,
     WatchlistSymbol,
@@ -71,6 +72,15 @@ class CandidateTransitionError(StoreError):
 
 class OrderTransitionError(StoreError):
     """An illegal order lifecycle transition was attempted."""
+
+
+class SessionAlreadyClosedError(StoreError):
+    """``close_session`` was called on a session that is already closed.
+
+    Closing is deliberately not idempotent (unlike candidate approve/reject):
+    re-closing would re-snapshot a position that may have changed, so the second
+    call is rejected explicitly.
+    """
 
 
 @dataclass(frozen=True)
@@ -247,7 +257,11 @@ class StateStore(ABC):
 
     @abstractmethod
     async def list_fills(
-        self, *, symbol: Optional[str] = None, order_id: Optional[str] = None
+        self,
+        *,
+        symbol: Optional[str] = None,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> list[Fill]:
         ...
 
@@ -319,3 +333,29 @@ class StateStore(ABC):
     @abstractmethod
     async def set_buys_paused(self, paused: bool) -> SessionRecord:
         """Persist the pause-buys flag on the active session (atomic + audit)."""
+
+    @abstractmethod
+    async def close_session(
+        self, session_id: Optional[str] = None
+    ) -> SessionRecord:
+        """Close a session (default: the active one). Atomically:
+
+        1. Transition every ``PENDING``/``APPROVED`` candidate in this session
+           to ``EXPIRED`` (terminal candidates are left untouched).
+        2. Snapshot current positions — every symbol with a nonzero derived
+           quantity — into ``position_snapshots``, keyed by this session id.
+        3. Set ``status=CLOSED`` and ``closed_at=now``.
+        4. Write one audit event recording the close and how many candidates
+           were expired.
+
+        Raises :class:`SessionAlreadyClosedError` if the session is already
+        closed, and :class:`UnknownEntityError` if ``session_id`` is unknown.
+        Automatic, window-driven close is out of scope here (needs a monitoring
+        loop) — this is the manual trigger only.
+        """
+
+    @abstractmethod
+    async def list_position_snapshots(
+        self, session_id: str
+    ) -> list[PositionSnapshot]:
+        """The position snapshots captured when ``session_id`` was closed."""

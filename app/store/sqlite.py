@@ -41,6 +41,7 @@ from app.models import (
     OrderStatus,
     OrderType,
     Position,
+    PositionSnapshot,
     SessionRecord,
     SessionStatus,
     SessionType,
@@ -53,6 +54,7 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     OrderTransitionError,
+    SessionAlreadyClosedError,
     StateStore,
     UnknownEntityError,
     normalize_symbol,
@@ -123,10 +125,26 @@ CREATE TABLE IF NOT EXISTS fills (
     quantity       INTEGER NOT NULL,
     price          REAL NOT NULL,
     source_fill_id TEXT UNIQUE,
+    session_id     TEXT,
     filled_at      TEXT NOT NULL,
     created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol);
+-- idx_fills_session is created in initialize() *after* _migrate, so it works on
+-- pre-D-007 databases where the session_id column is added by migration.
+
+-- Point-in-time positions captured at session close (D-007). Fills remain the
+-- source of truth; these are a fast, accurate read for closed sessions.
+CREATE TABLE IF NOT EXISTS position_snapshots (
+    id            TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    quantity      INTEGER NOT NULL,
+    cost_basis    REAL NOT NULL,
+    average_price REAL,
+    captured_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_session ON position_snapshots(session_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id           TEXT PRIMARY KEY,
@@ -206,7 +224,24 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             conn = self._connect()
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+            # Created after migration so it works on pre-D-007 databases.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fills_session "
+                "ON fills(session_id)"
+            )
             self._ensure_current_session_locked()
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Lightweight, idempotent migrations for databases created before a
+        schema addition. (CREATE TABLE IF NOT EXISTS doesn't add columns to an
+        existing table.)"""
+
+        fill_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(fills)").fetchall()
+        }
+        if "session_id" not in fill_cols:  # added in D-007
+            conn.execute("ALTER TABLE fills ADD COLUMN session_id TEXT")
 
     async def close(self) -> None:
         async with self._lock:
@@ -281,8 +316,21 @@ class SqliteStateStore(StateStore):
             quantity=row["quantity"],
             price=row["price"],
             source_fill_id=row["source_fill_id"],
+            session_id=row["session_id"],
             filled_at=row["filled_at"],
             created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _snapshot(row: sqlite3.Row) -> PositionSnapshot:
+        return PositionSnapshot(
+            id=row["id"],
+            session_id=row["session_id"],
+            symbol=row["symbol"],
+            quantity=row["quantity"],
+            cost_basis=row["cost_basis"],
+            average_price=row["average_price"],
+            captured_at=row["captured_at"],
         )
 
     @staticmethod
@@ -914,14 +962,15 @@ class SqliteStateStore(StateStore):
                 quantity=quantity,
                 price=price,
                 source_fill_id=source_fill_id,
+                session_id=session_id,
                 filled_at=filled_at or utcnow(),
             )
             with self._tx() as cur:
                 cur.execute(
                     """INSERT INTO fills
                        (id, order_id, symbol, side, quantity, price,
-                        source_fill_id, filled_at, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                        source_fill_id, session_id, filled_at, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
                         fill.id,
                         fill.order_id,
@@ -930,6 +979,7 @@ class SqliteStateStore(StateStore):
                         fill.quantity,
                         fill.price,
                         fill.source_fill_id,
+                        fill.session_id,
                         _dt(fill.filled_at),
                         _dt(fill.created_at),
                     ),
@@ -947,7 +997,11 @@ class SqliteStateStore(StateStore):
             return FillAppendResult(status="appended", fill=fill, event=event)
 
     async def list_fills(
-        self, *, symbol: Optional[str] = None, order_id: Optional[str] = None
+        self,
+        *,
+        symbol: Optional[str] = None,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> list[Fill]:
         clauses, params = [], []
         if symbol is not None:
@@ -956,6 +1010,9 @@ class SqliteStateStore(StateStore):
         if order_id is not None:
             clauses.append("order_id = ?")
             params.append(order_id)
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         async with self._lock:
             rows = self._read_all(
@@ -1112,3 +1169,147 @@ class SqliteStateStore(StateStore):
                     payload={"buys_paused": paused},
                 )
             return session
+
+    async def close_session(
+        self, session_id: Optional[str] = None
+    ) -> SessionRecord:
+        async with self._lock:
+            if session_id is None:
+                # The active session, without auto-creating one (closing when
+                # nothing is active means there is nothing to close).
+                row = self._read_one(
+                    "SELECT * FROM sessions WHERE status = ? "
+                    "ORDER BY rowid DESC LIMIT 1",
+                    (SessionStatus.ACTIVE.value,),
+                )
+                if row is None:
+                    raise SessionAlreadyClosedError("no active session to close")
+                session = self._session(row)
+            else:
+                row = self._read_one(
+                    "SELECT * FROM sessions WHERE id = ?", (session_id,)
+                )
+                if row is None:
+                    raise UnknownEntityError(f"session {session_id} not found")
+                session = self._session(row)
+                if session.status is SessionStatus.CLOSED:
+                    raise SessionAlreadyClosedError(
+                        f"session {session.id} is already closed"
+                    )
+
+            now = utcnow()
+
+            # Read what we'll touch *before* opening the transaction (reads are
+            # consistent under the lock); the writes then all commit together.
+            open_candidates = [
+                self._candidate(r)
+                for r in self._read_all(
+                    "SELECT * FROM candidates WHERE session_id = ? "
+                    "AND status IN (?, ?) ORDER BY rowid",
+                    (
+                        session.id,
+                        CandidateStatus.PENDING.value,
+                        CandidateStatus.APPROVED.value,
+                    ),
+                )
+            ]
+            snapshots = []
+            for r in self._read_all(
+                "SELECT DISTINCT symbol FROM fills ORDER BY symbol"
+            ):
+                pos = self._position_locked(r["symbol"])
+                if pos.quantity != 0:
+                    snapshots.append(
+                        PositionSnapshot(
+                            session_id=session.id,
+                            symbol=pos.symbol,
+                            quantity=pos.quantity,
+                            cost_basis=pos.cost_basis,
+                            average_price=pos.average_price,
+                            captured_at=now,
+                        )
+                    )
+
+            with self._tx() as cur:
+                for candidate in open_candidates:
+                    cur.execute(
+                        "UPDATE candidates SET status=?, expired_at=?, "
+                        "updated_at=? WHERE id=?",
+                        (
+                            CandidateStatus.EXPIRED.value,
+                            _dt(now),
+                            _dt(now),
+                            candidate.id,
+                        ),
+                    )
+                    self._insert_event(
+                        cur,
+                        "candidate_transition",
+                        message=(
+                            f"candidate {candidate.status.value} -> expired "
+                            f"(session close)"
+                        ),
+                        symbol=candidate.symbol,
+                        candidate_id=candidate.id,
+                        payload={
+                            "from": candidate.status.value,
+                            "to": "expired",
+                            "reason": "session_close",
+                        },
+                        session_id=session.id,
+                    )
+                for snap in snapshots:
+                    cur.execute(
+                        """INSERT INTO position_snapshots
+                           (id, session_id, symbol, quantity, cost_basis,
+                            average_price, captured_at)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (
+                            snap.id,
+                            snap.session_id,
+                            snap.symbol,
+                            snap.quantity,
+                            snap.cost_basis,
+                            snap.average_price,
+                            _dt(snap.captured_at),
+                        ),
+                    )
+                cur.execute(
+                    "UPDATE sessions SET status=?, closed_at=?, updated_at=? "
+                    "WHERE id=?",
+                    (
+                        SessionStatus.CLOSED.value,
+                        _dt(now),
+                        _dt(now),
+                        session.id,
+                    ),
+                )
+                self._insert_event(
+                    cur,
+                    "session_closed",
+                    message=(
+                        f"session closed ({len(open_candidates)} candidates "
+                        f"expired, {len(snapshots)} positions snapshotted)"
+                    ),
+                    session_id=session.id,
+                    payload={
+                        "expired_candidates": len(open_candidates),
+                        "position_snapshots": len(snapshots),
+                    },
+                )
+
+            session.status = SessionStatus.CLOSED
+            session.closed_at = now
+            session.updated_at = now
+            return session
+
+    async def list_position_snapshots(
+        self, session_id: str
+    ) -> list[PositionSnapshot]:
+        async with self._lock:
+            rows = self._read_all(
+                "SELECT * FROM position_snapshots WHERE session_id = ? "
+                "ORDER BY rowid",
+                (session_id,),
+            )
+            return [self._snapshot(r) for r in rows]
