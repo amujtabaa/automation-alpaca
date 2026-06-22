@@ -1,0 +1,104 @@
+"""Thin HTTP client for the backend API.
+
+This is the cockpit's *only* contact with truth. It performs no logic beyond
+issuing requests and surfacing errors — no trading decisions, no Alpaca calls,
+no position math. Keeping all of that here (and nowhere else in the cockpit)
+makes the thin-client boundary easy to audit.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
+
+import requests
+
+DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+TIMEOUT_SECONDS = 5.0
+
+
+def base_url() -> str:
+    return os.environ.get("ALPACA_API_BASE", DEFAULT_BASE_URL).rstrip("/")
+
+
+class BackendError(RuntimeError):
+    """A backend call failed (unreachable, timeout, or non-2xx response)."""
+
+
+def _request(method: str, path: str, **kwargs: Any) -> Any:
+    url = f"{base_url()}{path}"
+    try:
+        resp = requests.request(method, url, timeout=TIMEOUT_SECONDS, **kwargs)
+    except requests.exceptions.RequestException as exc:
+        raise BackendError(
+            f"Could not reach the backend at {base_url()}. Is it running? "
+            f"({exc.__class__.__name__})"
+        ) from exc
+    if not resp.ok:
+        detail = ""
+        try:
+            detail = resp.json().get("detail", "")
+        except ValueError:
+            detail = resp.text
+        raise BackendError(f"{method} {path} -> {resp.status_code}: {detail}")
+    if resp.status_code == 204 or not resp.content:
+        return None
+    return resp.json()
+
+
+# --- System --------------------------------------------------------------- #
+def get_health() -> dict:
+    return _request("GET", "/api/health")
+
+
+def get_session() -> dict:
+    return _request("GET", "/api/session")
+
+
+# --- Watchlist ------------------------------------------------------------ #
+def list_watchlist() -> list[dict]:
+    return _request("GET", "/api/watchlist")
+
+
+def upsert_watchlist(symbol: str, armed: bool = False) -> dict:
+    return _request("POST", "/api/watchlist", json={"symbol": symbol, "armed": armed})
+
+
+def remove_watchlist(symbol: str) -> None:
+    _request("DELETE", f"/api/watchlist/{symbol}")
+
+
+# --- Read-only trading views ---------------------------------------------- #
+def list_candidates() -> list[dict]:
+    return _request("GET", "/api/candidates")
+
+
+def list_positions() -> list[dict]:
+    return _request("GET", "/api/positions")
+
+
+def list_orders() -> list[dict]:
+    return _request("GET", "/api/orders")
+
+
+def list_events(limit: Optional[int] = None) -> list[dict]:
+    params = {"limit": limit} if limit else None
+    return _request("GET", "/api/events", params=params)
+
+
+def get_review(date: Optional[str] = None) -> dict:
+    params = {"date": date} if date else None
+    return _request("GET", "/api/review", params=params)
+
+
+# --- Controls ------------------------------------------------------------- #
+def set_kill_switch(engaged: bool) -> dict:
+    return _request("POST", "/api/controls/kill-switch", json={"engaged": engaged})
+
+
+def pause_buys() -> dict:
+    return _request("POST", "/api/controls/pause-buys")
+
+
+def resume_buys() -> dict:
+    return _request("POST", "/api/controls/resume-buys")
