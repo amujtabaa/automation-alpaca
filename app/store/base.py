@@ -19,6 +19,7 @@ Key structural guarantees the interface is shaped to enforce:
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
@@ -41,16 +42,31 @@ from app.models import (
 )
 
 
+# A bounded ticker domain: a leading letter then up to nine more of
+# letters/digits/dot/dash (covers e.g. AAPL, BRK.B, BF-B). Keeps overly long,
+# unicode, whitespace, path-like, or SQL-looking strings out of durable trading
+# data (DATA-2). SQL is already parameterized; this is a data-quality/blast-
+# radius guard, not an injection fix.
+_SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9.\-]{0,9}")
+
+
 def normalize_symbol(symbol: str) -> str:
     """Canonical symbol form used as the watchlist/position key.
 
     Normalization lives in the store so every caller (and both
-    implementations) keys symbols identically — the UI never has to.
+    implementations) keys symbols identically — the UI never has to. Rejects a
+    blank or out-of-domain symbol with ``ValueError`` (route handlers surface it
+    as 422).
     """
 
     normalized = symbol.strip().upper()
     if not normalized:
         raise ValueError("symbol must be a non-empty string")
+    if not _SYMBOL_RE.fullmatch(normalized):
+        raise ValueError(
+            f"symbol {symbol!r} is not a valid ticker (expected 1-10 chars: a "
+            f"leading letter then letters/digits/'.'/'-')"
+        )
     return normalized
 
 

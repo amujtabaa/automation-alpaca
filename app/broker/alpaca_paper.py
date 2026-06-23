@@ -145,6 +145,14 @@ class AlpacaPaperAdapter(BrokerAdapter):
             else AlpacaOrderSide.SELL
         )
 
+        # NOTE (BACKEND-2): extended_hours is intentionally NOT set here yet.
+        # Phase 4 carries no session-aware order intent — the Order model has no
+        # session type and candidates are dev-injected — so every order is a
+        # regular-hours DAY limit. extended_hours=True (for pre-market/after-hours
+        # eligibility, limit-only per Rule 12) lands in Phase 5 when the Strategy
+        # Engine produces session-tagged candidates and the order model carries
+        # the session through. Until then there is no premarket/after-hours intent
+        # to mis-route.
         req = LimitOrderRequest(
             symbol=order.symbol,
             qty=order.quantity,

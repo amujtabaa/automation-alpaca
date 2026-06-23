@@ -116,9 +116,25 @@ def load_settings() -> Settings:
             f"{STATE_STORE_ENV} must be 'sqlite' or 'memory', got {state_store!r}"
         )
     db_path = os.environ.get(DB_PATH_ENV, DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH
-    enable_dev_routes = (
-        os.environ.get(DEV_ROUTES_ENV, "true").strip().lower() not in _FALSEY
-    )
+
+    def _clean(name: str) -> Optional[str]:
+        raw = os.environ.get(name)
+        return raw.strip() if raw and raw.strip() else None
+
+    alpaca_api_key = _clean(ALPACA_KEY_ENV)
+    alpaca_api_secret = _clean(ALPACA_SECRET_ENV)
+    has_creds = bool(alpaca_api_key and alpaca_api_secret)
+
+    # DEV/MOCK candidate-injection routes. Explicit ENABLE_DEV_ROUTES always wins.
+    # When unset, the default is *credential-aware* (SECOPS-1): OFF once real paper
+    # keys are configured (don't expose a mock-injection surface alongside a live
+    # paper broker), ON otherwise so credential-free dev can still exercise the
+    # candidate flow.
+    dev_raw = os.environ.get(DEV_ROUTES_ENV)
+    if dev_raw is None or not dev_raw.strip():
+        enable_dev_routes = not has_creds
+    else:
+        enable_dev_routes = dev_raw.strip().lower() not in _FALSEY
 
     broker_adapter = os.environ.get(BROKER_ENV, "auto").strip().lower()
     if broker_adapter not in {"auto", "mock", "alpaca"}:
@@ -137,16 +153,12 @@ def load_settings() -> Settings:
         os.environ.get(ENABLE_MONITORING_ENV, "true").strip().lower() not in _FALSEY
     )
 
-    def _clean(name: str) -> Optional[str]:
-        raw = os.environ.get(name)
-        return raw.strip() if raw and raw.strip() else None
-
     return Settings(
         state_store=state_store,
         db_path=db_path,
         enable_dev_routes=enable_dev_routes,
-        alpaca_api_key=_clean(ALPACA_KEY_ENV),
-        alpaca_api_secret=_clean(ALPACA_SECRET_ENV),
+        alpaca_api_key=alpaca_api_key,
+        alpaca_api_secret=alpaca_api_secret,
         broker_adapter=broker_adapter,
         poll_cadence_seconds=poll_cadence,
         unfilled_timeout_minutes=unfilled_timeout,
