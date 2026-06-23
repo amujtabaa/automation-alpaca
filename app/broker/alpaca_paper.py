@@ -46,6 +46,11 @@ _ALPACA_STATUS_MAP: dict[str, OrderStatus] = {
     "accepted": OrderStatus.SUBMITTED,
     "pending_new": OrderStatus.SUBMITTED,
     "accepted_for_bidding": OrderStatus.SUBMITTED,
+    # Open but not yet routed/executable (e.g. held for a stop trigger, or being
+    # calculated). Real Alpaca statuses — map explicitly so they don't hit the
+    # unknown-status warning path in normal operation (F4).
+    "held": OrderStatus.SUBMITTED,
+    "calculated": OrderStatus.SUBMITTED,
     # Partial execution (still working remainder)
     "partially_filled": OrderStatus.PARTIALLY_FILLED,
     # Terminal — fully executed

@@ -100,3 +100,12 @@ def test_pending_cancel_maps_to_non_terminal_state():
     assert _map_status("pending_cancel") is OrderStatus.CANCEL_PENDING
     assert _map_status("canceled") is OrderStatus.CANCELED
     assert _map_status("filled") is OrderStatus.FILLED
+
+
+def test_held_and_calculated_map_to_submitted():
+    from app.broker.alpaca_paper import _map_status
+    from app.models import OrderStatus
+
+    # F4: real Alpaca statuses, mapped so they don't hit the unknown-status path.
+    assert _map_status("held") is OrderStatus.SUBMITTED
+    assert _map_status("calculated") is OrderStatus.SUBMITTED
