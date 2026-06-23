@@ -49,6 +49,37 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-011 — Phase 4 Alpaca Paper Adapter: REST polling, surface-and-cancel, cross-session monitoring
+**Decision.** Three Phase 4 design choices:
+1. **REST polling over websocket trade updates.** Order status is polled on a
+   fixed cadence (15-second default, `ALPACA_POLL_CADENCE_SECONDS`) rather than
+   via Alpaca's trade-update websocket. REST polling is simpler, easier to test
+   with a mock adapter, and sufficient since a human approves each order in beta
+   (no latency pressure). The websocket trade-updates approach is noted as the
+   Phase 8 upgrade when Auto-Sell's fill-reaction speed demands it.
+2. **Surface unfilled timeouts + manual cancel; no auto-cancel.** Orders open
+   past a configurable threshold (60-minute default, `ALPACA_UNFILLED_TIMEOUT_MINUTES`)
+   are flagged via an audit event and surfaced in the cockpit. A manual cancel
+   button calls `POST /api/orders/{id}/cancel`, which cancels via the adapter
+   and transitions the order to `canceled`. Auto-cancellation is deferred to
+   Phase 8's automated exit logic; human-in-the-loop beta doesn't auto-cancel.
+3. **Keep polling until terminal state regardless of session close.** The
+   monitoring loop polls all orders in `submitted`/`partially_filled` status
+   irrespective of their session's closed/active state. A submitted order
+   represents a real open position that needs tracking even after session close;
+   stopping mid-fill would leave positions stale. The position carries forward
+   across sessions by design (D-007).
+
+**Also settled in Phase 4:** `alpaca-py` is the SDK (official current package,
+not the older `alpaca-trade-api`); nothing outside the adapter imports it.
+`BrokerAdapter` is a pluggable interface (same ABC pattern as `ApprovalGate`)
+so a future live adapter is a drop-in without touching callers. Order submission
+is driven by the monitoring loop (not the approval endpoint) — the loop finds
+`ORDERED` orders not yet submitted and dispatches them, keeping the Phase 3
+handoff and Phase 4 execution cleanly separate. Unrealized P/L is deferred to
+Phase 5 (needs current price from the market data service). Position flatten is
+deferred to Phase 7 (Sell-Side Protection owns exit logic).
+
 ### D-010 — Store entrypoints validate inputs; the fill table never holds corrupt data
 **Decision.** `append_fill`, `create_order`, and `transition_order` validate
 their inputs at the store boundary (both implementations), rejecting

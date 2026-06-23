@@ -55,6 +55,7 @@ FastAPI Backend  (single async process, owns + persists truth)
     ├── Approval Gate  (beta: human-in-the-loop only · future: pluggable auto mode)
     ├── Capital Intelligence Layer (CAPI)
     ├── Paper Execution Engine  (order management: submit / poll / cancel-replace)
+    │     └── BrokerAdapter interface → AlpacaPaperAdapter (beta) | future live adapter
     ├── Position Manager
     ├── Sell-Side Protection Engine  (always-on safety exits — distinct from
     │     any future strategy-driven Auto-Sell Engine; protection takes priority)
@@ -153,6 +154,8 @@ GET    /api/positions/{symbol}
 POST   /api/positions/{symbol}/flatten
 
 GET    /api/orders
+GET    /api/orders/{order_id}
+POST   /api/orders/{order_id}/cancel   # manual cancel of an open order (Phase 4)
 GET    /api/events
 
 GET    /api/review?date=YYYY-MM-DD     # query a past session
