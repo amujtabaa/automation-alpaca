@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from app.models import Candidate, Order, OrderSide, SessionRecord
+from app.models import Candidate, Order, OrderSide, SessionRecord, SessionStatus
 
 
 def order_intent_block_reason(
@@ -39,6 +39,29 @@ def order_intent_block_reason(
     if session.buys_paused:
         return "buys_paused"
     return None
+
+
+def session_submission_block_reason(
+    session: Optional[SessionRecord],
+) -> Optional[str]:
+    """Why a CREATED order from ``session`` must NOT be submitted, or ``None``.
+
+    A held order is gated against its **own** originating session (D-013a), not
+    merely the live/current one: ``get_current_session`` auto-mints a fresh,
+    permissive session on UTC date rollover, so gating submission only on the
+    current session let a kill-switched order from a prior session slip through
+    to the broker (a Rule 8 bypass). This predicate adds the closed-session case
+    that ``order_intent_block_reason`` does not cover — a closed session blocks
+    *new* submissions, while already-submitted orders still reconcile to a
+    terminal state (D-011). An unknown session is treated as blocked, never
+    submitted.
+    """
+
+    if session is None:
+        return "unknown_session"
+    if session.status is SessionStatus.CLOSED:
+        return "session_closed"
+    return order_intent_block_reason(session)
 
 
 def fill_value_reason(quantity: int, price: float) -> Optional[str]:

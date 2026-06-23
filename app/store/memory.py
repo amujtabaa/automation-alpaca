@@ -828,6 +828,13 @@ class InMemoryStateStore(StateStore):
                     return session.model_copy(deep=True)
             return None
 
+    async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
+        async with self._lock:
+            for session in self._sessions:
+                if session.id == session_id:
+                    return session.model_copy(deep=True)
+            return None
+
     async def list_sessions(self) -> list[SessionRecord]:
         async with self._lock:
             return [s.model_copy(deep=True) for s in self._sessions]
@@ -926,6 +933,39 @@ class InMemoryStateStore(StateStore):
                         session_id=session.id,
                     )
 
+            # 1b) Cancel still-CREATED (never-submitted) orders in this session
+            #     so they cannot sit submittable after close (D-013a). The loop's
+            #     per-order-session gate also holds them, but cancelling here
+            #     leaves a clean terminal state instead of a zombie CREATED order.
+            #     Already-submitted orders are untouched and keep reconciling
+            #     (D-011).
+            canceled_orders = 0
+            for order in self._orders.values():
+                if (
+                    order.session_id == session.id
+                    and order.status is OrderStatus.CREATED
+                ):
+                    order.status = OrderStatus.CANCELED
+                    order.canceled_at = now
+                    order.updated_at = now
+                    canceled_orders += 1
+                    self._append_event_unlocked(
+                        "order_transition",
+                        message=(
+                            f"order {order.symbol} created -> canceled "
+                            f"(session close)"
+                        ),
+                        symbol=order.symbol,
+                        candidate_id=order.candidate_id,
+                        order_id=order.id,
+                        payload={
+                            "from": "created",
+                            "to": "canceled",
+                            "reason": "session_close",
+                        },
+                        session_id=session.id,
+                    )
+
             # 2) Snapshot every nonzero position (the live fold over fills).
             snapshots = 0
             for sym in sorted({f.symbol for f in self._fills}):
@@ -953,11 +993,13 @@ class InMemoryStateStore(StateStore):
                 "session_closed",
                 message=(
                     f"session closed ({expired} candidates expired, "
+                    f"{canceled_orders} created orders canceled, "
                     f"{snapshots} positions snapshotted)"
                 ),
                 session_id=session.id,
                 payload={
                     "expired_candidates": expired,
+                    "canceled_orders": canceled_orders,
                     "position_snapshots": snapshots,
                 },
             )

@@ -1381,6 +1381,13 @@ class SqliteStateStore(StateStore):
             )
             return self._session(row) if row else None
 
+    async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            )
+            return self._session(row) if row else None
+
     async def list_sessions(self) -> list[SessionRecord]:
         async with self._lock:
             rows = self._read_all("SELECT * FROM sessions ORDER BY rowid")
@@ -1487,6 +1494,17 @@ class SqliteStateStore(StateStore):
                     ),
                 )
             ]
+            # Still-CREATED (never-submitted) orders in this session are cancelled
+            # at close (D-013a) so they cannot sit submittable afterward; already-
+            # submitted orders are untouched and keep reconciling (D-011).
+            created_orders = [
+                self._order(r)
+                for r in self._read_all(
+                    "SELECT * FROM orders WHERE session_id = ? AND status = ? "
+                    "ORDER BY rowid",
+                    (session.id, OrderStatus.CREATED.value),
+                )
+            ]
             snapshots = []
             for r in self._read_all(
                 "SELECT DISTINCT symbol FROM fills ORDER BY symbol"
@@ -1532,6 +1550,34 @@ class SqliteStateStore(StateStore):
                         },
                         session_id=session.id,
                     )
+                for order in created_orders:
+                    cur.execute(
+                        "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
+                        "WHERE id=?",
+                        (
+                            OrderStatus.CANCELED.value,
+                            _dt(now),
+                            _dt(now),
+                            order.id,
+                        ),
+                    )
+                    self._insert_event(
+                        cur,
+                        "order_transition",
+                        message=(
+                            f"order {order.symbol} created -> canceled "
+                            f"(session close)"
+                        ),
+                        symbol=order.symbol,
+                        candidate_id=order.candidate_id,
+                        order_id=order.id,
+                        payload={
+                            "from": "created",
+                            "to": "canceled",
+                            "reason": "session_close",
+                        },
+                        session_id=session.id,
+                    )
                 for snap in snapshots:
                     cur.execute(
                         """INSERT INTO position_snapshots
@@ -1563,11 +1609,13 @@ class SqliteStateStore(StateStore):
                     "session_closed",
                     message=(
                         f"session closed ({len(open_candidates)} candidates "
-                        f"expired, {len(snapshots)} positions snapshotted)"
+                        f"expired, {len(created_orders)} created orders canceled, "
+                        f"{len(snapshots)} positions snapshotted)"
                     ),
                     session_id=session.id,
                     payload={
                         "expired_candidates": len(open_candidates),
+                        "canceled_orders": len(created_orders),
                         "position_snapshots": len(snapshots),
                     },
                 )

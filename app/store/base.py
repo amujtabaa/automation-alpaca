@@ -415,6 +415,15 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
+    async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
+        """The session with this id, or ``None``.
+
+        Used by the monitoring loop to gate a held order's submission against its
+        **own** originating session (D-013a), independent of which session is
+        currently live.
+        """
+
+    @abstractmethod
     async def list_sessions(self) -> list[SessionRecord]:
         ...
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from app.broker.adapter import BrokerAdapter, BrokerOrderUpdate
 from app.config import Settings
@@ -46,7 +47,10 @@ from app.store.base import (
     StateStore,
     UnknownEntityError,
 )
-from app.store.validation import order_intent_block_reason
+from app.store.validation import (
+    order_intent_block_reason,
+    session_submission_block_reason,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -112,8 +116,10 @@ async def run_monitoring_tick(
 
 
 async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> None:
-    """Submit every ``CREATED`` order to the broker and mark it ``SUBMITTED``.
+    """Submit eligible ``CREATED`` orders to the broker and mark them ``SUBMITTED``.
 
+    An order is only submitted if its **own** originating session is open and
+    unblocked, and the live session is not under a process-wide stop (D-013a).
     A submission failure leaves the order at ``CREATED`` to be retried on the
     next tick (no state change). The broker id returned by ``submit_order`` is
     persisted so the order can be polled and cancelled.
@@ -123,37 +129,42 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
     if not created:
         return
 
-    # Safety controls (Rule 8): hold ALL submissions while the kill switch is
-    # engaged / buys are paused. Re-checked here — not only at order creation —
-    # so an order created *before* the stop cannot race through to the broker
-    # after the user hits stop. Each held order is audited once (not per tick).
-    #
-    # Deliberate session semantics: submission gates on the *current* session
-    # (the operator's live stop intent), whereas creation gates on the
-    # candidate's own session. The two coincide in normal flow; they can only
-    # diverge for a CREATED order that outlives its session, which requires a
-    # manual session close, and beta opens no new session automatically — so the
-    # live-session gate stays in force and there is no clean-slate bypass.
-    block = order_intent_block_reason(await store.get_current_session())
-    if block is not None:
-        blocked_already = await _orders_with_event(
-            store, EventType.ORDER_SUBMISSION_BLOCKED.value
-        )
-        for order in created:
-            if order.id in blocked_already:
-                continue
-            await store.append_event(
-                EventType.ORDER_SUBMISSION_BLOCKED.value,
-                message=f"submission of {order.symbol} held: {block}",
-                symbol=order.symbol,
-                candidate_id=order.candidate_id,
-                order_id=order.id,
-                payload={"reason": block},
-                session_id=order.session_id,
-            )
-        return
+    # Safety controls (Rule 8) + order lifecycle (D-013a): each CREATED order is
+    # gated against its OWN originating session — held if that session is
+    # kill-switched, buys-paused, or closed. This is the fix for the
+    # date-rollover bypass: ``get_current_session`` auto-mints a fresh,
+    # permissive session on UTC rollover, so gating submission only on the
+    # *current* session let a kill-switched order from a prior session slip
+    # through to the broker. The current/live session is ALSO checked, as a
+    # process-wide emergency stop: if the operator's live session is stopped,
+    # hold everything regardless of the order's own session. Each held order is
+    # audited once (not per tick).
+    current_block = order_intent_block_reason(await store.get_current_session())
+    blocked_already: Optional[set[str]] = None
 
     for order in created:
+        own_session = await store.get_session_by_id(order.session_id)
+        hold_reason = session_submission_block_reason(own_session)
+        if hold_reason is None and current_block is not None:
+            hold_reason = f"current_{current_block}"
+        if hold_reason is not None:
+            if blocked_already is None:
+                blocked_already = await _orders_with_event(
+                    store, EventType.ORDER_SUBMISSION_BLOCKED.value
+                )
+            if order.id not in blocked_already:
+                await store.append_event(
+                    EventType.ORDER_SUBMISSION_BLOCKED.value,
+                    message=f"submission of {order.symbol} held: {hold_reason}",
+                    symbol=order.symbol,
+                    candidate_id=order.candidate_id,
+                    order_id=order.id,
+                    payload={"reason": hold_reason},
+                    session_id=order.session_id,
+                )
+                blocked_already.add(order.id)
+            continue
+
         try:
             broker_order_id = await adapter.submit_order(order)
         except Exception as exc:  # noqa: BLE001 - retry next tick, never crash
