@@ -72,6 +72,7 @@ from app.store.validation import (
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
+    limit_price_reason,
     order_candidate_match_reason,
 )
 
@@ -843,13 +844,14 @@ class SqliteStateStore(StateStore):
                     f"candidate {candidate_id} has no positive suggested_quantity "
                     f"to size an order"
                 )
-            # A LIMIT order requires a positive limit price (F1): never persist a
-            # LIMIT order with a missing/zero/negative price.
+            # A LIMIT order requires a finite, positive limit price (F1 / BACKEND-1):
+            # never persist a LIMIT order with a missing/NaN/Inf/zero/negative price.
             limit_price = candidate.suggested_limit_price
-            if limit_price is None or limit_price <= 0:
+            bad_price = limit_price_reason(limit_price)
+            if bad_price is not None:
                 raise InvalidOrderError(
-                    f"candidate {candidate_id} has no positive "
-                    f"suggested_limit_price for a limit order"
+                    f"candidate {candidate_id} has no valid suggested_limit_price "
+                    f"for a limit order ({bad_price})"
                 )
             # Long-only buy proposal (beta). Order type LIMIT; session order-type
             # policy (Rule 12) is enforced later, not here.

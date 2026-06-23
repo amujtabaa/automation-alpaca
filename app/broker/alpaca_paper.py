@@ -84,6 +84,23 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _resolve_fill_price(
+    filled_avg_price: Optional[object], limit_price: Optional[object]
+) -> float:
+    """Best available price for a synthetic delta fill: the broker's filled
+    average if present, else the order's limit, else 0.0. Tolerant of the SDK's
+    string/Decimal/None shapes."""
+
+    for candidate in (filled_avg_price, limit_price):
+        if candidate is None:
+            continue
+        try:
+            return float(candidate)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
 # --------------------------------------------------------------------------- #
 # Adapter
 # --------------------------------------------------------------------------- #
@@ -261,86 +278,30 @@ class AlpacaPaperAdapter(BrokerAdapter):
         filled_avg_price: Optional[object],
         limit_price: Optional[object],
     ) -> list[BrokerFill]:
-        """Return fill records for this order.
+        """Return this order's fills as a single scalar **delta** over what's
+        already recorded, under ONE consistent fill-identity scheme.
 
-        Preferred path: query account trade activities of type FILL for this
-        order via ``TradingClient.get_activities``. Each activity carries
-        Alpaca's own execution id (``activity.id``), which is the stable
-        ``source_fill_id`` the StateStore uses for duplicate protection
-        (dedup-safe across repeated polls).
+        The id is ``"<broker_order_id>:<cumulative filled_qty>"`` — stable per
+        cumulative-fill level. So the StateStore's ``source_fill_id`` dedup is
+        airtight: a repeated poll at the same level is ignored (delta 0), a new
+        level appends exactly the increment, and a given share can never be
+        counted twice.
 
-        Fallback path (if the activities call fails or returns nothing while the
-        order has fills): synthesise a single ``BrokerFill`` with a *stable*
-        composite id ``"<broker_order_id>:<filled_qty>"``. This id is stable per
-        cumulative-fill level — a repeated poll at the same fill level produces
-        the same id (idempotent, dedup-safe), and advancing to a higher fill
-        level produces a new id so the new partial fill is recorded. It is less
-        precise than real execution ids (one synthetic fill vs. multiple
-        partials), but it keeps the position truthful and the StateStore's
-        duplicate-protection rule intact.
+        **Why not the per-execution activities API?** Mixing two id schemes — a
+        synthetic id and a real Alpaca execution id for the *same* shares — would
+        miss dedup and double-count the position (a real data-integrity defect:
+        the activities API can be momentarily empty on one poll and recover on the
+        next, re-reporting an already-counted fill under a different id). Beta uses
+        average-cost math and defers realized/unrealized P/L, so per-execution
+        price precision buys nothing here. Reintroducing the activities path for
+        precision later requires making it *sticky per order* (an order never
+        switches id schemes mid-life) before it is safe.
         """
-        if filled_qty == 0:
-            return []
 
-        # --- Preferred: real activity records with Alpaca execution ids ---
-        raw_activities = await self._fetch_fill_activities(broker_order_id)
-
-        if raw_activities:
-            fills: list[BrokerFill] = []
-            for act in raw_activities:
-                try:
-                    act_id = str(act.id)
-                    act_qty = int(float(getattr(act, "qty", 0) or 0))
-                    act_price = float(getattr(act, "price", 0) or 0)
-                    act_time: datetime = getattr(act, "transaction_time", None) or _utcnow()
-                    if act_qty > 0:
-                        fills.append(
-                            BrokerFill(
-                                source_fill_id=act_id,
-                                quantity=act_qty,
-                                price=act_price,
-                                filled_at=act_time,
-                            )
-                        )
-                except Exception:
-                    _log.debug(
-                        "Could not parse activity record for order %r — skipping.",
-                        broker_order_id,
-                    )
-            if fills:
-                return fills
-
-        # --- Fallback: synthesise one fill from the order-level summary ---
-        # Emit only the DELTA over what's already recorded, NOT the cumulative —
-        # re-reporting the cumulative would make the store reject the fill as an
-        # overfill and the order/position would desync. The id is stable per
-        # cumulative level so a repeated poll at the same level dedups, and a new
-        # level yields a new id (the next increment).
         delta = filled_qty - recorded_quantity
         if delta <= 0:
             return []
-        _log.debug(
-            "Falling back to synthetic delta fill for order %r "
-            "(cumulative=%d, recorded=%d, delta=%d).",
-            broker_order_id,
-            filled_qty,
-            recorded_quantity,
-            delta,
-        )
-        fill_price: float
-        if filled_avg_price is not None:
-            try:
-                fill_price = float(filled_avg_price)
-            except (TypeError, ValueError):
-                fill_price = float(limit_price or 0)
-        elif limit_price is not None:
-            try:
-                fill_price = float(limit_price)
-            except (TypeError, ValueError):
-                fill_price = 0.0
-        else:
-            fill_price = 0.0
-
+        fill_price = _resolve_fill_price(filled_avg_price, limit_price)
         return [
             BrokerFill(
                 source_fill_id=f"{broker_order_id}:{filled_qty}",
@@ -349,48 +310,3 @@ class AlpacaPaperAdapter(BrokerAdapter):
                 filled_at=_utcnow(),
             )
         ]
-
-    async def _fetch_fill_activities(self, broker_order_id: str) -> list[object]:
-        """Fetch FILL-type account activities for ``broker_order_id``.
-
-        ``TradingClient.get_activities`` is the correct alpaca-py endpoint for
-        trade execution records. The SDK surface changed slightly between
-        versions, so we try the most common call shapes and return an empty list
-        on any failure — the caller falls back to a synthetic fill rather than
-        crashing the monitoring loop.
-        """
-        # Attempt 1: pass activity_type and order_id filter directly (newer SDK).
-        try:
-            from alpaca.trading.requests import GetActivitiesRequest  # type: ignore[import]
-
-            req = GetActivitiesRequest(
-                activity_type="FILL",  # type: ignore[arg-type]
-            )
-            acts = await asyncio.to_thread(self._client.get_activities, req)
-            if acts:
-                # Filter to this specific order; Alpaca may not support order_id
-                # filter in all SDK versions, so we do it client-side.
-                matched = [
-                    a for a in acts
-                    if str(getattr(a, "order_id", "")) == broker_order_id
-                ]
-                if matched:
-                    return matched
-        except Exception:
-            pass
-
-        # Attempt 2: keyword-argument style (some SDK versions).
-        try:
-            acts = await asyncio.to_thread(
-                self._client.get_activities,
-                activity_type="FILL",
-            )
-            if acts:
-                return [
-                    a for a in acts
-                    if str(getattr(a, "order_id", "")) == broker_order_id
-                ]
-        except Exception:
-            pass
-
-        return []

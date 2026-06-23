@@ -58,8 +58,10 @@ class MockCandidateCreate(BaseModel):
     reason: Optional[str] = "injected mock candidate for manual testing"
     suggested_quantity: int = Field(default=10, gt=0)
     # Non-optional: a JSON ``null`` must be rejected (422), not accepted and then
-    # turned into a LIMIT order with no price. ``gt=0`` rejects zero/negative.
-    suggested_limit_price: float = Field(default=1.00, gt=0)
+    # turned into a LIMIT order with no price. ``gt=0`` rejects zero/negative;
+    # ``allow_inf_nan=False`` rejects ``Infinity``/``NaN`` (which slip past ``gt=0``:
+    # ``inf > 0`` is ``True``) before they can reach the store (BACKEND-1).
+    suggested_limit_price: float = Field(default=1.00, gt=0, allow_inf_nan=False)
 
 
 class ReviewResponse(BaseModel):

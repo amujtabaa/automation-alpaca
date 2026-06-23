@@ -15,6 +15,7 @@ log says *why* a fill/order was rejected, not just that it was.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from app.models import Candidate, Order, OrderSide
@@ -23,15 +24,37 @@ from app.models import Candidate, Order, OrderSide
 def fill_value_reason(quantity: int, price: float) -> Optional[str]:
     """Reject a fill whose intrinsic values would corrupt position truth.
 
-    A non-positive quantity (a negative buy is a negative position) or a
-    non-positive price (negative cost basis / average price) directly violates
-    the derived-position invariant.
+    A non-finite (``NaN``/``Infinity``) or non-positive quantity or price
+    directly violates the derived-position invariant — ``NaN``/``Inf`` slip past
+    a bare ``<= 0`` check (``nan <= 0`` and ``inf <= 0`` are both ``False``) and
+    would poison ``cost_basis``/``average_price``, so they are rejected first.
     """
 
+    if not math.isfinite(quantity):
+        return "non_finite_quantity"
+    if not math.isfinite(price):
+        return "non_finite_price"
     if quantity <= 0:
         return "non_positive_quantity"
     if price <= 0:
         return "non_positive_price"
+    return None
+
+
+def limit_price_reason(limit_price: Optional[float]) -> Optional[str]:
+    """Reject a missing/non-finite/non-positive limit price for a LIMIT order.
+
+    A LIMIT order must carry a real, positive price; ``None``, ``NaN``, ``Inf``,
+    zero, and negative are all rejected (the ``NaN``/``Inf`` cases would
+    otherwise pass a bare ``<= 0`` guard).
+    """
+
+    if limit_price is None:
+        return "missing_limit_price"
+    if not math.isfinite(limit_price):
+        return "non_finite_limit_price"
+    if limit_price <= 0:
+        return "non_positive_limit_price"
     return None
 
 
