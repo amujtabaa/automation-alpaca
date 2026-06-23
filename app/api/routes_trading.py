@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_broker_adapter, get_store
-from app.broker.adapter import BrokerAdapter
+from app.broker.adapter import BrokerAdapter, BrokerError
 from app.models import Event, Order, OrderStatus, Position
 from app.store.base import (
     OrderTransitionError,
@@ -94,8 +94,18 @@ async def cancel_order(
 
     # Cancel at the broker first. A not-yet-submitted order (CREATED, no broker
     # id) has nothing at the broker to cancel — just transition it locally.
+    # A genuine broker failure surfaces as 502 (upstream) with the order left
+    # unchanged (still open) rather than an opaque 500 — the adapter already
+    # treats an already-terminal order as an idempotent no-op, so this is a real
+    # failure, not "the order was already gone".
     if order.broker_order_id is not None:
-        await adapter.cancel_order(order.broker_order_id)
+        try:
+            await adapter.cancel_order(order.broker_order_id)
+        except BrokerError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"broker cancel failed; order unchanged: {exc}",
+            ) from exc
 
     try:
         return await store.transition_order(order_id, OrderStatus.CANCELED)

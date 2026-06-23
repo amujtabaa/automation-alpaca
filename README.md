@@ -125,10 +125,68 @@ pytest
   duplicate-fill protection, the position-folding cases, the oversell rejection,
   the HTTP API, and a scripted restart-persistence check.
 
+## Phase 4 — Alpaca Paper Adapter
+
+**Paper only, always.** There is no live-trading path anywhere in this
+codebase; the adapter only ever constructs a paper `TradingClient`. Credentials
+live in `.env` (gitignored), never in source control.
+
+### Credentials and env vars
+
+Copy `.env.example` to `.env` and fill in your Alpaca paper keys:
+
+```bash
+cp .env.example .env
+# then edit .env with your paper API key and secret
+```
+
+Get paper credentials from <https://app.alpaca.markets> → Paper account → API Keys.
+
+| Variable                         | Default  | Meaning                                                                                              |
+| -------------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `ALPACA_PAPER_API_KEY`           | _(none)_ | Alpaca paper account API key — **paper only, never a live key**                                      |
+| `ALPACA_PAPER_API_SECRET`        | _(none)_ | Alpaca paper account API secret                                                                      |
+| `BROKER_ADAPTER`                 | `auto`   | `auto` uses Alpaca when keys are set, else mock; `mock` forces no-network mode; `alpaca` always Alpaca |
+| `ALPACA_POLL_CADENCE_SECONDS`    | `15`     | How often the monitoring loop submits pending orders and polls open ones (seconds)                   |
+| `ALPACA_UNFILLED_TIMEOUT_MINUTES`| `60`     | Open orders older than this emit an `order_stale` audit event (surface only — no auto-cancel)        |
+| `ENABLE_MONITORING`              | `true`   | Whether the background monitoring loop starts at app startup                                         |
+
+The default `BROKER_ADAPTER=auto` means the app runs **without any credentials
+set** — it falls back to the in-memory mock broker, so development and CI work
+out of the box.
+
+### Background monitoring loop
+
+When the monitoring loop is active it runs on the `ALPACA_POLL_CADENCE_SECONDS`
+cadence and:
+
+1. Submits orders in `created` state to Alpaca paper and transitions them to
+   `submitted`.
+2. Polls open orders; appends fill rows for any executions observed (fills are
+   the only thing that move positions — Rule 7).
+3. Surfaces any order that has been open longer than
+   `ALPACA_UNFILLED_TIMEOUT_MINUTES` as an `order_stale` audit event. **No
+   auto-cancel** (D-011 policy) — cancel manually via
+   `POST /api/orders/{id}/cancel`.
+
+### Integration tests
+
+The env-gated integration tests hit the real Alpaca paper API and are **not
+part of the standard `pytest` run** — they are skipped automatically when paper
+credentials are absent:
+
+```bash
+# Standard suite (no network, always safe):
+pytest
+
+# Env-gated integration tests (requires paper keys in the environment):
+pytest tests/integration/
+```
+
 ## Safety notes
 
-- **Paper only.** There is no live-trading path and no Alpaca SDK dependency.
-- **No credentials.** Nothing in this repo reads or stores broker credentials.
-- The kill-switch / pause-buys flags are **persisted** now; enforcement on order
-  intent arrives with the order path in a later phase (nothing submits orders
-  yet).
+- **Paper only.** There is intentionally no live-trading path and no live
+  credentials anywhere in this repo.
+- **Credentials in `.env` only** (gitignored). Never committed.
+- The kill-switch / pause-buys flags are **persisted**; enforcement on order
+  intent is wired in Phase 4's monitoring loop.
