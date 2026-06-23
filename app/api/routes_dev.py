@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_store
 from app.api.schemas import MockCandidateCreate
-from app.models import Candidate
+from app.models import Candidate, SessionStatus
 from app.store.base import StateStore
 
 router = APIRouter(prefix="/api/dev", tags=["dev"])
@@ -29,6 +29,17 @@ async def inject_mock_candidate(
     flow can be exercised manually before Phase 5's Strategy Engine exists.
     NOT strategy logic; Phase 5 replaces this with real candidate generation.
     """
+
+    # Don't inject into a closed session: after a manual close (D-009 keeps the
+    # day's session closed until a new one), a fresh candidate would attach to a
+    # closed session and sit outside its captured snapshot. The trading day is
+    # over — refuse rather than create orphaned post-close state.
+    session = await store.get_current_session()
+    if session.status is SessionStatus.CLOSED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="session is closed; cannot inject candidates",
+        )
 
     try:
         return await store.create_candidate(

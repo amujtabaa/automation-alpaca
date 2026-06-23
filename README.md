@@ -10,39 +10,54 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 > [`docs/01_ARCHITECTURE.md`](docs/01_ARCHITECTURE.md) for the non-negotiable
 > rules.
 
-## What's built (Phase 1 + 1.5 + 2)
+## What's built (Phase 1 + 1.5 + 2 + 3)
 
 - **FastAPI backend skeleton** — `GET /api/health`, `GET /api/session`, watchlist
-  CRUD, read-only candidate/order/position/event views, `GET /api/review`, and
+  CRUD, read-only order/position/event views, `GET /api/review`, and
   kill-switch / pause-buys / resume-buys controls.
 - **Persistence foundation** — Pydantic v2 models for every persisted entity; a
   `StateStore` interface with two implementations (`InMemoryStateStore` for
   tests, `SqliteStateStore` for the app); append-only fills with duplicate
   protection; derived positions; atomic multi-row writes.
-- **Thin Streamlit cockpit** — five screens; the Watchlist screen is fully
-  functional, the rest render real (currently empty) backend data.
+- **Candidate flow + Approval Gate (Phase 3)** — `GET /api/candidates` (active
+  session), `GET /api/candidates/{id}`, and `POST .../approve` / `.../reject`.
+  Approve/reject run through a pluggable **`ApprovalGate`** interface whose only
+  beta mode is human-in-the-loop (a future automatic mode drops in behind the
+  same seam). Approving runs the atomic `approved → ordered` handoff — it creates
+  a **paper order record** (no broker call; submission is Phase 4) and never
+  touches position (only fills do). A clearly-labelled dev endpoint
+  (`POST /api/dev/candidates`) injects mock candidates so the flow is exercisable
+  before the Strategy Engine exists.
+- **Thin Streamlit cockpit** — five screens; Watchlist and the Candidate Monitor
+  (list + approve/reject) are fully functional, the rest render real (currently
+  empty) backend data.
 
-Not yet built (later phases, deliberately out of scope here): candidate
-generation, the Approval Gate, the Alpaca paper adapter, the strategy engine,
-CAPI risk logic, and sell-side protection. See
+Not yet built (later phases, deliberately out of scope here): strategy-driven
+candidate generation (Phase 5), the Alpaca paper adapter (Phase 4), CAPI risk
+logic incl. kill-switch enforcement on order intent (Phase 6), and sell-side
+protection (Phase 7). See
 [`docs/04_IMPLEMENTATION_PLAN.md`](docs/04_IMPLEMENTATION_PLAN.md).
 
 ## Project structure
 
 ```
 app/                     FastAPI backend (the durable engine)
-  main.py                app factory + lifespan (creates the StateStore)
-  config.py              env-driven settings (STATE_STORE, ALPACA_DB_PATH)
+  main.py                app factory + lifespan (creates the StateStore + gate)
+  config.py              env-driven settings (STATE_STORE, ALPACA_DB_PATH,
+                         ENABLE_DEV_ROUTES)
   models.py              Pydantic v2 models for every persisted entity
   position.py            pure average-cost folding formula (the only way a
                          position is computed)
+  approval/              the pluggable Approval Gate (D-004)
+    gate.py              ApprovalGate interface + GateDecision
+    human.py             HumanApprovalGate (beta's only mode)
   store/
     base.py              StateStore interface (+ errors, FillAppendResult)
     memory.py            InMemoryStateStore (tests; IO-free)
     sqlite.py            SqliteStateStore (the app; durable)
     transitions.py       shared candidate/order state machines
-  api/                   thin routers (health, session, watchlist, trading,
-                         controls, review)
+  api/                   thin routers (system, watchlist, candidates, trading,
+                         controls, review, dev scaffolding)
 cockpit/                 thin Streamlit client
   api_client.py          the cockpit's only contact with the backend
   app.py                 five screens behind a sidebar
@@ -74,10 +89,11 @@ uvicorn app.main:app --reload
 
 Environment variables (optional):
 
-| Variable          | Default          | Meaning                                  |
-| ----------------- | ---------------- | ---------------------------------------- |
-| `STATE_STORE`     | `sqlite`         | `sqlite` (durable) or `memory` (ephemeral) |
-| `ALPACA_DB_PATH`  | `./data/app.db`  | SQLite file location                     |
+| Variable             | Default          | Meaning                                       |
+| -------------------- | ---------------- | --------------------------------------------- |
+| `STATE_STORE`        | `sqlite`         | `sqlite` (durable) or `memory` (ephemeral)    |
+| `ALPACA_DB_PATH`     | `./data/app.db`  | SQLite file location                          |
+| `ENABLE_DEV_ROUTES`  | `true`           | mount the dev mock-candidate injection routes |
 
 ## Run the cockpit
 
@@ -102,9 +118,12 @@ pytest
 - Unit tests run against the in-memory store and make **no network or disk IO**.
 - A separate suite exercises `SqliteStateStore` directly (schema, transaction
   rollback, persistence across reopen) using a temporary database.
-- Coverage includes: watchlist CRUD, candidate/order status separation,
-  append-only fills, duplicate-fill protection, the position-folding cases, the
-  oversell rejection, the HTTP API, and a scripted restart-persistence check.
+- Coverage includes: watchlist CRUD, candidate/order status separation, the
+  Approval Gate + atomic candidate→order handoff (both stores), the candidate
+  approve/reject API (idempotency, 404/409, gate pluggability, no-position-on-
+  approve), the cockpit Candidate Monitor (AppTest), append-only fills,
+  duplicate-fill protection, the position-folding cases, the oversell rejection,
+  the HTTP API, and a scripted restart-persistence check.
 
 ## Safety notes
 

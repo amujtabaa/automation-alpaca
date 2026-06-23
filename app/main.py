@@ -41,10 +41,11 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
     """
 
     owns_store = store is None
+    settings = load_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        active_store = store or create_state_store(load_settings())
+        active_store = store or create_state_store(settings)
         await active_store.initialize()
         app.state.store = active_store
         app.state.approval_gate = HumanApprovalGate(active_store)
@@ -67,7 +68,10 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
     app.include_router(routes_trading.router)
     app.include_router(routes_controls.router)
     app.include_router(routes_review.router)
-    app.include_router(routes_dev.router)
+    # DEV/MOCK scaffolding — mounted only when enabled (default on in beta so the
+    # candidate flow is exercisable; ENABLE_DEV_ROUTES=false keeps it off).
+    if settings.enable_dev_routes:
+        app.include_router(routes_dev.router)
 
     return app
 

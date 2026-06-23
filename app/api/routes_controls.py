@@ -1,10 +1,16 @@
 """Control flags: kill switch and pause/resume buys.
 
-In this phase these endpoints **persist the flag** (and audit it). Enforcement
-— actually blocking new order intent when the kill switch is engaged — has no
-meaning yet because nothing submits orders; it arrives with the order path
-(out of scope now, per the implementation prompt). The flag surviving a restart
-is the property that matters here.
+These endpoints **persist the flag** (and audit it). Enforcement — actually
+blocking new order intent when the kill switch is engaged or buys are paused — is
+**not yet wired**: the implementation plan assigns kill-switch enforcement on
+order intent to Phase 6 (CAPI), so the flags persist now and are honoured later.
+
+Note (Phase 3): approving a candidate now creates a paper **order record**
+(`create_order_for_candidate`) — the system's first order-intent path. It still
+sends nothing to a broker (paper submission is Phase 4), but it does mean the
+kill switch / pause-buys flags do not yet gate it. That gating lands with Phase
+6 enforcement; until then the flag surviving a restart is the property that
+matters here.
 """
 
 from __future__ import annotations
