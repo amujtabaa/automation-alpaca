@@ -76,7 +76,10 @@ class InMemoryStateStore(StateStore):
         self._candidates: dict[str, Candidate] = {}
         self._orders: dict[str, Order] = {}
         self._fills: list[Fill] = []  # append-only, insertion order
-        self._fill_source_ids: set[str] = set()
+        # Dedup keyed per-(order_id, source_fill_id) (Item 5 / F1): two different
+        # orders reporting a fill with the same source_fill_id must not swallow
+        # the second. Same-order replays are still ignored.
+        self._fill_source_ids: set[tuple[str, str]] = set()
         self._events: list[Event] = []  # append-only, insertion order
         self._sessions: list[SessionRecord] = []
         self._position_snapshots: list[PositionSnapshot] = []
@@ -735,7 +738,10 @@ class InMemoryStateStore(StateStore):
             # 3) Duplicate protection (makes append idempotent, not optional).
             #    A replay of an already-accepted fill short-circuits here before
             #    the cumulative check, so it is never mistaken for an overfill.
-            if source_fill_id is not None and source_fill_id in self._fill_source_ids:
+            if (
+                source_fill_id is not None
+                and (order_id, source_fill_id) in self._fill_source_ids
+            ):
                 event = self._append_event_unlocked(
                     "fill_duplicate_ignored",
                     message=(
@@ -812,7 +818,7 @@ class InMemoryStateStore(StateStore):
             with self._atomic():
                 self._fills.append(fill)
                 if source_fill_id is not None:
-                    self._fill_source_ids.add(source_fill_id)
+                    self._fill_source_ids.add((order_id, source_fill_id))
                 event = self._append_event_unlocked(
                     "fill_appended",
                     message=f"fill {fill.quantity} {key} @ {fill.price}",

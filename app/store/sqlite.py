@@ -128,7 +128,9 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 -- Append-only. No UPDATE/DELETE is ever issued against this table.
--- source_fill_id UNIQUE => "unique when present" (SQLite treats NULLs distinct).
+-- Dedup is per-(order_id, source_fill_id) via idx_fills_order_source, NOT a
+-- column-level UNIQUE on source_fill_id alone (Item 5 / F1): two different orders
+-- may legitimately report a fill with the same source_fill_id string.
 CREATE TABLE IF NOT EXISTS fills (
     id             TEXT PRIMARY KEY,
     order_id       TEXT NOT NULL,
@@ -136,14 +138,15 @@ CREATE TABLE IF NOT EXISTS fills (
     side           TEXT NOT NULL,
     quantity       INTEGER NOT NULL,
     price          REAL NOT NULL,
-    source_fill_id TEXT UNIQUE,
+    source_fill_id TEXT,
     session_id     TEXT,
     filled_at      TEXT NOT NULL,
     created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol);
--- idx_fills_session is created in initialize() *after* _migrate, so it works on
--- pre-D-007 databases where the session_id column is added by migration.
+-- idx_fills_session and idx_fills_order_source are created in initialize()
+-- *after* _migrate, so they work on databases migrated from older schemas
+-- (pre-D-007 session_id column; pre-Item-5 column-level UNIQUE rebuild).
 
 -- Point-in-time positions captured at session close (D-007). Fills remain the
 -- source of truth; these are a fast, accurate read for closed sessions.
@@ -237,10 +240,21 @@ class SqliteStateStore(StateStore):
             conn = self._connect()
             conn.executescript(SCHEMA)
             self._migrate(conn)
-            # Created after migration so it works on pre-D-007 databases.
+            # Created after migration so they work on databases migrated from
+            # older schemas (a fills-table rebuild drops the table's indexes).
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_fills_session "
                 "ON fills(session_id)"
+            )
+            # Per-(order_id, source_fill_id) dedup (Item 5). Partial index so the
+            # uniqueness applies only when source_fill_id is present.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_order_source "
+                "ON fills(order_id, source_fill_id) "
+                "WHERE source_fill_id IS NOT NULL"
             )
             self._ensure_current_session_locked()
 
@@ -263,6 +277,41 @@ class SqliteStateStore(StateStore):
             # Fresh DBs already get this column from SCHEMA; this guard only fires
             # on an orders table created before the column existed.
             conn.execute("ALTER TABLE orders ADD COLUMN broker_order_id TEXT")
+
+        # Item 5 / F1: dedup moved from a column-level UNIQUE on source_fill_id to
+        # a composite (order_id, source_fill_id) index. SQLite can't ALTER away a
+        # column constraint, so a DB created with the old `source_fill_id TEXT
+        # UNIQUE` must be rebuilt without it (rows preserved). Detect via the
+        # fills table's own CREATE SQL — the only UNIQUE it ever carried was that
+        # column constraint. The composite index is (re)created in initialize().
+        fills_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='fills'"
+        ).fetchone()
+        if fills_row is not None and "UNIQUE" in fills_row["sql"].upper():
+            conn.executescript(
+                """
+                ALTER TABLE fills RENAME TO fills_old;
+                CREATE TABLE fills (
+                    id             TEXT PRIMARY KEY,
+                    order_id       TEXT NOT NULL,
+                    symbol         TEXT NOT NULL,
+                    side           TEXT NOT NULL,
+                    quantity       INTEGER NOT NULL,
+                    price          REAL NOT NULL,
+                    source_fill_id TEXT,
+                    session_id     TEXT,
+                    filled_at      TEXT NOT NULL,
+                    created_at     TEXT NOT NULL
+                );
+                INSERT INTO fills
+                    (id, order_id, symbol, side, quantity, price,
+                     source_fill_id, session_id, filled_at, created_at)
+                    SELECT id, order_id, symbol, side, quantity, price,
+                           source_fill_id, session_id, filled_at, created_at
+                    FROM fills_old;
+                DROP TABLE fills_old;
+                """
+            )
 
     async def close(self) -> None:
         async with self._lock:
@@ -1196,8 +1245,8 @@ class SqliteStateStore(StateStore):
             #    cumulative check, so it is never mistaken for an overfill.
             if source_fill_id is not None:
                 dup = self._read_one(
-                    "SELECT 1 FROM fills WHERE source_fill_id = ?",
-                    (source_fill_id,),
+                    "SELECT 1 FROM fills WHERE order_id = ? AND source_fill_id = ?",
+                    (order_id, source_fill_id),
                 )
                 if dup is not None:
                     with self._tx() as cur:
