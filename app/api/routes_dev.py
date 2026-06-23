@@ -8,7 +8,7 @@ production paths.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_store
 from app.api.schemas import MockCandidateCreate
@@ -30,10 +30,18 @@ async def inject_mock_candidate(
     NOT strategy logic; Phase 5 replaces this with real candidate generation.
     """
 
-    return await store.create_candidate(
-        body.symbol,
-        strategy=body.strategy,
-        reason=body.reason,
-        suggested_quantity=body.suggested_quantity,
-        suggested_limit_price=body.suggested_limit_price,
-    )
+    try:
+        return await store.create_candidate(
+            body.symbol,
+            strategy=body.strategy,
+            reason=body.reason,
+            suggested_quantity=body.suggested_quantity,
+            suggested_limit_price=body.suggested_limit_price,
+        )
+    except ValueError as exc:
+        # `normalize_symbol` rejects a blank/whitespace-only symbol (min_length=1
+        # passes pydantic but strips to empty). Surface it as a clean 422, not a
+        # 500.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc

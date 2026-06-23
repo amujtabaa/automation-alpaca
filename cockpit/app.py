@@ -174,8 +174,8 @@ def screen_candidates() -> None:
     st.header("Candidate Monitor")
     st.caption(
         "Proposals awaiting human review — the Approval Gate's human-in-the-loop "
-        "mode. Approving a candidate submits a **paper** order (no live trading). "
-        "Rejecting dismisses it."
+        "mode. Approving a candidate creates a **paper** order record (no live "
+        "trading; nothing is sent to a broker yet). Rejecting dismisses it."
     )
 
     with st.expander("➕ Inject mock candidate (dev)"):
