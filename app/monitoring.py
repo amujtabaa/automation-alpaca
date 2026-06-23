@@ -46,6 +46,7 @@ from app.store.base import (
     StateStore,
     UnknownEntityError,
 )
+from app.store.validation import order_intent_block_reason
 
 _log = logging.getLogger(__name__)
 
@@ -106,6 +107,32 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
     """
 
     created = [o for o in await store.list_orders() if o.status is OrderStatus.CREATED]
+    if not created:
+        return
+
+    # Safety controls (Rule 8): hold ALL submissions while the kill switch is
+    # engaged / buys are paused. Re-checked here — not only at order creation —
+    # so an order created *before* the stop cannot race through to the broker
+    # after the user hits stop. Each held order is audited once (not per tick).
+    block = order_intent_block_reason(await store.get_current_session())
+    if block is not None:
+        blocked_already = await _orders_with_event(
+            store, EventType.ORDER_SUBMISSION_BLOCKED.value
+        )
+        for order in created:
+            if order.id in blocked_already:
+                continue
+            await store.append_event(
+                EventType.ORDER_SUBMISSION_BLOCKED.value,
+                message=f"submission of {order.symbol} held: {block}",
+                symbol=order.symbol,
+                candidate_id=order.candidate_id,
+                order_id=order.id,
+                payload={"reason": block},
+                session_id=order.session_id,
+            )
+        return
+
     for order in created:
         try:
             broker_order_id = await adapter.submit_order(order)
@@ -213,7 +240,7 @@ async def _reconcile_open_orders(
     if not open_orders:
         return
 
-    already_stale = await _orders_with_stale_event(store)
+    already_stale = await _orders_with_event(store, EventType.ORDER_STALE.value)
     timeout = timedelta(minutes=settings.unfilled_timeout_minutes)
     now = utcnow()
 
@@ -364,16 +391,17 @@ def _order_age(now: datetime, created_at: datetime):
     return now - created_at
 
 
-async def _orders_with_stale_event(store: StateStore) -> set[str]:
-    """Order ids that already carry an ``order_stale`` event.
+async def _orders_with_event(store: StateStore, event_type: str) -> set[str]:
+    """Order ids that already carry an event of ``event_type``.
 
-    Reads the persisted event log so the "flag stale once" guarantee survives a
-    process restart. Acceptable at beta's single-user scale; an indexed query is
-    the upgrade if the event log ever grows large.
+    Reads the persisted event log so "do this once per order" guarantees (flag
+    stale once; audit a held submission once) survive a process restart.
+    Acceptable at beta's single-user scale; an indexed query is the upgrade if
+    the event log ever grows large.
     """
 
     return {
         e.order_id
         for e in await store.list_events()
-        if e.event_type == EventType.ORDER_STALE.value and e.order_id is not None
+        if e.event_type == event_type and e.order_id is not None
     }

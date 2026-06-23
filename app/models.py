@@ -119,6 +119,9 @@ class EventType(str, Enum):
     # a real open broker order the local state didn't capture; surfaced, never
     # left silent.
     ORDER_SUBMIT_UNPERSISTED = "order_submit_unpersisted"
+    # Safety controls (Rule 8) blocking the order path (Phase 4 enforcement).
+    ORDER_INTENT_BLOCKED = "order_intent_blocked"  # creation blocked by kill/pause
+    ORDER_SUBMISSION_BLOCKED = "order_submission_blocked"  # loop held a submission
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"

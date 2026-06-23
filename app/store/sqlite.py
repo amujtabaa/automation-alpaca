@@ -55,6 +55,7 @@ from app.store.base import (
     FillAppendResult,
     InvalidFillError,
     InvalidOrderError,
+    OrderIntentBlockedError,
     OrderTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
@@ -74,6 +75,7 @@ from app.store.validation import (
     filled_quantity_reason,
     limit_price_reason,
     order_candidate_match_reason,
+    order_intent_block_reason,
 )
 
 SCHEMA = """
@@ -838,6 +840,27 @@ class SqliteStateStore(StateStore):
                     f"cannot order candidate {candidate_id} in status "
                     f"{candidate.status.value}; must be approved"
                 )
+            # Safety controls (Rule 8): refuse new order intent when the kill
+            # switch is engaged / buys are paused. Enforced at the backend
+            # boundary so every producer is gated (not just the UI), and audited.
+            sess_row = self._read_one(
+                "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
+            )
+            block = order_intent_block_reason(
+                self._session(sess_row) if sess_row is not None else None
+            )
+            if block is not None:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur,
+                        "order_intent_blocked",
+                        message=f"order intent for {candidate.symbol} blocked: {block}",
+                        symbol=candidate.symbol,
+                        candidate_id=candidate_id,
+                        payload={"reason": block},
+                        session_id=candidate.session_id,
+                    )
+                raise OrderIntentBlockedError(f"order intent blocked: {block}")
             qty = candidate.suggested_quantity
             if qty is None or qty <= 0:
                 raise InvalidOrderError(

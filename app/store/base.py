@@ -107,6 +107,19 @@ class SessionAlreadyClosedError(StoreError):
     """
 
 
+class OrderIntentBlockedError(StoreError):
+    """New order intent was blocked by a safety control (Rule 8).
+
+    Raised by ``create_order_for_candidate`` when the candidate's session has the
+    kill switch engaged (blocks *all* new order intent) or buys paused (blocks
+    new BUY intent — beta orders are long-only buys). The flag is persisted state
+    the backend owns; enforcing it here (not only in the UI) means every order-
+    intent producer — the approve route now, a future auto-buy engine — is gated,
+    and the block is recorded as an audit event. Distinct from the Phase 6 CAPI
+    risk limits (max shares/notional/exposure), which remain out of scope.
+    """
+
+
 class SessionClosedError(StoreError):
     """A new candidate was attempted against a *closed* session.
 

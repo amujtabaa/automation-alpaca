@@ -18,7 +18,27 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from app.models import Candidate, Order, OrderSide
+from app.models import Candidate, Order, OrderSide, SessionRecord
+
+
+def order_intent_block_reason(
+    session: Optional[SessionRecord],
+) -> Optional[str]:
+    """Why new order intent is blocked for ``session``, or ``None`` if allowed.
+
+    Rule 8 safety controls: the kill switch blocks *all* new order intent; buys
+    paused blocks new BUY intent (beta orders are long-only buys, so it blocks
+    them too). Shared by both stores and the monitoring loop so "is trading
+    stopped" is decided in exactly one place.
+    """
+
+    if session is None:
+        return None
+    if session.kill_switch:
+        return "kill_switch"
+    if session.buys_paused:
+        return "buys_paused"
+    return None
 
 
 def fill_value_reason(quantity: int, price: float) -> Optional[str]:

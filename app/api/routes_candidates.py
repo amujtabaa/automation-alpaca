@@ -17,10 +17,12 @@ from app.models import Candidate, CandidateStatus
 from app.store.base import (
     CandidateTransitionError,
     InvalidOrderError,
+    OrderIntentBlockedError,
     StateStore,
     StoreError,
     UnknownEntityError,
 )
+from app.store.validation import order_intent_block_reason
 
 router = APIRouter(prefix="/api", tags=["candidates"])
 
@@ -30,6 +32,7 @@ _MAPPED_ERRORS = (
     UnknownEntityError,
     CandidateTransitionError,
     InvalidOrderError,
+    OrderIntentBlockedError,
 )
 
 
@@ -128,6 +131,20 @@ async def approve_candidate(
                 f"suggested_quantity and suggested_limit_price are required"
             ),
         )
+
+    # Safety controls pre-check (Rule 8): don't approve a candidate the backend
+    # would then refuse to dispatch (kill switch engaged / buys paused) — that
+    # would strand it at APPROVED. Mirrors the enforcement inside
+    # create_order_for_candidate; checked here so a blocked candidate stays
+    # PENDING (still rejectable). Skipped for an already-ORDERED candidate (a
+    # re-approve is an idempotent no-op that creates no new intent).
+    if candidate.status is not CandidateStatus.ORDERED:
+        block = order_intent_block_reason(await store.get_current_session())
+        if block is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"order intent blocked: {block}",
+            )
 
     try:
         await gate.approve(candidate_id)

@@ -1,16 +1,16 @@
 """Control flags: kill switch and pause/resume buys.
 
-These endpoints **persist the flag** (and audit it). Enforcement — actually
-blocking new order intent when the kill switch is engaged or buys are paused — is
-**not yet wired**: the implementation plan assigns kill-switch enforcement on
-order intent to Phase 6 (CAPI), so the flags persist now and are honoured later.
+These endpoints **persist the flag** (and audit it). As of Phase 4 the flags are
+also **enforced on the order path** (Rule 8): with the kill switch engaged, new
+order intent is refused at the backend boundary (`create_order_for_candidate`,
+surfaced as 409 by the approve route) and the monitoring loop holds all order
+submissions; buys-paused does the same for BUY intent (beta orders are long-only
+buys). Both refusals are recorded as audit events (`order_intent_blocked` /
+`order_submission_blocked`), so a block is never UI-only state.
 
-Note (Phase 3): approving a candidate now creates a paper **order record**
-(`create_order_for_candidate`) — the system's first order-intent path. It still
-sends nothing to a broker (paper submission is Phase 4), but it does mean the
-kill switch / pause-buys flags do not yet gate it. That gating lands with Phase
-6 enforcement; until then the flag surviving a restart is the property that
-matters here.
+The broader Phase 6 CAPI risk limits (max shares, max notional, max total
+exposure, allowlist, duplicate prevention) remain out of scope here — Phase 4
+wires only the on/off safety controls, not the sizing/risk engine.
 """
 
 from __future__ import annotations
