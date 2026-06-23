@@ -105,4 +105,16 @@ Use when reviewing Codex or Claude Code output.
 - [ ] `POST /api/orders/{id}/cancel` calls the adapter then transitions the order.
 - [ ] Monitoring loop keeps polling until terminal state regardless of session
       close (D-011).
+- [ ] Fill dedup is keyed per-order (`(order_id, source_fill_id)`), so the same
+      broker fill id appearing on two different orders cannot swallow the second
+      order's fill.
+- [ ] Order submission gates on the order's own session: a `CREATED` order whose
+      originating session is kill-switched, paused, or closed is held and
+      audited, never submitted under the current session's controls (no
+      date-rollover or post-close bypass).
+- [ ] Config rejects non-finite (`NaN`/`Inf`) timing values at load; the
+      monitoring loop cannot be driven into an error-spin by a bad cadence.
+- [ ] In-memory store multi-row mutations roll back as a unit on audit-write
+      failure (`append_fill`, `set_kill_switch`, pause-buys, and any other
+      multi-row method), matching SQLite's transactional guarantee.
 - [ ] `.env` is gitignored; no credentials appear in any committed file or log.
