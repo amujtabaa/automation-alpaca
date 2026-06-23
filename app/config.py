@@ -12,6 +12,7 @@ here but never logged; ``.env`` (gitignored) holds the real values.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,8 +87,13 @@ class Settings:
 def _env_float(name: str, default: float, *, minimum: Optional[float] = None) -> float:
     """Parse a float env var, falling back to ``default`` if unset/blank.
 
-    A non-numeric value, or one below ``minimum``, raises ``ValueError`` — a
-    misconfigured cadence should fail fast at startup, not silently busy-loop.
+    A non-numeric value, a non-finite one (``NaN``/``Inf``), or one below
+    ``minimum`` raises ``ValueError`` — a misconfigured cadence should fail fast
+    at startup. ``float()`` accepts ``"nan"``/``"inf"`` and they slip past a bare
+    ``< minimum`` guard (``nan < x`` and ``inf < x`` are both ``False``); left in,
+    a ``NaN`` cadence makes the monitoring loop's ``asyncio.sleep(nan)`` never
+    fire (the loop silently stalls), and an infinite timeout disables stale-order
+    surfacing — both rejected here (BE-1).
     """
 
     raw = os.environ.get(name)
@@ -97,6 +103,8 @@ def _env_float(name: str, default: float, *, minimum: Optional[float] = None) ->
         value = float(raw.strip())
     except ValueError as exc:
         raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {value}")
     if minimum is not None and value < minimum:
         raise ValueError(f"{name} must be >= {minimum}, got {value}")
     return value
