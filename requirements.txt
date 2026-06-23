@@ -1,6 +1,6 @@
 # Alpaca Clean-Sheet CAPI Option 2.5 — backend + cockpit dependencies.
-# Paper-first beta: there is intentionally NO Alpaca SDK and NO credentials
-# dependency here (no network path to Alpaca exists yet — Phase 4).
+# Paper-first beta: paper credentials live in .env (gitignored); no live-
+# trading path exists anywhere in this codebase.
 
 # Backend (the durable engine)
 fastapi>=0.110
@@ -15,3 +15,12 @@ requests>=2.31
 pytest>=8.0
 httpx>=0.27
 anyio>=4.0
+
+# Phase 4 — Alpaca paper adapter (optional at install time).
+# This is the ONLY permitted Alpaca SDK for this project.
+# Required only when BROKER_ADAPTER=alpaca (real paper integration with Alpaca).
+# The import is lazy (inside AlpacaPaperAdapter.__init__), so the standard
+# test suite and CI run without it — unit tests never touch the Alpaca network.
+# Paper-only: the adapter only ever constructs a paper TradingClient; there is
+# intentionally no live-trading path in this codebase.
+alpaca-py>=0.20
