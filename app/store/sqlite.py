@@ -782,6 +782,100 @@ class SqliteStateStore(StateStore):
                 )
             return order
 
+    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+        async with self._lock:
+            cand_row = self._read_one(
+                "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
+            )
+            if cand_row is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            candidate = self._candidate(cand_row)
+            # Idempotent: a candidate already dispatched returns its existing
+            # order and writes nothing — no second order, no extra audit rows.
+            if candidate.status is CandidateStatus.ORDERED:
+                if candidate.order_id is None:  # ordered but unlinked — corrupt
+                    raise InvalidOrderError(
+                        f"candidate {candidate_id} is ORDERED but has no linked order"
+                    )
+                order_row = self._read_one(
+                    "SELECT * FROM orders WHERE id = ?", (candidate.order_id,)
+                )
+                if order_row is None:
+                    raise InvalidOrderError(
+                        f"candidate {candidate_id} links to missing order "
+                        f"{candidate.order_id}"
+                    )
+                return self._order(order_row)
+            # The approved-only rule D-010 deferred to the gate lands here: only
+            # an APPROVED candidate may be dispatched to an order.
+            if candidate.status is not CandidateStatus.APPROVED:
+                raise CandidateTransitionError(
+                    f"cannot order candidate {candidate_id} in status "
+                    f"{candidate.status.value}; must be approved"
+                )
+            qty = candidate.suggested_quantity
+            if qty is None or qty <= 0:
+                raise InvalidOrderError(
+                    f"candidate {candidate_id} has no positive suggested_quantity "
+                    f"to size an order"
+                )
+            # Long-only buy proposal (beta). Order type LIMIT; session order-type
+            # policy (Rule 12) is enforced later, not here.
+            order = Order(
+                candidate_id=candidate_id,
+                symbol=candidate.symbol,
+                side=OrderSide.BUY,
+                order_type=OrderType.LIMIT,
+                quantity=qty,
+                limit_price=candidate.suggested_limit_price,
+                session_id=candidate.session_id,
+            )
+            now = utcnow()
+            candidate.status = CandidateStatus.ORDERED
+            candidate.order_id = order.id
+            candidate.updated_at = now
+            candidate.ordered_at = now
+            # One transaction covers the order insert, the candidate transition,
+            # and both audit events — the atomic "candidate approval + order
+            # creation + audit event" group from docs/02.
+            with self._tx() as cur:
+                self._insert_order(cur, order)
+                cur.execute(
+                    """UPDATE candidates SET status=?, updated_at=?, order_id=?,
+                       approved_at=?, rejected_at=?, expired_at=?, ordered_at=?
+                       WHERE id=?""",
+                    (
+                        candidate.status.value,
+                        _dt(candidate.updated_at),
+                        candidate.order_id,
+                        _dt(candidate.approved_at),
+                        _dt(candidate.rejected_at),
+                        _dt(candidate.expired_at),
+                        _dt(candidate.ordered_at),
+                        candidate.id,
+                    ),
+                )
+                self._insert_event(
+                    cur,
+                    "order_created",
+                    message=f"order created for {candidate.symbol}",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate_id,
+                    order_id=order.id,
+                    session_id=candidate.session_id,
+                )
+                self._insert_event(
+                    cur,
+                    "candidate_transition",
+                    message="candidate approved -> ordered",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate_id,
+                    order_id=order.id,
+                    payload={"from": "approved", "to": "ordered"},
+                    session_id=candidate.session_id,
+                )
+            return order
+
     def _insert_order(self, cur: sqlite3.Cursor, o: Order) -> None:
         cur.execute(
             """INSERT INTO orders

@@ -357,6 +357,76 @@ class InMemoryStateStore(StateStore):
             )
             return order.model_copy(deep=True)
 
+    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+        async with self._lock:
+            candidate = self._candidates.get(candidate_id)
+            if candidate is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            # Idempotent: a candidate already dispatched returns its existing
+            # order and writes nothing — no second order, no extra audit rows.
+            if candidate.status is CandidateStatus.ORDERED:
+                existing = (
+                    self._orders.get(candidate.order_id)
+                    if candidate.order_id is not None
+                    else None
+                )
+                if existing is None:  # ordered but unlinked — a corrupt invariant
+                    raise InvalidOrderError(
+                        f"candidate {candidate_id} is ORDERED but has no linked order"
+                    )
+                return existing.model_copy(deep=True)
+            # The approved-only rule D-010 deferred to the gate lands here: only
+            # an APPROVED candidate may be dispatched to an order.
+            if candidate.status is not CandidateStatus.APPROVED:
+                raise CandidateTransitionError(
+                    f"cannot order candidate {candidate_id} in status "
+                    f"{candidate.status.value}; must be approved"
+                )
+            qty = candidate.suggested_quantity
+            if qty is None or qty <= 0:
+                raise InvalidOrderError(
+                    f"candidate {candidate_id} has no positive suggested_quantity "
+                    f"to size an order"
+                )
+            # Long-only buy proposal (beta). Order type LIMIT; session order-type
+            # policy (Rule 12) is enforced later, not here.
+            order = Order(
+                candidate_id=candidate_id,
+                symbol=candidate.symbol,
+                side=OrderSide.BUY,
+                order_type=OrderType.LIMIT,
+                quantity=qty,
+                limit_price=candidate.suggested_limit_price,
+                session_id=candidate.session_id,
+            )
+            self._orders[order.id] = order
+            # APPROVED -> ORDERED, linking the order. One lock acquisition covers
+            # the order insert, the candidate transition, and both audit events:
+            # all-or-nothing, like SqliteStateStore's single transaction.
+            now = utcnow()
+            candidate.status = CandidateStatus.ORDERED
+            candidate.order_id = order.id
+            candidate.updated_at = now
+            candidate.ordered_at = now
+            self._append_event_unlocked(
+                "order_created",
+                message=f"order created for {candidate.symbol}",
+                symbol=candidate.symbol,
+                candidate_id=candidate_id,
+                order_id=order.id,
+                session_id=candidate.session_id,
+            )
+            self._append_event_unlocked(
+                "candidate_transition",
+                message="candidate approved -> ordered",
+                symbol=candidate.symbol,
+                candidate_id=candidate_id,
+                order_id=order.id,
+                payload={"from": "approved", "to": "ordered"},
+                session_id=candidate.session_id,
+            )
+            return order.model_copy(deep=True)
+
     async def list_orders(
         self,
         *,
