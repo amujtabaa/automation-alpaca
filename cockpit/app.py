@@ -15,7 +15,7 @@ call via cockpit.api_client.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 
 import streamlit as st
 
@@ -261,21 +261,155 @@ def screen_candidates() -> None:
             row[6].write(status)
 
 
+def _format_age(created_at: str) -> str:
+    """Return a human-readable age string from an ISO timestamp. Display-only."""
+    try:
+        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta_seconds = int((now - dt).total_seconds())
+        if delta_seconds < 0:
+            return "just now"
+        if delta_seconds < 60:
+            return f"{delta_seconds}s"
+        minutes = delta_seconds // 60
+        if minutes < 60:
+            return f"{minutes}m"
+        hours = minutes // 60
+        return f"{hours}h {minutes % 60}m"
+    except Exception:
+        return "—"
+
+
 def screen_positions() -> None:
     st.header("Position Monitor")
-    st.caption("Positions are derived from filled orders. Quantity changes only "
-               "on fills — there are none yet.")
+    st.caption(
+        "Positions are derived from filled orders — quantity changes only on fills. "
+        "P/L requires live market data (Phase 5)."
+    )
+
+    # ------------------------------------------------------------------ #
+    # A) POSITIONS
+    # ------------------------------------------------------------------ #
     try:
         positions = api_client.list_positions()
     except BackendError as exc:
         st.error(str(exc))
         return
+
     open_positions = [p for p in positions if p.get("quantity")]
+
+    st.subheader("Positions")
     if not open_positions:
-        st.info("No open positions. Positions appear here once fills are recorded "
-                "(Phase 4).")
+        st.info(
+            "No open positions. Positions appear here once fills are recorded "
+            "(Phase 4)."
+        )
+    else:
+        hdr = st.columns([2, 2, 2, 3, 3])
+        hdr[0].markdown("**Symbol**")
+        hdr[1].markdown("**Quantity**")
+        hdr[2].markdown("**Avg Price**")
+        hdr[3].markdown("**P/L**")
+        hdr[4].markdown("**Action**")
+
+        for pos in open_positions:
+            sym = pos.get("symbol", "—")
+            qty = pos.get("quantity", 0)
+            avg = pos.get("average_price")
+            avg_display = f"${avg:.2f}" if avg is not None else "—"
+
+            row = st.columns([2, 2, 2, 3, 3])
+            row[0].write(sym)
+            row[1].write(str(qty))
+            row[2].write(avg_display)
+            row[3].caption("P/L: pending market data (Phase 5)")
+            with row[4]:
+                st.button(
+                    "Flatten",
+                    key=f"flatten_{sym}",
+                    disabled=True,
+                    help="Sell-side exits arrive in Phase 7",
+                )
+
+    st.divider()
+
+    # ------------------------------------------------------------------ #
+    # B) OPEN ORDERS
+    # ------------------------------------------------------------------ #
+    st.subheader("Open Orders")
+
+    try:
+        all_orders = api_client.list_orders()
+    except BackendError as exc:
+        st.error(str(exc))
         return
-    st.dataframe(open_positions, width='stretch', hide_index=True)
+
+    open_statuses = {"submitted", "partially_filled"}
+    open_orders = [o for o in all_orders if o.get("status") in open_statuses]
+
+    # Build stale-order set from events
+    try:
+        events = api_client.list_events()
+    except BackendError as exc:
+        st.error(str(exc))
+        return
+
+    stale_order_ids: set[str] = {
+        e["order_id"]
+        for e in events
+        if e.get("event_type") == "order_stale" and e.get("order_id")
+    }
+
+    if not open_orders:
+        st.caption("No open orders.")
+    else:
+        hdr = st.columns([2, 1, 2, 2, 1, 2, 3])
+        hdr[0].markdown("**Symbol**")
+        hdr[1].markdown("**Qty**")
+        hdr[2].markdown("**Limit Price**")
+        hdr[3].markdown("**Status**")
+        hdr[4].markdown("**Filled**")
+        hdr[5].markdown("**Age**")
+        hdr[6].markdown("**Action**")
+
+        for order in open_orders:
+            order_id = order.get("id", "")
+            symbol = order.get("symbol", "—")
+            qty = order.get("quantity", "—")
+            limit_price = order.get("limit_price")
+            price_display = f"${limit_price:.2f}" if limit_price is not None else "—"
+            status_val = order.get("status", "—")
+            filled_qty = order.get("filled_quantity", 0)
+            created_at = order.get("created_at", "")
+            age_display = _format_age(created_at) if created_at else "—"
+
+            is_stale = order_id in stale_order_ids
+
+            if is_stale:
+                st.warning(f"⚠️ STALE order detected for {symbol} (id: {order_id})")
+
+            row = st.columns([2, 1, 2, 2, 1, 2, 3])
+            row[0].write(symbol)
+            row[1].write(str(qty))
+            row[2].write(price_display)
+            row[3].write(status_val)
+            row[4].write(str(filled_qty))
+            row[5].write(age_display)
+
+            confirm_key = f"pending_cancel_{order_id}"
+            with row[6]:
+                if st.session_state.get(confirm_key):
+                    st.caption("⚠️ Confirm cancel?")
+                    if st.button("Yes, cancel", key=f"confirm_cancel_{order_id}"):
+                        st.session_state[confirm_key] = False
+                        _do(
+                            lambda oid=order_id: api_client.cancel_order(oid),
+                            f"{symbol} order canceled",
+                        )
+                else:
+                    if st.button("Cancel", key=f"cancel_{order_id}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
 
 
 def screen_review() -> None:
