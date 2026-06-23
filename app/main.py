@@ -18,12 +18,15 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.api import (
+    routes_candidates,
     routes_controls,
+    routes_dev,
     routes_review,
     routes_system,
     routes_trading,
     routes_watchlist,
 )
+from app.approval.human import HumanApprovalGate
 from app.config import load_settings
 from app.store import create_state_store
 from app.store.base import StateStore
@@ -44,6 +47,7 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
         active_store = store or create_state_store(load_settings())
         await active_store.initialize()
         app.state.store = active_store
+        app.state.approval_gate = HumanApprovalGate(active_store)
         try:
             yield
         finally:
@@ -59,9 +63,11 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
 
     app.include_router(routes_system.router)
     app.include_router(routes_watchlist.router)
+    app.include_router(routes_candidates.router)
     app.include_router(routes_trading.router)
     app.include_router(routes_controls.router)
     app.include_router(routes_review.router)
+    app.include_router(routes_dev.router)
 
     return app
 
