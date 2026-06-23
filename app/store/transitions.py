@@ -25,19 +25,27 @@ CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
 ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.CREATED: {
         OrderStatus.SUBMITTED,
-        OrderStatus.CANCELED,
+        OrderStatus.CANCELED,  # never-submitted order cancelled locally
         OrderStatus.REJECTED,
     },
     OrderStatus.SUBMITTED: {
         OrderStatus.PARTIALLY_FILLED,
         OrderStatus.FILLED,
-        OrderStatus.CANCELED,
+        OrderStatus.CANCEL_PENDING,  # cancel requested at the broker (CHAOS-1)
+        OrderStatus.CANCELED,  # broker-confirmed/external cancel
         OrderStatus.REJECTED,
     },
     OrderStatus.PARTIALLY_FILLED: {
         OrderStatus.PARTIALLY_FILLED,  # further partial fills
         OrderStatus.FILLED,
+        OrderStatus.CANCEL_PENDING,  # cancel requested with a partial already filled
         OrderStatus.CANCELED,
+    },
+    OrderStatus.CANCEL_PENDING: {
+        OrderStatus.CANCEL_PENDING,  # still pending; a late partial fill progressed
+        OrderStatus.FILLED,  # a late fill completed it before the cancel landed
+        OrderStatus.CANCELED,  # broker confirmed the cancel
+        OrderStatus.REJECTED,
     },
     OrderStatus.FILLED: set(),
     OrderStatus.CANCELED: set(),

@@ -50,8 +50,21 @@ from app.store.validation import order_intent_block_reason
 
 _log = logging.getLogger(__name__)
 
-# Orders the loop actively tracks toward a terminal state.
-_OPEN_STATUSES = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED})
+# Orders the loop actively polls toward a terminal state. Includes cancel_pending
+# so a late fill arriving before the broker confirms a cancel is still reconciled
+# (CHAOS-1).
+_OPEN_STATUSES = frozenset(
+    {
+        OrderStatus.SUBMITTED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.CANCEL_PENDING,
+    }
+)
+# Open orders eligible for the unfilled-timeout stale flag — NOT cancel_pending
+# (it is already being wound down, not "stuck unfilled").
+_STALEABLE_STATUSES = frozenset(
+    {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
+)
 
 # Fill-append failures that are recoverable per-order (logged, then skipped).
 _FILL_ERRORS = (InvalidFillError, UnknownEntityError, NegativePositionError)
@@ -263,9 +276,10 @@ async def _reconcile_open_orders(
                 await _apply_update(store, order, update)
 
         # Stale check on the *refreshed* order — applying the update above may
-        # have moved it to a terminal state, in which case it is no longer stale.
+        # have moved it to a terminal state (or to cancel_pending), in which case
+        # it is no longer eligible for the unfilled-timeout flag.
         fresh = await store.get_order(order.id)
-        if fresh is None or fresh.status not in _OPEN_STATUSES:
+        if fresh is None or fresh.status not in _STALEABLE_STATUSES:
             continue
         if fresh.id in already_stale:
             continue
@@ -342,7 +356,7 @@ async def _apply_update(
             update.filled_quantity,
             recorded,
         )
-    target = _reconciled_status(order.quantity, update.status, recorded)
+    target = _reconciled_status(order, update.status, recorded)
     try:
         await store.transition_order(
             order.id, target, filled_quantity=recorded
@@ -358,7 +372,7 @@ async def _apply_update(
 
 
 def _reconciled_status(
-    order_quantity: int, broker_status: OrderStatus, recorded: int
+    order: Order, broker_status: OrderStatus, recorded: int
 ) -> OrderStatus:
     """The order status implied by the fills we have actually recorded.
 
@@ -366,12 +380,22 @@ def _reconciled_status(
     cancel/reject as terminal when the order isn't already fully recorded as
     filled. (A buy that the broker reports CANCELED after the full quantity has
     actually filled is treated as FILLED — the recorded fills are the truth.)
+
+    An order already in ``cancel_pending`` (or one the broker now reports as
+    ``pending_cancel``) stays ``cancel_pending`` until the broker confirms a
+    terminal state — a late partial fill must not revert it to an open status
+    (CHAOS-1).
     """
 
-    if recorded >= order_quantity:
+    if recorded >= order.quantity:
         return OrderStatus.FILLED
     if broker_status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
         return broker_status
+    if (
+        broker_status is OrderStatus.CANCEL_PENDING
+        or order.status is OrderStatus.CANCEL_PENDING
+    ):
+        return OrderStatus.CANCEL_PENDING
     if recorded > 0:
         return OrderStatus.PARTIALLY_FILLED
     return OrderStatus.SUBMITTED

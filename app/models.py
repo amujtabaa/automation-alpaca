@@ -75,11 +75,19 @@ class CandidateStatus(str, Enum):
 
 
 class OrderStatus(str, Enum):
-    """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6)."""
+    """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6).
+
+    ``cancel_pending`` is a non-terminal state: a cancel has been requested at the
+    broker but not yet confirmed, so the order keeps being polled — a late fill
+    arriving before the venue finalizes the cancel is still recorded, never
+    missed (CHAOS-1). It resolves to ``canceled`` (broker confirms) or ``filled``
+    (a late fill completes it).
+    """
 
     CREATED = "created"
     SUBMITTED = "submitted"
     PARTIALLY_FILLED = "partially_filled"
+    CANCEL_PENDING = "cancel_pending"
     FILLED = "filled"
     CANCELED = "canceled"
     REJECTED = "rejected"

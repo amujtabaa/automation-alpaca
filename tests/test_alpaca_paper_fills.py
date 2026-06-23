@@ -90,3 +90,13 @@ def test_resolve_fill_price_prefers_avg_then_limit_then_zero():
     assert _resolve_fill_price(None, None) == 0.0
     # Tolerant of the SDK's string/Decimal shapes; an unparseable avg falls back.
     assert _resolve_fill_price("not-a-number", 3.0) == 3.0
+
+
+def test_pending_cancel_maps_to_non_terminal_state():
+    from app.broker.alpaca_paper import _map_status
+    from app.models import OrderStatus
+
+    # CHAOS-1: pending_cancel is NOT terminal, so the order keeps being polled.
+    assert _map_status("pending_cancel") is OrderStatus.CANCEL_PENDING
+    assert _map_status("canceled") is OrderStatus.CANCELED
+    assert _map_status("filled") is OrderStatus.FILLED

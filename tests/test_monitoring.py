@@ -303,6 +303,81 @@ async def test_tick_submits_then_reconciles(any_store):
 
 
 # --------------------------------------------------------------------------- #
+# Cancel-pending lifecycle (CHAOS-1): keep polling until the broker confirms
+# --------------------------------------------------------------------------- #
+async def test_cancel_pending_keeps_polling_and_records_late_fill(any_store):
+    order = await _created_order(any_store, qty=100, limit=2.0)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(any_store, adapter)
+    # The cancel route requested a broker cancel -> cancel_pending (non-terminal).
+    await any_store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+
+    # A late partial fill arrives while the broker still reports pending_cancel.
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.CANCEL_PENDING,
+        filled_quantity=40,
+        fills=[BrokerFill("late-1", 40, 2.0, utcnow())],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+    fresh = await any_store.get_order(order.id)
+    assert fresh.status is OrderStatus.CANCEL_PENDING  # not reverted to open
+    assert fresh.filled_quantity == 40
+    assert (await any_store.get_position("AAPL")).quantity == 40
+
+    # The broker confirms the cancel (replaying the same fill, which dedups).
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.CANCELED,
+        filled_quantity=40,
+        fills=[BrokerFill("late-1", 40, 2.0, utcnow())],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+    fresh = await any_store.get_order(order.id)
+    assert fresh.status is OrderStatus.CANCELED  # now terminal
+    assert fresh.filled_quantity == 40
+    # The late fill was recorded exactly once.
+    assert len(await any_store.list_fills(order_id=order.id)) == 1
+    assert (await any_store.get_position("AAPL")).quantity == 40
+
+
+async def test_cancel_pending_late_fill_can_complete_the_order(any_store):
+    order = await _created_order(any_store, qty=100, limit=2.0)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(any_store, adapter)
+    await any_store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+
+    # A late fill completes the order before the cancel landed -> FILLED wins.
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.CANCEL_PENDING,
+        filled_quantity=100,
+        fills=[BrokerFill("late-full", 100, 2.0, utcnow())],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+    fresh = await any_store.get_order(order.id)
+    assert fresh.status is OrderStatus.FILLED
+    assert (await any_store.get_position("AAPL")).quantity == 100
+
+
+async def test_cancel_pending_order_is_not_flagged_stale(any_store):
+    order = await _created_order(any_store)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(any_store, adapter)
+    await any_store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+
+    # Even with timeout 0, a cancel_pending order is not "stuck unfilled" — it's
+    # being wound down, so it is excluded from the stale flag.
+    await _reconcile_open_orders(any_store, adapter, Settings(unfilled_timeout_minutes=0.0))
+    assert not any(
+        e.event_type == "order_stale" and e.order_id == order.id
+        for e in await any_store.list_events()
+    )
+    # But it is still being polled (status unchanged, no error).
+    assert (await any_store.get_order(order.id)).status is OrderStatus.CANCEL_PENDING
+
+
+# --------------------------------------------------------------------------- #
 # The order tracks RECORDED fills, never the broker's scalar (review M1/M2)
 # --------------------------------------------------------------------------- #
 async def test_order_follows_recorded_fills_not_broker_scalar(any_store):

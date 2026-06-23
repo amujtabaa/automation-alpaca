@@ -76,13 +76,19 @@ async def test_get_order_known_and_unknown():
 # --------------------------------------------------------------------------- #
 # POST /api/orders/{id}/cancel
 # --------------------------------------------------------------------------- #
-async def test_cancel_submitted_order_calls_broker_and_transitions():
+async def test_cancel_submitted_order_goes_cancel_pending_and_is_idempotent():
     app, store, adapter = await _app_store_adapter()
     order = await _submitted_order(store, adapter)
     async with _client(app) as client:
         resp = await client.post(f"/api/orders/{order.id}/cancel")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "canceled"
+        assert resp.status_code == 200
+        # A cancel REQUEST is not terminal: the order is cancel_pending and stays
+        # reconcilable until the broker confirms (CHAOS-1).
+        assert resp.json()["status"] == "cancel_pending"
+        # Re-cancelling is an idempotent no-op — the broker is not hit again.
+        again = await client.post(f"/api/orders/{order.id}/cancel")
+        assert again.status_code == 200
+        assert again.json()["status"] == "cancel_pending"
     # The broker was asked to cancel the right broker id, exactly once.
     assert adapter.canceled == [order.broker_order_id]
 
@@ -116,7 +122,7 @@ async def test_cancel_partially_filled_order_is_allowed():
     async with _client(app) as client:
         resp = await client.post(f"/api/orders/{order.id}/cancel")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "canceled"
+    assert resp.json()["status"] == "cancel_pending"
 
 
 async def test_cancel_terminal_order_returns_409():

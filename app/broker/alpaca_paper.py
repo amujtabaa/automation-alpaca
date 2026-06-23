@@ -50,12 +50,14 @@ _ALPACA_STATUS_MAP: dict[str, OrderStatus] = {
     "partially_filled": OrderStatus.PARTIALLY_FILLED,
     # Terminal — fully executed
     "filled": OrderStatus.FILLED,
+    # Cancel requested but not yet finalized — NON-terminal, keep polling so a
+    # late fill before the venue confirms the cancel is still recorded (CHAOS-1).
+    "pending_cancel": OrderStatus.CANCEL_PENDING,
     # Terminal — no longer active, not filled (treat as canceled)
     "canceled": OrderStatus.CANCELED,
     "expired": OrderStatus.CANCELED,
     "done_for_day": OrderStatus.CANCELED,
     "replaced": OrderStatus.CANCELED,
-    "pending_cancel": OrderStatus.CANCELED,
     # Terminal — broker-rejected or administratively stopped
     "rejected": OrderStatus.REJECTED,
     "suspended": OrderStatus.REJECTED,

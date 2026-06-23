@@ -345,7 +345,9 @@ def screen_positions() -> None:
         st.error(str(exc))
         return
 
-    open_statuses = {"submitted", "partially_filled"}
+    # cancel_pending orders are still in flight (cancel requested, not confirmed)
+    # so they remain visible until they reach a terminal state.
+    open_statuses = {"submitted", "partially_filled", "cancel_pending"}
     open_orders = [o for o in all_orders if o.get("status") in open_statuses]
 
     # Build stale-order set from events
@@ -399,13 +401,17 @@ def screen_positions() -> None:
 
             confirm_key = f"pending_cancel_{order_id}"
             with row[6]:
-                if st.session_state.get(confirm_key):
+                if status_val == "cancel_pending":
+                    # Cancel already requested; the backend loop is winding it
+                    # down. No button — re-cancelling is a no-op.
+                    st.caption("⏳ cancel requested")
+                elif st.session_state.get(confirm_key):
                     st.caption("⚠️ Confirm cancel?")
                     if st.button("Yes, cancel", key=f"confirm_cancel_{order_id}"):
                         st.session_state[confirm_key] = False
                         _do(
                             lambda oid=order_id: api_client.cancel_order(oid),
-                            f"{symbol} order canceled",
+                            f"{symbol} order cancel requested",
                         )
                 else:
                     if st.button("Cancel", key=f"cancel_{order_id}"):
