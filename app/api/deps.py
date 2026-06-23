@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from app.approval.gate import ApprovalGate
+from app.broker.adapter import BrokerAdapter
 from app.store.base import StateStore
 
 
@@ -18,3 +19,13 @@ def get_approval_gate(request: Request) -> ApprovalGate:
     """The process-wide Approval Gate, constructed at startup (see main.py)."""
 
     return request.app.state.approval_gate
+
+
+def get_broker_adapter(request: Request) -> BrokerAdapter:
+    """The process-wide BrokerAdapter, constructed at startup (see main.py).
+
+    Routes depend on this interface, never on a concrete adapter — so the cancel
+    endpoint works identically against the paper adapter or a test mock.
+    """
+
+    return request.app.state.broker_adapter

@@ -10,13 +10,23 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import get_store
-from app.models import Event, Order, Position
-from app.store.base import StateStore
+from app.api.deps import get_broker_adapter, get_store
+from app.broker.adapter import BrokerAdapter
+from app.models import Event, Order, OrderStatus, Position
+from app.store.base import (
+    OrderTransitionError,
+    StateStore,
+    UnknownEntityError,
+)
 
 router = APIRouter(prefix="/api", tags=["trading"])
+
+# Order statuses that can no longer be cancelled — already resolved.
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
 
 
 @router.get("/positions", response_model=list[Position])
@@ -40,6 +50,64 @@ async def list_orders(
     store: StateStore = Depends(get_store),
 ) -> list[Order]:
     return await store.list_orders()
+
+
+@router.get("/orders/{order_id}", response_model=Order)
+async def get_order(
+    order_id: str,
+    store: StateStore = Depends(get_store),
+) -> Order:
+    order = await store.get_order(order_id)
+    if order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"order {order_id} not found",
+        )
+    return order
+
+
+@router.post("/orders/{order_id}/cancel", response_model=Order)
+async def cancel_order(
+    order_id: str,
+    store: StateStore = Depends(get_store),
+    adapter: BrokerAdapter = Depends(get_broker_adapter),
+) -> Order:
+    """Manually cancel an open order (D-011: human-triggered, no auto-cancel).
+
+    404 if the order is unknown; 409 if it is already terminal (filled, canceled,
+    or rejected) — there is nothing to cancel. Otherwise the broker is asked to
+    cancel (idempotent; skipped when the order was never submitted and so has no
+    broker id), then the order transitions to ``CANCELED``.
+    """
+
+    order = await store.get_order(order_id)
+    if order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"order {order_id} not found",
+        )
+    if order.status in _TERMINAL_ORDER_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"order {order_id} is already {order.status.value}; cannot cancel",
+        )
+
+    # Cancel at the broker first. A not-yet-submitted order (CREATED, no broker
+    # id) has nothing at the broker to cancel — just transition it locally.
+    if order.broker_order_id is not None:
+        await adapter.cancel_order(order.broker_order_id)
+
+    try:
+        return await store.transition_order(order_id, OrderStatus.CANCELED)
+    except UnknownEntityError as exc:  # pragma: no cover - fetched above
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except OrderTransitionError as exc:
+        # Raced to a terminal state between the check and the transition.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
 
 
 @router.get("/events", response_model=list[Event])

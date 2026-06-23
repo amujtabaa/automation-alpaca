@@ -252,6 +252,15 @@ class SqliteStateStore(StateStore):
         if "session_id" not in fill_cols:  # added in D-007
             conn.execute("ALTER TABLE fills ADD COLUMN session_id TEXT")
 
+        order_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()
+        }
+        if "broker_order_id" not in order_cols:  # added in Phase 4 (D-011)
+            # The Alpaca order UUID, set on submission and used to poll/cancel.
+            # Fresh DBs already get this column from SCHEMA; this guard only fires
+            # on an orders table created before the column existed.
+            conn.execute("ALTER TABLE orders ADD COLUMN broker_order_id TEXT")
+
     async def close(self) -> None:
         async with self._lock:
             if self._conn is not None:
