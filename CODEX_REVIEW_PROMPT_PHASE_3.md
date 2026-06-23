@@ -14,6 +14,24 @@ yet**. Treat the safety invariants below as load-bearing: a violation that lets
 position, orders, or fills drift from their intended truth is a **BLOCKER**, even
 if all tests pass.
 
+> ## ⚠️ Ground rules — READ-ONLY review; the deliverable is a markdown report
+>
+> - **Do NOT modify any code, tests, configs, or docs.** You are reviewing, not
+>   fixing. Do not edit files, do not stage/commit, do not open a PR, do not run
+>   formatters/linters that rewrite files. The only file you may **create** is
+>   your report (below).
+> - **You MAY — and should — recommend fixes.** For each finding, describe the
+>   concrete fix in prose and, where it helps, a short *illustrative* diff
+>   sketch or code snippet **inside the report**. These are recommendations for a
+>   separate engineer to apply and verify — never apply them yourself.
+> - **Throwaway probe scripts are fine** (write them under a temp/scratch dir or
+>   run them inline). They are how you verify findings. They must not touch the
+>   repo's tracked files.
+> - **Deliverable:** a single markdown file at the repo root named
+>   **`CODEX_REVIEW_FINDINGS_PHASE_3.md`**, in the format specified in §8. That
+>   file is the entire output of this task; a human reviewer will read it and
+>   decide what to apply.
+
 ---
 
 ## 0. Operating method — run this as a LOOP, not a single read
@@ -277,15 +295,26 @@ truth?), anything in the cockpit thin-client boundary, and test vacuity.
 
 ## 8. Output format
 
-Produce a single report:
+Write your entire output to a **new markdown file at the repo root named
+`CODEX_REVIEW_FINDINGS_PHASE_3.md`** (create only this file; change nothing
+else). Structure it as follows.
+
+Start with a short **summary table** (severity counts + one-line verdict), then
+the detailed findings.
 
 For **each finding**:
-- **Severity** — BLOCKER / MAJOR / MINOR / NIT (rubric below).
+- **ID + Severity** — e.g. `F1 — MAJOR` (BLOCKER / MAJOR / MINOR / NIT; rubric
+  below).
 - **One-line summary.**
 - **Location** — real `file:line` (opened, not guessed).
-- **Reproduction** — the minimal script/test and its observed output.
-- **Observed vs expected**, and **why it matters** (which rule/decision/contract).
-- **Suggested fix** — concrete.
+- **Reproduction** — the minimal script/test and its observed output (paste the
+  actual output).
+- **Observed vs expected**, and **why it matters** (cite the specific
+  rule/decision/contract).
+- **Recommended fix** — concrete prose, plus an *illustrative* diff sketch or
+  snippet if it clarifies. Recommendation only — do **not** apply it.
+- **Confidence** — note if anything is an UNVERIFIED hypothesis vs. a reproduced
+  defect.
 
 Severity rubric:
 - **BLOCKER** — violates a safety invariant (position/order/fill truth), data
