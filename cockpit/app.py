@@ -172,18 +172,93 @@ def screen_watchlist() -> None:
 
 def screen_candidates() -> None:
     st.header("Candidate Monitor")
-    st.caption("Strategy-generated candidates awaiting review. Candidate "
-               "generation arrives in Phase 3 — empty until then.")
+    st.caption(
+        "Proposals awaiting human review — the Approval Gate's human-in-the-loop "
+        "mode. Approving a candidate creates a **paper** order record (no live "
+        "trading; nothing is sent to a broker yet). Rejecting dismisses it."
+    )
+
+    with st.expander("➕ Inject mock candidate (dev)"):
+        st.caption(
+            "DEV/MOCK scaffolding — Phase 5's Strategy Engine replaces this. "
+            "Use it to inject a candidate so the approve/reject flow is "
+            "exercisable now."
+        )
+        with st.form("inject_candidate", clear_on_submit=True):
+            symbol_input = st.text_input("Symbol", placeholder="AAPL")
+            qty_input = st.number_input("Suggested quantity", min_value=1, value=10, step=1)
+            inject_submitted = st.form_submit_button("Inject candidate")
+        if inject_submitted:
+            sym = symbol_input.strip().upper()
+            if not sym:
+                st.warning("Symbol is required.")
+            else:
+                try:
+                    api_client.create_mock_candidate(sym, suggested_quantity=int(qty_input))
+                    st.toast(f"Mock candidate injected for {sym}")
+                    st.rerun()
+                except BackendError as exc:
+                    st.error(str(exc))
+
+    st.divider()
     try:
         candidates = api_client.list_candidates()
     except BackendError as exc:
         st.error(str(exc))
         return
+
     if not candidates:
-        st.info("No candidates yet. The strategy engine (Phase 5) will populate "
-                "this once candidate generation (Phase 3) is built.")
+        st.info(
+            "No candidates yet. Inject one above (dev) or wait for the "
+            "strategy engine in Phase 5."
+        )
         return
-    st.dataframe(candidates, width='stretch', hide_index=True)
+
+    st.subheader(f"Candidates ({len(candidates)})")
+
+    # Column widths: symbol, status, strategy, reason, qty, price, actions
+    hdr = st.columns([2, 2, 2, 4, 1, 2, 3])
+    hdr[0].markdown("**Symbol**")
+    hdr[1].markdown("**Status**")
+    hdr[2].markdown("**Strategy**")
+    hdr[3].markdown("**Reason**")
+    hdr[4].markdown("**Qty**")
+    hdr[5].markdown("**Limit price**")
+    hdr[6].markdown("**Action**")
+
+    for candidate in candidates:
+        cid = candidate["id"]
+        symbol = candidate.get("symbol", "—")
+        status = candidate.get("status", "—")
+        strategy = candidate.get("strategy") or "—"
+        reason = candidate.get("reason") or "—"
+        qty = candidate.get("suggested_quantity", "—")
+        price = candidate.get("suggested_limit_price")
+        price_display = f"${price:.2f}" if price is not None else "—"
+
+        row = st.columns([2, 2, 2, 4, 1, 2, 3])
+        row[0].write(symbol)
+        row[1].write(status)
+        row[2].write(strategy)
+        row[3].write(reason)
+        row[4].write(str(qty))
+        row[5].write(price_display)
+
+        if status == "pending":
+            with row[6]:
+                btn_cols = st.columns(2)
+                if btn_cols[0].button("Approve", key=f"approve_{cid}", type="primary"):
+                    _do(
+                        lambda cid=cid: api_client.approve_candidate(cid),
+                        f"{symbol} approved → ordered",
+                    )
+                if btn_cols[1].button("Reject", key=f"reject_{cid}"):
+                    _do(
+                        lambda cid=cid: api_client.reject_candidate(cid),
+                        f"{symbol} rejected",
+                    )
+        else:
+            row[6].write(status)
 
 
 def screen_positions() -> None:

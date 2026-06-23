@@ -68,11 +68,35 @@ def remove_watchlist(symbol: str) -> None:
     _request("DELETE", f"/api/watchlist/{symbol}")
 
 
-# --- Read-only trading views ---------------------------------------------- #
+# --- Candidates ----------------------------------------------------------- #
 def list_candidates() -> list[dict]:
     return _request("GET", "/api/candidates")
 
 
+def get_candidate(candidate_id: str) -> dict:
+    return _request("GET", f"/api/candidates/{candidate_id}")
+
+
+def approve_candidate(candidate_id: str) -> dict:
+    return _request("POST", f"/api/candidates/{candidate_id}/approve")
+
+
+def reject_candidate(candidate_id: str) -> dict:
+    return _request("POST", f"/api/candidates/{candidate_id}/reject")
+
+
+def create_mock_candidate(symbol: str, suggested_quantity: int = 10,
+                          suggested_limit_price: float = 1.0) -> dict:
+    """DEV/MOCK scaffolding: inject a candidate so the review flow is exercisable
+    before Phase 5's Strategy Engine exists."""
+    return _request("POST", "/api/dev/candidates", json={
+        "symbol": symbol,
+        "suggested_quantity": suggested_quantity,
+        "suggested_limit_price": suggested_limit_price,
+    })
+
+
+# --- Read-only trading views ---------------------------------------------- #
 def list_positions() -> list[dict]:
     return _request("GET", "/api/positions")
 

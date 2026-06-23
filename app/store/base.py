@@ -107,6 +107,17 @@ class SessionAlreadyClosedError(StoreError):
     """
 
 
+class SessionClosedError(StoreError):
+    """A candidate/order mutation was attempted against a *closed* session.
+
+    Closing a session ends the trading day (D-009). New candidates may not be
+    created in a closed session, and an approved candidate in a closed session
+    may not be dispatched to an order — both would mutate history *after* the
+    point-in-time review snapshot was captured. Distinct from
+    :class:`SessionAlreadyClosedError`, which is specifically about re-closing.
+    """
+
+
 @dataclass(frozen=True)
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.
@@ -227,6 +238,37 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
     ) -> Order:
         ...
+
+    @abstractmethod
+    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+        """Atomic ``APPROVED → ORDERED`` handoff — the candidate→order dispatch.
+
+        ``docs/02_DATA_AND_PERSISTENCE.md`` lists *"candidate approval + order
+        creation + audit event"* as one atomic group, so this is a single store
+        operation (one SQL transaction in :class:`SqliteStateStore`; one lock
+        acquisition in :class:`InMemoryStateStore`), not two sequential calls.
+        It is deliberately separate from ``transition_candidate`` and from the
+        Approval Gate: the ``ordered`` transition is never buried inside either
+        (Phase 3 prompt §3 / D-006).
+
+        On an ``APPROVED`` candidate it: creates the paper order (a long-only
+        ``BUY`` ``LIMIT`` order whose quantity/limit come from the candidate's
+        ``suggested_quantity`` / ``suggested_limit_price``), transitions the
+        candidate to ``ORDERED`` linking the new order, and writes both the
+        ``order_created`` and ``candidate_transition`` audit events — all
+        atomically. No network call (Phase 4 submits to Alpaca).
+
+        **Idempotent:** a candidate already ``ORDERED`` returns its existing order
+        and writes nothing (no second order). This is what keeps the approve
+        endpoint idempotent.
+
+        Raises :class:`UnknownEntityError` if the candidate does not exist;
+        :class:`CandidateTransitionError` if it is not ``APPROVED`` (e.g. still
+        ``PENDING``, or ``REJECTED``/``EXPIRED``); :class:`InvalidOrderError` if it
+        carries no positive ``suggested_quantity`` to size the order. This is
+        where the *approved-only* rule that ``create_order`` deliberately deferred
+        (D-010) is finally enforced.
+        """
 
     @abstractmethod
     async def list_orders(

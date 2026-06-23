@@ -46,6 +46,22 @@ class HealthResponse(BaseModel):
     time: datetime
 
 
+class MockCandidateCreate(BaseModel):
+    """Body for POST /api/dev/candidates — DEV/MOCK scaffolding only.
+
+    A minimal way to inject a candidate so the review flow is exercisable before
+    Phase 5's real Strategy Engine exists. NOT strategy logic; Phase 5 replaces it.
+    """
+
+    symbol: str = Field(min_length=1)
+    strategy: Optional[str] = "mock"
+    reason: Optional[str] = "injected mock candidate for manual testing"
+    suggested_quantity: int = Field(default=10, gt=0)
+    # Non-optional: a JSON ``null`` must be rejected (422), not accepted and then
+    # turned into a LIMIT order with no price. ``gt=0`` rejects zero/negative.
+    suggested_limit_price: float = Field(default=1.00, gt=0)
+
+
 class ReviewResponse(BaseModel):
     """Everything needed to review one session (current or a past date)."""
 

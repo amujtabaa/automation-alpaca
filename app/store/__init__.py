@@ -12,6 +12,7 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     SessionAlreadyClosedError,
+    SessionClosedError,
     StateStore,
     StoreError,
     UnknownEntityError,
@@ -27,6 +28,7 @@ __all__ = [
     "StoreError",
     "CandidateTransitionError",
     "SessionAlreadyClosedError",
+    "SessionClosedError",
     "UnknownEntityError",
     "create_state_store",
 ]
