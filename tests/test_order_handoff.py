@@ -14,6 +14,7 @@ from app.models import CandidateStatus, OrderSide, OrderStatus, OrderType
 from app.store.base import (
     CandidateTransitionError,
     InvalidOrderError,
+    SessionClosedError,
     UnknownEntityError,
 )
 
@@ -139,3 +140,44 @@ async def test_handoff_rejects_non_positive_quantity(any_store, bad_qty):
     with pytest.raises(InvalidOrderError):
         await any_store.create_order_for_candidate(candidate.id)
     assert await any_store.list_orders() == []
+
+
+# A LIMIT order must never be persisted without a positive limit price (F1).
+@pytest.mark.parametrize("bad_price", [None, 0, -1.0])
+async def test_handoff_rejects_non_positive_limit_price(any_store, bad_price):
+    await any_store.initialize()
+    candidate = await any_store.create_candidate(
+        "AAPL", suggested_quantity=10, suggested_limit_price=bad_price
+    )
+    await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
+    with pytest.raises(InvalidOrderError):
+        await any_store.create_order_for_candidate(candidate.id)
+    # Rejected before any state changed: no order, candidate stays APPROVED.
+    assert await any_store.list_orders() == []
+    assert (
+        await any_store.get_candidate(candidate.id)
+    ).status is CandidateStatus.APPROVED
+
+
+# No new candidates may be created in a closed session (D-009 / F2).
+async def test_create_candidate_refused_in_closed_session(any_store):
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    await any_store.close_session(session.id)
+
+    # Explicit closed session_id is refused ...
+    with pytest.raises(SessionClosedError):
+        await any_store.create_candidate(
+            "AAPL",
+            suggested_quantity=10,
+            suggested_limit_price=1.0,
+            session_id=session.id,
+        )
+    # ... and so is the default path, which resolves to the closed session
+    # post-close (D-009 keeps the day's session closed, no auto-create).
+    with pytest.raises(SessionClosedError):
+        await any_store.create_candidate(
+            "AAPL", suggested_quantity=10, suggested_limit_price=1.0
+        )
+    # Nothing was created either way.
+    assert await any_store.list_candidates() == []

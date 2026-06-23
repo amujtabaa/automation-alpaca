@@ -24,11 +24,18 @@ from app.store.base import (
 
 router = APIRouter(prefix="/api", tags=["candidates"])
 
+# Store/gate errors the candidate endpoints translate to HTTP. Anything else is
+# a genuine bug and is left to surface as a 500.
+_MAPPED_ERRORS = (
+    UnknownEntityError,
+    CandidateTransitionError,
+    InvalidOrderError,
+)
+
 
 def _http_error(exc: StoreError) -> HTTPException:
     """Map a known store/gate error to its HTTP status.
 
-    Only the three errors the candidate endpoints catch reach here:
     ``UnknownEntityError`` → 404; ``CandidateTransitionError`` /
     ``InvalidOrderError`` → 409. Any *other* store error is left to propagate as
     a 500 — it signals a genuine bug, not a client mistake. Returning (not
@@ -94,9 +101,10 @@ async def approve_candidate(
     from the gate by design — D-006). To stop a failed dispatch from stranding a
     candidate at ``approved`` (a state the candidate machine can only leave via
     ``ordered`` or a session-close expiry), the candidate is checked for
-    dispatchability *before* it is approved: a candidate with no positive
-    ``suggested_quantity`` is rejected up front (422) and stays ``pending`` —
-    still rejectable — rather than being approved into a dead end.
+    dispatchability *before* it is approved: a candidate that cannot be sized
+    into a valid LIMIT order — no positive ``suggested_quantity`` **or** no
+    positive ``suggested_limit_price`` — is rejected up front (422) and stays
+    ``pending`` (still rejectable) rather than being approved into a dead end.
     """
 
     candidate = await store.get_candidate(candidate_id)
@@ -106,22 +114,25 @@ async def approve_candidate(
             detail=f"candidate {candidate_id} not found",
         )
     # Dispatchability pre-check (see docstring). Skip it for an already-ordered
-    # candidate: re-approving it is an idempotent no-op that needs no quantity.
+    # candidate: re-approving it is an idempotent no-op that needs no sizing.
     if candidate.status is not CandidateStatus.ORDERED and not (
-        candidate.suggested_quantity and candidate.suggested_quantity > 0
+        candidate.suggested_quantity
+        and candidate.suggested_quantity > 0
+        and candidate.suggested_limit_price
+        and candidate.suggested_limit_price > 0
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"candidate {candidate_id} cannot be ordered: no positive "
-                f"suggested_quantity"
+                f"candidate {candidate_id} cannot be ordered: a positive "
+                f"suggested_quantity and suggested_limit_price are required"
             ),
         )
 
     try:
         await gate.approve(candidate_id)
         await store.create_order_for_candidate(candidate_id)
-    except (UnknownEntityError, CandidateTransitionError, InvalidOrderError) as exc:
+    except _MAPPED_ERRORS as exc:
         raise _http_error(exc) from exc
 
     # The candidate exists (fetched above) and is never deleted, so the refreshed
@@ -140,5 +151,5 @@ async def reject_candidate(
 
     try:
         return await gate.reject(candidate_id)
-    except (UnknownEntityError, CandidateTransitionError, InvalidOrderError) as exc:
+    except _MAPPED_ERRORS as exc:
         raise _http_error(exc) from exc

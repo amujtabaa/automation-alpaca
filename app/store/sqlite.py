@@ -57,6 +57,7 @@ from app.store.base import (
     InvalidOrderError,
     OrderTransitionError,
     SessionAlreadyClosedError,
+    SessionClosedError,
     StateStore,
     UnknownEntityError,
     normalize_symbol,
@@ -589,7 +590,21 @@ class SqliteStateStore(StateStore):
             # Default to the active session so close/expiry and date-scoped
             # review see this candidate (Fix 7). An explicit session_id wins.
             if session_id is None:
-                session_id = self._ensure_current_session_locked().id
+                session = self._ensure_current_session_locked()
+                session_id = session.id
+            else:
+                row = self._read_one(
+                    "SELECT * FROM sessions WHERE id = ?", (session_id,)
+                )
+                session = self._session(row) if row is not None else None
+            # No new candidates in a closed session (D-009 / F2): the trading day
+            # is over, and a post-close candidate would sit outside the captured
+            # review snapshot. Guard at the store boundary so every future
+            # producer (Phase 5) is covered, not only the dev route.
+            if session is not None and session.status is SessionStatus.CLOSED:
+                raise SessionClosedError(
+                    f"session {session_id} is closed; cannot create candidate"
+                )
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -819,6 +834,14 @@ class SqliteStateStore(StateStore):
                     f"candidate {candidate_id} has no positive suggested_quantity "
                     f"to size an order"
                 )
+            # A LIMIT order requires a positive limit price (F1): never persist a
+            # LIMIT order with a missing/zero/negative price.
+            limit_price = candidate.suggested_limit_price
+            if limit_price is None or limit_price <= 0:
+                raise InvalidOrderError(
+                    f"candidate {candidate_id} has no positive "
+                    f"suggested_limit_price for a limit order"
+                )
             # Long-only buy proposal (beta). Order type LIMIT; session order-type
             # policy (Rule 12) is enforced later, not here.
             order = Order(
@@ -827,7 +850,7 @@ class SqliteStateStore(StateStore):
                 side=OrderSide.BUY,
                 order_type=OrderType.LIMIT,
                 quantity=qty,
-                limit_price=candidate.suggested_limit_price,
+                limit_price=limit_price,
                 session_id=candidate.session_id,
             )
             now = utcnow()

@@ -107,6 +107,17 @@ class SessionAlreadyClosedError(StoreError):
     """
 
 
+class SessionClosedError(StoreError):
+    """A candidate/order mutation was attempted against a *closed* session.
+
+    Closing a session ends the trading day (D-009). New candidates may not be
+    created in a closed session, and an approved candidate in a closed session
+    may not be dispatched to an order — both would mutate history *after* the
+    point-in-time review snapshot was captured. Distinct from
+    :class:`SessionAlreadyClosedError`, which is specifically about re-closing.
+    """
+
+
 @dataclass(frozen=True)
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.

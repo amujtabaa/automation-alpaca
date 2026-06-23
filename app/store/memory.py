@@ -44,6 +44,7 @@ from app.store.base import (
     InvalidOrderError,
     OrderTransitionError,
     SessionAlreadyClosedError,
+    SessionClosedError,
     StateStore,
     UnknownEntityError,
     normalize_symbol,
@@ -224,7 +225,20 @@ class InMemoryStateStore(StateStore):
             # Default to the active session so close/expiry and date-scoped
             # review see this candidate (Fix 7). An explicit session_id wins.
             if session_id is None:
-                session_id = self._ensure_current_session_unlocked().id
+                session = self._ensure_current_session_unlocked()
+                session_id = session.id
+            else:
+                session = next(
+                    (s for s in self._sessions if s.id == session_id), None
+                )
+            # No new candidates in a closed session (D-009 / F2): the trading day
+            # is over, and a post-close candidate would sit outside the captured
+            # review snapshot. Guard at the store boundary so every future
+            # producer (Phase 5) is covered, not only the dev route.
+            if session is not None and session.status is SessionStatus.CLOSED:
+                raise SessionClosedError(
+                    f"session {session_id} is closed; cannot create candidate"
+                )
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -388,6 +402,14 @@ class InMemoryStateStore(StateStore):
                     f"candidate {candidate_id} has no positive suggested_quantity "
                     f"to size an order"
                 )
+            # A LIMIT order requires a positive limit price (F1): never persist a
+            # LIMIT order with a missing/zero/negative price.
+            limit_price = candidate.suggested_limit_price
+            if limit_price is None or limit_price <= 0:
+                raise InvalidOrderError(
+                    f"candidate {candidate_id} has no positive "
+                    f"suggested_limit_price for a limit order"
+                )
             # Long-only buy proposal (beta). Order type LIMIT; session order-type
             # policy (Rule 12) is enforced later, not here.
             order = Order(
@@ -396,35 +418,49 @@ class InMemoryStateStore(StateStore):
                 side=OrderSide.BUY,
                 order_type=OrderType.LIMIT,
                 quantity=qty,
-                limit_price=candidate.suggested_limit_price,
+                limit_price=limit_price,
                 session_id=candidate.session_id,
             )
-            self._orders[order.id] = order
-            # APPROVED -> ORDERED, linking the order. One lock acquisition covers
-            # the order insert, the candidate transition, and both audit events:
-            # all-or-nothing, like SqliteStateStore's single transaction.
+            # APPROVED -> ORDERED, linking the order. The lock serializes other
+            # coroutines, but this block must also be all-or-nothing if a write
+            # raises mid-way (F3) — so mutate a candidate *copy* and commit the
+            # order/candidate/events together, rolling back on any failure. This
+            # matches SqliteStateStore's single-transaction guarantee for the
+            # "candidate approval + order creation + audit event" group (docs/02).
             now = utcnow()
-            candidate.status = CandidateStatus.ORDERED
-            candidate.order_id = order.id
-            candidate.updated_at = now
-            candidate.ordered_at = now
-            self._append_event_unlocked(
-                "order_created",
-                message=f"order created for {candidate.symbol}",
-                symbol=candidate.symbol,
-                candidate_id=candidate_id,
-                order_id=order.id,
-                session_id=candidate.session_id,
-            )
-            self._append_event_unlocked(
-                "candidate_transition",
-                message="candidate approved -> ordered",
-                symbol=candidate.symbol,
-                candidate_id=candidate_id,
-                order_id=order.id,
-                payload={"from": "approved", "to": "ordered"},
-                session_id=candidate.session_id,
-            )
+            updated = candidate.model_copy(deep=True)
+            updated.status = CandidateStatus.ORDERED
+            updated.order_id = order.id
+            updated.updated_at = now
+            updated.ordered_at = now
+            events_before = len(self._events)
+            try:
+                self._orders[order.id] = order
+                self._candidates[candidate_id] = updated
+                self._append_event_unlocked(
+                    "order_created",
+                    message=f"order created for {candidate.symbol}",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate_id,
+                    order_id=order.id,
+                    session_id=candidate.session_id,
+                )
+                self._append_event_unlocked(
+                    "candidate_transition",
+                    message="candidate approved -> ordered",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate_id,
+                    order_id=order.id,
+                    payload={"from": "approved", "to": "ordered"},
+                    session_id=candidate.session_id,
+                )
+            except BaseException:
+                # Restore the pre-handoff state: drop the order, restore the
+                # original candidate, and truncate any events appended so far.
+                self._orders.pop(order.id, None)
+                self._candidates[candidate_id] = candidate
+                del self._events[events_before:]
+                raise
             return order.model_copy(deep=True)
 
     async def list_orders(

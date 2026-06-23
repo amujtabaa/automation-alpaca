@@ -54,7 +54,9 @@ async def test_approve_is_idempotent(store):
 
 async def test_approve_after_ordered_is_noop_success(store):
     gate = HumanApprovalGate(store)
-    candidate = await store.create_candidate("AAPL", suggested_quantity=10)
+    candidate = await store.create_candidate(
+        "AAPL", suggested_quantity=10, suggested_limit_price=1.0
+    )
     await gate.approve(candidate.id)
     await store.create_order_for_candidate(candidate.id)  # now ORDERED
     # Re-approving a dispatched candidate succeeds as a no-op rather than erroring
