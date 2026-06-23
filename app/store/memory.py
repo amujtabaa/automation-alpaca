@@ -484,6 +484,36 @@ class InMemoryStateStore(StateStore):
                 raise
             return order.model_copy(deep=True)
 
+    async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
+        async with self._lock:
+            candidate = self._candidates.get(candidate_id)
+            if candidate is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            # No-op unless the candidate is genuinely stranded APPROVED-with-no-
+            # order: never disturb one that became ORDERED, or a PENDING one.
+            if (
+                candidate.status is not CandidateStatus.APPROVED
+                or candidate.order_id is not None
+            ):
+                return candidate.model_copy(deep=True)
+            now = utcnow()
+            candidate.status = CandidateStatus.PENDING
+            candidate.approved_at = None
+            candidate.updated_at = now
+            self._append_event_unlocked(
+                "candidate_transition",
+                message="candidate approved -> pending (dispatch blocked)",
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                payload={
+                    "from": "approved",
+                    "to": "pending",
+                    "reason": "dispatch_blocked",
+                },
+                session_id=candidate.session_id,
+            )
+            return candidate.model_copy(deep=True)
+
     async def list_orders(
         self,
         *,

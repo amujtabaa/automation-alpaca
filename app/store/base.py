@@ -305,6 +305,20 @@ class StateStore(ABC):
         """
 
     @abstractmethod
+    async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
+        """Atomically revert ``APPROVED → PENDING`` when dispatch was refused.
+
+        Recovery for the approve/dispatch race (D-013): if a safety control flips
+        between the approve transition and the order-creation handoff, the store
+        refuses the order (``OrderIntentBlockedError``) but the candidate is
+        already ``APPROVED`` — stranded ``APPROVED`` with no order under a safety
+        stop. The approve route calls this to put it back to ``PENDING`` (still
+        rejectable / re-approvable). Acts **only** on an ``APPROVED`` candidate
+        with no linked order; otherwise it is an idempotent no-op (so a candidate
+        that actually became ``ORDERED`` is never disturbed). Atomic + audited.
+        """
+
+    @abstractmethod
     async def list_orders(
         self,
         *,

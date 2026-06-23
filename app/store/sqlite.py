@@ -933,6 +933,45 @@ class SqliteStateStore(StateStore):
                 )
             return order
 
+    async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
+            )
+            if row is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            candidate = self._candidate(row)
+            # No-op unless genuinely stranded APPROVED-with-no-order.
+            if (
+                candidate.status is not CandidateStatus.APPROVED
+                or candidate.order_id is not None
+            ):
+                return candidate
+            now = utcnow()
+            with self._tx() as cur:
+                cur.execute(
+                    "UPDATE candidates SET status=?, approved_at=?, updated_at=? "
+                    "WHERE id=?",
+                    (CandidateStatus.PENDING.value, None, _dt(now), candidate_id),
+                )
+                self._insert_event(
+                    cur,
+                    "candidate_transition",
+                    message="candidate approved -> pending (dispatch blocked)",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate.id,
+                    payload={
+                        "from": "approved",
+                        "to": "pending",
+                        "reason": "dispatch_blocked",
+                    },
+                    session_id=candidate.session_id,
+                )
+            candidate.status = CandidateStatus.PENDING
+            candidate.approved_at = None
+            candidate.updated_at = now
+            return candidate
+
     def _insert_order(self, cur: sqlite3.Cursor, o: Order) -> None:
         cur.execute(
             """INSERT INTO orders
