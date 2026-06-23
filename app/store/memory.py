@@ -173,12 +173,18 @@ class InMemoryStateStore(StateStore):
             if session.session_date == today:
                 return session
         session = SessionRecord(session_date=today, mode=TradingMode.PAPER)
-        self._sessions.append(session)
-        self._append_event_unlocked(
-            "session_opened",
-            message=f"session opened for {today}",
-            session_id=session.id,
-        )
+        # Self-atomic so a caller that auto-creates today's session OUTSIDE its
+        # own _atomic block (e.g. create_candidate) can't leak a half-created
+        # session if the session_opened event write fails — matches SQLite, where
+        # _ensure_current_session_locked wraps both writes in one _tx. _atomic
+        # nests safely inside a caller that is already atomic.
+        with self._atomic():
+            self._sessions.append(session)
+            self._append_event_unlocked(
+                "session_opened",
+                message=f"session opened for {today}",
+                session_id=session.id,
+            )
         return session
 
     def _fills_for_symbol_unlocked(self, symbol: str) -> list[Fill]:

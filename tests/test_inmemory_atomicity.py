@@ -123,6 +123,20 @@ async def test_transition_candidate_rolls_back_on_audit_failure(store):
     ).status is CandidateStatus.PENDING
 
 
+async def test_ensure_session_autocreate_rolls_back_on_audit_failure(store):
+    # create_candidate auto-creates today's session via _ensure (outside its own
+    # candidate _atomic block). If the session_opened event fails, no half-created
+    # session may leak — parity with SQLite, which wraps both in one transaction.
+    restore = _raise_on(store, "session_opened")
+    with pytest.raises(RuntimeError):
+        await store.create_candidate(
+            "AAPL", suggested_quantity=10, suggested_limit_price=1.0
+        )
+    restore()
+    assert await store.list_sessions() == []  # no half-created session
+    assert await store.list_candidates() == []
+
+
 async def test_close_session_rolls_back_on_audit_failure(store):
     # A session with an open candidate and a real position to snapshot.
     order = await _ordered(store)

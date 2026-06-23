@@ -9,8 +9,10 @@ satisfy ``docs/02_DATA_AND_PERSISTENCE.md``:
   crash mid-write can't leave the audit trail inconsistent with the state it
   describes.
 * **Append-only fills** — there is no UPDATE or DELETE issued against ``fills``
-  anywhere in this file. ``source_fill_id`` carries a UNIQUE constraint; SQLite
-  treats NULLs as distinct, so it means "unique when present".
+  anywhere in this file. Duplicate protection is a **partial composite** unique
+  index ``idx_fills_order_source`` on ``(order_id, source_fill_id)`` WHERE
+  ``source_fill_id IS NOT NULL`` (Item 5 / F1) — per-order, so two different
+  orders may legitimately report the same ``source_fill_id``; NULLs are exempt.
 * **Position is derived** — there is no positions table; positions are folded
   from the fill rows via the shared :func:`app.position.fold_fills`, the exact
   same code path the in-memory store uses (Rule 7).
@@ -250,7 +252,12 @@ class SqliteStateStore(StateStore):
                 "ON fills(session_id)"
             )
             # Per-(order_id, source_fill_id) dedup (Item 5). Partial index so the
-            # uniqueness applies only when source_fill_id is present.
+            # uniqueness applies only when source_fill_id is present. This CREATE
+            # can only fail if the existing rows already contain a duplicate
+            # (order_id, source_fill_id) pair — impossible for any DB this code
+            # ever produced, because every prior schema enforced the *stricter*
+            # column-level UNIQUE on source_fill_id alone. It fails closed (no
+            # silent data change) if a hand-crafted DB ever violated that.
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_order_source "
                 "ON fills(order_id, source_fill_id) "
