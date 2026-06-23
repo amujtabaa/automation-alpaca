@@ -151,7 +151,9 @@ POST   /api/candidates/{candidate_id}/reject
 
 GET    /api/positions
 GET    /api/positions/{symbol}
-POST   /api/positions/{symbol}/flatten
+POST   /api/positions/{symbol}/flatten  # Phase 7 (Sell-Side Protection); not yet
+                                         # implemented — cockpit button is a
+                                         # disabled placeholder until then
 
 GET    /api/orders
 GET    /api/orders/{order_id}

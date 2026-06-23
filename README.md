@@ -4,13 +4,14 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit
 (a disposable UI client) + local SQLite persistence.
 
-> **Beta safety:** no live trading, no real credentials, no Alpaca network calls
-> anywhere in this repo yet. The backend owns strategy/risk/order/fill/position
-> state; the cockpit only renders it and issues API calls. See
-> [`docs/01_ARCHITECTURE.md`](docs/01_ARCHITECTURE.md) for the non-negotiable
-> rules.
+> **Beta safety:** no live trading, **paper account only**, no real credentials
+> (paper keys only, env-gated). The Alpaca adapter only ever constructs a *paper*
+> `TradingClient`, and only when paper keys are configured. The backend owns
+> strategy/risk/order/fill/position state; the cockpit only renders it and issues
+> API calls. See [`docs/01_ARCHITECTURE.md`](docs/01_ARCHITECTURE.md) for the
+> non-negotiable rules.
 
-## What's built (Phase 1 + 1.5 + 2 + 3)
+## What's built (Phases 1–4)
 
 - **FastAPI backend skeleton** — `GET /api/health`, `GET /api/session`, watchlist
   CRUD, read-only order/position/event views, `GET /api/review`, and
@@ -24,18 +25,27 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
   Approve/reject run through a pluggable **`ApprovalGate`** interface whose only
   beta mode is human-in-the-loop (a future automatic mode drops in behind the
   same seam). Approving runs the atomic `approved → ordered` handoff — it creates
-  a **paper order record** (no broker call; submission is Phase 4) and never
-  touches position (only fills do). A clearly-labelled dev endpoint
-  (`POST /api/dev/candidates`) injects mock candidates so the flow is exercisable
-  before the Strategy Engine exists.
-- **Thin Streamlit cockpit** — five screens; Watchlist and the Candidate Monitor
-  (list + approve/reject) are fully functional, the rest render real (currently
-  empty) backend data.
+  a **paper order record** and never touches position (only fills do). A
+  clearly-labelled dev endpoint (`POST /api/dev/candidates`) injects mock
+  candidates so the flow is exercisable before the Strategy Engine exists.
+- **Alpaca Paper Adapter + monitoring loop (Phase 4)** — a background loop submits
+  `ORDERED` orders to **Alpaca Paper** (paper only), polls order status on a fixed
+  cadence, appends fills (dedup'd per order), reconciles to terminal, surfaces
+  unfilled-timeout staleness, and supports manual cancel (with a non-terminal
+  `cancel_pending` state). The kill switch / pause-buys controls are **enforced**
+  on the order path — order intent is refused at creation and submission is held
+  while engaged, gated on each order's own session. See the
+  [Phase 4 section](#phase-4--alpaca-paper-adapter) below.
+- **Thin Streamlit cockpit** — five screens; Watchlist, the Candidate Monitor
+  (list + approve/reject), and the Position/Order monitor (with cancel) are
+  functional; the rest render real backend data.
 
 Not yet built (later phases, deliberately out of scope here): strategy-driven
-candidate generation (Phase 5), the Alpaca paper adapter (Phase 4), CAPI risk
-logic incl. kill-switch enforcement on order intent (Phase 6), and sell-side
-protection (Phase 7). See
+candidate generation (Phase 5), CAPI risk **sizing** (max shares / notional /
+exposure — Phase 6; the on/off kill-switch & pause-buys controls are already
+enforced on the order path), and sell-side protection / position **flatten**
+(Phase 7 — the `/positions/{symbol}/flatten` endpoint and its cockpit button are
+placeholders until then). See
 [`docs/04_IMPLEMENTATION_PLAN.md`](docs/04_IMPLEMENTATION_PLAN.md).
 
 ## Project structure
@@ -93,7 +103,7 @@ Environment variables (optional):
 | -------------------- | ---------------- | --------------------------------------------- |
 | `STATE_STORE`        | `sqlite`         | `sqlite` (durable) or `memory` (ephemeral)    |
 | `ALPACA_DB_PATH`     | `./data/app.db`  | SQLite file location                          |
-| `ENABLE_DEV_ROUTES`  | `true`           | mount the dev mock-candidate injection routes |
+| `ENABLE_DEV_ROUTES`  | _(auto)_         | mount the dev mock-candidate injection routes; defaults **on** when no paper keys are set, **off** once they are (an explicit `true`/`false` always wins) |
 
 ## Run the cockpit
 

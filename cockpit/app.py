@@ -67,8 +67,9 @@ def _backend_banner() -> bool:
 def screen_session_control() -> None:
     st.header("Session Control")
     st.caption(
-        "Mode is **paper** only (beta). Controls below persist a flag on the "
-        "backend session; enforcement on order intent comes later."
+        "Mode is **paper** only (beta). The kill switch and pause-buys are "
+        "**enforced** on the order path — new order intent is refused and order "
+        "submission is held while engaged. (CAPI risk sizing is Phase 6.)"
     )
     try:
         session = api_client.get_session()
@@ -329,7 +330,10 @@ def screen_positions() -> None:
                     "Flatten",
                     key=f"flatten_{sym}",
                     disabled=True,
-                    help="Sell-side exits arrive in Phase 7",
+                    help=(
+                        "Placeholder — position flatten is wired in Phase 7 "
+                        "(Sell-Side Protection owns exits); not functional yet."
+                    ),
                 )
 
     st.divider()
