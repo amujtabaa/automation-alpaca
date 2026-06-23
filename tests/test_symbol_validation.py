@@ -71,3 +71,17 @@ def test_watchlist_rejects_bad_symbol_with_422():
     with TestClient(app) as c:
         resp = c.post("/api/watchlist", json={"symbol": "BAD SYMBOL!!", "armed": False})
         assert resp.status_code == 422
+
+
+def test_get_position_rejects_bad_symbol_with_422():
+    # CORR-1: tightening normalize_symbol (DATA-2) must not leak a 500 on the
+    # positions read path — it gets the same 422 as the watchlist routes.
+    app = create_app(InMemoryStateStore())
+    with TestClient(app) as c:
+        resp = c.get("/api/positions/foo$bar")
+        assert resp.status_code == 422
+    # A valid-but-unheld symbol still returns a flat position (200), not 422.
+    with TestClient(app) as c:
+        ok = c.get("/api/positions/AAPL")
+        assert ok.status_code == 200
+        assert ok.json()["quantity"] == 0

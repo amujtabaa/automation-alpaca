@@ -42,7 +42,14 @@ async def get_position(
     store: StateStore = Depends(get_store),
 ) -> Position:
     # Derived from fills; a symbol with no fills returns a flat position.
-    return await store.get_position(symbol)
+    try:
+        return await store.get_position(symbol)
+    except ValueError as exc:
+        # normalize_symbol rejects an out-of-domain ticker (DATA-2). Surface it as
+        # a clean 422 rather than a leaked 500 (matches the watchlist routes).
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 @router.get("/orders", response_model=list[Order])

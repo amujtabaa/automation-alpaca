@@ -127,6 +127,13 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
     # engaged / buys are paused. Re-checked here — not only at order creation —
     # so an order created *before* the stop cannot race through to the broker
     # after the user hits stop. Each held order is audited once (not per tick).
+    #
+    # Deliberate session semantics: submission gates on the *current* session
+    # (the operator's live stop intent), whereas creation gates on the
+    # candidate's own session. The two coincide in normal flow; they can only
+    # diverge for a CREATED order that outlives its session, which requires a
+    # manual session close, and beta opens no new session automatically — so the
+    # live-session gate stays in force and there is no clean-slate bypass.
     block = order_intent_block_reason(await store.get_current_session())
     if block is not None:
         blocked_already = await _orders_with_event(
