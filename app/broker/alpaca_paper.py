@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import TimeInForce
@@ -137,14 +138,18 @@ class AlpacaPaperAdapter(BrokerAdapter):
         try:
             resp = await asyncio.to_thread(self._client.submit_order, req)
             return str(resp.id)
-        except Exception as exc:
+        except APIError as exc:
+            code = getattr(exc, "status_code", None)
             exc_msg = str(exc).lower()
-            # Alpaca rejects duplicate client_order_ids with a 422 or a message
-            # mentioning "duplicate" or "client_order_id already exists".
-            if "duplicate" in exc_msg or "client_order_id" in exc_msg:
+            # A duplicate client_order_id is a 409/422 that names the duplicate.
+            # Recover the already-created order so a crash-then-retry is idempotent
+            # (never a second broker order). Anything else is a real failure.
+            if code in (409, 422) and (
+                "duplicate" in exc_msg or "client_order_id" in exc_msg
+            ):
                 _log.info(
-                    "Duplicate client_order_id detected for order %s; "
-                    "looking up existing Alpaca order.",
+                    "Duplicate client_order_id for order %s; recovering existing "
+                    "Alpaca order.",
                     order.id,
                 )
                 try:
@@ -157,19 +162,28 @@ class AlpacaPaperAdapter(BrokerAdapter):
                         f"Duplicate submit for order {order.id!r}: original submit "
                         f"rejected but lookup of existing order also failed."
                     ) from lookup_exc
-            # Do NOT include exc in the message string — it may echo back
-            # request params that could include keys if the SDK surfaces them.
+            # Do NOT include exc in the message string — it may echo back request
+            # params that could include keys if the SDK surfaces them.
             raise BrokerError(
                 f"Failed to submit order {order.id!r} ({order.symbol} "
-                f"{order.side} {order.quantity} shares)."
+                f"{order.quantity} shares)."
+            ) from exc
+        except Exception as exc:
+            # Network/timeout/unknown — a real failure, surfaced (never silent).
+            raise BrokerError(
+                f"Failed to submit order {order.id!r} ({order.symbol} "
+                f"{order.quantity} shares)."
             ) from exc
 
-    async def get_order_status(self, broker_order_id: str) -> BrokerOrderUpdate:
+    async def get_order_status(
+        self, broker_order_id: str, *, recorded_quantity: int = 0
+    ) -> BrokerOrderUpdate:
         """Poll Alpaca for the current state of one open order.
 
         Prefers the activities API for per-execution fill ids (stable, dedup-safe).
         Falls back to a synthesised fill if the activities call fails or returns
-        nothing while ``filled_qty > 0``.
+        nothing while ``filled_qty > 0`` — sized as the **delta** over
+        ``recorded_quantity`` so it never re-reports already-counted shares.
         """
         try:
             alpaca_order = await asyncio.to_thread(
@@ -186,6 +200,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
         fills = await self._get_fills(
             broker_order_id=broker_order_id,
             filled_qty=filled_qty,
+            recorded_quantity=recorded_quantity,
             filled_avg_price=alpaca_order.filled_avg_price,
             limit_price=alpaca_order.limit_price,
         )
@@ -208,29 +223,27 @@ class AlpacaPaperAdapter(BrokerAdapter):
             await asyncio.to_thread(
                 self._client.cancel_order_by_id, broker_order_id
             )
-        except Exception as exc:
-            exc_msg = str(exc).lower()
-            # Alpaca returns 404 or error messages like "not found",
-            # "already canceled", "order is not cancelable", or similar
-            # when the order is already in a terminal state.
-            terminal_indicators = (
-                "not found",
-                "404",
-                "already",
-                "cannot be cancelled",
-                "cannot be canceled",
-                "not cancelable",
-                "order is no longer",
-                "terminal",
-                "filled",
-            )
-            if any(indicator in exc_msg for indicator in terminal_indicators):
+        except APIError as exc:
+            # Decide idempotency by HTTP STATUS, not by sniffing free-text — a
+            # false positive here would silently mark a *live* order canceled.
+            #   404 = order not found (already gone)
+            #   422 = not cancelable (already in a terminal state)
+            # Both mean the order is no longer live -> idempotent no-op. Every
+            # other code (401/403/429/5xx, ...) is a real failure and is raised,
+            # so a transient error never masquerades as a successful cancel.
+            code = getattr(exc, "status_code", None)
+            if code in (404, 422):
                 _log.debug(
-                    "cancel_order no-op: broker_order_id=%r is already terminal (%s).",
+                    "cancel_order no-op: %r already terminal (HTTP %s).",
                     broker_order_id,
-                    type(exc).__name__,
+                    code,
                 )
-                return  # idempotent — not an error
+                return
+            raise BrokerError(
+                f"Failed to cancel order broker_order_id={broker_order_id!r}."
+            ) from exc
+        except Exception as exc:
+            # Network/timeout/unknown — a real failure. NEVER treated as a no-op.
             raise BrokerError(
                 f"Failed to cancel order broker_order_id={broker_order_id!r}."
             ) from exc
@@ -244,6 +257,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
         *,
         broker_order_id: str,
         filled_qty: int,
+        recorded_quantity: int,
         filled_avg_price: Optional[object],
         limit_price: Optional[object],
     ) -> list[BrokerFill]:
@@ -297,13 +311,21 @@ class AlpacaPaperAdapter(BrokerAdapter):
                 return fills
 
         # --- Fallback: synthesise one fill from the order-level summary ---
-        # The synthetic id is stable per (order, cumulative fill qty) so
-        # repeated polls at the same fill level produce the same id (dedup-safe)
-        # and a new fill level produces a new id (incremental fill detected).
+        # Emit only the DELTA over what's already recorded, NOT the cumulative —
+        # re-reporting the cumulative would make the store reject the fill as an
+        # overfill and the order/position would desync. The id is stable per
+        # cumulative level so a repeated poll at the same level dedups, and a new
+        # level yields a new id (the next increment).
+        delta = filled_qty - recorded_quantity
+        if delta <= 0:
+            return []
         _log.debug(
-            "Falling back to synthetic fill for order %r (filled_qty=%d).",
+            "Falling back to synthetic delta fill for order %r "
+            "(cumulative=%d, recorded=%d, delta=%d).",
             broker_order_id,
             filled_qty,
+            recorded_quantity,
+            delta,
         )
         fill_price: float
         if filled_avg_price is not None:
@@ -322,7 +344,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
         return [
             BrokerFill(
                 source_fill_id=f"{broker_order_id}:{filled_qty}",
-                quantity=filled_qty,
+                quantity=delta,
                 price=fill_price,
                 filled_at=_utcnow(),
             )

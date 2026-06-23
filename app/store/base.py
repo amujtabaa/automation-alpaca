@@ -108,13 +108,18 @@ class SessionAlreadyClosedError(StoreError):
 
 
 class SessionClosedError(StoreError):
-    """A candidate/order mutation was attempted against a *closed* session.
+    """A new candidate was attempted against a *closed* session.
 
-    Closing a session ends the trading day (D-009). New candidates may not be
-    created in a closed session, and an approved candidate in a closed session
-    may not be dispatched to an order — both would mutate history *after* the
-    point-in-time review snapshot was captured. Distinct from
-    :class:`SessionAlreadyClosedError`, which is specifically about re-closing.
+    Closing a session ends the trading day (D-009): ``create_candidate`` refuses
+    to attach a fresh candidate to a closed session, since it would sit outside
+    the point-in-time review snapshot captured at close. This guard is on
+    candidate *creation* only. It deliberately does **not** block order dispatch,
+    fill append, or order transitions for an order that already exists — those
+    must keep working after close so an in-flight order is tracked to a terminal
+    state (D-011). In practice dispatch can't happen in a closed session anyway,
+    because close expires every open (pending/approved) candidate first. Distinct
+    from :class:`SessionAlreadyClosedError`, which is specifically about
+    re-closing.
     """
 
 

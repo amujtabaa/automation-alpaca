@@ -13,7 +13,7 @@ here but never logged; ``.env`` (gitignored) holds the real values.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -58,9 +58,11 @@ class Settings:
     enable_dev_routes: bool = True
 
     # --- Phase 4: broker + monitoring loop ------------------------------- #
-    # Paper-only credentials. ``None`` when unset (dev/CI). Never logged.
-    alpaca_api_key: Optional[str] = None
-    alpaca_api_secret: Optional[str] = None
+    # Paper-only credentials. ``None`` when unset (dev/CI). ``repr=False`` keeps
+    # them out of any ``repr(settings)``/log line as defense-in-depth — they are
+    # never intentionally logged anywhere.
+    alpaca_api_key: Optional[str] = field(default=None, repr=False)
+    alpaca_api_secret: Optional[str] = field(default=None, repr=False)
     # "auto" | "mock" | "alpaca" — see BROKER_ENV above.
     broker_adapter: str = "auto"
     # How often the monitoring loop submits pending orders + reconciles open

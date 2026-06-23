@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.broker.adapter import BrokerAdapter, BrokerOrderUpdate
 from app.config import Settings
@@ -122,16 +122,79 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
                 order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
             )
         except _TRANSITION_ERRORS as exc:
-            # Submitted at the broker but could not be persisted as SUBMITTED.
-            # The real adapter sets a deterministic client_order_id so a retry is
-            # rejected as a duplicate rather than double-submitting; we surface
-            # this loudly because it should not happen in normal operation.
-            _log.error(
-                "order %s submitted to broker as %s but could not be marked "
-                "SUBMITTED: %s",
-                order.id,
+            # Submitted at the broker but could not be marked SUBMITTED (most
+            # often a concurrent manual cancel landing during the submit call).
+            # The real adapter's client_order_id makes a retry idempotent rather
+            # than double-submitting; here we make the live broker order visible
+            # and clean it up if it was cancelled.
+            await _handle_unpersisted_submit(
+                store, adapter, order, broker_order_id, exc
+            )
+
+
+async def _handle_unpersisted_submit(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    order: Order,
+    broker_order_id: str,
+    exc: Exception,
+) -> None:
+    """The broker accepted an order we then couldn't mark ``SUBMITTED``.
+
+    The order is live at the broker but the DB didn't capture it. This must
+    never be left silent (it is a real open position), so:
+
+    1. record an ``order_submit_unpersisted`` audit event, and
+    2. if the order is now ``CANCELED`` locally (a manual cancel raced the
+       submit), best-effort cancel it at the broker so a user-cancelled order
+       isn't left working upstream.
+
+    Every step is best-effort and swallows its own errors — this runs on a
+    failure path and must not crash the loop.
+    """
+
+    _log.error(
+        "order %s submitted to broker as %s but could not be marked SUBMITTED: %s",
+        order.id,
+        broker_order_id,
+        exc,
+    )
+    try:
+        await store.append_event(
+            EventType.ORDER_SUBMIT_UNPERSISTED.value,
+            message=(
+                f"order {order.symbol} accepted by broker as {broker_order_id} "
+                f"but could not be marked SUBMITTED"
+            ),
+            symbol=order.symbol,
+            candidate_id=order.candidate_id,
+            order_id=order.id,
+            payload={"broker_order_id": broker_order_id, "error": str(exc)},
+            session_id=order.session_id,
+        )
+    except Exception:  # noqa: BLE001 - audit is best-effort on a failure path
+        _log.exception(
+            "could not record order_submit_unpersisted for order %s", order.id
+        )
+
+    try:
+        current = await store.get_order(order.id)
+    except Exception:  # noqa: BLE001
+        current = None
+    if current is not None and current.status is OrderStatus.CANCELED:
+        try:
+            await adapter.cancel_order(broker_order_id)
+            _log.info(
+                "cleaned up stranded broker order %s (order %s was cancelled "
+                "during submit)",
                 broker_order_id,
-                exc,
+                order.id,
+            )
+        except Exception as cancel_exc:  # noqa: BLE001
+            _log.error(
+                "failed to clean up stranded broker order %s: %s",
+                broker_order_id,
+                cancel_exc,
             )
 
 
@@ -157,7 +220,11 @@ async def _reconcile_open_orders(
     for order in open_orders:
         if order.broker_order_id is not None:
             try:
-                update = await adapter.get_order_status(order.broker_order_id)
+                # Pass what we've already recorded so an adapter that only sees
+                # the broker's cumulative fill can emit a correct delta.
+                update = await adapter.get_order_status(
+                    order.broker_order_id, recorded_quantity=order.filled_quantity
+                )
             except Exception as exc:  # noqa: BLE001 - skip this order, never crash
                 _log.warning(
                     "status poll failed for order %s (%s): %s",
@@ -175,7 +242,7 @@ async def _reconcile_open_orders(
             continue
         if fresh.id in already_stale:
             continue
-        age = now - fresh.created_at
+        age = _order_age(now, fresh.created_at)
         if age > timeout:
             await store.append_event(
                 EventType.ORDER_STALE.value,
@@ -201,15 +268,20 @@ async def _reconcile_open_orders(
 async def _apply_update(
     store: StateStore, order: Order, update: BrokerOrderUpdate
 ) -> None:
-    """Append the broker's reported fills, then advance the order's status.
+    """Append the broker's reported fills, then reconcile the order to the
+    fills we actually **recorded** — never to the broker's raw scalar.
 
     Fills are appended first so the derived position reflects exactly what
     filled; the store dedups by ``source_fill_id`` (a replayed fill is ignored,
-    not double-counted) and rejects any fill inconsistent with the order. The
-    status/``filled_quantity`` update then runs through ``transition_order``,
-    which enforces the legal state machine and monotonic, in-range fill progress
-    — so a glitchy broker value is rejected and logged, never allowed to corrupt
-    the order.
+    not double-counted) and rejects any fill inconsistent with the order.
+
+    The order's ``filled_quantity`` and status are then set from the *recorded*
+    fill sum, not from ``update.filled_quantity``. This keeps the two truths in
+    lockstep: ``order.filled_quantity`` always equals the sum of appended fills
+    (= the derived position for a long-only buy), so a dropped or rejected fill
+    can never let the order claim more filled than the position supports — and
+    the order is never marked FILLED without the fills to back it. A broker
+    cancel/reject is still honoured as a terminal state.
     """
 
     for bf in update.fills:
@@ -232,18 +304,64 @@ async def _apply_update(
                 exc,
             )
 
+    recorded = sum(f.quantity for f in await store.list_fills(order_id=order.id))
+    if update.filled_quantity != recorded:
+        # Surface a divergence rather than trusting the broker scalar over the
+        # fills we could actually record (e.g. a fill the store rejected).
+        _log.warning(
+            "order %s: broker reports filled=%s but recorded fills sum to %s; "
+            "reconciling order to recorded.",
+            order.id,
+            update.filled_quantity,
+            recorded,
+        )
+    target = _reconciled_status(order.quantity, update.status, recorded)
     try:
         await store.transition_order(
-            order.id, update.status, filled_quantity=update.filled_quantity
+            order.id, target, filled_quantity=recorded
         )
     except _TRANSITION_ERRORS as exc:
         _log.warning(
-            "order %s update to %s (filled=%s) rejected: %s",
+            "order %s reconcile to %s (recorded filled=%s) rejected: %s",
             order.id,
-            update.status,
-            update.filled_quantity,
+            target,
+            recorded,
             exc,
         )
+
+
+def _reconciled_status(
+    order_quantity: int, broker_status: OrderStatus, recorded: int
+) -> OrderStatus:
+    """The order status implied by the fills we have actually recorded.
+
+    Never claims FILLED without the recorded fills to back it; honours a broker
+    cancel/reject as terminal when the order isn't already fully recorded as
+    filled. (A buy that the broker reports CANCELED after the full quantity has
+    actually filled is treated as FILLED — the recorded fills are the truth.)
+    """
+
+    if recorded >= order_quantity:
+        return OrderStatus.FILLED
+    if broker_status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
+        return broker_status
+    if recorded > 0:
+        return OrderStatus.PARTIALLY_FILLED
+    return OrderStatus.SUBMITTED
+
+
+def _order_age(now: datetime, created_at: datetime):
+    """``now - created_at``, tolerant of a tz-naive ``created_at`` (treated as
+    UTC).
+
+    Every timestamp the stores write is tz-aware, but a hand-inserted or legacy
+    row could be naive; without this guard the subtraction would raise
+    ``TypeError`` and abort the entire reconcile tick for every order.
+    """
+
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return now - created_at
 
 
 async def _orders_with_stale_event(store: StateStore) -> set[str]:

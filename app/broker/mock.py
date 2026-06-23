@@ -57,7 +57,11 @@ class MockBrokerAdapter(BrokerAdapter):
         )
         return broker_order_id
 
-    async def get_order_status(self, broker_order_id: str) -> BrokerOrderUpdate:
+    async def get_order_status(
+        self, broker_order_id: str, *, recorded_quantity: int = 0
+    ) -> BrokerOrderUpdate:
+        # The mock returns explicit per-execution fills the test queued, so it
+        # ignores recorded_quantity (it never needs the cumulative->delta trick).
         self.status_queries.append(broker_order_id)
         return self._responses.get(
             broker_order_id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])

@@ -157,3 +157,22 @@ async def test_cancel_broker_error_surfaces_as_502_order_unchanged():
     assert resp.status_code == 502
     # The order stays open (the transition never ran).
     assert (await store.get_order(order.id)).status is OrderStatus.SUBMITTED
+
+
+class _CancelRaisesNonBrokerError(MockBrokerAdapter):
+    """A misbehaving adapter that raises a non-BrokerError on cancel — the route
+    must still keep the order unchanged and report 502, not leak a 500."""
+
+    async def cancel_order(self, broker_order_id: str) -> None:
+        raise RuntimeError("unexpected adapter failure")
+
+
+async def test_cancel_non_broker_exception_also_502_order_unchanged():
+    app, store, adapter = await _app_store_adapter()
+    order = await _submitted_order(store, adapter)
+    # Swap in an adapter whose cancel raises something other than BrokerError.
+    app.state.broker_adapter = _CancelRaisesNonBrokerError()
+    async with _client(app) as client:
+        resp = await client.post(f"/api/orders/{order.id}/cancel")
+    assert resp.status_code == 502
+    assert (await store.get_order(order.id)).status is OrderStatus.SUBMITTED

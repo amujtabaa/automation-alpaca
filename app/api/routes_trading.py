@@ -106,6 +106,19 @@ async def cancel_order(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"broker cancel failed; order unchanged: {exc}",
             ) from exc
+        except Exception as exc:  # noqa: BLE001
+            # Any other adapter failure is still an upstream/broker problem: the
+            # local order must be left unchanged, not transitioned. Don't rely on
+            # adapters always wrapping failures in BrokerError.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="broker cancel failed; order unchanged",
+            ) from exc
+
+    # The local transition runs only after a successful broker cancel. If it then
+    # fails (a concurrent race to a terminal state), the broker order is already
+    # cancelled and the next monitoring poll reconciles local state — so the 409
+    # below is a transient-window response, not a durable inconsistency.
 
     try:
         return await store.transition_order(order_id, OrderStatus.CANCELED)

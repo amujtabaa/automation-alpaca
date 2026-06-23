@@ -11,6 +11,8 @@ InMemoryStateStore and SqliteStateStore.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from app.broker.adapter import BrokerError, BrokerFill, BrokerOrderUpdate
@@ -22,6 +24,8 @@ from app.monitoring import (
     _submit_pending_orders,
     run_monitoring_tick,
 )
+from app.store.base import OrderTransitionError
+from app.store.memory import InMemoryStateStore
 
 pytestmark = pytest.mark.anyio
 
@@ -191,7 +195,7 @@ class _PollRaisesAdapter(MockBrokerAdapter):
     """Submits like the mock, but every status poll raises — to prove the loop
     logs-and-continues rather than crashing."""
 
-    async def get_order_status(self, broker_order_id):  # type: ignore[override]
+    async def get_order_status(self, broker_order_id, *, recorded_quantity=0):  # type: ignore[override]
         raise BrokerError("poll endpoint down")
 
 
@@ -296,3 +300,176 @@ async def test_tick_submits_then_reconciles(any_store):
     await run_monitoring_tick(any_store, adapter, Settings())
     assert (await any_store.get_order(order.id)).status is OrderStatus.FILLED
     assert (await any_store.get_position("AAPL")).quantity == 10
+
+
+# --------------------------------------------------------------------------- #
+# The order tracks RECORDED fills, never the broker's scalar (review M1/M2)
+# --------------------------------------------------------------------------- #
+async def test_order_follows_recorded_fills_not_broker_scalar(any_store):
+    """If the broker over-claims (FILLED / a higher cumulative) but provides
+    fewer fills, the order tracks the fills we actually recorded — never the raw
+    scalar. order.filled_quantity == Σfills == position, and it is not marked
+    FILLED without the fills to back it. The order completes only once the
+    remaining execution actually arrives."""
+
+    order = await _created_order(any_store, qty=100, limit=2.0)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(any_store, adapter)
+
+    # Broker claims fully filled but supplies a single 40-share execution.
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.FILLED,
+        filled_quantity=100,
+        fills=[BrokerFill("exec-1", 40, 2.0, utcnow())],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    fresh = await any_store.get_order(order.id)
+    assert fresh.status is OrderStatus.PARTIALLY_FILLED  # NOT filled
+    assert fresh.filled_quantity == 40  # follows recorded fills, not the scalar
+    assert (await any_store.get_position("AAPL")).quantity == 40
+
+    # The remaining execution arrives; now the order legitimately completes.
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.FILLED,
+        filled_quantity=100,
+        fills=[
+            BrokerFill("exec-1", 40, 2.0, utcnow()),  # dup
+            BrokerFill("exec-2", 60, 2.0, utcnow()),
+        ],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+    fresh = await any_store.get_order(order.id)
+    assert fresh.status is OrderStatus.FILLED
+    assert fresh.filled_quantity == 100
+    assert (await any_store.get_position("AAPL")).quantity == 100
+
+
+async def test_broker_cancel_with_partial_fill_keeps_recorded_position(any_store):
+    """A broker cancel after a partial fill cancels the order but preserves the
+    recorded fill/position (the recorded fills are the truth)."""
+
+    order = await _created_order(any_store, qty=100, limit=2.0)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(any_store, adapter)
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.CANCELED,
+        filled_quantity=40,
+        fills=[BrokerFill("exec-1", 40, 2.0, utcnow())],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    fresh = await any_store.get_order(order.id)
+    assert fresh.status is OrderStatus.CANCELED
+    assert fresh.filled_quantity == 40
+    assert (await any_store.get_position("AAPL")).quantity == 40
+
+
+# --------------------------------------------------------------------------- #
+# Broker accepted but the SUBMITTED transition failed (review 3.1 / m3)
+# --------------------------------------------------------------------------- #
+class _SubmitTransitionFails(InMemoryStateStore):
+    """Fails the first CREATED->SUBMITTED transition, to simulate a store error
+    after the broker has already accepted the order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._fail_once = True
+
+    async def transition_order(
+        self, order_id, new_status, *, filled_quantity=None, broker_order_id=None
+    ):
+        if new_status is OrderStatus.SUBMITTED and self._fail_once:
+            self._fail_once = False
+            raise OrderTransitionError("simulated persist failure")
+        return await super().transition_order(
+            order_id,
+            new_status,
+            filled_quantity=filled_quantity,
+            broker_order_id=broker_order_id,
+        )
+
+
+async def test_submit_accepted_but_unpersisted_is_audited():
+    store = _SubmitTransitionFails()
+    order = await _created_order(store, qty=10, limit=1.0)
+    adapter = MockBrokerAdapter()
+
+    await _submit_pending_orders(store, adapter)
+
+    # Broker was asked to submit; the SUBMITTED transition failed -> order stays
+    # CREATED, and the live-but-unpersisted order is recorded as an audit event
+    # (never left visible only in logs).
+    assert [o.id for o in adapter.submitted] == [order.id]
+    assert (await store.get_order(order.id)).status is OrderStatus.CREATED
+    unpersisted = [
+        e
+        for e in await store.list_events()
+        if e.event_type == "order_submit_unpersisted" and e.order_id == order.id
+    ]
+    assert len(unpersisted) == 1
+    assert unpersisted[0].payload.get("broker_order_id") == adapter.broker_id_for(
+        order.id
+    )
+    # Order is still CREATED (not cancelled) -> no compensating broker cancel.
+    assert adapter.canceled == []
+
+
+class _CancelDuringSubmit(InMemoryStateStore):
+    """Simulates a manual cancel landing during the submit network call: the
+    CREATED->SUBMITTED transition instead finds the order already CANCELED."""
+
+    async def transition_order(
+        self, order_id, new_status, *, filled_quantity=None, broker_order_id=None
+    ):
+        if new_status is OrderStatus.SUBMITTED:
+            await super().transition_order(order_id, OrderStatus.CANCELED)
+            raise OrderTransitionError("order was cancelled during submit")
+        return await super().transition_order(
+            order_id,
+            new_status,
+            filled_quantity=filled_quantity,
+            broker_order_id=broker_order_id,
+        )
+
+
+async def test_cancel_during_submit_cleans_up_stranded_broker_order():
+    store = _CancelDuringSubmit()
+    order = await _created_order(store, qty=10, limit=1.0)
+    adapter = MockBrokerAdapter()
+
+    await _submit_pending_orders(store, adapter)
+
+    # The order was cancelled mid-submit: it is live at the broker but CANCELED
+    # locally, so the loop best-effort cancels the stranded broker order and
+    # records the unpersisted submit.
+    assert (await store.get_order(order.id)).status is OrderStatus.CANCELED
+    assert adapter.canceled == [adapter.broker_id_for(order.id)]
+    assert any(
+        e.event_type == "order_submit_unpersisted" and e.order_id == order.id
+        for e in await store.list_events()
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Stale-age computation tolerates a tz-naive created_at (review 2.1)
+# --------------------------------------------------------------------------- #
+async def test_stale_check_tolerates_naive_created_at():
+    store = InMemoryStateStore()
+    order = await _created_order(store)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(store, adapter)
+
+    # Force a tz-naive created_at (a legacy / hand-inserted row). Without the
+    # guard, `now - created_at` would raise TypeError and abort the whole tick.
+    store._orders[order.id].created_at = datetime(2020, 1, 1, 0, 0, 0)  # naive
+
+    await _reconcile_open_orders(store, adapter, Settings(unfilled_timeout_minutes=0.0))
+
+    assert any(
+        e.event_type == "order_stale" and e.order_id == order.id
+        for e in await store.list_events()
+    )

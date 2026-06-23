@@ -79,10 +79,18 @@ class BrokerAdapter(ABC):
         """
 
     @abstractmethod
-    async def get_order_status(self, broker_order_id: str) -> BrokerOrderUpdate:
+    async def get_order_status(
+        self, broker_order_id: str, *, recorded_quantity: int = 0
+    ) -> BrokerOrderUpdate:
         """Poll the broker for the current state of an order.
 
-        Called on the monitoring cadence for every open order. Raises
+        Called on the monitoring cadence for every open order. ``recorded_quantity``
+        is how many shares the backend has *already* recorded as filled for this
+        order (its current ``filled_quantity``). An adapter that has true
+        per-execution fill ids ignores it; one that can only see the broker's
+        *cumulative* filled amount uses it to emit a single fill for the **delta**
+        (``cumulative - recorded_quantity``) rather than re-reporting the whole
+        cumulative (which the store would reject as an overfill). Raises
         :class:`BrokerError` on failure.
         """
 

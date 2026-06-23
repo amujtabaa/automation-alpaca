@@ -115,6 +115,10 @@ class EventType(str, Enum):
     ORDER_TRANSITION = "order_transition"
     ORDER_FILL_PROGRESS = "order_fill_progress"
     ORDER_STALE = "order_stale"  # open order past the unfilled timeout (Phase 4)
+    # Broker accepted an order the DB could not then mark SUBMITTED (Phase 4) —
+    # a real open broker order the local state didn't capture; surfaced, never
+    # left silent.
+    ORDER_SUBMIT_UNPERSISTED = "order_submit_unpersisted"
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
