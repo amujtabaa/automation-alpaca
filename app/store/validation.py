@@ -15,23 +15,89 @@ log says *why* a fill/order was rejected, not just that it was.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
-from app.models import Candidate, Order, OrderSide
+from app.models import Candidate, Order, OrderSide, SessionRecord, SessionStatus
+
+
+def order_intent_block_reason(
+    session: Optional[SessionRecord],
+) -> Optional[str]:
+    """Why new order intent is blocked for ``session``, or ``None`` if allowed.
+
+    Rule 8 safety controls: the kill switch blocks *all* new order intent; buys
+    paused blocks new BUY intent (beta orders are long-only buys, so it blocks
+    them too). Shared by both stores and the monitoring loop so "is trading
+    stopped" is decided in exactly one place.
+    """
+
+    if session is None:
+        return None
+    if session.kill_switch:
+        return "kill_switch"
+    if session.buys_paused:
+        return "buys_paused"
+    return None
+
+
+def session_submission_block_reason(
+    session: Optional[SessionRecord],
+) -> Optional[str]:
+    """Why a CREATED order from ``session`` must NOT be submitted, or ``None``.
+
+    A held order is gated against its **own** originating session (D-013a), not
+    merely the live/current one: ``get_current_session`` auto-mints a fresh,
+    permissive session on UTC date rollover, so gating submission only on the
+    current session let a kill-switched order from a prior session slip through
+    to the broker (a Rule 8 bypass). This predicate adds the closed-session case
+    that ``order_intent_block_reason`` does not cover — a closed session blocks
+    *new* submissions, while already-submitted orders still reconcile to a
+    terminal state (D-011). An unknown session is treated as blocked, never
+    submitted.
+    """
+
+    if session is None:
+        return "unknown_session"
+    if session.status is SessionStatus.CLOSED:
+        return "session_closed"
+    return order_intent_block_reason(session)
 
 
 def fill_value_reason(quantity: int, price: float) -> Optional[str]:
     """Reject a fill whose intrinsic values would corrupt position truth.
 
-    A non-positive quantity (a negative buy is a negative position) or a
-    non-positive price (negative cost basis / average price) directly violates
-    the derived-position invariant.
+    A non-finite (``NaN``/``Infinity``) or non-positive quantity or price
+    directly violates the derived-position invariant — ``NaN``/``Inf`` slip past
+    a bare ``<= 0`` check (``nan <= 0`` and ``inf <= 0`` are both ``False``) and
+    would poison ``cost_basis``/``average_price``, so they are rejected first.
     """
 
+    if not math.isfinite(quantity):
+        return "non_finite_quantity"
+    if not math.isfinite(price):
+        return "non_finite_price"
     if quantity <= 0:
         return "non_positive_quantity"
     if price <= 0:
         return "non_positive_price"
+    return None
+
+
+def limit_price_reason(limit_price: Optional[float]) -> Optional[str]:
+    """Reject a missing/non-finite/non-positive limit price for a LIMIT order.
+
+    A LIMIT order must carry a real, positive price; ``None``, ``NaN``, ``Inf``,
+    zero, and negative are all rejected (the ``NaN``/``Inf`` cases would
+    otherwise pass a bare ``<= 0`` guard).
+    """
+
+    if limit_price is None:
+        return "missing_limit_price"
+    if not math.isfinite(limit_price):
+        return "non_finite_limit_price"
+    if limit_price <= 0:
+        return "non_positive_limit_price"
     return None
 
 

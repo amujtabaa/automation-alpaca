@@ -50,7 +50,11 @@ async def review(
 
     if session.status is SessionStatus.CLOSED:
         # Point-in-time: return the snapshot captured at close, not today's live
-        # fold over the full fill history.
+        # fold over the full fill history. Per D-012 this is intended: a fill that
+        # lands after close (e.g. a cancel_pending order completing post-close,
+        # D-011) updates the live position but is NOT retro-applied to the frozen
+        # snapshot, so a closed day's review can legitimately differ from the
+        # order's final filled quantity. Do not "fix" this divergence here.
         snapshots = await store.list_position_snapshots(session.id)
         positions = [
             Position(

@@ -49,6 +49,91 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-013 — Order submission gates on the order's own session; localhost is a load-bearing security boundary
+**Two decisions, both surfaced by independent red-team review of Phase 4.**
+
+**(a) Submission gate is per-order-session, not current-session.** A `CREATED`
+order must be gated for submission against the kill-switch / pause-buys / closed
+state of **the session that created it**, not merely the current live session.
+Previously `_submit_pending_orders` checked only `get_current_session()`, on the
+stated assumption that "beta opens no new session automatically, so a held order
+can't be released." That assumption was false: `get_current_session()`
+auto-creates a fresh session on UTC date rollover, so a kill-switched order from
+yesterday's session could submit under today's permissive defaults (a Rule 8
+violation). The same gap lets a `CREATED` order submit after its session was
+manually closed. Fix: submission checks the order's own session; an order whose
+originating session is kill-switched, paused, or closed is held (and audited),
+never submitted under a different session's controls. Already-submitted orders
+continue to reconcile after close (D-011 unchanged).
+
+**(b) Single-user localhost is a security assumption, not just a convenience.**
+The mutating API is unauthenticated by design (`routes_system.py` states "no auth
+in beta"). This is acceptable **only while the backend is genuinely bound to
+localhost and single-user.** Any exposure beyond localhost — LAN, cloud,
+shared host, unattended deployment — requires an operator token / API-key guard
+or enforced localhost binding **first**, because an unauthenticated mutating API
+reachable on a network lets another party approve, cancel, pause, close, and
+thereby indirectly submit paper orders. Recorded here as an explicit, hard
+deployment boundary so it's a conscious gate before any non-local run, not a
+silent assumption that erodes as the project grows.
+**Why both now.** (a) is a confirmed safety bug fixed in the Phase 4 cleanup;
+(b) is not a code change for beta but must be recorded before the project
+approaches real accounts, where the same unauthenticated surface stops being
+benign.
+
+### D-012 — Position snapshots are point-in-time-at-close; post-close fills are not retro-applied
+**Decision.** `position_snapshots` (written at session close, D-007) capture
+the derived position *as it stood at the moment of close*. If an order that was
+open at close — specifically a `cancel_pending` order still being polled to a
+terminal state (D-011) — receives a fill *after* the session is closed, that
+fill updates the **live** position and the order/fill record, but is **not**
+retro-applied to the closed session's frozen snapshot. Consequently
+`GET /api/review?date=<closed day>` (snapshot) can legitimately differ from
+`GET /api/positions` (live) for a symbol whose order completed after that day's
+close. This is intended behavior for beta, not a reconciliation bug.
+**Why.** A point-in-time snapshot is, by definition, what the world looked like
+at a specific instant; re-applying later events would make it not-point-in-time.
+The alternative — re-snapshotting a closed session whenever a post-close fill
+lands against one of its orders — is a real feature with real complexity
+(closed sessions would stop being immutable), and it buys little in beta where
+the divergence is small, visible in the live position and the order/fill/audit
+record, and only arises in the narrow cancel_pending-fills-after-close window.
+Beta accepts the divergence and documents it here so a future reviewer reading
+a past day's snapshot understands why it may not match the order's final filled
+quantity. Reconciling closed-session snapshots is a candidate for a later phase
+if it ever proves to matter operationally.
+
+### D-011 — Phase 4 Alpaca Paper Adapter: REST polling, surface-and-cancel, cross-session monitoring
+**Decision.** Three Phase 4 design choices:
+1. **REST polling over websocket trade updates.** Order status is polled on a
+   fixed cadence (15-second default, `ALPACA_POLL_CADENCE_SECONDS`) rather than
+   via Alpaca's trade-update websocket. REST polling is simpler, easier to test
+   with a mock adapter, and sufficient since a human approves each order in beta
+   (no latency pressure). The websocket trade-updates approach is noted as the
+   Phase 8 upgrade when Auto-Sell's fill-reaction speed demands it.
+2. **Surface unfilled timeouts + manual cancel; no auto-cancel.** Orders open
+   past a configurable threshold (60-minute default, `ALPACA_UNFILLED_TIMEOUT_MINUTES`)
+   are flagged via an audit event and surfaced in the cockpit. A manual cancel
+   button calls `POST /api/orders/{id}/cancel`, which cancels via the adapter
+   and transitions the order to `canceled`. Auto-cancellation is deferred to
+   Phase 8's automated exit logic; human-in-the-loop beta doesn't auto-cancel.
+3. **Keep polling until terminal state regardless of session close.** The
+   monitoring loop polls all orders in `submitted`/`partially_filled` status
+   irrespective of their session's closed/active state. A submitted order
+   represents a real open position that needs tracking even after session close;
+   stopping mid-fill would leave positions stale. The position carries forward
+   across sessions by design (D-007).
+
+**Also settled in Phase 4:** `alpaca-py` is the SDK (official current package,
+not the older `alpaca-trade-api`); nothing outside the adapter imports it.
+`BrokerAdapter` is a pluggable interface (same ABC pattern as `ApprovalGate`)
+so a future live adapter is a drop-in without touching callers. Order submission
+is driven by the monitoring loop (not the approval endpoint) — the loop finds
+`ORDERED` orders not yet submitted and dispatches them, keeping the Phase 3
+handoff and Phase 4 execution cleanly separate. Unrealized P/L is deferred to
+Phase 5 (needs current price from the market data service). Position flatten is
+deferred to Phase 7 (Sell-Side Protection owns exit logic).
+
 ### D-010 — Store entrypoints validate inputs; the fill table never holds corrupt data
 **Decision.** `append_fill`, `create_order`, and `transition_order` validate
 their inputs at the store boundary (both implementations), rejecting

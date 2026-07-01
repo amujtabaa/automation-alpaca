@@ -75,11 +75,19 @@ class CandidateStatus(str, Enum):
 
 
 class OrderStatus(str, Enum):
-    """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6)."""
+    """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6).
+
+    ``cancel_pending`` is a non-terminal state: a cancel has been requested at the
+    broker but not yet confirmed, so the order keeps being polled — a late fill
+    arriving before the venue finalizes the cancel is still recorded, never
+    missed (CHAOS-1). It resolves to ``canceled`` (broker confirms) or ``filled``
+    (a late fill completes it).
+    """
 
     CREATED = "created"
     SUBMITTED = "submitted"
     PARTIALLY_FILLED = "partially_filled"
+    CANCEL_PENDING = "cancel_pending"
     FILLED = "filled"
     CANCELED = "canceled"
     REJECTED = "rejected"
@@ -114,6 +122,14 @@ class EventType(str, Enum):
     ORDER_CREATED = "order_created"
     ORDER_TRANSITION = "order_transition"
     ORDER_FILL_PROGRESS = "order_fill_progress"
+    ORDER_STALE = "order_stale"  # open order past the unfilled timeout (Phase 4)
+    # Broker accepted an order the DB could not then mark SUBMITTED (Phase 4) —
+    # a real open broker order the local state didn't capture; surfaced, never
+    # left silent.
+    ORDER_SUBMIT_UNPERSISTED = "order_submit_unpersisted"
+    # Safety controls (Rule 8) blocking the order path (Phase 4 enforcement).
+    ORDER_INTENT_BLOCKED = "order_intent_blocked"  # creation blocked by kill/pause
+    ORDER_SUBMISSION_BLOCKED = "order_submission_blocked"  # loop held a submission
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"

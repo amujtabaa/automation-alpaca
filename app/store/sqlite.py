@@ -9,8 +9,10 @@ satisfy ``docs/02_DATA_AND_PERSISTENCE.md``:
   crash mid-write can't leave the audit trail inconsistent with the state it
   describes.
 * **Append-only fills** — there is no UPDATE or DELETE issued against ``fills``
-  anywhere in this file. ``source_fill_id`` carries a UNIQUE constraint; SQLite
-  treats NULLs as distinct, so it means "unique when present".
+  anywhere in this file. Duplicate protection is a **partial composite** unique
+  index ``idx_fills_order_source`` on ``(order_id, source_fill_id)`` WHERE
+  ``source_fill_id IS NOT NULL`` (Item 5 / F1) — per-order, so two different
+  orders may legitimately report the same ``source_fill_id``; NULLs are exempt.
 * **Position is derived** — there is no positions table; positions are folded
   from the fill rows via the shared :func:`app.position.fold_fills`, the exact
   same code path the in-memory store uses (Rule 7).
@@ -55,6 +57,7 @@ from app.store.base import (
     FillAppendResult,
     InvalidFillError,
     InvalidOrderError,
+    OrderIntentBlockedError,
     OrderTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
@@ -72,7 +75,9 @@ from app.store.validation import (
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
+    limit_price_reason,
     order_candidate_match_reason,
+    order_intent_block_reason,
 )
 
 SCHEMA = """
@@ -125,7 +130,9 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 -- Append-only. No UPDATE/DELETE is ever issued against this table.
--- source_fill_id UNIQUE => "unique when present" (SQLite treats NULLs distinct).
+-- Dedup is per-(order_id, source_fill_id) via idx_fills_order_source, NOT a
+-- column-level UNIQUE on source_fill_id alone (Item 5 / F1): two different orders
+-- may legitimately report a fill with the same source_fill_id string.
 CREATE TABLE IF NOT EXISTS fills (
     id             TEXT PRIMARY KEY,
     order_id       TEXT NOT NULL,
@@ -133,14 +140,15 @@ CREATE TABLE IF NOT EXISTS fills (
     side           TEXT NOT NULL,
     quantity       INTEGER NOT NULL,
     price          REAL NOT NULL,
-    source_fill_id TEXT UNIQUE,
+    source_fill_id TEXT,
     session_id     TEXT,
     filled_at      TEXT NOT NULL,
     created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol);
--- idx_fills_session is created in initialize() *after* _migrate, so it works on
--- pre-D-007 databases where the session_id column is added by migration.
+-- idx_fills_session and idx_fills_order_source are created in initialize()
+-- *after* _migrate, so they work on databases migrated from older schemas
+-- (pre-D-007 session_id column; pre-Item-5 column-level UNIQUE rebuild).
 
 -- Point-in-time positions captured at session close (D-007). Fills remain the
 -- source of truth; these are a fast, accurate read for closed sessions.
@@ -234,10 +242,26 @@ class SqliteStateStore(StateStore):
             conn = self._connect()
             conn.executescript(SCHEMA)
             self._migrate(conn)
-            # Created after migration so it works on pre-D-007 databases.
+            # Created after migration so they work on databases migrated from
+            # older schemas (a fills-table rebuild drops the table's indexes).
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_fills_session "
                 "ON fills(session_id)"
+            )
+            # Per-(order_id, source_fill_id) dedup (Item 5). Partial index so the
+            # uniqueness applies only when source_fill_id is present. This CREATE
+            # can only fail if the existing rows already contain a duplicate
+            # (order_id, source_fill_id) pair — impossible for any DB this code
+            # ever produced, because every prior schema enforced the *stricter*
+            # column-level UNIQUE on source_fill_id alone. It fails closed (no
+            # silent data change) if a hand-crafted DB ever violated that.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_order_source "
+                "ON fills(order_id, source_fill_id) "
+                "WHERE source_fill_id IS NOT NULL"
             )
             self._ensure_current_session_locked()
 
@@ -251,6 +275,50 @@ class SqliteStateStore(StateStore):
         }
         if "session_id" not in fill_cols:  # added in D-007
             conn.execute("ALTER TABLE fills ADD COLUMN session_id TEXT")
+
+        order_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()
+        }
+        if "broker_order_id" not in order_cols:  # added in Phase 4 (D-011)
+            # The Alpaca order UUID, set on submission and used to poll/cancel.
+            # Fresh DBs already get this column from SCHEMA; this guard only fires
+            # on an orders table created before the column existed.
+            conn.execute("ALTER TABLE orders ADD COLUMN broker_order_id TEXT")
+
+        # Item 5 / F1: dedup moved from a column-level UNIQUE on source_fill_id to
+        # a composite (order_id, source_fill_id) index. SQLite can't ALTER away a
+        # column constraint, so a DB created with the old `source_fill_id TEXT
+        # UNIQUE` must be rebuilt without it (rows preserved). Detect via the
+        # fills table's own CREATE SQL — the only UNIQUE it ever carried was that
+        # column constraint. The composite index is (re)created in initialize().
+        fills_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='fills'"
+        ).fetchone()
+        if fills_row is not None and "UNIQUE" in fills_row["sql"].upper():
+            conn.executescript(
+                """
+                ALTER TABLE fills RENAME TO fills_old;
+                CREATE TABLE fills (
+                    id             TEXT PRIMARY KEY,
+                    order_id       TEXT NOT NULL,
+                    symbol         TEXT NOT NULL,
+                    side           TEXT NOT NULL,
+                    quantity       INTEGER NOT NULL,
+                    price          REAL NOT NULL,
+                    source_fill_id TEXT,
+                    session_id     TEXT,
+                    filled_at      TEXT NOT NULL,
+                    created_at     TEXT NOT NULL
+                );
+                INSERT INTO fills
+                    (id, order_id, symbol, side, quantity, price,
+                     source_fill_id, session_id, filled_at, created_at)
+                    SELECT id, order_id, symbol, side, quantity, price,
+                           source_fill_id, session_id, filled_at, created_at
+                    FROM fills_old;
+                DROP TABLE fills_old;
+                """
+            )
 
     async def close(self) -> None:
         async with self._lock:
@@ -828,19 +896,41 @@ class SqliteStateStore(StateStore):
                     f"cannot order candidate {candidate_id} in status "
                     f"{candidate.status.value}; must be approved"
                 )
+            # Safety controls (Rule 8): refuse new order intent when the kill
+            # switch is engaged / buys are paused. Enforced at the backend
+            # boundary so every producer is gated (not just the UI), and audited.
+            sess_row = self._read_one(
+                "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
+            )
+            block = order_intent_block_reason(
+                self._session(sess_row) if sess_row is not None else None
+            )
+            if block is not None:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur,
+                        "order_intent_blocked",
+                        message=f"order intent for {candidate.symbol} blocked: {block}",
+                        symbol=candidate.symbol,
+                        candidate_id=candidate_id,
+                        payload={"reason": block},
+                        session_id=candidate.session_id,
+                    )
+                raise OrderIntentBlockedError(f"order intent blocked: {block}")
             qty = candidate.suggested_quantity
             if qty is None or qty <= 0:
                 raise InvalidOrderError(
                     f"candidate {candidate_id} has no positive suggested_quantity "
                     f"to size an order"
                 )
-            # A LIMIT order requires a positive limit price (F1): never persist a
-            # LIMIT order with a missing/zero/negative price.
+            # A LIMIT order requires a finite, positive limit price (F1 / BACKEND-1):
+            # never persist a LIMIT order with a missing/NaN/Inf/zero/negative price.
             limit_price = candidate.suggested_limit_price
-            if limit_price is None or limit_price <= 0:
+            bad_price = limit_price_reason(limit_price)
+            if bad_price is not None:
                 raise InvalidOrderError(
-                    f"candidate {candidate_id} has no positive "
-                    f"suggested_limit_price for a limit order"
+                    f"candidate {candidate_id} has no valid suggested_limit_price "
+                    f"for a limit order ({bad_price})"
                 )
             # Long-only buy proposal (beta). Order type LIMIT; session order-type
             # policy (Rule 12) is enforced later, not here.
@@ -898,6 +988,45 @@ class SqliteStateStore(StateStore):
                     session_id=candidate.session_id,
                 )
             return order
+
+    async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
+            )
+            if row is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            candidate = self._candidate(row)
+            # No-op unless genuinely stranded APPROVED-with-no-order.
+            if (
+                candidate.status is not CandidateStatus.APPROVED
+                or candidate.order_id is not None
+            ):
+                return candidate
+            now = utcnow()
+            with self._tx() as cur:
+                cur.execute(
+                    "UPDATE candidates SET status=?, approved_at=?, updated_at=? "
+                    "WHERE id=?",
+                    (CandidateStatus.PENDING.value, None, _dt(now), candidate_id),
+                )
+                self._insert_event(
+                    cur,
+                    "candidate_transition",
+                    message="candidate approved -> pending (dispatch blocked)",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate.id,
+                    payload={
+                        "from": "approved",
+                        "to": "pending",
+                        "reason": "dispatch_blocked",
+                    },
+                    session_id=candidate.session_id,
+                )
+            candidate.status = CandidateStatus.PENDING
+            candidate.approved_at = None
+            candidate.updated_at = now
+            return candidate
 
     def _insert_order(self, cur: sqlite3.Cursor, o: Order) -> None:
         cur.execute(
@@ -1123,8 +1252,8 @@ class SqliteStateStore(StateStore):
             #    cumulative check, so it is never mistaken for an overfill.
             if source_fill_id is not None:
                 dup = self._read_one(
-                    "SELECT 1 FROM fills WHERE source_fill_id = ?",
-                    (source_fill_id,),
+                    "SELECT 1 FROM fills WHERE order_id = ? AND source_fill_id = ?",
+                    (order_id, source_fill_id),
                 )
                 if dup is not None:
                     with self._tx() as cur:
@@ -1347,6 +1476,13 @@ class SqliteStateStore(StateStore):
             )
             return self._session(row) if row else None
 
+    async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            )
+            return self._session(row) if row else None
+
     async def list_sessions(self) -> list[SessionRecord]:
         async with self._lock:
             rows = self._read_all("SELECT * FROM sessions ORDER BY rowid")
@@ -1453,6 +1589,17 @@ class SqliteStateStore(StateStore):
                     ),
                 )
             ]
+            # Still-CREATED (never-submitted) orders in this session are cancelled
+            # at close (D-013a) so they cannot sit submittable afterward; already-
+            # submitted orders are untouched and keep reconciling (D-011).
+            created_orders = [
+                self._order(r)
+                for r in self._read_all(
+                    "SELECT * FROM orders WHERE session_id = ? AND status = ? "
+                    "ORDER BY rowid",
+                    (session.id, OrderStatus.CREATED.value),
+                )
+            ]
             snapshots = []
             for r in self._read_all(
                 "SELECT DISTINCT symbol FROM fills ORDER BY symbol"
@@ -1498,6 +1645,34 @@ class SqliteStateStore(StateStore):
                         },
                         session_id=session.id,
                     )
+                for order in created_orders:
+                    cur.execute(
+                        "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
+                        "WHERE id=?",
+                        (
+                            OrderStatus.CANCELED.value,
+                            _dt(now),
+                            _dt(now),
+                            order.id,
+                        ),
+                    )
+                    self._insert_event(
+                        cur,
+                        "order_transition",
+                        message=(
+                            f"order {order.symbol} created -> canceled "
+                            f"(session close)"
+                        ),
+                        symbol=order.symbol,
+                        candidate_id=order.candidate_id,
+                        order_id=order.id,
+                        payload={
+                            "from": "created",
+                            "to": "canceled",
+                            "reason": "session_close",
+                        },
+                        session_id=session.id,
+                    )
                 for snap in snapshots:
                     cur.execute(
                         """INSERT INTO position_snapshots
@@ -1529,11 +1704,13 @@ class SqliteStateStore(StateStore):
                     "session_closed",
                     message=(
                         f"session closed ({len(open_candidates)} candidates "
-                        f"expired, {len(snapshots)} positions snapshotted)"
+                        f"expired, {len(created_orders)} created orders canceled, "
+                        f"{len(snapshots)} positions snapshotted)"
                     ),
                     session_id=session.id,
                     payload={
                         "expired_candidates": len(open_candidates),
+                        "canceled_orders": len(created_orders),
                         "position_snapshots": len(snapshots),
                     },
                 )

@@ -85,3 +85,36 @@ Use when reviewing Codex or Claude Code output.
 - [ ] README updated.
 - [ ] AGENTS.md and CLAUDE.md present and consistent with `01_ARCHITECTURE.md`.
 - [ ] Decisions log (`00_START_HERE.md`) updated when architecture changes.
+
+## Phase 4 (Alpaca Paper Adapter)
+- [ ] No real/live Alpaca credentials anywhere; paper keys only, env-gated.
+- [ ] `alpaca-py` is the only Alpaca SDK; nothing outside `app/broker/` imports it.
+- [ ] `BrokerAdapter` is an abstract interface; routes and services depend on it,
+      not on `AlpacaPaperAdapter` directly.
+- [ ] Integration tests are gated behind `ALPACA_PAPER_API_KEY` /
+      `ALPACA_PAPER_API_SECRET`; they do not run in the standard `pytest` suite.
+- [ ] Unit tests use a `MockBrokerAdapter` and make no network calls (Rule 9).
+- [ ] Order submission is driven by the monitoring loop (finds `ORDERED` orders),
+      not the approval endpoint.
+- [ ] Fills are appended via `StateStore.append_fill` with `source_fill_id` from
+      Alpaca; duplicate fills are detected and audit-logged, not double-appended.
+- [ ] Position is still derived only from fills; the adapter never mutates
+      position directly (Rule 7).
+- [ ] Unfilled-order timeout is surfaced via audit event + cockpit alert; no
+      auto-cancel in Phase 4.
+- [ ] `POST /api/orders/{id}/cancel` calls the adapter then transitions the order.
+- [ ] Monitoring loop keeps polling until terminal state regardless of session
+      close (D-011).
+- [ ] Fill dedup is keyed per-order (`(order_id, source_fill_id)`), so the same
+      broker fill id appearing on two different orders cannot swallow the second
+      order's fill.
+- [ ] Order submission gates on the order's own session: a `CREATED` order whose
+      originating session is kill-switched, paused, or closed is held and
+      audited, never submitted under the current session's controls (no
+      date-rollover or post-close bypass).
+- [ ] Config rejects non-finite (`NaN`/`Inf`) timing values at load; the
+      monitoring loop cannot be driven into an error-spin by a bad cadence.
+- [ ] In-memory store multi-row mutations roll back as a unit on audit-write
+      failure (`append_fill`, `set_kill_switch`, pause-buys, and any other
+      multi-row method), matching SQLite's transactional guarantee.
+- [ ] `.env` is gitignored; no credentials appear in any committed file or log.

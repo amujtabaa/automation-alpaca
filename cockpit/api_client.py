@@ -105,6 +105,14 @@ def list_orders() -> list[dict]:
     return _request("GET", "/api/orders")
 
 
+def get_order(order_id: str) -> dict:
+    return _request("GET", f"/api/orders/{order_id}")
+
+
+def cancel_order(order_id: str) -> dict:
+    return _request("POST", f"/api/orders/{order_id}/cancel")
+
+
 def list_events(limit: Optional[int] = None) -> list[dict]:
     params = {"limit": limit} if limit else None
     return _request("GET", "/api/events", params=params)

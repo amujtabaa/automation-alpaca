@@ -17,10 +17,12 @@ from app.models import Candidate, CandidateStatus
 from app.store.base import (
     CandidateTransitionError,
     InvalidOrderError,
+    OrderIntentBlockedError,
     StateStore,
     StoreError,
     UnknownEntityError,
 )
+from app.store.validation import order_intent_block_reason
 
 router = APIRouter(prefix="/api", tags=["candidates"])
 
@@ -30,6 +32,7 @@ _MAPPED_ERRORS = (
     UnknownEntityError,
     CandidateTransitionError,
     InvalidOrderError,
+    OrderIntentBlockedError,
 )
 
 
@@ -129,9 +132,33 @@ async def approve_candidate(
             ),
         )
 
+    # Safety controls pre-check (Rule 8): don't approve a candidate the backend
+    # would then refuse to dispatch (kill switch engaged / buys paused) — that
+    # would strand it at APPROVED. Mirrors the enforcement inside
+    # create_order_for_candidate; checked here so a blocked candidate stays
+    # PENDING (still rejectable). Skipped for an already-ORDERED candidate (a
+    # re-approve is an idempotent no-op that creates no new intent).
+    if candidate.status is not CandidateStatus.ORDERED:
+        block = order_intent_block_reason(await store.get_current_session())
+        if block is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"order intent blocked: {block}",
+            )
+
     try:
         await gate.approve(candidate_id)
         await store.create_order_for_candidate(candidate_id)
+    except OrderIntentBlockedError as exc:
+        # Race (D-013): a safety control flipped between the pre-check above and
+        # the store handoff. The store refused the order, so roll the approval
+        # back to PENDING — never leave the candidate stranded APPROVED with no
+        # order under a safety stop. The revert is a no-op if the candidate
+        # actually became ORDERED, so this is safe even without the pre-check.
+        await store.revert_candidate_approval(candidate_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except _MAPPED_ERRORS as exc:
         raise _http_error(exc) from exc
 

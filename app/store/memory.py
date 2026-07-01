@@ -1,11 +1,13 @@
 """In-memory StateStore — used by unit tests, never touches disk or network.
 
-All mutating operations run under a single ``asyncio.Lock``. Because there is no
-crash-durability concern in memory, that lock *is* the atomicity guarantee here:
-a multi-row mutation (e.g. a transition plus its audit event) happens entirely
-inside one ``async with self._lock`` block, so it is all-or-nothing exactly like
-``SqliteStateStore``'s SQL transaction (see ``docs/02_DATA_AND_PERSISTENCE.md``,
-"Mutating Operations Are Atomic").
+All mutating operations run under a single ``asyncio.Lock`` (serializing
+coroutines), **and** every multi-row mutation runs inside ``self._atomic()`` so a
+failed audit-event write rolls the whole operation back — all-or-nothing exactly
+like ``SqliteStateStore``'s SQL transaction (see ``docs/02_DATA_AND_PERSISTENCE.md``,
+"Mutating Operations Are Atomic"). The lock alone is *not* sufficient: it prevents
+interleaving but not a half-applied write if a mutation raises after the state
+change but before (or during) its audit event — ``_atomic`` snapshots state on
+enter and restores it on any exception (Item 4 / BE-1).
 
 The lock is **not** reentrant, so public methods acquire it once and then call
 private ``*_unlocked`` helpers (which never re-acquire it) to do the raw work,
@@ -15,8 +17,9 @@ including writing audit events.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import date
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from app.models import (
     Candidate,
@@ -42,6 +45,7 @@ from app.store.base import (
     FillAppendResult,
     InvalidFillError,
     InvalidOrderError,
+    OrderIntentBlockedError,
     OrderTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
@@ -59,7 +63,9 @@ from app.store.validation import (
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
+    limit_price_reason,
     order_candidate_match_reason,
+    order_intent_block_reason,
 )
 
 
@@ -70,7 +76,10 @@ class InMemoryStateStore(StateStore):
         self._candidates: dict[str, Candidate] = {}
         self._orders: dict[str, Order] = {}
         self._fills: list[Fill] = []  # append-only, insertion order
-        self._fill_source_ids: set[str] = set()
+        # Dedup keyed per-(order_id, source_fill_id) (Item 5 / F1): two different
+        # orders reporting a fill with the same source_fill_id must not swallow
+        # the second. Same-order replays are still ignored.
+        self._fill_source_ids: set[tuple[str, str]] = set()
         self._events: list[Event] = []  # append-only, insertion order
         self._sessions: list[SessionRecord] = []
         self._position_snapshots: list[PositionSnapshot] = []
@@ -80,11 +89,55 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     async def initialize(self) -> None:
         async with self._lock:
-            self._ensure_current_session_unlocked()
+            with self._atomic():
+                self._ensure_current_session_unlocked()
 
     # ------------------------------------------------------------------ #
     # Internal helpers (assume the lock is held)
     # ------------------------------------------------------------------ #
+    @contextlib.contextmanager
+    def _atomic(self) -> Iterator[None]:
+        """All-or-nothing for a multi-row in-memory mutation (Item 4 / BE-1).
+
+        Snapshots store state on enter; on ANY exception restores it, so a failed
+        audit-event append can't leave a half-applied mutation (a fill recorded
+        without its ``fill_appended`` event and a poisoned dedup set; a flipped
+        control flag with no audit row). Mirrors ``SqliteStateStore``'s
+        BEGIN/COMMIT/ROLLBACK.
+
+        Collections whose elements are mutated in place (watchlist, candidates,
+        orders, sessions) are deep-copied; append-only collections (fills,
+        events, snapshots) and the dedup set are shallow-copied — restoring the
+        prior contents is enough since their elements are never mutated. The
+        snapshot cost is negligible at beta's single-user scale; correctness and
+        SQLite parity matter more.
+        """
+
+        saved_watchlist = {
+            k: v.model_copy(deep=True) for k, v in self._watchlist.items()
+        }
+        saved_candidates = {
+            k: v.model_copy(deep=True) for k, v in self._candidates.items()
+        }
+        saved_orders = {k: v.model_copy(deep=True) for k, v in self._orders.items()}
+        saved_fills = list(self._fills)
+        saved_source_ids = set(self._fill_source_ids)
+        saved_events = list(self._events)
+        saved_sessions = [s.model_copy(deep=True) for s in self._sessions]
+        saved_snapshots = list(self._position_snapshots)
+        try:
+            yield
+        except BaseException:
+            self._watchlist = saved_watchlist
+            self._candidates = saved_candidates
+            self._orders = saved_orders
+            self._fills = saved_fills
+            self._fill_source_ids = saved_source_ids
+            self._events = saved_events
+            self._sessions = saved_sessions
+            self._position_snapshots = saved_snapshots
+            raise
+
     def _append_event_unlocked(
         self,
         event_type: str,
@@ -120,12 +173,18 @@ class InMemoryStateStore(StateStore):
             if session.session_date == today:
                 return session
         session = SessionRecord(session_date=today, mode=TradingMode.PAPER)
-        self._sessions.append(session)
-        self._append_event_unlocked(
-            "session_opened",
-            message=f"session opened for {today}",
-            session_id=session.id,
-        )
+        # Self-atomic so a caller that auto-creates today's session OUTSIDE its
+        # own _atomic block (e.g. create_candidate) can't leak a half-created
+        # session if the session_opened event write fails — matches SQLite, where
+        # _ensure_current_session_locked wraps both writes in one _tx. _atomic
+        # nests safely inside a caller that is already atomic.
+        with self._atomic():
+            self._sessions.append(session)
+            self._append_event_unlocked(
+                "session_opened",
+                message=f"session opened for {today}",
+                session_id=session.id,
+            )
         return session
 
     def _fills_for_symbol_unlocked(self, symbol: str) -> list[Fill]:
@@ -145,22 +204,23 @@ class InMemoryStateStore(StateStore):
             existing = self._watchlist.get(key)
             if existing is not None:
                 return existing.model_copy(deep=True)
-            session = self._ensure_current_session_unlocked()
-            now = utcnow()
-            entry = WatchlistSymbol(
-                symbol=key,
-                armed=armed,
-                added_at=now,
-                updated_at=now,
-                armed_at=now if armed else None,
-            )
-            self._watchlist[key] = entry
-            self._append_event_unlocked(
-                "watchlist_added",
-                message=f"{key} added",
-                symbol=key,
-                session_id=session.id,
-            )
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+                now = utcnow()
+                entry = WatchlistSymbol(
+                    symbol=key,
+                    armed=armed,
+                    added_at=now,
+                    updated_at=now,
+                    armed_at=now if armed else None,
+                )
+                self._watchlist[key] = entry
+                self._append_event_unlocked(
+                    "watchlist_added",
+                    message=f"{key} added",
+                    symbol=key,
+                    session_id=session.id,
+                )
             return entry.model_copy(deep=True)
 
     async def list_watchlist(self) -> list[WatchlistSymbol]:
@@ -179,16 +239,17 @@ class InMemoryStateStore(StateStore):
             entry = self._watchlist.get(key)
             if entry is None:
                 raise UnknownEntityError(f"watchlist symbol {key} not found")
-            session = self._ensure_current_session_unlocked()
-            entry.armed = armed
-            entry.armed_at = utcnow() if armed else None
-            entry.updated_at = utcnow()
-            self._append_event_unlocked(
-                "watchlist_armed" if armed else "watchlist_disarmed",
-                message=f"{key} {'armed' if armed else 'disarmed'}",
-                symbol=key,
-                session_id=session.id,
-            )
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+                entry.armed = armed
+                entry.armed_at = utcnow() if armed else None
+                entry.updated_at = utcnow()
+                self._append_event_unlocked(
+                    "watchlist_armed" if armed else "watchlist_disarmed",
+                    message=f"{key} {'armed' if armed else 'disarmed'}",
+                    symbol=key,
+                    session_id=session.id,
+                )
             return entry.model_copy(deep=True)
 
     async def remove_watchlist_symbol(self, symbol: str) -> bool:
@@ -196,14 +257,15 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             if key not in self._watchlist:
                 return False
-            session = self._ensure_current_session_unlocked()
-            del self._watchlist[key]
-            self._append_event_unlocked(
-                "watchlist_removed",
-                message=f"{key} removed",
-                symbol=key,
-                session_id=session.id,
-            )
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+                del self._watchlist[key]
+                self._append_event_unlocked(
+                    "watchlist_removed",
+                    message=f"{key} removed",
+                    symbol=key,
+                    session_id=session.id,
+                )
             return True
 
     # ------------------------------------------------------------------ #
@@ -248,14 +310,15 @@ class InMemoryStateStore(StateStore):
                 suggested_limit_price=suggested_limit_price,
                 session_id=session_id,
             )
-            self._candidates[candidate.id] = candidate
-            self._append_event_unlocked(
-                "candidate_created",
-                message=f"candidate created for {key}",
-                symbol=key,
-                candidate_id=candidate.id,
-                session_id=session_id,
-            )
+            with self._atomic():
+                self._candidates[candidate.id] = candidate
+                self._append_event_unlocked(
+                    "candidate_created",
+                    message=f"candidate created for {key}",
+                    symbol=key,
+                    candidate_id=candidate.id,
+                    session_id=session_id,
+                )
             return candidate.model_copy(deep=True)
 
     async def list_candidates(
@@ -303,22 +366,23 @@ class InMemoryStateStore(StateStore):
                     f"illegal candidate transition {current.value} -> "
                     f"{new_status.value}"
                 )
-            candidate.status = new_status
-            candidate.updated_at = utcnow()
-            ts_field = _CANDIDATE_TIMESTAMP.get(new_status)
-            if ts_field:
-                setattr(candidate, ts_field, utcnow())
-            if new_status is CandidateStatus.ORDERED and order_id is not None:
-                candidate.order_id = order_id
-            self._append_event_unlocked(
-                "candidate_transition",
-                message=f"candidate {current.value} -> {new_status.value}",
-                symbol=candidate.symbol,
-                candidate_id=candidate.id,
-                order_id=order_id,
-                payload={"from": current.value, "to": new_status.value},
-                session_id=candidate.session_id,
-            )
+            with self._atomic():
+                candidate.status = new_status
+                candidate.updated_at = utcnow()
+                ts_field = _CANDIDATE_TIMESTAMP.get(new_status)
+                if ts_field:
+                    setattr(candidate, ts_field, utcnow())
+                if new_status is CandidateStatus.ORDERED and order_id is not None:
+                    candidate.order_id = order_id
+                self._append_event_unlocked(
+                    "candidate_transition",
+                    message=f"candidate {current.value} -> {new_status.value}",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate.id,
+                    order_id=order_id,
+                    payload={"from": current.value, "to": new_status.value},
+                    session_id=candidate.session_id,
+                )
             return candidate.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #
@@ -360,15 +424,16 @@ class InMemoryStateStore(StateStore):
                 replaces_order_id=replaces_order_id,
                 session_id=session_id,
             )
-            self._orders[order.id] = order
-            self._append_event_unlocked(
-                "order_created",
-                message=f"order created for {key}",
-                symbol=key,
-                candidate_id=candidate_id,
-                order_id=order.id,
-                session_id=session_id,
-            )
+            with self._atomic():
+                self._orders[order.id] = order
+                self._append_event_unlocked(
+                    "order_created",
+                    message=f"order created for {key}",
+                    symbol=key,
+                    candidate_id=candidate_id,
+                    order_id=order.id,
+                    session_id=session_id,
+                )
             return order.model_copy(deep=True)
 
     async def create_order_for_candidate(self, candidate_id: str) -> Order:
@@ -396,19 +461,37 @@ class InMemoryStateStore(StateStore):
                     f"cannot order candidate {candidate_id} in status "
                     f"{candidate.status.value}; must be approved"
                 )
+            # Safety controls (Rule 8): refuse new order intent when the kill
+            # switch is engaged / buys are paused. Enforced at the backend
+            # boundary so every producer is gated (not just the UI), and audited.
+            session = next(
+                (s for s in self._sessions if s.id == candidate.session_id), None
+            )
+            block = order_intent_block_reason(session)
+            if block is not None:
+                self._append_event_unlocked(
+                    "order_intent_blocked",
+                    message=f"order intent for {candidate.symbol} blocked: {block}",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate_id,
+                    payload={"reason": block},
+                    session_id=candidate.session_id,
+                )
+                raise OrderIntentBlockedError(f"order intent blocked: {block}")
             qty = candidate.suggested_quantity
             if qty is None or qty <= 0:
                 raise InvalidOrderError(
                     f"candidate {candidate_id} has no positive suggested_quantity "
                     f"to size an order"
                 )
-            # A LIMIT order requires a positive limit price (F1): never persist a
-            # LIMIT order with a missing/zero/negative price.
+            # A LIMIT order requires a finite, positive limit price (F1 / BACKEND-1):
+            # never persist a LIMIT order with a missing/NaN/Inf/zero/negative price.
             limit_price = candidate.suggested_limit_price
-            if limit_price is None or limit_price <= 0:
+            bad_price = limit_price_reason(limit_price)
+            if bad_price is not None:
                 raise InvalidOrderError(
-                    f"candidate {candidate_id} has no positive "
-                    f"suggested_limit_price for a limit order"
+                    f"candidate {candidate_id} has no valid suggested_limit_price "
+                    f"for a limit order ({bad_price})"
                 )
             # Long-only buy proposal (beta). Order type LIMIT; session order-type
             # policy (Rule 12) is enforced later, not here.
@@ -462,6 +545,37 @@ class InMemoryStateStore(StateStore):
                 del self._events[events_before:]
                 raise
             return order.model_copy(deep=True)
+
+    async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
+        async with self._lock:
+            candidate = self._candidates.get(candidate_id)
+            if candidate is None:
+                raise UnknownEntityError(f"candidate {candidate_id} not found")
+            # No-op unless the candidate is genuinely stranded APPROVED-with-no-
+            # order: never disturb one that became ORDERED, or a PENDING one.
+            if (
+                candidate.status is not CandidateStatus.APPROVED
+                or candidate.order_id is not None
+            ):
+                return candidate.model_copy(deep=True)
+            now = utcnow()
+            with self._atomic():
+                candidate.status = CandidateStatus.PENDING
+                candidate.approved_at = None
+                candidate.updated_at = now
+                self._append_event_unlocked(
+                    "candidate_transition",
+                    message="candidate approved -> pending (dispatch blocked)",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate.id,
+                    payload={
+                        "from": "approved",
+                        "to": "pending",
+                        "reason": "dispatch_blocked",
+                    },
+                    session_id=candidate.session_id,
+                )
+            return candidate.model_copy(deep=True)
 
     async def list_orders(
         self,
@@ -530,50 +644,51 @@ class InMemoryStateStore(StateStore):
                 return order.model_copy(deep=True)
 
             previous_filled = order.filled_quantity
-            if qty_changed:
-                order.filled_quantity = filled_quantity
-            if broker_changed:
-                order.broker_order_id = broker_order_id
-            if status_changed:
-                order.status = new_status
-                ts_field = _ORDER_TIMESTAMP.get(new_status)
-                if ts_field and getattr(order, ts_field) is None:
-                    setattr(order, ts_field, utcnow())
-            order.updated_at = utcnow()
-
-            if status_changed:
-                self._append_event_unlocked(
-                    "order_transition",
-                    message=f"order {current.value} -> {new_status.value}",
-                    symbol=order.symbol,
-                    candidate_id=order.candidate_id,
-                    order_id=order.id,
-                    payload={"from": current.value, "to": new_status.value},
-                    session_id=order.session_id,
-                )
-            else:
-                # Same status, but fill progressed (or broker id assigned). Not a
-                # no-op — record it with the before/after quantity, not a generic
-                # same-status row (D-008).
-                payload: dict[str, Any] = {
-                    "status": current.value,
-                    "previous_filled_quantity": previous_filled,
-                    "filled_quantity": order.filled_quantity,
-                }
+            with self._atomic():
+                if qty_changed:
+                    order.filled_quantity = filled_quantity
                 if broker_changed:
-                    payload["broker_order_id"] = broker_order_id
-                self._append_event_unlocked(
-                    "order_fill_progress",
-                    message=(
-                        f"order {order.symbol} fill progress "
-                        f"{previous_filled} -> {order.filled_quantity}"
-                    ),
-                    symbol=order.symbol,
-                    candidate_id=order.candidate_id,
-                    order_id=order.id,
-                    payload=payload,
-                    session_id=order.session_id,
-                )
+                    order.broker_order_id = broker_order_id
+                if status_changed:
+                    order.status = new_status
+                    ts_field = _ORDER_TIMESTAMP.get(new_status)
+                    if ts_field and getattr(order, ts_field) is None:
+                        setattr(order, ts_field, utcnow())
+                order.updated_at = utcnow()
+
+                if status_changed:
+                    self._append_event_unlocked(
+                        "order_transition",
+                        message=f"order {current.value} -> {new_status.value}",
+                        symbol=order.symbol,
+                        candidate_id=order.candidate_id,
+                        order_id=order.id,
+                        payload={"from": current.value, "to": new_status.value},
+                        session_id=order.session_id,
+                    )
+                else:
+                    # Same status, but fill progressed (or broker id assigned).
+                    # Not a no-op — record it with the before/after quantity, not
+                    # a generic same-status row (D-008).
+                    payload: dict[str, Any] = {
+                        "status": current.value,
+                        "previous_filled_quantity": previous_filled,
+                        "filled_quantity": order.filled_quantity,
+                    }
+                    if broker_changed:
+                        payload["broker_order_id"] = broker_order_id
+                    self._append_event_unlocked(
+                        "order_fill_progress",
+                        message=(
+                            f"order {order.symbol} fill progress "
+                            f"{previous_filled} -> {order.filled_quantity}"
+                        ),
+                        symbol=order.symbol,
+                        candidate_id=order.candidate_id,
+                        order_id=order.id,
+                        payload=payload,
+                        session_id=order.session_id,
+                    )
             return order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #
@@ -629,7 +744,10 @@ class InMemoryStateStore(StateStore):
             # 3) Duplicate protection (makes append idempotent, not optional).
             #    A replay of an already-accepted fill short-circuits here before
             #    the cumulative check, so it is never mistaken for an overfill.
-            if source_fill_id is not None and source_fill_id in self._fill_source_ids:
+            if (
+                source_fill_id is not None
+                and (order_id, source_fill_id) in self._fill_source_ids
+            ):
                 event = self._append_event_unlocked(
                     "fill_duplicate_ignored",
                     message=(
@@ -689,7 +807,10 @@ class InMemoryStateStore(StateStore):
                 )
                 raise NegativePositionError(key, current.quantity, quantity)
 
-            # 6) Append the fill and record it.
+            # 6) Append the fill and record it — atomically, so a failed audit
+            #    event can't leave a position-changing fill with no fill_appended
+            #    row AND a poisoned dedup set (Item 4). Only this success region is
+            #    wrapped; the rejection events above must persist.
             fill = Fill(
                 order_id=order_id,
                 symbol=key,
@@ -700,18 +821,23 @@ class InMemoryStateStore(StateStore):
                 session_id=session_id,
                 filled_at=filled_at or utcnow(),
             )
-            self._fills.append(fill)
-            if source_fill_id is not None:
-                self._fill_source_ids.add(source_fill_id)
-            event = self._append_event_unlocked(
-                "fill_appended",
-                message=f"fill {fill.quantity} {key} @ {fill.price}",
-                symbol=key,
-                order_id=order_id,
-                fill_id=fill.id,
-                payload={"side": side.value, "quantity": quantity, "price": price},
-                session_id=session_id,
-            )
+            with self._atomic():
+                self._fills.append(fill)
+                if source_fill_id is not None:
+                    self._fill_source_ids.add((order_id, source_fill_id))
+                event = self._append_event_unlocked(
+                    "fill_appended",
+                    message=f"fill {fill.quantity} {key} @ {fill.price}",
+                    symbol=key,
+                    order_id=order_id,
+                    fill_id=fill.id,
+                    payload={
+                        "side": side.value,
+                        "quantity": quantity,
+                        "price": price,
+                    },
+                    session_id=session_id,
+                )
             return FillAppendResult(
                 status="appended", fill=fill.model_copy(deep=True), event=event
             )
@@ -797,7 +923,9 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     async def get_current_session(self) -> SessionRecord:
         async with self._lock:
-            return self._ensure_current_session_unlocked().model_copy(deep=True)
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+            return session.model_copy(deep=True)
 
     async def get_session_by_date(self, day: date) -> Optional[SessionRecord]:
         target = day.isoformat()
@@ -807,47 +935,57 @@ class InMemoryStateStore(StateStore):
                     return session.model_copy(deep=True)
             return None
 
+    async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
+        async with self._lock:
+            for session in self._sessions:
+                if session.id == session_id:
+                    return session.model_copy(deep=True)
+            return None
+
     async def list_sessions(self) -> list[SessionRecord]:
         async with self._lock:
             return [s.model_copy(deep=True) for s in self._sessions]
 
     async def set_session_type(self, session_type: SessionType) -> SessionRecord:
         async with self._lock:
-            session = self._ensure_current_session_unlocked()
-            session.session_type = SessionType(session_type)
-            session.updated_at = utcnow()
-            self._append_event_unlocked(
-                "session_opened",
-                message=f"session type set to {session.session_type.value}",
-                session_id=session.id,
-                payload={"session_type": session.session_type.value},
-            )
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+                session.session_type = SessionType(session_type)
+                session.updated_at = utcnow()
+                self._append_event_unlocked(
+                    "session_opened",
+                    message=f"session type set to {session.session_type.value}",
+                    session_id=session.id,
+                    payload={"session_type": session.session_type.value},
+                )
             return session.model_copy(deep=True)
 
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
         async with self._lock:
-            session = self._ensure_current_session_unlocked()
-            session.kill_switch = engaged
-            session.updated_at = utcnow()
-            self._append_event_unlocked(
-                "kill_switch_engaged" if engaged else "kill_switch_released",
-                message=f"kill switch {'engaged' if engaged else 'released'}",
-                session_id=session.id,
-                payload={"kill_switch": engaged},
-            )
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+                session.kill_switch = engaged
+                session.updated_at = utcnow()
+                self._append_event_unlocked(
+                    "kill_switch_engaged" if engaged else "kill_switch_released",
+                    message=f"kill switch {'engaged' if engaged else 'released'}",
+                    session_id=session.id,
+                    payload={"kill_switch": engaged},
+                )
             return session.model_copy(deep=True)
 
     async def set_buys_paused(self, paused: bool) -> SessionRecord:
         async with self._lock:
-            session = self._ensure_current_session_unlocked()
-            session.buys_paused = paused
-            session.updated_at = utcnow()
-            self._append_event_unlocked(
-                "buys_paused" if paused else "buys_resumed",
-                message=f"buys {'paused' if paused else 'resumed'}",
-                session_id=session.id,
-                payload={"buys_paused": paused},
-            )
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+                session.buys_paused = paused
+                session.updated_at = utcnow()
+                self._append_event_unlocked(
+                    "buys_paused" if paused else "buys_resumed",
+                    message=f"buys {'paused' if paused else 'resumed'}",
+                    session_id=session.id,
+                    payload={"buys_paused": paused},
+                )
             return session.model_copy(deep=True)
 
     async def close_session(
@@ -878,69 +1016,114 @@ class InMemoryStateStore(StateStore):
                         f"session {session.id} is already closed"
                     )
 
-            now = utcnow()
+            # The whole close (expire candidates + cancel CREATED orders +
+            # snapshot positions + mark closed + audit) is one atomic group.
+            with self._atomic():
+                return self._close_session_unlocked(session)
 
-            # 1) Expire open (pending/approved) candidates in this session.
-            expired = 0
-            for candidate in self._candidates.values():
-                if candidate.session_id == session.id and candidate.status in (
-                    CandidateStatus.PENDING,
-                    CandidateStatus.APPROVED,
-                ):
-                    prev = candidate.status
-                    candidate.status = CandidateStatus.EXPIRED
-                    candidate.expired_at = now
-                    candidate.updated_at = now
-                    expired += 1
-                    self._append_event_unlocked(
-                        "candidate_transition",
-                        message=f"candidate {prev.value} -> expired (session close)",
-                        symbol=candidate.symbol,
-                        candidate_id=candidate.id,
-                        payload={
-                            "from": prev.value,
-                            "to": "expired",
-                            "reason": "session_close",
-                        },
+    def _close_session_unlocked(self, session: SessionRecord) -> SessionRecord:
+        """The close mutations (assumes the lock is held and ``session`` is the
+        validated, still-open session). Wrapped by ``_atomic`` so the whole close
+        is all-or-nothing."""
+
+        now = utcnow()
+
+        # 1) Expire open (pending/approved) candidates in this session.
+        expired = 0
+        for candidate in self._candidates.values():
+            if candidate.session_id == session.id and candidate.status in (
+                CandidateStatus.PENDING,
+                CandidateStatus.APPROVED,
+            ):
+                prev = candidate.status
+                candidate.status = CandidateStatus.EXPIRED
+                candidate.expired_at = now
+                candidate.updated_at = now
+                expired += 1
+                self._append_event_unlocked(
+                    "candidate_transition",
+                    message=f"candidate {prev.value} -> expired (session close)",
+                    symbol=candidate.symbol,
+                    candidate_id=candidate.id,
+                    payload={
+                        "from": prev.value,
+                        "to": "expired",
+                        "reason": "session_close",
+                    },
+                    session_id=session.id,
+                )
+
+        # 1b) Cancel still-CREATED (never-submitted) orders in this session
+        #     so they cannot sit submittable after close (D-013a). The loop's
+        #     per-order-session gate also holds them, but cancelling here
+        #     leaves a clean terminal state instead of a zombie CREATED order.
+        #     Already-submitted orders are untouched and keep reconciling
+        #     (D-011).
+        canceled_orders = 0
+        for order in self._orders.values():
+            if (
+                order.session_id == session.id
+                and order.status is OrderStatus.CREATED
+            ):
+                order.status = OrderStatus.CANCELED
+                order.canceled_at = now
+                order.updated_at = now
+                canceled_orders += 1
+                self._append_event_unlocked(
+                    "order_transition",
+                    message=(
+                        f"order {order.symbol} created -> canceled "
+                        f"(session close)"
+                    ),
+                    symbol=order.symbol,
+                    candidate_id=order.candidate_id,
+                    order_id=order.id,
+                    payload={
+                        "from": "created",
+                        "to": "canceled",
+                        "reason": "session_close",
+                    },
+                    session_id=session.id,
+                )
+
+        # 2) Snapshot every nonzero position (the live fold over fills).
+        snapshots = 0
+        for sym in sorted({f.symbol for f in self._fills}):
+            pos = self._position_unlocked(sym)
+            if pos.quantity != 0:
+                self._position_snapshots.append(
+                    PositionSnapshot(
                         session_id=session.id,
+                        symbol=pos.symbol,
+                        quantity=pos.quantity,
+                        cost_basis=pos.cost_basis,
+                        average_price=pos.average_price,
+                        captured_at=now,
                     )
+                )
+                snapshots += 1
 
-            # 2) Snapshot every nonzero position (the live fold over fills).
-            snapshots = 0
-            for sym in sorted({f.symbol for f in self._fills}):
-                pos = self._position_unlocked(sym)
-                if pos.quantity != 0:
-                    self._position_snapshots.append(
-                        PositionSnapshot(
-                            session_id=session.id,
-                            symbol=pos.symbol,
-                            quantity=pos.quantity,
-                            cost_basis=pos.cost_basis,
-                            average_price=pos.average_price,
-                            captured_at=now,
-                        )
-                    )
-                    snapshots += 1
+        # 3) Mark the session closed.
+        session.status = SessionStatus.CLOSED
+        session.closed_at = now
+        session.updated_at = now
 
-            # 3) Mark the session closed.
-            session.status = SessionStatus.CLOSED
-            session.closed_at = now
-            session.updated_at = now
-
-            # 4) One audit event for the close.
-            self._append_event_unlocked(
-                "session_closed",
-                message=(
-                    f"session closed ({expired} candidates expired, "
-                    f"{snapshots} positions snapshotted)"
-                ),
-                session_id=session.id,
-                payload={
-                    "expired_candidates": expired,
-                    "position_snapshots": snapshots,
-                },
-            )
-            return session.model_copy(deep=True)
+        # 4) One audit event for the close.
+        self._append_event_unlocked(
+            "session_closed",
+            message=(
+                f"session closed ({expired} candidates expired, "
+                f"{canceled_orders} created orders canceled, "
+                f"{snapshots} positions snapshotted)"
+            ),
+            session_id=session.id,
+            payload={
+                "expired_candidates": expired,
+                "canceled_orders": canceled_orders,
+                "position_snapshots": snapshots,
+            },
+        )
+        return session.model_copy(deep=True)
 
     async def list_position_snapshots(
         self, session_id: str

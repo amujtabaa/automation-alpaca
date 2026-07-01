@@ -19,6 +19,7 @@ Key structural guarantees the interface is shaped to enforce:
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
@@ -41,16 +42,31 @@ from app.models import (
 )
 
 
+# A bounded ticker domain: a leading letter then up to nine more of
+# letters/digits/dot/dash (covers e.g. AAPL, BRK.B, BF-B). Keeps overly long,
+# unicode, whitespace, path-like, or SQL-looking strings out of durable trading
+# data (DATA-2). SQL is already parameterized; this is a data-quality/blast-
+# radius guard, not an injection fix.
+_SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9.\-]{0,9}")
+
+
 def normalize_symbol(symbol: str) -> str:
     """Canonical symbol form used as the watchlist/position key.
 
     Normalization lives in the store so every caller (and both
-    implementations) keys symbols identically — the UI never has to.
+    implementations) keys symbols identically — the UI never has to. Rejects a
+    blank or out-of-domain symbol with ``ValueError`` (route handlers surface it
+    as 422).
     """
 
     normalized = symbol.strip().upper()
     if not normalized:
         raise ValueError("symbol must be a non-empty string")
+    if not _SYMBOL_RE.fullmatch(normalized):
+        raise ValueError(
+            f"symbol {symbol!r} is not a valid ticker (expected 1-10 chars: a "
+            f"leading letter then letters/digits/'.'/'-')"
+        )
     return normalized
 
 
@@ -107,14 +123,32 @@ class SessionAlreadyClosedError(StoreError):
     """
 
 
-class SessionClosedError(StoreError):
-    """A candidate/order mutation was attempted against a *closed* session.
+class OrderIntentBlockedError(StoreError):
+    """New order intent was blocked by a safety control (Rule 8).
 
-    Closing a session ends the trading day (D-009). New candidates may not be
-    created in a closed session, and an approved candidate in a closed session
-    may not be dispatched to an order — both would mutate history *after* the
-    point-in-time review snapshot was captured. Distinct from
-    :class:`SessionAlreadyClosedError`, which is specifically about re-closing.
+    Raised by ``create_order_for_candidate`` when the candidate's session has the
+    kill switch engaged (blocks *all* new order intent) or buys paused (blocks
+    new BUY intent — beta orders are long-only buys). The flag is persisted state
+    the backend owns; enforcing it here (not only in the UI) means every order-
+    intent producer — the approve route now, a future auto-buy engine — is gated,
+    and the block is recorded as an audit event. Distinct from the Phase 6 CAPI
+    risk limits (max shares/notional/exposure), which remain out of scope.
+    """
+
+
+class SessionClosedError(StoreError):
+    """A new candidate was attempted against a *closed* session.
+
+    Closing a session ends the trading day (D-009): ``create_candidate`` refuses
+    to attach a fresh candidate to a closed session, since it would sit outside
+    the point-in-time review snapshot captured at close. This guard is on
+    candidate *creation* only. It deliberately does **not** block order dispatch,
+    fill append, or order transitions for an order that already exists — those
+    must keep working after close so an in-flight order is tracked to a terminal
+    state (D-011). In practice dispatch can't happen in a closed session anyway,
+    because close expires every open (pending/approved) candidate first. Distinct
+    from :class:`SessionAlreadyClosedError`, which is specifically about
+    re-closing.
     """
 
 
@@ -271,6 +305,20 @@ class StateStore(ABC):
         """
 
     @abstractmethod
+    async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
+        """Atomically revert ``APPROVED → PENDING`` when dispatch was refused.
+
+        Recovery for the approve/dispatch race (D-013): if a safety control flips
+        between the approve transition and the order-creation handoff, the store
+        refuses the order (``OrderIntentBlockedError``) but the candidate is
+        already ``APPROVED`` — stranded ``APPROVED`` with no order under a safety
+        stop. The approve route calls this to put it back to ``PENDING`` (still
+        rejectable / re-approvable). Acts **only** on an ``APPROVED`` candidate
+        with no linked order; otherwise it is an idempotent no-op (so a candidate
+        that actually became ``ORDERED`` is never disturbed). Atomic + audited.
+        """
+
+    @abstractmethod
     async def list_orders(
         self,
         *,
@@ -379,6 +427,15 @@ class StateStore(ABC):
     @abstractmethod
     async def get_session_by_date(self, day: date) -> Optional[SessionRecord]:
         ...
+
+    @abstractmethod
+    async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
+        """The session with this id, or ``None``.
+
+        Used by the monitoring loop to gate a held order's submission against its
+        **own** originating session (D-013a), independent of which session is
+        currently live.
+        """
 
     @abstractmethod
     async def list_sessions(self) -> list[SessionRecord]:
