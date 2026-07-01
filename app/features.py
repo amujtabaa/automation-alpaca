@@ -77,6 +77,17 @@ def session_type_for(dt: datetime) -> Optional[SessionType]:
     do not trade on weekends regardless of clock time. Exchange holidays are
     NOT checked (no holiday calendar here); a holiday's true state is that the
     feed simply never ticks, which the staleness check surfaces instead.
+
+    **Early-close half-days are not detected either** (e.g. the day after
+    Thanksgiving, when the regular session ends at 13:00 ET instead of 16:00):
+    this function would still classify 13:00–16:00 ET on such a day as
+    ``REGULAR``, even though the exchange is actually closed. This is not
+    silent forever — trades stop arriving after the real close, so the feed's
+    own staleness detection (D-005, ``MARKET_DATA_STALE_MINUTES``) surfaces it
+    within that configured window — but it is a real, currently-undetected gap
+    between "classified as regular hours" and "the exchange is actually open,"
+    distinct from the ordinary holiday case above (which has no session-type
+    ambiguity at all, just silence).
     """
 
     if dt.tzinfo is None:

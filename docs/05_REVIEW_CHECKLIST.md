@@ -154,7 +154,14 @@ Use when reviewing Codex or Claude Code output.
       (`app.features.pct_move`) — the cockpit displays it, never re-derives it
       from `last_price`/`prev_close` itself.
 - [ ] Config rejects non-finite/out-of-range strategy and feed-staleness values
-      at load, consistent with `_env_float`/`_env_int`.
+      at load, consistent with `_env_float`/`_env_int`. `MARKET_DATA_STALE_MINUTES`
+      and `STRATEGY_MAX_SPREAD_PCT` specifically reject `0` (not just NaN/Inf) —
+      a `0` on either silently zeroes out all candidate generation forever, a
+      distinct footgun class from the "0 is a meaningful setting" cases
+      (`STRATEGY_MOMENTUM_THRESHOLD_PCT`, `STRATEGY_MIN_VOLUME`).
+- [ ] `AlpacaMarketDataStream.subscribe()` seeds multiple symbols concurrently
+      (`asyncio.gather`), not sequentially — arming a large watchlist shouldn't
+      pay N sequential REST round-trips.
 - [ ] Cockpit market-data display (Watchlist screen) is formatting only — no
       trading decision is made in Streamlit from the displayed % move.
 - [ ] Integration tests are gated behind `ALPACA_PAPER_API_KEY` /

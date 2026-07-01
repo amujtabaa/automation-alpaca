@@ -118,3 +118,17 @@ class TestSessionTypeFor:
     def test_friday_still_evaluates(self):
         # 2026-01-09 is a Friday.
         assert session_type_for(self._et(2026, 1, 9, 10, 30, dst=False)) is SessionType.REGULAR
+
+    def test_early_close_half_day_is_a_documented_known_limitation(self):
+        """2026-11-27 is the day after Thanksgiving — a real early-close
+        half-day (regular session ends 13:00 ET, not 16:00). This function
+        does NOT detect half-days (no holiday calendar), so 14:00 ET on this
+        actual-half-day is misclassified as REGULAR even though the exchange
+        is closed. Locked in as an explicit, tested limitation (see the
+        function's docstring) rather than an undocumented surprise — market
+        data staleness detection is what actually surfaces this in practice."""
+
+        assert (
+            session_type_for(self._et(2026, 11, 27, 14, 0, dst=False))
+            is SessionType.REGULAR
+        )

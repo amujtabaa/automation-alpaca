@@ -132,12 +132,20 @@ class AlpacaMarketDataStream(MarketDataService):
         # different caller, landing during the awaited REST seed below, would
         # resurrect it. Not guarded against — would need a separate "still
         # wanted" set if a second caller is ever introduced.
+        #
+        # Seeded CONCURRENTLY, not sequentially: each _fetch_seed already
+        # catches its own exceptions and returns an all-None tuple rather than
+        # raising (never propagates), so gather() without return_exceptions
+        # is safe — one symbol's failure can't take down the batch, and
+        # arming a large watchlist doesn't pay N sequential REST round-trips.
         now = utcnow()
-        for symbol in new_symbols:
-            last_price, bid, ask, volume, prev_close = await asyncio.to_thread(
-                self._fetch_seed, symbol
-            )
-            with self._lock:
+        seeds = await asyncio.gather(
+            *(asyncio.to_thread(self._fetch_seed, symbol) for symbol in new_symbols)
+        )
+        with self._lock:
+            for symbol, (last_price, bid, ask, volume, prev_close) in zip(
+                new_symbols, seeds
+            ):
                 self._snapshots[symbol] = MarketSnapshot(
                     symbol=symbol,
                     last_price=last_price,

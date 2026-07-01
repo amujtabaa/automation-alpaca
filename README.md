@@ -194,12 +194,12 @@ there is no separate market-data key:
 | Variable                            | Default  | Meaning                                                                                    |
 | ------------------------------------ | -------- | ------------------------------------------------------------------------------------------- |
 | `MARKET_DATA_FEED`                   | `auto`   | `auto` uses the real Alpaca SIP stream when keys are set, else a fake; `mock`/`alpaca` force one |
-| `MARKET_DATA_STALE_MINUTES`          | `5`      | Feed silence longer than this marks snapshots stale and emits `market_data_stale`            |
+| `MARKET_DATA_STALE_MINUTES`          | `5`      | Feed silence longer than this marks snapshots stale and emits `market_data_stale`. **Must be > 0** — 0 would mark every snapshot permanently stale, silently zeroing out all candidate generation |
 | `ENABLE_STRATEGY_ENGINE`             | `true`   | Whether the background strategy loop starts at app startup                                   |
 | `STRATEGY_DECISION_CADENCE_SECONDS`  | `5`      | How often armed watchlist symbols are re-evaluated (decision cadence, distinct from ingestion) |
-| `STRATEGY_MOMENTUM_THRESHOLD_PCT`    | `3.0`    | Minimum positive `%` move (vs. previous close) to propose a candidate                        |
-| `STRATEGY_MIN_VOLUME`                | `50000`  | Minimum session volume to propose a candidate                                                |
-| `STRATEGY_MAX_SPREAD_PCT`            | `1.0`    | Maximum bid/ask spread (`%` of midpoint) to propose a candidate                              |
+| `STRATEGY_MOMENTUM_THRESHOLD_PCT`    | `3.0`    | Minimum positive `%` move (vs. previous close) to propose a candidate; `0` is a valid "any positive move" setting |
+| `STRATEGY_MIN_VOLUME`                | `50000`  | Minimum session volume to propose a candidate; `0` is a valid "no floor" setting              |
+| `STRATEGY_MAX_SPREAD_PCT`            | `1.0`    | Maximum bid/ask spread (`%` of midpoint) to propose a candidate. **Must be > 0** — 0 would require a literally-zero spread (never happens on a real quote), silently zeroing out all candidate generation; use a large value like `100` to effectively disable the check |
 | `STRATEGY_LIMIT_BUFFER_PCT`          | `0.1`    | Buy-through buffer added to `last_price` for the proposed limit price                        |
 | `STRATEGY_DEFAULT_QUANTITY`          | `10`     | Fixed placeholder share count (real sizing is Phase 6 CAPI)                                  |
 

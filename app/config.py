@@ -223,8 +223,14 @@ def load_settings() -> Settings:
             f"{MARKET_DATA_FEED_ENV} must be 'auto', 'mock', or 'alpaca', "
             f"got {market_data_feed!r}"
         )
+    # Strictly positive (matches POLL_CADENCE_ENV's minimum=0.001), NOT >= 0.0:
+    # unlike the order-unfilled-timeout (where 0 is a deliberately meaningful
+    # "flag every open order immediately" setting), a stale-minutes of exactly
+    # 0 makes every market snapshot permanently stale, which silently zeroes
+    # out the Strategy Engine's entire candidate output — far more likely to
+    # be an operator typo than an intentional configuration.
     market_data_stale_minutes = _env_float(
-        MARKET_DATA_STALE_MINUTES_ENV, DEFAULT_MARKET_DATA_STALE_MINUTES, minimum=0.0
+        MARKET_DATA_STALE_MINUTES_ENV, DEFAULT_MARKET_DATA_STALE_MINUTES, minimum=0.001
     )
     enable_strategy_engine = (
         os.environ.get(ENABLE_STRATEGY_ENGINE_ENV, "true").strip().lower()
@@ -243,8 +249,13 @@ def load_settings() -> Settings:
     strategy_min_volume = _env_float(
         STRATEGY_MIN_VOLUME_ENV, DEFAULT_STRATEGY_MIN_VOLUME, minimum=0.0
     )
+    # Strictly positive, NOT >= 0.0: 0 reads like "no spread limit" but means
+    # the opposite (a MAXIMUM of exactly 0 requires a literally-zero spread —
+    # a real two-sided quote essentially never has one), so it would silently
+    # fail every symbol's spread gate forever. To effectively disable the
+    # check, use a large value (e.g. 100) instead of 0.
     strategy_max_spread = _env_float(
-        STRATEGY_MAX_SPREAD_ENV, DEFAULT_STRATEGY_MAX_SPREAD_PCT, minimum=0.0
+        STRATEGY_MAX_SPREAD_ENV, DEFAULT_STRATEGY_MAX_SPREAD_PCT, minimum=0.001
     )
     strategy_limit_buffer = _env_float(
         STRATEGY_LIMIT_BUFFER_ENV, DEFAULT_STRATEGY_LIMIT_BUFFER_PCT, minimum=0.0

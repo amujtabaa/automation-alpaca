@@ -100,6 +100,59 @@ class TestSubscribe:
         # handler, *symbols positional args
         assert stream._stream.subscribe_trades.call_args.args[1:] == ("AAPL",)
 
+    async def test_multi_symbol_batch_assigns_each_seed_to_the_right_symbol(self):
+        """Concurrent seeding (asyncio.gather) must not scramble which result
+        belongs to which symbol — a real risk when parallelizing per-symbol
+        work if results aren't paired back up by position/key correctly."""
+
+        stream = _stream()
+
+        def fake_get_snapshot(request):
+            symbol = request.symbol_or_symbols
+            prices = {"AAPL": 100.0, "MSFT": 200.0, "GOOG": 300.0}
+            return {symbol: _fake_snapshot(last_price=prices[symbol], prev_close=prices[symbol] - 1)}
+
+        stream._historical.get_stock_snapshot = Mock(side_effect=fake_get_snapshot)
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+
+        await stream.subscribe(["AAPL", "MSFT", "GOOG"])
+
+        aapl = await stream.get_snapshot("AAPL")
+        msft = await stream.get_snapshot("MSFT")
+        goog = await stream.get_snapshot("GOOG")
+        assert aapl.last_price == 100.0
+        assert msft.last_price == 200.0
+        assert goog.last_price == 300.0
+
+    async def test_multi_symbol_batch_seeds_concurrently_not_sequentially(self):
+        """Each REST seed call runs off-thread and concurrently — subscribing
+        N symbols should take roughly ONE call's latency, not N of them."""
+
+        import time
+
+        stream = _stream()
+        delay_seconds = 0.2
+        symbols = ["AAPL", "MSFT", "GOOG", "TSLA"]
+
+        def slow_get_snapshot(request):
+            time.sleep(delay_seconds)  # runs in a worker thread (asyncio.to_thread)
+            symbol = request.symbol_or_symbols
+            return {symbol: _fake_snapshot(last_price=1.0, prev_close=1.0)}
+
+        stream._historical.get_stock_snapshot = Mock(side_effect=slow_get_snapshot)
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+
+        start = time.monotonic()
+        await stream.subscribe(symbols)
+        elapsed = time.monotonic() - start
+
+        # Sequential would take ~4 * delay_seconds (0.8s); concurrent should
+        # be close to 1 * delay_seconds. Generous margin for CI scheduling
+        # jitter, but tight enough to fail if it silently regresses to serial.
+        assert elapsed < delay_seconds * len(symbols) * 0.75
+
     async def test_already_subscribed_symbol_is_not_reseeded(self):
         stream = _stream()
         stream._historical.get_stock_snapshot = Mock(
