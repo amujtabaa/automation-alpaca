@@ -242,15 +242,16 @@ def screen_candidates() -> None:
 
     st.subheader(f"Candidates ({len(candidates)})")
 
-    # Column widths: symbol, status, strategy, reason, qty, price, actions
-    hdr = st.columns([2, 2, 2, 4, 1, 2, 3])
+    # Column widths: symbol, status, strategy, reason, risk, qty, price, actions
+    hdr = st.columns([2, 2, 2, 4, 3, 1, 2, 3])
     hdr[0].markdown("**Symbol**")
     hdr[1].markdown("**Status**")
     hdr[2].markdown("**Strategy**")
     hdr[3].markdown("**Reason**")
-    hdr[4].markdown("**Qty**")
-    hdr[5].markdown("**Limit price**")
-    hdr[6].markdown("**Action**")
+    hdr[4].markdown("**Risk decision**")
+    hdr[5].markdown("**Qty**")
+    hdr[6].markdown("**Limit price**")
+    hdr[7].markdown("**Action**")
 
     for candidate in candidates:
         cid = candidate["id"]
@@ -258,20 +259,22 @@ def screen_candidates() -> None:
         status = candidate.get("status", "—")
         strategy = candidate.get("strategy") or "—"
         reason = candidate.get("reason") or "—"
+        risk_decision = candidate.get("risk_decision") or "—"
         qty = candidate.get("suggested_quantity", "—")
         price = candidate.get("suggested_limit_price")
         price_display = f"${price:.2f}" if price is not None else "—"
 
-        row = st.columns([2, 2, 2, 4, 1, 2, 3])
+        row = st.columns([2, 2, 2, 4, 3, 1, 2, 3])
         row[0].write(symbol)
         row[1].write(status)
         row[2].write(strategy)
         row[3].write(reason)
-        row[4].write(str(qty))
-        row[5].write(price_display)
+        row[4].write(risk_decision)
+        row[5].write(str(qty))
+        row[6].write(price_display)
 
         if status == "pending":
-            with row[6]:
+            with row[7]:
                 btn_cols = st.columns(2)
                 if btn_cols[0].button("Approve", key=f"approve_{cid}", type="primary"):
                     _do(
@@ -284,7 +287,7 @@ def screen_candidates() -> None:
                         f"{symbol} rejected",
                     )
         else:
-            row[6].write(status)
+            row[7].write(status)
 
 
 def _format_age(created_at: str) -> str:
@@ -382,9 +385,12 @@ def screen_positions() -> None:
     open_statuses = {"submitted", "partially_filled", "cancel_pending"}
     open_orders = [o for o in all_orders if o.get("status") in open_statuses]
 
-    # Build stale-order set from events
+    # Build stale-order set from events. Bounded to the most recent 500 — the
+    # audit log accumulates across days (docs/02) and grows unbounded, but a
+    # currently-open order's own order_stale event (if any) is necessarily
+    # recent, since it can only fire while the order is still open.
     try:
-        events = api_client.list_events()
+        events = api_client.list_events(limit=500)
     except BackendError as exc:
         st.error(str(exc))
         return

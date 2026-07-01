@@ -218,6 +218,63 @@ class TestUnsubscribe:
         stream._stream.unsubscribe_quotes.assert_not_called()
 
 
+class TestListSnapshots:
+    async def test_empty_before_any_subscription(self):
+        stream = _stream()
+        assert await stream.list_snapshots() == []
+
+    async def test_returns_every_subscribed_symbol(self):
+        stream = _stream()
+
+        def fake_get_snapshot(request):
+            symbol = request.symbol_or_symbols
+            prices = {"AAPL": 100.0, "MSFT": 200.0}
+            return {symbol: _fake_snapshot(last_price=prices[symbol], prev_close=prices[symbol] - 1)}
+
+        stream._historical.get_stock_snapshot = Mock(side_effect=fake_get_snapshot)
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+
+        await stream.subscribe(["AAPL", "MSFT"])
+        snapshots = await stream.list_snapshots()
+
+        assert {s.symbol for s in snapshots} == {"AAPL", "MSFT"}
+        assert {s.symbol: s.last_price for s in snapshots} == {"AAPL": 100.0, "MSFT": 200.0}
+
+    async def test_stale_flag_applies_uniformly_to_every_snapshot(self):
+        stream = _stream()
+        stream._historical.get_stock_snapshot = Mock(
+            side_effect=lambda request: {
+                request.symbol_or_symbols: _fake_snapshot(last_price=1.0, prev_close=1.0)
+            }
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        await stream.subscribe(["AAPL", "MSFT"])
+        # Force the feed-wide clock stale — applies to every symbol alike,
+        # since staleness is feed-wide, not per-symbol (see module docstring).
+        stream._last_message_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+        snapshots = await stream.list_snapshots()
+
+        assert {s.symbol: s.stale for s in snapshots} == {"AAPL": True, "MSFT": True}
+
+    async def test_removed_symbol_no_longer_appears(self):
+        stream = _stream()
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=1.0, prev_close=1.0)}
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        stream._stream.unsubscribe_trades = Mock()
+        stream._stream.unsubscribe_quotes = Mock()
+        await stream.subscribe(["AAPL"])
+
+        await stream.unsubscribe(["AAPL"])
+
+        assert await stream.list_snapshots() == []
+
+
 class TestLiveHandlers:
     async def test_trade_updates_price_and_accumulates_volume(self):
         stream = _stream()
@@ -254,6 +311,12 @@ class TestLiveHandlers:
         stream = _stream()
         # AAPL was never subscribed -> _on_trade must not raise or resurrect it.
         await stream._on_trade(SimpleNamespace(symbol="AAPL", price=100.0, size=10))
+        assert await stream.get_snapshot("AAPL") is None
+
+    async def test_quote_for_unsubscribed_symbol_is_ignored(self):
+        stream = _stream()
+        # AAPL was never subscribed -> _on_quote must not raise or resurrect it.
+        await stream._on_quote(SimpleNamespace(symbol="AAPL", bid_price=100.0, ask_price=100.1))
         assert await stream.get_snapshot("AAPL") is None
 
     async def test_reseed_null_prev_close_keeps_existing_value(self, monkeypatch):

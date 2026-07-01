@@ -82,7 +82,7 @@ to submission.
 ### D-014 — Strategy Engine: candidate generation is not kill-switch-gated; placeholder sizing; open-candidate dedup; sync/staleness are session-independent
 **Four decisions for Phase 5 (the first candidate generator).**
 
-**(a) Candidate generation is not gated by the kill switch or pause-buys.**
+**(a) / D-014a — Candidate generation is not gated by the kill switch or pause-buys.**
 Rule 8 blocks *order intent* — it says nothing about candidate *visibility*.
 The Strategy Engine keeps proposing candidates for human review even while
 buys are paused or the kill switch is engaged; the existing enforcement
@@ -92,20 +92,20 @@ stop, and conflating the safety control with the informational proposal feed
 would make the kill switch do double duty as a "hide the feed" toggle it was
 never meant to be.
 
-**(b) Sizing is a fixed placeholder, not real risk logic, until CAPI exists.**
+**(b) / D-014b — Sizing is a fixed placeholder, not real risk logic, until CAPI exists.**
 `suggested_quantity` is a configurable fixed default; `suggested_limit_price`
 is `last_price` plus a small buy-through buffer. `risk_decision` states
 plainly this is placeholder sizing pending Phase 6 CAPI — the Strategy Engine
 does not invent risk management it isn't built to own.
 
-**(c) Dedup blocks on an *unresolved* candidate only.** The strategy loop
+**(c) / D-014c — Dedup blocks on an *unresolved* candidate only.** The strategy loop
 skips a symbol that already has a `PENDING`/`APPROVED` candidate this session
 (don't spam a proposal nobody has acted on yet), but a symbol that reached
 `ORDERED`, `REJECTED`, or `EXPIRED` is eligible for a fresh proposal — the
 human already made a decision on the prior signal, and a stock that keeps
 moving can legitimately generate a new, separately-approvable one.
 
-**(d) Subscription sync and staleness surfacing never touch session state.**
+**(d) / D-014d — Subscription sync and staleness surfacing never touch session state.**
 The strategy loop originally fetched (and, on an idle day with nothing armed,
 implicitly *created*) the current session as its very first step, every tick —
 an unintended side effect: an idle watchlist would still mint an empty session
@@ -133,7 +133,7 @@ in the same place as (a)-(c).
 ### D-013 — Order submission gates on the order's own session; localhost is a load-bearing security boundary
 **Two decisions, both surfaced by independent red-team review of Phase 4.**
 
-**(a) Submission gate is per-order-session, not current-session.** A `CREATED`
+**(a) / D-013a — Submission gate is per-order-session, not current-session.** A `CREATED`
 order must be gated for submission against the kill-switch / pause-buys / closed
 state of **the session that created it**, not merely the current live session.
 Previously `_submit_pending_orders` checked only `get_current_session()`, on the
@@ -147,7 +147,7 @@ originating session is kill-switched, paused, or closed is held (and audited),
 never submitted under a different session's controls. Already-submitted orders
 continue to reconcile after close (D-011 unchanged).
 
-**(b) Single-user localhost is a security assumption, not just a convenience.**
+**(b) / D-013b — Single-user localhost is a security assumption, not just a convenience.**
 The mutating API is unauthenticated by design (`routes_system.py` states "no auth
 in beta"). This is acceptable **only while the backend is genuinely bound to
 localhost and single-user.** Any exposure beyond localhost — LAN, cloud,
@@ -419,3 +419,56 @@ thin client; Dash is a possible future migration against the same API.
 **Why.** The user does not want command-line operation. Streamlit gives faster
 beta iteration than Dash as long as it stays thin. A stable, UI-agnostic API
 contract preserves the migration path.
+
+## Review Finding Tags
+
+Several external review passes (a Codex QA/red-team review, and the Phase 4
+cleanup round in `docs/IMPLEMENTATION_PROMPT_PHASE_4_CLEANUP.md`) tagged
+individual findings with short ids that are still cited inline in code
+comments and test docstrings (e.g. `(F1)`, `(BACKEND-1)`) as the reason a
+specific guard/behavior exists. The originating review documents for the
+Codex-tagged findings were never checked into this repo, so those ids weren't
+resolvable anywhere in-tree — this index exists so a reader hitting one of
+them in a comment doesn't have to grep the whole codebase to reconstruct what
+it means. `docs/IMPLEMENTATION_PROMPT_PHASE_4_CLEANUP.md`'s own items (D-013,
+D-013a, BE-1) are its native tags, already defined there in full — **not**
+duplicated below, and **not** the same tag as the similarly-named `BACKEND-1`.
+
+- **CHAOS-1** — `cancel_pending`/`CANCEL_PENDING` is a non-terminal order
+  status: a cancel requested at the broker but not yet confirmed keeps being
+  polled, so a late fill arriving before the venue finalizes the cancel is
+  still recorded, never missed. See `app/models.py`'s `OrderStatus` docstring.
+- **CHAOS-2 / DATA-1** — a single paired finding: the original fill-sourcing
+  code mixed two fill-identity schemes (per-execution broker activity ids vs.
+  a synthetic cumulative-level id), which could record the same shares twice
+  under different ids if the activities API returned inconsistent results
+  across polls. Fixed by using one scheme only — a stable
+  `"<broker_order_id>:<cumulative filled_qty>"` delta id (see
+  `app/broker/alpaca_paper.py`'s `_get_fills`, `tests/test_alpaca_paper_fills.py`).
+- **DATA-2** — `normalize_symbol` (`app/store/base.py`) bounds the ticker
+  domain (a leading letter then up to nine more letters/digits/`.`/`-`) and
+  rejects blank/out-of-domain input with a clean 422 rather than letting an
+  overly long, unicode, whitespace, or SQL-looking string reach durable
+  trading data.
+- **BACKEND-1** — `NaN`/`Infinity` slip past a bare `<= 0` guard (`nan <= 0`
+  and `inf <= 0` are both `False`) and would poison `cost_basis`/
+  `average_price` and persisted order/fill rows; rejected at the store
+  boundary (D-010) and the API schema. See `tests/test_non_finite_inputs.py`.
+  Distinct from the cleanup doc's `BE-1`, which is about non-finite *config*
+  timing values (poll cadence / timeout), not order/fill numeric fields.
+- **BACKEND-2** — `submit_order` never set Alpaca's `extended_hours` flag
+  based on the current session, so a premarket/after-hours limit order was
+  silently ineligible to execute in the very session it was proposed for.
+  Resolved by D-015.
+- **F1** — fill dedup was originally a column-level `UNIQUE` on
+  `source_fill_id` alone (global across all orders), so the same broker fill
+  id appearing on two *different* orders could swallow the second order's
+  fill. Fixed with a composite `(order_id, source_fill_id)` index — dedup is
+  per-order. See `tests/test_fill_dedup_per_order.py`.
+- **F2** — no new candidates may be created against a closed session (D-009).
+- **F3** — the in-memory candidate-approve + order-creation handoff must be
+  all-or-nothing, matching `SqliteStateStore`'s transactional guarantee — a
+  mid-way exception must not leave an approved candidate with no order.
+- **F4** — two real (but previously unmapped) Alpaca order statuses, `held`
+  and `calculated`, are explicitly mapped to `SUBMITTED` so they don't hit the
+  unknown-status warning path in normal operation.

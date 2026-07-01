@@ -431,3 +431,40 @@ async def test_one_symbols_failure_does_not_block_others():
     candidates = await store.list_candidates()
     assert len(candidates) == 1
     assert candidates[0].symbol == "MSFT"  # AAPL's failure didn't block MSFT
+
+
+async def test_outer_loop_survives_a_whole_tick_failure_and_continues():
+    """A whole-TICK failure (e.g. the store itself raising, not just one
+    symbol's evaluation) must not kill the background task — this exercises
+    strategy_loop's own `except Exception: continue` guard, distinct from
+    run_strategy_tick's per-symbol try/except covered above."""
+
+    store = await _armed_store("AAPL")
+    feed = FakeMarketDataFeed()
+    await feed.subscribe(["AAPL"])
+    feed.set_snapshot("AAPL", **_HEALTHY)
+
+    orig_list_watchlist = store.list_watchlist
+    call_count = 0
+
+    async def flaky_list_watchlist(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("simulated whole-tick failure")
+        return await orig_list_watchlist(*args, **kwargs)
+
+    store.list_watchlist = flaky_list_watchlist
+
+    settings = Settings(strategy_decision_cadence_seconds=0.01)
+    task = asyncio.create_task(strategy_loop(store, feed, settings))
+    try:
+        await asyncio.sleep(0.05)  # let several ticks happen, including the failure
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task  # would re-raise RuntimeError here if the loop hadn't
+            # caught it — suppress() only swallows CancelledError
+
+    assert call_count >= 2  # the loop kept ticking past the first failure
+    assert task.cancelled()  # torn down cleanly by our cancel(), not crashed
