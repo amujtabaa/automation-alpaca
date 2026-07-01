@@ -23,7 +23,7 @@ which has no cross-thread meaning) rather than trusting the GIL alone for the
 multi-field ``MarketSnapshot`` replacement.
 
 **Reconnect (D-005) is mostly the SDK's job, verified by reading its source**
-(``alpaca.data.live.stock.StockDataStream._run_forever``): on a
+(``alpaca.data.live.websocket.DataStream._run_forever``): on a
 ``websockets.WebSocketException`` it closes the socket, clears its internal
 ``_running`` flag, and loops back to reconnect — indefinitely, without
 ``run()`` ever returning. This module does not need its own retry loop around
@@ -33,6 +33,25 @@ actually died — the `"insufficient subscription"` case is the one documented
 fatal error the SDK's loop `return`s on, letting `run()` complete) — surfaced
 here as permanent staleness (see the module docstring's "fatal vs transient"
 note on :meth:`run`), never silently trusted as still-live.
+
+**A bad API key is NOT the same case as "insufficient subscription"** —
+verified by reading the same source. ``_run_forever``'s ``except ValueError``
+branch only closes the socket and `return`s when the message contains the
+literal substring ``"insufficient subscription"``; any other ``ValueError``
+(including the one ``_auth()`` raises on a rejected key: ``"failed to
+authenticate"``) is logged and falls through to the top of the `while True`
+loop *without* resetting `_running` or backing off. Because `_running` was
+never set `True` for a connection that never got past `_auth()`, the next
+iteration immediately retries `_connect()` + `_auth()` again — an unbounded,
+back-off-free reconnect-and-auth-retry storm against Alpaca's endpoint, not a
+clean `return` like the subscription case. This module has no hook into that
+inner loop to detect or throttle it (`run()` doesn't return until the process
+is killed). What *is* still guaranteed: no live message ever arrives during
+the storm, so `_last_message_at`/`_run_started_at` never advance and the
+staleness check (below) correctly reports every snapshot as permanently
+stale — the user-visible "never silently stale" contract (D-005) holds even
+though the retry storm itself continues in the background until an operator
+notices and restarts the process with a corrected key.
 """
 
 from __future__ import annotations
@@ -41,8 +60,9 @@ import asyncio
 import dataclasses
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -55,6 +75,11 @@ from app.marketdata.service import MarketDataService, MarketSnapshot
 from app.models import utcnow
 
 _log = logging.getLogger(__name__)
+
+# US equity trading-day boundary is Eastern local midnight, not UTC midnight
+# (UTC midnight falls mid-after-hours-session for EST, one hour before the
+# 8pm ET after-hours close) — see _trading_day.
+_EASTERN = ZoneInfo("America/New_York")
 
 
 def _is_feed_stale(
@@ -70,6 +95,19 @@ def _is_feed_stale(
     if reference is None:
         return False
     return (now - reference) > stale_after
+
+
+def _trading_day(dt: datetime) -> date:
+    """The US/Eastern calendar date ``dt`` falls on.
+
+    Used to detect a day-boundary crossing for a continuously-subscribed
+    symbol (see :meth:`AlpacaMarketDataStream._reseed_symbol`). Deliberately
+    Eastern, not UTC: a UTC-date comparison would fire up to an hour early
+    for EST (UTC midnight = 7pm ET, still inside that day's after-hours
+    session), incorrectly treating an in-progress trading day as over.
+    """
+
+    return dt.astimezone(_EASTERN).date()
 
 
 def _seed_from_snapshot(raw) -> tuple[
@@ -108,6 +146,13 @@ class AlpacaMarketDataStream(MarketDataService):
 
         self._lock = threading.Lock()
         self._snapshots: dict[str, MarketSnapshot] = {}
+        # Trading day each symbol's prev_close/volume baseline was last
+        # REST-seeded on — see _reseed_symbol. Without this, a symbol that
+        # stays continuously armed never gets a second seed (subscribe()
+        # skips already-tracked symbols), so prev_close and the volume
+        # accumulator would silently keep referencing a prior trading day
+        # forever.
+        self._seeded_on: dict[str, date] = {}
         # Feed-wide "is the connection alive" clock: updated by ANY trade/quote
         # handler firing for ANY symbol. Deliberately not per-symbol — an
         # illiquid symbol legitimately not trading for minutes is not the same
@@ -155,6 +200,7 @@ class AlpacaMarketDataStream(MarketDataService):
                     prev_close=prev_close,
                     updated_at=now,
                 )
+                self._seeded_on[symbol] = _trading_day(now)
 
         # Register live updates. Safe to call before run() has started (the SDK
         # just records the handler) or after (it dispatches onto the stream's
@@ -173,6 +219,7 @@ class AlpacaMarketDataStream(MarketDataService):
         with self._lock:
             for symbol in existing:
                 self._snapshots.pop(symbol, None)
+                self._seeded_on.pop(symbol, None)
 
     async def get_snapshot(self, symbol: str) -> Optional[MarketSnapshot]:
         with self._lock:
@@ -194,15 +241,21 @@ class AlpacaMarketDataStream(MarketDataService):
             # (asyncio.run(...) internally) — must run off-thread; see the
             # module docstring. Its internal _run_forever() already retries
             # transient websocket errors forever without returning, so a
-            # normal return/exception here means something genuinely fatal
-            # (e.g. "insufficient subscription", a bad API key) — not a
+            # normal return/exception here means "insufficient subscription"
+            # (the one case the SDK's loop actually `return`s on) — not a
             # transient drop the SDK would have recovered from on its own.
-            # We deliberately do NOT loop-and-retry run() ourselves in that
-            # case: repeatedly reconnecting with the same fatal misconfiguration
-            # would just hammer Alpaca's auth/subscription endpoint. Instead we
-            # stop updating _last_message_at, so every snapshot correctly
-            # reports stale=True forever after (D-005: surfaced, never silent)
-            # until an operator fixes the root cause and restarts the process.
+            # NOTE: a bad API key does NOT reach this except/return path at
+            # all — see the module docstring's "bad API key is NOT the same
+            # case" note. It retries forever *inside* run(), so this call
+            # simply never returns for that failure mode; there is nothing
+            # for us to catch or retry here. We deliberately do NOT
+            # loop-and-retry run() ourselves for the case that *does* return
+            # (insufficient subscription): repeatedly reconnecting with the
+            # same fatal misconfiguration would just hammer Alpaca's
+            # subscription endpoint. Instead we stop updating
+            # _last_message_at, so every snapshot correctly reports
+            # stale=True forever after (D-005: surfaced, never silent) until
+            # an operator fixes the root cause and restarts the process.
             await asyncio.to_thread(self._stream.run)
         except Exception:
             _log.exception(
@@ -211,6 +264,16 @@ class AlpacaMarketDataStream(MarketDataService):
             )
 
     async def stop(self) -> None:
+        # Guards a startup/shutdown race: StockDataStream.stop() dereferences
+        # its internal _loop unconditionally (self._loop.is_running()), and
+        # _loop stays None until run()'s background thread reaches
+        # _run_forever()'s first line. Calling stop() before that point (e.g.
+        # app shutdown arriving moments after startup, before the run() task
+        # has actually started executing on its to_thread worker) would
+        # otherwise raise an unhandled AttributeError instead of a clean,
+        # idempotent no-op stop.
+        if getattr(self._stream, "_loop", None) is None:
+            return
         await asyncio.to_thread(self._stream.stop)
 
     # ------------------------------------------------------------------ #
@@ -245,19 +308,60 @@ class AlpacaMarketDataStream(MarketDataService):
             _log.exception("failed to seed snapshot for %s; proceeding with nulls", symbol)
             return None, None, None, None, None
 
-    async def _on_trade(self, trade: Trade) -> None:
+    async def _reseed_symbol(self, symbol: str, now: datetime) -> None:
+        """Re-seed ``prev_close`` and the volume baseline for one symbol on a
+        trading-day rollover.
+
+        ``subscribe()`` only seeds a symbol once — a continuously-armed
+        symbol (never unsubscribed/re-subscribed) would otherwise keep
+        ``prev_close`` pinned to whatever day it first subscribed on forever,
+        and keep accumulating ``volume`` on top of a stale baseline across
+        day boundaries. Triggered from :meth:`_on_trade` on the first trade
+        observed after the trading day changes (see ``_trading_day``); a
+        symbol with zero trades on a given day never needs this, since its
+        ``last_price`` isn't advancing either.
+
+        Only ``prev_close``/``volume`` are touched — ``last_price``/``bid``/
+        ``ask``/``updated_at`` are left as whatever the live feed already
+        has, so a REST call that lags the live tick can never regress those.
+        """
+
+        _, _, _, volume, prev_close = await asyncio.to_thread(self._fetch_seed, symbol)
         with self._lock:
-            self._last_message_at = utcnow()
+            existing = self._snapshots.get(symbol)
+            if existing is None:
+                return  # unsubscribed while the REST call was in flight
+            self._snapshots[symbol] = dataclasses.replace(
+                existing,
+                prev_close=prev_close if prev_close is not None else existing.prev_close,
+                volume=volume,
+            )
+            self._seeded_on[symbol] = _trading_day(now)
+
+    async def _on_trade(self, trade: Trade) -> None:
+        now = utcnow()
+        with self._lock:
+            self._last_message_at = now
             existing = self._snapshots.get(trade.symbol)
             if existing is None:
                 return  # unsubscribed between the tick being sent and received
+            needs_reseed = self._seeded_on.get(trade.symbol) != _trading_day(now)
+
+        if needs_reseed:
+            await self._reseed_symbol(trade.symbol, now)
+
+        with self._lock:
+            existing = self._snapshots.get(trade.symbol)
+            if existing is None:
+                return  # unsubscribed while the reseed REST call was in flight
             self._snapshots[trade.symbol] = dataclasses.replace(
                 existing,
                 last_price=trade.price,
                 # Approximate session volume: REST-seeded baseline (today's
                 # cumulative volume as of the last completed daily bar) plus
-                # observed trade sizes since subscribing. Not settlement-grade
-                # exact cumulative volume (a brief disconnect could under-count
+                # observed trade sizes since subscribing (or since the last
+                # day-boundary reseed above). Not settlement-grade exact
+                # cumulative volume (a brief disconnect could under-count
                 # trades that occurred during the gap) — adequate for a
                 # threshold gate (Strategy Engine's min-volume check), not for
                 # precise reporting.

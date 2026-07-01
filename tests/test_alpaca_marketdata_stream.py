@@ -10,6 +10,7 @@ with fake credentials; pure-logic assertions).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -255,6 +256,29 @@ class TestLiveHandlers:
         await stream._on_trade(SimpleNamespace(symbol="AAPL", price=100.0, size=10))
         assert await stream.get_snapshot("AAPL") is None
 
+    async def test_reseed_null_prev_close_keeps_existing_value(self, monkeypatch):
+        stream = _stream()
+        day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        await stream.subscribe(["AAPL"])
+
+        day2 = datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day2)
+        # REST momentarily has no previous_daily_bar -> must not clobber prev_close with None.
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=103.0, volume=500)}
+        )
+
+        await stream._on_trade(SimpleNamespace(symbol="AAPL", price=104.0, size=25))
+
+        snap = await stream.get_snapshot("AAPL")
+        assert snap.prev_close == 99.0  # preserved, not clobbered with None
+
     async def test_tick_updates_feed_wide_staleness_clock(self):
         stream = _stream()
         stream._historical.get_stock_snapshot = Mock(
@@ -275,6 +299,115 @@ class TestLiveHandlers:
         assert snap_after.stale is False  # a fresh tick recovers staleness
 
 
+class TestDayBoundaryReseed:
+    """A continuously-armed symbol is only ever seeded once by subscribe()
+    (it skips already-tracked symbols) — without a day-boundary reseed,
+    prev_close and the volume baseline would silently keep referencing
+    whatever day the symbol first subscribed on, forever."""
+
+    async def test_same_trading_day_trade_does_not_reseed(self, monkeypatch):
+        stream = _stream()
+        day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)  # 11:00 ET
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        await stream.subscribe(["AAPL"])
+
+        later_same_day = datetime(2026, 6, 1, 19, 0, tzinfo=timezone.utc)  # 15:00 ET, still day1
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: later_same_day)
+
+        await stream._on_trade(SimpleNamespace(symbol="AAPL", price=101.0, size=10))
+
+        assert stream._historical.get_stock_snapshot.call_count == 1  # only the initial seed
+        snap = await stream.get_snapshot("AAPL")
+        assert snap.prev_close == 99.0
+        assert snap.volume == 1_000 + 10
+
+    async def test_next_trading_day_trade_reseeds_prev_close_and_volume_baseline(self, monkeypatch):
+        stream = _stream()
+        day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        await stream.subscribe(["AAPL"])
+
+        day2 = datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc)  # next ET calendar day
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day2)
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=103.0, volume=500, prev_close=102.0)}
+        )
+
+        await stream._on_trade(SimpleNamespace(symbol="AAPL", price=104.0, size=25))
+
+        stream._historical.get_stock_snapshot.assert_called_once()  # the reseed call
+        snap = await stream.get_snapshot("AAPL")
+        assert snap.prev_close == 102.0  # refreshed from the day2 baseline, not day1's 99.0
+        assert snap.volume == 500 + 25  # new baseline + this trade, not stacked on day1's 1,000
+        assert snap.last_price == 104.0  # the live trade price is still applied
+
+    async def test_reseed_null_prev_close_keeps_existing_value(self, monkeypatch):
+        stream = _stream()
+        day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        await stream.subscribe(["AAPL"])
+
+        day2 = datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day2)
+        # REST momentarily has no previous_daily_bar -> must not clobber prev_close with None.
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=103.0, volume=500)}
+        )
+
+        await stream._on_trade(SimpleNamespace(symbol="AAPL", price=104.0, size=25))
+
+        snap = await stream.get_snapshot("AAPL")
+        assert snap.prev_close == 99.0  # preserved, not clobbered with None
+
+    async def test_unsubscribe_during_reseed_does_not_resurrect_symbol(self, monkeypatch):
+        import time
+
+        stream = _stream()
+        day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        stream._stream.unsubscribe_trades = Mock()
+        stream._stream.unsubscribe_quotes = Mock()
+        await stream.subscribe(["AAPL"])
+
+        day2 = datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day2)
+
+        def slow_reseed(request):
+            time.sleep(0.1)  # runs in a worker thread (asyncio.to_thread)
+            return {"AAPL": _fake_snapshot(last_price=103.0, volume=500, prev_close=102.0)}
+
+        stream._historical.get_stock_snapshot = Mock(side_effect=slow_reseed)
+
+        trade_task = asyncio.create_task(
+            stream._on_trade(SimpleNamespace(symbol="AAPL", price=104.0, size=25))
+        )
+        await asyncio.sleep(0.02)  # let the reseed REST call start
+        await stream.unsubscribe(["AAPL"])
+        await trade_task  # must not raise, must not resurrect AAPL
+
+        assert await stream.get_snapshot("AAPL") is None
+
+
 class TestRunStop:
     async def test_run_catches_a_fatal_sdk_exception_without_raising(self):
         stream = _stream()
@@ -291,8 +424,22 @@ class TestRunStop:
 
         assert stream._run_started_at is not None
 
-    async def test_stop_calls_sdk_stop(self):
+    async def test_stop_before_run_has_started_is_a_noop_not_an_attributeerror(self):
+        """StockDataStream._loop is None until run()'s background thread
+        reaches _run_forever(); calling the SDK's stop() before that
+        dereferences None (self._loop.is_running()), raising AttributeError.
+        A shutdown arriving before run() has actually started must not crash."""
         stream = _stream()
+        stream._stream.stop = Mock()
+        assert stream._stream._loop is None  # run() never started
+
+        await stream.stop()  # must not raise
+
+        stream._stream.stop.assert_not_called()
+
+    async def test_stop_calls_sdk_stop_once_run_has_started(self):
+        stream = _stream()
+        stream._stream._loop = Mock()  # simulates run()'s thread having started
         stream._stream.stop = Mock()
 
         await stream.stop()
