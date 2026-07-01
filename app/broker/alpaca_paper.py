@@ -27,7 +27,8 @@ from alpaca.trading.enums import TimeInForce
 from alpaca.trading.requests import LimitOrderRequest
 
 from app.broker.adapter import BrokerAdapter, BrokerError, BrokerFill, BrokerOrderUpdate
-from app.models import Order, OrderSide, OrderStatus
+from app.features import session_type_for
+from app.models import Order, OrderSide, OrderStatus, SessionType, utcnow
 
 _log = logging.getLogger(__name__)
 
@@ -136,7 +137,11 @@ class AlpacaPaperAdapter(BrokerAdapter):
 
         Beta only ever creates LIMIT orders (Rule 12: pre/after-hours require
         limit-only; regular-hours other types are permitted but the current
-        candidate/order model only produces limit orders in Phase 4).
+        candidate/order model only produces limit orders). ``extended_hours``
+        is set based on the CURRENT session at submission time (Rule 12), so a
+        limit order submitted during premarket/after-hours is actually
+        eligible to execute in that session rather than silently queued until
+        regular hours.
 
         ``client_order_id`` is set to ``order.id`` (our internal UUID hex) so
         that a retry after a crash between submit-and-persist is rejected by
@@ -150,19 +155,39 @@ class AlpacaPaperAdapter(BrokerAdapter):
             else AlpacaOrderSide.SELL
         )
 
-        # NOTE (BACKEND-2): extended_hours is intentionally NOT set here yet.
-        # Phase 4 carries no session-aware order intent — the Order model has no
-        # session type and candidates are dev-injected — so every order is a
-        # regular-hours DAY limit. extended_hours=True (for pre-market/after-hours
-        # eligibility, limit-only per Rule 12) lands in Phase 5 when the Strategy
-        # Engine produces session-tagged candidates and the order model carries
-        # the session through. Until then there is no premarket/after-hours intent
-        # to mis-route.
+        # extended_hours (BACKEND-2, resolved in Phase 5): a LIMIT+DAY order
+        # submitted to Alpaca WITHOUT extended_hours=True is not eligible to
+        # execute during premarket (04:00-09:30 ET) or after-hours
+        # (16:00-20:00 ET) — only during regular hours. Phase 5's Strategy
+        # Engine (app/strategy.py) proposes candidates EXCLUSIVELY during those
+        # two windows (premarket_momentum_v1's whole purpose), so submitting
+        # without this flag would make its approved candidates silently
+        # ineligible to fill in the very session they were proposed for —
+        # found during a post-Phase-5 self-review, not caught at the time
+        # Phase 5 shipped, since the order-submission side was never revisited
+        # when the Strategy Engine was built.
+        #
+        # Determined at SUBMISSION time (session_type_for(utcnow()), not
+        # candidate-creation time): no Order/Candidate schema change needed,
+        # and it's the more correct reading of Rule 12's "session-conditional"
+        # anyway — extended-hours eligibility is a property of when the order
+        # actually reaches the exchange, not when the proposal was generated.
+        # A candidate whose approval is delayed past its original session's
+        # close naturally falls back to a regular DAY limit (extended_hours
+        # not needed then) rather than incorrectly carrying a stale premarket
+        # intent forward.
+        current_session = session_type_for(utcnow())
+        extended_hours = current_session in (
+            SessionType.PRE_MARKET,
+            SessionType.AFTER_HOURS,
+        )
+
         req = LimitOrderRequest(
             symbol=order.symbol,
             qty=order.quantity,
             side=alpaca_side,
             time_in_force=TimeInForce.DAY,
+            extended_hours=extended_hours,
             limit_price=order.limit_price,
             client_order_id=order.id,  # idempotency key — see docstring
         )

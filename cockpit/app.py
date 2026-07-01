@@ -147,27 +147,50 @@ def screen_watchlist() -> None:
         st.info("Watchlist is empty. Paste symbols above to get started.")
         return
 
+    # Phase 5: last price / % move next to each armed symbol, display only.
+    # pct_move is computed by the BACKEND (GET /api/marketdata/snapshots, via
+    # app/features.py — the same function the Strategy Engine decides on) and
+    # only formatted here; the cockpit never re-derives the number, so what's
+    # shown always matches what the strategy actually saw (Streamlit stays a
+    # pure display client, per 01_ARCHITECTURE.md).
+    try:
+        snapshots = {s["symbol"]: s for s in api_client.list_marketdata_snapshots()}
+    except BackendError:
+        snapshots = {}
+
     st.subheader(f"Current watchlist ({len(watchlist)})")
-    hdr = st.columns([3, 2, 2, 2])
+    hdr = st.columns([2, 2, 2, 2, 2, 2])
     hdr[0].markdown("**Symbol**")
     hdr[1].markdown("**State**")
-    hdr[2].markdown("**Arm / Disarm**")
-    hdr[3].markdown("**Remove**")
+    hdr[2].markdown("**Last**")
+    hdr[3].markdown("**% Move**")
+    hdr[4].markdown("**Arm / Disarm**")
+    hdr[5].markdown("**Remove**")
     for entry in watchlist:
         sym = entry["symbol"]
         armed = bool(entry["armed"])
-        row = st.columns([3, 2, 2, 2])
+        snap = snapshots.get(sym)
+        last_display = f"${snap['last_price']:.2f}" if snap and snap.get("last_price") is not None else "—"
+        move_display = "—"
+        if snap and snap.get("pct_move") is not None:
+            move_display = f"{snap['pct_move']:+.1f}%"
+        if snap and snap.get("stale"):
+            last_display += " ⚠️"
+
+        row = st.columns([2, 2, 2, 2, 2, 2])
         row[0].write(sym)
         row[1].write("🟢 armed" if armed else "⚪ disarmed")
+        row[2].write(last_display)
+        row[3].write(move_display)
         if armed:
-            if row[2].button("Disarm", key=f"disarm_{sym}", width='stretch'):
+            if row[4].button("Disarm", key=f"disarm_{sym}", width='stretch'):
                 _do(lambda s=sym: api_client.upsert_watchlist(s, armed=False),
                     f"{sym} disarmed")
         else:
-            if row[2].button("Arm", key=f"arm_{sym}", width='stretch'):
+            if row[4].button("Arm", key=f"arm_{sym}", width='stretch'):
                 _do(lambda s=sym: api_client.upsert_watchlist(s, armed=True),
                     f"{sym} armed")
-        if row[3].button("Remove", key=f"rm_{sym}", width='stretch'):
+        if row[5].button("Remove", key=f"rm_{sym}", width='stretch'):
             _do(lambda s=sym: api_client.remove_watchlist(s), f"{sym} removed")
 
 
@@ -182,9 +205,9 @@ def screen_candidates() -> None:
 
     with st.expander("➕ Inject mock candidate (dev)"):
         st.caption(
-            "DEV/MOCK scaffolding — Phase 5's Strategy Engine replaces this. "
-            "Use it to inject a candidate so the approve/reject flow is "
-            "exercisable now."
+            "DEV/MOCK scaffolding for hand-testing an exact candidate. The "
+            "real Strategy Engine generates candidates independently — this "
+            "is for testing states it wouldn't naturally produce."
         )
         with st.form("inject_candidate", clear_on_submit=True):
             symbol_input = st.text_input("Symbol", placeholder="AAPL")
@@ -211,22 +234,24 @@ def screen_candidates() -> None:
 
     if not candidates:
         st.info(
-            "No candidates yet. Inject one above (dev) or wait for the "
-            "strategy engine in Phase 5."
+            "No candidates yet. Inject one above (dev), or arm a watchlist "
+            "symbol and wait for the Strategy Engine to propose one during "
+            "premarket/after-hours."
         )
         return
 
     st.subheader(f"Candidates ({len(candidates)})")
 
-    # Column widths: symbol, status, strategy, reason, qty, price, actions
-    hdr = st.columns([2, 2, 2, 4, 1, 2, 3])
+    # Column widths: symbol, status, strategy, reason, risk, qty, price, actions
+    hdr = st.columns([2, 2, 2, 4, 3, 1, 2, 3])
     hdr[0].markdown("**Symbol**")
     hdr[1].markdown("**Status**")
     hdr[2].markdown("**Strategy**")
     hdr[3].markdown("**Reason**")
-    hdr[4].markdown("**Qty**")
-    hdr[5].markdown("**Limit price**")
-    hdr[6].markdown("**Action**")
+    hdr[4].markdown("**Risk decision**")
+    hdr[5].markdown("**Qty**")
+    hdr[6].markdown("**Limit price**")
+    hdr[7].markdown("**Action**")
 
     for candidate in candidates:
         cid = candidate["id"]
@@ -234,20 +259,22 @@ def screen_candidates() -> None:
         status = candidate.get("status", "—")
         strategy = candidate.get("strategy") or "—"
         reason = candidate.get("reason") or "—"
+        risk_decision = candidate.get("risk_decision") or "—"
         qty = candidate.get("suggested_quantity", "—")
         price = candidate.get("suggested_limit_price")
         price_display = f"${price:.2f}" if price is not None else "—"
 
-        row = st.columns([2, 2, 2, 4, 1, 2, 3])
+        row = st.columns([2, 2, 2, 4, 3, 1, 2, 3])
         row[0].write(symbol)
         row[1].write(status)
         row[2].write(strategy)
         row[3].write(reason)
-        row[4].write(str(qty))
-        row[5].write(price_display)
+        row[4].write(risk_decision)
+        row[5].write(str(qty))
+        row[6].write(price_display)
 
         if status == "pending":
-            with row[6]:
+            with row[7]:
                 btn_cols = st.columns(2)
                 if btn_cols[0].button("Approve", key=f"approve_{cid}", type="primary"):
                     _do(
@@ -260,7 +287,7 @@ def screen_candidates() -> None:
                         f"{symbol} rejected",
                     )
         else:
-            row[6].write(status)
+            row[7].write(status)
 
 
 def _format_age(created_at: str) -> str:
@@ -285,8 +312,9 @@ def _format_age(created_at: str) -> str:
 def screen_positions() -> None:
     st.header("Position Monitor")
     st.caption(
-        "Positions are derived from filled orders — quantity changes only on fills. "
-        "P/L requires live market data (Phase 5)."
+        "Positions are derived from filled orders — quantity changes only on "
+        "fills. The Phase 5 price feed exists (see the Watchlist screen), but "
+        "P/L computation from it is not yet wired into this screen."
     )
 
     # ------------------------------------------------------------------ #
@@ -324,7 +352,10 @@ def screen_positions() -> None:
             row[0].write(sym)
             row[1].write(str(qty))
             row[2].write(avg_display)
-            row[3].caption("P/L: pending market data (Phase 5)")
+            # The Phase 5 price feed exists (see the Watchlist screen), but
+            # computing unrealized P/L from it here is a deliberate small scope
+            # decision, not yet built — not an oversight.
+            row[3].caption("P/L: not yet wired to the live price feed")
             with row[4]:
                 st.button(
                     "Flatten",
@@ -354,9 +385,15 @@ def screen_positions() -> None:
     open_statuses = {"submitted", "partially_filled", "cancel_pending"}
     open_orders = [o for o in all_orders if o.get("status") in open_statuses]
 
-    # Build stale-order set from events
+    # Build stale-order set from events, filtered server-side to just
+    # order_stale — NOT a raw recent-N window: the audit log accumulates
+    # across days (docs/02) and, post-Phase-5, the strategy loop writes far
+    # more events per tick (market_data_stale/recovered + candidate events
+    # across every armed symbol) than order events, so a fixed-size recent
+    # window could scroll a still-open order's one-time order_stale event
+    # out of view long before the order actually resolves.
     try:
-        events = api_client.list_events()
+        events = api_client.list_events(event_type="order_stale")
     except BackendError as exc:
         st.error(str(exc))
         return

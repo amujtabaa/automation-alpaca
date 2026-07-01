@@ -134,12 +134,24 @@ pending ──approve──▶ approved ──order──▶ ordered     (termin
 ```text
 created ──submit──▶ submitted ──┬──▶ partially_filled ──▶ filled
                                  ├──▶ filled
-                                 ├──▶ canceled
+                                 ├──▶ cancel_pending ──┬──▶ canceled   (broker confirms)
+                                 │                     └──▶ filled     (late fill wins, D-013a's
+                                 │                                      sibling CHAOS-1 policy)
                                  └──▶ rejected   (rejected by the broker)
+
+created ──cancel (session close, D-013a)──▶ canceled
 ```
 
 - **`submitted ≠ filled`.** Reaching `submitted` means Alpaca accepted the
   paper order, not that it executed (Rule 6).
+- **`cancel_pending` is non-terminal.** A cancel has been requested at the
+  broker but not yet confirmed, so the order keeps being polled — a late fill
+  that arrives before the venue finalizes the cancel is still recorded, never
+  missed. It resolves to `canceled` or `filled` (see `app/models.py`'s
+  `OrderStatus` docstring).
+- **A `CREATED` (never-submitted) order is canceled directly at session close**
+  (D-013a) — a separate path from `cancel_pending`, since it was never sent to
+  the broker at all. See "Session Close Mechanics" below.
 - An order links back to the candidate that produced it (`candidate_id`).
 - An order may carry a nullable `replaces_order_id` (see "Forward
   Compatibility" below) — beta never populates it.
@@ -189,16 +201,24 @@ does, atomically:**
 1. Every candidate still `pending` or `approved` (not yet `ordered`)
    transitions to `expired`. This is the trigger for the `expire` transition
    referenced above — it doesn't happen on a timer in beta, only on close.
-2. Current positions (the live fold over fills, exactly what
+2. Every order still `created` (never submitted to the broker) in this
+   session transitions directly to `canceled` (D-013a). This is distinct from
+   the `cancel_pending` path in the Order Lifecycle above — a `created` order
+   was never sent to Alpaca, so there is nothing to confirm with the broker;
+   this closes it out cleanly rather than leaving a zombie `created` order
+   that the submission gate would otherwise have to keep holding forever.
+   Already-`submitted` orders are untouched and keep reconciling after close
+   (D-011) — only orders that never left `created` are affected.
+3. Current positions (the live fold over fills, exactly what
    `GET /api/positions` returns right now) are written to a
    **`position_snapshots`** table, keyed by `session_id`. This is the
    "snapshots for fast review" already named in "Persisted Entities" above,
    now given an actual shape: `session_id`, `symbol`, `quantity`, `cost_basis`,
    `average_price`, `captured_at`. One row per symbol with a nonzero position
    at close.
-3. The session's `status` becomes `closed`, with a `closed_at` timestamp.
-4. An audit event records the close, including how many candidates were
-   expired.
+4. The session's `status` becomes `closed`, with a `closed_at` timestamp.
+5. An audit event records the close, including how many candidates were
+   expired and how many `created` orders were canceled.
 
 **`GET /api/review?date=` reads accordingly:** for the *active* session (today,
 or whatever date is currently open), it returns the live derived view, same as
@@ -261,33 +281,43 @@ though beta never populates it. This costs nothing now and means a "replaced"
 order state can be added to the state machine later without migrating existing
 rows or touching unrelated callers.
 
-## Market-Data Access (Phase 5 note)
+## Market-Data Access (built in Phase 5)
 
 Two different rates are involved, and the design deliberately keeps them
 separate:
 
 - **Ingestion (continuous):** with the paid Algo Trader Plus subscription, the
-  backend holds a single **real-time SIP websocket stream** open and uses it
-  to maintain a current in-memory snapshot per watchlist symbol (last price,
-  volume, % move, spread). The data subscription is independent of paper vs.
-  live trading mode, so the paper account still receives the full real-time
-  SIP feed, not a delayed one.
+  backend holds a single **real-time SIP websocket stream** open
+  (`app/marketdata/alpaca_stream.py`) and uses it to maintain a current
+  in-memory snapshot per watchlist symbol (last price, volume, % move,
+  spread). The data subscription is independent of paper vs. live trading
+  mode, so the paper account still receives the full real-time SIP feed, not
+  a delayed one.
 - **Decision (fixed cadence):** the Strategy Engine evaluates that snapshot on
-  a fixed interval (exact cadence TBD during Phase 5) rather than on every
-  tick. Re-evaluating on every tick produces flickering, contradictory
-  candidates on noise; a human is approving each one in beta, so sub-second
-  reaction time buys nothing and a steady few-second cadence is the better
-  design.
-- **Reconnect handling is required, not optional.** Websocket connections can
-  drop (network blip, server-side restart). On disconnect the backend must
-  detect it and reconnect automatically — the snapshot must never go silently
-  stale. This follows the project's general rule that nothing fails silently
-  (see "Lifecycle" above): a stale-but-untracked feed is the market-data
-  equivalent of a silent data loss.
+  a fixed interval — **`STRATEGY_DECISION_CADENCE_SECONDS`, default 5s** —
+  rather than on every tick. Re-evaluating on every tick produces flickering,
+  contradictory candidates on noise; a human is approving each one in beta, so
+  sub-second reaction time buys nothing and a steady few-second cadence is the
+  better design.
+- **Reconnect handling is implemented, not just required.** Websocket
+  connections can drop (network blip, server-side restart); on disconnect the
+  backend detects it and reconnects automatically (the SDK's own internal
+  retry loop, verified by reading its source — see `alpaca_stream.py`'s module
+  docstring) — the snapshot never goes silently stale. This follows the
+  project's general rule that nothing fails silently (see "Lifecycle" above):
+  a stale-but-untracked feed is the market-data equivalent of a silent data
+  loss. A degraded feed is surfaced as a `market_data_stale`/
+  `market_data_recovered` audit event (`MARKET_DATA_STALE_MINUTES`,
+  default 5min).
 - Most subscription tiers, including Algo Trader Plus, allow **only one
   websocket connection per account** — consistent with the single-process
-  backend design; nothing else should open a second stream.
-- **Premarket / after-hours feed quality on Alpaca's paper data is a known
-  unknown** — verify availability and reliability empirically in Phase 5 before
-  relying on it for candidate generation, rather than assuming parity with
-  regular-hours data.
+  backend design; nothing else opens a second stream.
+- **Premarket / after-hours feed quality on Alpaca's paper data remains an
+  empirically unverified known unknown.** The ingestion/decision/reconnect
+  code above is built and unit-tested against a mocked SDK boundary, but this
+  project's build environment has no real Alpaca credentials or market-hours
+  access, so the actual *quality* of premarket/after-hours paper data — as
+  opposed to the code that would consume it — has never been observed. Verify
+  empirically (real paper keys, during an actual premarket/after-hours
+  session, via `tests/integration/test_alpaca_marketdata.py`) before relying
+  on it for candidate generation; do not assume parity with regular-hours data.

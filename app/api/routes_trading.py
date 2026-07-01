@@ -157,6 +157,7 @@ async def _transition_cancel(
 @router.get("/events", response_model=list[Event])
 async def list_events(
     limit: Optional[int] = Query(default=None, ge=1, le=1000),
+    event_type: Optional[str] = Query(default=None),
     store: StateStore = Depends(get_store),
 ) -> list[Event]:
-    return await store.list_events(limit=limit)
+    return await store.list_events(limit=limit, event_type=event_type)

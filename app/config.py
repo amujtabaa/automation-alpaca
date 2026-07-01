@@ -39,9 +39,29 @@ UNFILLED_TIMEOUT_ENV = "ALPACA_UNFILLED_TIMEOUT_MINUTES"
 BROKER_ENV = "BROKER_ADAPTER"
 ENABLE_MONITORING_ENV = "ENABLE_MONITORING"
 
+# Phase 5 — Market Data Service + Strategy Engine. Same paper-only Alpaca
+# credentials as Phase 4 (the data subscription is independent of paper vs.
+# live trading mode, per docs/02_DATA_AND_PERSISTENCE.md) — no new creds.
+MARKET_DATA_FEED_ENV = "MARKET_DATA_FEED"  # "auto" | "mock" | "alpaca"
+MARKET_DATA_STALE_MINUTES_ENV = "MARKET_DATA_STALE_MINUTES"
+ENABLE_STRATEGY_ENGINE_ENV = "ENABLE_STRATEGY_ENGINE"
+STRATEGY_DECISION_CADENCE_ENV = "STRATEGY_DECISION_CADENCE_SECONDS"
+STRATEGY_MOMENTUM_THRESHOLD_ENV = "STRATEGY_MOMENTUM_THRESHOLD_PCT"
+STRATEGY_MIN_VOLUME_ENV = "STRATEGY_MIN_VOLUME"
+STRATEGY_MAX_SPREAD_ENV = "STRATEGY_MAX_SPREAD_PCT"
+STRATEGY_LIMIT_BUFFER_ENV = "STRATEGY_LIMIT_BUFFER_PCT"
+STRATEGY_DEFAULT_QUANTITY_ENV = "STRATEGY_DEFAULT_QUANTITY"
+
 DEFAULT_DB_PATH = "./data/app.db"
 DEFAULT_POLL_CADENCE_SECONDS = 15.0
 DEFAULT_UNFILLED_TIMEOUT_MINUTES = 60.0
+DEFAULT_MARKET_DATA_STALE_MINUTES = 5.0
+DEFAULT_STRATEGY_DECISION_CADENCE_SECONDS = 5.0
+DEFAULT_STRATEGY_MOMENTUM_THRESHOLD_PCT = 3.0
+DEFAULT_STRATEGY_MIN_VOLUME = 50_000.0
+DEFAULT_STRATEGY_MAX_SPREAD_PCT = 1.0
+DEFAULT_STRATEGY_LIMIT_BUFFER_PCT = 0.1
+DEFAULT_STRATEGY_DEFAULT_QUANTITY = 10
 
 _FALSEY = {"false", "0", "no", "off"}
 
@@ -55,7 +75,10 @@ class Settings:
     # Whether the DEV/MOCK scaffolding routes (e.g. POST /api/dev/candidates) are
     # mounted. On by default so the candidate flow is exercisable in beta; set
     # ``ENABLE_DEV_ROUTES=false`` to keep the mock-injection path off a given
-    # deployment. Phase 5's real Strategy Engine removes the need for it.
+    # deployment. Phase 5's real Strategy Engine (``app/strategy.py`` +
+    # ``app/strategy_loop.py``) is now the primary candidate producer, but this
+    # route stays useful for hand-testing an exact symbol/price/quantity the
+    # strategy wouldn't naturally produce — it doesn't remove the need for it.
     enable_dev_routes: bool = True
 
     # --- Phase 4: broker + monitoring loop ------------------------------- #
@@ -74,6 +97,25 @@ class Settings:
     unfilled_timeout_minutes: float = DEFAULT_UNFILLED_TIMEOUT_MINUTES
     # Whether the background monitoring loop starts at app startup.
     enable_monitoring: bool = True
+
+    # --- Phase 5: market data + strategy loop ----------------------------- #
+    # "auto" | "mock" | "alpaca" — see MARKET_DATA_FEED_ENV above.
+    market_data_feed: str = "auto"
+    # How long the feed may be disconnected before affected snapshots are
+    # marked stale (D-005: never silently serve a stale snapshot as current).
+    market_data_stale_minutes: float = DEFAULT_MARKET_DATA_STALE_MINUTES
+    # Whether the background strategy loop starts at app startup.
+    enable_strategy_engine: bool = True
+    # How often armed watchlist symbols are re-evaluated against the current
+    # snapshot (D-005: decision cadence, distinct from the ingestion stream and
+    # from Phase 4's order-poll cadence).
+    strategy_decision_cadence_seconds: float = DEFAULT_STRATEGY_DECISION_CADENCE_SECONDS
+    # First strategy target's thresholds (D-014b: placeholder, not CAPI).
+    strategy_momentum_threshold_pct: float = DEFAULT_STRATEGY_MOMENTUM_THRESHOLD_PCT
+    strategy_min_volume: float = DEFAULT_STRATEGY_MIN_VOLUME
+    strategy_max_spread_pct: float = DEFAULT_STRATEGY_MAX_SPREAD_PCT
+    strategy_limit_buffer_pct: float = DEFAULT_STRATEGY_LIMIT_BUFFER_PCT
+    strategy_default_quantity: int = DEFAULT_STRATEGY_DEFAULT_QUANTITY
 
     @property
     def db_file(self) -> Path:
@@ -108,6 +150,23 @@ def _env_float(name: str, default: float, *, minimum: Optional[float] = None) ->
     if minimum is not None and value < minimum:
         raise ValueError(f"{name} must be >= {minimum}, got {value}")
     return value
+
+
+def _env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
+    """Parse an integer env var via :func:`_env_float`, then require it be whole.
+
+    Reuses the non-finite/minimum validation rather than duplicating it;
+    rejects a fractional value explicitly (e.g. ``"2.5"``) instead of silently
+    truncating it, which would otherwise hide a likely typo.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = _env_float(name, float(default), minimum=minimum)
+    if not value.is_integer():
+        raise ValueError(f"{name} must be a whole number, got {value}")
+    return int(value)
 
 
 def load_settings() -> Settings:
@@ -161,6 +220,53 @@ def load_settings() -> Settings:
         os.environ.get(ENABLE_MONITORING_ENV, "true").strip().lower() not in _FALSEY
     )
 
+    market_data_feed = os.environ.get(MARKET_DATA_FEED_ENV, "auto").strip().lower()
+    if market_data_feed not in {"auto", "mock", "alpaca"}:
+        raise ValueError(
+            f"{MARKET_DATA_FEED_ENV} must be 'auto', 'mock', or 'alpaca', "
+            f"got {market_data_feed!r}"
+        )
+    # Strictly positive (matches POLL_CADENCE_ENV's minimum=0.001), NOT >= 0.0:
+    # unlike the order-unfilled-timeout (where 0 is a deliberately meaningful
+    # "flag every open order immediately" setting), a stale-minutes of exactly
+    # 0 makes every market snapshot permanently stale, which silently zeroes
+    # out the Strategy Engine's entire candidate output — far more likely to
+    # be an operator typo than an intentional configuration.
+    market_data_stale_minutes = _env_float(
+        MARKET_DATA_STALE_MINUTES_ENV, DEFAULT_MARKET_DATA_STALE_MINUTES, minimum=0.001
+    )
+    enable_strategy_engine = (
+        os.environ.get(ENABLE_STRATEGY_ENGINE_ENV, "true").strip().lower()
+        not in _FALSEY
+    )
+    strategy_decision_cadence = _env_float(
+        STRATEGY_DECISION_CADENCE_ENV,
+        DEFAULT_STRATEGY_DECISION_CADENCE_SECONDS,
+        minimum=0.001,
+    )
+    strategy_momentum_threshold = _env_float(
+        STRATEGY_MOMENTUM_THRESHOLD_ENV,
+        DEFAULT_STRATEGY_MOMENTUM_THRESHOLD_PCT,
+        minimum=0.0,
+    )
+    strategy_min_volume = _env_float(
+        STRATEGY_MIN_VOLUME_ENV, DEFAULT_STRATEGY_MIN_VOLUME, minimum=0.0
+    )
+    # Strictly positive, NOT >= 0.0: 0 reads like "no spread limit" but means
+    # the opposite (a MAXIMUM of exactly 0 requires a literally-zero spread —
+    # a real two-sided quote essentially never has one), so it would silently
+    # fail every symbol's spread gate forever. To effectively disable the
+    # check, use a large value (e.g. 100) instead of 0.
+    strategy_max_spread = _env_float(
+        STRATEGY_MAX_SPREAD_ENV, DEFAULT_STRATEGY_MAX_SPREAD_PCT, minimum=0.001
+    )
+    strategy_limit_buffer = _env_float(
+        STRATEGY_LIMIT_BUFFER_ENV, DEFAULT_STRATEGY_LIMIT_BUFFER_PCT, minimum=0.0
+    )
+    strategy_default_quantity = _env_int(
+        STRATEGY_DEFAULT_QUANTITY_ENV, DEFAULT_STRATEGY_DEFAULT_QUANTITY, minimum=1
+    )
+
     return Settings(
         state_store=state_store,
         db_path=db_path,
@@ -171,4 +277,13 @@ def load_settings() -> Settings:
         poll_cadence_seconds=poll_cadence,
         unfilled_timeout_minutes=unfilled_timeout,
         enable_monitoring=enable_monitoring,
+        market_data_feed=market_data_feed,
+        market_data_stale_minutes=market_data_stale_minutes,
+        enable_strategy_engine=enable_strategy_engine,
+        strategy_decision_cadence_seconds=strategy_decision_cadence,
+        strategy_momentum_threshold_pct=strategy_momentum_threshold,
+        strategy_min_volume=strategy_min_volume,
+        strategy_max_spread_pct=strategy_max_spread,
+        strategy_limit_buffer_pct=strategy_limit_buffer,
+        strategy_default_quantity=strategy_default_quantity,
     )

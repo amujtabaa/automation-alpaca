@@ -34,7 +34,6 @@ from app.models import (
     PositionSnapshot,
     SessionRecord,
     SessionStatus,
-    SessionType,
     TradingMode,
     WatchlistSymbol,
     utcnow,
@@ -906,13 +905,15 @@ class InMemoryStateStore(StateStore):
         self,
         *,
         session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
         async with self._lock:
             out = [
                 e.model_copy(deep=True)
                 for e in self._events
-                if session_id is None or e.session_id == session_id
+                if (session_id is None or e.session_id == session_id)
+                and (event_type is None or e.event_type == event_type)
             ]
             if limit is not None:
                 out = out[-limit:]
@@ -945,20 +946,6 @@ class InMemoryStateStore(StateStore):
     async def list_sessions(self) -> list[SessionRecord]:
         async with self._lock:
             return [s.model_copy(deep=True) for s in self._sessions]
-
-    async def set_session_type(self, session_type: SessionType) -> SessionRecord:
-        async with self._lock:
-            with self._atomic():
-                session = self._ensure_current_session_unlocked()
-                session.session_type = SessionType(session_type)
-                session.updated_at = utcnow()
-                self._append_event_unlocked(
-                    "session_opened",
-                    message=f"session type set to {session.session_type.value}",
-                    session_id=session.id,
-                    payload={"session_type": session.session_type.value},
-                )
-            return session.model_copy(deep=True)
 
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
         async with self._lock:

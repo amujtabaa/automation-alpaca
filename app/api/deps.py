@@ -6,6 +6,7 @@ from fastapi import Request
 
 from app.approval.gate import ApprovalGate
 from app.broker.adapter import BrokerAdapter
+from app.marketdata.service import MarketDataService
 from app.store.base import StateStore
 
 
@@ -29,3 +30,13 @@ def get_broker_adapter(request: Request) -> BrokerAdapter:
     """
 
     return request.app.state.broker_adapter
+
+
+def get_market_data_service(request: Request) -> MarketDataService:
+    """The process-wide MarketDataService, constructed at startup (see main.py).
+
+    Routes depend on this interface, never on a concrete implementation — so a
+    snapshot route works identically against the real Alpaca feed or the fake.
+    """
+
+    return request.app.state.market_data

@@ -16,11 +16,13 @@ pytest>=8.0
 httpx>=0.27
 anyio>=4.0
 
-# Phase 4 — Alpaca paper adapter (optional at install time).
+# Alpaca paper adapter/feed (optional at install time).
 # This is the ONLY permitted Alpaca SDK for this project.
-# Required only when BROKER_ADAPTER=alpaca (real paper integration with Alpaca).
-# The import is lazy (inside AlpacaPaperAdapter.__init__), so the standard
-# test suite and CI run without it — unit tests never touch the Alpaca network.
-# Paper-only: the adapter only ever constructs a paper TradingClient; there is
-# intentionally no live-trading path in this codebase.
+# Required when BROKER_ADAPTER=alpaca (Phase 4, order submission/reconciliation)
+# and/or MARKET_DATA_FEED=alpaca (Phase 5, real-time quotes) — either setting on
+# its own pulls it in. Both import sites are lazy (inside AlpacaPaperAdapter's
+# and AlpacaMarketDataStream's __init__/factory), so the standard test suite and
+# CI run without it — unit tests never touch the Alpaca network. Paper-only:
+# both call sites only ever use paper credentials; there is intentionally no
+# live-trading path in this codebase.
 alpaca-py>=0.20

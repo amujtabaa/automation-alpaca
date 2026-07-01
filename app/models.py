@@ -99,8 +99,17 @@ class OrderSide(str, Enum):
 
 
 class OrderType(str, Enum):
-    """Order types. Session policy (Rule 12) is enforced later, not in beta;
-    the enum simply has to be able to express the allowed types."""
+    """Order types.
+
+    Beta's submission path (``app.broker.alpaca_paper.AlpacaPaperAdapter.
+    submit_order``) always constructs a ``LIMIT`` order and sets Alpaca's
+    ``extended_hours`` flag based on the current session at submission time
+    (D-015) — the limit-only half of Rule 12 is enforced. The other half —
+    actually selecting ``MARKET``/``TRAILING_STOP`` during regular hours when
+    a strategy calls for it — is not yet wired up; those members exist so the
+    enum can already express the allowed types once that selection logic is
+    built, without a model change.
+    """
 
     LIMIT = "limit"
     MARKET = "market"
@@ -143,6 +152,12 @@ class EventType(str, Enum):
 
     SESSION_OPENED = "session_opened"
     SESSION_CLOSED = "session_closed"
+
+    # Market data feed (Phase 5): the feed has been disconnected longer than
+    # the configured staleness threshold — surfaced, never silently stale
+    # (D-005).
+    MARKET_DATA_STALE = "market_data_stale"
+    MARKET_DATA_RECOVERED = "market_data_recovered"
 
 
 # --------------------------------------------------------------------------- #
@@ -306,6 +321,12 @@ class SessionRecord(_Entity):
     id: str = Field(default_factory=new_id)
     session_date: str  # ISO date "YYYY-MM-DD"
     mode: TradingMode = TradingMode.PAPER
+    # Not persisted meaningfully — GET /api/session overlays this live from
+    # session_type_for(utcnow()) on every read rather than a stored value,
+    # since a single day's session spans all three windows as wall-clock time
+    # passes (see routes_system.py's session() docstring). Left as a plain
+    # column here (not removed) only because the field/model shape is shared
+    # with reading rows back out of storage.
     session_type: Optional[SessionType] = None
     status: SessionStatus = SessionStatus.ACTIVE
 

@@ -1,8 +1,10 @@
-"""Watchlist CRUD — the one fully functional data screen in this phase.
+"""Watchlist CRUD — the input the rest of the system is driven from.
 
-Brought into scope now (the implementation prompt resolves the Phase 2/3
-ambiguity in favour of shipping watchlist CRUD now). Candidates, orders, and
-positions stay read-only until later phases populate them.
+The armed subset of this list is what the Strategy Engine (Phase 5) evaluates
+and the Market Data Service subscribes to (`docs/01_ARCHITECTURE.md`); it is
+the only entity with a mutating create/update/delete surface here, since
+candidates/orders/positions are all produced downstream (by approval,
+submission, and fills respectively) rather than directly authored.
 """
 
 from __future__ import annotations

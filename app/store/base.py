@@ -37,7 +37,6 @@ from app.models import (
     Position,
     PositionSnapshot,
     SessionRecord,
-    SessionType,
     WatchlistSymbol,
 )
 
@@ -413,9 +412,17 @@ class StateStore(ABC):
         self,
         *,
         session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
-        ...
+        """``event_type``, when given, filters to exactly that
+        :class:`EventType` value (e.g. ``"order_stale"``) — the audit log
+        accumulates across days (``docs/02``) and a caller that only cares
+        about one rare event type shouldn't have to pull the full log (or an
+        arbitrarily-sized recent window that a high write-rate producer, like
+        the Phase 5 strategy loop's per-tick staleness/candidate events, can
+        scroll a rare event out of) just to find it.
+        """
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags
@@ -442,10 +449,6 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
-    async def set_session_type(self, session_type: SessionType) -> SessionRecord:
-        """Set the active session's type (atomic + audit event)."""
-
-    @abstractmethod
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
         """Persist the kill-switch flag on the active session (atomic + audit).
 
@@ -465,11 +468,16 @@ class StateStore(ABC):
 
         1. Transition every ``PENDING``/``APPROVED`` candidate in this session
            to ``EXPIRED`` (terminal candidates are left untouched).
-        2. Snapshot current positions — every symbol with a nonzero derived
+        2. Cancel every still-``CREATED`` (never-submitted) order in this
+           session (D-013a) — a clean terminal state instead of a zombie
+           ``CREATED`` order the per-order-session submission gate would
+           otherwise hold forever. Already-``SUBMITTED`` orders are untouched
+           and keep reconciling after close (D-011).
+        3. Snapshot current positions — every symbol with a nonzero derived
            quantity — into ``position_snapshots``, keyed by this session id.
-        3. Set ``status=CLOSED`` and ``closed_at=now``.
-        4. Write one audit event recording the close and how many candidates
-           were expired.
+        4. Set ``status=CLOSED`` and ``closed_at=now``.
+        5. Write one audit event recording the close, how many candidates
+           were expired, and how many orders were canceled.
 
         Raises :class:`SessionAlreadyClosedError` if the session is already
         closed, and :class:`UnknownEntityError` if ``session_id`` is unknown.
