@@ -73,6 +73,10 @@ class MarketSnapshotResponse(BaseModel):
     Mirrors ``app.marketdata.service.MarketSnapshot`` as a Pydantic model for
     the HTTP layer — the dataclass itself is working data (never persisted,
     ``docs/02_DATA_AND_PERSISTENCE.md``) and stays IO/framework-agnostic.
+    ``pct_move`` is computed by the route via ``app.features.pct_move`` (the
+    same function the Strategy Engine decides on) and included here so the
+    cockpit never has to recompute it — Streamlit stays a pure display client
+    instead of re-deriving a number a decision was actually made from.
     """
 
     symbol: str
@@ -81,6 +85,7 @@ class MarketSnapshotResponse(BaseModel):
     ask: Optional[float]
     volume: Optional[int]
     prev_close: Optional[float]
+    pct_move: Optional[float]
     updated_at: datetime
     stale: bool
 

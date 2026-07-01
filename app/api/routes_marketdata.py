@@ -14,9 +14,17 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import get_market_data_service
 from app.api.schemas import MarketSnapshotResponse
-from app.marketdata.service import MarketDataService
+from app.features import pct_move
+from app.marketdata.service import MarketDataService, MarketSnapshot
 
 router = APIRouter(prefix="/api/marketdata", tags=["marketdata"])
+
+
+def _to_response(snapshot: MarketSnapshot) -> MarketSnapshotResponse:
+    return MarketSnapshotResponse(
+        **snapshot.__dict__,
+        pct_move=pct_move(snapshot.last_price, snapshot.prev_close),
+    )
 
 
 @router.get("/snapshots", response_model=list[MarketSnapshotResponse])
@@ -24,4 +32,4 @@ async def list_snapshots(
     market_data: MarketDataService = Depends(get_market_data_service),
 ) -> list[MarketSnapshotResponse]:
     snapshots = await market_data.list_snapshots()
-    return [MarketSnapshotResponse(**s.__dict__) for s in snapshots]
+    return [_to_response(s) for s in snapshots]

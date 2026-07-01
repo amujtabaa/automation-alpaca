@@ -42,12 +42,40 @@ def test_healthy_snapshot_shows_last_price_and_move(monkeypatch):
         "ask": 103.1,
         "volume": 100_000,
         "prev_close": 100.0,
+        "pct_move": 3.0,
         "updated_at": "2026-01-07T10:00:00+00:00",
         "stale": False,
     }
     at = _run(monkeypatch, watchlist=[WATCHLIST_ENTRY], snapshots=[snapshot])
 
     assert not at.exception
+
+
+def test_move_display_uses_backend_pct_move_directly(monkeypatch):
+    """The cockpit must display the BACKEND-computed pct_move, not recompute
+    it from last_price/prev_close — verified by giving it a pct_move value
+    that would NOT match (last_price - prev_close) / prev_close * 100 and
+    confirming the widget shows the given value, not a locally-derived one."""
+
+    snapshot = {
+        "symbol": "AAPL",
+        "last_price": 103.0,
+        "bid": 102.9,
+        "ask": 103.1,
+        "volume": 100_000,
+        "prev_close": 100.0,
+        "pct_move": 42.0,  # deliberately inconsistent with last/prev above
+        "updated_at": "2026-01-07T10:00:00+00:00",
+        "stale": False,
+    }
+    at = _run(monkeypatch, watchlist=[WATCHLIST_ENTRY], snapshots=[snapshot])
+
+    assert not at.exception
+    all_text = " ".join(w.value for w in at.get("markdown")) + " ".join(
+        w.value for w in at.get("text")
+    )
+    assert "+42.0%" in all_text
+    assert "+3.0%" not in all_text  # the locally-recomputed (wrong) value
 
 
 def test_stale_snapshot_does_not_crash(monkeypatch):
@@ -58,6 +86,7 @@ def test_stale_snapshot_does_not_crash(monkeypatch):
         "ask": 103.1,
         "volume": 100_000,
         "prev_close": 100.0,
+        "pct_move": 3.0,
         "updated_at": "2026-01-07T10:00:00+00:00",
         "stale": True,
     }

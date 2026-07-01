@@ -41,6 +41,7 @@ def test_returns_populated_snapshot(client):
     assert snap["ask"] == 103.1
     assert snap["volume"] == 100_000
     assert snap["prev_close"] == 100.0
+    assert snap["pct_move"] == pytest.approx(3.0)
     assert snap["stale"] is False
     assert "updated_at" in snap
 
@@ -59,3 +60,17 @@ def test_subscribed_symbol_with_no_data_yet_serializes_nulls(client):
     assert snap["ask"] is None
     assert snap["volume"] is None
     assert snap["prev_close"] is None
+    assert snap["pct_move"] is None
+
+
+def test_pct_move_computed_by_backend_not_cockpit(client):
+    """The route computes pct_move (app.features.pct_move) — this is the value
+    the Strategy Engine actually decided on; the cockpit only displays it."""
+
+    feed: FakeMarketDataFeed = client.app.state.market_data
+    feed.set_snapshot("AAPL", last_price=97.0, prev_close=100.0)
+
+    resp = client.get("/api/marketdata/snapshots")
+
+    [snap] = resp.json()
+    assert snap["pct_move"] == pytest.approx(-3.0)
