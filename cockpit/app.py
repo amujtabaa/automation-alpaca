@@ -147,27 +147,49 @@ def screen_watchlist() -> None:
         st.info("Watchlist is empty. Paste symbols above to get started.")
         return
 
+    # Phase 5: last price / % move next to each armed symbol, display only —
+    # the backend (app/features.py) owns the real pct_move computation used for
+    # any decision; this is a plain formatting convenience over raw fields the
+    # backend already returns, same category as _format_age's elapsed-time math.
+    try:
+        snapshots = {s["symbol"]: s for s in api_client.list_marketdata_snapshots()}
+    except BackendError:
+        snapshots = {}
+
     st.subheader(f"Current watchlist ({len(watchlist)})")
-    hdr = st.columns([3, 2, 2, 2])
+    hdr = st.columns([2, 2, 2, 2, 2, 2])
     hdr[0].markdown("**Symbol**")
     hdr[1].markdown("**State**")
-    hdr[2].markdown("**Arm / Disarm**")
-    hdr[3].markdown("**Remove**")
+    hdr[2].markdown("**Last**")
+    hdr[3].markdown("**% Move**")
+    hdr[4].markdown("**Arm / Disarm**")
+    hdr[5].markdown("**Remove**")
     for entry in watchlist:
         sym = entry["symbol"]
         armed = bool(entry["armed"])
-        row = st.columns([3, 2, 2, 2])
+        snap = snapshots.get(sym)
+        last_display = f"${snap['last_price']:.2f}" if snap and snap.get("last_price") is not None else "—"
+        move_display = "—"
+        if snap and snap.get("last_price") is not None and snap.get("prev_close"):
+            move_pct = (snap["last_price"] - snap["prev_close"]) / snap["prev_close"] * 100.0
+            move_display = f"{move_pct:+.1f}%"
+        if snap and snap.get("stale"):
+            last_display += " ⚠️"
+
+        row = st.columns([2, 2, 2, 2, 2, 2])
         row[0].write(sym)
         row[1].write("🟢 armed" if armed else "⚪ disarmed")
+        row[2].write(last_display)
+        row[3].write(move_display)
         if armed:
-            if row[2].button("Disarm", key=f"disarm_{sym}", width='stretch'):
+            if row[4].button("Disarm", key=f"disarm_{sym}", width='stretch'):
                 _do(lambda s=sym: api_client.upsert_watchlist(s, armed=False),
                     f"{sym} disarmed")
         else:
-            if row[2].button("Arm", key=f"arm_{sym}", width='stretch'):
+            if row[4].button("Arm", key=f"arm_{sym}", width='stretch'):
                 _do(lambda s=sym: api_client.upsert_watchlist(s, armed=True),
                     f"{sym} armed")
-        if row[3].button("Remove", key=f"rm_{sym}", width='stretch'):
+        if row[5].button("Remove", key=f"rm_{sym}", width='stretch'):
             _do(lambda s=sym: api_client.remove_watchlist(s), f"{sym} removed")
 
 

@@ -68,6 +68,11 @@ def remove_watchlist(symbol: str) -> None:
     _request("DELETE", f"/api/watchlist/{symbol}")
 
 
+# --- Market data (Phase 5, read-only) -------------------------------------- #
+def list_marketdata_snapshots() -> list[dict]:
+    return _request("GET", "/api/marketdata/snapshots")
+
+
 # --- Candidates ----------------------------------------------------------- #
 def list_candidates() -> list[dict]:
     return _request("GET", "/api/candidates")
