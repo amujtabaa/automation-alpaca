@@ -74,6 +74,21 @@ def test_watchlist_crud_and_arming(client):
     assert client.delete("/api/watchlist/AAPL").status_code == 404
 
 
+def test_events_endpoint_filters_by_event_type(client):
+    # Create unarmed (writes watchlist_added, not watchlist_armed), then arm
+    # and disarm as separate transitions, to get two distinct event types.
+    client.post("/api/watchlist", json={"symbol": "AAPL"})
+    client.post("/api/watchlist", json={"symbol": "AAPL", "armed": True})
+    client.post("/api/watchlist", json={"symbol": "AAPL", "armed": False})
+
+    armed_only = client.get("/api/events", params={"event_type": "watchlist_armed"}).json()
+    assert armed_only
+    assert {e["event_type"] for e in armed_only} == {"watchlist_armed"}
+
+    none_of_this_type = client.get("/api/events", params={"event_type": "order_stale"}).json()
+    assert none_of_this_type == []
+
+
 def test_readonly_views_are_empty_not_mocked(client):
     assert client.get("/api/candidates").json() == []
     assert client.get("/api/positions").json() == []

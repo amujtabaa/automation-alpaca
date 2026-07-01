@@ -119,9 +119,13 @@ def cancel_order(order_id: str) -> dict:
     return _request("POST", f"/api/orders/{order_id}/cancel")
 
 
-def list_events(limit: Optional[int] = None) -> list[dict]:
-    params = {"limit": limit} if limit else None
-    return _request("GET", "/api/events", params=params)
+def list_events(limit: Optional[int] = None, event_type: Optional[str] = None) -> list[dict]:
+    params: dict = {}
+    if limit:
+        params["limit"] = limit
+    if event_type:
+        params["event_type"] = event_type
+    return _request("GET", "/api/events", params=params or None)
 
 
 def get_review(date: Optional[str] = None) -> dict:

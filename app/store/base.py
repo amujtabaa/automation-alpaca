@@ -412,9 +412,17 @@ class StateStore(ABC):
         self,
         *,
         session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
-        ...
+        """``event_type``, when given, filters to exactly that
+        :class:`EventType` value (e.g. ``"order_stale"``) — the audit log
+        accumulates across days (``docs/02``) and a caller that only cares
+        about one rare event type shouldn't have to pull the full log (or an
+        arbitrarily-sized recent window that a high write-rate producer, like
+        the Phase 5 strategy loop's per-tick staleness/candidate events, can
+        scroll a rare event out of) just to find it.
+        """
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

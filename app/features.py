@@ -17,7 +17,11 @@ from zoneinfo import ZoneInfo
 
 from app.models import SessionType
 
-_EASTERN = ZoneInfo("America/New_York")
+# Public (not underscore-prefixed): app/marketdata/alpaca_stream.py's
+# day-boundary reseed logic imports this too, so trading-day/session-boundary
+# timezone handling has exactly one source instead of a second copy that
+# could drift out of sync.
+EASTERN = ZoneInfo("America/New_York")
 
 # US equity session boundaries, Eastern time (docs/02: premarket/after-hours
 # feed quality is an empirical unknown to verify separately — these boundaries
@@ -92,7 +96,7 @@ def session_type_for(dt: datetime) -> Optional[SessionType]:
 
     if dt.tzinfo is None:
         raise ValueError("session_type_for requires a timezone-aware datetime")
-    local_dt = dt.astimezone(_EASTERN)
+    local_dt = dt.astimezone(EASTERN)
     if local_dt.weekday() >= 5:  # Saturday=5, Sunday=6
         return None
     local = local_dt.time()

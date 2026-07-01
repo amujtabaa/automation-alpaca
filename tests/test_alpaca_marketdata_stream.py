@@ -487,18 +487,47 @@ class TestRunStop:
 
         assert stream._run_started_at is not None
 
-    async def test_stop_before_run_has_started_is_a_noop_not_an_attributeerror(self):
+    async def test_stop_times_out_and_warns_if_run_never_starts(self, monkeypatch):
         """StockDataStream._loop is None until run()'s background thread
         reaches _run_forever(); calling the SDK's stop() before that
         dereferences None (self._loop.is_running()), raising AttributeError.
-        A shutdown arriving before run() has actually started must not crash."""
+        If run() truly never gets scheduled, stop() must give up cleanly
+        (bounded wait) rather than raise OR hang shutdown forever."""
+        monkeypatch.setattr(
+            "app.marketdata.alpaca_stream._STOP_READY_TIMEOUT_SECONDS", 0.05
+        )
+        monkeypatch.setattr(
+            "app.marketdata.alpaca_stream._STOP_READY_POLL_INTERVAL_SECONDS", 0.01
+        )
         stream = _stream()
         stream._stream.stop = Mock()
         assert stream._stream._loop is None  # run() never started
 
-        await stream.stop()  # must not raise
+        await stream.stop()  # must not raise, must not hang
 
         stream._stream.stop.assert_not_called()
+
+    async def test_stop_waits_for_run_to_start_then_stops_it(self, monkeypatch):
+        """The common case this guard exists for: run()'s background thread
+        hasn't reached _run_forever() *yet* at the moment stop() is called
+        (a startup/shutdown race), but does within the wait window — stop()
+        must still actually stop the connection, not silently leak it."""
+        monkeypatch.setattr(
+            "app.marketdata.alpaca_stream._STOP_READY_TIMEOUT_SECONDS", 5.0
+        )
+        monkeypatch.setattr(
+            "app.marketdata.alpaca_stream._STOP_READY_POLL_INTERVAL_SECONDS", 0.01
+        )
+        stream = _stream()
+        stream._stream.stop = Mock()
+        assert stream._stream._loop is None  # run() hasn't started yet
+
+        stop_task = asyncio.create_task(stream.stop())
+        await asyncio.sleep(0.03)  # let stop() begin polling
+        stream._stream._loop = Mock()  # simulates run()'s thread starting
+        await stop_task  # must not raise, must not time out
+
+        stream._stream.stop.assert_called_once()
 
     async def test_stop_calls_sdk_stop_once_run_has_started(self):
         stream = _stream()

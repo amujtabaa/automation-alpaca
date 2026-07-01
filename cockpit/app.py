@@ -385,12 +385,15 @@ def screen_positions() -> None:
     open_statuses = {"submitted", "partially_filled", "cancel_pending"}
     open_orders = [o for o in all_orders if o.get("status") in open_statuses]
 
-    # Build stale-order set from events. Bounded to the most recent 500 — the
-    # audit log accumulates across days (docs/02) and grows unbounded, but a
-    # currently-open order's own order_stale event (if any) is necessarily
-    # recent, since it can only fire while the order is still open.
+    # Build stale-order set from events, filtered server-side to just
+    # order_stale — NOT a raw recent-N window: the audit log accumulates
+    # across days (docs/02) and, post-Phase-5, the strategy loop writes far
+    # more events per tick (market_data_stale/recovered + candidate events
+    # across every armed symbol) than order events, so a fixed-size recent
+    # window could scroll a still-open order's one-time order_stale event
+    # out of view long before the order actually resolves.
     try:
-        events = api_client.list_events(limit=500)
+        events = api_client.list_events(event_type="order_stale")
     except BackendError as exc:
         st.error(str(exc))
         return

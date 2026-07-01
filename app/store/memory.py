@@ -905,13 +905,15 @@ class InMemoryStateStore(StateStore):
         self,
         *,
         session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
         async with self._lock:
             out = [
                 e.model_copy(deep=True)
                 for e in self._events
-                if session_id is None or e.session_id == session_id
+                if (session_id is None or e.session_id == session_id)
+                and (event_type is None or e.event_type == event_type)
             ]
             if limit is not None:
                 out = out[-limit:]

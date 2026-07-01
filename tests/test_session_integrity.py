@@ -110,3 +110,26 @@ async def test_watchlist_events_scoped_to_active_session(any_store):
         "watchlist_disarmed",
         "watchlist_removed",
     } <= types
+
+
+async def test_list_events_filters_by_event_type(any_store):
+    """Added alongside the cockpit's Position Monitor fix: filtering server-side
+    by event_type (e.g. "order_stale") lets a caller find a specific rare event
+    without pulling the whole log or risking a fixed-size recent window
+    scrolling it out of view."""
+
+    await any_store.initialize()
+    await any_store.add_watchlist_symbol("AAPL")
+    await any_store.set_watchlist_armed("AAPL", True)
+    await any_store.set_watchlist_armed("AAPL", False)
+
+    armed_only = await any_store.list_events(event_type="watchlist_armed")
+    assert armed_only
+    assert {e.event_type for e in armed_only} == {"watchlist_armed"}
+
+    disarmed_only = await any_store.list_events(event_type="watchlist_disarmed")
+    assert disarmed_only
+    assert {e.event_type for e in disarmed_only} == {"watchlist_disarmed"}
+
+    none_of_this_type = await any_store.list_events(event_type="order_stale")
+    assert none_of_this_type == []

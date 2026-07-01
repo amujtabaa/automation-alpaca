@@ -1442,12 +1442,16 @@ class SqliteStateStore(StateStore):
         self,
         *,
         session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
         clauses, params = [], []
         if session_id is not None:
             clauses.append("session_id = ?")
             params.append(session_id)
+        if event_type is not None:
+            clauses.append("event_type = ?")
+            params.append(event_type)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         async with self._lock:
             rows = self._read_all(

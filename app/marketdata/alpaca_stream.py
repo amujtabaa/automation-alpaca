@@ -62,7 +62,6 @@ import logging
 import threading
 from datetime import date, datetime, timedelta
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -71,15 +70,14 @@ from alpaca.data.models.quotes import Quote
 from alpaca.data.models.trades import Trade
 from alpaca.data.requests import StockSnapshotRequest
 
+from app.features import EASTERN
 from app.marketdata.service import MarketDataService, MarketSnapshot
 from app.models import utcnow
 
 _log = logging.getLogger(__name__)
 
-# US equity trading-day boundary is Eastern local midnight, not UTC midnight
-# (UTC midnight falls mid-after-hours-session for EST, one hour before the
-# 8pm ET after-hours close) — see _trading_day.
-_EASTERN = ZoneInfo("America/New_York")
+_STOP_READY_TIMEOUT_SECONDS = 5.0
+_STOP_READY_POLL_INTERVAL_SECONDS = 0.05
 
 
 def _is_feed_stale(
@@ -107,7 +105,7 @@ def _trading_day(dt: datetime) -> date:
     session), incorrectly treating an in-progress trading day as over.
     """
 
-    return dt.astimezone(_EASTERN).date()
+    return dt.astimezone(EASTERN).date()
 
 
 def _seed_from_snapshot(raw) -> tuple[
@@ -270,10 +268,34 @@ class AlpacaMarketDataStream(MarketDataService):
         # _run_forever()'s first line. Calling stop() before that point (e.g.
         # app shutdown arriving moments after startup, before the run() task
         # has actually started executing on its to_thread worker) would
-        # otherwise raise an unhandled AttributeError instead of a clean,
-        # idempotent no-op stop.
-        if getattr(self._stream, "_loop", None) is None:
-            return
+        # otherwise raise an unhandled AttributeError.
+        #
+        # A bare "return if not ready yet" is NOT safe here: the run() task's
+        # underlying to_thread worker cannot be killed by Task.cancel() once
+        # it has actually started (a known asyncio.to_thread limitation), so
+        # silently skipping the SDK's real stop() in this window would trade
+        # the AttributeError crash for a worse failure — a live websocket
+        # connection leaked forever, fully detached from the exited process.
+        # Instead, poll briefly for _loop to appear (thread-scheduling delay
+        # is normally milliseconds) before giving up.
+        #
+        # Known tradeoff: this reaches into alpaca-py's private `_loop`
+        # attribute, since the SDK exposes no public "has run() started"
+        # signal to poll instead. An SDK upgrade that renames/removes it
+        # would make this loop always time out (never actually stopping the
+        # connection) rather than crash — a silent regression back to the
+        # leak this fix addresses, discoverable only by testing against a
+        # new alpaca-py version, not by this module's own logic.
+        deadline = utcnow() + timedelta(seconds=_STOP_READY_TIMEOUT_SECONDS)
+        while getattr(self._stream, "_loop", None) is None:
+            if utcnow() >= deadline:
+                _log.warning(
+                    "stop() timed out waiting for the market data stream to "
+                    "start; run() may never have been scheduled — nothing to "
+                    "stop."
+                )
+                return
+            await asyncio.sleep(_STOP_READY_POLL_INTERVAL_SECONDS)
         await asyncio.to_thread(self._stream.stop)
 
     # ------------------------------------------------------------------ #
@@ -316,14 +338,33 @@ class AlpacaMarketDataStream(MarketDataService):
         symbol (never unsubscribed/re-subscribed) would otherwise keep
         ``prev_close`` pinned to whatever day it first subscribed on forever,
         and keep accumulating ``volume`` on top of a stale baseline across
-        day boundaries. Triggered from :meth:`_on_trade` on the first trade
-        observed after the trading day changes (see ``_trading_day``); a
-        symbol with zero trades on a given day never needs this, since its
-        ``last_price`` isn't advancing either.
+        day boundaries. Triggered from :meth:`_on_trade` only, on the first
+        trade observed after the trading day changes (see ``_trading_day``).
 
         Only ``prev_close``/``volume`` are touched — ``last_price``/``bid``/
         ``ask``/``updated_at`` are left as whatever the live feed already
         has, so a REST call that lags the live tick can never regress those.
+
+        **Two known, accepted tradeoffs, not oversights** (found in review,
+        deliberately not fixed given the beta/single-user scope):
+
+        1. A symbol with zero trades on a given day never reseeds — quotes
+           alone (``_on_quote``) don't trigger it. ``prev_close`` stays
+           pinned to the prior day until (unless) a trade eventually lands,
+           which would then compute ``pct_move`` against a stale baseline for
+           that one evaluation. This only affects a symbol illiquid enough to
+           go a full session without a print, which the momentum strategies
+           this beta targets are unlikely to be watching in practice.
+        2. The REST call here is *awaited inline* from ``_on_trade``, which
+           the SDK dispatches strictly serially (one message fully processed
+           before the next is even read — see the module docstring). During
+           a real day-boundary rollover with many armed symbols, each one's
+           first post-rollover trade blocks delivery of every other symbol's
+           trades/quotes for that REST round-trip's duration, so reseeds
+           landing close together can compound into a multi-second delay.
+           Making this non-blocking (e.g. `asyncio.create_task`) would
+           reintroduce a genuine concurrent-reseed race that today's
+           strictly-serial dispatch structurally prevents — not a free fix.
         """
 
         _, _, _, volume, prev_close = await asyncio.to_thread(self._fetch_seed, symbol)
