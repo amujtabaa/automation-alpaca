@@ -144,6 +144,12 @@ class EventType(str, Enum):
     SESSION_OPENED = "session_opened"
     SESSION_CLOSED = "session_closed"
 
+    # Market data feed (Phase 5): the feed has been disconnected longer than
+    # the configured staleness threshold — surfaced, never silently stale
+    # (D-005).
+    MARKET_DATA_STALE = "market_data_stale"
+    MARKET_DATA_RECOVERED = "market_data_recovered"
+
 
 # --------------------------------------------------------------------------- #
 # Persisted entities
