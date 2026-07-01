@@ -165,6 +165,10 @@ GET    /api/review?date=YYYY-MM-DD     # query a past session
 POST   /api/controls/kill-switch
 POST   /api/controls/pause-buys
 POST   /api/controls/resume-buys
+
+GET    /api/marketdata/snapshots       # read-only; Phase 5. Subscriptions are
+                                        # driven by the armed watchlist, not by
+                                        # a call here — no POST/DELETE exists.
 ```
 
 `/api/review` is added to serve the across-days history requirement

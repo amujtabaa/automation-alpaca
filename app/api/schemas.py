@@ -49,8 +49,11 @@ class HealthResponse(BaseModel):
 class MockCandidateCreate(BaseModel):
     """Body for POST /api/dev/candidates — DEV/MOCK scaffolding only.
 
-    A minimal way to inject a candidate so the review flow is exercisable before
-    Phase 5's real Strategy Engine exists. NOT strategy logic; Phase 5 replaces it.
+    A minimal way to hand-inject an arbitrary candidate for manual testing —
+    NOT strategy logic. Phase 5's real Strategy Engine (``app/strategy.py`` +
+    ``app/strategy_loop.py``) now generates real candidates independently; this
+    route remains useful for testing states the strategy wouldn't naturally
+    produce (an exact symbol/price/quantity on demand).
     """
 
     symbol: str = Field(min_length=1)
@@ -62,6 +65,24 @@ class MockCandidateCreate(BaseModel):
     # ``allow_inf_nan=False`` rejects ``Infinity``/``NaN`` (which slip past ``gt=0``:
     # ``inf > 0`` is ``True``) before they can reach the store (BACKEND-1).
     suggested_limit_price: float = Field(default=1.00, gt=0, allow_inf_nan=False)
+
+
+class MarketSnapshotResponse(BaseModel):
+    """One symbol's current market-data snapshot (Phase 5).
+
+    Mirrors ``app.marketdata.service.MarketSnapshot`` as a Pydantic model for
+    the HTTP layer — the dataclass itself is working data (never persisted,
+    ``docs/02_DATA_AND_PERSISTENCE.md``) and stays IO/framework-agnostic.
+    """
+
+    symbol: str
+    last_price: Optional[float]
+    bid: Optional[float]
+    ask: Optional[float]
+    volume: Optional[int]
+    prev_close: Optional[float]
+    updated_at: datetime
+    stale: bool
 
 
 class ReviewResponse(BaseModel):
