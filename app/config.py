@@ -75,7 +75,10 @@ class Settings:
     # Whether the DEV/MOCK scaffolding routes (e.g. POST /api/dev/candidates) are
     # mounted. On by default so the candidate flow is exercisable in beta; set
     # ``ENABLE_DEV_ROUTES=false`` to keep the mock-injection path off a given
-    # deployment. Phase 5's real Strategy Engine removes the need for it.
+    # deployment. Phase 5's real Strategy Engine (``app/strategy.py`` +
+    # ``app/strategy_loop.py``) is now the primary candidate producer, but this
+    # route stays useful for hand-testing an exact symbol/price/quantity the
+    # strategy wouldn't naturally produce — it doesn't remove the need for it.
     enable_dev_routes: bool = True
 
     # --- Phase 4: broker + monitoring loop ------------------------------- #

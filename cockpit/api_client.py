@@ -92,8 +92,9 @@ def reject_candidate(candidate_id: str) -> dict:
 
 def create_mock_candidate(symbol: str, suggested_quantity: int = 10,
                           suggested_limit_price: float = 1.0) -> dict:
-    """DEV/MOCK scaffolding: inject a candidate so the review flow is exercisable
-    before Phase 5's Strategy Engine exists."""
+    """DEV/MOCK scaffolding: hand-inject an exact candidate for manual testing.
+    The real Strategy Engine (Phase 5) generates candidates independently;
+    this remains useful for testing states it wouldn't naturally produce."""
     return _request("POST", "/api/dev/candidates", json={
         "symbol": symbol,
         "suggested_quantity": suggested_quantity,

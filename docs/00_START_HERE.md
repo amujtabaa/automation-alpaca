@@ -49,6 +49,36 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-015 — Order submission sets `extended_hours` from the current session (resolves BACKEND-2)
+**Decision.** `AlpacaPaperAdapter.submit_order` (`app/broker/alpaca_paper.py`)
+now sets Alpaca's `extended_hours` flag based on `session_type_for(utcnow())`
+**at submission time**: `True` when the current session is `PRE_MARKET` or
+`AFTER_HOURS`, `False` otherwise (including when there is no session at all,
+e.g. overnight). No `Order`/`Candidate` schema change — submission-time is a
+more correct reading of Rule 12's "session-conditional" than candidate-
+creation time anyway, since extended-hours eligibility is a property of when
+the order actually reaches the exchange. A candidate whose human approval is
+delayed past its original session's close naturally falls back to a plain
+regular-hours DAY limit (which doesn't need the flag) rather than incorrectly
+carrying a stale premarket intent forward.
+
+**Why now, and why it matters.** `BACKEND-2` (Phase 4 cleanup) deferred this
+with the stated prediction "lands in Phase 5 when the Strategy Engine produces
+session-tagged candidates" — but when Phase 5 actually shipped, the
+order-submission side was never revisited, so the flag stayed unset. This
+went from a **theoretical** gap to a **real one** the moment Phase 5's
+`premarket_momentum_v1` started proposing real candidates: that strategy
+proposes **exclusively** during `PRE_MARKET`/`AFTER_HOURS` (see D-014), so
+every one of its approved candidates would have submitted as a plain
+regular-hours DAY limit order — silently ineligible to execute in the very
+session it was proposed for, defeating the strategy's purpose without any
+error, rejection, or other visible signal. Found during a post-Phase-5
+self-review specifically because "review prior development, especially
+critical areas" prompted re-reading `alpaca_paper.py` alongside the now-built
+Strategy Engine, rather than reading either file in isolation — the gap only
+becomes visible when you trace a real premarket candidate all the way through
+to submission.
+
 ### D-014 — Strategy Engine: candidate generation is not kill-switch-gated; placeholder sizing; open-candidate dedup; sync/staleness are session-independent
 **Four decisions for Phase 5 (the first candidate generator).**
 

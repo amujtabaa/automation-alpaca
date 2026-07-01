@@ -147,10 +147,12 @@ def screen_watchlist() -> None:
         st.info("Watchlist is empty. Paste symbols above to get started.")
         return
 
-    # Phase 5: last price / % move next to each armed symbol, display only —
-    # the backend (app/features.py) owns the real pct_move computation used for
-    # any decision; this is a plain formatting convenience over raw fields the
-    # backend already returns, same category as _format_age's elapsed-time math.
+    # Phase 5: last price / % move next to each armed symbol, display only.
+    # pct_move is computed by the BACKEND (GET /api/marketdata/snapshots, via
+    # app/features.py — the same function the Strategy Engine decides on) and
+    # only formatted here; the cockpit never re-derives the number, so what's
+    # shown always matches what the strategy actually saw (Streamlit stays a
+    # pure display client, per 01_ARCHITECTURE.md).
     try:
         snapshots = {s["symbol"]: s for s in api_client.list_marketdata_snapshots()}
     except BackendError:
@@ -170,9 +172,8 @@ def screen_watchlist() -> None:
         snap = snapshots.get(sym)
         last_display = f"${snap['last_price']:.2f}" if snap and snap.get("last_price") is not None else "—"
         move_display = "—"
-        if snap and snap.get("last_price") is not None and snap.get("prev_close"):
-            move_pct = (snap["last_price"] - snap["prev_close"]) / snap["prev_close"] * 100.0
-            move_display = f"{move_pct:+.1f}%"
+        if snap and snap.get("pct_move") is not None:
+            move_display = f"{snap['pct_move']:+.1f}%"
         if snap and snap.get("stale"):
             last_display += " ⚠️"
 
@@ -204,9 +205,9 @@ def screen_candidates() -> None:
 
     with st.expander("➕ Inject mock candidate (dev)"):
         st.caption(
-            "DEV/MOCK scaffolding — Phase 5's Strategy Engine replaces this. "
-            "Use it to inject a candidate so the approve/reject flow is "
-            "exercisable now."
+            "DEV/MOCK scaffolding for hand-testing an exact candidate. The "
+            "real Strategy Engine generates candidates independently — this "
+            "is for testing states it wouldn't naturally produce."
         )
         with st.form("inject_candidate", clear_on_submit=True):
             symbol_input = st.text_input("Symbol", placeholder="AAPL")
@@ -233,8 +234,9 @@ def screen_candidates() -> None:
 
     if not candidates:
         st.info(
-            "No candidates yet. Inject one above (dev) or wait for the "
-            "strategy engine in Phase 5."
+            "No candidates yet. Inject one above (dev), or arm a watchlist "
+            "symbol and wait for the Strategy Engine to propose one during "
+            "premarket/after-hours."
         )
         return
 
@@ -307,8 +309,9 @@ def _format_age(created_at: str) -> str:
 def screen_positions() -> None:
     st.header("Position Monitor")
     st.caption(
-        "Positions are derived from filled orders — quantity changes only on fills. "
-        "P/L requires live market data (Phase 5)."
+        "Positions are derived from filled orders — quantity changes only on "
+        "fills. The Phase 5 price feed exists (see the Watchlist screen), but "
+        "P/L computation from it is not yet wired into this screen."
     )
 
     # ------------------------------------------------------------------ #

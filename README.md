@@ -163,6 +163,15 @@ pytest
 codebase; the adapter only ever constructs a paper `TradingClient`. Credentials
 live in `.env` (gitignored), never in source control.
 
+Every submitted order sets Alpaca's `extended_hours` flag from the **current**
+session at submission time (`app.features.session_type_for`) — `True` during
+premarket/after-hours, `False` during regular hours or overnight (D-015 in
+[`docs/00_START_HERE.md`](docs/00_START_HERE.md)). Without this, a limit order
+submitted during premarket/after-hours is silently ineligible to execute in
+that session — which matters concretely once Phase 5's Strategy Engine exists,
+since its first strategy proposes candidates *exclusively* during those two
+windows.
+
 ### Credentials and env vars
 
 Copy `.env.example` to `.env` and fill in your Alpaca paper keys:

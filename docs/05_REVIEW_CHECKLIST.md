@@ -96,6 +96,9 @@ Use when reviewing Codex or Claude Code output.
 - [ ] Unit tests use a `MockBrokerAdapter` and make no network calls (Rule 9).
 - [ ] Order submission is driven by the monitoring loop (finds `ORDERED` orders),
       not the approval endpoint.
+- [ ] `extended_hours` is set on the Alpaca order request based on the current
+      session at submission time (D-015) — a premarket/after-hours limit order
+      submitted without it is silently ineligible to execute in that session.
 - [ ] Fills are appended via `StateStore.append_fill` with `source_fill_id` from
       Alpaca; duplicate fills are detected and audit-logged, not double-appended.
 - [ ] Position is still derived only from fills; the adapter never mutates
