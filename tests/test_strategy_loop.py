@@ -8,6 +8,8 @@ directly to keep the suite fast.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import datetime, timezone
 
 import pytest
@@ -16,7 +18,7 @@ from app.config import Settings
 from app.marketdata.fake import FakeMarketDataFeed
 from app.models import CandidateStatus
 from app.store.memory import InMemoryStateStore
-from app.strategy_loop import run_strategy_tick
+from app.strategy_loop import run_strategy_tick, strategy_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -161,7 +163,7 @@ class TestDedup:
 
 
 class TestSessionClose:
-    async def test_closed_session_skips_the_whole_tick(self):
+    async def test_closed_session_skips_candidate_evaluation(self):
         store = await _armed_store("AAPL")
         feed = FakeMarketDataFeed()
         await feed.subscribe(["AAPL"])  # setup call, before the tick under test
@@ -171,9 +173,69 @@ class TestSessionClose:
 
         await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
 
-        assert len(feed.subscribe_calls) == calls_before  # loop made no new calls
+        # No NEW subscribe call (AAPL was already subscribed and stays armed —
+        # sync is a no-op here, not skipped; see the two tests below for sync/
+        # staleness genuinely still running during a closed session).
+        assert len(feed.subscribe_calls) == calls_before
         assert feed.unsubscribe_calls == []
-        assert await store.list_candidates() == []
+        assert await store.list_candidates() == []  # no candidate created
+
+    async def test_sync_subscriptions_still_runs_during_a_closed_session(self):
+        """Subscription sync is NOT gated on session state — a newly-armed
+        symbol still gets subscribed even while the session is closed, so the
+        feed doesn't go blind just because trading is stopped for the day."""
+
+        store = InMemoryStateStore()
+        await store.initialize()
+        await store.close_session()
+        await store.add_watchlist_symbol("AAPL", armed=True)
+        feed = FakeMarketDataFeed()  # AAPL not yet subscribed
+
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        assert feed.subscribe_calls == [["AAPL"]]  # synced despite the closed session
+        assert await store.list_candidates() == []  # still no candidate, though
+
+    async def test_staleness_surfacing_still_runs_during_a_closed_session(self):
+        """A dead feed is surfaced even while the session is closed — D-005's
+        'never silently stale' doesn't pause just because trading has stopped
+        for the day (e.g. an overnight outage before the next session opens)."""
+
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+        await store.close_session()
+
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        events = await store.list_events()
+        assert any(e.event_type == "market_data_stale" and e.symbol == "AAPL" for e in events)
+
+
+class TestIdleTickDoesNotCreateASession:
+    async def test_empty_watchlist_never_touches_session_state(self):
+        store = InMemoryStateStore()
+        await store.initialize()  # creates today's session once, at boot
+        sessions_before = len(await store.list_sessions())
+        feed = FakeMarketDataFeed()
+
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        # No additional session created by ticking with nothing armed.
+        assert len(await store.list_sessions()) == sessions_before
+
+    async def test_all_disarmed_never_touches_session_state(self):
+        store = InMemoryStateStore()
+        await store.initialize()
+        await store.add_watchlist_symbol("AAPL", armed=False)
+        sessions_before = len(await store.list_sessions())
+        feed = FakeMarketDataFeed()
+
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        assert len(await store.list_sessions()) == sessions_before
 
 
 class TestNotGatedBySafetyControls:
@@ -244,6 +306,108 @@ class TestMarketDataStaleness:
 
         events = await store.list_events()
         assert not any(e.event_type in ("market_data_stale", "market_data_recovered") for e in events)
+
+
+class TestStaleStateCache:
+    """The in-memory stale_state cache (perf fix: avoids a full list_events()
+    scan every tick) must produce IDENTICAL results to the event-log fallback,
+    and stay correctly pruned as symbols come and go."""
+
+    async def test_cache_produces_same_result_as_event_log_fallback(self):
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+        cache: dict[str, bool] = {}
+
+        # Tick 1: becomes stale -> one event, cache updated.
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        assert cache == {"AAPL": True}
+        stale_events = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        assert len(stale_events) == 1
+
+        # Tick 2: still stale, using the CACHE (not the event log) -> no new event.
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        stale_events = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        assert len(stale_events) == 1  # unchanged
+
+        # Tick 3: recovers -> one recovered event, cache flips.
+        feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        assert cache == {"AAPL": False}
+        recovered = [e for e in await store.list_events() if e.event_type == "market_data_recovered"]
+        assert len(recovered) == 1
+
+    async def test_cache_and_no_cache_agree_across_ticks(self):
+        """Two independent stores/feeds, one driven with a cache and one
+        without, must reach the same final event counts."""
+
+        async def _drive(cache):
+            store = await _armed_store("AAPL")
+            feed = FakeMarketDataFeed()
+            await feed.subscribe(["AAPL"])
+            feed.set_snapshot("AAPL", stale=True)
+            await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+            await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+            feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
+            await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+            events = await store.list_events()
+            return (
+                len([e for e in events if e.event_type == "market_data_stale"]),
+                len([e for e in events if e.event_type == "market_data_recovered"]),
+            )
+
+        with_cache = await _drive({})
+        without_cache = await _drive(None)
+        assert with_cache == without_cache == (1, 1)
+
+    async def test_cache_is_pruned_when_symbol_unsubscribed(self):
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+        cache: dict[str, bool] = {}
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        assert "AAPL" in cache
+
+        await store.set_watchlist_armed("AAPL", False)  # disarm -> unsubscribed
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+
+        assert "AAPL" not in cache  # pruned, not leaked forever
+
+    async def test_loop_owns_a_persistent_cache_across_ticks(self):
+        """strategy_loop itself (not just run_strategy_tick) must carry the
+        cache across iterations — verified by spying on list_events() call
+        count via a thin store wrapper."""
+
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+
+        list_events_calls = 0
+        orig_list_events = store.list_events
+
+        async def counting_list_events(*args, **kwargs):
+            nonlocal list_events_calls
+            list_events_calls += 1
+            return await orig_list_events(*args, **kwargs)
+
+        store.list_events = counting_list_events
+
+        settings = Settings(strategy_decision_cadence_seconds=0.01)
+        task = asyncio.create_task(strategy_loop(store, feed, settings))
+        try:
+            await asyncio.sleep(0.05)  # let a few ticks happen
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        # strategy_loop's stale_state dict is created (empty, but non-None)
+        # BEFORE the loop starts, so every tick — including the first — passes
+        # a real cache, never None; the event-log fallback is never reached.
+        assert list_events_calls == 0
 
 
 async def test_one_symbols_failure_does_not_block_others():

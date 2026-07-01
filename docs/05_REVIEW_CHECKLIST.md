@@ -142,9 +142,17 @@ Use when reviewing Codex or Claude Code output.
       (D-014b) — no invented risk logic ahead of Phase 6 CAPI.
 - [ ] Feed staleness is surfaced as a `market_data_stale`/`market_data_recovered`
       audit event on a *transition* (not once per tick) — never silently stale
-      (D-005).
+      (D-005), using an O(1) in-memory cache the strategy loop carries across
+      ticks (not a full event-log scan every cadence).
 - [ ] MarketDataService subscriptions are driven by the armed watchlist, not by
       a mutating API endpoint (`GET /api/marketdata/snapshots` is read-only).
+- [ ] Subscription sync and staleness surfacing run regardless of session state
+      (open, closed, or not-yet-created for today) — only candidate evaluation
+      is gated on the session being open (D-014d); an idle tick with nothing
+      armed never auto-creates a session.
+- [ ] `pct_move` on `GET /api/marketdata/snapshots` is computed by the backend
+      (`app.features.pct_move`) — the cockpit displays it, never re-derives it
+      from `last_price`/`prev_close` itself.
 - [ ] Config rejects non-finite/out-of-range strategy and feed-staleness values
       at load, consistent with `_env_float`/`_env_int`.
 - [ ] Cockpit market-data display (Watchlist screen) is formatting only — no

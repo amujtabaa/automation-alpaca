@@ -27,11 +27,24 @@ Design rules this module follows:
   *intent*, not candidate *visibility* — this loop keeps proposing regardless
   of those flags; the existing enforcement (D-013a) blocks any resulting
   order downstream.
-* **Skips entirely when the session is closed** — there is nothing to propose
-  against (``create_candidate`` would refuse it anyway; checked once per tick
-  rather than once per symbol).
+* **Subscription sync and staleness surfacing never touch session state.**
+  They run every tick regardless of whether a trading session is open,
+  closed, or doesn't exist yet for today — a just-disarmed symbol must always
+  get unsubscribed, and a dead feed must always get surfaced, independent of
+  the trading day's state. Only *candidate evaluation* — the part that
+  actually needs a session to attach candidates to and to check "is trading
+  stopped for today" — is skipped when the session is closed, and only that
+  part fetches/creates the current session. This also means an idle tick with
+  nothing armed never auto-creates an empty session purely from the loop
+  ticking (``get_current_session`` is only called once armed symbols exist).
 * **Dedup is session-wide, computed once per tick** (D-014c), not once per
   symbol — a single ``list_candidates`` pair of calls, not N.
+* **Staleness state is cached in memory across ticks**, passed down from
+  :func:`strategy_loop`'s own long-lived dict, so a live process does an O(1)
+  dict lookup per symbol instead of re-scanning the entire event log every
+  cadence (the event-log read remains the *correct* fallback — and is what
+  every test exercises by default — for a caller that doesn't carry state
+  across calls, e.g. a one-off diagnostic tick).
 """
 
 from __future__ import annotations
@@ -72,10 +85,14 @@ async def strategy_loop(
         "strategy loop started (cadence=%.3fs)",
         settings.strategy_decision_cadence_seconds,
     )
+    # Owned by this long-lived task and threaded into every tick, so staleness
+    # transitions are detected via an O(1) in-memory lookup instead of
+    # rescanning the whole event log every cadence (see module docstring).
+    stale_state: dict[str, bool] = {}
     while True:
         try:
             await asyncio.sleep(settings.strategy_decision_cadence_seconds)
-            await run_strategy_tick(store, market_data, settings)
+            await run_strategy_tick(store, market_data, settings, stale_state=stale_state)
         except asyncio.CancelledError:
             _log.info("strategy loop cancelled; shutting down")
             raise
@@ -89,28 +106,36 @@ async def run_strategy_tick(
     settings: Settings,
     *,
     now: Optional[datetime] = None,
+    stale_state: Optional[dict[str, bool]] = None,
 ) -> None:
-    """One strategy iteration: sync subscriptions, then evaluate armed symbols.
+    """One strategy iteration: sync subscriptions and surface staleness (always),
+    then evaluate armed symbols against the current session (only if there's a
+    session to evaluate against).
 
     Exposed separately from :func:`strategy_loop` so tests drive a single,
     deterministic tick without the sleep/``while True`` wrapper. ``now``
     defaults to :func:`app.models.utcnow`; tests pass an explicit
     timezone-aware datetime for deterministic session-type classification
     (real wall-clock time would make premarket/regular/after-hours tests
-    flaky depending on when they happen to run).
+    flaky depending on when they happen to run). ``stale_state`` is the
+    in-memory staleness cache :func:`strategy_loop` carries across ticks;
+    omitted (``None``) it falls back to the persisted-event-log read, which
+    is what every direct-call test exercises (see module docstring).
     """
-
-    session = await store.get_current_session()
-    if session.status is SessionStatus.CLOSED:
-        return
 
     watchlist = await store.list_watchlist()
     armed_symbols = [w.symbol for w in watchlist if w.armed]
 
+    # Never gated on session state (see module docstring): a disarm must
+    # always be synced, and a dead feed must always be surfaced.
     await _sync_subscriptions(market_data, armed_symbols)
-    await _surface_market_data_staleness(store, market_data)
+    await _surface_market_data_staleness(store, market_data, stale_state)
 
     if not armed_symbols:
+        return  # nothing to evaluate; skip WITHOUT touching session state
+
+    session = await store.get_current_session()
+    if session.status is SessionStatus.CLOSED:
         return
 
     open_symbols = await _open_candidate_symbols(store, session.id)
@@ -176,7 +201,9 @@ async def _open_candidate_symbols(store: StateStore, session_id: str) -> set[str
 
 
 async def _surface_market_data_staleness(
-    store: StateStore, market_data: MarketDataService
+    store: StateStore,
+    market_data: MarketDataService,
+    stale_state: Optional[dict[str, bool]] = None,
 ) -> None:
     """Write a ``market_data_stale``/``market_data_recovered`` event on a
     per-symbol staleness *transition* (D-005) — not every tick a symbol
@@ -187,14 +214,34 @@ async def _surface_market_data_staleness(
     Feed-level, not session-scoped: a dead feed matters independent of which
     trading session is active, so this reads the full event history rather
     than filtering by ``session_id`` (unlike the candidate dedup above).
+
+    ``stale_state``, if given, is used and updated **in place** as the prior-
+    state source instead of the event log — an O(1) lookup per symbol rather
+    than a full ``list_events()`` scan every cadence. It is also pruned of any
+    symbol no longer subscribed, so a long-running process doesn't accumulate
+    entries for symbols armed once and later removed. If omitted (``None``),
+    falls back to :func:`_last_known_stale_state` (correct, just slower —
+    what every test that doesn't explicitly pass a cache exercises).
     """
 
     snapshots = await market_data.list_snapshots()
+    symbols = {s.symbol for s in snapshots}
+
+    if stale_state is not None:
+        # Prune BEFORE the empty-snapshots early return below — otherwise a
+        # symbol that just got fully unsubscribed (snapshots now empty) would
+        # never be pruned, since the early return would skip this entirely.
+        for stale_symbol in list(stale_state.keys()):
+            if stale_symbol not in symbols:
+                del stale_state[stale_symbol]
+
     if not snapshots:
         return
 
-    symbols = {s.symbol for s in snapshots}
-    previously_stale = await _last_known_stale_state(store, symbols)
+    if stale_state is None:
+        previously_stale: dict[str, bool] = await _last_known_stale_state(store, symbols)
+    else:
+        previously_stale = stale_state
 
     for snapshot in snapshots:
         was_stale = previously_stale.get(snapshot.symbol, False)
@@ -205,24 +252,34 @@ async def _surface_market_data_staleness(
                 symbol=snapshot.symbol,
                 payload={"last_updated_at": snapshot.updated_at.isoformat()},
             )
+            previously_stale[snapshot.symbol] = True
         elif was_stale and not snapshot.stale:
             await store.append_event(
                 EventType.MARKET_DATA_RECOVERED.value,
                 message=f"market data for {snapshot.symbol} recovered",
                 symbol=snapshot.symbol,
             )
+            previously_stale[snapshot.symbol] = False
 
 
 async def _last_known_stale_state(
     store: StateStore, symbols: set[str]
 ) -> dict[str, bool]:
-    """The most recently recorded stale/recovered state per symbol.
+    """The most recently recorded stale/recovered state per symbol, read from
+    the persisted event log — the correct-but-slower fallback used when no
+    in-memory ``stale_state`` cache is available (see
+    :func:`_surface_market_data_staleness`).
 
-    A symbol absent from the result has no prior staleness event — its first
-    observed state (stale or not) is always written once, establishing a
-    baseline, same idempotency pattern as ``monitoring.py``'s
-    ``_orders_with_event`` (read the persisted log so "write once per
-    transition" survives a process restart).
+    A symbol absent from the result has no prior staleness event. Note this is
+    NOT symmetric between the two directions: a symbol whose *first-ever*
+    observation is healthy is absent (nothing was written — there is nothing
+    to announce about a feed that has always been fine); a symbol whose
+    first-ever observation is stale is *also* absent from this read (no event
+    exists YET), which is exactly what makes the caller write the first
+    ``market_data_stale`` event — establishing a baseline only in the
+    becomes-stale direction, matching ``monitoring.py``'s ``_orders_with_event``
+    idempotency pattern (read the persisted log so "write once per transition"
+    survives a process restart).
     """
 
     state: dict[str, bool] = {}

@@ -49,8 +49,8 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
-### D-014 — Strategy Engine: candidate generation is not kill-switch-gated; placeholder sizing; open-candidate dedup
-**Three decisions for Phase 5 (the first candidate generator).**
+### D-014 — Strategy Engine: candidate generation is not kill-switch-gated; placeholder sizing; open-candidate dedup; sync/staleness are session-independent
+**Four decisions for Phase 5 (the first candidate generator).**
 
 **(a) Candidate generation is not gated by the kill switch or pause-buys.**
 Rule 8 blocks *order intent* — it says nothing about candidate *visibility*.
@@ -75,11 +75,30 @@ skips a symbol that already has a `PENDING`/`APPROVED` candidate this session
 human already made a decision on the prior signal, and a stock that keeps
 moving can legitimately generate a new, separately-approvable one.
 
+**(d) Subscription sync and staleness surfacing never touch session state.**
+The strategy loop originally fetched (and, on an idle day with nothing armed,
+implicitly *created*) the current session as its very first step, every tick —
+an unintended side effect: an idle watchlist would still mint an empty session
+purely from the loop ticking. Fixed by reordering so `get_current_session` is
+only called once armed symbols are known to exist (i.e., there is actually a
+candidate to evaluate against). This has a second, deliberate consequence: a
+just-disarmed symbol's subscription is always synced (unsubscribed) and a dead
+feed is always surfaced (`market_data_stale`), regardless of whether a trading
+session is open, closed, or hasn't started yet for the day — market-data
+ingestion is a process-lifetime concern (`app/main.py`'s feed task already
+runs independent of the strategy loop), not a trading-session concern, so
+gating its bookkeeping on session state was never correct. Only *candidate
+evaluation* — the part that needs a session to attach to and to check "is
+trading stopped for today" — still skips when the session is closed.
+
 **Why now.** Phase 5 is the first phase where anything other than the dev
 route creates candidates, so these are the first real calls on "what makes a
 candidate worth proposing" and "what should proposal even mean" — recorded
 here so a future Auto-Buy engine (Phase 9) inherits the same posture rather
-than each future producer re-deciding it independently.
+than each future producer re-deciding it independently. (d) surfaced during a
+self-review pass after the phase shipped — recorded here rather than only in
+a commit message so a future reader of `strategy_loop.py` finds the reasoning
+in the same place as (a)-(c).
 
 ### D-013 — Order submission gates on the order's own session; localhost is a load-bearing security boundary
 **Two decisions, both surfaced by independent red-team review of Phase 4.**

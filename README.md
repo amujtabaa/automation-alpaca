@@ -249,13 +249,20 @@ paper keys during those sessions and confirm the feed actually ticks.
 When active, the strategy loop runs on `STRATEGY_DECISION_CADENCE_SECONDS` and:
 
 1. Syncs `MarketDataService` subscriptions to the **armed** watchlist (a
-   symbol you never arm is never subscribed, and never evaluated).
+   symbol you never arm is never subscribed, and never evaluated) — runs
+   regardless of whether a trading session is open, closed, or not yet
+   created for today.
 2. Surfaces a feed staleness *transition* as a `market_data_stale` /
-   `market_data_recovered` audit event (once per transition, not once per tick).
+   `market_data_recovered` audit event (once per transition, not once per
+   tick, using an in-memory cache rather than a full event-log scan) — also
+   session-independent, so a dead feed is surfaced even overnight between
+   sessions.
 3. Evaluates each armed symbol through `premarket_momentum_v1`
    (`app/strategy.py`) and creates a real candidate for any proposal — visible
    immediately on the cockpit's Candidate Monitor, same approve/reject flow as
-   a dev-injected one.
+   a dev-injected one. This step alone is skipped when the session is closed,
+   and is the only step that fetches/creates the current session — so an idle
+   tick with nothing armed never mints an empty session.
 
 Not gated by the kill switch / pause-buys: those block order **intent**
 downstream (Rule 8), not candidate visibility — see decision D-014 in
