@@ -49,6 +49,38 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-014 — Strategy Engine: candidate generation is not kill-switch-gated; placeholder sizing; open-candidate dedup
+**Three decisions for Phase 5 (the first candidate generator).**
+
+**(a) Candidate generation is not gated by the kill switch or pause-buys.**
+Rule 8 blocks *order intent* — it says nothing about candidate *visibility*.
+The Strategy Engine keeps proposing candidates for human review even while
+buys are paused or the kill switch is engaged; the existing enforcement
+(D-013a) already blocks any resulting order from reaching the broker. A human
+operator may still want to see what the strategy would propose during a
+stop, and conflating the safety control with the informational proposal feed
+would make the kill switch do double duty as a "hide the feed" toggle it was
+never meant to be.
+
+**(b) Sizing is a fixed placeholder, not real risk logic, until CAPI exists.**
+`suggested_quantity` is a configurable fixed default; `suggested_limit_price`
+is `last_price` plus a small buy-through buffer. `risk_decision` states
+plainly this is placeholder sizing pending Phase 6 CAPI — the Strategy Engine
+does not invent risk management it isn't built to own.
+
+**(c) Dedup blocks on an *unresolved* candidate only.** The strategy loop
+skips a symbol that already has a `PENDING`/`APPROVED` candidate this session
+(don't spam a proposal nobody has acted on yet), but a symbol that reached
+`ORDERED`, `REJECTED`, or `EXPIRED` is eligible for a fresh proposal — the
+human already made a decision on the prior signal, and a stock that keeps
+moving can legitimately generate a new, separately-approvable one.
+
+**Why now.** Phase 5 is the first phase where anything other than the dev
+route creates candidates, so these are the first real calls on "what makes a
+candidate worth proposing" and "what should proposal even mean" — recorded
+here so a future Auto-Buy engine (Phase 9) inherits the same posture rather
+than each future producer re-deciding it independently.
+
 ### D-013 — Order submission gates on the order's own session; localhost is a load-bearing security boundary
 **Two decisions, both surfaced by independent red-team review of Phase 4.**
 
