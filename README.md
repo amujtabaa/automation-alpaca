@@ -11,7 +11,7 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 > API calls. See [`docs/01_ARCHITECTURE.md`](docs/01_ARCHITECTURE.md) for the
 > non-negotiable rules.
 
-## What's built (Phases 1–4)
+## What's built (Phases 1–5)
 
 - **FastAPI backend skeleton** — `GET /api/health`, `GET /api/session`, watchlist
   CRUD, read-only order/position/event views, `GET /api/review`, and
@@ -36,17 +36,34 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
   on the order path — order intent is refused at creation and submission is held
   while engaged, gated on each order's own session. See the
   [Phase 4 section](#phase-4--alpaca-paper-adapter) below.
-- **Thin Streamlit cockpit** — five screens; Watchlist, the Candidate Monitor
-  (list + approve/reject), and the Position/Order monitor (with cancel) are
-  functional; the rest render real backend data.
+- **Market Data Service + Strategy Engine (Phase 5)** — a real-time SIP websocket
+  feed (`MarketDataService`, real Alpaca stream when paper keys are present,
+  otherwise an IO-free fake) maintains a per-symbol snapshot (last price, bid/ask,
+  volume, previous close), auto-reconnecting and surfacing a stuck feed as a
+  `market_data_stale`/`market_data_recovered` audit event rather than silently
+  serving old numbers. A background strategy loop keeps subscriptions in sync
+  with the **armed** watchlist and evaluates a first, simple premarket/after-hours
+  momentum generator (`premarket_momentum_v1`) on its own decision cadence,
+  creating real candidates with a genuine explanation string — the dev-injection
+  route remains available for hand-testing specific states, but candidate
+  generation is no longer only mock data. Sizing is a fixed placeholder pending
+  Phase 6 CAPI (stated plainly in the candidate's `risk_decision`). Deliberately
+  **not** gated by the kill switch / pause-buys — those block order intent
+  downstream (Rule 8), not candidate visibility. `GET /api/marketdata/snapshots`
+  (read-only) backs a Last/% Move column on the cockpit Watchlist screen.
+- **Thin Streamlit cockpit** — five screens; Watchlist (with live snapshot data),
+  the Candidate Monitor (list + approve/reject), and the Position/Order monitor
+  (with cancel) are functional; the rest render real backend data.
 
-Not yet built (later phases, deliberately out of scope here): strategy-driven
-candidate generation (Phase 5), CAPI risk **sizing** (max shares / notional /
-exposure — Phase 6; the on/off kill-switch & pause-buys controls are already
-enforced on the order path), and sell-side protection / position **flatten**
-(Phase 7 — the `/positions/{symbol}/flatten` endpoint and its cockpit button are
-placeholders until then). See
-[`docs/04_IMPLEMENTATION_PLAN.md`](docs/04_IMPLEMENTATION_PLAN.md).
+Not yet built (later phases, deliberately out of scope here): CAPI risk
+**sizing** (max shares / notional / exposure — Phase 6; the on/off kill-switch &
+pause-buys controls are already enforced on the order path), and sell-side
+protection / position **flatten** (Phase 7 — the `/positions/{symbol}/flatten`
+endpoint and its cockpit button are placeholders until then). Premarket/after-
+hours Alpaca paper feed *quality* (as opposed to the plumbing, which is built)
+is an empirical unknown — see
+[`docs/IMPLEMENTATION_PROMPT_PHASE_5.md`](docs/IMPLEMENTATION_PROMPT_PHASE_5.md#known-unknown--explicitly-deferred).
+See [`docs/04_IMPLEMENTATION_PLAN.md`](docs/04_IMPLEMENTATION_PLAN.md).
 
 ## Project structure
 
@@ -133,7 +150,12 @@ pytest
   approve/reject API (idempotency, 404/409, gate pluggability, no-position-on-
   approve), the cockpit Candidate Monitor (AppTest), append-only fills,
   duplicate-fill protection, the position-folding cases, the oversell rejection,
-  the HTTP API, and a scripted restart-persistence check.
+  the HTTP API, a scripted restart-persistence check, the Alpaca paper adapter's
+  status mapping and fill delta-sourcing against a mocked SDK boundary, the
+  Feature Engine's boundary/DST/weekend cases, the Strategy Engine's decision
+  gates and the strategy loop's dedup/staleness/kill-switch-independence
+  behavior, and the real market-data stream's subscribe/handler/staleness logic
+  against a mocked SDK boundary.
 
 ## Phase 4 — Alpaca Paper Adapter
 
@@ -165,6 +187,22 @@ The default `BROKER_ADAPTER=auto` means the app runs **without any credentials
 set** — it falls back to the in-memory mock broker, so development and CI work
 out of the box.
 
+Phase 5 (Market Data + Strategy Engine) reuses the **same** paper credentials
+above — the data subscription is independent of paper vs. live trading mode, so
+there is no separate market-data key:
+
+| Variable                            | Default  | Meaning                                                                                    |
+| ------------------------------------ | -------- | ------------------------------------------------------------------------------------------- |
+| `MARKET_DATA_FEED`                   | `auto`   | `auto` uses the real Alpaca SIP stream when keys are set, else a fake; `mock`/`alpaca` force one |
+| `MARKET_DATA_STALE_MINUTES`          | `5`      | Feed silence longer than this marks snapshots stale and emits `market_data_stale`            |
+| `ENABLE_STRATEGY_ENGINE`             | `true`   | Whether the background strategy loop starts at app startup                                   |
+| `STRATEGY_DECISION_CADENCE_SECONDS`  | `5`      | How often armed watchlist symbols are re-evaluated (decision cadence, distinct from ingestion) |
+| `STRATEGY_MOMENTUM_THRESHOLD_PCT`    | `3.0`    | Minimum positive `%` move (vs. previous close) to propose a candidate                        |
+| `STRATEGY_MIN_VOLUME`                | `50000`  | Minimum session volume to propose a candidate                                                |
+| `STRATEGY_MAX_SPREAD_PCT`            | `1.0`    | Maximum bid/ask spread (`%` of midpoint) to propose a candidate                              |
+| `STRATEGY_LIMIT_BUFFER_PCT`          | `0.1`    | Buy-through buffer added to `last_price` for the proposed limit price                        |
+| `STRATEGY_DEFAULT_QUANTITY`          | `10`     | Fixed placeholder share count (real sizing is Phase 6 CAPI)                                  |
+
 ### Background monitoring loop
 
 When the monitoring loop is active it runs on the `ALPACA_POLL_CADENCE_SECONDS`
@@ -193,10 +231,42 @@ pytest
 pytest tests/integration/
 ```
 
+## Phase 5 — Strategy Engine
+
+**Plumbing built, live feed quality unverified.** The Market Data Service,
+Feature Engine, and Strategy Engine are fully implemented and tested against
+mocked/fake boundaries — but this project's build environment has no real
+Alpaca credentials or market-hours access, so the **quality** of Alpaca's
+premarket/after-hours paper data (as opposed to the code that consumes it) has
+not been empirically verified, exactly as
+[`docs/02_DATA_AND_PERSISTENCE.md`](docs/02_DATA_AND_PERSISTENCE.md) calls out
+as a Phase 5 task. Before relying on this for real premarket/after-hours
+sessions, run `pytest tests/integration/test_alpaca_marketdata.py` with real
+paper keys during those sessions and confirm the feed actually ticks.
+
+### Background strategy loop
+
+When active, the strategy loop runs on `STRATEGY_DECISION_CADENCE_SECONDS` and:
+
+1. Syncs `MarketDataService` subscriptions to the **armed** watchlist (a
+   symbol you never arm is never subscribed, and never evaluated).
+2. Surfaces a feed staleness *transition* as a `market_data_stale` /
+   `market_data_recovered` audit event (once per transition, not once per tick).
+3. Evaluates each armed symbol through `premarket_momentum_v1`
+   (`app/strategy.py`) and creates a real candidate for any proposal — visible
+   immediately on the cockpit's Candidate Monitor, same approve/reject flow as
+   a dev-injected one.
+
+Not gated by the kill switch / pause-buys: those block order **intent**
+downstream (Rule 8), not candidate visibility — see decision D-014 in
+[`docs/00_START_HERE.md`](docs/00_START_HERE.md).
+
 ## Safety notes
 
 - **Paper only.** There is intentionally no live-trading path and no live
   credentials anywhere in this repo.
 - **Credentials in `.env` only** (gitignored). Never committed.
-- The kill-switch / pause-buys flags are **persisted**; enforcement on order
-  intent is wired in Phase 4's monitoring loop.
+- The kill-switch / pause-buys flags are **persisted and enforced** on the
+  order path: new order intent is refused at creation and submission is held
+  while engaged, gated on each order's own session (D-013a) — closing the
+  date-rollover bypass a Phase 4 cleanup pass found and fixed before merge.
