@@ -203,6 +203,49 @@ class TestNotGatedBySafetyControls:
         assert len(await store.list_candidates()) == 1
 
 
+class TestMarketDataStaleness:
+    """D-005: staleness transitions are surfaced as audit events, once per
+    transition, not once per tick."""
+
+    async def test_stale_snapshot_writes_one_event(self):
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        events = await store.list_events()
+        stale_events = [e for e in events if e.event_type == "market_data_stale"]
+        assert len(stale_events) == 1  # not one per tick
+        assert stale_events[0].symbol == "AAPL"
+
+    async def test_recovery_writes_a_recovered_event(self):
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        events = await store.list_events()
+        assert any(e.event_type == "market_data_recovered" and e.symbol == "AAPL" for e in events)
+
+    async def test_never_stale_writes_no_events(self):
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
+
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
+
+        events = await store.list_events()
+        assert not any(e.event_type in ("market_data_stale", "market_data_recovered") for e in events)
+
+
 async def test_one_symbols_failure_does_not_block_others():
     store = await _armed_store("AAPL", "MSFT")
     feed = FakeMarketDataFeed()

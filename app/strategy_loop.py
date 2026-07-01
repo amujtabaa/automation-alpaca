@@ -8,7 +8,13 @@ D-005's ingestion/decision split):
    **armed** watchlist symbols (subscribes newly-armed, unsubscribes
    newly-disarmed — the loop drives subscriptions from the watchlist, not the
    reverse).
-2. Evaluates each armed symbol's current snapshot through the Strategy Engine
+2. Surfaces a feed staleness *transition* (D-005: never silently stale) as a
+   ``market_data_stale``/``market_data_recovered`` audit event — the service
+   implementation only reports the current ``stale`` bool on each snapshot; a
+   store isn't part of its interface, so writing the transition event is the
+   loop's job, mirroring how ``order_stale`` is written by the order-monitoring
+   loop rather than the broker adapter.
+3. Evaluates each armed symbol's current snapshot through the Strategy Engine
    (``app/strategy.py``) and creates a candidate for any proposal.
 
 Design rules this module follows:
@@ -38,7 +44,7 @@ from typing import Optional
 from app.config import Settings
 from app.features import session_type_for
 from app.marketdata.service import MarketDataService
-from app.models import CandidateStatus, SessionStatus, utcnow
+from app.models import CandidateStatus, EventType, SessionStatus, utcnow
 from app.store.base import StateStore
 from app.strategy import evaluate
 
@@ -47,6 +53,10 @@ _log = logging.getLogger(__name__)
 # An unresolved candidate for a symbol blocks a fresh proposal (D-014c);
 # ORDERED/REJECTED/EXPIRED do not — see docs/00_START_HERE.md D-014.
 _OPEN_CANDIDATE_STATUSES = (CandidateStatus.PENDING, CandidateStatus.APPROVED)
+
+_STALENESS_EVENT_TYPES = frozenset(
+    {EventType.MARKET_DATA_STALE.value, EventType.MARKET_DATA_RECOVERED.value}
+)
 
 
 async def strategy_loop(
@@ -98,6 +108,7 @@ async def run_strategy_tick(
     armed_symbols = [w.symbol for w in watchlist if w.armed]
 
     await _sync_subscriptions(market_data, armed_symbols)
+    await _surface_market_data_staleness(store, market_data)
 
     if not armed_symbols:
         return
@@ -162,3 +173,61 @@ async def _open_candidate_symbols(store: StateStore, session_id: str) -> set[str
         for candidate in await store.list_candidates(session_id=session_id, status=status):
             open_symbols.add(candidate.symbol)
     return open_symbols
+
+
+async def _surface_market_data_staleness(
+    store: StateStore, market_data: MarketDataService
+) -> None:
+    """Write a ``market_data_stale``/``market_data_recovered`` event on a
+    per-symbol staleness *transition* (D-005) — not every tick a symbol
+    happens to be stale, only when it changes, so the audit log records the
+    incident rather than spamming one row per cadence for as long as a
+    disconnect lasts.
+
+    Feed-level, not session-scoped: a dead feed matters independent of which
+    trading session is active, so this reads the full event history rather
+    than filtering by ``session_id`` (unlike the candidate dedup above).
+    """
+
+    snapshots = await market_data.list_snapshots()
+    if not snapshots:
+        return
+
+    symbols = {s.symbol for s in snapshots}
+    previously_stale = await _last_known_stale_state(store, symbols)
+
+    for snapshot in snapshots:
+        was_stale = previously_stale.get(snapshot.symbol, False)
+        if snapshot.stale and not was_stale:
+            await store.append_event(
+                EventType.MARKET_DATA_STALE.value,
+                message=f"market data for {snapshot.symbol} is stale",
+                symbol=snapshot.symbol,
+                payload={"last_updated_at": snapshot.updated_at.isoformat()},
+            )
+        elif was_stale and not snapshot.stale:
+            await store.append_event(
+                EventType.MARKET_DATA_RECOVERED.value,
+                message=f"market data for {snapshot.symbol} recovered",
+                symbol=snapshot.symbol,
+            )
+
+
+async def _last_known_stale_state(
+    store: StateStore, symbols: set[str]
+) -> dict[str, bool]:
+    """The most recently recorded stale/recovered state per symbol.
+
+    A symbol absent from the result has no prior staleness event — its first
+    observed state (stale or not) is always written once, establishing a
+    baseline, same idempotency pattern as ``monitoring.py``'s
+    ``_orders_with_event`` (read the persisted log so "write once per
+    transition" survives a process restart).
+    """
+
+    state: dict[str, bool] = {}
+    for event in await store.list_events():
+        if event.event_type not in _STALENESS_EVENT_TYPES or event.symbol not in symbols:
+            continue
+        state[event.symbol] = event.event_type == EventType.MARKET_DATA_STALE.value
+    return state
