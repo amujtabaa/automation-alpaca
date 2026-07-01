@@ -118,3 +118,40 @@ Use when reviewing Codex or Claude Code output.
       failure (`append_fill`, `set_kill_switch`, pause-buys, and any other
       multi-row method), matching SQLite's transactional guarantee.
 - [ ] `.env` is gitignored; no credentials appear in any committed file or log.
+
+## Phase 5 (Market Data Service + Strategy Engine)
+- [ ] No real/live Alpaca credentials anywhere; the market-data feed reuses the
+      same paper-only credentials as the broker adapter (no new credential vars).
+- [ ] `alpaca-py` is imported only inside `app/marketdata/alpaca_stream.py`;
+      nothing else in `app/marketdata/` imports it (lazy import in the factory).
+- [ ] `MarketDataService` is an abstract interface; the strategy loop and routes
+      depend on it, not on `AlpacaMarketDataStream` directly.
+- [ ] Unit tests use `FakeMarketDataFeed` (or a mocked SDK boundary for
+      `AlpacaMarketDataStream` itself) and make no network calls (Rule 9).
+- [ ] `MarketSnapshot` is never persisted (`docs/02`: working data, not a
+      durable record) — no table, no StateStore method for it.
+- [ ] The Strategy Engine (`app/strategy.py`) is a pure function with no store
+      access; the strategy loop (`app/strategy_loop.py`) owns all `StateStore`
+      calls, mirroring the split between `app/position.py` and the stores.
+- [ ] Candidate generation is gated by the **armed** watchlist and per-symbol
+      dedup (D-014c: `PENDING`/`APPROVED` blocks, `ORDERED`/`REJECTED`/`EXPIRED`
+      don't) — never by the kill switch or pause-buys (D-014a; those block order
+      *intent* downstream, not candidate visibility).
+- [ ] `suggested_quantity`/`suggested_limit_price`/`risk_decision` on a
+      strategy-generated candidate are honestly labeled placeholder sizing
+      (D-014b) — no invented risk logic ahead of Phase 6 CAPI.
+- [ ] Feed staleness is surfaced as a `market_data_stale`/`market_data_recovered`
+      audit event on a *transition* (not once per tick) — never silently stale
+      (D-005).
+- [ ] MarketDataService subscriptions are driven by the armed watchlist, not by
+      a mutating API endpoint (`GET /api/marketdata/snapshots` is read-only).
+- [ ] Config rejects non-finite/out-of-range strategy and feed-staleness values
+      at load, consistent with `_env_float`/`_env_int`.
+- [ ] Cockpit market-data display (Watchlist screen) is formatting only — no
+      trading decision is made in Streamlit from the displayed % move.
+- [ ] Integration tests are gated behind `ALPACA_PAPER_API_KEY` /
+      `ALPACA_PAPER_API_SECRET`; they do not run in the standard `pytest` suite.
+- [ ] Premarket/after-hours feed *quality* is documented as an empirically
+      unverified known unknown (not something this checklist can confirm without
+      live credentials + market hours) — see
+      `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.

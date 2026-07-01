@@ -346,7 +346,10 @@ def screen_positions() -> None:
             row[0].write(sym)
             row[1].write(str(qty))
             row[2].write(avg_display)
-            row[3].caption("P/L: pending market data (Phase 5)")
+            # The Phase 5 price feed exists (see the Watchlist screen), but
+            # computing unrealized P/L from it here is a deliberate small scope
+            # decision, not yet built — not an oversight.
+            row[3].caption("P/L: not yet wired to the live price feed")
             with row[4]:
                 st.button(
                     "Flatten",
