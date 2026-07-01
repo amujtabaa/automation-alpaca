@@ -88,7 +88,9 @@ Use when reviewing Codex or Claude Code output.
 
 ## Phase 4 (Alpaca Paper Adapter)
 - [ ] No real/live Alpaca credentials anywhere; paper keys only, env-gated.
-- [ ] `alpaca-py` is the only Alpaca SDK; nothing outside `app/broker/` imports it.
+- [ ] `alpaca-py` is the only Alpaca SDK. As of Phase 5 it has a second, equally
+      lazy-imported call site — see the Phase 5 section below
+      (`app/marketdata/alpaca_stream.py`) — but no third.
 - [ ] `BrokerAdapter` is an abstract interface; routes and services depend on it,
       not on `AlpacaPaperAdapter` directly.
 - [ ] Integration tests are gated behind `ALPACA_PAPER_API_KEY` /

@@ -134,12 +134,24 @@ pending ──approve──▶ approved ──order──▶ ordered     (termin
 ```text
 created ──submit──▶ submitted ──┬──▶ partially_filled ──▶ filled
                                  ├──▶ filled
-                                 ├──▶ canceled
+                                 ├──▶ cancel_pending ──┬──▶ canceled   (broker confirms)
+                                 │                     └──▶ filled     (late fill wins, D-013a's
+                                 │                                      sibling CHAOS-1 policy)
                                  └──▶ rejected   (rejected by the broker)
+
+created ──cancel (session close, D-013a)──▶ canceled
 ```
 
 - **`submitted ≠ filled`.** Reaching `submitted` means Alpaca accepted the
   paper order, not that it executed (Rule 6).
+- **`cancel_pending` is non-terminal.** A cancel has been requested at the
+  broker but not yet confirmed, so the order keeps being polled — a late fill
+  that arrives before the venue finalizes the cancel is still recorded, never
+  missed. It resolves to `canceled` or `filled` (see `app/models.py`'s
+  `OrderStatus` docstring).
+- **A `CREATED` (never-submitted) order is canceled directly at session close**
+  (D-013a) — a separate path from `cancel_pending`, since it was never sent to
+  the broker at all. See "Session Close Mechanics" below.
 - An order links back to the candidate that produced it (`candidate_id`).
 - An order may carry a nullable `replaces_order_id` (see "Forward
   Compatibility" below) — beta never populates it.
@@ -189,16 +201,24 @@ does, atomically:**
 1. Every candidate still `pending` or `approved` (not yet `ordered`)
    transitions to `expired`. This is the trigger for the `expire` transition
    referenced above — it doesn't happen on a timer in beta, only on close.
-2. Current positions (the live fold over fills, exactly what
+2. Every order still `created` (never submitted to the broker) in this
+   session transitions directly to `canceled` (D-013a). This is distinct from
+   the `cancel_pending` path in the Order Lifecycle above — a `created` order
+   was never sent to Alpaca, so there is nothing to confirm with the broker;
+   this closes it out cleanly rather than leaving a zombie `created` order
+   that the submission gate would otherwise have to keep holding forever.
+   Already-`submitted` orders are untouched and keep reconciling after close
+   (D-011) — only orders that never left `created` are affected.
+3. Current positions (the live fold over fills, exactly what
    `GET /api/positions` returns right now) are written to a
    **`position_snapshots`** table, keyed by `session_id`. This is the
    "snapshots for fast review" already named in "Persisted Entities" above,
    now given an actual shape: `session_id`, `symbol`, `quantity`, `cost_basis`,
    `average_price`, `captured_at`. One row per symbol with a nonzero position
    at close.
-3. The session's `status` becomes `closed`, with a `closed_at` timestamp.
-4. An audit event records the close, including how many candidates were
-   expired.
+4. The session's `status` becomes `closed`, with a `closed_at` timestamp.
+5. An audit event records the close, including how many candidates were
+   expired and how many `created` orders were canceled.
 
 **`GET /api/review?date=` reads accordingly:** for the *active* session (today,
 or whatever date is currently open), it returns the live derived view, same as

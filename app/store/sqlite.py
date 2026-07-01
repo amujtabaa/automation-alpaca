@@ -46,7 +46,6 @@ from app.models import (
     PositionSnapshot,
     SessionRecord,
     SessionStatus,
-    SessionType,
     TradingMode,
     WatchlistSymbol,
     utcnow,
@@ -1487,26 +1486,6 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             rows = self._read_all("SELECT * FROM sessions ORDER BY rowid")
             return [self._session(r) for r in rows]
-
-    async def set_session_type(self, session_type: SessionType) -> SessionRecord:
-        session_type = SessionType(session_type)
-        async with self._lock:
-            session = self._ensure_current_session_locked()
-            session.session_type = session_type
-            session.updated_at = utcnow()
-            with self._tx() as cur:
-                cur.execute(
-                    "UPDATE sessions SET session_type=?, updated_at=? WHERE id=?",
-                    (session_type.value, _dt(session.updated_at), session.id),
-                )
-                self._insert_event(
-                    cur,
-                    "session_opened",
-                    message=f"session type set to {session_type.value}",
-                    session_id=session.id,
-                    payload={"session_type": session_type.value},
-                )
-            return session
 
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
         async with self._lock:

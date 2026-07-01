@@ -8,7 +8,10 @@ the UI.
 
 1. Open browser cockpit.
 2. Select Alpaca Paper mode.
-3. Select session type: pre-market, after-hours, or regular hours.
+3. Session type (pre-market, regular, or after-hours) is classified
+   automatically from wall-clock Eastern time (`app.features.session_type_for`)
+   — displayed as a read-only indicator, not user-selected (superseded by
+   Phase 5's Strategy Engine; see the Session Control screen below).
 4. Paste or upload watchlist symbols.
 5. Click **Arm Watchlist**.
 6. Backend begins monitoring (single background task).
@@ -25,8 +28,12 @@ the UI.
 ## Streamlit Screens
 
 ### 1. Session Control
-Alpaca Paper mode indicator, session selector, automation-mode selector, kill
-switch, pause buys, resume buys.
+Alpaca Paper mode indicator, read-only session-type indicator (auto-classified
+by wall-clock time, not user-selected — see above), kill switch, pause buys,
+resume buys. There is no automation-mode selector: beta ships exactly one
+Approval Gate mode (human-in-the-loop); an automatic mode is a future addition
+behind the same interface (`docs/01_ARCHITECTURE.md`, "Future Architecture"),
+not a toggle that exists today.
 
 ### 2. Watchlist Input
 Paste ticker list (CSV upload later), normalize symbols, show validation errors,
