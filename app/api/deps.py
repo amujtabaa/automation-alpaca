@@ -6,6 +6,7 @@ from fastapi import Request
 
 from app.approval.gate import ApprovalGate
 from app.broker.adapter import BrokerAdapter
+from app.config import Settings
 from app.marketdata.service import MarketDataService
 from app.store.base import StateStore
 
@@ -14,6 +15,17 @@ def get_store(request: Request) -> StateStore:
     """The single process-wide StateStore, created at startup (see main.py)."""
 
     return request.app.state.store
+
+
+def get_settings(request: Request) -> Settings:
+    """The resolved process-wide Settings, loaded once at startup (see main.py).
+
+    Routes depend on this rather than calling ``load_settings()`` themselves,
+    so every request sees the exact same config the app started with (and a
+    single env-parse failure surfaces at startup, not mid-request).
+    """
+
+    return request.app.state.settings
 
 
 def get_approval_gate(request: Request) -> ApprovalGate:

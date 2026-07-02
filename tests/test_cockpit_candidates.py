@@ -10,10 +10,10 @@ No backend, no HTTP, no live IO.
 
 from __future__ import annotations
 
-import pytest
 from streamlit.testing.v1 import AppTest
 
 from cockpit import api_client
+from cockpit.api_client import BackendError
 
 
 # --------------------------------------------------------------------------- #
@@ -133,6 +133,33 @@ def test_reject_round_trips_through_api(monkeypatch):
     assert ("reject", "c1") in recorder, (
         f"Expected ('reject', 'c1') recorded; got: {recorder}"
     )
+
+
+def test_approve_blocked_by_capi_shows_backend_error(monkeypatch):
+    """A CAPI-blocked approve (POST /approve -> 409) surfaces via the same
+    generic st.error(...) path every other backend rejection already uses (no
+    bespoke risk-limit UI needed — the candidate stays PENDING, so there's no
+    ongoing "blocked" state to render, only this point-in-time rejection)."""
+
+    recorder: list = []
+    at = _run(monkeypatch, candidates=[PENDING_CANDIDATE], recorder=recorder)
+
+    def blocked_approve(cid: str) -> dict:
+        raise BackendError(
+            f"POST /api/candidates/{cid}/approve -> 409: "
+            "risk limit blocked: exceeds_max_notional_per_order"
+        )
+
+    monkeypatch.setattr(api_client, "approve_candidate", blocked_approve)
+
+    at.button(key="approve_c1").click().run()
+
+    assert not at.exception
+    error_texts = [e.value for e in at.error]
+    assert any("exceeds_max_notional_per_order" in t for t in error_texts), (
+        f"Expected the risk-limit block reason surfaced via st.error; got: {error_texts}"
+    )
+    assert ("approve", "c1") not in recorder  # the real approve never ran
 
 
 def test_non_pending_candidate_has_no_action_buttons(monkeypatch):

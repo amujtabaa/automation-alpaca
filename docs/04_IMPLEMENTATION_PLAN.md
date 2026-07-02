@@ -60,10 +60,27 @@ deferred. Each phase ends with passing tests and preserved safety invariants
 - candidate explanation fields
 - **verify premarket/after-hours Alpaca paper data quality before relying on it**
 
-### Phase 6 — Capital Intelligence Layer (CAPI)
-- max shares, max notional, max total exposure
-- allowlist, duplicate prevention
-- kill switch enforcement on order intent
+### Phase 6 — Capital Intelligence Layer (CAPI): pre-trade risk gate
+Two of this section's original three bullets shipped earlier than planned, as
+byproducts of other phases' hardening rather than as CAPI itself — noted here
+so the plan reflects what actually happened, not just what was originally
+scoped:
+- ~~kill switch enforcement on order intent~~ — shipped in the Phase 4 cleanup
+  round (`order_intent_block_reason`, D-013/D-013a), not Phase 6.
+- ~~duplicate prevention~~ — shipped as two separate mechanisms before Phase 6:
+  candidate dedup (D-014c, an unresolved PENDING/APPROVED candidate blocks a
+  fresh proposal) and fill dedup (`source_fill_id`, D-006). Phase 6 does **not**
+  add a distinct "already holding this symbol" re-entry block on top of these —
+  considered and deliberately left out (see D-016); the total-exposure cap
+  already limits how much a re-entry can add.
+
+What Phase 6 actually built (D-016):
+- max shares per order, max notional per order, max total exposure — a
+  pre-trade **gate** (block-and-reject on breach, never resize)
+- a trading allowlist, distinct from the watchlist
+- **not** position sizing — `suggested_quantity`/`suggested_limit_price` remain
+  the Strategy Engine's D-014b placeholder; real capital-based sizing is
+  future work that would feed this same gate
 
 ### Phase 7 — Sell-Side Protection
 - position monitoring, hard floor, controlled exit

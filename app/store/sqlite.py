@@ -55,6 +55,7 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     InvalidOrderError,
+    RiskLimits,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
@@ -77,6 +78,8 @@ from app.store.transitions import (
     CANDIDATE_TRANSITIONS,
 )
 from app.store.validation import (
+    NON_TERMINAL_ORDER_STATUSES,
+    existing_exposure,
     order_candidate_match_reason,
 )
 
@@ -865,7 +868,37 @@ class SqliteStateStore(StateStore):
                 )
             return order
 
-    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+    def _current_exposure_locked(self) -> float:
+        positions = [
+            self._position_locked(r["symbol"])
+            for r in self._read_all("SELECT DISTINCT symbol FROM fills ORDER BY symbol")
+        ]
+        non_terminal_placeholders = ",".join("?" * len(NON_TERMINAL_ORDER_STATUSES))
+        open_orders = [
+            self._order(r)
+            for r in self._read_all(
+                f"SELECT * FROM orders WHERE status IN ({non_terminal_placeholders}) "
+                "ORDER BY rowid",
+                tuple(s.value for s in NON_TERMINAL_ORDER_STATUSES),
+            )
+        ]
+        # Every fill, not just fills against open_orders — existing_exposure
+        # derives each order's actual filled quantity from these directly
+        # (see its docstring: Order.filled_quantity can lag a just-appended
+        # fill by one transition_order call during reconciliation).
+        fills = [self._fill(r) for r in self._read_all("SELECT * FROM fills ORDER BY rowid")]
+        return existing_exposure(positions, open_orders, fills)
+
+    async def current_exposure(self) -> float:
+        async with self._lock:
+            return self._current_exposure_locked()
+
+    async def create_order_for_candidate(
+        self,
+        candidate_id: str,
+        *,
+        risk_limits: RiskLimits = RiskLimits(),
+    ) -> Order:
         async with self._lock:
             cand_row = self._read_one(
                 "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
@@ -891,15 +924,23 @@ class SqliteStateStore(StateStore):
                 return self._order(order_row)
             # Shared validation cascade + order construction (app/store/core.py);
             # the candidate-missing and ORDERED-idempotent cases above stay here
-            # since they need store-specific fetches.
+            # since they need store-specific fetches. Exposure is computed
+            # unconditionally (cheap at beta scale) — the planner only uses it
+            # when a CAPI limit above is actually configured.
             sess_row = self._read_one(
                 "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
             )
             session = self._session(sess_row) if sess_row is not None else None
-            plan = plan_create_order_for_candidate(candidate=candidate, session=session)
+            plan = plan_create_order_for_candidate(
+                candidate=candidate,
+                session=session,
+                exposure_before_order=self._current_exposure_locked(),
+                risk_limits=risk_limits,
+            )
             if plan.outcome == CREATE_ORDER_REJECT:
-                # Only the kill-switch/pause block writes an audit row before it
-                # raises; the not-approved and invalid-qty/price rejections don't.
+                # The kill-switch/pause block and the Phase 6 CAPI risk-limit
+                # block each write an audit row before raising; the not-approved
+                # and invalid-qty/price rejections don't.
                 if plan.reject_event is not None:
                     with self._tx() as cur:
                         self._insert_event(

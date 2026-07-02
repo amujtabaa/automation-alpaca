@@ -11,18 +11,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_approval_gate, get_store
+from app.api.deps import get_approval_gate, get_settings, get_store
 from app.approval.gate import ApprovalGate
+from app.config import Settings
 from app.models import Candidate, CandidateStatus
 from app.store.base import (
     CandidateTransitionError,
     InvalidOrderError,
     OrderIntentBlockedError,
+    RiskLimitBlockedError,
+    RiskLimits,
     StateStore,
     StoreError,
     UnknownEntityError,
 )
-from app.store.validation import order_intent_block_reason
+from app.store.validation import order_intent_block_reason, risk_limit_reason
 
 router = APIRouter(prefix="/api", tags=["candidates"])
 
@@ -33,6 +36,7 @@ _MAPPED_ERRORS = (
     CandidateTransitionError,
     InvalidOrderError,
     OrderIntentBlockedError,
+    RiskLimitBlockedError,
 )
 
 
@@ -85,6 +89,7 @@ async def approve_candidate(
     candidate_id: str,
     store: StateStore = Depends(get_store),
     gate: ApprovalGate = Depends(get_approval_gate),
+    settings: Settings = Depends(get_settings),
 ) -> Candidate:
     """Approve a candidate and dispatch the order.
 
@@ -95,9 +100,11 @@ async def approve_candidate(
     Flow:
     1. ``gate.approve(candidate_id)`` — carries out the pending→approved
        gate decision (idempotent).
-    2. ``store.create_order_for_candidate(candidate_id)`` — the distinct
+    2. ``store.create_order_for_candidate(candidate_id, ...)`` — the distinct
        dispatch step: transitions approved→ordered and creates the paper order,
-       atomically.
+       atomically. The CAPI limits from ``settings`` are passed through so this
+       call is the *authoritative* risk check (D-016) — the pre-checks below
+       are for clean UX only.
     3. Returns the final ORDERED candidate.
 
     These two steps are distinct store operations (the handoff is kept separate
@@ -138,6 +145,12 @@ async def approve_candidate(
     # create_order_for_candidate; checked here so a blocked candidate stays
     # PENDING (still rejectable). Skipped for an already-ORDERED candidate (a
     # re-approve is an idempotent no-op that creates no new intent).
+    risk_limits = RiskLimits(
+        max_shares_per_order=settings.capi_max_shares_per_order,
+        max_notional_per_order=settings.capi_max_notional_per_order,
+        max_total_exposure=settings.capi_max_total_exposure,
+        allowlist=settings.capi_trading_allowlist,
+    )
     if candidate.status is not CandidateStatus.ORDERED:
         block = order_intent_block_reason(await store.get_current_session())
         if block is not None:
@@ -146,15 +159,41 @@ async def approve_candidate(
                 detail=f"order intent blocked: {block}",
             )
 
+        # CAPI risk-limit pre-check (D-016): same purpose as the safety-control
+        # pre-check above, for the same reason — surface a clean 409 with the
+        # candidate left PENDING (still rejectable) instead of stranding it at
+        # APPROVED. Mirrors the authoritative check inside
+        # create_order_for_candidate exactly (same predicate, same
+        # ``risk_limits``). ``store.current_exposure()`` reads positions + open
+        # orders as one atomic snapshot under a single lock acquisition, so this
+        # pre-check can't observe a torn read between two separate store calls.
+        risk_block = risk_limit_reason(
+            symbol=candidate.symbol,
+            order_quantity=candidate.suggested_quantity,
+            order_limit_price=candidate.suggested_limit_price,
+            exposure_before_order=await store.current_exposure(),
+            max_shares_per_order=risk_limits.max_shares_per_order,
+            max_notional_per_order=risk_limits.max_notional_per_order,
+            max_total_exposure=risk_limits.max_total_exposure,
+            allowlist=risk_limits.allowlist,
+        )
+        if risk_block is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"risk limit blocked: {risk_block}",
+            )
+
     try:
         await gate.approve(candidate_id)
-        await store.create_order_for_candidate(candidate_id)
-    except OrderIntentBlockedError as exc:
-        # Race (D-013): a safety control flipped between the pre-check above and
-        # the store handoff. The store refused the order, so roll the approval
-        # back to PENDING — never leave the candidate stranded APPROVED with no
-        # order under a safety stop. The revert is a no-op if the candidate
-        # actually became ORDERED, so this is safe even without the pre-check.
+        await store.create_order_for_candidate(candidate_id, risk_limits=risk_limits)
+    except (OrderIntentBlockedError, RiskLimitBlockedError) as exc:
+        # Race (D-013): a safety control or CAPI limit changed between the
+        # pre-checks above and the store handoff (e.g. another order filled
+        # in between, pushing exposure over the cap). The store refused the
+        # order, so roll the approval back to PENDING — never leave the
+        # candidate stranded APPROVED with no order. The revert is a no-op if
+        # the candidate actually became ORDERED, so this is safe even without
+        # the pre-checks.
         await store.revert_candidate_approval(candidate_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)

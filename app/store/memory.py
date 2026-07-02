@@ -43,6 +43,7 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     InvalidOrderError,
+    RiskLimits,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
@@ -65,6 +66,8 @@ from app.store.transitions import (
     CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
 )
 from app.store.validation import (
+    NON_TERMINAL_ORDER_STATUSES,
+    existing_exposure,
     order_candidate_match_reason,
 )
 
@@ -192,6 +195,15 @@ class InMemoryStateStore(StateStore):
 
     def _position_unlocked(self, symbol: str) -> Position:
         return fold_fills(symbol, self._fills_for_symbol_unlocked(symbol))
+
+    def _current_exposure_unlocked(self) -> float:
+        positions = [
+            self._position_unlocked(s) for s in sorted({f.symbol for f in self._fills})
+        ]
+        open_orders = [
+            o for o in self._orders.values() if o.status in NON_TERMINAL_ORDER_STATUSES
+        ]
+        return existing_exposure(positions, open_orders, self._fills)
 
     # ------------------------------------------------------------------ #
     # Watchlist
@@ -436,7 +448,16 @@ class InMemoryStateStore(StateStore):
                 )
             return order.model_copy(deep=True)
 
-    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+    async def current_exposure(self) -> float:
+        async with self._lock:
+            return self._current_exposure_unlocked()
+
+    async def create_order_for_candidate(
+        self,
+        candidate_id: str,
+        *,
+        risk_limits: RiskLimits = RiskLimits(),
+    ) -> Order:
         async with self._lock:
             candidate = self._candidates.get(candidate_id)
             if candidate is None:
@@ -456,14 +477,22 @@ class InMemoryStateStore(StateStore):
                 return existing.model_copy(deep=True)
             # Shared validation cascade + order construction (app/store/core.py);
             # the candidate-missing and ORDERED-idempotent cases above stay here
-            # since they need store-specific fetches.
+            # since they need store-specific fetches. Exposure is computed
+            # unconditionally (cheap at beta scale) — the planner only uses it
+            # when a CAPI limit above is actually configured.
             session = next(
                 (s for s in self._sessions if s.id == candidate.session_id), None
             )
-            plan = plan_create_order_for_candidate(candidate=candidate, session=session)
+            plan = plan_create_order_for_candidate(
+                candidate=candidate,
+                session=session,
+                exposure_before_order=self._current_exposure_unlocked(),
+                risk_limits=risk_limits,
+            )
             if plan.outcome == CREATE_ORDER_REJECT:
-                # Only the kill-switch/pause block writes an audit row before it
-                # raises; the not-approved and invalid-qty/price rejections don't.
+                # The kill-switch/pause block and the Phase 6 CAPI risk-limit
+                # block each write an audit row before raising; the not-approved
+                # and invalid-qty/price rejections don't.
                 if plan.reject_event is not None:
                     self._append_event_unlocked(
                         plan.reject_event.event_type, **plan.reject_event.as_kwargs()

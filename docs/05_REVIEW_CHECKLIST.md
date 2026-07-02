@@ -175,3 +175,89 @@ Use when reviewing Codex or Claude Code output.
       unverified known unknown (not something this checklist can confirm without
       live credentials + market hours) — see
       `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
+
+## Phase 6 (Capital Intelligence Layer — pre-trade risk gate)
+- [ ] CAPI gates-and-rejects on a limit breach; it never silently resizes an
+      order down to fit (D-016a).
+- [ ] Exposure (`app.store.validation.existing_exposure`) is local-derived only
+      — folded positions' **cost basis** + non-terminal orders' remaining
+      notional (`quantity - actual_filled_quantity`) × their own `limit_price`;
+      no live broker/market-data call is made from the order path (D-016b).
+      Cost-basis exposure is a *directional* approximation (conservative on a
+      losing position, permissive on a winner) — not something to forget when
+      `premarket_momentum_v1` (a winners-targeting strategy) is the candidate
+      source.
+- [ ] An order's "actual filled quantity" for the exposure sum is derived from
+      the **fill table** (an optional `fills` argument to `existing_exposure`,
+      passed by both stores' `_current_exposure_*` helpers), never trusted
+      from `Order.filled_quantity` directly. `append_fill` and the
+      `transition_order(..., filled_quantity=...)` call that catches the
+      order's own field up are two separate atomic operation groups
+      (`app/monitoring.py`'s `_apply_update` calls them independently) — a
+      pre-merge adversarial review found and reproduced a real double-count in
+      the window between them (a position's cost basis already reflects a
+      fill before `Order.filled_quantity` does) before this fix landed.
+      `tests/test_capi_order_gate.py::test_fill_without_order_transition_is_not_double_counted`
+      pins the fixed behavior directly.
+- [ ] The three numeric caps' boundary (`order_quantity`/`notional`/`exposure`
+      *exactly equal* to the configured limit) is asserted, not just values
+      strictly above/below it — a `>` → `>=` regression silently tightening a
+      cap to exclusive would otherwise slip past both the example tests and
+      Hypothesis's random search (float/int equality is rare to hit by
+      chance; pinned via `@example(...)` in
+      `tests/test_capi_risk_properties.py`).
+- [ ] `NON_TERMINAL_ORDER_STATUSES` (`app/store/validation.py`) is *derived*
+      from `ORDER_TRANSITIONS` (`app/store/transitions.py`), not hand-copied
+      — a status is non-terminal exactly when it has a non-empty legal
+      outgoing transition set, so the two can't silently drift apart.
+- [ ] `risk_limit_reason` is a pure function (`app/store/validation.py`), not a
+      pluggable `RiskEngine` class — mirrors `order_intent_block_reason`'s
+      existing pattern exactly (D-016c); no async engine call was introduced
+      into `plan_create_order_for_candidate`'s pure, synchronous planner.
+- [ ] The risk check runs in **two** places with the *same* predicate and the
+      *same* inputs: the approve route (pre-check, for UX — a blocked
+      candidate stays `PENDING`, still rejectable) and
+      `create_order_for_candidate` (authoritative, under the store's lock).
+- [ ] A race between the pre-check and the authoritative check (limit breached
+      in between) is recovered the same way as an `OrderIntentBlockedError`
+      race: `revert_candidate_approval` rolls the candidate back to `PENDING`
+      — never stranded `APPROVED` with no order. Exercised end-to-end for
+      `RiskLimitBlockedError` specifically by
+      `tests/test_capi_route_api.py::test_capi_race_between_precheck_and_authoritative_check_reverts_to_pending`
+      (mirrors `tests/test_approve_dispatch_race.py`'s kill-switch race test;
+      a pre-merge review found this CAPI-specific path was undertested).
+- [ ] Each of `RiskLimits`' four fields (`max_shares_per_order`/
+      `max_notional_per_order`/`max_total_exposure`/`allowlist`) is
+      independently optional (`None` = not enforced); the zero-argument
+      default `RiskLimits()` passed to `StateStore.create_order_for_candidate`
+      is fully unenforced (preserving ~20 pre-existing test call sites), but
+      the approve route always builds one from real, validated-positive
+      values from `Settings` — never the default in production.
+- [ ] `StateStore.current_exposure()` (not `list_positions()` +
+      `list_orders()` combined by the caller) is what the approve route's
+      pre-check calls — it reads positions and open orders as one atomic
+      snapshot under a single lock acquisition, so the pre-check can't observe
+      a torn read across two separate lock-acquire/release cycles.
+- [ ] `CAPI_MAX_SHARES_PER_ORDER`/`CAPI_MAX_NOTIONAL_PER_ORDER`/
+      `CAPI_MAX_TOTAL_EXPOSURE` reject `0`/negative/non-finite at config load
+      (`_env_float(..., minimum=0.001)`) — a limit of exactly `0` would
+      silently block every order, the same footgun class as
+      `MARKET_DATA_STALE_MINUTES`. `CAPI_TRADING_ALLOWLIST` empty is a
+      legitimate, meaningful state (no restriction beyond the watchlist), not
+      a footgun — unlike the three numeric limits.
+- [ ] A `risk_limit_blocked` audit event is written on a breach, with the
+      reason code and the numbers involved in its payload — never a silent
+      rejection.
+- [ ] `RiskLimitBlockedError` is distinct from `OrderIntentBlockedError`
+      (Rule 8's binary kill-switch/pause-buys check has no numeric limits
+      involved) but both are handled identically at the route (409 + revert).
+- [ ] Phase 6 does **not** add a distinct "already holding this symbol"
+      re-entry block — deliberately left out; the total-exposure cap already
+      limits how much a re-entry can add (see `docs/04`'s Phase 6 note).
+- [ ] `suggested_quantity`/`suggested_limit_price` are **unchanged** by Phase 6
+      — still the Strategy Engine's D-014b placeholder sizing. CAPI is a gate
+      on that placeholder, not a replacement for it.
+- [ ] Hypothesis property tests cover `existing_exposure`/`risk_limit_reason`'s
+      core invariants (e.g. a blocked order never appears in the accepted
+      set; total exposure after an accepted order never exceeds the
+      configured cap), not just hand-picked examples.
