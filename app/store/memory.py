@@ -65,6 +65,7 @@ from app.store.transitions import (
     CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
 )
 from app.store.validation import (
+    NON_TERMINAL_ORDER_STATUSES,
     order_candidate_match_reason,
 )
 
@@ -436,7 +437,15 @@ class InMemoryStateStore(StateStore):
                 )
             return order.model_copy(deep=True)
 
-    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+    async def create_order_for_candidate(
+        self,
+        candidate_id: str,
+        *,
+        max_shares_per_order: Optional[float] = None,
+        max_notional_per_order: Optional[float] = None,
+        max_total_exposure: Optional[float] = None,
+        allowlist: Optional[frozenset[str]] = None,
+    ) -> Order:
         async with self._lock:
             candidate = self._candidates.get(candidate_id)
             if candidate is None:
@@ -456,11 +465,28 @@ class InMemoryStateStore(StateStore):
                 return existing.model_copy(deep=True)
             # Shared validation cascade + order construction (app/store/core.py);
             # the candidate-missing and ORDERED-idempotent cases above stay here
-            # since they need store-specific fetches.
+            # since they need store-specific fetches. Positions/open orders are
+            # fetched unconditionally (cheap at beta scale) — the planner only
+            # uses them when a CAPI limit above is actually configured.
             session = next(
                 (s for s in self._sessions if s.id == candidate.session_id), None
             )
-            plan = plan_create_order_for_candidate(candidate=candidate, session=session)
+            positions = [
+                self._position_unlocked(s) for s in sorted({f.symbol for f in self._fills})
+            ]
+            open_orders = [
+                o for o in self._orders.values() if o.status in NON_TERMINAL_ORDER_STATUSES
+            ]
+            plan = plan_create_order_for_candidate(
+                candidate=candidate,
+                session=session,
+                positions=positions,
+                open_orders=open_orders,
+                max_shares_per_order=max_shares_per_order,
+                max_notional_per_order=max_notional_per_order,
+                max_total_exposure=max_total_exposure,
+                allowlist=allowlist,
+            )
             if plan.outcome == CREATE_ORDER_REJECT:
                 # Only the kill-switch/pause block writes an audit row before it
                 # raises; the not-approved and invalid-qty/price rejections don't.

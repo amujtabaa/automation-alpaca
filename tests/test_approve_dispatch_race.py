@@ -107,9 +107,9 @@ def test_approve_race_reverts_to_pending_and_returns_409():
         # store's handoff to engage it immediately before the real call.
         orig = store.create_order_for_candidate
 
-        async def racing(candidate_id):
+        async def racing(candidate_id, **kwargs):
             await store.set_kill_switch(True)
-            return await orig(candidate_id)
+            return await orig(candidate_id, **kwargs)
 
         store.create_order_for_candidate = racing
 

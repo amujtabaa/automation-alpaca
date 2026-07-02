@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from app.approval.human import HumanApprovalGate
+from app.config import Settings
 from app.main import create_app
 from app.models import CandidateStatus
 from app.store.memory import InMemoryStateStore
@@ -39,6 +40,7 @@ async def test_approve_non_dispatchable_candidate_422_and_recoverable():
     # Lifespan isn't run under ASGITransport, so wire app.state explicitly.
     app.state.store = store
     app.state.approval_gate = HumanApprovalGate(store)
+    app.state.settings = Settings()
 
     candidate = await store.create_candidate("AAPL")  # no suggested_quantity
     assert candidate.suggested_quantity is None

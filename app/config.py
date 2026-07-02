@@ -52,6 +52,17 @@ STRATEGY_MAX_SPREAD_ENV = "STRATEGY_MAX_SPREAD_PCT"
 STRATEGY_LIMIT_BUFFER_ENV = "STRATEGY_LIMIT_BUFFER_PCT"
 STRATEGY_DEFAULT_QUANTITY_ENV = "STRATEGY_DEFAULT_QUANTITY"
 
+# Phase 6 — Capital Intelligence Layer (CAPI) pre-trade risk gate (D-016).
+# Enforced in app.store.core's create_order_for_candidate (authoritative) and
+# pre-checked in the approve route (UX) — see app.store.validation.risk_limit_reason.
+CAPI_MAX_SHARES_PER_ORDER_ENV = "CAPI_MAX_SHARES_PER_ORDER"
+CAPI_MAX_NOTIONAL_PER_ORDER_ENV = "CAPI_MAX_NOTIONAL_PER_ORDER"
+CAPI_MAX_TOTAL_EXPOSURE_ENV = "CAPI_MAX_TOTAL_EXPOSURE"
+# Comma-separated tickers; empty (default) = no restriction beyond the
+# watchlist itself, a genuinely meaningful empty state (unlike the three
+# numeric limits above, which reject 0 — see load_settings).
+CAPI_TRADING_ALLOWLIST_ENV = "CAPI_TRADING_ALLOWLIST"
+
 DEFAULT_DB_PATH = "./data/app.db"
 DEFAULT_POLL_CADENCE_SECONDS = 15.0
 DEFAULT_UNFILLED_TIMEOUT_MINUTES = 60.0
@@ -62,6 +73,14 @@ DEFAULT_STRATEGY_MIN_VOLUME = 50_000.0
 DEFAULT_STRATEGY_MAX_SPREAD_PCT = 1.0
 DEFAULT_STRATEGY_LIMIT_BUFFER_PCT = 0.1
 DEFAULT_STRATEGY_DEFAULT_QUANTITY = 10
+# Placeholder paper-trading guardrails, not a real capital plan — a beta
+# operator running the default 10-share strategy has ample headroom under
+# these; they exist so CAPI is a real, always-on gate from day one rather
+# than something an operator has to remember to configure before it does
+# anything.
+DEFAULT_CAPI_MAX_SHARES_PER_ORDER = 500.0
+DEFAULT_CAPI_MAX_NOTIONAL_PER_ORDER = 5_000.0
+DEFAULT_CAPI_MAX_TOTAL_EXPOSURE = 25_000.0
 
 _FALSEY = {"false", "0", "no", "off"}
 
@@ -116,6 +135,13 @@ class Settings:
     strategy_max_spread_pct: float = DEFAULT_STRATEGY_MAX_SPREAD_PCT
     strategy_limit_buffer_pct: float = DEFAULT_STRATEGY_LIMIT_BUFFER_PCT
     strategy_default_quantity: int = DEFAULT_STRATEGY_DEFAULT_QUANTITY
+
+    # --- Phase 6: CAPI pre-trade risk gate (D-016) ------------------------- #
+    capi_max_shares_per_order: float = DEFAULT_CAPI_MAX_SHARES_PER_ORDER
+    capi_max_notional_per_order: float = DEFAULT_CAPI_MAX_NOTIONAL_PER_ORDER
+    capi_max_total_exposure: float = DEFAULT_CAPI_MAX_TOTAL_EXPOSURE
+    # Empty = no restriction beyond the watchlist itself.
+    capi_trading_allowlist: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def db_file(self) -> Path:
@@ -267,6 +293,28 @@ def load_settings() -> Settings:
         STRATEGY_DEFAULT_QUANTITY_ENV, DEFAULT_STRATEGY_DEFAULT_QUANTITY, minimum=1
     )
 
+    # Strictly positive for all three (matches STRATEGY_MAX_SPREAD_ENV's
+    # reasoning): a limit of exactly 0 doesn't mean "unlimited," it means
+    # "reject every order," which would silently disable all trading rather
+    # than obviously breaking something — the same class of footgun the other
+    # *_minimum=0.001 checks above guard against.
+    capi_max_shares_per_order = _env_float(
+        CAPI_MAX_SHARES_PER_ORDER_ENV, DEFAULT_CAPI_MAX_SHARES_PER_ORDER, minimum=0.001
+    )
+    capi_max_notional_per_order = _env_float(
+        CAPI_MAX_NOTIONAL_PER_ORDER_ENV,
+        DEFAULT_CAPI_MAX_NOTIONAL_PER_ORDER,
+        minimum=0.001,
+    )
+    capi_max_total_exposure = _env_float(
+        CAPI_MAX_TOTAL_EXPOSURE_ENV, DEFAULT_CAPI_MAX_TOTAL_EXPOSURE, minimum=0.001
+    )
+    capi_trading_allowlist = frozenset(
+        s.strip().upper()
+        for s in os.environ.get(CAPI_TRADING_ALLOWLIST_ENV, "").split(",")
+        if s.strip()
+    )
+
     return Settings(
         state_store=state_store,
         db_path=db_path,
@@ -286,4 +334,8 @@ def load_settings() -> Settings:
         strategy_max_spread_pct=strategy_max_spread,
         strategy_limit_buffer_pct=strategy_limit_buffer,
         strategy_default_quantity=strategy_default_quantity,
+        capi_max_shares_per_order=capi_max_shares_per_order,
+        capi_max_notional_per_order=capi_max_notional_per_order,
+        capi_max_total_exposure=capi_max_total_exposure,
+        capi_trading_allowlist=capi_trading_allowlist,
     )

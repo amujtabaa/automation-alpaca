@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from app.models import (
     Candidate,
@@ -49,15 +49,18 @@ from app.store.base import (
     InvalidOrderError,
     OrderIntentBlockedError,
     OrderTransitionError,
+    RiskLimitBlockedError,
     UnknownEntityError,
 )
 from app.store.transitions import ORDER_TIMESTAMP, ORDER_TRANSITIONS
 from app.store.validation import (
+    existing_exposure,
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
     limit_price_reason,
     order_intent_block_reason,
+    risk_limit_reason,
 )
 
 
@@ -290,11 +293,25 @@ class CreateOrderPlan:
 
 
 def plan_create_order_for_candidate(
-    *, candidate: Candidate, session: Optional[SessionRecord]
+    *,
+    candidate: Candidate,
+    session: Optional[SessionRecord],
+    positions: Sequence[Position] = (),
+    open_orders: Sequence[Order] = (),
+    max_shares_per_order: Optional[float] = None,
+    max_notional_per_order: Optional[float] = None,
+    max_total_exposure: Optional[float] = None,
+    allowlist: Optional[frozenset[str]] = None,
 ) -> CreateOrderPlan:
     """The shared validation cascade + order construction for the candidate→order
     dispatch. ``candidate`` is known to exist and *not* already ORDERED (the store
     handles those first). ``session`` is the candidate's own originating session.
+
+    ``positions``/``open_orders`` are every current position and non-terminal
+    order in the store (unscoped by session — exposure is a live, cross-session
+    concept; see ``app.store.validation.existing_exposure``), used only for the
+    Phase 6 CAPI risk gate (D-016) below. The four ``max_*``/``allowlist``
+    keywords are independently optional (``None`` = not enforced).
     """
 
     # The approved-only rule D-010 deferred to the gate lands here.
@@ -343,6 +360,37 @@ def plan_create_order_for_candidate(
             error=InvalidOrderError(
                 f"candidate {candidate.id} has no valid suggested_limit_price "
                 f"for a limit order ({bad_price})"
+            ),
+        )
+
+    # Phase 6 CAPI pre-trade risk gate (D-016): gate-and-reject, never resize.
+    # Local-derived exposure only (folded positions + non-terminal orders'
+    # remaining notional) — no live broker/market-data call on the order path.
+    risk_block = risk_limit_reason(
+        symbol=candidate.symbol,
+        order_quantity=qty,
+        order_limit_price=limit_price,
+        exposure_before_order=existing_exposure(positions, open_orders),
+        max_shares_per_order=max_shares_per_order,
+        max_notional_per_order=max_notional_per_order,
+        max_total_exposure=max_total_exposure,
+        allowlist=allowlist,
+    )
+    if risk_block is not None:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=RiskLimitBlockedError(f"risk limit blocked: {risk_block}"),
+            reject_event=EventSpec(
+                "risk_limit_blocked",
+                message=f"order intent for {candidate.symbol} blocked: {risk_block}",
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                payload={
+                    "reason": risk_block,
+                    "order_quantity": qty,
+                    "order_limit_price": limit_price,
+                },
+                session_id=candidate.session_id,
             ),
         )
 

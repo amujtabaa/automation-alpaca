@@ -11,7 +11,7 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 > API calls. See [`docs/01_ARCHITECTURE.md`](docs/01_ARCHITECTURE.md) for the
 > non-negotiable rules.
 
-## What's built (Phases 1–5)
+## What's built (Phases 1–6)
 
 - **FastAPI backend skeleton** — `GET /api/health`, `GET /api/session`, watchlist
   CRUD, read-only order/position/event views, `GET /api/review`, and
@@ -46,22 +46,35 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
   momentum generator (`premarket_momentum_v1`) on its own decision cadence,
   creating real candidates with a genuine explanation string — the dev-injection
   route remains available for hand-testing specific states, but candidate
-  generation is no longer only mock data. Sizing is a fixed placeholder pending
-  Phase 6 CAPI (stated plainly in the candidate's `risk_decision`). Deliberately
-  **not** gated by the kill switch / pause-buys — those block order intent
-  downstream (Rule 8), not candidate visibility. `GET /api/marketdata/snapshots`
-  (read-only) backs a Last/% Move column on the cockpit Watchlist screen.
+  generation is no longer only mock data. Sizing (`suggested_quantity`/
+  `suggested_limit_price`) is still a fixed placeholder (stated plainly in the
+  candidate's `risk_decision`) — Phase 6 gates it, it doesn't replace it (see
+  below). Deliberately **not** gated by the kill switch / pause-buys — those
+  block order intent downstream (Rule 8), not candidate visibility.
+  `GET /api/marketdata/snapshots` (read-only) backs a Last/% Move column on the
+  cockpit Watchlist screen.
+- **Capital Intelligence Layer — pre-trade risk gate (Phase 6, D-016)** — a
+  pluggable-by-boundary (not by class — see D-016c) pre-trade check: max
+  shares/notional per order, max total exposure, and a trading allowlist.
+  Gates-and-rejects on a breach (never resizes). Exposure is **local-derived
+  only** — folded positions' cost basis + non-terminal orders' remaining
+  notional — no live broker/market-data call on the order path. Runs at two
+  points with the same predicate: the approve route (pre-check, so a blocked
+  candidate stays `PENDING`) and `create_order_for_candidate` (authoritative,
+  under the store's lock), with the same race-recovery (`revert_candidate_approval`)
+  the kill-switch check already used. **Not** position sizing — CAPI is a gate
+  on the Strategy Engine's placeholder sizing above, not a replacement for it.
 - **Thin Streamlit cockpit** — five screens; Watchlist (with live snapshot data),
   the Candidate Monitor (list + approve/reject), and the Position/Order monitor
   (with cancel) are functional; the rest render real backend data.
 
-Not yet built (later phases, deliberately out of scope here): CAPI risk
-**sizing** (max shares / notional / exposure — Phase 6; the on/off kill-switch &
-pause-buys controls are already enforced on the order path), and sell-side
-protection / position **flatten** (Phase 7 — the `/positions/{symbol}/flatten`
-endpoint and its cockpit button are placeholders until then). Premarket/after-
-hours Alpaca paper feed *quality* (as opposed to the plumbing, which is built)
-is an empirical unknown — see
+Not yet built (later phases, deliberately out of scope here): real
+capital-based position **sizing** (account-equity-aware, feeding the same CAPI
+gate above — still a fixed placeholder), and sell-side protection / position
+**flatten** (Phase 7 — the `/positions/{symbol}/flatten` endpoint and its
+cockpit button are placeholders until then). Premarket/after-hours Alpaca
+paper feed *quality* (as opposed to the plumbing, which is built) is an
+empirical unknown — see
 [`docs/IMPLEMENTATION_PROMPT_PHASE_5.md`](docs/IMPLEMENTATION_PROMPT_PHASE_5.md#known-unknown--explicitly-deferred).
 See [`docs/04_IMPLEMENTATION_PLAN.md`](docs/04_IMPLEMENTATION_PLAN.md).
 
@@ -210,7 +223,20 @@ there is no separate market-data key:
 | `STRATEGY_MIN_VOLUME`                | `50000`  | Minimum session volume to propose a candidate; `0` is a valid "no floor" setting              |
 | `STRATEGY_MAX_SPREAD_PCT`            | `1.0`    | Maximum bid/ask spread (`%` of midpoint) to propose a candidate. **Must be > 0** — 0 would require a literally-zero spread (never happens on a real quote), silently zeroing out all candidate generation; use a large value like `100` to effectively disable the check |
 | `STRATEGY_LIMIT_BUFFER_PCT`          | `0.1`    | Buy-through buffer added to `last_price` for the proposed limit price                        |
-| `STRATEGY_DEFAULT_QUANTITY`          | `10`     | Fixed placeholder share count (real sizing is Phase 6 CAPI)                                  |
+| `STRATEGY_DEFAULT_QUANTITY`          | `10`     | Fixed placeholder share count (D-014b; CAPI below gates this, it doesn't replace it)          |
+
+### CAPI — pre-trade risk gate (Phase 6, D-016)
+
+Enforced at candidate approval (pre-check) and inside `create_order_for_candidate`
+(authoritative, under the store's lock). Local-derived exposure only — no live
+broker/market-data call:
+
+| Variable                     | Default | Meaning                                                                                       |
+| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `CAPI_MAX_SHARES_PER_ORDER`   | `500`   | Max quantity for a single order. **Must be > 0** — 0 would silently block every order            |
+| `CAPI_MAX_NOTIONAL_PER_ORDER` | `5000`  | Max `quantity × limit_price` for a single order. **Must be > 0**, same reason                    |
+| `CAPI_MAX_TOTAL_EXPOSURE`     | `25000` | Max total exposure (positions' cost basis + non-terminal orders' remaining notional, including the new order). **Must be > 0**, same reason |
+| `CAPI_TRADING_ALLOWLIST`      | *(empty)* | Comma-separated tickers; empty means no restriction beyond the watchlist (a meaningful empty state, unlike the three limits above) |
 
 ### Background monitoring loop
 

@@ -16,9 +16,31 @@ log says *why* a fill/order was rejected, not just that it was.
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Sequence
 
-from app.models import Candidate, Order, OrderSide, SessionRecord, SessionStatus
+from app.models import (
+    Candidate,
+    Order,
+    OrderSide,
+    OrderStatus,
+    Position,
+    SessionRecord,
+    SessionStatus,
+)
+
+# An order still in one of these statuses represents live risk: it could fill
+# at any moment, so it counts toward exposure exactly like an already-filled
+# position. Everything else (FILLED/CANCELED/REJECTED) is terminal and settled
+# — see app/store/transitions.py's ORDER_TRANSITIONS (these are exactly the
+# non-empty-transition-set statuses).
+NON_TERMINAL_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.CREATED,
+        OrderStatus.SUBMITTED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.CANCEL_PENDING,
+    }
+)
 
 
 def order_intent_block_reason(
@@ -156,4 +178,83 @@ def filled_quantity_reason(order: Order, new_filled_quantity: int) -> Optional[s
         return "filled_quantity_exceeds_order_quantity"
     if new_filled_quantity < order.filled_quantity:
         return "filled_quantity_decreased"
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Phase 6 — Capital Intelligence Layer (CAPI) pre-trade risk gate (D-016)
+# --------------------------------------------------------------------------- #
+
+
+def existing_exposure(
+    positions: Sequence[Position], open_orders: Sequence[Order]
+) -> float:
+    """Current dollar exposure *before* the order being evaluated: every
+    position's cost basis, plus the notional of every non-terminal order's
+    remaining (unfilled) quantity.
+
+    Local-derived only (D-016): no live broker/market-data call. Position
+    exposure uses cost basis, not mark-to-market — beta explicitly defers
+    unrealized P/L elsewhere (``docs/03_UI_WORKFLOW.md``'s Position Monitor),
+    and cost basis is exactly what the store already has without a new
+    dependency on live prices. A flat (fully-sold) position's cost_basis is
+    ``0`` by the folding formula (``docs/02``), so no explicit quantity filter
+    is needed here — summing every position is already correct.
+
+    Order exposure is priced at each order's own ``limit_price`` (``None`` only
+    for a non-LIMIT order type, which beta never creates — treated as ``0`` to
+    stay total, not raise, since this is a read-only aggregate, not a
+    validation gate itself).
+    """
+
+    position_exposure = sum(p.cost_basis for p in positions)
+    order_exposure = sum(
+        (o.quantity - o.filled_quantity) * (o.limit_price or 0.0)
+        for o in open_orders
+        if o.status in NON_TERMINAL_ORDER_STATUSES
+    )
+    return position_exposure + order_exposure
+
+
+def risk_limit_reason(
+    *,
+    symbol: str,
+    order_quantity: int,
+    order_limit_price: float,
+    exposure_before_order: float,
+    max_shares_per_order: Optional[float],
+    max_notional_per_order: Optional[float],
+    max_total_exposure: Optional[float],
+    allowlist: Optional[frozenset[str]],
+) -> Optional[str]:
+    """Why a proposed order breaches a configured CAPI limit, or ``None`` if it
+    doesn't.
+
+    Every limit is independently optional (``None`` = not enforced) — the
+    *interface* supports an unrestricted mode (existing tests and any future
+    caller that doesn't care about CAPI), but production always passes real,
+    validated-positive values from ``Settings`` (``app.config``), which rejects
+    a non-finite/non-positive limit at load, the same footgun class as
+    ``MARKET_DATA_STALE_MINUTES``/``STRATEGY_MAX_SPREAD_PCT``. ``allowlist``
+    empty or ``None`` both mean "no restriction beyond the watchlist" — a
+    genuinely meaningful empty state, unlike the numeric limits.
+
+    Beta gates-and-rejects (D-016): a breach blocks the order outright, never
+    silently resizes it down to fit. Order of checks: allowlist (cheapest,
+    categorical) -> per-order share/notional caps -> total exposure (needs the
+    full position/order-book picture the caller assembled).
+    """
+
+    if allowlist and symbol not in allowlist:
+        return "not_on_allowlist"
+    if max_shares_per_order is not None and order_quantity > max_shares_per_order:
+        return "exceeds_max_shares_per_order"
+    order_notional = order_quantity * order_limit_price
+    if max_notional_per_order is not None and order_notional > max_notional_per_order:
+        return "exceeds_max_notional_per_order"
+    if (
+        max_total_exposure is not None
+        and exposure_before_order + order_notional > max_total_exposure
+    ):
+        return "exceeds_max_total_exposure"
     return None

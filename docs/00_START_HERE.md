@@ -49,6 +49,73 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-016 — CAPI is a pure pre-trade risk *gate*, not a position-sizing engine; local-derived exposure; reject-not-resize
+**Scope.** Phase 6 ships the **preservation** half of CAPI (max shares/notional
+per order, max total exposure, a trading allowlist) as a hard pre-trade gate.
+It does **not** ship the **allocation**/sizing half — `suggested_quantity` and
+`suggested_limit_price` remain the Strategy Engine's fixed placeholder (D-014b,
+`risk_decision="phase5_fixed_size_pending_capi"`); real capital-based sizing
+(account-equity-aware position sizing) is still future work that would feed
+the *same* gate below, not a separate mechanism.
+
+**(a) Gate-and-reject, never resize.** A proposed order that breaches a limit
+is blocked outright with an audit reason; it is never silently shrunk to fit.
+Rationale: the human approved a specific size — resizing it without asking
+would be a surprising, opaque behavior change to what was approved, and real
+position-sizing logic belongs in a future phase designed for it, not bolted
+onto a limit check.
+
+**(b) Local-derived exposure only — no live broker/market-data call.**
+Exposure is computed entirely from state the store already has: every
+position's **cost basis** (not mark-to-market — beta already defers
+unrealized P/L elsewhere, per the Position Monitor) plus every non-terminal
+order's remaining (unfilled) quantity × its own `limit_price`. This keeps the
+order path free of a new dependency on `MarketDataService` or a broker
+round-trip; "buying power" in the brokerage-account sense is out of scope
+(fake money in paper anyway).
+
+**(c) No separate `RiskEngine` ABC — a pure predicate, like the sibling checks.**
+The original plan sketched a pluggable `RiskEngine` ABC mirroring
+`BrokerAdapter`/`MarketDataService`/`ApprovalGate`. Implementation surfaced a
+better fit already established in this codebase:
+`order_intent_block_reason` (Rule 8's kill-switch/pause-buys check) is a
+*plain synchronous function* called from two places — the approve route
+(pre-check, for UX) and `create_order_for_candidate`'s planner (authoritative,
+for correctness) — and gets "any future Auto-Buy mode honors this for free"
+pluggability for free, just by living at the store boundary, no ABC required.
+`risk_limit_reason` (`app/store/validation.py`) follows the identical pattern.
+An async `RiskEngine` ABC would also have fought the store's own architecture:
+`plan_create_order_for_candidate` (`app/store/core.py`, from the store-hardening
+interlude) is a *pure, synchronous* planner by design — forcing an async
+engine call into it would have undone exactly the sync-pure-planner
+consolidation that interlude just finished. If a future Auto-Buy phase needs
+live broker-backed limits (real buying power, not cost-basis exposure), *that*
+is the point to introduce an async seam — not now, per (b).
+
+**Enforcement points:** `app/api/routes_candidates.py`'s `approve_candidate`
+(pre-check, mirrors the existing kill-switch/pause-buys pre-check exactly,
+including race recovery via `revert_candidate_approval` if a limit is breached
+between the pre-check and the store handoff) and
+`StateStore.create_order_for_candidate`'s new optional
+`max_shares_per_order`/`max_notional_per_order`/`max_total_exposure`/`allowlist`
+keywords (authoritative, under the store's lock). Each is independently
+optional at the *interface* level (`None` = not enforced, keeping ~20
+pre-existing test call sites unchanged), but the approve route always passes
+real, validated-positive values loaded from `Settings` — `app.config`'s
+`_env_float` rejects a non-finite/non-positive `CAPI_MAX_*` value at startup
+(the same footgun class as `MARKET_DATA_STALE_MINUTES`), so CAPI can't be
+silently disabled by an env misconfiguration the way `None` can be by a test.
+A breach raises `RiskLimitBlockedError` and writes a `risk_limit_blocked`
+audit event with the reason code and the numbers involved.
+
+**Why now.** Phase 6 is the first CAPI work; recording the scope boundary (a)
+and the exposure-model boundary (b) here means a future Auto-Buy/real-sizing
+phase inherits an explicit decision to revisit, not silence. (c) is recorded
+because it's a deviation from the originally-sketched design, surfaced only
+once the store's own architecture was examined closely — worth keeping
+visible so a future reader doesn't wonder why CAPI has no engine class
+alongside its three siblings.
+
 ### D-015 — Order submission sets `extended_hours` from the current session (resolves BACKEND-2)
 **Decision.** `AlpacaPaperAdapter.submit_order` (`app/broker/alpaca_paper.py`)
 now sets Alpaca's `extended_hours` flag based on `session_type_for(utcnow())`

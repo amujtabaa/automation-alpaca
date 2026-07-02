@@ -130,8 +130,23 @@ class OrderIntentBlockedError(StoreError):
     new BUY intent — beta orders are long-only buys). The flag is persisted state
     the backend owns; enforcing it here (not only in the UI) means every order-
     intent producer — the approve route now, a future auto-buy engine — is gated,
-    and the block is recorded as an audit event. Distinct from the Phase 6 CAPI
-    risk limits (max shares/notional/exposure), which remain out of scope.
+    and the block is recorded as an audit event. Distinct from
+    :class:`RiskLimitBlockedError` (Phase 6 CAPI): this is a binary on/off
+    control-flag check with no numeric limits involved.
+    """
+
+
+class RiskLimitBlockedError(StoreError):
+    """New order intent was blocked by a Phase 6 CAPI risk limit (D-016).
+
+    Raised by ``create_order_for_candidate`` when the proposed order's symbol
+    isn't on the trading allowlist, or would exceed the configured max
+    shares/notional per order or max total exposure — computed from local
+    state only (folded positions + non-terminal orders' remaining notional; see
+    ``app.store.validation.risk_limit_reason``), never a live broker/market-data
+    call. Beta gates-and-rejects: a breach blocks the order outright, it is
+    never silently resized to fit. Distinct from :class:`OrderIntentBlockedError`
+    (Rule 8's binary kill-switch/pause-buys control, no numeric limits).
     """
 
 
@@ -273,7 +288,15 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
-    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+    async def create_order_for_candidate(
+        self,
+        candidate_id: str,
+        *,
+        max_shares_per_order: Optional[float] = None,
+        max_notional_per_order: Optional[float] = None,
+        max_total_exposure: Optional[float] = None,
+        allowlist: Optional[frozenset[str]] = None,
+    ) -> Order:
         """Atomic ``APPROVED → ORDERED`` handoff — the candidate→order dispatch.
 
         ``docs/02_DATA_AND_PERSISTENCE.md`` lists *"candidate approval + order
@@ -295,12 +318,23 @@ class StateStore(ABC):
         and writes nothing (no second order). This is what keeps the approve
         endpoint idempotent.
 
+        The four ``max_*``/``allowlist`` keywords are the Phase 6 CAPI risk gate
+        (D-016): each is independently optional (``None`` = not enforced), so
+        the interface itself supports an unrestricted mode, but the approve
+        route always passes real, validated-positive values loaded from
+        ``Settings``. A breach raises :class:`RiskLimitBlockedError` and writes
+        a ``risk_limit_blocked`` audit event (see
+        ``app.store.validation.risk_limit_reason`` for the exact checks and
+        their order).
+
         Raises :class:`UnknownEntityError` if the candidate does not exist;
         :class:`CandidateTransitionError` if it is not ``APPROVED`` (e.g. still
         ``PENDING``, or ``REJECTED``/``EXPIRED``); :class:`InvalidOrderError` if it
-        carries no positive ``suggested_quantity`` to size the order. This is
-        where the *approved-only* rule that ``create_order`` deliberately deferred
-        (D-010) is finally enforced.
+        carries no positive ``suggested_quantity`` to size the order;
+        :class:`OrderIntentBlockedError` if the candidate's session is
+        kill-switched or buys are paused; :class:`RiskLimitBlockedError` if a
+        CAPI limit above is breached. This is where the *approved-only* rule
+        that ``create_order`` deliberately deferred (D-010) is finally enforced.
         """
 
     @abstractmethod

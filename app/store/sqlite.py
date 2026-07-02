@@ -77,6 +77,7 @@ from app.store.transitions import (
     CANDIDATE_TRANSITIONS,
 )
 from app.store.validation import (
+    NON_TERMINAL_ORDER_STATUSES,
     order_candidate_match_reason,
 )
 
@@ -865,7 +866,15 @@ class SqliteStateStore(StateStore):
                 )
             return order
 
-    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+    async def create_order_for_candidate(
+        self,
+        candidate_id: str,
+        *,
+        max_shares_per_order: Optional[float] = None,
+        max_notional_per_order: Optional[float] = None,
+        max_total_exposure: Optional[float] = None,
+        allowlist: Optional[frozenset[str]] = None,
+    ) -> Order:
         async with self._lock:
             cand_row = self._read_one(
                 "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
@@ -891,12 +900,36 @@ class SqliteStateStore(StateStore):
                 return self._order(order_row)
             # Shared validation cascade + order construction (app/store/core.py);
             # the candidate-missing and ORDERED-idempotent cases above stay here
-            # since they need store-specific fetches.
+            # since they need store-specific fetches. Positions/open orders are
+            # fetched unconditionally (cheap at beta scale) — the planner only
+            # uses them when a CAPI limit above is actually configured.
             sess_row = self._read_one(
                 "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
             )
             session = self._session(sess_row) if sess_row is not None else None
-            plan = plan_create_order_for_candidate(candidate=candidate, session=session)
+            positions = [
+                self._position_locked(r["symbol"])
+                for r in self._read_all("SELECT DISTINCT symbol FROM fills ORDER BY symbol")
+            ]
+            non_terminal_placeholders = ",".join("?" * len(NON_TERMINAL_ORDER_STATUSES))
+            open_orders = [
+                self._order(r)
+                for r in self._read_all(
+                    f"SELECT * FROM orders WHERE status IN ({non_terminal_placeholders}) "
+                    "ORDER BY rowid",
+                    tuple(s.value for s in NON_TERMINAL_ORDER_STATUSES),
+                )
+            ]
+            plan = plan_create_order_for_candidate(
+                candidate=candidate,
+                session=session,
+                positions=positions,
+                open_orders=open_orders,
+                max_shares_per_order=max_shares_per_order,
+                max_notional_per_order=max_notional_per_order,
+                max_total_exposure=max_total_exposure,
+                allowlist=allowlist,
+            )
             if plan.outcome == CREATE_ORDER_REJECT:
                 # Only the kill-switch/pause block writes an audit row before it
                 # raises; the not-approved and invalid-qty/price rejections don't.

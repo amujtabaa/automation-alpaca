@@ -175,3 +175,52 @@ Use when reviewing Codex or Claude Code output.
       unverified known unknown (not something this checklist can confirm without
       live credentials + market hours) — see
       `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
+
+## Phase 6 (Capital Intelligence Layer — pre-trade risk gate)
+- [ ] CAPI gates-and-rejects on a limit breach; it never silently resizes an
+      order down to fit (D-016a).
+- [ ] Exposure (`app.store.validation.existing_exposure`) is local-derived only
+      — folded positions' **cost basis** + non-terminal orders' remaining
+      notional (`quantity - filled_quantity`) × their own `limit_price`; no
+      live broker/market-data call is made from the order path (D-016b).
+- [ ] `risk_limit_reason` is a pure function (`app/store/validation.py`), not a
+      pluggable `RiskEngine` class — mirrors `order_intent_block_reason`'s
+      existing pattern exactly (D-016c); no async engine call was introduced
+      into `plan_create_order_for_candidate`'s pure, synchronous planner.
+- [ ] The risk check runs in **two** places with the *same* predicate and the
+      *same* inputs: the approve route (pre-check, for UX — a blocked
+      candidate stays `PENDING`, still rejectable) and
+      `create_order_for_candidate` (authoritative, under the store's lock).
+- [ ] A race between the pre-check and the authoritative check (limit breached
+      in between) is recovered the same way as an `OrderIntentBlockedError`
+      race: `revert_candidate_approval` rolls the candidate back to `PENDING`
+      — never stranded `APPROVED` with no order.
+- [ ] Each of `max_shares_per_order`/`max_notional_per_order`/
+      `max_total_exposure`/`allowlist` is independently optional at the
+      `StateStore.create_order_for_candidate` **interface** level (`None` =
+      not enforced, preserving ~20 pre-existing test call sites), but the
+      approve route always passes real, validated-positive values from
+      `Settings` — never `None` in production.
+- [ ] `CAPI_MAX_SHARES_PER_ORDER`/`CAPI_MAX_NOTIONAL_PER_ORDER`/
+      `CAPI_MAX_TOTAL_EXPOSURE` reject `0`/negative/non-finite at config load
+      (`_env_float(..., minimum=0.001)`) — a limit of exactly `0` would
+      silently block every order, the same footgun class as
+      `MARKET_DATA_STALE_MINUTES`. `CAPI_TRADING_ALLOWLIST` empty is a
+      legitimate, meaningful state (no restriction beyond the watchlist), not
+      a footgun — unlike the three numeric limits.
+- [ ] A `risk_limit_blocked` audit event is written on a breach, with the
+      reason code and the numbers involved in its payload — never a silent
+      rejection.
+- [ ] `RiskLimitBlockedError` is distinct from `OrderIntentBlockedError`
+      (Rule 8's binary kill-switch/pause-buys check has no numeric limits
+      involved) but both are handled identically at the route (409 + revert).
+- [ ] Phase 6 does **not** add a distinct "already holding this symbol"
+      re-entry block — deliberately left out; the total-exposure cap already
+      limits how much a re-entry can add (see `docs/04`'s Phase 6 note).
+- [ ] `suggested_quantity`/`suggested_limit_price` are **unchanged** by Phase 6
+      — still the Strategy Engine's D-014b placeholder sizing. CAPI is a gate
+      on that placeholder, not a replacement for it.
+- [ ] Hypothesis property tests cover `existing_exposure`/`risk_limit_reason`'s
+      core invariants (e.g. a blocked order never appears in the accepted
+      set; total exposure after an accepted order never exceeds the
+      configured cap), not just hand-picked examples.

@@ -80,6 +80,7 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
         active_store = store or create_state_store(settings)
         await active_store.initialize()
         app.state.store = active_store
+        app.state.settings = settings
         app.state.approval_gate = HumanApprovalGate(active_store)
         app.state.broker_adapter = create_broker_adapter(settings)
         app.state.market_data = create_market_data_service(settings)
