@@ -24,9 +24,20 @@ CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
 
 ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.CREATED: {
-        OrderStatus.SUBMITTED,
+        OrderStatus.SUBMITTING,  # atomic submission claim (D-017) — the ONLY
+                                 # path to the broker; CREATED never goes
+                                 # straight to SUBMITTED anymore, so a control
+                                 # flip can't sneak between "decided to submit"
+                                 # and "sent" (F-001/F-002).
         OrderStatus.CANCELED,  # never-submitted order cancelled locally
         OrderStatus.REJECTED,
+    },
+    OrderStatus.SUBMITTING: {
+        OrderStatus.SUBMITTED,  # broker acked the submission
+        OrderStatus.CREATED,    # release the claim on a transient submit failure
+                                # (next tick re-runs the full control gate)
+        OrderStatus.CANCELED,   # manual cancel raced the submit / terminal
+        OrderStatus.REJECTED,   # broker rejected
     },
     OrderStatus.SUBMITTED: {
         OrderStatus.PARTIALLY_FILLED,

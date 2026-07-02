@@ -85,6 +85,17 @@ class OrderStatus(str, Enum):
     """
 
     CREATED = "created"
+    # Intermediate submission-claim state (D-017): the monitoring loop has
+    # atomically claimed a CREATED order for submission — re-checked every
+    # control under one store-lock hold and committed to sending it — but the
+    # broker call has not yet returned. It is the *only* path from CREATED to
+    # SUBMITTED, which is what makes the kill-switch/session-close race
+    # unwinnable (F-001/F-002): a control flip either lands before the claim
+    # (order stays CREATED, held) or after it (already committed to submission).
+    # Non-terminal (it has outgoing transitions) so it counts toward CAPI
+    # exposure; it carries no broker_order_id yet, so reconcile naturally skips
+    # it.
+    SUBMITTING = "submitting"
     SUBMITTED = "submitted"
     PARTIALLY_FILLED = "partially_filled"
     CANCEL_PENDING = "cancel_pending"
@@ -139,6 +150,10 @@ class EventType(str, Enum):
     # Safety controls (Rule 8) blocking the order path (Phase 4 enforcement).
     ORDER_INTENT_BLOCKED = "order_intent_blocked"  # creation blocked by kill/pause
     ORDER_SUBMISSION_BLOCKED = "order_submission_blocked"  # loop held a submission
+    # Submission-claim + durable broker-submit recovery (D-017 / Wave 0).
+    ORDER_SUBMISSION_CLAIMED = "order_submission_claimed"  # CREATED -> SUBMITTING
+    SUBMIT_RECOVERY_RECORDED = "submit_recovery_recorded"  # a stranded broker order logged
+    SUBMIT_RECOVERY_RESOLVED = "submit_recovery_resolved"  # recovery loop cleared it
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
@@ -293,6 +308,41 @@ class PositionSnapshot(_Entity):
     cost_basis: float
     average_price: Optional[float] = None
     captured_at: datetime = Field(default_factory=utcnow)
+
+
+class SubmitRecoveryRecord(_Entity):
+    """A durable record of a broker order that was accepted upstream but whose
+    local ``SUBMITTING -> SUBMITTED`` persist failed (D-017 / F-002).
+
+    The order is *live at the broker* while the local state does not track it as
+    open (it went CANCELED/REJECTED locally, e.g. a manual cancel raced the
+    submit). A single best-effort cancel is not enough — if that cancel fails the
+    broker order is orphaned. This record is written instead, and the monitoring
+    tick's recovery step polls/cancels its ``broker_order_id`` on every cadence
+    until it is confirmed resolved (not one attempt). Unresolved records are
+    surfaced prominently to the operator.
+    """
+
+    id: str = Field(default_factory=new_id)
+    local_order_id: str
+    broker_order_id: str
+    # Alpaca's client_order_id (idempotency key); the paper adapter may not
+    # expose one for a given order, so it is nullable.
+    client_order_id: Optional[str] = None
+    symbol: str
+    side: OrderSide
+    quantity: int
+    limit_price: Optional[float] = None
+    failure_reason: str
+    # "unresolved" until the recovery loop confirms the broker order is no longer
+    # live (canceled/rejected), or "resolved_filled_needs_review" if it turns out
+    # to have filled (a real untracked position — surfaced, never silently
+    # dropped). See app/monitoring.py's recovery step.
+    cleanup_status: str = "unresolved"
+    retry_count: int = 0
+    session_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
+    last_attempt_at: Optional[datetime] = None
 
 
 class Event(_Entity):

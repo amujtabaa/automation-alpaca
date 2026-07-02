@@ -20,6 +20,7 @@ from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.models import CandidateStatus, OrderStatus, utcnow
 from app.monitoring import (
+    _recover_unpersisted_submits,
     _reconcile_open_orders,
     _submit_pending_orders,
     run_monitoring_tick,
@@ -475,11 +476,14 @@ async def test_submit_accepted_but_unpersisted_is_audited():
 
     await _submit_pending_orders(store, adapter)
 
-    # Broker was asked to submit; the SUBMITTED transition failed -> order stays
-    # CREATED, and the live-but-unpersisted order is recorded as an audit event
-    # (never left visible only in logs).
+    # The order was claimed (CREATED -> SUBMITTING), the broker accepted it, and
+    # the first SUBMITTING -> SUBMITTED transition failed — but the order is not
+    # cancelled, so it is genuinely open at the broker. The handler retries the
+    # transition (the store fails only once), so the order ends up SUBMITTED and
+    # tracked. The hiccup is audited; no cancel, no recovery record (the order
+    # is legitimately live, not orphaned).
     assert [o.id for o in adapter.submitted] == [order.id]
-    assert (await store.get_order(order.id)).status is OrderStatus.CREATED
+    assert (await store.get_order(order.id)).status is OrderStatus.SUBMITTED
     unpersisted = [
         e
         for e in await store.list_events()
@@ -489,8 +493,8 @@ async def test_submit_accepted_but_unpersisted_is_audited():
     assert unpersisted[0].payload.get("broker_order_id") == adapter.broker_id_for(
         order.id
     )
-    # Order is still CREATED (not cancelled) -> no compensating broker cancel.
-    assert adapter.canceled == []
+    assert adapter.canceled == []  # not cancelled — it is a valid open order
+    assert await store.list_submit_recoveries() == []  # recovered on retry
 
 
 class _CancelDuringSubmit(InMemoryStateStore):
@@ -511,7 +515,7 @@ class _CancelDuringSubmit(InMemoryStateStore):
         )
 
 
-async def test_cancel_during_submit_cleans_up_stranded_broker_order():
+async def test_cancel_during_submit_records_durable_recovery():
     store = _CancelDuringSubmit()
     order = await _created_order(store, qty=10, limit=1.0)
     adapter = MockBrokerAdapter()
@@ -519,14 +523,49 @@ async def test_cancel_during_submit_cleans_up_stranded_broker_order():
     await _submit_pending_orders(store, adapter)
 
     # The order was cancelled mid-submit: it is live at the broker but CANCELED
-    # locally, so the loop best-effort cancels the stranded broker order and
-    # records the unpersisted submit.
+    # locally (the F-002 orphan). Instead of a lone best-effort cancel, a durable
+    # recovery record is written; the submission is audited. The cancel now
+    # happens in the recovery loop, not here.
     assert (await store.get_order(order.id)).status is OrderStatus.CANCELED
-    assert adapter.canceled == [adapter.broker_id_for(order.id)]
+    assert adapter.canceled == []  # no immediate cancel — deferred to recovery
     assert any(
         e.event_type == "order_submit_unpersisted" and e.order_id == order.id
         for e in await store.list_events()
     )
+    unresolved = await store.list_submit_recoveries(unresolved_only=True)
+    assert len(unresolved) == 1
+    assert unresolved[0].broker_order_id == adapter.broker_id_for(order.id)
+    assert unresolved[0].local_order_id == order.id
+
+
+async def test_recovery_loop_cancels_stranded_broker_order_and_resolves():
+    """The recovery loop drives an unresolved record to resolution: it cancels
+    the still-live broker order and marks the record resolved. A single
+    best-effort cancel is replaced by retry-until-resolved (F-002)."""
+
+    store = _CancelDuringSubmit()
+    order = await _created_order(store, qty=10, limit=1.0)
+    adapter = MockBrokerAdapter()
+
+    # First: strand the broker order (records the recovery, no cancel yet).
+    await _submit_pending_orders(store, adapter)
+    broker_id = adapter.broker_id_for(order.id)
+    assert adapter.canceled == []
+
+    # A transient cancel failure on the first recovery attempt must NOT resolve
+    # it — it stays unresolved, retry_count bumped, retried next tick.
+    adapter.fail_next_cancel(BrokerError("cancel temporarily unavailable"))
+    await _recover_unpersisted_submits(store, adapter)
+    still = await store.list_submit_recoveries(unresolved_only=True)
+    assert len(still) == 1
+    assert still[0].retry_count == 1
+
+    # Next tick: cancel succeeds, broker confirms CANCELED, record resolves.
+    await _recover_unpersisted_submits(store, adapter)
+    assert broker_id in adapter.canceled
+    assert await store.list_submit_recoveries(unresolved_only=True) == []
+    resolved = await store.list_submit_recoveries()
+    assert resolved[0].cleanup_status == "resolved_canceled"
 
 
 # --------------------------------------------------------------------------- #

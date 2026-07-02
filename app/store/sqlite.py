@@ -46,12 +46,15 @@ from app.models import (
     PositionSnapshot,
     SessionRecord,
     SessionStatus,
+    SubmitRecoveryRecord,
     TradingMode,
     WatchlistSymbol,
     utcnow,
 )
 from app.position import fold_fills
 from app.store.base import (
+    CLAIM_BLOCKED,
+    CLAIM_CLAIMED,
     CandidateTransitionError,
     FillAppendResult,
     InvalidOrderError,
@@ -59,6 +62,7 @@ from app.store.base import (
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
+    SubmissionClaim,
     UnknownEntityError,
     normalize_symbol,
 )
@@ -69,6 +73,7 @@ from app.store.core import (
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     plan_append_fill,
+    plan_claim_order_for_submission,
     plan_close_session,
     plan_create_order_for_candidate,
     plan_transition_order,
@@ -192,6 +197,28 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
+
+-- Durable broker-submit recovery ledger (D-017): a broker order accepted
+-- upstream whose local SUBMITTING->SUBMITTED persist failed. The monitoring
+-- tick's recovery step polls/cancels broker_order_id until cleanup_status
+-- leaves 'unresolved'.
+CREATE TABLE IF NOT EXISTS submit_recoveries (
+    id               TEXT PRIMARY KEY,
+    local_order_id   TEXT NOT NULL,
+    broker_order_id  TEXT NOT NULL,
+    client_order_id  TEXT,
+    symbol           TEXT NOT NULL,
+    side             TEXT NOT NULL,
+    quantity         INTEGER NOT NULL,
+    limit_price      REAL,
+    failure_reason   TEXT NOT NULL,
+    cleanup_status   TEXT NOT NULL DEFAULT 'unresolved',
+    retry_count      INTEGER NOT NULL DEFAULT 0,
+    session_id       TEXT,
+    created_at       TEXT NOT NULL,
+    last_attempt_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recoveries_status ON submit_recoveries(cleanup_status);
 """
 
 
@@ -987,6 +1014,204 @@ class SqliteStateStore(StateStore):
                 for event in plan.events:
                     self._insert_event(cur, event.event_type, **event.as_kwargs())
             return order
+
+    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
+        async with self._lock:
+            row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
+            order = self._order(row) if row is not None else None
+            own_session = None
+            if order is not None and order.session_id is not None:
+                srow = self._read_one(
+                    "SELECT * FROM sessions WHERE id = ?", (order.session_id,)
+                )
+                own_session = self._session(srow) if srow is not None else None
+            current_session = self._ensure_current_session_locked()
+            plan = plan_claim_order_for_submission(
+                order=order,
+                own_session=own_session,
+                current_session=current_session,
+            )
+            if plan.outcome == CLAIM_CLAIMED:
+                updated = plan.order
+                with self._tx() as cur:
+                    cur.execute(
+                        "UPDATE orders SET status=?, updated_at=? WHERE id=?",
+                        (updated.status.value, _dt(updated.updated_at), updated.id),
+                    )
+                    self._insert_event(
+                        cur, plan.event.event_type, **plan.event.as_kwargs()
+                    )
+                return SubmissionClaim(CLAIM_CLAIMED, order=updated)
+            if plan.outcome == CLAIM_BLOCKED:
+                return SubmissionClaim(CLAIM_BLOCKED, reason=plan.reason)
+            return SubmissionClaim(plan.outcome)  # CLAIM_SKIPPED
+
+    # ------------------------------------------------------------------ #
+    # Broker-submit recovery ledger (D-017)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _submit_recovery(row: sqlite3.Row) -> SubmitRecoveryRecord:
+        return SubmitRecoveryRecord(
+            id=row["id"],
+            local_order_id=row["local_order_id"],
+            broker_order_id=row["broker_order_id"],
+            client_order_id=row["client_order_id"],
+            symbol=row["symbol"],
+            side=row["side"],
+            quantity=row["quantity"],
+            limit_price=row["limit_price"],
+            failure_reason=row["failure_reason"],
+            cleanup_status=row["cleanup_status"],
+            retry_count=row["retry_count"],
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+            last_attempt_at=row["last_attempt_at"],
+        )
+
+    def _insert_submit_recovery(
+        self, cur: sqlite3.Cursor, r: SubmitRecoveryRecord
+    ) -> None:
+        cur.execute(
+            """INSERT INTO submit_recoveries
+               (id, local_order_id, broker_order_id, client_order_id, symbol,
+                side, quantity, limit_price, failure_reason, cleanup_status,
+                retry_count, session_id, created_at, last_attempt_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                r.id,
+                r.local_order_id,
+                r.broker_order_id,
+                r.client_order_id,
+                r.symbol,
+                r.side.value,
+                r.quantity,
+                r.limit_price,
+                r.failure_reason,
+                r.cleanup_status,
+                r.retry_count,
+                r.session_id,
+                _dt(r.created_at),
+                _dt(r.last_attempt_at),
+            ),
+        )
+
+    async def create_submit_recovery(
+        self,
+        *,
+        local_order_id: str,
+        broker_order_id: str,
+        client_order_id: Optional[str] = None,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        limit_price: Optional[float] = None,
+        failure_reason: str,
+        session_id: Optional[str] = None,
+    ) -> SubmitRecoveryRecord:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            record = SubmitRecoveryRecord(
+                local_order_id=local_order_id,
+                broker_order_id=broker_order_id,
+                client_order_id=client_order_id,
+                symbol=key,
+                side=OrderSide(side),
+                quantity=quantity,
+                limit_price=limit_price,
+                failure_reason=failure_reason,
+                session_id=session_id,
+            )
+            with self._tx() as cur:
+                self._insert_submit_recovery(cur, record)
+                self._insert_event(
+                    cur,
+                    "submit_recovery_recorded",
+                    message=(
+                        f"broker order {broker_order_id} for {key} needs "
+                        f"recovery: {failure_reason}"
+                    ),
+                    symbol=key,
+                    order_id=local_order_id,
+                    payload={
+                        "broker_order_id": broker_order_id,
+                        "failure_reason": failure_reason,
+                    },
+                    session_id=session_id,
+                )
+            return record
+
+    async def list_submit_recoveries(
+        self, *, unresolved_only: bool = False
+    ) -> list[SubmitRecoveryRecord]:
+        async with self._lock:
+            if unresolved_only:
+                rows = self._read_all(
+                    "SELECT * FROM submit_recoveries WHERE cleanup_status = ? "
+                    "ORDER BY rowid",
+                    ("unresolved",),
+                )
+            else:
+                rows = self._read_all(
+                    "SELECT * FROM submit_recoveries ORDER BY rowid"
+                )
+            return [self._submit_recovery(r) for r in rows]
+
+    async def update_submit_recovery(
+        self,
+        recovery_id: str,
+        *,
+        cleanup_status: Optional[str] = None,
+        bump_attempt: bool = False,
+    ) -> SubmitRecoveryRecord:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM submit_recoveries WHERE id = ?", (recovery_id,)
+            )
+            if row is None:
+                raise UnknownEntityError(
+                    f"submit recovery {recovery_id} not found"
+                )
+            record = self._submit_recovery(row)
+            resolving = (
+                cleanup_status is not None
+                and cleanup_status != "unresolved"
+                and cleanup_status != record.cleanup_status
+            )
+            updated = record.model_copy(deep=True)
+            if bump_attempt:
+                updated.retry_count += 1
+                updated.last_attempt_at = utcnow()
+            if cleanup_status is not None:
+                updated.cleanup_status = cleanup_status
+            with self._tx() as cur:
+                cur.execute(
+                    "UPDATE submit_recoveries SET cleanup_status=?, retry_count=?, "
+                    "last_attempt_at=? WHERE id=?",
+                    (
+                        updated.cleanup_status,
+                        updated.retry_count,
+                        _dt(updated.last_attempt_at),
+                        updated.id,
+                    ),
+                )
+                if resolving:
+                    self._insert_event(
+                        cur,
+                        "submit_recovery_resolved",
+                        message=(
+                            f"broker order {updated.broker_order_id} recovery "
+                            f"resolved: {cleanup_status}"
+                        ),
+                        symbol=updated.symbol,
+                        order_id=updated.local_order_id,
+                        payload={
+                            "broker_order_id": updated.broker_order_id,
+                            "cleanup_status": cleanup_status,
+                            "retry_count": updated.retry_count,
+                        },
+                        session_id=updated.session_id,
+                    )
+            return updated
 
     async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
         async with self._lock:

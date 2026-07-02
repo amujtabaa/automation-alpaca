@@ -37,6 +37,7 @@ from app.models import (
     Position,
     PositionSnapshot,
     SessionRecord,
+    SubmitRecoveryRecord,
     WatchlistSymbol,
 )
 
@@ -208,6 +209,30 @@ class RiskLimits:
     allowlist: Optional[frozenset[str]] = None
 
 
+# SubmissionClaim.outcome values (D-017). The monitoring loop dispatches on these:
+CLAIM_CLAIMED = "claimed"   # order transitioned CREATED -> SUBMITTING; submit it
+CLAIM_BLOCKED = "blocked"   # a control blocks submission; no state change, reason set
+CLAIM_SKIPPED = "skipped"   # order was no longer CREATED (already claimed/cancelled)
+
+
+@dataclass(frozen=True)
+class SubmissionClaim:
+    """Outcome of :meth:`StateStore.claim_order_for_submission` (D-017).
+
+    A ``claimed`` result means the order was atomically moved ``CREATED ->
+    SUBMITTING`` under one lock hold *after* re-checking every control, so the
+    monitoring loop may now call the broker knowing no kill-switch/pause/close
+    flip could have slipped in undetected. ``blocked`` means a control held it
+    (``reason`` is set; no state changed). ``skipped`` means it was no longer
+    ``CREATED`` when the lock was acquired (a session close cancelled it, or it
+    was already claimed) — nothing to do.
+    """
+
+    outcome: str
+    order: Optional[Order] = None
+    reason: Optional[str] = None
+
+
 class StateStore(ABC):
     """Abstract persistence interface. All methods are async."""
 
@@ -373,6 +398,77 @@ class StateStore(ABC):
         lock-acquire/release cycles. ``create_order_for_candidate``'s own
         authoritative check computes this the same way, inside its own single
         lock hold, for the same reason.
+        """
+
+    @abstractmethod
+    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
+        """Atomically claim a ``CREATED`` order for submission (D-017).
+
+        Under a **single lock hold** — mirroring ``set_kill_switch``'s idiom, not
+        a new locking primitive — this re-reads the order, re-reads the current
+        session **and** the order's own originating session, and re-checks every
+        control (kill-switch, buys-paused, session-closed, session-unknown, and
+        that the order is still ``CREATED``). Then:
+
+        * order no longer ``CREATED`` → ``SubmissionClaim(CLAIM_SKIPPED)``, no
+          state change (a session close cancelled it, or it was already claimed);
+        * a control blocks it → ``SubmissionClaim(CLAIM_BLOCKED, reason=...)``,
+          no state change (the loop audits the hold once, as before);
+        * all clear → transition ``CREATED → SUBMITTING``, write an
+          ``order_submission_claimed`` audit event, and return
+          ``SubmissionClaim(CLAIM_CLAIMED, order=<the SUBMITTING order>)``.
+
+        Because the control mutation (``set_kill_switch`` etc.) and this claim
+        serialize through the same lock, a flip can no longer land *inside* the
+        claim→broker-call window undetected: it lands before the claim (order
+        stays ``CREATED``, held) or after ``SUBMITTING`` (already committed to
+        submission — the human approved it and the backend atomically claimed it
+        before the stop). This is the F-001/F-002 fix; the monitoring loop calls
+        this first and only submits ``CLAIM_CLAIMED`` orders.
+        """
+
+    @abstractmethod
+    async def create_submit_recovery(
+        self,
+        *,
+        local_order_id: str,
+        broker_order_id: str,
+        client_order_id: Optional[str] = None,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        limit_price: Optional[float] = None,
+        failure_reason: str,
+        session_id: Optional[str] = None,
+    ) -> SubmitRecoveryRecord:
+        """Durably record a broker order that was accepted but whose local
+        ``SUBMITTING → SUBMITTED`` persist failed (D-017 / F-002). Atomic +
+        audited (``submit_recovery_recorded``). The monitoring tick's recovery
+        step then polls/cancels ``broker_order_id`` until resolved — a single
+        best-effort cancel is not enough, so this replaces it.
+        """
+
+    @abstractmethod
+    async def list_submit_recoveries(
+        self, *, unresolved_only: bool = False
+    ) -> list[SubmitRecoveryRecord]:
+        """All broker-submit recovery records (newest last), optionally only the
+        ones still ``unresolved`` (what the recovery loop and the operator view
+        care about)."""
+
+    @abstractmethod
+    async def update_submit_recovery(
+        self,
+        recovery_id: str,
+        *,
+        cleanup_status: Optional[str] = None,
+        bump_attempt: bool = False,
+    ) -> SubmitRecoveryRecord:
+        """Update a recovery record (atomic). ``bump_attempt`` increments
+        ``retry_count`` and stamps ``last_attempt_at`` (recording that the
+        recovery loop tried this cadence). Setting ``cleanup_status`` to a
+        resolved value writes a ``submit_recovery_resolved`` audit event. Raises
+        :class:`UnknownEntityError` if the id is unknown.
         """
 
     @abstractmethod

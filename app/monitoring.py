@@ -41,22 +41,22 @@ from app.config import Settings
 from app.models import EventType, Order, OrderStatus, utcnow
 from app.position import NegativePositionError
 from app.store.base import (
+    CLAIM_BLOCKED,
+    CLAIM_CLAIMED,
     InvalidFillError,
     InvalidOrderError,
     OrderTransitionError,
     StateStore,
     UnknownEntityError,
 )
-from app.store.validation import (
-    order_intent_block_reason,
-    session_submission_block_reason,
-)
 
 _log = logging.getLogger(__name__)
 
 # Orders the loop actively polls toward a terminal state. Includes cancel_pending
 # so a late fill arriving before the broker confirms a cancel is still reconciled
-# (CHAOS-1).
+# (CHAOS-1). Deliberately excludes SUBMITTING (D-017): a claimed order has no
+# broker_order_id yet, so there is nothing to poll — it advances to SUBMITTED
+# (or releases to CREATED) inside the same submit tick, never via reconcile.
 _OPEN_STATUSES = frozenset(
     {
         OrderStatus.SUBMITTED,
@@ -113,41 +113,39 @@ async def run_monitoring_tick(
 
     await _submit_pending_orders(store, adapter)
     await _reconcile_open_orders(store, adapter, settings)
+    await _recover_unpersisted_submits(store, adapter)
 
 
 async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> None:
-    """Submit eligible ``CREATED`` orders to the broker and mark them ``SUBMITTED``.
+    """Claim eligible ``CREATED`` orders atomically, then submit only the claims.
 
-    An order is only submitted if its **own** originating session is open and
-    unblocked, and the live session is not under a process-wide stop (D-013a).
-    A submission failure leaves the order at ``CREATED`` to be retried on the
-    next tick (no state change). The broker id returned by ``submit_order`` is
-    persisted so the order can be polled and cancelled.
+    The submission-claim (D-017) closes the F-001/F-002 race: instead of reading
+    the controls, awaiting the broker, and *then* marking the order (a window in
+    which a kill-switch flip or a session close could slip in undetected), the
+    loop asks the store to **atomically** re-check every control and move the
+    order ``CREATED → SUBMITTING`` under one lock hold. Only a claimed
+    (``SUBMITTING``) order reaches ``adapter.submit_order``. Because the claim
+    and every control mutation serialize through the same lock, a flip lands
+    either before the claim (order stays ``CREATED``, held) or after it (already
+    committed to submission) — never in between.
+
+    A transient submit failure releases the claim (``SUBMITTING → CREATED``) so
+    the next tick re-runs the full gate. A broker-accepted order the store then
+    can't mark ``SUBMITTED`` (e.g. a manual cancel raced the submit) is handed to
+    the durable recovery ledger, not a lone best-effort cancel.
     """
 
     created = [o for o in await store.list_orders() if o.status is OrderStatus.CREATED]
     if not created:
         return
 
-    # Safety controls (Rule 8) + order lifecycle (D-013a): each CREATED order is
-    # gated against its OWN originating session — held if that session is
-    # kill-switched, buys-paused, or closed. This is the fix for the
-    # date-rollover bypass: ``get_current_session`` auto-mints a fresh,
-    # permissive session on UTC rollover, so gating submission only on the
-    # *current* session let a kill-switched order from a prior session slip
-    # through to the broker. The current/live session is ALSO checked, as a
-    # process-wide emergency stop: if the operator's live session is stopped,
-    # hold everything regardless of the order's own session. Each held order is
-    # audited once (not per tick).
-    current_block = order_intent_block_reason(await store.get_current_session())
     blocked_already: Optional[set[str]] = None
 
     for order in created:
-        own_session = await store.get_session_by_id(order.session_id)
-        hold_reason = session_submission_block_reason(own_session)
-        if hold_reason is None and current_block is not None:
-            hold_reason = f"current_{current_block}"
-        if hold_reason is not None:
+        claim = await store.claim_order_for_submission(order.id)
+        if claim.outcome == CLAIM_BLOCKED:
+            # Held by a control — audited once per order (not per tick), matching
+            # the prior behavior. The claim wrote no state change.
             if blocked_already is None:
                 blocked_already = await _orders_with_event(
                     store, EventType.ORDER_SUBMISSION_BLOCKED.value
@@ -155,38 +153,52 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
             if order.id not in blocked_already:
                 await store.append_event(
                     EventType.ORDER_SUBMISSION_BLOCKED.value,
-                    message=f"submission of {order.symbol} held: {hold_reason}",
+                    message=f"submission of {order.symbol} held: {claim.reason}",
                     symbol=order.symbol,
                     candidate_id=order.candidate_id,
                     order_id=order.id,
-                    payload={"reason": hold_reason},
+                    payload={"reason": claim.reason},
                     session_id=order.session_id,
                 )
                 blocked_already.add(order.id)
             continue
+        if claim.outcome != CLAIM_CLAIMED:
+            # CLAIM_SKIPPED: no longer CREATED (a session close cancelled it, or
+            # it was already claimed). Nothing to submit.
+            continue
 
+        # The order is now SUBMITTING — the backend has committed to sending it.
+        claimed = claim.order
         try:
-            broker_order_id = await adapter.submit_order(order)
-        except Exception as exc:  # noqa: BLE001 - retry next tick, never crash
+            broker_order_id = await adapter.submit_order(claimed)
+        except Exception as exc:  # noqa: BLE001 - release the claim, retry next tick
             _log.warning(
-                "submit failed for order %s (%s); leaving CREATED to retry: %s",
-                order.id,
-                order.symbol,
+                "submit failed for order %s (%s); releasing claim to retry: %s",
+                claimed.id,
+                claimed.symbol,
                 exc,
             )
+            try:
+                await store.transition_order(claimed.id, OrderStatus.CREATED)
+            except _TRANSITION_ERRORS as rel_exc:
+                # The order left SUBMITTING some other way (e.g. a manual cancel
+                # during the broker call) — nothing to release. Safe to skip.
+                _log.warning(
+                    "could not release claim on order %s: %s", claimed.id, rel_exc
+                )
             continue
         try:
             await store.transition_order(
-                order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
+                claimed.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
             )
         except _TRANSITION_ERRORS as exc:
-            # Submitted at the broker but could not be marked SUBMITTED (most
-            # often a concurrent manual cancel landing during the submit call).
-            # The real adapter's client_order_id makes a retry idempotent rather
-            # than double-submitting; here we make the live broker order visible
-            # and clean it up if it was cancelled.
+            # Broker accepted it but the store couldn't mark it SUBMITTED (most
+            # often a manual cancel landing during the submit call: SUBMITTING →
+            # CANCELED, so SUBMITTING → SUBMITTED is now illegal). The order is
+            # live upstream but locally terminal — record it durably so the
+            # recovery loop cancels it, not a single best-effort attempt.
             await _handle_unpersisted_submit(
-                store, adapter, order, broker_order_id, exc
+                store, adapter, claimed, broker_order_id, exc
             )
 
 
@@ -199,16 +211,24 @@ async def _handle_unpersisted_submit(
 ) -> None:
     """The broker accepted an order we then couldn't mark ``SUBMITTED``.
 
-    The order is live at the broker but the DB didn't capture it. This must
-    never be left silent (it is a real open position), so:
+    Two distinct situations reach here, and they need opposite handling:
 
-    1. record an ``order_submit_unpersisted`` audit event, and
-    2. if the order is now ``CANCELED`` locally (a manual cancel raced the
-       submit), best-effort cancel it at the broker so a user-cancelled order
-       isn't left working upstream.
+    * **Transient persist failure, order still ``SUBMITTING``.** The order is
+      genuinely open at the broker — we just failed to record ``SUBMITTED``.
+      *Retry* the transition so reconcile can track it; do **not** cancel a
+      legitimately-open order. This is the common, benign case.
+    * **A manual cancel raced the submit, order now ``CANCELED``/``REJECTED``
+      locally.** The order is live at the broker but the local state treats it
+      as terminal — the true F-002 orphan. A single best-effort cancel is not
+      enough (if it fails the broker order is orphaned), so write a **durable
+      recovery record**: the recovery loop (``_recover_unpersisted_submits``)
+      then polls/cancels ``broker_order_id`` every cadence until it is confirmed
+      no longer live. The same durable path is used if the retry above also
+      fails — an order we cannot track is safer cancelled than left live and
+      invisible.
 
-    Every step is best-effort and swallows its own errors — this runs on a
-    failure path and must not crash the loop.
+    Best-effort and swallows its own errors — this runs on a failure path and
+    must not crash the loop.
     """
 
     _log.error(
@@ -239,21 +259,123 @@ async def _handle_unpersisted_submit(
         current = await store.get_order(order.id)
     except Exception:  # noqa: BLE001
         current = None
-    if current is not None and current.status is OrderStatus.CANCELED:
+    status = current.status if current is not None else None
+
+    if status is OrderStatus.SUBMITTING:
+        # Order is legitimately open at the broker; retry recording SUBMITTED.
         try:
-            await adapter.cancel_order(broker_order_id)
+            await store.transition_order(
+                order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
+            )
             _log.info(
-                "cleaned up stranded broker order %s (order %s was cancelled "
-                "during submit)",
-                broker_order_id,
-                order.id,
+                "recovered unpersisted submit for order %s on retry", order.id
             )
-        except Exception as cancel_exc:  # noqa: BLE001
+            return
+        except _TRANSITION_ERRORS as retry_exc:
             _log.error(
-                "failed to clean up stranded broker order %s: %s",
-                broker_order_id,
-                cancel_exc,
+                "retry to mark order %s SUBMITTED failed; recording recovery: %s",
+                order.id,
+                retry_exc,
             )
+
+    # Locally terminal (manual cancel raced) or the retry failed: the broker
+    # order is live but untrackable locally. Record it durably so the recovery
+    # loop cancels it — not a single best-effort attempt (the F-002 fix).
+    try:
+        await store.create_submit_recovery(
+            local_order_id=order.id,
+            broker_order_id=broker_order_id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            failure_reason=str(exc),
+            session_id=order.session_id,
+        )
+    except Exception:  # noqa: BLE001 - even the recovery write is best-effort here
+        _log.exception(
+            "could not write submit-recovery record for order %s (broker %s)",
+            order.id,
+            broker_order_id,
+        )
+
+
+async def _recover_unpersisted_submits(
+    store: StateStore, adapter: BrokerAdapter
+) -> None:
+    """Drive every unresolved broker-submit recovery record toward resolution.
+
+    For each record (D-017 / F-002): poll the broker order; if it is already
+    terminal-and-not-live (``CANCELED``/``REJECTED``), it is resolved. If it
+    turns out to have ``FILLED``, that is a real untracked position — surface it
+    loudly and mark it ``resolved_filled_needs_review`` (never silently dropped).
+    Otherwise it is still live, so request a cancel and re-poll to confirm; if
+    the broker confirms terminal, resolve it, else leave it unresolved to retry
+    next cadence (not a single attempt). Every record's attempt count is bumped
+    so an operator can see it is being worked.
+
+    Best-effort per record; a broker error on one leaves it unresolved for the
+    next tick and never crashes the loop.
+    """
+
+    records = await store.list_submit_recoveries(unresolved_only=True)
+    for rec in records:
+        try:
+            update = await adapter.get_order_status(
+                rec.broker_order_id, recorded_quantity=0
+            )
+        except Exception as exc:  # noqa: BLE001 - retry next tick
+            _log.warning(
+                "recovery poll failed for broker order %s: %s",
+                rec.broker_order_id,
+                exc,
+            )
+            await store.update_submit_recovery(rec.id, bump_attempt=True)
+            continue
+
+        if update.status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
+            await store.update_submit_recovery(
+                rec.id, cleanup_status="resolved_canceled", bump_attempt=True
+            )
+            _log.info("recovered stranded broker order %s (terminal at broker)", rec.broker_order_id)
+            continue
+        if update.status is OrderStatus.FILLED:
+            # A live position we never tracked locally — do not silently drop it.
+            _log.error(
+                "stranded broker order %s FILLED before recovery could cancel it "
+                "— a real untracked position needs manual review",
+                rec.broker_order_id,
+            )
+            await store.update_submit_recovery(
+                rec.id,
+                cleanup_status="resolved_filled_needs_review",
+                bump_attempt=True,
+            )
+            continue
+
+        # Still live at the broker → request a cancel and confirm.
+        try:
+            await adapter.cancel_order(rec.broker_order_id)
+            confirm = await adapter.get_order_status(
+                rec.broker_order_id, recorded_quantity=0
+            )
+        except Exception as exc:  # noqa: BLE001 - retry next tick
+            _log.warning(
+                "recovery cancel failed for broker order %s: %s",
+                rec.broker_order_id,
+                exc,
+            )
+            await store.update_submit_recovery(rec.id, bump_attempt=True)
+            continue
+
+        if confirm.status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
+            await store.update_submit_recovery(
+                rec.id, cleanup_status="resolved_canceled", bump_attempt=True
+            )
+            _log.info("recovered stranded broker order %s (cancel confirmed)", rec.broker_order_id)
+        else:
+            # Cancel requested but not yet confirmed terminal — retry next tick.
+            await store.update_submit_recovery(rec.id, bump_attempt=True)
 
 
 async def _reconcile_open_orders(

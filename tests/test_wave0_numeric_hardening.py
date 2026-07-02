@@ -24,6 +24,7 @@ from app.marketdata.service import MarketSnapshot
 from app.models import CandidateStatus, OrderSide, OrderStatus, SessionType, utcnow
 from app.store.base import InvalidFillError, InvalidOrderError
 from app.strategy import evaluate
+from tests.store_helpers import submit_created_order
 
 pytestmark = pytest.mark.anyio
 
@@ -40,7 +41,7 @@ async def _submitted_order(store, *, symbol="AAPL", qty=100, limit=2.0):
     )
     await store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
     order = await store.create_order_for_candidate(candidate.id)
-    await store.transition_order(order.id, OrderStatus.SUBMITTED)
+    await submit_created_order(store, order.id)
     return order
 
 

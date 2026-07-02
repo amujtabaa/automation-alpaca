@@ -171,7 +171,10 @@ class TestPlanCreateOrder:
 # --- plan_transition_order ------------------------------------------------- #
 class TestPlanTransitionOrder:
     def test_apply_status_change(self):
-        order = _order(status=OrderStatus.CREATED)
+        # created -> submitted is no longer legal in one hop (D-017: the claim
+        # is the only path); submitted from submitting IS. This still exercises
+        # a genuine status-change apply that sets the submitted_at timestamp.
+        order = _order(status=OrderStatus.SUBMITTING)
         plan = core.plan_transition_order(
             order=order,
             new_status=OrderStatus.SUBMITTED,

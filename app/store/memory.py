@@ -34,12 +34,15 @@ from app.models import (
     PositionSnapshot,
     SessionRecord,
     SessionStatus,
+    SubmitRecoveryRecord,
     TradingMode,
     WatchlistSymbol,
     utcnow,
 )
 from app.position import fold_fills
 from app.store.base import (
+    CLAIM_BLOCKED,
+    CLAIM_CLAIMED,
     CandidateTransitionError,
     FillAppendResult,
     InvalidOrderError,
@@ -47,6 +50,7 @@ from app.store.base import (
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
+    SubmissionClaim,
     UnknownEntityError,
     normalize_symbol,
 )
@@ -57,6 +61,7 @@ from app.store.core import (
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     plan_append_fill,
+    plan_claim_order_for_submission,
     plan_close_session,
     plan_create_order_for_candidate,
     plan_transition_order,
@@ -86,6 +91,7 @@ class InMemoryStateStore(StateStore):
         self._events: list[Event] = []  # append-only, insertion order
         self._sessions: list[SessionRecord] = []
         self._position_snapshots: list[PositionSnapshot] = []
+        self._submit_recoveries: list[SubmitRecoveryRecord] = []  # D-017
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -128,6 +134,9 @@ class InMemoryStateStore(StateStore):
         saved_events = list(self._events)
         saved_sessions = [s.model_copy(deep=True) for s in self._sessions]
         saved_snapshots = list(self._position_snapshots)
+        # Recovery records are append-then-replace (update swaps in a fresh copy,
+        # never mutates in place), so a shallow snapshot restores correctly.
+        saved_recoveries = list(self._submit_recoveries)
         try:
             yield
         except BaseException:
@@ -135,6 +144,7 @@ class InMemoryStateStore(StateStore):
             self._candidates = saved_candidates
             self._orders = saved_orders
             self._fills = saved_fills
+            self._submit_recoveries = saved_recoveries
             self._fill_source_ids = saved_source_ids
             self._events = saved_events
             self._sessions = saved_sessions
@@ -525,6 +535,140 @@ class InMemoryStateStore(StateStore):
                 for event in plan.events:
                     self._append_event_unlocked(event.event_type, **event.as_kwargs())
             return order.model_copy(deep=True)
+
+    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
+        async with self._lock:
+            order = self._orders.get(order_id)
+            own_session = (
+                next(
+                    (s for s in self._sessions if s.id == order.session_id), None
+                )
+                if order is not None
+                else None
+            )
+            current_session = self._ensure_current_session_unlocked()
+            plan = plan_claim_order_for_submission(
+                order=order,
+                own_session=own_session,
+                current_session=current_session,
+            )
+            if plan.outcome == CLAIM_CLAIMED:
+                with self._atomic():
+                    self._orders[order_id] = plan.order
+                    self._append_event_unlocked(
+                        plan.event.event_type, **plan.event.as_kwargs()
+                    )
+                return SubmissionClaim(
+                    CLAIM_CLAIMED, order=plan.order.model_copy(deep=True)
+                )
+            if plan.outcome == CLAIM_BLOCKED:
+                return SubmissionClaim(CLAIM_BLOCKED, reason=plan.reason)
+            return SubmissionClaim(plan.outcome)  # CLAIM_SKIPPED
+
+    async def create_submit_recovery(
+        self,
+        *,
+        local_order_id: str,
+        broker_order_id: str,
+        client_order_id: Optional[str] = None,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        limit_price: Optional[float] = None,
+        failure_reason: str,
+        session_id: Optional[str] = None,
+    ) -> SubmitRecoveryRecord:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            record = SubmitRecoveryRecord(
+                local_order_id=local_order_id,
+                broker_order_id=broker_order_id,
+                client_order_id=client_order_id,
+                symbol=key,
+                side=OrderSide(side),
+                quantity=quantity,
+                limit_price=limit_price,
+                failure_reason=failure_reason,
+                session_id=session_id,
+            )
+            with self._atomic():
+                self._submit_recoveries.append(record)
+                self._append_event_unlocked(
+                    "submit_recovery_recorded",
+                    message=(
+                        f"broker order {broker_order_id} for {key} needs "
+                        f"recovery: {failure_reason}"
+                    ),
+                    symbol=key,
+                    order_id=local_order_id,
+                    payload={
+                        "broker_order_id": broker_order_id,
+                        "failure_reason": failure_reason,
+                    },
+                    session_id=session_id,
+                )
+            return record.model_copy(deep=True)
+
+    async def list_submit_recoveries(
+        self, *, unresolved_only: bool = False
+    ) -> list[SubmitRecoveryRecord]:
+        async with self._lock:
+            return [
+                r.model_copy(deep=True)
+                for r in self._submit_recoveries
+                if not unresolved_only or r.cleanup_status == "unresolved"
+            ]
+
+    async def update_submit_recovery(
+        self,
+        recovery_id: str,
+        *,
+        cleanup_status: Optional[str] = None,
+        bump_attempt: bool = False,
+    ) -> SubmitRecoveryRecord:
+        async with self._lock:
+            idx = next(
+                (
+                    i
+                    for i, r in enumerate(self._submit_recoveries)
+                    if r.id == recovery_id
+                ),
+                None,
+            )
+            if idx is None:
+                raise UnknownEntityError(f"submit recovery {recovery_id} not found")
+            record = self._submit_recoveries[idx]
+            resolving = (
+                cleanup_status is not None
+                and cleanup_status != "unresolved"
+                and cleanup_status != record.cleanup_status
+            )
+            # Replace, never mutate in place (keeps _atomic's shallow snapshot valid).
+            updated = record.model_copy(deep=True)
+            if bump_attempt:
+                updated.retry_count += 1
+                updated.last_attempt_at = utcnow()
+            if cleanup_status is not None:
+                updated.cleanup_status = cleanup_status
+            with self._atomic():
+                self._submit_recoveries[idx] = updated
+                if resolving:
+                    self._append_event_unlocked(
+                        "submit_recovery_resolved",
+                        message=(
+                            f"broker order {updated.broker_order_id} recovery "
+                            f"resolved: {cleanup_status}"
+                        ),
+                        symbol=updated.symbol,
+                        order_id=updated.local_order_id,
+                        payload={
+                            "broker_order_id": updated.broker_order_id,
+                            "cleanup_status": cleanup_status,
+                            "retry_count": updated.retry_count,
+                        },
+                        session_id=updated.session_id,
+                    )
+            return updated.model_copy(deep=True)
 
     async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
         async with self._lock:
