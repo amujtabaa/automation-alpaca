@@ -83,38 +83,102 @@ def session_submission_block_reason(
     return order_intent_block_reason(session)
 
 
-def fill_value_reason(quantity: int, price: float) -> Optional[str]:
-    """Reject a fill whose intrinsic values would corrupt position truth.
+# --------------------------------------------------------------------------- #
+# Shared numeric guards (F-003/F-005)
+#
+# One place decides "is this a real, usable number" so the store, the routes,
+# the strategy engine, and the market-data path stop each inventing their own
+# check (the root cause both Phase 6 reviews named). These return a short reason
+# code or ``None``, exactly like every other predicate in this module; callers
+# suffix the field name (``non_finite`` -> ``non_finite_filled_quantity``).
+# --------------------------------------------------------------------------- #
 
-    A non-finite (``NaN``/``Infinity``) or non-positive quantity or price
-    directly violates the derived-position invariant — ``NaN``/``Inf`` slip past
-    a bare ``<= 0`` check (``nan <= 0`` and ``inf <= 0`` are both ``False``) and
-    would poison ``cost_basis``/``average_price``, so they are rejected first.
+
+def finite_number_reason(value: object) -> Optional[str]:
+    """Reject a value that is not a real, finite number.
+
+    Rejects, in order:
+
+    * **booleans** — ``True``/``False`` are ``int`` subclasses and would
+      otherwise sail through every numeric comparison as ``1``/``0``
+      (``filled_quantity=True`` silently persisting as ``1`` was a reproduced
+      defect);
+    * **non-numeric types** — e.g. ``"5"`` yields a clean domain reason instead
+      of the raw ``TypeError`` that ``math.isfinite("5")`` would raise;
+    * **``NaN`` / ``±Inf``** — which slip past a bare ``<= 0`` guard
+      (``nan <= 0`` and ``inf <= 0`` are both ``False``) and would poison a
+      derived position, an order row, or a candidate's suggested price.
+
+    A finite ``int`` or ``float`` returns ``None``.
     """
 
-    if not math.isfinite(quantity):
-        return "non_finite_quantity"
-    if not math.isfinite(price):
-        return "non_finite_price"
+    if isinstance(value, bool):
+        return "non_numeric"
+    if not isinstance(value, (int, float)):
+        return "non_numeric"
+    if not math.isfinite(value):
+        return "non_finite"
+    return None
+
+
+def whole_count_reason(value: object) -> Optional[str]:
+    """Reject a value that is not a finite, whole (integer-valued), non-negative
+    share count. Builds on :func:`finite_number_reason`, then rejects a
+    fractional value (``0.5``) and a negative one. ``0`` is allowed here — a
+    caller that needs *strictly positive* (a fill quantity) checks that itself.
+    """
+
+    base = finite_number_reason(value)
+    if base is not None:
+        return base
+    if isinstance(value, float) and not value.is_integer():
+        return "non_integer"
+    if value < 0:
+        return "negative"
+    return None
+
+
+def fill_value_reason(quantity: object, price: object) -> Optional[str]:
+    """Reject a fill whose intrinsic values would corrupt position truth.
+
+    Quantity must be a finite, whole, strictly-positive share count; price a
+    finite, strictly-positive number (a fractional price is fine). Non-finite,
+    boolean, and non-numeric inputs are all rejected via the shared guards above
+    with a clean domain reason (never a raw ``TypeError``), since a corrupt
+    quantity/price directly violates the derived-position invariant.
+    """
+
+    qty_bad = finite_number_reason(quantity)
+    if qty_bad is not None:
+        return f"{qty_bad}_quantity"
+    if isinstance(quantity, float) and not quantity.is_integer():
+        return "non_integer_quantity"
     if quantity <= 0:
         return "non_positive_quantity"
+
+    price_bad = finite_number_reason(price)
+    if price_bad is not None:
+        return f"{price_bad}_price"
     if price <= 0:
         return "non_positive_price"
     return None
 
 
-def limit_price_reason(limit_price: Optional[float]) -> Optional[str]:
-    """Reject a missing/non-finite/non-positive limit price for a LIMIT order.
+def limit_price_reason(limit_price: object) -> Optional[str]:
+    """Reject a missing/non-finite/non-numeric/non-positive limit price for a
+    LIMIT order.
 
     A LIMIT order must carry a real, positive price; ``None``, ``NaN``, ``Inf``,
-    zero, and negative are all rejected (the ``NaN``/``Inf`` cases would
-    otherwise pass a bare ``<= 0`` guard).
+    a boolean, a non-numeric type, zero, and negative are all rejected. A
+    fractional price is valid (unlike a share count). The ``NaN``/``Inf`` cases
+    would otherwise pass a bare ``<= 0`` guard.
     """
 
     if limit_price is None:
         return "missing_limit_price"
-    if not math.isfinite(limit_price):
-        return "non_finite_limit_price"
+    bad = finite_number_reason(limit_price)
+    if bad is not None:
+        return f"{bad}_limit_price"
     if limit_price <= 0:
         return "non_positive_limit_price"
     return None
@@ -160,15 +224,25 @@ def order_candidate_match_reason(
     return None
 
 
-def filled_quantity_reason(order: Order, new_filled_quantity: int) -> Optional[str]:
-    """Reject an out-of-range or backward ``filled_quantity`` on an order.
+def filled_quantity_reason(order: Order, new_filled_quantity: object) -> Optional[str]:
+    """Reject an out-of-range, malformed, or backward ``filled_quantity`` on an
+    order.
 
-    Must satisfy ``0 <= new_filled_quantity <= order.quantity`` and be
-    monotonic non-decreasing relative to the order's current
-    ``filled_quantity`` (no broker-correction path exists in beta). Equality is
-    allowed (it is handled upstream as a no-op).
+    Must first be a finite, whole, non-negative number (F-003: a ``NaN`` slipped
+    past the bare ``<``/``>`` comparisons — every comparison against ``NaN`` is
+    ``False`` — and persisted as ``nan`` in memory / an ``IntegrityError`` in
+    SQLite; a boolean persisted as ``1``). Then must satisfy
+    ``0 <= new_filled_quantity <= order.quantity`` and be monotonic
+    non-decreasing relative to the order's current ``filled_quantity`` (no
+    broker-correction path exists in beta). Equality is allowed (handled
+    upstream as a no-op).
     """
 
+    base = finite_number_reason(new_filled_quantity)
+    if base is not None:
+        return f"{base}_filled_quantity"
+    if isinstance(new_filled_quantity, float) and not new_filled_quantity.is_integer():
+        return "non_integer_filled_quantity"
     if new_filled_quantity < 0:
         return "negative_filled_quantity"
     if new_filled_quantity > order.quantity:

@@ -11,11 +11,26 @@ symbol right now," never as zero.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from app.models import SessionType
+
+
+def _finite(value: Optional[float]) -> bool:
+    """A usable numeric input: present and finite (not ``None``/``NaN``/``±Inf``).
+
+    The market-data feed can, in principle, surface a non-finite value (a bad
+    tick, a divide-by-zero upstream); a feature computed from it must resolve to
+    ``None`` ("can't evaluate") rather than propagate ``inf``/``nan`` into a
+    candidate's price or a comparison (F-005). This mirrors the store-side
+    ``finite_number_reason`` guard at the read boundary — same intent, boolean
+    shape for these pure-math helpers.
+    """
+
+    return value is not None and math.isfinite(value)
 
 # Public (not underscore-prefixed): app/marketdata/alpaca_stream.py's
 # day-boundary reseed logic imports this too, so trading-day/session-boundary
@@ -35,25 +50,26 @@ _AFTER_HOURS_END = time(20, 0)
 def pct_move(last_price: Optional[float], prev_close: Optional[float]) -> Optional[float]:
     """Percent move of ``last_price`` versus ``prev_close`` (e.g. ``3.2`` = +3.2%).
 
-    ``None`` if either input is missing or ``prev_close`` is non-positive (a
-    percentage against zero/negative is not a meaningful number, not zero).
+    ``None`` if either input is missing, non-finite, or ``prev_close`` is
+    non-positive (a percentage against zero/negative — or from an ``inf``
+    price — is not a meaningful number, not zero).
     """
 
-    if last_price is None or prev_close is None or prev_close <= 0:
+    if not _finite(last_price) or not _finite(prev_close) or prev_close <= 0:
         return None
     return (last_price - prev_close) / prev_close * 100.0
 
 
 def spread(bid: Optional[float], ask: Optional[float]) -> Optional[float]:
-    """Absolute bid/ask spread, or ``None`` on a missing or crossed quote."""
+    """Absolute bid/ask spread, or ``None`` on a missing, non-finite, or crossed quote."""
 
-    if bid is None or ask is None or bid >= ask:
+    if not _finite(bid) or not _finite(ask) or bid >= ask:
         return None
     return ask - bid
 
 
 def spread_pct(bid: Optional[float], ask: Optional[float]) -> Optional[float]:
-    """Spread as a percent of the midpoint, or ``None`` on a missing/crossed quote."""
+    """Spread as a percent of the midpoint, or ``None`` on a missing/non-finite/crossed quote."""
 
     s = spread(bid, ask)
     if s is None:
