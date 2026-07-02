@@ -119,6 +119,13 @@ def cancel_order(order_id: str) -> dict:
     return _request("POST", f"/api/orders/{order_id}/cancel")
 
 
+def list_order_recoveries(unresolved_only: bool = True) -> list[dict]:
+    """Broker-submit recovery records (D-017 / F-002) — unresolved by default."""
+
+    params = {"unresolved_only": "true" if unresolved_only else "false"}
+    return _request("GET", "/api/order-recoveries", params=params)
+
+
 def list_events(limit: Optional[int] = None, event_type: Optional[str] = None) -> list[dict]:
     params: dict = {}
     if limit:

@@ -309,6 +309,42 @@ def _format_age(created_at: str) -> str:
         return "—"
 
 
+# Order statuses that are still live/actionable and must be shown (F-006): a
+# never-submitted `created` order (held by a control, or just awaiting the
+# submit tick) and a claimed `submitting` order are durable non-terminal state
+# the operator was previously blind to — not just submitted/partially_filled.
+_DISPLAY_ORDER_STATUSES = (
+    "created",
+    "submitting",
+    "submitted",
+    "partially_filled",
+    "cancel_pending",
+)
+
+
+def _order_operational_label(status: str, block_reason: str | None) -> str:
+    """A human-readable operational state for the order list (F-006).
+
+    Wave 0 derives this in the cockpit from the order status + the latest
+    ``order_submission_blocked`` reason; Wave 2 (D-020) moves the classification
+    server-side so the UI stops interpreting lifecycle at all.
+    """
+
+    if status == "created":
+        if block_reason is None:
+            return "created · awaiting submission"
+        if block_reason in ("kill_switch", "current_kill_switch"):
+            return "created · held by kill switch"
+        if block_reason in ("buys_paused", "current_buys_paused"):
+            return "created · held (buys paused)"
+        if "session_closed" in block_reason:
+            return "created · held (session closed)"
+        return f"created · held ({block_reason})"
+    if status == "submitting":
+        return "submitting · claimed, sending to broker"
+    return status
+
+
 def screen_positions() -> None:
     st.header("Position Monitor")
     st.caption(
@@ -380,10 +416,45 @@ def screen_positions() -> None:
         st.error(str(exc))
         return
 
-    # cancel_pending orders are still in flight (cancel requested, not confirmed)
-    # so they remain visible until they reach a terminal state.
-    open_statuses = {"submitted", "partially_filled", "cancel_pending"}
-    open_orders = [o for o in all_orders if o.get("status") in open_statuses]
+    # Show every durable non-terminal order (F-006): not only submitted/
+    # partially_filled/cancel_pending, but also `created` (held by a control or
+    # awaiting the submit tick) and `submitting` (claimed) — orders the operator
+    # was previously blind to. cancel_pending stays visible until terminal.
+    open_orders = [o for o in all_orders if o.get("status") in _DISPLAY_ORDER_STATUSES]
+
+    # Broker-submit recovery records (D-017 / F-002): a broker order accepted
+    # upstream the local state can't otherwise show. Surfaced prominently.
+    try:
+        recoveries = api_client.list_order_recoveries()
+    except BackendError as exc:
+        st.error(str(exc))
+        return
+
+    if recoveries:
+        st.error(
+            f"⚠️ {len(recoveries)} broker order(s) need recovery — accepted by the "
+            "broker but not tracked locally. The monitoring loop is cancelling "
+            "them; verify at the broker if this persists."
+        )
+        for rec in recoveries:
+            st.caption(
+                f"• {rec.get('symbol', '—')} broker id "
+                f"{rec.get('broker_order_id', '—')} — {rec.get('cleanup_status', '—')} "
+                f"(attempts: {rec.get('retry_count', 0)})"
+            )
+
+    # Per-order hold reason, from the latest order_submission_blocked event.
+    try:
+        block_events = api_client.list_events(event_type="order_submission_blocked")
+    except BackendError as exc:
+        st.error(str(exc))
+        return
+    block_reason_by_order: dict[str, str] = {}
+    for e in block_events:
+        oid = e.get("order_id")
+        reason = (e.get("payload") or {}).get("reason")
+        if oid and reason:
+            block_reason_by_order[oid] = reason  # later events overwrite earlier
 
     # Build stale-order set from events, filtered server-side to just
     # order_stale — NOT a raw recent-N window: the audit log accumulates
@@ -426,6 +497,9 @@ def screen_positions() -> None:
             filled_qty = order.get("filled_quantity", 0)
             created_at = order.get("created_at", "")
             age_display = _format_age(created_at) if created_at else "—"
+            label = _order_operational_label(
+                status_val, block_reason_by_order.get(order_id)
+            )
 
             is_stale = order_id in stale_order_ids
 
@@ -436,7 +510,7 @@ def screen_positions() -> None:
             row[0].write(symbol)
             row[1].write(str(qty))
             row[2].write(price_display)
-            row[3].write(status_val)
+            row[3].write(label)
             row[4].write(str(filled_qty))
             row[5].write(age_display)
 

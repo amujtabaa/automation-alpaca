@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_broker_adapter, get_store
 from app.broker.adapter import BrokerAdapter, BrokerError
-from app.models import Event, Order, OrderStatus, Position
+from app.models import Event, Order, OrderStatus, Position, SubmitRecoveryRecord
 from app.store.base import (
     OrderTransitionError,
     StateStore,
@@ -57,6 +57,24 @@ async def list_orders(
     store: StateStore = Depends(get_store),
 ) -> list[Order]:
     return await store.list_orders()
+
+
+@router.get("/order-recoveries", response_model=list[SubmitRecoveryRecord])
+async def list_order_recoveries(
+    unresolved_only: bool = Query(default=True),
+    store: StateStore = Depends(get_store),
+) -> list[SubmitRecoveryRecord]:
+    """Read-only view of broker-submit recovery records (D-017 / F-002).
+
+    Defaults to the *unresolved* ones — a broker order accepted upstream but not
+    tracked locally, being driven to resolution by the monitoring loop. The
+    operator must see these prominently (a real live order the local state can't
+    otherwise show). This is the minimal Wave 0 surface; a full operational-status
+    classification endpoint is Wave 2 (D-020). Defined before ``/orders/{order_id}``
+    so the literal path isn't captured as an ``order_id``.
+    """
+
+    return await store.list_submit_recoveries(unresolved_only=unresolved_only)
 
 
 @router.get("/orders/{order_id}", response_model=Order)

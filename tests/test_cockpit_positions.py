@@ -57,6 +57,7 @@ def _run(
     orders: list,
     events: list,
     recorder: list,
+    recoveries: list | None = None,
 ) -> AppTest:
     """Patch api_client, boot AppTest, navigate to Position Monitor, return it."""
 
@@ -64,6 +65,9 @@ def _run(
     monkeypatch.setattr(api_client, "list_positions", lambda: list(positions))
     monkeypatch.setattr(api_client, "list_orders", lambda: list(orders))
     monkeypatch.setattr(api_client, "list_events", lambda **kw: list(events))
+    monkeypatch.setattr(
+        api_client, "list_order_recoveries", lambda **kw: list(recoveries or [])
+    )
 
     def fake_cancel(order_id: str) -> dict:
         recorder.append(("cancel", order_id))
@@ -171,6 +175,81 @@ def test_cancel_confirm_flow_records_cancel(monkeypatch):
     assert not at.exception
     assert ("cancel", "o1") in recorder, (
         f"Expected ('cancel', 'o1') in recorder; got: {recorder}"
+    )
+
+
+HELD_CREATED_ORDER = {
+    "id": "o2",
+    "symbol": "MSFT",
+    "quantity": 5,
+    "limit_price": 2.0,
+    "status": "created",
+    "filled_quantity": 0,
+    "broker_order_id": None,
+    "created_at": "2024-01-01T10:00:00+00:00",
+    "candidate_id": "c2",
+}
+
+BLOCKED_EVENT = {
+    "id": "e2",
+    "event_type": "order_submission_blocked",
+    "order_id": "o2",
+    "payload": {"reason": "kill_switch"},
+}
+
+RECOVERY_RECORD = {
+    "id": "r1",
+    "local_order_id": "o9",
+    "broker_order_id": "broker-o9",
+    "symbol": "TSLA",
+    "cleanup_status": "unresolved",
+    "retry_count": 2,
+}
+
+
+def test_held_created_order_is_shown_with_reason_and_cancel(monkeypatch):
+    """F-006: a never-submitted `created` order held by the kill switch must be
+    visible (was hidden before), labelled with its hold reason, and offer a
+    cancel — the backend cancels a never-submitted order locally."""
+
+    recorder: list = []
+    at = _run(
+        monkeypatch,
+        positions=[],
+        orders=[HELD_CREATED_ORDER],
+        events=[BLOCKED_EVENT],
+        recorder=recorder,
+    )
+
+    assert not at.exception
+    # The held order is rendered (previously the `created` filter hid it).
+    assert "cancel_o2" in [b.key for b in at.button]
+    # Its hold reason is surfaced somewhere on the screen.
+    all_text = " ".join(
+        getattr(el, "value", "") or ""
+        for el in (list(at.markdown) + list(at.caption))
+    )
+    assert "kill switch" in all_text.lower()
+
+
+def test_unresolved_recovery_record_is_surfaced(monkeypatch):
+    """F-006/F-002: an unresolved broker-submit recovery record is shown as a
+    prominent error so the operator knows a live broker order needs attention."""
+
+    recorder: list = []
+    at = _run(
+        monkeypatch,
+        positions=[],
+        orders=[],
+        events=[],
+        recorder=recorder,
+        recoveries=[RECOVERY_RECORD],
+    )
+
+    assert not at.exception
+    error_texts = [e.value for e in at.error]
+    assert any("recovery" in t.lower() for t in error_texts), (
+        f"Expected a recovery alert; got errors: {error_texts}"
     )
 
 
