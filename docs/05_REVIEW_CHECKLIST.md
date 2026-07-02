@@ -183,6 +183,14 @@ Use when reviewing Codex or Claude Code output.
       — folded positions' **cost basis** + non-terminal orders' remaining
       notional (`quantity - filled_quantity`) × their own `limit_price`; no
       live broker/market-data call is made from the order path (D-016b).
+      Cost-basis exposure is a *directional* approximation (conservative on a
+      losing position, permissive on a winner) — not something to forget when
+      `premarket_momentum_v1` (a winners-targeting strategy) is the candidate
+      source.
+- [ ] `NON_TERMINAL_ORDER_STATUSES` (`app/store/validation.py`) is *derived*
+      from `ORDER_TRANSITIONS` (`app/store/transitions.py`), not hand-copied
+      — a status is non-terminal exactly when it has a non-empty legal
+      outgoing transition set, so the two can't silently drift apart.
 - [ ] `risk_limit_reason` is a pure function (`app/store/validation.py`), not a
       pluggable `RiskEngine` class — mirrors `order_intent_block_reason`'s
       existing pattern exactly (D-016c); no async engine call was introduced
@@ -195,12 +203,18 @@ Use when reviewing Codex or Claude Code output.
       in between) is recovered the same way as an `OrderIntentBlockedError`
       race: `revert_candidate_approval` rolls the candidate back to `PENDING`
       — never stranded `APPROVED` with no order.
-- [ ] Each of `max_shares_per_order`/`max_notional_per_order`/
-      `max_total_exposure`/`allowlist` is independently optional at the
-      `StateStore.create_order_for_candidate` **interface** level (`None` =
-      not enforced, preserving ~20 pre-existing test call sites), but the
-      approve route always passes real, validated-positive values from
-      `Settings` — never `None` in production.
+- [ ] Each of `RiskLimits`' four fields (`max_shares_per_order`/
+      `max_notional_per_order`/`max_total_exposure`/`allowlist`) is
+      independently optional (`None` = not enforced); the zero-argument
+      default `RiskLimits()` passed to `StateStore.create_order_for_candidate`
+      is fully unenforced (preserving ~20 pre-existing test call sites), but
+      the approve route always builds one from real, validated-positive
+      values from `Settings` — never the default in production.
+- [ ] `StateStore.current_exposure()` (not `list_positions()` +
+      `list_orders()` combined by the caller) is what the approve route's
+      pre-check calls — it reads positions and open orders as one atomic
+      snapshot under a single lock acquisition, so the pre-check can't observe
+      a torn read across two separate lock-acquire/release cycles.
 - [ ] `CAPI_MAX_SHARES_PER_ORDER`/`CAPI_MAX_NOTIONAL_PER_ORDER`/
       `CAPI_MAX_TOTAL_EXPOSURE` reject `0`/negative/non-finite at config load
       (`_env_float(..., minimum=0.001)`) — a limit of exactly `0` would

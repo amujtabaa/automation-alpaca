@@ -20,15 +20,12 @@ from app.store.base import (
     InvalidOrderError,
     OrderIntentBlockedError,
     RiskLimitBlockedError,
+    RiskLimits,
     StateStore,
     StoreError,
     UnknownEntityError,
 )
-from app.store.validation import (
-    existing_exposure,
-    order_intent_block_reason,
-    risk_limit_reason,
-)
+from app.store.validation import order_intent_block_reason, risk_limit_reason
 
 router = APIRouter(prefix="/api", tags=["candidates"])
 
@@ -148,6 +145,12 @@ async def approve_candidate(
     # create_order_for_candidate; checked here so a blocked candidate stays
     # PENDING (still rejectable). Skipped for an already-ORDERED candidate (a
     # re-approve is an idempotent no-op that creates no new intent).
+    risk_limits = RiskLimits(
+        max_shares_per_order=settings.capi_max_shares_per_order,
+        max_notional_per_order=settings.capi_max_notional_per_order,
+        max_total_exposure=settings.capi_max_total_exposure,
+        allowlist=settings.capi_trading_allowlist,
+    )
     if candidate.status is not CandidateStatus.ORDERED:
         block = order_intent_block_reason(await store.get_current_session())
         if block is not None:
@@ -160,18 +163,19 @@ async def approve_candidate(
         # pre-check above, for the same reason — surface a clean 409 with the
         # candidate left PENDING (still rejectable) instead of stranding it at
         # APPROVED. Mirrors the authoritative check inside
-        # create_order_for_candidate exactly (same predicate, same inputs).
+        # create_order_for_candidate exactly (same predicate, same
+        # ``risk_limits``). ``store.current_exposure()`` reads positions + open
+        # orders as one atomic snapshot under a single lock acquisition, so this
+        # pre-check can't observe a torn read between two separate store calls.
         risk_block = risk_limit_reason(
             symbol=candidate.symbol,
             order_quantity=candidate.suggested_quantity,
             order_limit_price=candidate.suggested_limit_price,
-            exposure_before_order=existing_exposure(
-                await store.list_positions(), await store.list_orders()
-            ),
-            max_shares_per_order=settings.capi_max_shares_per_order,
-            max_notional_per_order=settings.capi_max_notional_per_order,
-            max_total_exposure=settings.capi_max_total_exposure,
-            allowlist=settings.capi_trading_allowlist,
+            exposure_before_order=await store.current_exposure(),
+            max_shares_per_order=risk_limits.max_shares_per_order,
+            max_notional_per_order=risk_limits.max_notional_per_order,
+            max_total_exposure=risk_limits.max_total_exposure,
+            allowlist=risk_limits.allowlist,
         )
         if risk_block is not None:
             raise HTTPException(
@@ -181,13 +185,7 @@ async def approve_candidate(
 
     try:
         await gate.approve(candidate_id)
-        await store.create_order_for_candidate(
-            candidate_id,
-            max_shares_per_order=settings.capi_max_shares_per_order,
-            max_notional_per_order=settings.capi_max_notional_per_order,
-            max_total_exposure=settings.capi_max_total_exposure,
-            allowlist=settings.capi_trading_allowlist,
-        )
+        await store.create_order_for_candidate(candidate_id, risk_limits=risk_limits)
     except (OrderIntentBlockedError, RiskLimitBlockedError) as exc:
         # Race (D-013): a safety control or CAPI limit changed between the
         # pre-checks above and the store handoff (e.g. another order filled

@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from app.models import CandidateStatus, OrderSide, OrderStatus
-from app.store.base import RiskLimitBlockedError
+from app.store.base import RiskLimitBlockedError, RiskLimits
 
 pytestmark = pytest.mark.anyio
 
@@ -48,7 +48,7 @@ class TestMaxSharesPerOrder:
         candidate = await _approved_candidate(any_store, quantity=50)
 
         order = await any_store.create_order_for_candidate(
-            candidate.id, max_shares_per_order=100
+            candidate.id, risk_limits=RiskLimits(max_shares_per_order=100)
         )
 
         assert order.quantity == 50
@@ -58,7 +58,7 @@ class TestMaxSharesPerOrder:
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
-                candidate.id, max_shares_per_order=100
+                candidate.id, risk_limits=RiskLimits(max_shares_per_order=100)
             )
 
         # Not stranded APPROVED — the caller (route) reverts on this error;
@@ -71,7 +71,7 @@ class TestMaxSharesPerOrder:
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
-                candidate.id, max_shares_per_order=100
+                candidate.id, risk_limits=RiskLimits(max_shares_per_order=100)
             )
 
         events = await any_store.list_events(event_type="risk_limit_blocked")
@@ -86,7 +86,7 @@ class TestMaxNotionalPerOrder:
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
-                candidate.id, max_notional_per_order=500.0
+                candidate.id, risk_limits=RiskLimits(max_notional_per_order=500.0)
             )
 
 
@@ -112,7 +112,7 @@ class TestMaxTotalExposure:
         with pytest.raises(RiskLimitBlockedError):
             # 900 (existing) + 200 (new) = 1100 > 1000 cap
             await any_store.create_order_for_candidate(
-                candidate.id, max_total_exposure=1000.0
+                candidate.id, risk_limits=RiskLimits(max_total_exposure=1000.0)
             )
 
     async def test_open_order_notional_counts_toward_the_cap(self, any_store):
@@ -126,7 +126,7 @@ class TestMaxTotalExposure:
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
-                second.id, max_total_exposure=1000.0
+                second.id, risk_limits=RiskLimits(max_total_exposure=1000.0)
             )
 
     async def test_terminal_order_does_not_count(self, any_store):
@@ -140,7 +140,7 @@ class TestMaxTotalExposure:
 
         # 0 (canceled doesn't count) + 200 (new) = 200 <= 1000 cap -> allowed
         order = await any_store.create_order_for_candidate(
-            second.id, max_total_exposure=1000.0
+            second.id, risk_limits=RiskLimits(max_total_exposure=1000.0)
         )
         assert order.symbol == "AAPL"
 
@@ -150,7 +150,7 @@ class TestAllowlist:
         candidate = await _approved_candidate(any_store, symbol="AAPL")
 
         order = await any_store.create_order_for_candidate(
-            candidate.id, allowlist=frozenset({"AAPL", "MSFT"})
+            candidate.id, risk_limits=RiskLimits(allowlist=frozenset({"AAPL", "MSFT"}))
         )
 
         assert order.symbol == "AAPL"
@@ -160,14 +160,14 @@ class TestAllowlist:
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
-                candidate.id, allowlist=frozenset({"AAPL", "MSFT"})
+                candidate.id, risk_limits=RiskLimits(allowlist=frozenset({"AAPL", "MSFT"}))
             )
 
     async def test_empty_allowlist_means_unrestricted(self, any_store):
         candidate = await _approved_candidate(any_store, symbol="ZZZZ")
 
         order = await any_store.create_order_for_candidate(
-            candidate.id, allowlist=frozenset()
+            candidate.id, risk_limits=RiskLimits(allowlist=frozenset())
         )
 
         assert order.symbol == "ZZZZ"
@@ -186,7 +186,8 @@ class TestIdempotency:
         first = await any_store.create_order_for_candidate(candidate.id)
 
         second = await any_store.create_order_for_candidate(
-            candidate.id, max_shares_per_order=1  # would block if evaluated fresh
+            candidate.id,
+            risk_limits=RiskLimits(max_shares_per_order=1),  # would block if evaluated fresh
         )
 
         assert second.id == first.id

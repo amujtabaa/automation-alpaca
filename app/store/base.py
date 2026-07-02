@@ -182,6 +182,32 @@ class FillAppendResult:
     event: Event
 
 
+@dataclass(frozen=True)
+class RiskLimits:
+    """The Phase 6 CAPI limits for one :meth:`StateStore.create_order_for_candidate`
+    call (D-016). Bundled into one object — rather than four separate keyword
+    arguments threaded individually through the abstract method, both store
+    implementations, the shared planner, and the route (which needs the same
+    values twice: the pre-check and the authoritative call) — so a future
+    limit type is one field added in one place, not a signature edited in five.
+
+    Every field is independently optional: ``None`` means "not enforced." The
+    zero-argument default, ``RiskLimits()``, is fully unenforced — this is what
+    keeps ``create_order_for_candidate``'s ~20 pre-existing test call sites
+    (written before Phase 6, none of which pass a ``risk_limits`` argument)
+    behaviorally unchanged. Production code (the approve route) always builds
+    one from ``Settings``, which rejects a non-finite/non-positive numeric
+    limit at load — see ``app.config.load_settings``.
+    """
+
+    max_shares_per_order: Optional[float] = None
+    max_notional_per_order: Optional[float] = None
+    max_total_exposure: Optional[float] = None
+    # Empty/None both mean "no restriction beyond the watchlist" — a
+    # genuinely meaningful empty state, unlike the three numeric limits above.
+    allowlist: Optional[frozenset[str]] = None
+
+
 class StateStore(ABC):
     """Abstract persistence interface. All methods are async."""
 
@@ -292,10 +318,7 @@ class StateStore(ABC):
         self,
         candidate_id: str,
         *,
-        max_shares_per_order: Optional[float] = None,
-        max_notional_per_order: Optional[float] = None,
-        max_total_exposure: Optional[float] = None,
-        allowlist: Optional[frozenset[str]] = None,
+        risk_limits: RiskLimits = RiskLimits(),
     ) -> Order:
         """Atomic ``APPROVED → ORDERED`` handoff — the candidate→order dispatch.
 
@@ -318,14 +341,13 @@ class StateStore(ABC):
         and writes nothing (no second order). This is what keeps the approve
         endpoint idempotent.
 
-        The four ``max_*``/``allowlist`` keywords are the Phase 6 CAPI risk gate
-        (D-016): each is independently optional (``None`` = not enforced), so
-        the interface itself supports an unrestricted mode, but the approve
-        route always passes real, validated-positive values loaded from
-        ``Settings``. A breach raises :class:`RiskLimitBlockedError` and writes
-        a ``risk_limit_blocked`` audit event (see
-        ``app.store.validation.risk_limit_reason`` for the exact checks and
-        their order).
+        ``risk_limits`` is the Phase 6 CAPI risk gate (D-016): its default,
+        ``RiskLimits()``, is fully unenforced, so the interface itself supports
+        an unrestricted mode, but the approve route always passes real,
+        validated-positive values loaded from ``Settings``. A breach raises
+        :class:`RiskLimitBlockedError` and writes a ``risk_limit_blocked``
+        audit event (see ``app.store.validation.risk_limit_reason`` for the
+        exact checks and their order).
 
         Raises :class:`UnknownEntityError` if the candidate does not exist;
         :class:`CandidateTransitionError` if it is not ``APPROVED`` (e.g. still
@@ -335,6 +357,22 @@ class StateStore(ABC):
         kill-switched or buys are paused; :class:`RiskLimitBlockedError` if a
         CAPI limit above is breached. This is where the *approved-only* rule
         that ``create_order`` deliberately deferred (D-010) is finally enforced.
+        """
+
+    @abstractmethod
+    async def current_exposure(self) -> float:
+        """Total current CAPI exposure (D-016b), read as one atomic snapshot.
+
+        Every position's cost basis plus every non-terminal order's remaining
+        notional — see ``app.store.validation.existing_exposure`` for the pure
+        computation this wraps. Exists as its own store method (rather than
+        making a caller combine ``list_positions()`` + ``list_orders()``
+        itself) specifically so a caller *outside* the store's lock — the
+        approve route's risk-limit pre-check — gets one consistent snapshot
+        under a single lock acquisition, not a torn read across two separate
+        lock-acquire/release cycles. ``create_order_for_candidate``'s own
+        authoritative check computes this the same way, inside its own single
+        lock hold, for the same reason.
         """
 
     @abstractmethod

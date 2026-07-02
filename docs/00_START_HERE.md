@@ -72,7 +72,20 @@ unrealized P/L elsewhere, per the Position Monitor) plus every non-terminal
 order's remaining (unfilled) quantity × its own `limit_price`. This keeps the
 order path free of a new dependency on `MarketDataService` or a broker
 round-trip; "buying power" in the brokerage-account sense is out of scope
-(fake money in paper anyway).
+(fake money in paper anyway). `StateStore.current_exposure()` reads this as
+one atomic snapshot under a single lock acquisition, so a caller outside the
+store's lock (the approve route's pre-check) never observes a torn read
+across two separate lock cycles.
+
+This approximation is **directional, not neutral**: cost basis over-counts a
+position that has since dropped in value (the cap binds *sooner* than
+mark-to-market would — conservative) and under-counts one that has risen (the
+cap binds *later* — permissive). Because `premarket_momentum_v1` (D-014)
+specifically targets momentum winners, the realistic failure mode is the
+permissive direction — a position that ran up since entry reads as less
+exposure than it actually represents. Acceptable for beta's gate-and-reject
+cap; worth revisiting if CAPI is ever asked to bound something more precise
+than "don't blow past a round-number ceiling."
 
 **(c) No separate `RiskEngine` ABC — a pure predicate, like the sibling checks.**
 The original plan sketched a pluggable `RiskEngine` ABC mirroring
@@ -82,26 +95,37 @@ better fit already established in this codebase:
 *plain synchronous function* called from two places — the approve route
 (pre-check, for UX) and `create_order_for_candidate`'s planner (authoritative,
 for correctness) — and gets "any future Auto-Buy mode honors this for free"
-pluggability for free, just by living at the store boundary, no ABC required.
-`risk_limit_reason` (`app/store/validation.py`) follows the identical pattern.
-An async `RiskEngine` ABC would also have fought the store's own architecture:
-`plan_create_order_for_candidate` (`app/store/core.py`, from the store-hardening
-interlude) is a *pure, synchronous* planner by design — forcing an async
-engine call into it would have undone exactly the sync-pure-planner
-consolidation that interlude just finished. If a future Auto-Buy phase needs
-live broker-backed limits (real buying power, not cost-basis exposure), *that*
-is the point to introduce an async seam — not now, per (b).
+pluggability for free just by living at the store boundary, no ABC required:
+the store is already the seam a future Auto-Buy mode would sit behind, so a
+second pluggable layer above it would be pluggability the codebase already
+has, built twice. `risk_limit_reason` (`app/store/validation.py`) follows the
+identical pattern. This is a premature-abstraction call, not a technical
+constraint — `plan_create_order_for_candidate` (`app/store/core.py`, from the
+store-hardening interlude) stays a pure, synchronous planner either way, since
+its inputs (`exposure_before_order`, `risk_limits`) are plain values the store
+already fetched before calling in; an async `RiskEngine.check(...)` call
+could sit in the store method that surrounds the planner without breaking the
+planner's purity. The reason to skip it is that nothing today needs a second
+implementation behind that interface — one pure function with one caller
+shape doesn't earn an ABC. If a future Auto-Buy phase needs live broker-backed
+limits (real buying power, not cost-basis exposure), *that* is the point to
+introduce an async seam — not now, per (b).
 
 **Enforcement points:** `app/api/routes_candidates.py`'s `approve_candidate`
 (pre-check, mirrors the existing kill-switch/pause-buys pre-check exactly,
 including race recovery via `revert_candidate_approval` if a limit is breached
 between the pre-check and the store handoff) and
-`StateStore.create_order_for_candidate`'s new optional
-`max_shares_per_order`/`max_notional_per_order`/`max_total_exposure`/`allowlist`
-keywords (authoritative, under the store's lock). Each is independently
-optional at the *interface* level (`None` = not enforced, keeping ~20
-pre-existing test call sites unchanged), but the approve route always passes
-real, validated-positive values loaded from `Settings` — `app.config`'s
+`StateStore.create_order_for_candidate`'s optional `risk_limits: RiskLimits`
+parameter (authoritative, under the store's lock). `RiskLimits`
+(`app/store/base.py`) bundles the four independently-optional limits
+(`max_shares_per_order`/`max_notional_per_order`/`max_total_exposure`/
+`allowlist`) into one dataclass rather than four separate keywords threaded
+through the abstract method, both stores, the planner, and the route (which
+needs the same values twice — pre-check and authoritative call) — a future
+limit type is one field added in one place. `RiskLimits()`, the default, is
+fully unenforced at the *interface* level (keeping ~20 pre-existing test call
+sites unchanged), but the approve route always builds one from real,
+validated-positive values loaded from `Settings` — `app.config`'s
 `_env_float` rejects a non-finite/non-positive `CAPI_MAX_*` value at startup
 (the same footgun class as `MARKET_DATA_STALE_MINUTES`), so CAPI can't be
 silently disabled by an env misconfiguration the way `None` can be by a test.

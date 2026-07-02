@@ -55,6 +55,7 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     InvalidOrderError,
+    RiskLimits,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
@@ -78,6 +79,7 @@ from app.store.transitions import (
 )
 from app.store.validation import (
     NON_TERMINAL_ORDER_STATUSES,
+    existing_exposure,
     order_candidate_match_reason,
 )
 
@@ -866,14 +868,31 @@ class SqliteStateStore(StateStore):
                 )
             return order
 
+    def _current_exposure_locked(self) -> float:
+        positions = [
+            self._position_locked(r["symbol"])
+            for r in self._read_all("SELECT DISTINCT symbol FROM fills ORDER BY symbol")
+        ]
+        non_terminal_placeholders = ",".join("?" * len(NON_TERMINAL_ORDER_STATUSES))
+        open_orders = [
+            self._order(r)
+            for r in self._read_all(
+                f"SELECT * FROM orders WHERE status IN ({non_terminal_placeholders}) "
+                "ORDER BY rowid",
+                tuple(s.value for s in NON_TERMINAL_ORDER_STATUSES),
+            )
+        ]
+        return existing_exposure(positions, open_orders)
+
+    async def current_exposure(self) -> float:
+        async with self._lock:
+            return self._current_exposure_locked()
+
     async def create_order_for_candidate(
         self,
         candidate_id: str,
         *,
-        max_shares_per_order: Optional[float] = None,
-        max_notional_per_order: Optional[float] = None,
-        max_total_exposure: Optional[float] = None,
-        allowlist: Optional[frozenset[str]] = None,
+        risk_limits: RiskLimits = RiskLimits(),
     ) -> Order:
         async with self._lock:
             cand_row = self._read_one(
@@ -900,39 +919,23 @@ class SqliteStateStore(StateStore):
                 return self._order(order_row)
             # Shared validation cascade + order construction (app/store/core.py);
             # the candidate-missing and ORDERED-idempotent cases above stay here
-            # since they need store-specific fetches. Positions/open orders are
-            # fetched unconditionally (cheap at beta scale) — the planner only
-            # uses them when a CAPI limit above is actually configured.
+            # since they need store-specific fetches. Exposure is computed
+            # unconditionally (cheap at beta scale) — the planner only uses it
+            # when a CAPI limit above is actually configured.
             sess_row = self._read_one(
                 "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
             )
             session = self._session(sess_row) if sess_row is not None else None
-            positions = [
-                self._position_locked(r["symbol"])
-                for r in self._read_all("SELECT DISTINCT symbol FROM fills ORDER BY symbol")
-            ]
-            non_terminal_placeholders = ",".join("?" * len(NON_TERMINAL_ORDER_STATUSES))
-            open_orders = [
-                self._order(r)
-                for r in self._read_all(
-                    f"SELECT * FROM orders WHERE status IN ({non_terminal_placeholders}) "
-                    "ORDER BY rowid",
-                    tuple(s.value for s in NON_TERMINAL_ORDER_STATUSES),
-                )
-            ]
             plan = plan_create_order_for_candidate(
                 candidate=candidate,
                 session=session,
-                positions=positions,
-                open_orders=open_orders,
-                max_shares_per_order=max_shares_per_order,
-                max_notional_per_order=max_notional_per_order,
-                max_total_exposure=max_total_exposure,
-                allowlist=allowlist,
+                exposure_before_order=self._current_exposure_locked(),
+                risk_limits=risk_limits,
             )
             if plan.outcome == CREATE_ORDER_REJECT:
-                # Only the kill-switch/pause block writes an audit row before it
-                # raises; the not-approved and invalid-qty/price rejections don't.
+                # The kill-switch/pause block and the Phase 6 CAPI risk-limit
+                # block each write an audit row before raising; the not-approved
+                # and invalid-qty/price rejections don't.
                 if plan.reject_event is not None:
                     with self._tx() as cur:
                         self._insert_event(

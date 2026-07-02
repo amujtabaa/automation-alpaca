@@ -22,24 +22,20 @@ from app.models import (
     Candidate,
     Order,
     OrderSide,
-    OrderStatus,
     Position,
     SessionRecord,
     SessionStatus,
 )
+from app.store.transitions import ORDER_TRANSITIONS
 
 # An order still in one of these statuses represents live risk: it could fill
 # at any moment, so it counts toward exposure exactly like an already-filled
-# position. Everything else (FILLED/CANCELED/REJECTED) is terminal and settled
-# — see app/store/transitions.py's ORDER_TRANSITIONS (these are exactly the
-# non-empty-transition-set statuses).
+# position. Everything else (FILLED/CANCELED/REJECTED) is terminal and settled.
+# Derived from app/store/transitions.py's ORDER_TRANSITIONS rather than
+# hand-copied, so the two can never silently drift apart: a status is
+# non-terminal exactly when it has at least one legal outgoing transition.
 NON_TERMINAL_ORDER_STATUSES = frozenset(
-    {
-        OrderStatus.CREATED,
-        OrderStatus.SUBMITTED,
-        OrderStatus.PARTIALLY_FILLED,
-        OrderStatus.CANCEL_PENDING,
-    }
+    status for status, transitions in ORDER_TRANSITIONS.items() if transitions
 )
 
 
@@ -200,6 +196,17 @@ def existing_exposure(
     dependency on live prices. A flat (fully-sold) position's cost_basis is
     ``0`` by the folding formula (``docs/02``), so no explicit quantity filter
     is needed here — summing every position is already correct.
+
+    This is a *directional* approximation, not a neutral one: cost basis
+    over-counts a position that has since dropped in value (the cap is
+    conservative — it binds sooner than a mark-to-market total would) and
+    under-counts one that has risen (the cap is permissive — it binds later
+    than mark-to-market would). Because this strategy set targets momentum
+    winners, the realistic failure mode is the permissive direction: a
+    position that ran up since entry reads as less exposure than it actually
+    represents, letting a new order through that a mark-to-market total would
+    have blocked. Acceptable for beta's gate-and-reject cap, but worth knowing
+    before leaning on this number for anything more precise.
 
     Order exposure is priced at each order's own ``limit_price`` (``None`` only
     for a non-LIMIT order type, which beta never creates — treated as ``0`` to
