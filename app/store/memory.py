@@ -203,7 +203,7 @@ class InMemoryStateStore(StateStore):
         open_orders = [
             o for o in self._orders.values() if o.status in NON_TERMINAL_ORDER_STATUSES
         ]
-        return existing_exposure(positions, open_orders)
+        return existing_exposure(positions, open_orders, self._fills)
 
     # ------------------------------------------------------------------ #
     # Watchlist

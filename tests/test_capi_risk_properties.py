@@ -13,7 +13,7 @@ No IO, no store, no async — pure functions over synthetic ``Position``/
 
 from __future__ import annotations
 
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from app.models import Order, OrderSide, OrderStatus, OrderType, Position
@@ -111,6 +111,13 @@ class TestRiskLimitReasonInvariants:
             min_value=0.01, max_value=10_000_000, allow_nan=False, allow_infinity=False
         ),
     )
+    @example(
+        symbol="AAPL",
+        order_quantity=100,
+        order_limit_price=10.0,
+        exposure_before_order=0.0,
+        max_total_exposure=1000.0,
+    )
     @settings(max_examples=300)
     def test_total_exposure_cap_is_never_exceeded_by_an_accepted_order(
         self,
@@ -150,6 +157,13 @@ class TestRiskLimitReasonInvariants:
             min_value=0.01, max_value=1_000_000, allow_nan=False, allow_infinity=False
         ),
     )
+    # Random int/float generation almost never lands on an exact
+    # order_quantity == max_shares_per_order boundary on its own (unlike the
+    # notional/exposure checks, whose quantity*price multiplication makes
+    # Hypothesis collide on the boundary far more often) — pinned explicitly
+    # so a `>` -> `>=` regression on this specific comparison can't slip past
+    # an entire @settings(max_examples=300) run undetected.
+    @example(symbol="AAPL", order_quantity=500, max_shares_per_order=500.0)
     @settings(max_examples=300)
     def test_max_shares_per_order_is_a_hard_iff_cap(
         self, symbol, order_quantity, max_shares_per_order
@@ -177,6 +191,7 @@ class TestRiskLimitReasonInvariants:
             min_value=0.01, max_value=100_000_000, allow_nan=False, allow_infinity=False
         ),
     )
+    @example(symbol="AAPL", order_quantity=100, order_limit_price=5.0, max_notional_per_order=500.0)
     @settings(max_examples=300)
     def test_max_notional_per_order_is_a_hard_iff_cap(
         self, symbol, order_quantity, order_limit_price, max_notional_per_order

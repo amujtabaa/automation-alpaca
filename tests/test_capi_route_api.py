@@ -12,6 +12,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.models import CandidateStatus
 from app.store.memory import InMemoryStateStore
 
 
@@ -113,3 +114,44 @@ def test_second_order_blocked_by_exposure_from_the_first(monkeypatch):
         resp2 = client.post(f"/api/candidates/{second['id']}/approve")
         assert resp2.status_code == 409  # $10 (open) + $10 (new) = $20 > $15
         assert "exceeds_max_total_exposure" in resp2.json()["detail"]
+
+
+def test_capi_race_between_precheck_and_authoritative_check_reverts_to_pending(monkeypatch):
+    """The exposure race (D-013's CAPI sibling): the pre-check passes ($10 <=
+    the $15 cap, nothing else on the books yet), but before the authoritative
+    check inside create_order_for_candidate runs, another candidate's approval
+    races an order into existence that pushes exposure over the cap. Mirrors
+    tests/test_approve_dispatch_race.py's kill-switch race test structurally,
+    but exercises RiskLimitBlockedError specifically -- unlike that race,
+    nothing else in the suite drove the pre-check and the authoritative check
+    to disagree for a CAPI limit before this test."""
+
+    store = InMemoryStateStore()
+    monkeypatch.setenv("CAPI_MAX_TOTAL_EXPOSURE", "15")
+    app = create_app(store)
+    with TestClient(app) as client:
+        first = _inject(client, symbol="AAPL", suggested_quantity=10, suggested_limit_price=1.0)  # $10
+        second = _inject(client, symbol="MSFT", suggested_quantity=10, suggested_limit_price=1.0)  # $10
+
+        orig = store.create_order_for_candidate
+
+        async def racing(candidate_id, **kwargs):
+            if candidate_id == first["id"]:
+                # Race: dispatch `second` first (directly via the store, same
+                # event loop as the in-flight request) so exposure grows by
+                # $10 before `first`'s authoritative check runs -- exposure
+                # $10 (from second) + $10 (first) = $20 > the $15 cap.
+                await store.transition_candidate(second["id"], CandidateStatus.APPROVED)
+                await orig(second["id"])
+            return await orig(candidate_id, **kwargs)
+
+        store.create_order_for_candidate = racing
+
+        resp = client.post(f"/api/candidates/{first['id']}/approve")
+        assert resp.status_code == 409
+        assert "exceeds_max_total_exposure" in resp.json()["detail"]
+
+        # Not stranded: rolled back to PENDING, no order for `first`.
+        refreshed = client.get(f"/api/candidates/{first['id']}").json()
+        assert refreshed["status"] == "pending"
+        assert refreshed["order_id"] is None

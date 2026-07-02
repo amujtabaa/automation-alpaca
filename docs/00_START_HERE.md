@@ -77,6 +77,20 @@ one atomic snapshot under a single lock acquisition, so a caller outside the
 store's lock (the approve route's pre-check) never observes a torn read
 across two separate lock cycles.
 
+An order's "remaining" notional is priced off its **actual filled quantity,
+derived from the fill table** — not `Order.filled_quantity` — for a subtle but
+real reason a pre-merge review caught: `append_fill` and the later
+`transition_order(..., filled_quantity=...)` call that catches the order's own
+`filled_quantity` field up are two *separate* atomic operation groups (see
+`docs/02_DATA_AND_PERSISTENCE.md`; `app/monitoring.py`'s `_apply_update` always
+calls them in that order, as two independent lock-guarded calls). In the
+window between them, a position's cost basis has already moved but
+`Order.filled_quantity` hasn't — reading the stale field there would
+double-count the just-filled shares. `existing_exposure()` avoids this by
+summing each order's fills directly (available in the same lock hold that
+already reads `positions`), so both halves of the exposure sum are always
+grounded in the fill table, never a field that can lag it.
+
 This approximation is **directional, not neutral**: cost basis over-counts a
 position that has since dropped in value (the cap binds *sooner* than
 mark-to-market would — conservative) and under-counts one that has risen (the

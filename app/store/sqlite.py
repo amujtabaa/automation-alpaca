@@ -882,7 +882,12 @@ class SqliteStateStore(StateStore):
                 tuple(s.value for s in NON_TERMINAL_ORDER_STATUSES),
             )
         ]
-        return existing_exposure(positions, open_orders)
+        # Every fill, not just fills against open_orders — existing_exposure
+        # derives each order's actual filled quantity from these directly
+        # (see its docstring: Order.filled_quantity can lag a just-appended
+        # fill by one transition_order call during reconciliation).
+        fills = [self._fill(r) for r in self._read_all("SELECT * FROM fills ORDER BY rowid")]
+        return existing_exposure(positions, open_orders, fills)
 
     async def current_exposure(self) -> float:
         async with self._lock:

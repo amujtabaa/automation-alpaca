@@ -53,6 +53,20 @@ class TestMaxSharesPerOrder:
 
         assert order.quantity == 50
 
+    async def test_exactly_at_limit_succeeds(self, any_store):
+        """The cap is inclusive (``>``, not ``>=``) — an order of exactly
+        max_shares_per_order shares must NOT block. Nothing in the example
+        tests above exercises this exact boundary; without it, a regression
+        that silently tightened the comparison to ``>=`` would go unnoticed."""
+
+        candidate = await _approved_candidate(any_store, quantity=100)
+
+        order = await any_store.create_order_for_candidate(
+            candidate.id, risk_limits=RiskLimits(max_shares_per_order=100)
+        )
+
+        assert order.quantity == 100
+
     async def test_over_limit_blocks_and_leaves_candidate_pending(self, any_store):
         candidate = await _approved_candidate(any_store, quantity=150)
 
@@ -81,6 +95,15 @@ class TestMaxSharesPerOrder:
 
 
 class TestMaxNotionalPerOrder:
+    async def test_exactly_at_limit_succeeds(self, any_store):
+        candidate = await _approved_candidate(any_store, quantity=100, limit=5.0)  # $500
+
+        order = await any_store.create_order_for_candidate(
+            candidate.id, risk_limits=RiskLimits(max_notional_per_order=500.0)
+        )
+
+        assert order.quantity == 100
+
     async def test_over_limit_blocks(self, any_store):
         candidate = await _approved_candidate(any_store, quantity=100, limit=10.0)  # $1000
 
@@ -97,7 +120,15 @@ class TestMaxTotalExposure:
         exposure is accounted for."""
 
         await any_store.initialize()
-        # Seed an existing $900 position via a real fill against a filled order.
+        # Seed an existing $900 position via a real fill against a filled
+        # order, then transition the order to FILLED with the matching
+        # filled_quantity — exactly the two-call sequence app/monitoring.py's
+        # _apply_update always performs (append_fill, then transition_order).
+        # Skipping the transition_order call would leave the order SUBMITTED
+        # with filled_quantity=0, silently double-counting the $900 fill (see
+        # test_fill_without_order_transition_is_not_double_counted below) and
+        # this test's own numeric assertion below exists specifically to
+        # catch that regression, not just the raise.
         seed_candidate = await any_store.create_candidate(
             "MSFT", suggested_quantity=10, suggested_limit_price=90.0
         )
@@ -105,7 +136,11 @@ class TestMaxTotalExposure:
         seed_order = await any_store.create_order_for_candidate(seed_candidate.id)
         await any_store.transition_order(seed_order.id, OrderStatus.SUBMITTED)
         await any_store.append_fill(seed_order.id, "MSFT", OrderSide.BUY, 10, 90.0)
+        await any_store.transition_order(
+            seed_order.id, OrderStatus.FILLED, filled_quantity=10
+        )
         assert (await any_store.get_position("MSFT")).cost_basis == 900.0
+        assert await any_store.current_exposure() == 900.0
 
         candidate = await _approved_candidate(any_store, symbol="AAPL", quantity=10, limit=20.0)  # $200
 
@@ -114,6 +149,27 @@ class TestMaxTotalExposure:
             await any_store.create_order_for_candidate(
                 candidate.id, risk_limits=RiskLimits(max_total_exposure=1000.0)
             )
+
+    async def test_fill_without_order_transition_is_not_double_counted(self, any_store):
+        """A fill recorded via append_fill(), before the matching
+        transition_order() call catches the order's filled_quantity up, must
+        not be counted twice (once via the position's already-updated cost
+        basis, again via the order's stale 'remaining' notional) — the exact
+        window app/monitoring.py's _apply_update leaves open between its two
+        separate calls for a single broker fill."""
+
+        await any_store.initialize()
+        candidate = await any_store.create_candidate(
+            "MSFT", suggested_quantity=100, suggested_limit_price=9.0
+        )
+        await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
+        order = await any_store.create_order_for_candidate(candidate.id)
+        await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+
+        await any_store.append_fill(order.id, "MSFT", OrderSide.BUY, 100, 9.0)
+        # transition_order deliberately NOT called yet: order.filled_quantity
+        # is still 0 even though the fill is fully recorded.
+        assert await any_store.current_exposure() == 900.0  # not 1800.0
 
     async def test_open_order_notional_counts_toward_the_cap(self, any_store):
         """A still-open (non-terminal) order's remaining notional is live
@@ -128,6 +184,15 @@ class TestMaxTotalExposure:
             await any_store.create_order_for_candidate(
                 second.id, risk_limits=RiskLimits(max_total_exposure=1000.0)
             )
+
+    async def test_exactly_at_limit_succeeds(self, any_store):
+        candidate = await _approved_candidate(any_store, symbol="AAPL", quantity=100, limit=10.0)  # $1000
+
+        order = await any_store.create_order_for_candidate(
+            candidate.id, risk_limits=RiskLimits(max_total_exposure=1000.0)
+        )
+
+        assert order.quantity == 100
 
     async def test_terminal_order_does_not_count(self, any_store):
         """A CANCELED order's notional must not linger in the exposure total."""

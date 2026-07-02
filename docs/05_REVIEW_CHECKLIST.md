@@ -181,12 +181,31 @@ Use when reviewing Codex or Claude Code output.
       order down to fit (D-016a).
 - [ ] Exposure (`app.store.validation.existing_exposure`) is local-derived only
       — folded positions' **cost basis** + non-terminal orders' remaining
-      notional (`quantity - filled_quantity`) × their own `limit_price`; no
-      live broker/market-data call is made from the order path (D-016b).
+      notional (`quantity - actual_filled_quantity`) × their own `limit_price`;
+      no live broker/market-data call is made from the order path (D-016b).
       Cost-basis exposure is a *directional* approximation (conservative on a
       losing position, permissive on a winner) — not something to forget when
       `premarket_momentum_v1` (a winners-targeting strategy) is the candidate
       source.
+- [ ] An order's "actual filled quantity" for the exposure sum is derived from
+      the **fill table** (an optional `fills` argument to `existing_exposure`,
+      passed by both stores' `_current_exposure_*` helpers), never trusted
+      from `Order.filled_quantity` directly. `append_fill` and the
+      `transition_order(..., filled_quantity=...)` call that catches the
+      order's own field up are two separate atomic operation groups
+      (`app/monitoring.py`'s `_apply_update` calls them independently) — a
+      pre-merge adversarial review found and reproduced a real double-count in
+      the window between them (a position's cost basis already reflects a
+      fill before `Order.filled_quantity` does) before this fix landed.
+      `tests/test_capi_order_gate.py::test_fill_without_order_transition_is_not_double_counted`
+      pins the fixed behavior directly.
+- [ ] The three numeric caps' boundary (`order_quantity`/`notional`/`exposure`
+      *exactly equal* to the configured limit) is asserted, not just values
+      strictly above/below it — a `>` → `>=` regression silently tightening a
+      cap to exclusive would otherwise slip past both the example tests and
+      Hypothesis's random search (float/int equality is rare to hit by
+      chance; pinned via `@example(...)` in
+      `tests/test_capi_risk_properties.py`).
 - [ ] `NON_TERMINAL_ORDER_STATUSES` (`app/store/validation.py`) is *derived*
       from `ORDER_TRANSITIONS` (`app/store/transitions.py`), not hand-copied
       — a status is non-terminal exactly when it has a non-empty legal
@@ -202,7 +221,11 @@ Use when reviewing Codex or Claude Code output.
 - [ ] A race between the pre-check and the authoritative check (limit breached
       in between) is recovered the same way as an `OrderIntentBlockedError`
       race: `revert_candidate_approval` rolls the candidate back to `PENDING`
-      — never stranded `APPROVED` with no order.
+      — never stranded `APPROVED` with no order. Exercised end-to-end for
+      `RiskLimitBlockedError` specifically by
+      `tests/test_capi_route_api.py::test_capi_race_between_precheck_and_authoritative_check_reverts_to_pending`
+      (mirrors `tests/test_approve_dispatch_race.py`'s kill-switch race test;
+      a pre-merge review found this CAPI-specific path was undertested).
 - [ ] Each of `RiskLimits`' four fields (`max_shares_per_order`/
       `max_notional_per_order`/`max_total_exposure`/`allowlist`) is
       independently optional (`None` = not enforced); the zero-argument

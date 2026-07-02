@@ -20,6 +20,7 @@ from typing import Optional, Sequence
 
 from app.models import (
     Candidate,
+    Fill,
     Order,
     OrderSide,
     Position,
@@ -183,7 +184,9 @@ def filled_quantity_reason(order: Order, new_filled_quantity: int) -> Optional[s
 
 
 def existing_exposure(
-    positions: Sequence[Position], open_orders: Sequence[Order]
+    positions: Sequence[Position],
+    open_orders: Sequence[Order],
+    fills: Sequence[Fill] = (),
 ) -> float:
     """Current dollar exposure *before* the order being evaluated: every
     position's cost basis, plus the notional of every non-terminal order's
@@ -212,11 +215,33 @@ def existing_exposure(
     for a non-LIMIT order type, which beta never creates — treated as ``0`` to
     stay total, not raise, since this is a read-only aggregate, not a
     validation gate itself).
+
+    ``fills`` — every fill currently in the store, not filtered to
+    ``open_orders`` — is used to derive each order's *actual* filled quantity
+    directly from the append-only fill table, in preference to trusting
+    ``Order.filled_quantity``. This matters because "append a fill" and "update
+    the order's filled_quantity/status to match" are two *separate* atomic
+    operation groups (``docs/02_DATA_AND_PERSISTENCE.md`` lists "fill append +
+    duplicate-fill check + audit event" and "order status transition + audit
+    event" as distinct groups on purpose — see ``app/monitoring.py``'s
+    ``_apply_update``, which always calls ``append_fill`` and only afterward,
+    as a separate call, ``transition_order``). Between those two calls there is
+    a real window where a fill has already moved a position's cost basis but
+    ``Order.filled_quantity`` hasn't caught up yet; reading the stale field
+    there would double-count the just-filled shares (once via the position,
+    again via the order's not-yet-decremented "remaining" notional). An order
+    with no recorded fills falls back to its own ``filled_quantity`` (``0`` for
+    a fresh order, identical to the pre-fix behavior), so omitting ``fills``
+    entirely (the default, used by callers with no fill table to hand — e.g.
+    the Hypothesis property tests below) reproduces the old behavior exactly.
     """
 
     position_exposure = sum(p.cost_basis for p in positions)
+    filled_by_order: dict[str, int] = {}
+    for f in fills:
+        filled_by_order[f.order_id] = filled_by_order.get(f.order_id, 0) + f.quantity
     order_exposure = sum(
-        (o.quantity - o.filled_quantity) * (o.limit_price or 0.0)
+        (o.quantity - filled_by_order.get(o.id, o.filled_quantity)) * (o.limit_price or 0.0)
         for o in open_orders
         if o.status in NON_TERMINAL_ORDER_STATUSES
     )
