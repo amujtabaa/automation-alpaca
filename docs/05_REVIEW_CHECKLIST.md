@@ -176,6 +176,50 @@ Use when reviewing Codex or Claude Code output.
       live credentials + market hours) — see
       `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
 
+## Wave 0 (post-Phase-6 remediation — F-001…F-008)
+- [ ] Kill switch cannot lose the race vs. broker submission at **any** flip
+      point (F-001): `claim_order_for_submission` re-checks every control and
+      moves `CREATED → SUBMITTING` under **one** store-lock hold, and the loop
+      submits only claimed orders. A flip lands before the claim (held) or after
+      `SUBMITTING` (already committed) — never in between (D-017).
+- [ ] The transition table is strict: `CREATED → {SUBMITTING, CANCELED,
+      REJECTED}` (no direct `CREATED → SUBMITTED`); the claim is the only path
+      to the broker. Session close never cancels a `SUBMITTING` order (its
+      filter keys on `status is CREATED`) — pinned by a test.
+- [ ] A broker-accepted order the store can't mark `SUBMITTED` is handled by
+      *why*: still `SUBMITTING` (open at broker) → retry; locally
+      `CANCELED`/`REJECTED` (orphan) → a **durable** `SubmitRecoveryRecord`, and
+      `_recover_unpersisted_submits` polls/cancels every cadence until resolved
+      — not a lone best-effort cancel (F-002). A `FILLED` stranded order is
+      surfaced (`resolved_filled_needs_review`), never silently dropped.
+- [ ] Malformed `filled_quantity`/fill quantity/fill price
+      (NaN/Inf/fractional/bool/str/negative/overfill) is rejected cleanly and
+      **identically** in both stores with no persisted mutation (F-003), via one
+      shared `finite_number_reason`/`whole_count_reason` guard.
+- [ ] Non-finite market data produces **no** candidate (F-005): `features.py`
+      returns `None`, and `strategy.evaluate` rejects a snapshot with any
+      present-but-non-finite field (never `suggested_limit_price=inf`).
+- [ ] An explicit, unresolvable `session_id` is rejected at `create_candidate`
+      (no orphan candidate/order); the planner blocks `session is None` (F-004)
+      — and `order_intent_block_reason(None)` is **unchanged** (the monitoring
+      loop's current-session emergency-stop still reads `None` as "no live
+      session to stop").
+- [ ] The approve route reverts approval on **all** post-approval dispatch
+      failures, not just block/risk errors — a candidate never strands
+      `APPROVED` (F-002-first-doc); the pre-check uses `limit_price_reason`, so
+      an `inf` price is caught before approval.
+- [ ] The cockpit surfaces `created`/held/`submitting`/recovery orders with
+      reasons and offers cancel for never-submitted orders (F-006);
+      `GET /api/order-recoveries` is read-only and defined before
+      `/orders/{order_id}`.
+- [ ] `stale_state` is seeded from the durable event log on the first tick
+      after restart — no duplicate `market_data_stale` (F-007); the log is read
+      once per symbol, not per tick.
+- [ ] No `ResourceWarning` for sqlite connections in the suite (F-008); the
+      `any_store` fixture closes its connection and the warning is promoted to
+      an error.
+- [ ] D-017 is recorded in `docs/00_START_HERE.md` as part of the fix.
+
 ## Phase 6 (Capital Intelligence Layer — pre-trade risk gate)
 - [ ] CAPI gates-and-rejects on a limit breach; it never silently resizes an
       order down to fit (D-016a).
