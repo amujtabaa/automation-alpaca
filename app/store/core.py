@@ -28,10 +28,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from app.models import Fill, Order, OrderSide, utcnow
+from app.models import (
+    Candidate,
+    CandidateStatus,
+    Fill,
+    Order,
+    OrderSide,
+    OrderType,
+    SessionRecord,
+    utcnow,
+)
 from app.position import NegativePositionError, would_go_negative
-from app.store.base import InvalidFillError, UnknownEntityError
-from app.store.validation import fill_order_match_reason, fill_value_reason
+from app.store.base import (
+    CandidateTransitionError,
+    InvalidFillError,
+    InvalidOrderError,
+    OrderIntentBlockedError,
+    UnknownEntityError,
+)
+from app.store.validation import (
+    fill_order_match_reason,
+    fill_value_reason,
+    limit_price_reason,
+    order_intent_block_reason,
+)
 
 
 @dataclass(frozen=True)
@@ -232,4 +252,124 @@ def plan_append_fill(
             session_id=session_id,
         ),
         fill=fill,
+    )
+
+
+# ---- create_order_for_candidate ------------------------------------------- #
+
+# CreateOrderPlan.outcome values:
+CREATE_ORDER_REJECT = "reject"  # write `reject_event` (block case only); raise `error`
+CREATE_ORDER_CREATE = "create"  # write `order` + candidate ORDERED transition + `events`
+
+
+@dataclass(frozen=True)
+class CreateOrderPlan:
+    """Pure outcome of the APPROVED→ORDERED handoff *after* the store has handled
+    the candidate-missing and ORDERED-idempotent cases (both need store fetches).
+
+    ``reject``: raise ``error``; write ``reject_event`` first *only* when it is
+    set (the kill-switch/pause block writes an audit row; the not-approved and
+    invalid-qty/price rejections write nothing, matching the original stores).
+    ``create``: append ``order``, transition the candidate to ORDERED linking it,
+    and write ``events`` (``order_created`` then ``candidate_transition``) — all
+    atomically.
+    """
+
+    outcome: str
+    error: Optional[Exception] = None
+    reject_event: Optional[EventSpec] = None
+    order: Optional[Order] = None
+    events: tuple[EventSpec, ...] = ()
+
+
+def plan_create_order_for_candidate(
+    *, candidate: Candidate, session: Optional[SessionRecord]
+) -> CreateOrderPlan:
+    """The shared validation cascade + order construction for the candidate→order
+    dispatch. ``candidate`` is known to exist and *not* already ORDERED (the store
+    handles those first). ``session`` is the candidate's own originating session.
+    """
+
+    # The approved-only rule D-010 deferred to the gate lands here.
+    if candidate.status is not CandidateStatus.APPROVED:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=CandidateTransitionError(
+                f"cannot order candidate {candidate.id} in status "
+                f"{candidate.status.value}; must be approved"
+            ),
+        )
+
+    # Safety controls (Rule 8): refuse new order intent when kill-switched /
+    # buys-paused — gated at the backend boundary (not just the UI), and audited.
+    block = order_intent_block_reason(session)
+    if block is not None:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=OrderIntentBlockedError(f"order intent blocked: {block}"),
+            reject_event=EventSpec(
+                "order_intent_blocked",
+                message=f"order intent for {candidate.symbol} blocked: {block}",
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                payload={"reason": block},
+                session_id=candidate.session_id,
+            ),
+        )
+
+    qty = candidate.suggested_quantity
+    if qty is None or qty <= 0:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=InvalidOrderError(
+                f"candidate {candidate.id} has no positive suggested_quantity "
+                f"to size an order"
+            ),
+        )
+
+    # A LIMIT order requires a finite, positive limit price (F1 / BACKEND-1).
+    limit_price = candidate.suggested_limit_price
+    bad_price = limit_price_reason(limit_price)
+    if bad_price is not None:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=InvalidOrderError(
+                f"candidate {candidate.id} has no valid suggested_limit_price "
+                f"for a limit order ({bad_price})"
+            ),
+        )
+
+    # Long-only buy proposal (beta). Order type LIMIT; session order-type policy
+    # (Rule 12) is enforced at submission time, not here.
+    order = Order(
+        candidate_id=candidate.id,
+        symbol=candidate.symbol,
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=qty,
+        limit_price=limit_price,
+        session_id=candidate.session_id,
+    )
+    return CreateOrderPlan(
+        CREATE_ORDER_CREATE,
+        order=order,
+        events=(
+            EventSpec(
+                "order_created",
+                message=f"order created for {candidate.symbol}",
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                order_id=order.id,
+                session_id=candidate.session_id,
+            ),
+            EventSpec(
+                "candidate_transition",
+                message="candidate approved -> ordered",
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                order_id=order.id,
+                payload={"from": "approved", "to": "ordered"},
+                session_id=candidate.session_id,
+            ),
+        ),
     )

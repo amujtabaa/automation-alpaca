@@ -43,7 +43,6 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     InvalidOrderError,
-    OrderIntentBlockedError,
     OrderTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
@@ -52,9 +51,11 @@ from app.store.base import (
     normalize_symbol,
 )
 from app.store.core import (
+    CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
     plan_append_fill,
+    plan_create_order_for_candidate,
 )
 from app.store.transitions import (
     CANDIDATE_TIMESTAMP as _CANDIDATE_TIMESTAMP,
@@ -64,9 +65,7 @@ from app.store.transitions import (
 )
 from app.store.validation import (
     filled_quantity_reason,
-    limit_price_reason,
     order_candidate_match_reason,
-    order_intent_block_reason,
 )
 
 
@@ -455,96 +454,39 @@ class InMemoryStateStore(StateStore):
                         f"candidate {candidate_id} is ORDERED but has no linked order"
                     )
                 return existing.model_copy(deep=True)
-            # The approved-only rule D-010 deferred to the gate lands here: only
-            # an APPROVED candidate may be dispatched to an order.
-            if candidate.status is not CandidateStatus.APPROVED:
-                raise CandidateTransitionError(
-                    f"cannot order candidate {candidate_id} in status "
-                    f"{candidate.status.value}; must be approved"
-                )
-            # Safety controls (Rule 8): refuse new order intent when the kill
-            # switch is engaged / buys are paused. Enforced at the backend
-            # boundary so every producer is gated (not just the UI), and audited.
+            # Shared validation cascade + order construction (app/store/core.py);
+            # the candidate-missing and ORDERED-idempotent cases above stay here
+            # since they need store-specific fetches.
             session = next(
                 (s for s in self._sessions if s.id == candidate.session_id), None
             )
-            block = order_intent_block_reason(session)
-            if block is not None:
-                self._append_event_unlocked(
-                    "order_intent_blocked",
-                    message=f"order intent for {candidate.symbol} blocked: {block}",
-                    symbol=candidate.symbol,
-                    candidate_id=candidate_id,
-                    payload={"reason": block},
-                    session_id=candidate.session_id,
-                )
-                raise OrderIntentBlockedError(f"order intent blocked: {block}")
-            qty = candidate.suggested_quantity
-            if qty is None or qty <= 0:
-                raise InvalidOrderError(
-                    f"candidate {candidate_id} has no positive suggested_quantity "
-                    f"to size an order"
-                )
-            # A LIMIT order requires a finite, positive limit price (F1 / BACKEND-1):
-            # never persist a LIMIT order with a missing/NaN/Inf/zero/negative price.
-            limit_price = candidate.suggested_limit_price
-            bad_price = limit_price_reason(limit_price)
-            if bad_price is not None:
-                raise InvalidOrderError(
-                    f"candidate {candidate_id} has no valid suggested_limit_price "
-                    f"for a limit order ({bad_price})"
-                )
-            # Long-only buy proposal (beta). Order type LIMIT; session order-type
-            # policy (Rule 12) is enforced later, not here.
-            order = Order(
-                candidate_id=candidate_id,
-                symbol=candidate.symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.LIMIT,
-                quantity=qty,
-                limit_price=limit_price,
-                session_id=candidate.session_id,
-            )
-            # APPROVED -> ORDERED, linking the order. The lock serializes other
-            # coroutines, but this block must also be all-or-nothing if a write
-            # raises mid-way (F3) — so mutate a candidate *copy* and commit the
-            # order/candidate/events together, rolling back on any failure. This
-            # matches SqliteStateStore's single-transaction guarantee for the
-            # "candidate approval + order creation + audit event" group (docs/02).
+            plan = plan_create_order_for_candidate(candidate=candidate, session=session)
+            if plan.outcome == CREATE_ORDER_REJECT:
+                # Only the kill-switch/pause block writes an audit row before it
+                # raises; the not-approved and invalid-qty/price rejections don't.
+                if plan.reject_event is not None:
+                    self._append_event_unlocked(
+                        plan.reject_event.event_type, **plan.reject_event.as_kwargs()
+                    )
+                raise plan.error
+
+            # CREATE — APPROVED -> ORDERED, linking the order. Wrapped in _atomic
+            # (unifying what was previously a hand-rolled snapshot/restore here) so
+            # the order insert + candidate transition + both audit events are
+            # all-or-nothing, matching SqliteStateStore's single-transaction
+            # guarantee for the "approval + order creation + audit" group (docs/02).
+            order = plan.order
             now = utcnow()
             updated = candidate.model_copy(deep=True)
             updated.status = CandidateStatus.ORDERED
             updated.order_id = order.id
             updated.updated_at = now
             updated.ordered_at = now
-            events_before = len(self._events)
-            try:
+            with self._atomic():
                 self._orders[order.id] = order
                 self._candidates[candidate_id] = updated
-                self._append_event_unlocked(
-                    "order_created",
-                    message=f"order created for {candidate.symbol}",
-                    symbol=candidate.symbol,
-                    candidate_id=candidate_id,
-                    order_id=order.id,
-                    session_id=candidate.session_id,
-                )
-                self._append_event_unlocked(
-                    "candidate_transition",
-                    message="candidate approved -> ordered",
-                    symbol=candidate.symbol,
-                    candidate_id=candidate_id,
-                    order_id=order.id,
-                    payload={"from": "approved", "to": "ordered"},
-                    session_id=candidate.session_id,
-                )
-            except BaseException:
-                # Restore the pre-handoff state: drop the order, restore the
-                # original candidate, and truncate any events appended so far.
-                self._orders.pop(order.id, None)
-                self._candidates[candidate_id] = candidate
-                del self._events[events_before:]
-                raise
+                for event in plan.events:
+                    self._append_event_unlocked(event.event_type, **event.as_kwargs())
             return order.model_copy(deep=True)
 
     async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
