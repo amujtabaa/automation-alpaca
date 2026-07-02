@@ -50,11 +50,10 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.position import NegativePositionError, fold_fills, would_go_negative
+from app.position import fold_fills
 from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
-    InvalidFillError,
     InvalidOrderError,
     OrderIntentBlockedError,
     OrderTransitionError,
@@ -64,6 +63,11 @@ from app.store.base import (
     UnknownEntityError,
     normalize_symbol,
 )
+from app.store.core import (
+    FILL_DUPLICATE,
+    FILL_REJECT,
+    plan_append_fill,
+)
 from app.store.transitions import (
     CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS,
@@ -71,8 +75,6 @@ from app.store.transitions import (
     ORDER_TRANSITIONS,
 )
 from app.store.validation import (
-    fill_order_match_reason,
-    fill_value_reason,
     filled_quantity_reason,
     limit_price_reason,
     order_candidate_match_reason,
@@ -1209,130 +1211,60 @@ class SqliteStateStore(StateStore):
         key = normalize_symbol(symbol)
         side = OrderSide(side)
         async with self._lock:
-            # 1) Intrinsic value validation (Fix 1): a non-positive quantity or
-            #    price would corrupt derived-position truth. Reject up front.
-            value_reason = fill_value_reason(quantity, price)
-            if value_reason is not None:
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_invalid",
-                        message=f"fill for {key} rejected: {value_reason}",
-                        symbol=key,
-                        order_id=order_id,
-                        payload={
-                            "reason": value_reason,
-                            "quantity": quantity,
-                            "price": price,
-                        },
-                        session_id=session_id,
-                    )
-                raise InvalidFillError(f"invalid fill for {key}: {value_reason}")
-
-            # 2) The referenced order must exist (Fix 2).
+            # Fetch the state the shared planner decides over (SQL form), then
+            # apply its plan. Decision logic lives once in app/store/core.py; only
+            # the fetch + the write primitive are store-specific here.
             order_row = self._read_one(
                 "SELECT * FROM orders WHERE id = ?", (order_id,)
             )
-            if order_row is None:
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_invalid",
-                        message=f"fill rejected: unknown order {order_id}",
-                        symbol=key,
-                        order_id=order_id,
-                        payload={"reason": "unknown_order"},
-                        session_id=session_id,
-                    )
-                raise UnknownEntityError(f"order {order_id} not found")
-            order = self._order(order_row)
-
-            # 3) Duplicate protection. A replay short-circuits here before the
-            #    cumulative check, so it is never mistaken for an overfill.
-            if source_fill_id is not None:
-                dup = self._read_one(
-                    "SELECT 1 FROM fills WHERE order_id = ? AND source_fill_id = ?",
-                    (order_id, source_fill_id),
-                )
-                if dup is not None:
-                    with self._tx() as cur:
-                        event = self._insert_event(
-                            cur,
-                            "fill_duplicate_ignored",
-                            message=f"duplicate fill {source_fill_id} for {key} ignored",
-                            symbol=key,
-                            order_id=order_id,
-                            payload={"source_fill_id": source_fill_id},
-                            session_id=session_id,
-                        )
-                    return FillAppendResult(status="duplicate", fill=None, event=event)
-
-            # 4) Symbol/side match + cumulative-quantity vs the order (Fix 2).
+            order = self._order(order_row) if order_row is not None else None
             prior_row = self._read_one(
                 "SELECT COALESCE(SUM(quantity), 0) AS total FROM fills "
                 "WHERE order_id = ?",
                 (order_id,),
             )
             prior_filled = prior_row["total"] if prior_row else 0
-            match_reason = fill_order_match_reason(
-                order, key, side, quantity, prior_filled
-            )
-            if match_reason is not None:
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_invalid",
-                        message=f"fill for {key} rejected: {match_reason}",
-                        symbol=key,
-                        order_id=order_id,
-                        payload={
-                            "reason": match_reason,
-                            "order_symbol": order.symbol,
-                            "order_side": OrderSide(order.side).value,
-                            "order_quantity": order.quantity,
-                            "prior_filled_quantity": prior_filled,
-                            "quantity": quantity,
-                        },
-                        session_id=session_id,
+            is_duplicate = False
+            if source_fill_id is not None:
+                is_duplicate = (
+                    self._read_one(
+                        "SELECT 1 FROM fills WHERE order_id = ? AND source_fill_id = ?",
+                        (order_id, source_fill_id),
                     )
-                raise InvalidFillError(
-                    f"fill for {key} inconsistent with order {order_id}: "
-                    f"{match_reason}"
+                    is not None
                 )
-
-            # 5) Long-only integrity check.
             current = self._position_locked(key)
-            if would_go_negative(current.quantity, side, quantity):
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_negative_position",
-                        message=(
-                            f"sell of {quantity} {key} rejected: exceeds current "
-                            f"quantity {current.quantity}"
-                        ),
-                        symbol=key,
-                        order_id=order_id,
-                        payload={
-                            "attempted_sell": quantity,
-                            "current_quantity": current.quantity,
-                        },
-                        session_id=session_id,
-                    )
-                # Event committed; now surface the rejection.
-                raise NegativePositionError(key, current.quantity, quantity)
-
-            # 6) Append.
-            fill = Fill(
+            plan = plan_append_fill(
                 order_id=order_id,
+                order=order,
+                prior_filled=prior_filled,
+                current_quantity=current.quantity,
+                is_duplicate=is_duplicate,
                 symbol=key,
                 side=side,
                 quantity=quantity,
                 price=price,
                 source_fill_id=source_fill_id,
+                filled_at=filled_at,
                 session_id=session_id,
-                filled_at=filled_at or utcnow(),
             )
+
+            if plan.outcome == FILL_REJECT:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur, plan.event.event_type, **plan.event.as_kwargs()
+                    )
+                raise plan.error
+
+            if plan.outcome == FILL_DUPLICATE:
+                with self._tx() as cur:
+                    event = self._insert_event(
+                        cur, plan.event.event_type, **plan.event.as_kwargs()
+                    )
+                return FillAppendResult(status="duplicate", fill=None, event=event)
+
+            # FILL_APPEND — one transaction: INSERT the fill row + its audit event.
+            fill = plan.fill
             with self._tx() as cur:
                 cur.execute(
                     """INSERT INTO fills
@@ -1353,14 +1285,7 @@ class SqliteStateStore(StateStore):
                     ),
                 )
                 event = self._insert_event(
-                    cur,
-                    "fill_appended",
-                    message=f"fill {fill.quantity} {key} @ {fill.price}",
-                    symbol=key,
-                    order_id=order_id,
-                    fill_id=fill.id,
-                    payload={"side": side.value, "quantity": quantity, "price": price},
-                    session_id=session_id,
+                    cur, plan.event.event_type, **plan.event.as_kwargs()
                 )
             return FillAppendResult(status="appended", fill=fill, event=event)
 
