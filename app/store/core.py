@@ -39,6 +39,8 @@ from app.models import (
     OrderType,
     Position,
     PositionSnapshot,
+    RECOVERY_NEEDS_REVIEW,
+    RECOVERY_UNRESOLVED,
     SessionRecord,
     utcnow,
 )
@@ -453,6 +455,31 @@ def plan_create_order_for_candidate(
             ),
         ),
     )
+
+
+# ---- submit-recovery ledger (D-017) --------------------------------------- #
+
+
+def recovery_status_event(
+    prev_status: str, new_status: Optional[str]
+) -> Optional[str]:
+    """The audit event type to write when a recovery record's ``cleanup_status``
+    changes to ``new_status``, or ``None`` if nothing should be recorded (no
+    change, or it stays ``RECOVERY_UNRESOLVED``). A move to needs-review writes
+    ``submit_recovery_needs_review`` (a real untracked position — not "resolved");
+    a clean cancel writes ``submit_recovery_resolved``. Shared so both stores
+    emit identical events.
+    """
+
+    if (
+        new_status is None
+        or new_status == prev_status
+        or new_status == RECOVERY_UNRESOLVED
+    ):
+        return None
+    if new_status == RECOVERY_NEEDS_REVIEW:
+        return "submit_recovery_needs_review"
+    return "submit_recovery_resolved"
 
 
 # ---- claim_order_for_submission (D-017) ----------------------------------- #

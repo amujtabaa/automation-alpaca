@@ -85,11 +85,11 @@ async def test_list_order_recoveries_returns_unresolved_by_default():
         # The literal path is not captured as an order_id by /orders/{order_id}.
         assert (await client.get("/api/orders/order-recoveries")).status_code == 404
 
-    # Once resolved, it drops out of the default (unresolved-only) view.
+    # Once cleanly resolved, it drops out of the default (open) view.
     await store.update_submit_recovery(rec.id, cleanup_status="resolved_canceled")
     async with _client(app) as client:
         assert (await client.get("/api/order-recoveries")).json() == []
-        allrecs = await client.get("/api/order-recoveries?unresolved_only=false")
+        allrecs = await client.get("/api/order-recoveries?open_only=false")
         assert [r["id"] for r in allrecs.json()] == [rec.id]
 
 

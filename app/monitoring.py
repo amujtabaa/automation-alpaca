@@ -38,7 +38,16 @@ from typing import Optional
 
 from app.broker.adapter import BrokerAdapter, BrokerOrderUpdate
 from app.config import Settings
-from app.models import EventType, Order, OrderStatus, utcnow
+from app.models import (
+    RECOVERY_NEEDS_REVIEW,
+    RECOVERY_RESOLVED,
+    RECOVERY_UNRESOLVED,
+    EventType,
+    Order,
+    OrderStatus,
+    SessionStatus,
+    utcnow,
+)
 from app.position import NegativePositionError
 from app.store.base import (
     CLAIM_BLOCKED,
@@ -172,14 +181,33 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
         try:
             broker_order_id = await adapter.submit_order(claimed)
         except Exception as exc:  # noqa: BLE001 - release the claim, retry next tick
+            # Releasing SUBMITTING -> CREATED lets the next tick re-run the full
+            # gate. But if the order's OWN session closed during the submit await
+            # (session close skips SUBMITTING orders, so the claim shielded it
+            # from close's CREATED-order cancel), releasing to CREATED would
+            # strand a zombie CREATED order in a closed session forever — close
+            # is one-shot and never runs again, and no other path cleans it up,
+            # so it would count toward CAPI exposure indefinitely (regressing
+            # D-013a's no-zombie-CREATED-after-close invariant). In that case
+            # cancel it instead — exactly what close would have done to a CREATED
+            # order. A merely kill-switched/paused session still releases to
+            # CREATED (reversible: the next claim holds it until the stop clears).
+            own_session = await store.get_session_by_id(claimed.session_id)
+            release_target = (
+                OrderStatus.CANCELED
+                if own_session is not None
+                and own_session.status is SessionStatus.CLOSED
+                else OrderStatus.CREATED
+            )
             _log.warning(
-                "submit failed for order %s (%s); releasing claim to retry: %s",
+                "submit failed for order %s (%s); releasing claim to %s: %s",
                 claimed.id,
                 claimed.symbol,
+                release_target.value,
                 exc,
             )
             try:
-                await store.transition_order(claimed.id, OrderStatus.CREATED)
+                await store.transition_order(claimed.id, release_target)
             except _TRANSITION_ERRORS as rel_exc:
                 # The order left SUBMITTING some other way (e.g. a manual cancel
                 # during the broker call) — nothing to release. Safe to skip.
@@ -300,25 +328,40 @@ async def _handle_unpersisted_submit(
         )
 
 
+def _broker_filled(update: BrokerOrderUpdate) -> int:
+    """How many shares the broker reports filled on a recovery poll — the
+    order's cumulative ``filled_quantity`` plus any per-execution fills it
+    carries, whichever is larger (adapters differ on which they populate)."""
+
+    from_fills = sum(f.quantity for f in (update.fills or []))
+    return max(update.filled_quantity or 0, from_fills)
+
+
 async def _recover_unpersisted_submits(
     store: StateStore, adapter: BrokerAdapter
 ) -> None:
     """Drive every unresolved broker-submit recovery record toward resolution.
 
-    For each record (D-017 / F-002): poll the broker order; if it is already
-    terminal-and-not-live (``CANCELED``/``REJECTED``), it is resolved. If it
-    turns out to have ``FILLED``, that is a real untracked position — surface it
-    loudly and mark it ``resolved_filled_needs_review`` (never silently dropped).
-    Otherwise it is still live, so request a cancel and re-poll to confirm; if
-    the broker confirms terminal, resolve it, else leave it unresolved to retry
-    next cadence (not a single attempt). Every record's attempt count is bumped
-    so an operator can see it is being worked.
+    For each record (D-017 / F-002):
 
-    Best-effort per record; a broker error on one leaves it unresolved for the
-    next tick and never crashes the loop.
+    * **Any fills** (partial *or* full) → the broker order executed some shares
+      the local state never tracked: a **real untracked position**. Mark it
+      ``needs_review`` and surface it loudly — never cancel-and-drop it. This is
+      the key fix over the naive "cancel anything not already terminal" loop,
+      which silently discarded a partial fill's already-executed shares.
+    * **Zero fills, terminal at broker** (``CANCELED``/``REJECTED``) → nothing
+      live: ``resolved_canceled``.
+    * **Zero fills, still live** → request a cancel and re-poll; if the confirm
+      shows fills, escalate to ``needs_review``; if terminal, resolve; else
+      leave unresolved to retry next cadence (not a single attempt).
+
+    Only ``RECOVERY_UNRESOLVED`` records are acted on — a ``needs_review`` record
+    is done being worked automatically and stays visible to the operator until a
+    human reconciles it. Best-effort per record; a broker error leaves it
+    unresolved for the next tick and never crashes the loop.
     """
 
-    records = await store.list_submit_recoveries(unresolved_only=True)
+    records = await store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED})
     for rec in records:
         try:
             update = await adapter.get_order_status(
@@ -333,27 +376,28 @@ async def _recover_unpersisted_submits(
             await store.update_submit_recovery(rec.id, bump_attempt=True)
             continue
 
+        if _broker_filled(update) > 0:
+            # Partial OR full fill: a real untracked position. Do not cancel the
+            # remainder and mark it "resolved" — that would silently discard the
+            # already-executed shares. Flag for human reconciliation.
+            _log.error(
+                "stranded broker order %s has %s filled shares before recovery "
+                "could cancel it — a real untracked position needs manual review",
+                rec.broker_order_id,
+                _broker_filled(update),
+            )
+            await store.update_submit_recovery(
+                rec.id, cleanup_status=RECOVERY_NEEDS_REVIEW, bump_attempt=True
+            )
+            continue
         if update.status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
             await store.update_submit_recovery(
-                rec.id, cleanup_status="resolved_canceled", bump_attempt=True
+                rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
             )
             _log.info("recovered stranded broker order %s (terminal at broker)", rec.broker_order_id)
             continue
-        if update.status is OrderStatus.FILLED:
-            # A live position we never tracked locally — do not silently drop it.
-            _log.error(
-                "stranded broker order %s FILLED before recovery could cancel it "
-                "— a real untracked position needs manual review",
-                rec.broker_order_id,
-            )
-            await store.update_submit_recovery(
-                rec.id,
-                cleanup_status="resolved_filled_needs_review",
-                bump_attempt=True,
-            )
-            continue
 
-        # Still live at the broker → request a cancel and confirm.
+        # Zero fills and still live → request a cancel and confirm.
         try:
             await adapter.cancel_order(rec.broker_order_id)
             confirm = await adapter.get_order_status(
@@ -368,9 +412,15 @@ async def _recover_unpersisted_submits(
             await store.update_submit_recovery(rec.id, bump_attempt=True)
             continue
 
-        if confirm.status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
+        if _broker_filled(confirm) > 0:
+            # A fill landed during the cancel window — same untracked-position
+            # concern; escalate to needs_review rather than resolved.
             await store.update_submit_recovery(
-                rec.id, cleanup_status="resolved_canceled", bump_attempt=True
+                rec.id, cleanup_status=RECOVERY_NEEDS_REVIEW, bump_attempt=True
+            )
+        elif confirm.status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
+            await store.update_submit_recovery(
+                rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
             )
             _log.info("recovered stranded broker order %s (cancel confirmed)", rec.broker_order_id)
         else:

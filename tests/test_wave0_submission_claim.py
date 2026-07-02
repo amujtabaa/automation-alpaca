@@ -16,7 +16,15 @@ import pytest
 
 from app.broker.adapter import BrokerError
 from app.broker.mock import MockBrokerAdapter
-from app.models import CandidateStatus, OrderSide, OrderStatus
+from app.models import (
+    RECOVERY_NEEDS_REVIEW,
+    RECOVERY_OPEN_STATUSES,
+    RECOVERY_RESOLVED,
+    RECOVERY_UNRESOLVED,
+    CandidateStatus,
+    OrderSide,
+    OrderStatus,
+)
 from app.monitoring import _submit_pending_orders
 from app.store.base import (
     CLAIM_BLOCKED,
@@ -119,12 +127,31 @@ class TestRecoveryLedger:
             for e in await any_store.list_events()
         )
 
-    async def test_unresolved_only_filter(self, any_store):
+    async def test_status_filter(self, any_store):
         rec = await self._record(any_store)
-        assert len(await any_store.list_submit_recoveries(unresolved_only=True)) == 1
-        await any_store.update_submit_recovery(rec.id, cleanup_status="resolved_canceled")
-        assert await any_store.list_submit_recoveries(unresolved_only=True) == []
-        assert len(await any_store.list_submit_recoveries()) == 1  # still in history
+        # Open view (the operator/loop filter) includes unresolved.
+        assert len(await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)) == 1
+        await any_store.update_submit_recovery(rec.id, cleanup_status=RECOVERY_RESOLVED)
+        # A cleanly-resolved record drops out of the open view but stays in history.
+        assert await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES) == []
+        assert len(await any_store.list_submit_recoveries()) == 1
+
+    async def test_needs_review_stays_in_the_open_operator_view(self, any_store):
+        """A needs_review record (a real untracked position) must NOT drop out of
+        the operator surface the way a cleanly-cancelled one does — the operator
+        has to see it until a human reconciles it (F-006/#4)."""
+
+        rec = await self._record(any_store)
+        await any_store.update_submit_recovery(rec.id, cleanup_status=RECOVERY_NEEDS_REVIEW)
+        open_records = await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)
+        assert [r.id for r in open_records] == [rec.id]
+        # But the recovery loop's own filter (strictly unresolved) excludes it —
+        # it must not keep re-cancelling a needs-review record.
+        assert await any_store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED}) == []
+        # And it wrote a needs-review event, not a "resolved" one.
+        types = {e.event_type for e in await any_store.list_events()}
+        assert "submit_recovery_needs_review" in types
+        assert "submit_recovery_resolved" not in types
 
     async def test_bump_attempt_increments_and_stamps(self, any_store):
         rec = await self._record(any_store)
@@ -135,7 +162,7 @@ class TestRecoveryLedger:
     async def test_resolve_writes_resolved_event_once(self, any_store):
         rec = await self._record(any_store)
         await any_store.update_submit_recovery(
-            rec.id, cleanup_status="resolved_canceled", bump_attempt=True
+            rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
         )
         resolved_events = [
             e
@@ -143,7 +170,7 @@ class TestRecoveryLedger:
             if e.event_type == "submit_recovery_resolved"
         ]
         assert len(resolved_events) == 1
-        assert resolved_events[0].payload["cleanup_status"] == "resolved_canceled"
+        assert resolved_events[0].payload["cleanup_status"] == RECOVERY_RESOLVED
 
     async def test_update_unknown_raises(self, any_store):
         await any_store.initialize()
@@ -194,6 +221,39 @@ async def test_kill_switch_flip_after_claim_still_submits():
     assert [o.id for o in adapter.submitted] == [order.id]
     assert (await store.get_order(order.id)).status is OrderStatus.SUBMITTED
     assert (await store.get_current_session()).kill_switch is True  # flip took effect
+
+
+class _CloseSessionThenFailSubmit(MockBrokerAdapter):
+    """Closes the order's session *inside* submit_order (after the claim moved
+    it to SUBMITTING, which close skips), then raises — reproducing a session
+    close racing the submit call."""
+
+    def __init__(self, store) -> None:
+        super().__init__()
+        self._store = store
+
+    async def submit_order(self, order):
+        self.submitted.append(order)  # record the attempt, as the real mock does
+        await self._store.close_session()
+        raise BrokerError("network blip during a closing session")
+
+
+async def test_release_after_submit_failure_into_closed_session_cancels_not_strands():
+    """If the order's own session closed during the submit await, releasing the
+    claim to CREATED would strand a zombie CREATED order in a closed session
+    forever (close is one-shot; nothing else cleans it up), permanently inflating
+    exposure. Instead it must be CANCELED — what close would have done to a
+    CREATED order (regression guard for the pre-merge review's finding #2)."""
+
+    store = InMemoryStateStore()
+    order = await _created_order(store)
+    adapter = _CloseSessionThenFailSubmit(store)
+
+    await _submit_pending_orders(store, adapter)
+
+    fresh = await store.get_order(order.id)
+    assert fresh.status is OrderStatus.CANCELED  # not stranded CREATED
+    assert [o.id for o in adapter.submitted] == [order.id]  # the broker was attempted
 
 
 async def test_transient_submit_failure_releases_claim_and_reruns_gate():

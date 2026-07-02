@@ -31,7 +31,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
     Candidate,
@@ -77,6 +77,7 @@ from app.store.core import (
     plan_close_session,
     plan_create_order_for_candidate,
     plan_transition_order,
+    recovery_status_event,
 )
 from app.store.transitions import (
     CANDIDATE_TIMESTAMP,
@@ -1141,18 +1142,22 @@ class SqliteStateStore(StateStore):
             return record
 
     async def list_submit_recoveries(
-        self, *, unresolved_only: bool = False
+        self, *, statuses: Optional[Iterable[str]] = None
     ) -> list[SubmitRecoveryRecord]:
+        wanted = None if statuses is None else list(statuses)
         async with self._lock:
-            if unresolved_only:
-                rows = self._read_all(
-                    "SELECT * FROM submit_recoveries WHERE cleanup_status = ? "
-                    "ORDER BY rowid",
-                    ("unresolved",),
-                )
-            else:
+            if wanted is None:
                 rows = self._read_all(
                     "SELECT * FROM submit_recoveries ORDER BY rowid"
+                )
+            elif not wanted:
+                return []
+            else:
+                placeholders = ",".join("?" * len(wanted))
+                rows = self._read_all(
+                    f"SELECT * FROM submit_recoveries WHERE cleanup_status IN "
+                    f"({placeholders}) ORDER BY rowid",
+                    tuple(wanted),
                 )
             return [self._submit_recovery(r) for r in rows]
 
@@ -1172,10 +1177,8 @@ class SqliteStateStore(StateStore):
                     f"submit recovery {recovery_id} not found"
                 )
             record = self._submit_recovery(row)
-            resolving = (
-                cleanup_status is not None
-                and cleanup_status != "unresolved"
-                and cleanup_status != record.cleanup_status
+            terminal_event = recovery_status_event(
+                record.cleanup_status, cleanup_status
             )
             updated = record.model_copy(deep=True)
             if bump_attempt:
@@ -1194,13 +1197,13 @@ class SqliteStateStore(StateStore):
                         updated.id,
                     ),
                 )
-                if resolving:
+                if terminal_event is not None:
                     self._insert_event(
                         cur,
-                        "submit_recovery_resolved",
+                        terminal_event,
                         message=(
                             f"broker order {updated.broker_order_id} recovery "
-                            f"resolved: {cleanup_status}"
+                            f"{cleanup_status}"
                         ),
                         symbol=updated.symbol,
                         order_id=updated.local_order_id,

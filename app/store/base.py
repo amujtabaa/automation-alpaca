@@ -23,7 +23,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 
 from app.models import (
     Candidate,
@@ -450,11 +450,17 @@ class StateStore(ABC):
 
     @abstractmethod
     async def list_submit_recoveries(
-        self, *, unresolved_only: bool = False
+        self, *, statuses: Optional[Iterable[str]] = None
     ) -> list[SubmitRecoveryRecord]:
-        """All broker-submit recovery records (newest last), optionally only the
-        ones still ``unresolved`` (what the recovery loop and the operator view
-        care about)."""
+        """Broker-submit recovery records (newest last), optionally filtered to a
+        set of ``cleanup_status`` values.
+
+        ``statuses=None`` returns all. The recovery loop passes
+        ``{RECOVERY_UNRESOLVED}`` (records it should still act on); the operator
+        surface passes ``RECOVERY_OPEN_STATUSES`` (unresolved **and**
+        needs-review — everything still needing attention, since a needs-review
+        record holds a real untracked position a human must reconcile).
+        """
 
     @abstractmethod
     async def update_submit_recovery(

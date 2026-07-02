@@ -246,14 +246,19 @@ async def _surface_market_data_staleness(
         # durable event log (F-007). On the FIRST tick after a process restart
         # the cache is a non-None but EMPTY dict, so without this an
         # already-stale feed (a market_data_stale already in the log) would be
-        # re-announced as a *new* transition — a duplicate event. Only unknown
-        # symbols trigger a log read, so steady-state ticks stay O(1); a
-        # never-stale symbol has no event and stays absent (a healthy baseline),
-        # matching _last_known_stale_state's own asymmetry.
+        # re-announced as a *new* transition — a duplicate event.
+        #
+        # Crucially, seed EVERY unknown symbol — including healthy ones with no
+        # event — as an explicit ``False``, not just the ones the log returns. A
+        # never-stale symbol has no staleness event, so if it were left absent
+        # it would stay "unknown" and force a full list_events() scan on *every*
+        # tick, reintroducing the O(events)/tick cost the cache exists to avoid.
+        # Seeding it False makes the log read happen exactly once per symbol.
         unknown = symbols - previously_stale.keys()
         if unknown:
-            for sym, was in (await _last_known_stale_state(store, unknown)).items():
-                previously_stale.setdefault(sym, was)
+            seeded = await _last_known_stale_state(store, unknown)
+            for sym in unknown:
+                previously_stale[sym] = seeded.get(sym, False)
 
     for snapshot in snapshots:
         was_stale = previously_stale.get(snapshot.symbol, False)

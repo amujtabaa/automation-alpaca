@@ -79,9 +79,14 @@ the path the loop happens to use. `CREATED → SUBMITTED` is gone; test setup
 that needs "an order as if submitted" uses the two-step helper
 `tests/store_helpers.submit_created_order`. A transient `submit_order` raise
 releases the claim (`SUBMITTING → CREATED`) so the next tick re-runs the *full*
-gate (a flip during the retry window is then honored). Session close never
-cancels a `SUBMITTING` order — its cancel filter keys on `status is CREATED`,
-so `SUBMITTING` is naturally excluded (pinned by a test). `SUBMITTING` is
+gate (a flip during the retry window is then honored) — **unless the order's own
+session closed during the submit await**, in which case the release goes
+`SUBMITTING → CANCELED` instead: releasing to `CREATED` there would strand a
+zombie `CREATED` order in a closed session forever (close is one-shot; nothing
+else cleans it up), permanently inflating CAPI exposure — cancelling it is
+exactly what close would have done to a `CREATED` order (D-013a). Session close
+never cancels a `SUBMITTING` order — its cancel filter keys on `status is
+CREATED`, so `SUBMITTING` is naturally excluded (pinned by a test). `SUBMITTING` is
 non-terminal (it has outgoing transitions), so it counts toward CAPI exposure
 automatically via the derived `NON_TERMINAL_ORDER_STATUSES`; it carries no
 `broker_order_id`, so reconcile (which keys on `broker_order_id is not None`)
@@ -99,10 +104,16 @@ fails, the handling now splits by *why*:
   lost), so a **durable `SubmitRecoveryRecord`** is written (new table +
   `create/list/update_submit_recovery` store methods, mirrored in both stores).
   A recovery step folded into the monitoring tick polls/cancels the
-  `broker_order_id` **every cadence until resolved** — confirming terminal,
-  or (if it turns out to have `FILLED`) marking it
-  `resolved_filled_needs_review` and surfacing it loudly rather than silently
-  dropping a real untracked position.
+  `broker_order_id` **every cadence until resolved**: zero fills and terminal
+  → `resolved_canceled`; zero fills and still live → cancel and confirm; **any
+  fills at all (partial *or* full)** → `needs_review`, because those executed
+  shares are a real untracked position that a human must reconcile — it is
+  never cancelled-and-dropped. A `needs_review` record stays in the operator's
+  open view (`RECOVERY_OPEN_STATUSES`) until a human clears it; only the
+  recovery loop's own `unresolved`-scoped query excludes it, so it is not
+  re-cancelled. (The naive "cancel anything not already fully filled" version
+  silently discarded a partial fill's shares — a hole the pre-merge review
+  caught.)
 
 **Explicitly out of scope (kept minimal per the remediation prompt):** a full
 OMS-lite command/outbox layer beyond this claim + recovery record. **Known

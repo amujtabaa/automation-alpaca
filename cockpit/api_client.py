@@ -119,10 +119,12 @@ def cancel_order(order_id: str) -> dict:
     return _request("POST", f"/api/orders/{order_id}/cancel")
 
 
-def list_order_recoveries(unresolved_only: bool = True) -> list[dict]:
-    """Broker-submit recovery records (D-017 / F-002) — unresolved by default."""
+def list_order_recoveries(open_only: bool = True) -> list[dict]:
+    """Broker-submit recovery records (D-017 / F-002). By default only the
+    *open* ones — unresolved (loop still working) + needs-review (a real
+    untracked position a human must reconcile)."""
 
-    params = {"unresolved_only": "true" if unresolved_only else "false"}
+    params = {"open_only": "true" if open_only else "false"}
     return _request("GET", "/api/order-recoveries", params=params)
 
 

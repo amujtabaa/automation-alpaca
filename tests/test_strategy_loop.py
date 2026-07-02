@@ -414,15 +414,14 @@ class TestStaleStateCache:
 
         assert "AAPL" not in cache  # pruned, not leaked forever
 
-    async def test_loop_owns_a_persistent_cache_across_ticks(self):
-        """strategy_loop itself (not just run_strategy_tick) must carry the
-        cache across iterations — verified by spying on list_events() call
-        count via a thin store wrapper."""
-
+    async def _count_list_events_over_ticks(self, stale: bool) -> int:
         store = await _armed_store("AAPL")
         feed = FakeMarketDataFeed()
         await feed.subscribe(["AAPL"])
-        feed.set_snapshot("AAPL", stale=True)
+        if stale:
+            feed.set_snapshot("AAPL", stale=True)
+        else:
+            feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
 
         list_events_calls = 0
         orig_list_events = store.list_events
@@ -437,20 +436,30 @@ class TestStaleStateCache:
         settings = Settings(strategy_decision_cadence_seconds=0.01)
         task = asyncio.create_task(strategy_loop(store, feed, settings))
         try:
-            await asyncio.sleep(0.05)  # let a few ticks happen
+            await asyncio.sleep(0.06)  # several ticks
         finally:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        return list_events_calls
 
-        # strategy_loop's stale_state dict is created (empty, but non-None)
-        # BEFORE the loop starts and carried across ticks. The event log is read
-        # exactly ONCE — the first tick seeds the empty cache from the durable
-        # log for the not-yet-observed symbol (the F-007 restart seed) — and
-        # never again, since every subsequent tick finds the symbol already in
-        # the cache. A per-tick full scan (the perf regression this guards) would
-        # make this grow with the number of ticks.
-        assert list_events_calls == 1
+    async def test_loop_owns_a_persistent_cache_across_ticks(self):
+        """strategy_loop itself (not just run_strategy_tick) must carry the
+        cache across iterations. The event log is read exactly ONCE — the first
+        tick seeds the empty cache from the durable log for the not-yet-observed
+        symbol (the F-007 restart seed) — and never again. A per-tick full scan
+        (the perf regression this guards) would make this grow with ticks."""
+
+        assert await self._count_list_events_over_ticks(stale=True) == 1
+
+    async def test_healthy_symbol_does_not_rescan_the_log_every_tick(self):
+        """Regression guard for the F-007 seed: a never-stale symbol has no
+        staleness event, so it must still be cached (as a healthy baseline) on
+        the first seed — otherwise it stays 'unknown' and forces a full
+        list_events() scan on EVERY tick. With several ticks running, the log is
+        read exactly once, not once per tick."""
+
+        assert await self._count_list_events_over_ticks(stale=False) == 1
 
 
 async def test_one_symbols_failure_does_not_block_others():

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import date
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
     Candidate,
@@ -65,6 +65,7 @@ from app.store.core import (
     plan_close_session,
     plan_create_order_for_candidate,
     plan_transition_order,
+    recovery_status_event,
 )
 from app.store.transitions import (
     CANDIDATE_TIMESTAMP as _CANDIDATE_TIMESTAMP,
@@ -610,13 +611,14 @@ class InMemoryStateStore(StateStore):
             return record.model_copy(deep=True)
 
     async def list_submit_recoveries(
-        self, *, unresolved_only: bool = False
+        self, *, statuses: Optional[Iterable[str]] = None
     ) -> list[SubmitRecoveryRecord]:
+        wanted = None if statuses is None else set(statuses)
         async with self._lock:
             return [
                 r.model_copy(deep=True)
                 for r in self._submit_recoveries
-                if not unresolved_only or r.cleanup_status == "unresolved"
+                if wanted is None or r.cleanup_status in wanted
             ]
 
     async def update_submit_recovery(
@@ -638,10 +640,8 @@ class InMemoryStateStore(StateStore):
             if idx is None:
                 raise UnknownEntityError(f"submit recovery {recovery_id} not found")
             record = self._submit_recoveries[idx]
-            resolving = (
-                cleanup_status is not None
-                and cleanup_status != "unresolved"
-                and cleanup_status != record.cleanup_status
+            terminal_event = recovery_status_event(
+                record.cleanup_status, cleanup_status
             )
             # Replace, never mutate in place (keeps _atomic's shallow snapshot valid).
             updated = record.model_copy(deep=True)
@@ -652,12 +652,12 @@ class InMemoryStateStore(StateStore):
                 updated.cleanup_status = cleanup_status
             with self._atomic():
                 self._submit_recoveries[idx] = updated
-                if resolving:
+                if terminal_event is not None:
                     self._append_event_unlocked(
-                        "submit_recovery_resolved",
+                        terminal_event,
                         message=(
                             f"broker order {updated.broker_order_id} recovery "
-                            f"resolved: {cleanup_status}"
+                            f"{cleanup_status}"
                         ),
                         symbol=updated.symbol,
                         order_id=updated.local_order_id,

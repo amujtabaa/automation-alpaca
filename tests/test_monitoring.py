@@ -18,7 +18,15 @@ import pytest
 from app.broker.adapter import BrokerError, BrokerFill, BrokerOrderUpdate
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
-from app.models import CandidateStatus, OrderStatus, utcnow
+from app.models import (
+    RECOVERY_NEEDS_REVIEW,
+    RECOVERY_OPEN_STATUSES,
+    RECOVERY_RESOLVED,
+    RECOVERY_UNRESOLVED,
+    CandidateStatus,
+    OrderStatus,
+    utcnow,
+)
 from app.monitoring import (
     _recover_unpersisted_submits,
     _reconcile_open_orders,
@@ -532,7 +540,7 @@ async def test_cancel_during_submit_records_durable_recovery():
         e.event_type == "order_submit_unpersisted" and e.order_id == order.id
         for e in await store.list_events()
     )
-    unresolved = await store.list_submit_recoveries(unresolved_only=True)
+    unresolved = await store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED})
     assert len(unresolved) == 1
     assert unresolved[0].broker_order_id == adapter.broker_id_for(order.id)
     assert unresolved[0].local_order_id == order.id
@@ -556,16 +564,47 @@ async def test_recovery_loop_cancels_stranded_broker_order_and_resolves():
     # it — it stays unresolved, retry_count bumped, retried next tick.
     adapter.fail_next_cancel(BrokerError("cancel temporarily unavailable"))
     await _recover_unpersisted_submits(store, adapter)
-    still = await store.list_submit_recoveries(unresolved_only=True)
+    still = await store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED})
     assert len(still) == 1
     assert still[0].retry_count == 1
 
     # Next tick: cancel succeeds, broker confirms CANCELED, record resolves.
     await _recover_unpersisted_submits(store, adapter)
     assert broker_id in adapter.canceled
-    assert await store.list_submit_recoveries(unresolved_only=True) == []
+    assert await store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED}) == []
     resolved = await store.list_submit_recoveries()
-    assert resolved[0].cleanup_status == "resolved_canceled"
+    assert resolved[0].cleanup_status == RECOVERY_RESOLVED
+
+
+async def test_recovery_flags_partially_filled_stranded_order_for_review():
+    """A stranded broker order that PARTIALLY filled must NOT be cancelled and
+    marked cleanly resolved — its already-executed shares are a real untracked
+    position. The recovery loop flags it needs_review and keeps it visible in
+    the operator's open view, never silently dropping the fill (F-002 / the
+    partial-fill hole the pre-merge review found)."""
+
+    store = _CancelDuringSubmit()
+    order = await _created_order(store, qty=10, limit=1.0)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(store, adapter)  # strands the broker order
+    broker_id = adapter.broker_id_for(order.id)
+
+    # The live broker order partially fills (4 of 10) before recovery acts.
+    adapter.set_response(
+        broker_id, BrokerOrderUpdate(OrderStatus.PARTIALLY_FILLED, 4, [])
+    )
+    await _recover_unpersisted_submits(store, adapter)
+
+    # Not cancelled (that would discard the 4 filled shares); flagged for review
+    # and still visible to the operator, with a needs-review audit event.
+    assert broker_id not in adapter.canceled
+    rec = (await store.list_submit_recoveries())[0]
+    assert rec.cleanup_status == RECOVERY_NEEDS_REVIEW
+    assert len(await store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)) == 1
+    assert any(
+        e.event_type == "submit_recovery_needs_review"
+        for e in await store.list_events()
+    )
 
 
 # --------------------------------------------------------------------------- #

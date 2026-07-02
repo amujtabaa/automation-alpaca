@@ -153,7 +153,8 @@ class EventType(str, Enum):
     # Submission-claim + durable broker-submit recovery (D-017 / Wave 0).
     ORDER_SUBMISSION_CLAIMED = "order_submission_claimed"  # CREATED -> SUBMITTING
     SUBMIT_RECOVERY_RECORDED = "submit_recovery_recorded"  # a stranded broker order logged
-    SUBMIT_RECOVERY_RESOLVED = "submit_recovery_resolved"  # recovery loop cleared it
+    SUBMIT_RECOVERY_RESOLVED = "submit_recovery_resolved"  # recovery loop cleanly cancelled it
+    SUBMIT_RECOVERY_NEEDS_REVIEW = "submit_recovery_needs_review"  # stranded order had fills
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
@@ -310,6 +311,17 @@ class PositionSnapshot(_Entity):
     captured_at: datetime = Field(default_factory=utcnow)
 
 
+# SubmitRecoveryRecord.cleanup_status values (D-017 / F-002).
+RECOVERY_UNRESOLVED = "unresolved"          # the recovery loop is still working it
+RECOVERY_RESOLVED = "resolved_canceled"     # cleanly cancelled at the broker — no position
+RECOVERY_NEEDS_REVIEW = "needs_review"      # the broker order had fills — a real untracked
+                                            # position exists; a human must reconcile it
+# Statuses the operator must still SEE (not cleanly resolved). The recovery loop
+# itself acts only on RECOVERY_UNRESOLVED — a needs_review record is done being
+# worked automatically and must not be re-cancelled.
+RECOVERY_OPEN_STATUSES = frozenset({RECOVERY_UNRESOLVED, RECOVERY_NEEDS_REVIEW})
+
+
 class SubmitRecoveryRecord(_Entity):
     """A durable record of a broker order that was accepted upstream but whose
     local ``SUBMITTING -> SUBMITTED`` persist failed (D-017 / F-002).
@@ -334,11 +346,11 @@ class SubmitRecoveryRecord(_Entity):
     quantity: int
     limit_price: Optional[float] = None
     failure_reason: str
-    # "unresolved" until the recovery loop confirms the broker order is no longer
-    # live (canceled/rejected), or "resolved_filled_needs_review" if it turns out
-    # to have filled (a real untracked position — surfaced, never silently
+    # RECOVERY_UNRESOLVED until the recovery loop confirms the broker order is no
+    # longer live (RECOVERY_RESOLVED), or RECOVERY_NEEDS_REVIEW if it turns out to
+    # have any fills (a real untracked position — surfaced, never silently
     # dropped). See app/monitoring.py's recovery step.
-    cleanup_status: str = "unresolved"
+    cleanup_status: str = RECOVERY_UNRESOLVED
     retry_count: int = 0
     session_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
