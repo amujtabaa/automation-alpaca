@@ -50,33 +50,34 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.position import NegativePositionError, fold_fills, would_go_negative
+from app.position import fold_fills
 from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
-    InvalidFillError,
     InvalidOrderError,
-    OrderIntentBlockedError,
-    OrderTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
     UnknownEntityError,
     normalize_symbol,
 )
+from app.store.core import (
+    CREATE_ORDER_REJECT,
+    FILL_DUPLICATE,
+    FILL_REJECT,
+    ORDER_TRANSITION_NOOP,
+    ORDER_TRANSITION_REJECT,
+    plan_append_fill,
+    plan_close_session,
+    plan_create_order_for_candidate,
+    plan_transition_order,
+)
 from app.store.transitions import (
     CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS,
-    ORDER_TIMESTAMP,
-    ORDER_TRANSITIONS,
 )
 from app.store.validation import (
-    fill_order_match_reason,
-    fill_value_reason,
-    filled_quantity_reason,
-    limit_price_reason,
     order_candidate_match_reason,
-    order_intent_block_reason,
 )
 
 SCHEMA = """
@@ -888,68 +889,35 @@ class SqliteStateStore(StateStore):
                         f"{candidate.order_id}"
                     )
                 return self._order(order_row)
-            # The approved-only rule D-010 deferred to the gate lands here: only
-            # an APPROVED candidate may be dispatched to an order.
-            if candidate.status is not CandidateStatus.APPROVED:
-                raise CandidateTransitionError(
-                    f"cannot order candidate {candidate_id} in status "
-                    f"{candidate.status.value}; must be approved"
-                )
-            # Safety controls (Rule 8): refuse new order intent when the kill
-            # switch is engaged / buys are paused. Enforced at the backend
-            # boundary so every producer is gated (not just the UI), and audited.
+            # Shared validation cascade + order construction (app/store/core.py);
+            # the candidate-missing and ORDERED-idempotent cases above stay here
+            # since they need store-specific fetches.
             sess_row = self._read_one(
                 "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
             )
-            block = order_intent_block_reason(
-                self._session(sess_row) if sess_row is not None else None
-            )
-            if block is not None:
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "order_intent_blocked",
-                        message=f"order intent for {candidate.symbol} blocked: {block}",
-                        symbol=candidate.symbol,
-                        candidate_id=candidate_id,
-                        payload={"reason": block},
-                        session_id=candidate.session_id,
-                    )
-                raise OrderIntentBlockedError(f"order intent blocked: {block}")
-            qty = candidate.suggested_quantity
-            if qty is None or qty <= 0:
-                raise InvalidOrderError(
-                    f"candidate {candidate_id} has no positive suggested_quantity "
-                    f"to size an order"
-                )
-            # A LIMIT order requires a finite, positive limit price (F1 / BACKEND-1):
-            # never persist a LIMIT order with a missing/NaN/Inf/zero/negative price.
-            limit_price = candidate.suggested_limit_price
-            bad_price = limit_price_reason(limit_price)
-            if bad_price is not None:
-                raise InvalidOrderError(
-                    f"candidate {candidate_id} has no valid suggested_limit_price "
-                    f"for a limit order ({bad_price})"
-                )
-            # Long-only buy proposal (beta). Order type LIMIT; session order-type
-            # policy (Rule 12) is enforced later, not here.
-            order = Order(
-                candidate_id=candidate_id,
-                symbol=candidate.symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.LIMIT,
-                quantity=qty,
-                limit_price=limit_price,
-                session_id=candidate.session_id,
-            )
+            session = self._session(sess_row) if sess_row is not None else None
+            plan = plan_create_order_for_candidate(candidate=candidate, session=session)
+            if plan.outcome == CREATE_ORDER_REJECT:
+                # Only the kill-switch/pause block writes an audit row before it
+                # raises; the not-approved and invalid-qty/price rejections don't.
+                if plan.reject_event is not None:
+                    with self._tx() as cur:
+                        self._insert_event(
+                            cur,
+                            plan.reject_event.event_type,
+                            **plan.reject_event.as_kwargs(),
+                        )
+                raise plan.error
+
+            # CREATE — one transaction covers the order insert, the candidate
+            # ORDERED transition, and both audit events (the atomic "candidate
+            # approval + order creation + audit event" group from docs/02).
+            order = plan.order
             now = utcnow()
             candidate.status = CandidateStatus.ORDERED
             candidate.order_id = order.id
             candidate.updated_at = now
             candidate.ordered_at = now
-            # One transaction covers the order insert, the candidate transition,
-            # and both audit events — the atomic "candidate approval + order
-            # creation + audit event" group from docs/02.
             with self._tx() as cur:
                 self._insert_order(cur, order)
                 cur.execute(
@@ -967,25 +935,8 @@ class SqliteStateStore(StateStore):
                         candidate.id,
                     ),
                 )
-                self._insert_event(
-                    cur,
-                    "order_created",
-                    message=f"order created for {candidate.symbol}",
-                    symbol=candidate.symbol,
-                    candidate_id=candidate_id,
-                    order_id=order.id,
-                    session_id=candidate.session_id,
-                )
-                self._insert_event(
-                    cur,
-                    "candidate_transition",
-                    message="candidate approved -> ordered",
-                    symbol=candidate.symbol,
-                    candidate_id=candidate_id,
-                    order_id=order.id,
-                    payload={"from": "approved", "to": "ordered"},
-                    session_id=candidate.session_id,
-                )
+                for event in plan.events:
+                    self._insert_event(cur, event.event_type, **event.as_kwargs())
             return order
 
     async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
@@ -1096,100 +1047,38 @@ class SqliteStateStore(StateStore):
             if row is None:
                 raise UnknownEntityError(f"order {order_id} not found")
             order = self._order(row)
-            current = order.status
-            status_changed = new_status is not current
-            if status_changed and new_status not in ORDER_TRANSITIONS.get(
-                current, set()
-            ):
-                raise OrderTransitionError(
-                    f"illegal order transition {current.value} -> {new_status.value}"
-                )
-            # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward
-            # progress raises and writes nothing; D-008 audit behavior below is
-            # untouched. Equality is allowed (handled as a no-op).
-            if filled_quantity is not None:
-                bad = filled_quantity_reason(order, filled_quantity)
-                if bad is not None:
-                    raise InvalidOrderError(
-                        f"invalid filled_quantity {filled_quantity} for order "
-                        f"{order.id} (qty {order.quantity}, current "
-                        f"{order.filled_quantity}): {bad}"
-                    )
-            qty_changed = (
-                filled_quantity is not None
-                and filled_quantity != order.filled_quantity
+            plan = plan_transition_order(
+                order=order,
+                new_status=new_status,
+                filled_quantity=filled_quantity,
+                broker_order_id=broker_order_id,
             )
-            broker_changed = (
-                broker_order_id is not None
-                and broker_order_id != order.broker_order_id
-            )
-
-            # True no-op: write nothing, mutate nothing (D-008).
-            if not status_changed and not qty_changed and not broker_changed:
+            if plan.outcome == ORDER_TRANSITION_REJECT:
+                raise plan.error
+            if plan.outcome == ORDER_TRANSITION_NOOP:
                 return order
-
-            previous_filled = order.filled_quantity
-            if qty_changed:
-                order.filled_quantity = filled_quantity
-            if broker_changed:
-                order.broker_order_id = broker_order_id
-            if status_changed:
-                order.status = new_status
-                ts_field = ORDER_TIMESTAMP.get(new_status)
-                if ts_field and getattr(order, ts_field) is None:
-                    setattr(order, ts_field, utcnow())
-            order.updated_at = utcnow()
-
+            # APPLY — persist the fully-updated order + its one audit row
+            # (order_transition or order_fill_progress) in one transaction.
+            updated = plan.order
             with self._tx() as cur:
                 cur.execute(
                     """UPDATE orders SET status=?, filled_quantity=?,
                        broker_order_id=?, updated_at=?, submitted_at=?, filled_at=?,
                        canceled_at=?, rejected_at=? WHERE id=?""",
                     (
-                        order.status.value,
-                        order.filled_quantity,
-                        order.broker_order_id,
-                        _dt(order.updated_at),
-                        _dt(order.submitted_at),
-                        _dt(order.filled_at),
-                        _dt(order.canceled_at),
-                        _dt(order.rejected_at),
-                        order.id,
+                        updated.status.value,
+                        updated.filled_quantity,
+                        updated.broker_order_id,
+                        _dt(updated.updated_at),
+                        _dt(updated.submitted_at),
+                        _dt(updated.filled_at),
+                        _dt(updated.canceled_at),
+                        _dt(updated.rejected_at),
+                        updated.id,
                     ),
                 )
-                if status_changed:
-                    self._insert_event(
-                        cur,
-                        "order_transition",
-                        message=f"order {current.value} -> {new_status.value}",
-                        symbol=order.symbol,
-                        candidate_id=order.candidate_id,
-                        order_id=order.id,
-                        payload={"from": current.value, "to": new_status.value},
-                        session_id=order.session_id,
-                    )
-                else:
-                    payload: dict[str, Any] = {
-                        "status": current.value,
-                        "previous_filled_quantity": previous_filled,
-                        "filled_quantity": order.filled_quantity,
-                    }
-                    if broker_changed:
-                        payload["broker_order_id"] = broker_order_id
-                    self._insert_event(
-                        cur,
-                        "order_fill_progress",
-                        message=(
-                            f"order {order.symbol} fill progress "
-                            f"{previous_filled} -> {order.filled_quantity}"
-                        ),
-                        symbol=order.symbol,
-                        candidate_id=order.candidate_id,
-                        order_id=order.id,
-                        payload=payload,
-                        session_id=order.session_id,
-                    )
-            return order
+                self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
+            return updated
 
     # ------------------------------------------------------------------ #
     # Fills (append-only)
@@ -1209,130 +1098,60 @@ class SqliteStateStore(StateStore):
         key = normalize_symbol(symbol)
         side = OrderSide(side)
         async with self._lock:
-            # 1) Intrinsic value validation (Fix 1): a non-positive quantity or
-            #    price would corrupt derived-position truth. Reject up front.
-            value_reason = fill_value_reason(quantity, price)
-            if value_reason is not None:
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_invalid",
-                        message=f"fill for {key} rejected: {value_reason}",
-                        symbol=key,
-                        order_id=order_id,
-                        payload={
-                            "reason": value_reason,
-                            "quantity": quantity,
-                            "price": price,
-                        },
-                        session_id=session_id,
-                    )
-                raise InvalidFillError(f"invalid fill for {key}: {value_reason}")
-
-            # 2) The referenced order must exist (Fix 2).
+            # Fetch the state the shared planner decides over (SQL form), then
+            # apply its plan. Decision logic lives once in app/store/core.py; only
+            # the fetch + the write primitive are store-specific here.
             order_row = self._read_one(
                 "SELECT * FROM orders WHERE id = ?", (order_id,)
             )
-            if order_row is None:
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_invalid",
-                        message=f"fill rejected: unknown order {order_id}",
-                        symbol=key,
-                        order_id=order_id,
-                        payload={"reason": "unknown_order"},
-                        session_id=session_id,
-                    )
-                raise UnknownEntityError(f"order {order_id} not found")
-            order = self._order(order_row)
-
-            # 3) Duplicate protection. A replay short-circuits here before the
-            #    cumulative check, so it is never mistaken for an overfill.
-            if source_fill_id is not None:
-                dup = self._read_one(
-                    "SELECT 1 FROM fills WHERE order_id = ? AND source_fill_id = ?",
-                    (order_id, source_fill_id),
-                )
-                if dup is not None:
-                    with self._tx() as cur:
-                        event = self._insert_event(
-                            cur,
-                            "fill_duplicate_ignored",
-                            message=f"duplicate fill {source_fill_id} for {key} ignored",
-                            symbol=key,
-                            order_id=order_id,
-                            payload={"source_fill_id": source_fill_id},
-                            session_id=session_id,
-                        )
-                    return FillAppendResult(status="duplicate", fill=None, event=event)
-
-            # 4) Symbol/side match + cumulative-quantity vs the order (Fix 2).
+            order = self._order(order_row) if order_row is not None else None
             prior_row = self._read_one(
                 "SELECT COALESCE(SUM(quantity), 0) AS total FROM fills "
                 "WHERE order_id = ?",
                 (order_id,),
             )
             prior_filled = prior_row["total"] if prior_row else 0
-            match_reason = fill_order_match_reason(
-                order, key, side, quantity, prior_filled
-            )
-            if match_reason is not None:
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_invalid",
-                        message=f"fill for {key} rejected: {match_reason}",
-                        symbol=key,
-                        order_id=order_id,
-                        payload={
-                            "reason": match_reason,
-                            "order_symbol": order.symbol,
-                            "order_side": OrderSide(order.side).value,
-                            "order_quantity": order.quantity,
-                            "prior_filled_quantity": prior_filled,
-                            "quantity": quantity,
-                        },
-                        session_id=session_id,
+            is_duplicate = False
+            if source_fill_id is not None:
+                is_duplicate = (
+                    self._read_one(
+                        "SELECT 1 FROM fills WHERE order_id = ? AND source_fill_id = ?",
+                        (order_id, source_fill_id),
                     )
-                raise InvalidFillError(
-                    f"fill for {key} inconsistent with order {order_id}: "
-                    f"{match_reason}"
+                    is not None
                 )
-
-            # 5) Long-only integrity check.
             current = self._position_locked(key)
-            if would_go_negative(current.quantity, side, quantity):
-                with self._tx() as cur:
-                    self._insert_event(
-                        cur,
-                        "fill_rejected_negative_position",
-                        message=(
-                            f"sell of {quantity} {key} rejected: exceeds current "
-                            f"quantity {current.quantity}"
-                        ),
-                        symbol=key,
-                        order_id=order_id,
-                        payload={
-                            "attempted_sell": quantity,
-                            "current_quantity": current.quantity,
-                        },
-                        session_id=session_id,
-                    )
-                # Event committed; now surface the rejection.
-                raise NegativePositionError(key, current.quantity, quantity)
-
-            # 6) Append.
-            fill = Fill(
+            plan = plan_append_fill(
                 order_id=order_id,
+                order=order,
+                prior_filled=prior_filled,
+                current_quantity=current.quantity,
+                is_duplicate=is_duplicate,
                 symbol=key,
                 side=side,
                 quantity=quantity,
                 price=price,
                 source_fill_id=source_fill_id,
+                filled_at=filled_at,
                 session_id=session_id,
-                filled_at=filled_at or utcnow(),
             )
+
+            if plan.outcome == FILL_REJECT:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur, plan.event.event_type, **plan.event.as_kwargs()
+                    )
+                raise plan.error
+
+            if plan.outcome == FILL_DUPLICATE:
+                with self._tx() as cur:
+                    event = self._insert_event(
+                        cur, plan.event.event_type, **plan.event.as_kwargs()
+                    )
+                return FillAppendResult(status="duplicate", fill=None, event=event)
+
+            # FILL_APPEND — one transaction: INSERT the fill row + its audit event.
+            fill = plan.fill
             with self._tx() as cur:
                 cur.execute(
                     """INSERT INTO fills
@@ -1353,14 +1172,7 @@ class SqliteStateStore(StateStore):
                     ),
                 )
                 event = self._insert_event(
-                    cur,
-                    "fill_appended",
-                    message=f"fill {fill.quantity} {key} @ {fill.price}",
-                    symbol=key,
-                    order_id=order_id,
-                    fill_id=fill.id,
-                    payload={"side": side.value, "quantity": quantity, "price": price},
-                    session_id=session_id,
+                    cur, plan.event.event_type, **plan.event.as_kwargs()
                 )
             return FillAppendResult(status="appended", fill=fill, event=event)
 
@@ -1560,6 +1372,7 @@ class SqliteStateStore(StateStore):
 
             # Read what we'll touch *before* opening the transaction (reads are
             # consistent under the lock); the writes then all commit together.
+            # Order preserved (rowid / symbol) so audit-event order is unchanged.
             open_candidates = [
                 self._candidate(r)
                 for r in self._read_all(
@@ -1583,25 +1396,25 @@ class SqliteStateStore(StateStore):
                     (session.id, OrderStatus.CREATED.value),
                 )
             ]
-            snapshots = []
+            nonzero_positions = []
             for r in self._read_all(
                 "SELECT DISTINCT symbol FROM fills ORDER BY symbol"
             ):
                 pos = self._position_locked(r["symbol"])
                 if pos.quantity != 0:
-                    snapshots.append(
-                        PositionSnapshot(
-                            session_id=session.id,
-                            symbol=pos.symbol,
-                            quantity=pos.quantity,
-                            cost_basis=pos.cost_basis,
-                            average_price=pos.average_price,
-                            captured_at=now,
-                        )
-                    )
+                    nonzero_positions.append(pos)
 
+            plan = plan_close_session(
+                session=session,
+                open_candidates=open_candidates,
+                created_orders=created_orders,
+                nonzero_positions=nonzero_positions,
+                now=now,
+            )
+
+            # Apply (read-then-write form): all UPDATEs/INSERTs commit together.
             with self._tx() as cur:
-                for candidate in open_candidates:
+                for candidate, event in zip(open_candidates, plan.candidate_events):
                     cur.execute(
                         "UPDATE candidates SET status=?, expired_at=?, "
                         "updated_at=? WHERE id=?",
@@ -1612,23 +1425,8 @@ class SqliteStateStore(StateStore):
                             candidate.id,
                         ),
                     )
-                    self._insert_event(
-                        cur,
-                        "candidate_transition",
-                        message=(
-                            f"candidate {candidate.status.value} -> expired "
-                            f"(session close)"
-                        ),
-                        symbol=candidate.symbol,
-                        candidate_id=candidate.id,
-                        payload={
-                            "from": candidate.status.value,
-                            "to": "expired",
-                            "reason": "session_close",
-                        },
-                        session_id=session.id,
-                    )
-                for order in created_orders:
+                    self._insert_event(cur, event.event_type, **event.as_kwargs())
+                for order, event in zip(created_orders, plan.order_events):
                     cur.execute(
                         "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
                         "WHERE id=?",
@@ -1639,24 +1437,8 @@ class SqliteStateStore(StateStore):
                             order.id,
                         ),
                     )
-                    self._insert_event(
-                        cur,
-                        "order_transition",
-                        message=(
-                            f"order {order.symbol} created -> canceled "
-                            f"(session close)"
-                        ),
-                        symbol=order.symbol,
-                        candidate_id=order.candidate_id,
-                        order_id=order.id,
-                        payload={
-                            "from": "created",
-                            "to": "canceled",
-                            "reason": "session_close",
-                        },
-                        session_id=session.id,
-                    )
-                for snap in snapshots:
+                    self._insert_event(cur, event.event_type, **event.as_kwargs())
+                for snap in plan.snapshots:
                     cur.execute(
                         """INSERT INTO position_snapshots
                            (id, session_id, symbol, quantity, cost_basis,
@@ -1683,19 +1465,7 @@ class SqliteStateStore(StateStore):
                     ),
                 )
                 self._insert_event(
-                    cur,
-                    "session_closed",
-                    message=(
-                        f"session closed ({len(open_candidates)} candidates "
-                        f"expired, {len(created_orders)} created orders canceled, "
-                        f"{len(snapshots)} positions snapshotted)"
-                    ),
-                    session_id=session.id,
-                    payload={
-                        "expired_candidates": len(open_candidates),
-                        "canceled_orders": len(created_orders),
-                        "position_snapshots": len(snapshots),
-                    },
+                    cur, plan.close_event.event_type, **plan.close_event.as_kwargs()
                 )
 
             session.status = SessionStatus.CLOSED
