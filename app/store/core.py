@@ -322,6 +322,29 @@ def plan_create_order_for_candidate(
             ),
         )
 
+    # Unresolved session (F-004): a candidate whose declared session no longer
+    # resolves must not produce order intent. This is a *distinct* guard from
+    # order_intent_block_reason(session) below — that predicate deliberately
+    # treats None as "no live session to stop" for the monitoring loop's
+    # current-session emergency-stop check, so it must NOT be changed to block
+    # on None. create_candidate already rejects an explicit unresolvable
+    # session id up front; this is the dispatch-time backstop, audited.
+    if session is None:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=OrderIntentBlockedError("order intent blocked: unresolved_session"),
+            reject_event=EventSpec(
+                "order_intent_blocked",
+                message=(
+                    f"order intent for {candidate.symbol} blocked: unresolved_session"
+                ),
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                payload={"reason": "unresolved_session"},
+                session_id=candidate.session_id,
+            ),
+        )
+
     # Safety controls (Rule 8): refuse new order intent when kill-switched /
     # buys-paused — gated at the backend boundary (not just the UI), and audited.
     block = order_intent_block_reason(session)

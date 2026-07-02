@@ -12,6 +12,7 @@ from datetime import date
 import pytest
 
 from app.models import CandidateStatus, SessionStatus
+from app.store.base import UnknownEntityError
 
 pytestmark = pytest.mark.anyio
 
@@ -84,10 +85,26 @@ async def test_default_session_candidate_is_expired_on_close(any_store):
     assert candidate.id in [c.id for c in listed]
 
 
-async def test_explicit_session_id_is_respected(any_store):
+async def test_explicit_valid_session_id_is_respected(any_store):
+    """An explicit session id that *resolves* is honored over the default."""
+
     await any_store.initialize()
-    candidate = await any_store.create_candidate("AAPL", session_id="explicit-session")
-    assert candidate.session_id == "explicit-session"
+    session = await any_store.get_current_session()
+    candidate = await any_store.create_candidate("AAPL", session_id=session.id)
+    assert candidate.session_id == session.id
+
+
+async def test_explicit_nonexistent_session_id_raises_no_orphan(any_store):
+    """F-004: an explicit session id that names no session is rejected — never
+    a silently-created orphan candidate whose declared session doesn't exist
+    (which would then dispatch an orphan order). The `None` -> current-session
+    default (tested above) is unchanged; this only affects an explicit,
+    unresolvable id."""
+
+    await any_store.initialize()
+    with pytest.raises(UnknownEntityError):
+        await any_store.create_candidate("AAPL", session_id="does-not-exist")
+    assert await any_store.list_candidates() == []  # no orphan created
 
 
 # --------------------------------------------------------------------------- #

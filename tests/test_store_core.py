@@ -139,6 +139,19 @@ class TestPlanCreateOrder:
         assert plan.reject_event.event_type == "order_intent_blocked"
         assert plan.reject_event.payload["reason"] == "kill_switch"
 
+    def test_reject_unresolved_session_writes_event(self):
+        # F-004 dispatch-time backstop: an APPROVED candidate whose declared
+        # session no longer resolves (session=None) must not produce order
+        # intent. Distinct from order_intent_block_reason(None) (which is
+        # deliberately unblocked for the monitoring loop's current-session
+        # emergency-stop check) — this guard lives in the planner and is audited.
+        plan = core.plan_create_order_for_candidate(
+            candidate=_candidate(), session=None
+        )
+        assert plan.outcome == core.CREATE_ORDER_REJECT
+        assert plan.reject_event.event_type == "order_intent_blocked"
+        assert plan.reject_event.payload["reason"] == "unresolved_session"
+
     def test_reject_bad_quantity(self):
         plan = core.plan_create_order_for_candidate(
             candidate=_candidate(suggested_quantity=0),

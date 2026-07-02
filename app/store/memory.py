@@ -297,7 +297,11 @@ class InMemoryStateStore(StateStore):
         key = normalize_symbol(symbol)
         async with self._lock:
             # Default to the active session so close/expiry and date-scoped
-            # review see this candidate (Fix 7). An explicit session_id wins.
+            # review see this candidate (Fix 7). An explicit session_id wins —
+            # but it must actually resolve: an explicit id that names no session
+            # is rejected (F-004), never allowed to create an orphan candidate
+            # whose declared session doesn't exist (which then dispatches an
+            # orphan order). The `None` -> current-session default is unchanged.
             if session_id is None:
                 session = self._ensure_current_session_unlocked()
                 session_id = session.id
@@ -305,6 +309,10 @@ class InMemoryStateStore(StateStore):
                 session = next(
                     (s for s in self._sessions if s.id == session_id), None
                 )
+                if session is None:
+                    raise UnknownEntityError(
+                        f"session {session_id} does not exist; cannot create candidate"
+                    )
             # No new candidates in a closed session (D-009 / F2): the trading day
             # is over, and a post-close candidate would sit outside the captured
             # review snapshot. Guard at the store boundary so every future
