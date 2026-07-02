@@ -26,6 +26,7 @@ still behave identically after each method is migrated here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
 
 from app.models import (
@@ -34,7 +35,10 @@ from app.models import (
     Fill,
     Order,
     OrderSide,
+    OrderStatus,
     OrderType,
+    Position,
+    PositionSnapshot,
     SessionRecord,
     utcnow,
 )
@@ -44,11 +48,14 @@ from app.store.base import (
     InvalidFillError,
     InvalidOrderError,
     OrderIntentBlockedError,
+    OrderTransitionError,
     UnknownEntityError,
 )
+from app.store.transitions import ORDER_TIMESTAMP, ORDER_TRANSITIONS
 from app.store.validation import (
     fill_order_match_reason,
     fill_value_reason,
+    filled_quantity_reason,
     limit_price_reason,
     order_intent_block_reason,
 )
@@ -372,4 +379,219 @@ def plan_create_order_for_candidate(
                 session_id=candidate.session_id,
             ),
         ),
+    )
+
+
+# ---- transition_order ----------------------------------------------------- #
+
+# OrderTransitionPlan.outcome values:
+ORDER_TRANSITION_REJECT = "reject"  # raise `error`
+ORDER_TRANSITION_NOOP = "noop"      # nothing changed; store returns the order unchanged
+ORDER_TRANSITION_APPLY = "apply"    # persist `order` (fully updated) + write `event`
+
+
+@dataclass(frozen=True)
+class OrderTransitionPlan:
+    """Pure outcome of :meth:`StateStore.transition_order` (the order already
+    fetched by the store). ``order`` on an ``apply`` is the fully-updated copy —
+    status/filled_quantity/broker_order_id and the relevant terminal timestamp
+    already set — so the store just persists it and writes ``event``.
+    """
+
+    outcome: str
+    error: Optional[Exception] = None
+    order: Optional[Order] = None
+    event: Optional[EventSpec] = None
+
+
+def plan_transition_order(
+    *,
+    order: Order,
+    new_status: OrderStatus,
+    filled_quantity: Optional[int],
+    broker_order_id: Optional[str],
+) -> OrderTransitionPlan:
+    """Decide an order transition — the shared logic (legality, monotonic
+    filled-quantity, the true-no-op rule, and the D-008 ``order_transition`` vs
+    ``order_fill_progress`` audit split) that was duplicated between the stores.
+    """
+
+    current = order.status
+    status_changed = new_status is not current
+    if status_changed and new_status not in ORDER_TRANSITIONS.get(current, set()):
+        return OrderTransitionPlan(
+            ORDER_TRANSITION_REJECT,
+            error=OrderTransitionError(
+                f"illegal order transition {current.value} -> {new_status.value}"
+            ),
+        )
+
+    # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward progress
+    # raises and writes nothing. Equality is allowed (handled as a no-op below).
+    if filled_quantity is not None:
+        bad = filled_quantity_reason(order, filled_quantity)
+        if bad is not None:
+            return OrderTransitionPlan(
+                ORDER_TRANSITION_REJECT,
+                error=InvalidOrderError(
+                    f"invalid filled_quantity {filled_quantity} for order "
+                    f"{order.id} (qty {order.quantity}, current "
+                    f"{order.filled_quantity}): {bad}"
+                ),
+            )
+
+    qty_changed = filled_quantity is not None and filled_quantity != order.filled_quantity
+    broker_changed = (
+        broker_order_id is not None and broker_order_id != order.broker_order_id
+    )
+
+    # True no-op (status unchanged and nothing else changed): write no audit row
+    # and mutate nothing — same rule transition_candidate uses (D-008).
+    if not status_changed and not qty_changed and not broker_changed:
+        return OrderTransitionPlan(ORDER_TRANSITION_NOOP)
+
+    previous_filled = order.filled_quantity
+    updated = order.model_copy(deep=True)
+    if qty_changed:
+        updated.filled_quantity = filled_quantity
+    if broker_changed:
+        updated.broker_order_id = broker_order_id
+    if status_changed:
+        updated.status = new_status
+        ts_field = ORDER_TIMESTAMP.get(new_status)
+        if ts_field and getattr(updated, ts_field) is None:
+            setattr(updated, ts_field, utcnow())
+    updated.updated_at = utcnow()
+
+    if status_changed:
+        event = EventSpec(
+            "order_transition",
+            message=f"order {current.value} -> {new_status.value}",
+            symbol=updated.symbol,
+            candidate_id=updated.candidate_id,
+            order_id=updated.id,
+            payload={"from": current.value, "to": new_status.value},
+            session_id=updated.session_id,
+        )
+    else:
+        # Same status, but fill progressed (or a broker id was assigned). Not a
+        # no-op — record it with the before/after quantity, not a generic
+        # same-status row (D-008).
+        payload: dict[str, Any] = {
+            "status": current.value,
+            "previous_filled_quantity": previous_filled,
+            "filled_quantity": updated.filled_quantity,
+        }
+        if broker_changed:
+            payload["broker_order_id"] = broker_order_id
+        event = EventSpec(
+            "order_fill_progress",
+            message=(
+                f"order {updated.symbol} fill progress "
+                f"{previous_filled} -> {updated.filled_quantity}"
+            ),
+            symbol=updated.symbol,
+            candidate_id=updated.candidate_id,
+            order_id=updated.id,
+            payload=payload,
+            session_id=updated.session_id,
+        )
+    return OrderTransitionPlan(ORDER_TRANSITION_APPLY, order=updated, event=event)
+
+
+# ---- close_session -------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SessionClosePlan:
+    """Pure plan for closing a session (the store has already resolved and
+    validated the session and fetched what will be touched).
+
+    ``candidate_events`` is parallel to the ``open_candidates`` the store passed
+    in (one per candidate, same order); ``order_events`` parallel to
+    ``created_orders``. ``snapshots`` are the position rows to insert.
+    ``close_event`` is the single ``session_closed`` summary. The store applies
+    the actual mutations (EXPIRED / CANCELED / CLOSED + timestamps) with its own
+    primitive, using ``now`` — kept storage-specific because one store mutates
+    live objects in place and the other UPDATEs by id.
+    """
+
+    candidate_events: tuple[EventSpec, ...]
+    order_events: tuple[EventSpec, ...]
+    snapshots: tuple[PositionSnapshot, ...]
+    close_event: EventSpec
+
+
+def plan_close_session(
+    *,
+    session: SessionRecord,
+    open_candidates: list[Candidate],
+    created_orders: list[Order],
+    nonzero_positions: list[Position],
+    now: datetime,
+) -> SessionClosePlan:
+    """Build the audit events + position snapshots for a session close (D-007 /
+    D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
+    ``created_orders`` its still-CREATED (never-submitted) orders, and
+    ``nonzero_positions`` every symbol with a nonzero derived position. The
+    counts drive the summary event.
+    """
+
+    candidate_events = tuple(
+        EventSpec(
+            "candidate_transition",
+            message=f"candidate {candidate.status.value} -> expired (session close)",
+            symbol=candidate.symbol,
+            candidate_id=candidate.id,
+            payload={
+                "from": candidate.status.value,
+                "to": "expired",
+                "reason": "session_close",
+            },
+            session_id=session.id,
+        )
+        for candidate in open_candidates
+    )
+    order_events = tuple(
+        EventSpec(
+            "order_transition",
+            message=f"order {order.symbol} created -> canceled (session close)",
+            symbol=order.symbol,
+            candidate_id=order.candidate_id,
+            order_id=order.id,
+            payload={"from": "created", "to": "canceled", "reason": "session_close"},
+            session_id=session.id,
+        )
+        for order in created_orders
+    )
+    snapshots = tuple(
+        PositionSnapshot(
+            session_id=session.id,
+            symbol=pos.symbol,
+            quantity=pos.quantity,
+            cost_basis=pos.cost_basis,
+            average_price=pos.average_price,
+            captured_at=now,
+        )
+        for pos in nonzero_positions
+    )
+    close_event = EventSpec(
+        "session_closed",
+        message=(
+            f"session closed ({len(open_candidates)} candidates expired, "
+            f"{len(created_orders)} created orders canceled, "
+            f"{len(snapshots)} positions snapshotted)"
+        ),
+        session_id=session.id,
+        payload={
+            "expired_candidates": len(open_candidates),
+            "canceled_orders": len(created_orders),
+            "position_snapshots": len(snapshots),
+        },
+    )
+    return SessionClosePlan(
+        candidate_events=candidate_events,
+        order_events=order_events,
+        snapshots=snapshots,
+        close_event=close_event,
     )

@@ -43,7 +43,6 @@ from app.store.base import (
     CandidateTransitionError,
     FillAppendResult,
     InvalidOrderError,
-    OrderTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
@@ -54,17 +53,18 @@ from app.store.core import (
     CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
+    ORDER_TRANSITION_NOOP,
+    ORDER_TRANSITION_REJECT,
     plan_append_fill,
+    plan_close_session,
     plan_create_order_for_candidate,
+    plan_transition_order,
 )
 from app.store.transitions import (
     CANDIDATE_TIMESTAMP as _CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
-    ORDER_TIMESTAMP as _ORDER_TIMESTAMP,
-    ORDER_TRANSITIONS as _ORDER_TRANSITIONS,
 )
 from app.store.validation import (
-    filled_quantity_reason,
     order_candidate_match_reason,
 )
 
@@ -553,86 +553,24 @@ class InMemoryStateStore(StateStore):
             order = self._orders.get(order_id)
             if order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
-            current = order.status
-            status_changed = new_status is not current
-            if status_changed and new_status not in _ORDER_TRANSITIONS.get(
-                current, set()
-            ):
-                raise OrderTransitionError(
-                    f"illegal order transition {current.value} -> {new_status.value}"
-                )
-            # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward
-            # progress raises and writes nothing; D-008 audit behavior below is
-            # untouched. Equality is allowed (handled as a no-op).
-            if filled_quantity is not None:
-                bad = filled_quantity_reason(order, filled_quantity)
-                if bad is not None:
-                    raise InvalidOrderError(
-                        f"invalid filled_quantity {filled_quantity} for order "
-                        f"{order.id} (qty {order.quantity}, current "
-                        f"{order.filled_quantity}): {bad}"
-                    )
-            qty_changed = (
-                filled_quantity is not None
-                and filled_quantity != order.filled_quantity
+            plan = plan_transition_order(
+                order=order,
+                new_status=new_status,
+                filled_quantity=filled_quantity,
+                broker_order_id=broker_order_id,
             )
-            broker_changed = (
-                broker_order_id is not None
-                and broker_order_id != order.broker_order_id
-            )
-
-            # True no-op (status unchanged and nothing else changed): write no
-            # audit row and mutate nothing — same rule transition_candidate uses.
-            if not status_changed and not qty_changed and not broker_changed:
+            if plan.outcome == ORDER_TRANSITION_REJECT:
+                raise plan.error
+            if plan.outcome == ORDER_TRANSITION_NOOP:
                 return order.model_copy(deep=True)
-
-            previous_filled = order.filled_quantity
+            # APPLY — swap in the fully-updated order and write its one audit row
+            # (order_transition or order_fill_progress) atomically.
             with self._atomic():
-                if qty_changed:
-                    order.filled_quantity = filled_quantity
-                if broker_changed:
-                    order.broker_order_id = broker_order_id
-                if status_changed:
-                    order.status = new_status
-                    ts_field = _ORDER_TIMESTAMP.get(new_status)
-                    if ts_field and getattr(order, ts_field) is None:
-                        setattr(order, ts_field, utcnow())
-                order.updated_at = utcnow()
-
-                if status_changed:
-                    self._append_event_unlocked(
-                        "order_transition",
-                        message=f"order {current.value} -> {new_status.value}",
-                        symbol=order.symbol,
-                        candidate_id=order.candidate_id,
-                        order_id=order.id,
-                        payload={"from": current.value, "to": new_status.value},
-                        session_id=order.session_id,
-                    )
-                else:
-                    # Same status, but fill progressed (or broker id assigned).
-                    # Not a no-op — record it with the before/after quantity, not
-                    # a generic same-status row (D-008).
-                    payload: dict[str, Any] = {
-                        "status": current.value,
-                        "previous_filled_quantity": previous_filled,
-                        "filled_quantity": order.filled_quantity,
-                    }
-                    if broker_changed:
-                        payload["broker_order_id"] = broker_order_id
-                    self._append_event_unlocked(
-                        "order_fill_progress",
-                        message=(
-                            f"order {order.symbol} fill progress "
-                            f"{previous_filled} -> {order.filled_quantity}"
-                        ),
-                        symbol=order.symbol,
-                        candidate_id=order.candidate_id,
-                        order_id=order.id,
-                        payload=payload,
-                        session_id=order.session_id,
-                    )
-            return order.model_copy(deep=True)
+                self._orders[order_id] = plan.order
+                self._append_event_unlocked(
+                    plan.event.event_type, **plan.event.as_kwargs()
+                )
+            return plan.order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #
     # Fills (append-only) — the only mutation of position
@@ -880,100 +818,54 @@ class InMemoryStateStore(StateStore):
 
         now = utcnow()
 
-        # 1) Expire open (pending/approved) candidates in this session.
-        expired = 0
-        for candidate in self._candidates.values():
-            if candidate.session_id == session.id and candidate.status in (
-                CandidateStatus.PENDING,
-                CandidateStatus.APPROVED,
-            ):
-                prev = candidate.status
-                candidate.status = CandidateStatus.EXPIRED
-                candidate.expired_at = now
-                candidate.updated_at = now
-                expired += 1
-                self._append_event_unlocked(
-                    "candidate_transition",
-                    message=f"candidate {prev.value} -> expired (session close)",
-                    symbol=candidate.symbol,
-                    candidate_id=candidate.id,
-                    payload={
-                        "from": prev.value,
-                        "to": "expired",
-                        "reason": "session_close",
-                    },
-                    session_id=session.id,
-                )
-
-        # 1b) Cancel still-CREATED (never-submitted) orders in this session
-        #     so they cannot sit submittable after close (D-013a). The loop's
-        #     per-order-session gate also holds them, but cancelling here
-        #     leaves a clean terminal state instead of a zombie CREATED order.
-        #     Already-submitted orders are untouched and keep reconciling
-        #     (D-011).
-        canceled_orders = 0
-        for order in self._orders.values():
-            if (
-                order.session_id == session.id
-                and order.status is OrderStatus.CREATED
-            ):
-                order.status = OrderStatus.CANCELED
-                order.canceled_at = now
-                order.updated_at = now
-                canceled_orders += 1
-                self._append_event_unlocked(
-                    "order_transition",
-                    message=(
-                        f"order {order.symbol} created -> canceled "
-                        f"(session close)"
-                    ),
-                    symbol=order.symbol,
-                    candidate_id=order.candidate_id,
-                    order_id=order.id,
-                    payload={
-                        "from": "created",
-                        "to": "canceled",
-                        "reason": "session_close",
-                    },
-                    session_id=session.id,
-                )
-
-        # 2) Snapshot every nonzero position (the live fold over fills).
-        snapshots = 0
+        # Select what the shared planner decides over (dict-scan form). Order
+        # preserved: candidates/orders in insertion order, positions by symbol —
+        # matching the pre-refactor loops so audit-event order is unchanged.
+        open_candidates = [
+            c
+            for c in self._candidates.values()
+            if c.session_id == session.id
+            and c.status in (CandidateStatus.PENDING, CandidateStatus.APPROVED)
+        ]
+        created_orders = [
+            o
+            for o in self._orders.values()
+            if o.session_id == session.id and o.status is OrderStatus.CREATED
+        ]
+        nonzero_positions = []
         for sym in sorted({f.symbol for f in self._fills}):
             pos = self._position_unlocked(sym)
             if pos.quantity != 0:
-                self._position_snapshots.append(
-                    PositionSnapshot(
-                        session_id=session.id,
-                        symbol=pos.symbol,
-                        quantity=pos.quantity,
-                        cost_basis=pos.cost_basis,
-                        average_price=pos.average_price,
-                        captured_at=now,
-                    )
-                )
-                snapshots += 1
+                nonzero_positions.append(pos)
 
-        # 3) Mark the session closed.
+        plan = plan_close_session(
+            session=session,
+            open_candidates=open_candidates,
+            created_orders=created_orders,
+            nonzero_positions=nonzero_positions,
+            now=now,
+        )
+
+        # Apply (in-place mutation form). D-013a: expire open candidates, cancel
+        # still-CREATED orders, snapshot nonzero positions, mark the session
+        # closed. Under _atomic() (see the caller) so the whole close is
+        # all-or-nothing.
+        for candidate, event in zip(open_candidates, plan.candidate_events):
+            candidate.status = CandidateStatus.EXPIRED
+            candidate.expired_at = now
+            candidate.updated_at = now
+            self._append_event_unlocked(event.event_type, **event.as_kwargs())
+        for order, event in zip(created_orders, plan.order_events):
+            order.status = OrderStatus.CANCELED
+            order.canceled_at = now
+            order.updated_at = now
+            self._append_event_unlocked(event.event_type, **event.as_kwargs())
+        self._position_snapshots.extend(plan.snapshots)
         session.status = SessionStatus.CLOSED
         session.closed_at = now
         session.updated_at = now
-
-        # 4) One audit event for the close.
         self._append_event_unlocked(
-            "session_closed",
-            message=(
-                f"session closed ({expired} candidates expired, "
-                f"{canceled_orders} created orders canceled, "
-                f"{snapshots} positions snapshotted)"
-            ),
-            session_id=session.id,
-            payload={
-                "expired_candidates": expired,
-                "canceled_orders": canceled_orders,
-                "position_snapshots": snapshots,
-            },
+            plan.close_event.event_type, **plan.close_event.as_kwargs()
         )
         return session.model_copy(deep=True)
 
