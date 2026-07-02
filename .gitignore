@@ -14,6 +14,12 @@ ENV/
 .pytest_tmp/
 .pytest_cache/
 
+# Coverage artifacts (measured in CI; not committed)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # SQLite database (created at runtime, not committed)
 data/
 *.db
