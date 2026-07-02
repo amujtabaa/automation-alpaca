@@ -242,6 +242,18 @@ async def _surface_market_data_staleness(
         previously_stale: dict[str, bool] = await _last_known_stale_state(store, symbols)
     else:
         previously_stale = stale_state
+        # Seed any symbol the in-memory cache hasn't observed yet from the
+        # durable event log (F-007). On the FIRST tick after a process restart
+        # the cache is a non-None but EMPTY dict, so without this an
+        # already-stale feed (a market_data_stale already in the log) would be
+        # re-announced as a *new* transition — a duplicate event. Only unknown
+        # symbols trigger a log read, so steady-state ticks stay O(1); a
+        # never-stale symbol has no event and stays absent (a healthy baseline),
+        # matching _last_known_stale_state's own asymmetry.
+        unknown = symbols - previously_stale.keys()
+        if unknown:
+            for sym, was in (await _last_known_stale_state(store, unknown)).items():
+                previously_stale.setdefault(sym, was)
 
     for snapshot in snapshots:
         was_stale = previously_stale.get(snapshot.symbol, False)

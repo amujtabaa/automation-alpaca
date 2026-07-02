@@ -361,6 +361,45 @@ class TestStaleStateCache:
         without_cache = await _drive(None)
         assert with_cache == without_cache == (1, 1)
 
+    async def test_fresh_cache_after_restart_seeds_from_log_no_duplicate(self):
+        """F-007: on the first tick after a process restart the in-memory cache
+        is a non-None but EMPTY dict. An already-stale feed (its
+        market_data_stale already in the durable log) must NOT be re-announced —
+        the empty cache is seeded from the log for unknown symbols first."""
+
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+
+        # Pre-restart process: records the stale transition in its own cache.
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={})
+        stale = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        assert len(stale) == 1
+
+        # Restart: a brand-new empty cache, feed still stale -> NO duplicate.
+        fresh_cache: dict[str, bool] = {}
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=fresh_cache)
+        stale = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        assert len(stale) == 1  # not re-announced
+        assert fresh_cache["AAPL"] is True  # seeded from the durable log
+
+    async def test_fresh_cache_after_restart_still_detects_recovery(self):
+        """After a restart-seed, a stale->healthy transition is still surfaced
+        exactly once (the seed establishes the correct prior baseline)."""
+
+        store = await _armed_store("AAPL")
+        feed = FakeMarketDataFeed()
+        await feed.subscribe(["AAPL"])
+        feed.set_snapshot("AAPL", stale=True)
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={})
+
+        # Restart with an empty cache; feed has since recovered.
+        feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
+        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={})
+        recovered = [e for e in await store.list_events() if e.event_type == "market_data_recovered"]
+        assert len(recovered) == 1
+
     async def test_cache_is_pruned_when_symbol_unsubscribed(self):
         store = await _armed_store("AAPL")
         feed = FakeMarketDataFeed()
@@ -405,9 +444,13 @@ class TestStaleStateCache:
                 await task
 
         # strategy_loop's stale_state dict is created (empty, but non-None)
-        # BEFORE the loop starts, so every tick — including the first — passes
-        # a real cache, never None; the event-log fallback is never reached.
-        assert list_events_calls == 0
+        # BEFORE the loop starts and carried across ticks. The event log is read
+        # exactly ONCE — the first tick seeds the empty cache from the durable
+        # log for the not-yet-observed symbol (the F-007 restart seed) — and
+        # never again, since every subsequent tick finds the symbol already in
+        # the cache. A per-tick full scan (the perf regression this guards) would
+        # make this grow with the number of ticks.
+        assert list_events_calls == 1
 
 
 async def test_one_symbols_failure_does_not_block_others():

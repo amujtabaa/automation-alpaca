@@ -10,6 +10,12 @@ addopts = "-q"
 # file shouldn't trip the whole-suite floor. CI runs `pytest --cov=app
 # --cov-branch` explicitly (see .github/workflows/ci.yml); the floor below then
 # applies.
+# A leaked/unclosed sqlite connection (F-008) surfaces as a ResourceWarning at
+# GC; promote it to an error so a future fixture that forgets to close its store
+# fails the suite instead of warning quietly.
+filterwarnings = [
+    "error::ResourceWarning",
+]
 
 [tool.coverage.run]
 source = ["app"]
