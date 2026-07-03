@@ -202,6 +202,12 @@ Use when reviewing Codex or Claude Code output.
       resolvable session, and **no `is_live` broker order is untracked** (the
       F-002 orphan guard — referenced by a local order or an open recovery
       record).
+- [ ] The orphan guard is a **live** invariant, not a vacuous one: the machine
+      actually reaches the orphan state via `arm_submit_cancel_race` (a one-shot
+      mid-submit `set_on_submit` cancel) + `submit_pending_only` (submit phase in
+      isolation, so the orphan is visible before a full tick's recovery heals
+      it). Mutation-validated — neutering `create_submit_recovery` fires
+      `no_live_untracked_broker_order`; without these two rules it could not.
 - [ ] The chaos matrix pins the historical blockers deterministically
       (duplicate fill not double-counted, late-fill-after-cancel CHAOS-1,
       disconnect-then-recover, F-001 mid-submit kill flip, F-002 orphan clean +

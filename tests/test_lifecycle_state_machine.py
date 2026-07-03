@@ -45,7 +45,7 @@ from app.models import (
     OrderStatus,
     utcnow,
 )
-from app.monitoring import run_monitoring_tick
+from app.monitoring import _submit_pending_orders, run_monitoring_tick
 from app.store.base import (
     CandidateTransitionError,
     InvalidOrderError,
@@ -169,6 +169,45 @@ class LifecycleMachine(RuleBasedStateMachine):
         heart. Never raises (the loop is crash-proof by contract)."""
 
         self._run(run_monitoring_tick(self.store, self.sim, _SETTINGS))
+
+    @rule()
+    def submit_pending_only(self):
+        """Run ONLY the submit phase (claim + submit), not reconcile/recover.
+
+        In isolation from the recovery phase, an armed mid-submit cancel race
+        (see ``arm_submit_cancel_race``) leaves the F-002 orphan *observable
+        between rules*: the broker order live upstream, its local order terminal,
+        and an open recovery record — the exact state
+        ``no_live_untracked_broker_order`` guards, with the invariant now passing
+        via its ``open_recovery`` disjunct rather than trivially via ``tracked``.
+        A full ``monitoring_tick`` submits AND recovers in one call, healing the
+        orphan before any invariant checkpoint could observe it."""
+
+        self._run(_submit_pending_orders(self.store, self.sim))
+
+    @rule()
+    def arm_submit_cancel_race(self):
+        """Arm a one-shot F-002 race: the next order to reach the broker is
+        manually canceled *inside* ``submit_order`` — after its broker id is
+        minted and live, before the local ``SUBMITTED`` persist — so it ends
+        ``CANCELED`` locally while live at the broker. That is the orphan the
+        durable recovery ledger (D-017) exists to reconcile.
+
+        Without this seam the random machine can never construct the orphan:
+        every submit persists ``SUBMITTED`` uninterrupted, so the recovery path
+        (and ``no_live_untracked_broker_order``'s ``open_recovery`` branch) would
+        be dead code. The hook disarms itself so only the next submit races."""
+
+        async def cancel_mid_submit(order, broker_id):
+            self.sim.set_on_submit(None)  # one-shot: only this submit races
+            try:
+                await self.store.transition_order(order.id, OrderStatus.CANCELED)
+            except (OrderTransitionError, UnknownEntityError):
+                # Raced to terminal another way between claim and hook — no orphan
+                # this time, itself a legitimate interleaving.
+                pass
+
+        self.sim.set_on_submit(cancel_mid_submit)
 
     @rule(order=orders, portion=st.floats(min_value=0.1, max_value=1.0))
     def script_broker_fill(self, order, portion):

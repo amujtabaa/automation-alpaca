@@ -77,22 +77,35 @@ actually cancelled.
 **(b) A Hypothesis `RuleBasedStateMachine` over the real backend
 (`tests/test_lifecycle_state_machine.py`).** Rules fire the real
 store + monitoring-loop + sim operations
-(create/approve+dispatch/`run_monitoring_tick`/script-fill/cancel/kill/pause/
-close) in Hypothesis-chosen orders, catching only the exceptions a *legitimate*
-racing interleaving produces (closed session, illegal transition because state
-moved, a control block) — anything else propagates and fails. After **every**
-action it asserts the system's steady-state safety contract as `@invariant`s:
-position never negative, `filled_quantity` whole/bounded/equal to recorded
-fills, no candidate stranded `APPROVED`, every order has a resolvable session,
-and **no live-at-broker order is untracked** (the F-002 orphan guard — every
-`is_live` broker id must be referenced by a local order or an open recovery
-record). Runs against memory and SQLite as two `TestCase`s; the SQLite one
-closes its connection on teardown (ResourceWarning is a suite-wide error,
-F-008). Async-in-Hypothesis (rules are synchronous) is solved by giving each
-machine instance one persistent asyncio loop, so the store's `asyncio.Lock` and
-SQLite connection stay valid across rules. Mutation-validated: reverting
-`revert_candidate_approval` makes Hypothesis shrink to the minimal
-approve-then-block interleaving and fire `no_candidate_stranded_approved`.
+(create/approve+dispatch/`run_monitoring_tick`/submit-only-phase/script-fill/
+cancel/kill/pause/close/arm-mid-submit-cancel-race) in Hypothesis-chosen orders,
+catching only the exceptions a *legitimate* racing interleaving produces (closed
+session, illegal transition because state moved, a control block) — anything else
+propagates and fails. After **every** action it asserts the system's steady-state
+safety contract as `@invariant`s: position never negative, `filled_quantity`
+whole/bounded/equal to recorded fills, no candidate stranded `APPROVED`, every
+order has a resolvable session, and **no live-at-broker order is untracked** (the
+F-002 orphan guard — every `is_live` broker id must be referenced by a local
+order or an open recovery record). Runs against memory and SQLite as two
+`TestCase`s; the SQLite one closes its connection on teardown (ResourceWarning is
+a suite-wide error, F-008). Async-in-Hypothesis (rules are synchronous) is solved
+by giving each machine instance one persistent asyncio loop, so the store's
+`asyncio.Lock` and SQLite connection stay valid across rules.
+
+For the orphan guard to be a *live* invariant and not a vacuous one, the machine
+has to actually construct the orphan: `arm_submit_cancel_race` installs a
+one-shot `set_on_submit` hook that cancels the next order *inside* `submit_order`
+(after its broker id is live, before the local `SUBMITTED` persist), and
+`submit_pending_only` runs just the submit phase so the resulting orphan — broker
+order live, local order terminal, recovery record open — is observable at an
+invariant checkpoint before a full tick's recovery phase heals it. (An
+independent review of the Wave 1 diff caught that without these two rules the
+random machine could never reach the orphan state, so `no_live_untracked_broker_
+order` always passed via its `tracked` clause and its `open_recovery` branch was
+dead — the guard's whole point unexercised.) Mutation-validated twice: reverting
+`revert_candidate_approval` fires `no_candidate_stranded_approved`, and neutering
+`create_submit_recovery` (the F-002 ledger) now fires `no_live_untracked_broker_
+order` — which it provably did **not** before these rules existed.
 
 **(c) A deterministic chaos matrix (`tests/test_sim_chaos.py`).** Six pinned
 reproductions of the exact sequences the random machine explores but can't
