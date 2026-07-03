@@ -128,6 +128,18 @@ def list_order_recoveries(open_only: bool = True) -> list[dict]:
     return _request("GET", "/api/order-recoveries", params=params)
 
 
+def list_operator_orders() -> dict:
+    """The operator's single source of order-lifecycle truth (D-020).
+
+    Returns ``{"orders": [...], "recoveries": [...]}`` where every durable
+    non-terminal order is already classified server-side (``operational_status``,
+    hold ``reason``, ``cancelable``, ``stale``) and every open recovery record
+    is included. The cockpit renders this verbatim — it no longer interprets
+    order lifecycle or owns the "which statuses are open" filter."""
+
+    return _request("GET", "/api/operator/orders")
+
+
 def list_events(limit: Optional[int] = None, event_type: Optional[str] = None) -> list[dict]:
     params: dict = {}
     if limit:

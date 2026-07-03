@@ -1,16 +1,29 @@
-"""Pure input-validation predicates shared by both StateStore implementations.
+"""The single source of pre-trade policy — pure reason-code predicates (D-019).
 
-These functions encode the D-010 input-boundary rules in *one* place so
-``InMemoryStateStore`` and ``SqliteStateStore`` reject identical inputs — the
-parity the ``any_store`` tests assert. They are pure (no IO, no async, no
-state): each returns a short, greppable *reason code* string when the input is
-invalid, or ``None`` when it is acceptable. The stores translate a reason into
-the appropriate audit event + ``StoreError`` subclass; keeping the *decision*
-here and the *event/raise wiring* in each store avoids the one thing that would
-break parity — the two stores drifting on what counts as invalid.
+Both post-Phase-6 reviews named the same root cause: "each layer invents its own
+check." Wave 0 planted one shared numeric predicate; Wave 2 (D-019) finishes the
+job by making this module the *one* home every layer imports from — routes, both
+StateStore implementations, the strategy engine, and the market-data path — so a
+policy decision (is this a real number, a valid limit price, a resolvable
+session, a stopped control, a breached CAPI limit, a usable market-data field) is
+made in exactly one place and can never drift between callers. That is why it
+lives at ``app/policy.py`` and not under ``app/store/`` (it was
+``app/store/validation.py`` through Wave 1): it is not store-specific.
 
+They are pure (no IO, no async, no state): each returns a short, greppable
+*reason code* string when the input is invalid/blocked, or ``None`` when it is
+acceptable. The stores translate a reason into the appropriate audit event +
+``StoreError`` subclass; keeping the *decision* here and the *event/raise wiring*
+in each caller is what preserves parity — the one thing that would break it is
+two callers drifting on what counts as invalid, which a single source prevents.
 The reason codes are also written into rejection-event payloads, so the audit
 log says *why* a fill/order was rejected, not just that it was.
+
+This is deliberately a module of pure functions, **not** a ``PolicyEngine``/ABC
+or an async seam (D-016c): nothing needs a second implementation yet, and the
+approve-route pre-check and the authoritative store check must keep calling the
+*same* function with the *same* inputs. Consolidation is de-duplication, not a
+new indirection layer.
 """
 
 from __future__ import annotations
@@ -19,20 +32,22 @@ import math
 from typing import Optional, Sequence
 
 from app.models import (
+    RECOVERY_NEEDS_REVIEW,
     Candidate,
     Fill,
     Order,
     OrderSide,
+    OrderStatus,
     Position,
     SessionRecord,
     SessionStatus,
 )
-from app.store.transitions import ORDER_TRANSITIONS
+from app.transitions import ORDER_TRANSITIONS
 
 # An order still in one of these statuses represents live risk: it could fill
 # at any moment, so it counts toward exposure exactly like an already-filled
 # position. Everything else (FILLED/CANCELED/REJECTED) is terminal and settled.
-# Derived from app/store/transitions.py's ORDER_TRANSITIONS rather than
+# Derived from app/transitions.py's ORDER_TRANSITIONS rather than
 # hand-copied, so the two can never silently drift apart: a status is
 # non-terminal exactly when it has at least one legal outgoing transition.
 NON_TERMINAL_ORDER_STATUSES = frozenset(
@@ -81,6 +96,48 @@ def session_submission_block_reason(
     if session.status is SessionStatus.CLOSED:
         return "session_closed"
     return order_intent_block_reason(session)
+
+
+def order_session_resolution_reason(
+    session: Optional[SessionRecord],
+) -> Optional[str]:
+    """Why an APPROVED candidate's declared session can't back new order intent
+    at dispatch, or ``None`` if it resolves.
+
+    The F-004 dispatch-time backstop, centralized (D-019): an APPROVED candidate
+    whose declared ``session_id`` no longer resolves (``session is None``) must
+    not produce order intent — it is blocked as ``unresolved_session`` and
+    audited. ``create_candidate`` already rejects an explicit unresolvable
+    session id up front; this covers the order-creation path.
+
+    This is a **distinct** predicate from ``order_intent_block_reason``, and the
+    difference is load-bearing: that one deliberately treats ``None`` as "no live
+    session to stop" (returns ``None``/unblocked) so the monitoring loop's
+    current-session emergency-stop check reads a missing current session as
+    nothing to halt. Blocking on ``None`` belongs *only* to the order-creation
+    path, which is exactly why it is its own function rather than a change to
+    ``order_intent_block_reason``.
+    """
+
+    if session is None:
+        return "unresolved_session"
+    return None
+
+
+def market_data_field_reason(value: object) -> Optional[str]:
+    """Why a market-data snapshot field is unusable, or ``None`` if it is a real,
+    finite number.
+
+    The F-005 guard, centralized (D-019): a ``NaN``/``Inf``/``None``/boolean/
+    non-numeric last-price, previous-close, bid, or ask must never flow into a
+    feature computation or a candidate's ``suggested_limit_price``. This is just
+    :func:`finite_number_reason` under a market-data name so the strategy/feature
+    layer reads from the same single source as the order/fill layer instead of
+    forking its own ``math.isfinite`` check. ``None`` (a missing field) is
+    reported as ``non_numeric`` — a missing snapshot value is not usable.
+    """
+
+    return finite_number_reason(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -364,3 +421,110 @@ def risk_limit_reason(
     ):
         return "exceeds_max_total_exposure"
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Operational status — the single server-side lifecycle classification (D-020)
+#
+# The cockpit used to interpret (order.status + latest submission-block reason)
+# into a human operational state, and it owned the "which statuses are still
+# open" filter. Wave 2 moves both here so no UI re-derives lifecycle and the next
+# UI (Dash) inherits the same truth for free. Pure: a status (+ the reason from
+# the latest audit event) in, a stable label out. The labels are a small closed
+# vocabulary the operator endpoint and its schema share.
+# --------------------------------------------------------------------------- #
+
+# Durable non-terminal order states, operator-facing.
+OP_AWAITING_SUBMISSION = "awaiting_submission"  # CREATED, no control holding it
+OP_HELD_KILL_SWITCH = "held_kill_switch"
+OP_HELD_BUYS_PAUSED = "held_buys_paused"
+OP_HELD_SESSION_CLOSED = "held_session_closed"  # closed or unresolvable session
+OP_HELD_OTHER = "held"  # a held CREATED order with an unrecognized reason
+OP_SUBMITTING = "submitting"
+OP_SUBMITTED = "submitted"
+OP_PARTIALLY_FILLED = "partially_filled"
+OP_CANCEL_PENDING = "cancel_pending"
+
+# Broker-submit recovery-ledger states (D-017 records surfaced in the operator
+# view), sharing the same label space.
+OP_BROKER_SUBMISSION_FAILED = "broker_submission_failed"  # unresolved: live at broker, being reconciled
+OP_RECOVERY_REQUIRED = "recovery_required"  # needs_review: real untracked position, human must act
+
+# Maps a submission-block reason (from an order_submission_blocked audit event)
+# to a held label. Two families of reason reach here:
+#   * the order's OWN session being stopped — session_submission_block_reason:
+#     kill_switch / buys_paused / session_closed / unknown_session;
+#   * the LIVE/current session being stopped while the order's own session is
+#     permissive — plan_claim_order_for_submission wraps those as
+#     f"current_{...}", i.e. current_kill_switch / current_buys_paused (the
+#     D-013a cross-session emergency-stop after a date rollover). A kill switch
+#     is a kill switch regardless of which session tripped it, so both prefixes
+#     map to the same operational label (only order_intent_block_reason feeds the
+#     current_ path, so only kill_switch/buys_paused have current_ variants —
+#     session_closed does not).
+_HELD_REASON_LABELS = {
+    "kill_switch": OP_HELD_KILL_SWITCH,
+    "current_kill_switch": OP_HELD_KILL_SWITCH,
+    "buys_paused": OP_HELD_BUYS_PAUSED,
+    "current_buys_paused": OP_HELD_BUYS_PAUSED,
+    "session_closed": OP_HELD_SESSION_CLOSED,
+    "unknown_session": OP_HELD_SESSION_CLOSED,
+}
+
+_STATUS_OP_LABELS = {
+    OrderStatus.SUBMITTING: OP_SUBMITTING,
+    OrderStatus.SUBMITTED: OP_SUBMITTED,
+    OrderStatus.PARTIALLY_FILLED: OP_PARTIALLY_FILLED,
+    OrderStatus.CANCEL_PENDING: OP_CANCEL_PENDING,
+}
+
+# A manual cancel is offerable on any non-terminal order that has not already
+# been asked to cancel — mirrors POST /orders/{id}/cancel exactly (terminal ->
+# 409; cancel_pending -> idempotent no-op, so no button).
+_CANCELABLE_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.CREATED,
+        OrderStatus.SUBMITTING,
+        OrderStatus.SUBMITTED,
+        OrderStatus.PARTIALLY_FILLED,
+    }
+)
+
+
+def operational_status_for(
+    order_status: OrderStatus, block_reason: Optional[str]
+) -> str:
+    """The operator-facing lifecycle label for a durable non-terminal order.
+
+    ``block_reason`` is the reason from that order's latest
+    ``order_submission_blocked`` audit event (``None`` if it was never blocked)
+    and only matters while the order is still ``CREATED`` — once it is claimed
+    (``SUBMITTING``) or beyond, the status itself is the truth. A terminal status
+    has no operational label (the endpoint filters terminals out first); if one
+    is passed anyway this returns its raw value defensively rather than raising.
+    """
+
+    if order_status is OrderStatus.CREATED:
+        if block_reason is None:
+            return OP_AWAITING_SUBMISSION
+        return _HELD_REASON_LABELS.get(block_reason, OP_HELD_OTHER)
+    return _STATUS_OP_LABELS.get(order_status, order_status.value)
+
+
+def order_is_cancelable(order_status: OrderStatus) -> bool:
+    """Whether the operator endpoint should offer a manual cancel — the same
+    rule the cancel route enforces (non-terminal and not already
+    ``cancel_pending``)."""
+
+    return order_status in _CANCELABLE_ORDER_STATUSES
+
+
+def recovery_operational_status(cleanup_status: str) -> str:
+    """Operational label for a broker-submit recovery record (D-017): a
+    ``needs_review`` record is a real untracked position a human must reconcile
+    (``recovery_required``); anything else still open is being worked by the
+    recovery loop (``broker_submission_failed``)."""
+
+    if cleanup_status == RECOVERY_NEEDS_REVIEW:
+        return OP_RECOVERY_REQUIRED
+    return OP_BROKER_SUBMISSION_FAILED

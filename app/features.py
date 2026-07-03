@@ -11,26 +11,28 @@ symbol right now," never as zero.
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from app.models import SessionType
+from app.policy import market_data_field_reason
 
 
 def _finite(value: Optional[float]) -> bool:
-    """A usable numeric input: present and finite (not ``None``/``NaN``/``±Inf``).
+    """A usable numeric market-data input: present and finite (not
+    ``None``/``NaN``/``±Inf``).
 
-    The market-data feed can, in principle, surface a non-finite value (a bad
-    tick, a divide-by-zero upstream); a feature computed from it must resolve to
+    Delegates the finiteness *decision* to the single policy source
+    (``app.policy.market_data_field_reason``, itself ``finite_number_reason``)
+    so the feature layer no longer forks its own ``math.isfinite`` check — the
+    D-019 consolidation. A feature computed from an unusable input resolves to
     ``None`` ("can't evaluate") rather than propagate ``inf``/``nan`` into a
-    candidate's price or a comparison (F-005). This mirrors the store-side
-    ``finite_number_reason`` guard at the read boundary — same intent, boolean
-    shape for these pure-math helpers.
+    candidate's price or a comparison (F-005); ``None`` (a missing field) is
+    likewise not usable.
     """
 
-    return value is not None and math.isfinite(value)
+    return market_data_field_reason(value) is None
 
 # Public (not underscore-prefixed): app/marketdata/alpaca_stream.py's
 # day-boundary reseed logic imports this too, so trading-day/session-boundary

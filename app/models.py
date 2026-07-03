@@ -369,6 +369,16 @@ class Event(_Entity):
     fill_id: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
+    # One key that ties a whole candidate lifecycle together for incident
+    # reconstruction (D-020): candidate creation stamps it, and every downstream
+    # event (approval, order creation, claim, submission, blocked/recovery,
+    # fills, transitions) carries the same value. It is the owning candidate's id
+    # — the store resolves it from the event's candidate_id when not passed
+    # explicitly, so one filter (GET /api/events?correlation_id=) returns the
+    # full lifecycle even for events that historically only named an order.
+    # Nullable + additive: pre-D-020 rows and non-candidate events (e.g.
+    # market_data_stale) are None.
+    correlation_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
 
 

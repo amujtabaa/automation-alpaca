@@ -17,7 +17,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from app.models import Order, OrderSide, OrderStatus, OrderType, Position
-from app.store.validation import existing_exposure, risk_limit_reason
+from app.policy import existing_exposure, risk_limit_reason
 
 # Realistic domains, not adversarial ones: existing_exposure/risk_limit_reason
 # assume valid domain objects (Rule: validate at the boundary, trust internal

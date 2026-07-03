@@ -176,6 +176,74 @@ Use when reviewing Codex or Claude Code output.
       live credentials + market hours) — see
       `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
 
+## Wave 2 (policy module + operator endpoint + correlation IDs — D-019/D-020)
+- [ ] `app/policy.py` is the single source for numeric / limit / session /
+      control / risk / market-data validity; every caller imports it and none
+      forks its own check. `features._finite` delegates to
+      `market_data_field_reason`; the F-004 session block is
+      `order_session_resolution_reason`.
+- [ ] The refactor is behavior-preserving: all pre-existing tests pass with
+      **only** import-path changes; no reason code changed meaning. No
+      `RiskEngine`/policy ABC or async seam (D-016c). `order_intent_block_reason(None)`
+      stays `None` and is pinned distinct from `order_session_resolution_reason(None)`.
+      `NON_TERMINAL_ORDER_STATUSES` stays derived from `ORDER_TRANSITIONS`.
+      `app/transitions.py` moved to top level (breaks the policy→store import
+      cycle); no `app.store.transitions` references remain.
+- [ ] `GET /api/operator/orders` is read-only and classifies **every**
+      `NON_TERMINAL_ORDER_STATUSES` order (label + hold reason + `cancelable` +
+      `stale`) plus every open recovery record. `cancelable` matches the cancel
+      route (non-terminal, not `cancel_pending`). Terminal orders are excluded.
+- [ ] The cockpit consumes `/api/operator/orders` and no longer owns lifecycle
+      interpretation: `_DISPLAY_ORDER_STATUSES`, the server-side status labeling,
+      the block-reason lookup, and the stale-event scan are gone; only a
+      presentation-only label map remains and it trusts the backend `cancelable`.
+- [ ] `Event.correlation_id` is nullable + additive (SQLite `_migrate` guard;
+      old rows / non-candidate events NULL). It defaults from `candidate_id`
+      **identically in both stores** (parity). Fills now carry `candidate_id` so
+      the whole candidate→order→fill lifecycle correlates; `GET
+      /api/events?correlation_id=` returns it. A state-machine invariant holds
+      the derive rule across interleavings.
+- [ ] D-019 and D-020 are recorded in `docs/00_START_HERE.md`.
+
+## Wave 1 (broker sim + stateful lifecycle harness — D-018)
+- [ ] `SimBrokerAdapter` **extends** `MockBrokerAdapter` (does not replace it),
+      imports no SDK, makes no network call, and is wired into no production
+      factory — it lives in `app/broker/` purely as a richer test double.
+- [ ] `set_on_submit` fires its hook *after* the broker id is minted and live
+      but *before* `submit_order` returns, and only on a successful submit — so
+      a test can land a control flip at the exact F-001/F-002 race point.
+      `is_live(broker_id)` is correct the instant `submit_order` returns.
+- [ ] `script`'s consumed-vs-queued state (`_script_last` vs `_scripts`) and
+      `cancel_order`'s state-merge keep `is_live` and `get_order_status`
+      consistent: a cancel wins over a pending script, preserves prior fills,
+      and stops the queue resuming.
+- [ ] The `RuleBasedStateMachine` runs against **both** stores (memory +
+      SQLite as two `TestCase`s); the SQLite one closes its connection on
+      teardown (no `ResourceWarning`, F-008). Each instance owns one persistent
+      asyncio loop so the store lock / SQLite connection stay valid across the
+      synchronous Hypothesis rules.
+- [ ] Rules catch **only** the exceptions a legitimate racing interleaving
+      produces (closed session, illegal transition because state moved, a
+      control block); any other exception propagates and fails the test.
+- [ ] Invariants are checked after **every** action and encode the real safety
+      contract: position never negative, `filled_quantity` whole/bounded/equal
+      to recorded fills, no candidate stranded `APPROVED`, every order has a
+      resolvable session, and **no `is_live` broker order is untracked** (the
+      F-002 orphan guard — referenced by a local order or an open recovery
+      record).
+- [ ] The orphan guard is a **live** invariant, not a vacuous one: the machine
+      actually reaches the orphan state via `arm_submit_cancel_race` (a one-shot
+      mid-submit `set_on_submit` cancel) + `submit_pending_only` (submit phase in
+      isolation, so the orphan is visible before a full tick's recovery heals
+      it). Mutation-validated — neutering `create_submit_recovery` fires
+      `no_live_untracked_broker_order`; without these two rules it could not.
+- [ ] The chaos matrix pins the historical blockers deterministically
+      (duplicate fill not double-counted, late-fill-after-cancel CHAOS-1,
+      disconnect-then-recover, F-001 mid-submit kill flip, F-002 orphan clean +
+      partial-fill `needs_review`), all driven through the **real** monitoring
+      loop — not by poking store methods directly.
+- [ ] D-018 is recorded in `docs/00_START_HERE.md`.
+
 ## Wave 0 (post-Phase-6 remediation — F-001…F-008)
 - [ ] Kill switch cannot lose the race vs. broker submission at **any** flip
       point (F-001): `claim_order_for_submission` re-checks every control and

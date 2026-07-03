@@ -100,7 +100,7 @@ async def test_closed_session_yields_session_closed_hold_reason(any_store):
     # Defense-in-depth backstop to the close-cancel above: the gate predicate
     # itself holds any order whose own session is closed (independent of whether
     # close-cancel already terminated it).
-    from app.store.validation import session_submission_block_reason
+    from app.policy import session_submission_block_reason
 
     order = await _created_order(any_store)
     await any_store.close_session()

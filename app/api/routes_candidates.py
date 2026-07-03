@@ -25,7 +25,7 @@ from app.store.base import (
     StoreError,
     UnknownEntityError,
 )
-from app.store.validation import (
+from app.policy import (
     limit_price_reason,
     order_intent_block_reason,
     risk_limit_reason,

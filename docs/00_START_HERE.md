@@ -49,6 +49,178 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-020 — Operator-truth endpoint + audit correlation IDs (Wave 2)
+**Context.** Two observability gaps. (A) The cockpit *interpreted* order
+lifecycle itself — which statuses count as "open", each order's hold reason from
+the latest `order_submission_blocked` event, the `order_stale` scan, and the
+status→label mapping — so every UI would re-derive it and could drift from the
+backend (Wave 0 had already fixed one specific `created`-filter bug; this
+generalizes the fix). (B) An order's lifecycle spans `candidate_id`, `order_id`,
+and `fill_id`, so no single key tied candidate-creation → approval → claim →
+submit → fill → position for incident reconstruction.
+
+**(A) `GET /api/operator/orders` — server-side lifecycle classification.**
+Read-only. Returns every durable non-terminal order already classified: an
+`operational_status` label (`app.policy.operational_status_for`:
+`awaiting_submission` / `held_kill_switch` / `held_buys_paused` /
+`held_session_closed` / `held` / `submitting` / `submitted` /
+`partially_filled` / `cancel_pending`), the hold `reason` behind a `created`
+order (its latest `order_submission_blocked` event), a `cancelable` flag (the
+same rule the cancel route enforces — non-terminal and not already
+`cancel_pending`), and a `stale` flag; plus every open broker-submit recovery
+record classified `broker_submission_failed` (unresolved) / `recovery_required`
+(needs_review). The classifier lives in `app/policy.py` beside the gate
+predicates so "what operational state is this" is decided in one place too.
+Terminal orders are excluded via the same `NON_TERMINAL_ORDER_STATUSES` the CAPI
+exposure calc uses. The cockpit now consumes this and **stops owning** the
+open-status filter, the block-reason lookup, the stale-event scan, and the
+status labeling — it keeps only a presentation-only label map (formatting, not
+lifecycle logic) and trusts the backend's `cancelable` flag rather than a status
+string. The raw `/orders` read and `/orders/{id}/cancel` action are unchanged;
+the next UI (Dash) gets the same classified truth for free.
+
+**(B) `Event.correlation_id` — one key per candidate lifecycle.** A single
+nullable, additive field on `Event` (SQLite gets an additive column with a
+`_migrate` guard; pre-D-020 rows and non-candidate events like
+`market_data_stale` stay NULL, no backfill). The correlation key **is the owning
+candidate's id**: rather than thread a fresh id through ~40 event sites, the
+event writer defaults `correlation_id` from the event's `candidate_id`
+(`correlation_id or candidate_id`, identically in both stores — parity). Every
+lifecycle event already carried `candidate_id` (candidate transitions, order
+creation, claim, submission-blocked, unpersisted-submit, stale, transitions)
+**except fills**, which now also carry it — so `GET
+/api/events?correlation_id=<candidate_id>` reconstructs creation → approval →
+order → claim → submit → fill → transitions in one query. Deliberately **not**
+event-sourcing: one nullable field, no new entity columns. **Scope note:** the
+submit-recovery *ledger's own* bookkeeping events (`submit_recovery_recorded` /
+`_resolved` / `_needs_review`) link by `order_id`, not `correlation_id` — the
+recovery record intentionally stores no `candidate_id` (keeping D-020 to one
+nullable Event field); the recovery *trigger* (`order_submit_unpersisted`) does
+correlate. A state-machine invariant (`correlation_id_matches_owning_candidate`)
+holds the derive rule across every random interleaving in both stores.
+
+### D-019 — One pre-trade policy module (`app/policy.py`), the single source for every gate (Wave 2)
+**Context.** Both post-Phase-6 reviews named the same root cause — "each layer
+invents its own check." Wave 0 planted *one* shared numeric predicate
+(`finite_number_reason`); Wave 2 finishes the consolidation so that every
+pre-trade policy decision — numeric validity, limit price, session resolution,
+control state, CAPI risk limit + exposure, market-data field finiteness — is made
+in exactly one place that routes, both stores, the strategy engine, and the
+market-data path all import from.
+
+**What changed.**
+- **Promoted `app/store/validation.py` → `app/policy.py`.** The module was
+  already ~80% of the policy surface, but it is used by routes / strategy /
+  market-data, not just the store, so its home under `app/store/` was a
+  misnomer. It is now a top-level module; its role is stated in its docstring as
+  *the* single source.
+- **Centralized the two remaining forks.** `order_session_resolution_reason`
+  (the F-004 dispatch-time "unresolved session blocks order intent" rule, which
+  had been inline in `plan_create_order_for_candidate`) and
+  `market_data_field_reason` (the F-005 market-data finiteness guard). The
+  feature engine's `_finite` now *delegates* to `market_data_field_reason`
+  instead of forking its own `math.isfinite` — so the strategy/feature layer and
+  the order/fill layer decide "is this a real number" identically.
+- **Moved `app/store/transitions.py` → `app/transitions.py`.** The order
+  state-machine table is domain config, not store implementation — and the move
+  was also *required* to break an import cycle the promotion exposed
+  (`app.policy` → `app.store.transitions` would trigger `app/store/__init__`'s
+  eager `import memory → core → app.policy`, a partially-initialized-module
+  error). At top level, `app.policy` → `app.transitions` → `app.models` has no
+  cycle.
+
+**Constraints honored (this is a refactor, not a rewrite).**
+- **Behavior-preserving.** All 730 pre-existing tests pass with *only* import
+  paths changed; no reason code changed meaning, no gate loosened or tightened
+  on any input the type contracts admit. (`_finite`'s sole divergence is
+  rejecting a *boolean* market-data field, which `Optional[float]` forbids and
+  which the order/fill layer already rejected — an alignment, not a live gate
+  change.)
+- **No `RiskEngine`/policy ABC or async seam** (D-016c preserved): `app/policy.py`
+  is pure functions only, so the approve-route pre-check and the authoritative
+  store check keep calling the *same* function with the *same* inputs.
+- **`order_intent_block_reason(None)` emergency-stop semantics preserved** and
+  now pinned *distinct* from `order_session_resolution_reason(None)`: the former
+  stays `None` (a missing current session = nothing to stop, for the monitoring
+  loop); only the latter blocks `None` as `unresolved_session` (order-creation
+  path). `tests/test_policy_consolidation.py` asserts this non-uniformity did not
+  get flattened by centralizing.
+- **`NON_TERMINAL_ORDER_STATUSES` stays derived** from `ORDER_TRANSITIONS`.
+
+### D-018 — Controllable broker sim + stateful lifecycle harness (Wave 1)
+**Context.** Every serious defect in this project's history was a
+*temporal-sequence* bug found by luck of tracing the right interleaving
+(session orphaning D-009, the kill-switch date-rollover bypass D-013a, the F-001
+submit TOCTOU, the F-002 orphaned broker order). Example-based tests only cover
+the sequences someone thought to write. Wave 1 adds two layers that attack the
+whole class instead of instances, both fully IO-free (Rule 9) and run against
+**both** stores.
+
+**(a) `SimBrokerAdapter` (`app/broker/sim.py`) — a controllable test double.**
+Extends `MockBrokerAdapter` (never replaces it; still no SDK, no network, never
+wired into a production factory) with the controls needed to make otherwise
+timing-dependent races *deterministic*: `set_on_submit(hook)` fires an async
+hook mid-`submit_order` — after the broker id is minted and live but before the
+call returns — so a test flips a control (kill switch, manual cancel, session
+close) at the exact instant the real F-001/F-002 race would land;
+`fail_submit_when`/`fail_cancel_when` raise at a chosen call index;
+`script(id, updates)` queues a per-order status sequence (models
+partial→partial→filled, a duplicate `source_fill_id`, a late fill after
+`cancel_pending`), with the last update sticking once exhausted;
+`disconnect_status_for(n)` makes the next N status polls raise then recovers;
+`is_live(broker_id)` reports whether a broker order's current status is
+non-terminal — the seam a recovery test uses to assert a stranded order was
+actually cancelled.
+
+**(b) A Hypothesis `RuleBasedStateMachine` over the real backend
+(`tests/test_lifecycle_state_machine.py`).** Rules fire the real
+store + monitoring-loop + sim operations
+(create/approve+dispatch/`run_monitoring_tick`/submit-only-phase/script-fill/
+cancel/kill/pause/close/arm-mid-submit-cancel-race) in Hypothesis-chosen orders,
+catching only the exceptions a *legitimate* racing interleaving produces (closed
+session, illegal transition because state moved, a control block) — anything else
+propagates and fails. After **every** action it asserts the system's steady-state
+safety contract as `@invariant`s: position never negative, `filled_quantity`
+whole/bounded/equal to recorded fills, no candidate stranded `APPROVED`, every
+order has a resolvable session, and **no live-at-broker order is untracked** (the
+F-002 orphan guard — every `is_live` broker id must be referenced by a local
+order or an open recovery record). Runs against memory and SQLite as two
+`TestCase`s; the SQLite one closes its connection on teardown (ResourceWarning is
+a suite-wide error, F-008). Async-in-Hypothesis (rules are synchronous) is solved
+by giving each machine instance one persistent asyncio loop, so the store's
+`asyncio.Lock` and SQLite connection stay valid across rules.
+
+For the orphan guard to be a *live* invariant and not a vacuous one, the machine
+has to actually construct the orphan: `arm_submit_cancel_race` installs a
+one-shot `set_on_submit` hook that cancels the next order *inside* `submit_order`
+(after its broker id is live, before the local `SUBMITTED` persist), and
+`submit_pending_only` runs just the submit phase so the resulting orphan — broker
+order live, local order terminal, recovery record open — is observable at an
+invariant checkpoint before a full tick's recovery phase heals it. (An
+independent review of the Wave 1 diff caught that without these two rules the
+random machine could never reach the orphan state, so `no_live_untracked_broker_
+order` always passed via its `tracked` clause and its `open_recovery` branch was
+dead — the guard's whole point unexercised.) Mutation-validated twice: reverting
+`revert_candidate_approval` fires `no_candidate_stranded_approved`, and neutering
+`create_submit_recovery` (the F-002 ledger) now fires `no_live_untracked_broker_
+order` — which it provably did **not** before these rules existed.
+
+**(c) A deterministic chaos matrix (`tests/test_sim_chaos.py`).** Six pinned
+reproductions of the exact sequences the random machine explores but can't
+*guarantee* to hit each run, so they can never silently regress: duplicate fill
+via reconcile (not double-counted), late fill after `cancel_pending` wins
+(CHAOS-1), disconnect-then-recover (loop logs-and-continues, fill lands on
+recovery), the F-001 mid-submit kill flip (claim already committed → still
+submits), and the F-002 accept→local-cancel→recovery orphan in both the clean
+(cancel-and-resolve) and the partial-fill (`needs_review`, kept visible, never
+cancelled-and-dropped) variants — all driven through the real monitoring loop
+via the sim's controls.
+
+**Out of scope (kept minimal):** no fuzzing of market-data feature math here
+(covered by Phase 5/Wave 0 finite-guard tests); the machine models the
+order/candidate/session lifecycle, not the strategy engine's candidate
+*generation*, which is deterministic given a snapshot and already unit-tested.
+
 ### D-017 — Atomic submission claim (`SUBMITTING`) + durable broker-submit recovery ledger
 **Context.** An independent post-Phase-6 review found two blocker races
 (F-001, F-002) with the *same* root cause: there was no durable

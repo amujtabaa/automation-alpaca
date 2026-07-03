@@ -1,6 +1,6 @@
 """Wave 0 — F-003 / F-005: hostile numeric input is rejected cleanly at BOTH
 the store boundary and the market-data → feature → strategy boundary, via one
-shared predicate (``app.store.validation.finite_number_reason``).
+shared predicate (``app.policy.finite_number_reason``).
 
 F-003 (reproduced firsthand pre-fix): a ``NaN`` ``filled_quantity`` slipped past
 ``transition_order``'s bare ``<``/``>`` comparisons (every comparison against
