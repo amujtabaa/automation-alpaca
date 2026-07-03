@@ -176,6 +176,35 @@ Use when reviewing Codex or Claude Code output.
       live credentials + market hours) — see
       `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
 
+## Wave 2 (policy module + operator endpoint + correlation IDs — D-019/D-020)
+- [ ] `app/policy.py` is the single source for numeric / limit / session /
+      control / risk / market-data validity; every caller imports it and none
+      forks its own check. `features._finite` delegates to
+      `market_data_field_reason`; the F-004 session block is
+      `order_session_resolution_reason`.
+- [ ] The refactor is behavior-preserving: all pre-existing tests pass with
+      **only** import-path changes; no reason code changed meaning. No
+      `RiskEngine`/policy ABC or async seam (D-016c). `order_intent_block_reason(None)`
+      stays `None` and is pinned distinct from `order_session_resolution_reason(None)`.
+      `NON_TERMINAL_ORDER_STATUSES` stays derived from `ORDER_TRANSITIONS`.
+      `app/transitions.py` moved to top level (breaks the policy→store import
+      cycle); no `app.store.transitions` references remain.
+- [ ] `GET /api/operator/orders` is read-only and classifies **every**
+      `NON_TERMINAL_ORDER_STATUSES` order (label + hold reason + `cancelable` +
+      `stale`) plus every open recovery record. `cancelable` matches the cancel
+      route (non-terminal, not `cancel_pending`). Terminal orders are excluded.
+- [ ] The cockpit consumes `/api/operator/orders` and no longer owns lifecycle
+      interpretation: `_DISPLAY_ORDER_STATUSES`, the server-side status labeling,
+      the block-reason lookup, and the stale-event scan are gone; only a
+      presentation-only label map remains and it trusts the backend `cancelable`.
+- [ ] `Event.correlation_id` is nullable + additive (SQLite `_migrate` guard;
+      old rows / non-candidate events NULL). It defaults from `candidate_id`
+      **identically in both stores** (parity). Fills now carry `candidate_id` so
+      the whole candidate→order→fill lifecycle correlates; `GET
+      /api/events?correlation_id=` returns it. A state-machine invariant holds
+      the derive rule across interleavings.
+- [ ] D-019 and D-020 are recorded in `docs/00_START_HERE.md`.
+
 ## Wave 1 (broker sim + stateful lifecycle harness — D-018)
 - [ ] `SimBrokerAdapter` **extends** `MockBrokerAdapter` (does not replace it),
       imports no SDK, makes no network call, and is wired into no production

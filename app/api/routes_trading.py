@@ -268,6 +268,14 @@ async def _transition_cancel(
 async def list_events(
     limit: Optional[int] = Query(default=None, ge=1, le=1000),
     event_type: Optional[str] = Query(default=None),
+    correlation_id: Optional[str] = Query(default=None),
     store: StateStore = Depends(get_store),
 ) -> list[Event]:
-    return await store.list_events(limit=limit, event_type=event_type)
+    """``correlation_id`` (D-020) returns the complete lifecycle of one
+    candidate — creation, approval, order creation, claim, submission,
+    blocked/recovery, fills, and transitions — in one query, for incident
+    reconstruction."""
+
+    return await store.list_events(
+        limit=limit, event_type=event_type, correlation_id=correlation_id
+    )

@@ -173,16 +173,17 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
 CREATE INDEX IF NOT EXISTS idx_snapshots_session ON position_snapshots(session_id);
 
 CREATE TABLE IF NOT EXISTS events (
-    id           TEXT PRIMARY KEY,
-    event_type   TEXT NOT NULL,
-    message      TEXT NOT NULL DEFAULT '',
-    symbol       TEXT,
-    candidate_id TEXT,
-    order_id     TEXT,
-    fill_id      TEXT,
-    payload      TEXT NOT NULL DEFAULT '{}',
-    session_id   TEXT,
-    created_at   TEXT NOT NULL
+    id             TEXT PRIMARY KEY,
+    event_type     TEXT NOT NULL,
+    message        TEXT NOT NULL DEFAULT '',
+    symbol         TEXT,
+    candidate_id   TEXT,
+    order_id       TEXT,
+    fill_id        TEXT,
+    payload        TEXT NOT NULL DEFAULT '{}',
+    session_id     TEXT,
+    correlation_id TEXT,
+    created_at     TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -315,6 +316,14 @@ class SqliteStateStore(StateStore):
             # Fresh DBs already get this column from SCHEMA; this guard only fires
             # on an orders table created before the column existed.
             conn.execute("ALTER TABLE orders ADD COLUMN broker_order_id TEXT")
+
+        event_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "correlation_id" not in event_cols:  # added in Wave 2 (D-020)
+            # The lifecycle-correlation key. Additive; pre-D-020 rows stay NULL
+            # (backfill not required). Fresh DBs already get it from SCHEMA.
+            conn.execute("ALTER TABLE events ADD COLUMN correlation_id TEXT")
 
         # Item 5 / F1: dedup moved from a column-level UNIQUE on source_fill_id to
         # a composite (order_id, source_fill_id) index. SQLite can't ALTER away a
@@ -453,6 +462,7 @@ class SqliteStateStore(StateStore):
             fill_id=row["fill_id"],
             payload=json.loads(row["payload"]) if row["payload"] else {},
             session_id=row["session_id"],
+            correlation_id=row["correlation_id"],
             created_at=row["created_at"],
         )
 
@@ -487,6 +497,7 @@ class SqliteStateStore(StateStore):
         fill_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Event:
         event = Event(
             event_type=str(event_type),
@@ -497,12 +508,16 @@ class SqliteStateStore(StateStore):
             fill_id=fill_id,
             payload=payload or {},
             session_id=session_id,
+            # Owning candidate's id is the correlation key (D-020); default from
+            # candidate_id so a whole lifecycle shares one filterable key with no
+            # per-call-site threading. Same rule in InMemoryStateStore — parity.
+            correlation_id=correlation_id or candidate_id,
         )
         cur.execute(
             """INSERT INTO events
                (id, event_type, message, symbol, candidate_id, order_id,
-                fill_id, payload, session_id, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                fill_id, payload, session_id, correlation_id, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 event.id,
                 event.event_type,
@@ -513,6 +528,7 @@ class SqliteStateStore(StateStore):
                 event.fill_id,
                 json.dumps(event.payload),
                 event.session_id,
+                event.correlation_id,
                 _dt(event.created_at),
             ),
         )
@@ -1512,6 +1528,7 @@ class SqliteStateStore(StateStore):
         fill_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Event:
         async with self._lock:
             with self._tx() as cur:
@@ -1525,6 +1542,7 @@ class SqliteStateStore(StateStore):
                     fill_id=fill_id,
                     payload=payload,
                     session_id=session_id,
+                    correlation_id=correlation_id,
                 )
 
     async def list_events(
@@ -1532,6 +1550,7 @@ class SqliteStateStore(StateStore):
         *,
         session_id: Optional[str] = None,
         event_type: Optional[str] = None,
+        correlation_id: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
         clauses, params = [], []
@@ -1541,6 +1560,9 @@ class SqliteStateStore(StateStore):
         if event_type is not None:
             clauses.append("event_type = ?")
             params.append(event_type)
+        if correlation_id is not None:
+            clauses.append("correlation_id = ?")
+            params.append(correlation_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         async with self._lock:
             rows = self._read_all(

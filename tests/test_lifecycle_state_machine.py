@@ -305,6 +305,20 @@ class LifecycleMachine(RuleBasedStateMachine):
             )
 
     @invariant()
+    def correlation_id_matches_owning_candidate(self):
+        # D-020: every event that names a candidate carries that candidate's id
+        # as its correlation_id, so one filter reconstructs a whole lifecycle.
+        # Holding this across every random interleaving proves the derive rule
+        # (correlation_id defaults to candidate_id) is applied uniformly in both
+        # stores, not just on the happy path.
+        for event in self._run(self.store.list_events()):
+            if event.candidate_id is not None:
+                assert event.correlation_id == event.candidate_id, (
+                    f"event {event.id} ({event.event_type}) candidate_id "
+                    f"{event.candidate_id} != correlation_id {event.correlation_id}"
+                )
+
+    @invariant()
     def every_order_has_a_resolvable_session(self):
         for o in self._run(self.store.list_orders()):
             assert o.session_id is not None

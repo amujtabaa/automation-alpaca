@@ -163,6 +163,7 @@ class InMemoryStateStore(StateStore):
         fill_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Event:
         event = Event(
             event_type=str(event_type),
@@ -173,6 +174,11 @@ class InMemoryStateStore(StateStore):
             fill_id=fill_id,
             payload=payload or {},
             session_id=session_id,
+            # The owning candidate's id is the correlation key (D-020): default it
+            # from candidate_id so every event in a candidate's lifecycle shares
+            # one filterable key with no per-call-site threading. Same rule in
+            # SqliteStateStore._insert_event — parity.
+            correlation_id=correlation_id or candidate_id,
         )
         self._events.append(event)
         return event.model_copy(deep=True)
@@ -872,6 +878,7 @@ class InMemoryStateStore(StateStore):
         fill_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Event:
         async with self._lock:
             return self._append_event_unlocked(
@@ -883,6 +890,7 @@ class InMemoryStateStore(StateStore):
                 fill_id=fill_id,
                 payload=payload,
                 session_id=session_id,
+                correlation_id=correlation_id,
             )
 
     async def list_events(
@@ -890,6 +898,7 @@ class InMemoryStateStore(StateStore):
         *,
         session_id: Optional[str] = None,
         event_type: Optional[str] = None,
+        correlation_id: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
         async with self._lock:
@@ -898,6 +907,7 @@ class InMemoryStateStore(StateStore):
                 for e in self._events
                 if (session_id is None or e.session_id == session_id)
                 and (event_type is None or e.event_type == event_type)
+                and (correlation_id is None or e.correlation_id == correlation_id)
             ]
             if limit is not None:
                 out = out[-limit:]

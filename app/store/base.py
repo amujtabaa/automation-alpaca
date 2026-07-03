@@ -578,7 +578,12 @@ class StateStore(ABC):
         fill_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Event:
+        """``correlation_id`` ties a whole candidate lifecycle together for
+        incident reconstruction (D-020). When not passed it defaults to
+        ``candidate_id`` (the owning candidate's id is the correlation key), so
+        every event that names a candidate correlates automatically."""
         ...
 
     @abstractmethod
@@ -587,6 +592,7 @@ class StateStore(ABC):
         *,
         session_id: Optional[str] = None,
         event_type: Optional[str] = None,
+        correlation_id: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
         """``event_type``, when given, filters to exactly that

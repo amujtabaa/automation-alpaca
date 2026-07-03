@@ -49,6 +49,56 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-020 — Operator-truth endpoint + audit correlation IDs (Wave 2)
+**Context.** Two observability gaps. (A) The cockpit *interpreted* order
+lifecycle itself — which statuses count as "open", each order's hold reason from
+the latest `order_submission_blocked` event, the `order_stale` scan, and the
+status→label mapping — so every UI would re-derive it and could drift from the
+backend (Wave 0 had already fixed one specific `created`-filter bug; this
+generalizes the fix). (B) An order's lifecycle spans `candidate_id`, `order_id`,
+and `fill_id`, so no single key tied candidate-creation → approval → claim →
+submit → fill → position for incident reconstruction.
+
+**(A) `GET /api/operator/orders` — server-side lifecycle classification.**
+Read-only. Returns every durable non-terminal order already classified: an
+`operational_status` label (`app.policy.operational_status_for`:
+`awaiting_submission` / `held_kill_switch` / `held_buys_paused` /
+`held_session_closed` / `held` / `submitting` / `submitted` /
+`partially_filled` / `cancel_pending`), the hold `reason` behind a `created`
+order (its latest `order_submission_blocked` event), a `cancelable` flag (the
+same rule the cancel route enforces — non-terminal and not already
+`cancel_pending`), and a `stale` flag; plus every open broker-submit recovery
+record classified `broker_submission_failed` (unresolved) / `recovery_required`
+(needs_review). The classifier lives in `app/policy.py` beside the gate
+predicates so "what operational state is this" is decided in one place too.
+Terminal orders are excluded via the same `NON_TERMINAL_ORDER_STATUSES` the CAPI
+exposure calc uses. The cockpit now consumes this and **stops owning** the
+open-status filter, the block-reason lookup, the stale-event scan, and the
+status labeling — it keeps only a presentation-only label map (formatting, not
+lifecycle logic) and trusts the backend's `cancelable` flag rather than a status
+string. The raw `/orders` read and `/orders/{id}/cancel` action are unchanged;
+the next UI (Dash) gets the same classified truth for free.
+
+**(B) `Event.correlation_id` — one key per candidate lifecycle.** A single
+nullable, additive field on `Event` (SQLite gets an additive column with a
+`_migrate` guard; pre-D-020 rows and non-candidate events like
+`market_data_stale` stay NULL, no backfill). The correlation key **is the owning
+candidate's id**: rather than thread a fresh id through ~40 event sites, the
+event writer defaults `correlation_id` from the event's `candidate_id`
+(`correlation_id or candidate_id`, identically in both stores — parity). Every
+lifecycle event already carried `candidate_id` (candidate transitions, order
+creation, claim, submission-blocked, unpersisted-submit, stale, transitions)
+**except fills**, which now also carry it — so `GET
+/api/events?correlation_id=<candidate_id>` reconstructs creation → approval →
+order → claim → submit → fill → transitions in one query. Deliberately **not**
+event-sourcing: one nullable field, no new entity columns. **Scope note:** the
+submit-recovery *ledger's own* bookkeeping events (`submit_recovery_recorded` /
+`_resolved` / `_needs_review`) link by `order_id`, not `correlation_id` — the
+recovery record intentionally stores no `candidate_id` (keeping D-020 to one
+nullable Event field); the recovery *trigger* (`order_submit_unpersisted`) does
+correlate. A state-machine invariant (`correlation_id_matches_owning_candidate`)
+holds the derive rule across every random interleaving in both stores.
+
 ### D-019 — One pre-trade policy module (`app/policy.py`), the single source for every gate (Wave 2)
 **Context.** Both post-Phase-6 reviews named the same root cause — "each layer
 invents its own check." Wave 0 planted *one* shared numeric predicate

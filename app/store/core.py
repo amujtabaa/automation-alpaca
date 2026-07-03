@@ -195,6 +195,7 @@ def plan_append_fill(
                 "fill_duplicate_ignored",
                 message=f"duplicate fill {source_fill_id} for {symbol} ignored",
                 symbol=symbol,
+                candidate_id=order.candidate_id,
                 order_id=order_id,
                 payload={"source_fill_id": source_fill_id},
                 session_id=session_id,
@@ -210,6 +211,7 @@ def plan_append_fill(
                 "fill_rejected_invalid",
                 message=f"fill for {symbol} rejected: {match_reason}",
                 symbol=symbol,
+                candidate_id=order.candidate_id,
                 order_id=order_id,
                 payload={
                     "reason": match_reason,
@@ -237,6 +239,7 @@ def plan_append_fill(
                     f"quantity {current_quantity}"
                 ),
                 symbol=symbol,
+                candidate_id=order.candidate_id,
                 order_id=order_id,
                 payload={"attempted_sell": quantity, "current_quantity": current_quantity},
                 session_id=session_id,
@@ -263,6 +266,7 @@ def plan_append_fill(
             "fill_appended",
             message=f"fill {fill.quantity} {symbol} @ {fill.price}",
             symbol=symbol,
+            candidate_id=order.candidate_id,
             order_id=order_id,
             fill_id=fill.id,
             payload={"side": side.value, "quantity": quantity, "price": price},
