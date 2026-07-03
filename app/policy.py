@@ -32,10 +32,12 @@ import math
 from typing import Optional, Sequence
 
 from app.models import (
+    RECOVERY_NEEDS_REVIEW,
     Candidate,
     Fill,
     Order,
     OrderSide,
+    OrderStatus,
     Position,
     SessionRecord,
     SessionStatus,
@@ -419,3 +421,99 @@ def risk_limit_reason(
     ):
         return "exceeds_max_total_exposure"
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Operational status — the single server-side lifecycle classification (D-020)
+#
+# The cockpit used to interpret (order.status + latest submission-block reason)
+# into a human operational state, and it owned the "which statuses are still
+# open" filter. Wave 2 moves both here so no UI re-derives lifecycle and the next
+# UI (Dash) inherits the same truth for free. Pure: a status (+ the reason from
+# the latest audit event) in, a stable label out. The labels are a small closed
+# vocabulary the operator endpoint and its schema share.
+# --------------------------------------------------------------------------- #
+
+# Durable non-terminal order states, operator-facing.
+OP_AWAITING_SUBMISSION = "awaiting_submission"  # CREATED, no control holding it
+OP_HELD_KILL_SWITCH = "held_kill_switch"
+OP_HELD_BUYS_PAUSED = "held_buys_paused"
+OP_HELD_SESSION_CLOSED = "held_session_closed"  # closed or unresolvable session
+OP_HELD_OTHER = "held"  # a held CREATED order with an unrecognized reason
+OP_SUBMITTING = "submitting"
+OP_SUBMITTED = "submitted"
+OP_PARTIALLY_FILLED = "partially_filled"
+OP_CANCEL_PENDING = "cancel_pending"
+
+# Broker-submit recovery-ledger states (D-017 records surfaced in the operator
+# view), sharing the same label space.
+OP_BROKER_SUBMISSION_FAILED = "broker_submission_failed"  # unresolved: live at broker, being reconciled
+OP_RECOVERY_REQUIRED = "recovery_required"  # needs_review: real untracked position, human must act
+
+# Maps a submission-block reason (from an order_submission_blocked audit event,
+# ultimately session_submission_block_reason) to a held label. An unknown or
+# unresolvable session both read as "no live session backing this order."
+_HELD_REASON_LABELS = {
+    "kill_switch": OP_HELD_KILL_SWITCH,
+    "buys_paused": OP_HELD_BUYS_PAUSED,
+    "session_closed": OP_HELD_SESSION_CLOSED,
+    "unknown_session": OP_HELD_SESSION_CLOSED,
+}
+
+_STATUS_OP_LABELS = {
+    OrderStatus.SUBMITTING: OP_SUBMITTING,
+    OrderStatus.SUBMITTED: OP_SUBMITTED,
+    OrderStatus.PARTIALLY_FILLED: OP_PARTIALLY_FILLED,
+    OrderStatus.CANCEL_PENDING: OP_CANCEL_PENDING,
+}
+
+# A manual cancel is offerable on any non-terminal order that has not already
+# been asked to cancel — mirrors POST /orders/{id}/cancel exactly (terminal ->
+# 409; cancel_pending -> idempotent no-op, so no button).
+_CANCELABLE_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.CREATED,
+        OrderStatus.SUBMITTING,
+        OrderStatus.SUBMITTED,
+        OrderStatus.PARTIALLY_FILLED,
+    }
+)
+
+
+def operational_status_for(
+    order_status: OrderStatus, block_reason: Optional[str]
+) -> str:
+    """The operator-facing lifecycle label for a durable non-terminal order.
+
+    ``block_reason`` is the reason from that order's latest
+    ``order_submission_blocked`` audit event (``None`` if it was never blocked)
+    and only matters while the order is still ``CREATED`` — once it is claimed
+    (``SUBMITTING``) or beyond, the status itself is the truth. A terminal status
+    has no operational label (the endpoint filters terminals out first); if one
+    is passed anyway this returns its raw value defensively rather than raising.
+    """
+
+    if order_status is OrderStatus.CREATED:
+        if block_reason is None:
+            return OP_AWAITING_SUBMISSION
+        return _HELD_REASON_LABELS.get(block_reason, OP_HELD_OTHER)
+    return _STATUS_OP_LABELS.get(order_status, order_status.value)
+
+
+def order_is_cancelable(order_status: OrderStatus) -> bool:
+    """Whether the operator endpoint should offer a manual cancel — the same
+    rule the cancel route enforces (non-terminal and not already
+    ``cancel_pending``)."""
+
+    return order_status in _CANCELABLE_ORDER_STATUSES
+
+
+def recovery_operational_status(cleanup_status: str) -> str:
+    """Operational label for a broker-submit recovery record (D-017): a
+    ``needs_review`` record is a real untracked position a human must reconcile
+    (``recovery_required``); anything else still open is being worked by the
+    recovery loop (``broker_submission_failed``)."""
+
+    if cleanup_status == RECOVERY_NEEDS_REVIEW:
+        return OP_RECOVERY_REQUIRED
+    return OP_BROKER_SUBMISSION_FAILED

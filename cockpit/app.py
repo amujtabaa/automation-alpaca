@@ -309,40 +309,32 @@ def _format_age(created_at: str) -> str:
         return "—"
 
 
-# Order statuses that are still live/actionable and must be shown (F-006): a
-# never-submitted `created` order (held by a control, or just awaiting the
-# submit tick) and a claimed `submitting` order are durable non-terminal state
-# the operator was previously blind to — not just submitted/partially_filled.
-_DISPLAY_ORDER_STATUSES = (
-    "created",
-    "submitting",
-    "submitted",
-    "partially_filled",
-    "cancel_pending",
-)
+# The backend now classifies order lifecycle server-side (D-020): the cockpit
+# renders the operational_status label GET /api/operator/orders returns and no
+# longer owns an open-status filter or derives the state from status + audit
+# events itself. This map is presentation-only — a friendly string per backend
+# label — not lifecycle logic.
+_OP_DISPLAY = {
+    "awaiting_submission": "created · awaiting submission",
+    "held_kill_switch": "created · held by kill switch",
+    "held_buys_paused": "created · held (buys paused)",
+    "held_session_closed": "created · held (session closed)",
+    "held": "created · held",
+    "submitting": "submitting · claimed, sending to broker",
+    "submitted": "submitted",
+    "partially_filled": "partially filled",
+    "cancel_pending": "cancel requested",
+}
 
 
-def _order_operational_label(status: str, block_reason: str | None) -> str:
-    """A human-readable operational state for the order list (F-006).
+def _op_label(operational_status: str, reason: str | None) -> str:
+    """Friendly display string for a backend ``operational_status`` — presentation
+    only (the backend owns the classification, D-020). A generic ``held`` with a
+    known reason shows that reason inline."""
 
-    Wave 0 derives this in the cockpit from the order status + the latest
-    ``order_submission_blocked`` reason; Wave 2 (D-020) moves the classification
-    server-side so the UI stops interpreting lifecycle at all.
-    """
-
-    if status == "created":
-        if block_reason is None:
-            return "created · awaiting submission"
-        if block_reason in ("kill_switch", "current_kill_switch"):
-            return "created · held by kill switch"
-        if block_reason in ("buys_paused", "current_buys_paused"):
-            return "created · held (buys paused)"
-        if "session_closed" in block_reason:
-            return "created · held (session closed)"
-        return f"created · held ({block_reason})"
-    if status == "submitting":
-        return "submitting · claimed, sending to broker"
-    return status
+    if operational_status == "held" and reason:
+        return f"created · held ({reason})"
+    return _OP_DISPLAY.get(operational_status, operational_status)
 
 
 def screen_positions() -> None:
@@ -410,26 +402,22 @@ def screen_positions() -> None:
     # ------------------------------------------------------------------ #
     st.subheader("Open Orders")
 
+    # The backend classifies lifecycle now (D-020): one call returns every
+    # durable non-terminal order already labeled (operational_status, hold
+    # reason, cancelable, stale) plus every open recovery record. The cockpit
+    # renders that verbatim — it no longer owns the open-status filter, the
+    # hold-reason lookup, the stale-event scan, or the status labeling.
     try:
-        all_orders = api_client.list_orders()
+        operator = api_client.list_operator_orders()
     except BackendError as exc:
         st.error(str(exc))
         return
 
-    # Show every durable non-terminal order (F-006): not only submitted/
-    # partially_filled/cancel_pending, but also `created` (held by a control or
-    # awaiting the submit tick) and `submitting` (claimed) — orders the operator
-    # was previously blind to. cancel_pending stays visible until terminal.
-    open_orders = [o for o in all_orders if o.get("status") in _DISPLAY_ORDER_STATUSES]
+    order_views = operator.get("orders", [])
+    recoveries = operator.get("recoveries", [])
 
     # Broker-submit recovery records (D-017 / F-002): a broker order accepted
     # upstream the local state can't otherwise show. Surfaced prominently.
-    try:
-        recoveries = api_client.list_order_recoveries()
-    except BackendError as exc:
-        st.error(str(exc))
-        return
-
     if recoveries:
         st.error(
             f"⚠️ {len(recoveries)} broker order(s) need recovery — accepted by the "
@@ -437,45 +425,15 @@ def screen_positions() -> None:
             "them; verify at the broker if this persists."
         )
         for rec in recoveries:
+            record = rec.get("record", {})
             st.caption(
-                f"• {rec.get('symbol', '—')} broker id "
-                f"{rec.get('broker_order_id', '—')} — {rec.get('cleanup_status', '—')} "
-                f"(attempts: {rec.get('retry_count', 0)})"
+                f"• {record.get('symbol', '—')} broker id "
+                f"{record.get('broker_order_id', '—')} — "
+                f"{rec.get('operational_status', '—')} "
+                f"(attempts: {record.get('retry_count', 0)})"
             )
 
-    # Per-order hold reason, from the latest order_submission_blocked event.
-    try:
-        block_events = api_client.list_events(event_type="order_submission_blocked")
-    except BackendError as exc:
-        st.error(str(exc))
-        return
-    block_reason_by_order: dict[str, str] = {}
-    for e in block_events:
-        oid = e.get("order_id")
-        reason = (e.get("payload") or {}).get("reason")
-        if oid and reason:
-            block_reason_by_order[oid] = reason  # later events overwrite earlier
-
-    # Build stale-order set from events, filtered server-side to just
-    # order_stale — NOT a raw recent-N window: the audit log accumulates
-    # across days (docs/02) and, post-Phase-5, the strategy loop writes far
-    # more events per tick (market_data_stale/recovered + candidate events
-    # across every armed symbol) than order events, so a fixed-size recent
-    # window could scroll a still-open order's one-time order_stale event
-    # out of view long before the order actually resolves.
-    try:
-        events = api_client.list_events(event_type="order_stale")
-    except BackendError as exc:
-        st.error(str(exc))
-        return
-
-    stale_order_ids: set[str] = {
-        e["order_id"]
-        for e in events
-        if e.get("event_type") == "order_stale" and e.get("order_id")
-    }
-
-    if not open_orders:
+    if not order_views:
         st.caption("No open orders.")
     else:
         hdr = st.columns([2, 1, 2, 2, 1, 2, 3])
@@ -487,23 +445,19 @@ def screen_positions() -> None:
         hdr[5].markdown("**Age**")
         hdr[6].markdown("**Action**")
 
-        for order in open_orders:
+        for view in order_views:
+            order = view.get("order", {})
             order_id = order.get("id", "")
             symbol = order.get("symbol", "—")
             qty = order.get("quantity", "—")
             limit_price = order.get("limit_price")
             price_display = f"${limit_price:.2f}" if limit_price is not None else "—"
-            status_val = order.get("status", "—")
             filled_qty = order.get("filled_quantity", 0)
             created_at = order.get("created_at", "")
             age_display = _format_age(created_at) if created_at else "—"
-            label = _order_operational_label(
-                status_val, block_reason_by_order.get(order_id)
-            )
+            label = _op_label(view.get("operational_status", ""), view.get("reason"))
 
-            is_stale = order_id in stale_order_ids
-
-            if is_stale:
+            if view.get("stale"):
                 st.warning(f"⚠️ STALE order detected for {symbol} (id: {order_id})")
 
             row = st.columns([2, 1, 2, 2, 1, 2, 3])
@@ -516,9 +470,10 @@ def screen_positions() -> None:
 
             confirm_key = f"pending_cancel_{order_id}"
             with row[6]:
-                if status_val == "cancel_pending":
-                    # Cancel already requested; the backend loop is winding it
-                    # down. No button — re-cancelling is a no-op.
+                if not view.get("cancelable", False):
+                    # Not cancelable — a cancel was already requested and the
+                    # backend loop is winding it down. No button (re-cancelling is
+                    # a no-op); the backend, not the cockpit, decides cancelability.
                     st.caption("⏳ cancel requested")
                 elif st.session_state.get(confirm_key):
                     st.caption("⚠️ Confirm cancel?")

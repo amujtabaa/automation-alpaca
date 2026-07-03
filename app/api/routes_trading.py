@@ -13,6 +13,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_broker_adapter, get_store
+from app.api.schemas import (
+    OperatorOrdersResponse,
+    OperatorOrderView,
+    OperatorRecoveryView,
+)
 from app.broker.adapter import BrokerAdapter, BrokerError
 from app.models import (
     RECOVERY_OPEN_STATUSES,
@@ -21,6 +26,12 @@ from app.models import (
     OrderStatus,
     Position,
     SubmitRecoveryRecord,
+)
+from app.policy import (
+    NON_TERMINAL_ORDER_STATUSES,
+    operational_status_for,
+    order_is_cancelable,
+    recovery_operational_status,
 )
 from app.store.base import (
     OrderTransitionError,
@@ -86,6 +97,76 @@ async def list_order_recoveries(
 
     statuses = RECOVERY_OPEN_STATUSES if open_only else None
     return await store.list_submit_recoveries(statuses=statuses)
+
+
+@router.get("/operator/orders", response_model=OperatorOrdersResponse)
+async def operator_orders(
+    store: StateStore = Depends(get_store),
+) -> OperatorOrdersResponse:
+    """The operator's single source of order-lifecycle truth (D-020).
+
+    Classifies every durable non-terminal order **server-side** — its
+    ``operational_status`` (``app.policy.operational_status_for``), the hold
+    ``reason`` behind a ``created`` order (from that order's latest
+    ``order_submission_blocked`` audit event), a ``cancelable`` flag (the same
+    rule the cancel route enforces), and a ``stale`` flag (from ``order_stale``
+    events) — plus every open broker-submit recovery record, so the cockpit (and
+    any future UI) renders lifecycle instead of re-deriving it. Read-only: the
+    raw ``/orders`` read and the ``/orders/{id}/cancel`` action are unchanged.
+
+    Terminal orders (filled/canceled/rejected) are excluded via the same
+    ``NON_TERMINAL_ORDER_STATUSES`` the CAPI exposure calc uses, so "what still
+    needs an operator's eyes" is defined in exactly one place.
+    """
+
+    orders = await store.list_orders()
+    non_terminal = [o for o in orders if o.status in NON_TERMINAL_ORDER_STATUSES]
+
+    # Latest submission-block reason per order (later events overwrite earlier),
+    # exactly what the cockpit used to assemble itself.
+    block_reason_by_order: dict[str, str] = {}
+    for event in await store.list_events(event_type="order_submission_blocked"):
+        reason = (event.payload or {}).get("reason")
+        if event.order_id and reason:
+            block_reason_by_order[event.order_id] = reason
+
+    stale_order_ids = {
+        event.order_id
+        for event in await store.list_events(event_type="order_stale")
+        if event.order_id
+    }
+
+    order_views = [
+        OperatorOrderView(
+            order=order,
+            operational_status=operational_status_for(
+                order.status, block_reason_by_order.get(order.id)
+            ),
+            # The hold reason is only meaningful while the order is still
+            # CREATED (held); once claimed/submitted the status is the truth.
+            reason=(
+                block_reason_by_order.get(order.id)
+                if order.status is OrderStatus.CREATED
+                else None
+            ),
+            cancelable=order_is_cancelable(order.status),
+            stale=order.id in stale_order_ids,
+        )
+        for order in non_terminal
+    ]
+
+    recovery_views = [
+        OperatorRecoveryView(
+            record=record,
+            operational_status=recovery_operational_status(record.cleanup_status),
+            reason=record.failure_reason,
+        )
+        for record in await store.list_submit_recoveries(
+            statuses=RECOVERY_OPEN_STATUSES
+        )
+    ]
+
+    return OperatorOrdersResponse(orders=order_views, recoveries=recovery_views)
 
 
 @router.get("/orders/{order_id}", response_model=Order)

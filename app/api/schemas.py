@@ -19,6 +19,7 @@ from app.models import (
     Order,
     Position,
     SessionRecord,
+    SubmitRecoveryRecord,
 )
 
 
@@ -100,3 +101,49 @@ class ReviewResponse(BaseModel):
     fills: list[Fill]
     positions: list[Position]
     events: list[Event]
+
+
+class OperatorOrderView(BaseModel):
+    """One durable non-terminal order, classified server-side (D-020).
+
+    The cockpit used to interpret ``order.status`` + the latest submission-block
+    audit event into a human operational state and owned the "which statuses are
+    still open" filter. This carries the backend's own classification so the UI
+    renders it verbatim — ``operational_status`` (from
+    ``app.policy.operational_status_for``), the ``reason`` behind a held state
+    (raw block-reason code, ``None`` when not held), whether a manual cancel is
+    offerable, and whether the order is flagged stale — and never re-derives
+    lifecycle. The full ``order`` is included for the display fields (symbol,
+    quantity, price, filled, age).
+    """
+
+    order: Order
+    operational_status: str
+    reason: Optional[str] = None
+    cancelable: bool
+    stale: bool = False
+
+
+class OperatorRecoveryView(BaseModel):
+    """One unresolved broker-submit recovery record, classified (D-017 / D-020).
+
+    A broker order accepted upstream that local order state can't otherwise
+    show. ``operational_status`` is ``broker_submission_failed`` while the
+    recovery loop is still working it or ``recovery_required`` once escalated to
+    ``needs_review`` (a real untracked position a human must reconcile).
+    """
+
+    record: SubmitRecoveryRecord
+    operational_status: str
+    reason: Optional[str] = None
+
+
+class OperatorOrdersResponse(BaseModel):
+    """The operator's single source of order-lifecycle truth (``GET
+    /api/operator/orders``). Every durable non-terminal order and every open
+    recovery record, each already classified — read-only; no mutation lives
+    here (the existing ``/orders`` raw read and the ``/orders/{id}/cancel``
+    action are unchanged)."""
+
+    orders: list[OperatorOrderView]
+    recoveries: list[OperatorRecoveryView]
