@@ -49,6 +49,67 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-018 — Controllable broker sim + stateful lifecycle harness (Wave 1)
+**Context.** Every serious defect in this project's history was a
+*temporal-sequence* bug found by luck of tracing the right interleaving
+(session orphaning D-009, the kill-switch date-rollover bypass D-013a, the F-001
+submit TOCTOU, the F-002 orphaned broker order). Example-based tests only cover
+the sequences someone thought to write. Wave 1 adds two layers that attack the
+whole class instead of instances, both fully IO-free (Rule 9) and run against
+**both** stores.
+
+**(a) `SimBrokerAdapter` (`app/broker/sim.py`) — a controllable test double.**
+Extends `MockBrokerAdapter` (never replaces it; still no SDK, no network, never
+wired into a production factory) with the controls needed to make otherwise
+timing-dependent races *deterministic*: `set_on_submit(hook)` fires an async
+hook mid-`submit_order` — after the broker id is minted and live but before the
+call returns — so a test flips a control (kill switch, manual cancel, session
+close) at the exact instant the real F-001/F-002 race would land;
+`fail_submit_when`/`fail_cancel_when` raise at a chosen call index;
+`script(id, updates)` queues a per-order status sequence (models
+partial→partial→filled, a duplicate `source_fill_id`, a late fill after
+`cancel_pending`), with the last update sticking once exhausted;
+`disconnect_status_for(n)` makes the next N status polls raise then recovers;
+`is_live(broker_id)` reports whether a broker order's current status is
+non-terminal — the seam a recovery test uses to assert a stranded order was
+actually cancelled.
+
+**(b) A Hypothesis `RuleBasedStateMachine` over the real backend
+(`tests/test_lifecycle_state_machine.py`).** Rules fire the real
+store + monitoring-loop + sim operations
+(create/approve+dispatch/`run_monitoring_tick`/script-fill/cancel/kill/pause/
+close) in Hypothesis-chosen orders, catching only the exceptions a *legitimate*
+racing interleaving produces (closed session, illegal transition because state
+moved, a control block) — anything else propagates and fails. After **every**
+action it asserts the system's steady-state safety contract as `@invariant`s:
+position never negative, `filled_quantity` whole/bounded/equal to recorded
+fills, no candidate stranded `APPROVED`, every order has a resolvable session,
+and **no live-at-broker order is untracked** (the F-002 orphan guard — every
+`is_live` broker id must be referenced by a local order or an open recovery
+record). Runs against memory and SQLite as two `TestCase`s; the SQLite one
+closes its connection on teardown (ResourceWarning is a suite-wide error,
+F-008). Async-in-Hypothesis (rules are synchronous) is solved by giving each
+machine instance one persistent asyncio loop, so the store's `asyncio.Lock` and
+SQLite connection stay valid across rules. Mutation-validated: reverting
+`revert_candidate_approval` makes Hypothesis shrink to the minimal
+approve-then-block interleaving and fire `no_candidate_stranded_approved`.
+
+**(c) A deterministic chaos matrix (`tests/test_sim_chaos.py`).** Six pinned
+reproductions of the exact sequences the random machine explores but can't
+*guarantee* to hit each run, so they can never silently regress: duplicate fill
+via reconcile (not double-counted), late fill after `cancel_pending` wins
+(CHAOS-1), disconnect-then-recover (loop logs-and-continues, fill lands on
+recovery), the F-001 mid-submit kill flip (claim already committed → still
+submits), and the F-002 accept→local-cancel→recovery orphan in both the clean
+(cancel-and-resolve) and the partial-fill (`needs_review`, kept visible, never
+cancelled-and-dropped) variants — all driven through the real monitoring loop
+via the sim's controls.
+
+**Out of scope (kept minimal):** no fuzzing of market-data feature math here
+(covered by Phase 5/Wave 0 finite-guard tests); the machine models the
+order/candidate/session lifecycle, not the strategy engine's candidate
+*generation*, which is deterministic given a snapshot and already unit-tested.
+
 ### D-017 — Atomic submission claim (`SUBMITTING`) + durable broker-submit recovery ledger
 **Context.** An independent post-Phase-6 review found two blocker races
 (F-001, F-002) with the *same* root cause: there was no durable

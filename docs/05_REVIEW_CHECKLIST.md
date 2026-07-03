@@ -176,6 +176,39 @@ Use when reviewing Codex or Claude Code output.
       live credentials + market hours) — see
       `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
 
+## Wave 1 (broker sim + stateful lifecycle harness — D-018)
+- [ ] `SimBrokerAdapter` **extends** `MockBrokerAdapter` (does not replace it),
+      imports no SDK, makes no network call, and is wired into no production
+      factory — it lives in `app/broker/` purely as a richer test double.
+- [ ] `set_on_submit` fires its hook *after* the broker id is minted and live
+      but *before* `submit_order` returns, and only on a successful submit — so
+      a test can land a control flip at the exact F-001/F-002 race point.
+      `is_live(broker_id)` is correct the instant `submit_order` returns.
+- [ ] `script`'s consumed-vs-queued state (`_script_last` vs `_scripts`) and
+      `cancel_order`'s state-merge keep `is_live` and `get_order_status`
+      consistent: a cancel wins over a pending script, preserves prior fills,
+      and stops the queue resuming.
+- [ ] The `RuleBasedStateMachine` runs against **both** stores (memory +
+      SQLite as two `TestCase`s); the SQLite one closes its connection on
+      teardown (no `ResourceWarning`, F-008). Each instance owns one persistent
+      asyncio loop so the store lock / SQLite connection stay valid across the
+      synchronous Hypothesis rules.
+- [ ] Rules catch **only** the exceptions a legitimate racing interleaving
+      produces (closed session, illegal transition because state moved, a
+      control block); any other exception propagates and fails the test.
+- [ ] Invariants are checked after **every** action and encode the real safety
+      contract: position never negative, `filled_quantity` whole/bounded/equal
+      to recorded fills, no candidate stranded `APPROVED`, every order has a
+      resolvable session, and **no `is_live` broker order is untracked** (the
+      F-002 orphan guard — referenced by a local order or an open recovery
+      record).
+- [ ] The chaos matrix pins the historical blockers deterministically
+      (duplicate fill not double-counted, late-fill-after-cancel CHAOS-1,
+      disconnect-then-recover, F-001 mid-submit kill flip, F-002 orphan clean +
+      partial-fill `needs_review`), all driven through the **real** monitoring
+      loop — not by poking store methods directly.
+- [ ] D-018 is recorded in `docs/00_START_HERE.md`.
+
 ## Wave 0 (post-Phase-6 remediation — F-001…F-008)
 - [ ] Kill switch cannot lose the race vs. broker submission at **any** flip
       point (F-001): `claim_order_for_submission` re-checks every control and
