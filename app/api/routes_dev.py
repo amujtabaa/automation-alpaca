@@ -1,9 +1,10 @@
 """DEV/MOCK scaffolding — candidate injection for manual flow testing.
 
-This module exists solely to make the candidate approval flow exercisable before
-Phase 5's real Strategy Engine is built. It is NOT strategy logic; Phase 5
-replaces it with real candidate generation. Nothing here should be called from
-production paths.
+Phase 5's real Strategy Engine (``app/strategy.py`` + ``app/strategy_loop.py``)
+is now the primary candidate producer. This module remains as a way to
+hand-inject an exact symbol/price/quantity for testing a state the strategy
+wouldn't naturally produce — it is NOT strategy logic, and nothing here should
+be called from a real trading-decision path.
 """
 
 from __future__ import annotations
@@ -25,9 +26,9 @@ async def inject_mock_candidate(
 ) -> Candidate:
     """Inject a mock candidate — DEV/MOCK scaffolding only.
 
-    Creates a ``pending`` candidate in the active session so the approve/reject
-    flow can be exercised manually before Phase 5's Strategy Engine exists.
-    NOT strategy logic; Phase 5 replaces this with real candidate generation.
+    Creates a ``pending`` candidate in the active session for manual testing —
+    NOT strategy logic. The real Strategy Engine (Phase 5) generates candidates
+    independently of this route; this exists for hand-testing exact states.
     """
 
     # Don't inject into a closed session: after a manual close (D-009 keeps the

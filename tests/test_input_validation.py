@@ -18,6 +18,7 @@ from app.store.base import (
     InvalidOrderError,
     UnknownEntityError,
 )
+from tests.store_helpers import submit_created_order
 
 pytestmark = pytest.mark.anyio
 
@@ -150,7 +151,7 @@ async def test_create_order_valid_candidate_any_status_succeeds(any_store):
 # --------------------------------------------------------------------------- #
 async def test_transition_order_rejects_negative_filled_quantity(any_store):
     _, order = await _order(any_store, quantity=100)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+    await submit_created_order(any_store, order.id)
     n_before = len(await any_store.list_events())
     with pytest.raises(InvalidOrderError):
         await any_store.transition_order(
@@ -163,7 +164,7 @@ async def test_transition_order_rejects_negative_filled_quantity(any_store):
 
 async def test_transition_order_rejects_over_quantity(any_store):
     _, order = await _order(any_store, quantity=100)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+    await submit_created_order(any_store, order.id)
     with pytest.raises(InvalidOrderError):
         await any_store.transition_order(
             order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=101
@@ -172,7 +173,7 @@ async def test_transition_order_rejects_over_quantity(any_store):
 
 async def test_transition_order_rejects_backward_progress(any_store):
     _, order = await _order(any_store, quantity=100)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+    await submit_created_order(any_store, order.id)
     await any_store.transition_order(
         order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=60
     )
@@ -186,7 +187,7 @@ async def test_transition_order_rejects_backward_progress(any_store):
 
 async def test_transition_order_valid_progression_and_noop(any_store):
     _, order = await _order(any_store, quantity=100)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+    await submit_created_order(any_store, order.id)
     await any_store.transition_order(
         order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=40
     )

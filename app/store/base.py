@@ -19,10 +19,11 @@ Key structural guarantees the interface is shaped to enforce:
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 
 from app.models import (
     Candidate,
@@ -36,21 +37,36 @@ from app.models import (
     Position,
     PositionSnapshot,
     SessionRecord,
-    SessionType,
+    SubmitRecoveryRecord,
     WatchlistSymbol,
 )
+
+
+# A bounded ticker domain: a leading letter then up to nine more of
+# letters/digits/dot/dash (covers e.g. AAPL, BRK.B, BF-B). Keeps overly long,
+# unicode, whitespace, path-like, or SQL-looking strings out of durable trading
+# data (DATA-2). SQL is already parameterized; this is a data-quality/blast-
+# radius guard, not an injection fix.
+_SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9.\-]{0,9}")
 
 
 def normalize_symbol(symbol: str) -> str:
     """Canonical symbol form used as the watchlist/position key.
 
     Normalization lives in the store so every caller (and both
-    implementations) keys symbols identically — the UI never has to.
+    implementations) keys symbols identically — the UI never has to. Rejects a
+    blank or out-of-domain symbol with ``ValueError`` (route handlers surface it
+    as 422).
     """
 
     normalized = symbol.strip().upper()
     if not normalized:
         raise ValueError("symbol must be a non-empty string")
+    if not _SYMBOL_RE.fullmatch(normalized):
+        raise ValueError(
+            f"symbol {symbol!r} is not a valid ticker (expected 1-10 chars: a "
+            f"leading letter then letters/digits/'.'/'-')"
+        )
     return normalized
 
 
@@ -107,14 +123,47 @@ class SessionAlreadyClosedError(StoreError):
     """
 
 
-class SessionClosedError(StoreError):
-    """A candidate/order mutation was attempted against a *closed* session.
+class OrderIntentBlockedError(StoreError):
+    """New order intent was blocked by a safety control (Rule 8).
 
-    Closing a session ends the trading day (D-009). New candidates may not be
-    created in a closed session, and an approved candidate in a closed session
-    may not be dispatched to an order — both would mutate history *after* the
-    point-in-time review snapshot was captured. Distinct from
-    :class:`SessionAlreadyClosedError`, which is specifically about re-closing.
+    Raised by ``create_order_for_candidate`` when the candidate's session has the
+    kill switch engaged (blocks *all* new order intent) or buys paused (blocks
+    new BUY intent — beta orders are long-only buys). The flag is persisted state
+    the backend owns; enforcing it here (not only in the UI) means every order-
+    intent producer — the approve route now, a future auto-buy engine — is gated,
+    and the block is recorded as an audit event. Distinct from
+    :class:`RiskLimitBlockedError` (Phase 6 CAPI): this is a binary on/off
+    control-flag check with no numeric limits involved.
+    """
+
+
+class RiskLimitBlockedError(StoreError):
+    """New order intent was blocked by a Phase 6 CAPI risk limit (D-016).
+
+    Raised by ``create_order_for_candidate`` when the proposed order's symbol
+    isn't on the trading allowlist, or would exceed the configured max
+    shares/notional per order or max total exposure — computed from local
+    state only (folded positions + non-terminal orders' remaining notional; see
+    ``app.policy.risk_limit_reason``), never a live broker/market-data
+    call. Beta gates-and-rejects: a breach blocks the order outright, it is
+    never silently resized to fit. Distinct from :class:`OrderIntentBlockedError`
+    (Rule 8's binary kill-switch/pause-buys control, no numeric limits).
+    """
+
+
+class SessionClosedError(StoreError):
+    """A new candidate was attempted against a *closed* session.
+
+    Closing a session ends the trading day (D-009): ``create_candidate`` refuses
+    to attach a fresh candidate to a closed session, since it would sit outside
+    the point-in-time review snapshot captured at close. This guard is on
+    candidate *creation* only. It deliberately does **not** block order dispatch,
+    fill append, or order transitions for an order that already exists — those
+    must keep working after close so an in-flight order is tracked to a terminal
+    state (D-011). In practice dispatch can't happen in a closed session anyway,
+    because close expires every open (pending/approved) candidate first. Distinct
+    from :class:`SessionAlreadyClosedError`, which is specifically about
+    re-closing.
     """
 
 
@@ -132,6 +181,56 @@ class FillAppendResult:
     status: Literal["appended", "duplicate"]
     fill: Optional[Fill]
     event: Event
+
+
+@dataclass(frozen=True)
+class RiskLimits:
+    """The Phase 6 CAPI limits for one :meth:`StateStore.create_order_for_candidate`
+    call (D-016). Bundled into one object — rather than four separate keyword
+    arguments threaded individually through the abstract method, both store
+    implementations, the shared planner, and the route (which needs the same
+    values twice: the pre-check and the authoritative call) — so a future
+    limit type is one field added in one place, not a signature edited in five.
+
+    Every field is independently optional: ``None`` means "not enforced." The
+    zero-argument default, ``RiskLimits()``, is fully unenforced — this is what
+    keeps ``create_order_for_candidate``'s ~20 pre-existing test call sites
+    (written before Phase 6, none of which pass a ``risk_limits`` argument)
+    behaviorally unchanged. Production code (the approve route) always builds
+    one from ``Settings``, which rejects a non-finite/non-positive numeric
+    limit at load — see ``app.config.load_settings``.
+    """
+
+    max_shares_per_order: Optional[float] = None
+    max_notional_per_order: Optional[float] = None
+    max_total_exposure: Optional[float] = None
+    # Empty/None both mean "no restriction beyond the watchlist" — a
+    # genuinely meaningful empty state, unlike the three numeric limits above.
+    allowlist: Optional[frozenset[str]] = None
+
+
+# SubmissionClaim.outcome values (D-017). The monitoring loop dispatches on these:
+CLAIM_CLAIMED = "claimed"   # order transitioned CREATED -> SUBMITTING; submit it
+CLAIM_BLOCKED = "blocked"   # a control blocks submission; no state change, reason set
+CLAIM_SKIPPED = "skipped"   # order was no longer CREATED (already claimed/cancelled)
+
+
+@dataclass(frozen=True)
+class SubmissionClaim:
+    """Outcome of :meth:`StateStore.claim_order_for_submission` (D-017).
+
+    A ``claimed`` result means the order was atomically moved ``CREATED ->
+    SUBMITTING`` under one lock hold *after* re-checking every control, so the
+    monitoring loop may now call the broker knowing no kill-switch/pause/close
+    flip could have slipped in undetected. ``blocked`` means a control held it
+    (``reason`` is set; no state changed). ``skipped`` means it was no longer
+    ``CREATED`` when the lock was acquired (a session close cancelled it, or it
+    was already claimed) — nothing to do.
+    """
+
+    outcome: str
+    order: Optional[Order] = None
+    reason: Optional[str] = None
 
 
 class StateStore(ABC):
@@ -240,7 +339,12 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
-    async def create_order_for_candidate(self, candidate_id: str) -> Order:
+    async def create_order_for_candidate(
+        self,
+        candidate_id: str,
+        *,
+        risk_limits: RiskLimits = RiskLimits(),
+    ) -> Order:
         """Atomic ``APPROVED → ORDERED`` handoff — the candidate→order dispatch.
 
         ``docs/02_DATA_AND_PERSISTENCE.md`` lists *"candidate approval + order
@@ -262,12 +366,137 @@ class StateStore(ABC):
         and writes nothing (no second order). This is what keeps the approve
         endpoint idempotent.
 
+        ``risk_limits`` is the Phase 6 CAPI risk gate (D-016): its default,
+        ``RiskLimits()``, is fully unenforced, so the interface itself supports
+        an unrestricted mode, but the approve route always passes real,
+        validated-positive values loaded from ``Settings``. A breach raises
+        :class:`RiskLimitBlockedError` and writes a ``risk_limit_blocked``
+        audit event (see ``app.policy.risk_limit_reason`` for the
+        exact checks and their order).
+
         Raises :class:`UnknownEntityError` if the candidate does not exist;
         :class:`CandidateTransitionError` if it is not ``APPROVED`` (e.g. still
         ``PENDING``, or ``REJECTED``/``EXPIRED``); :class:`InvalidOrderError` if it
-        carries no positive ``suggested_quantity`` to size the order. This is
-        where the *approved-only* rule that ``create_order`` deliberately deferred
-        (D-010) is finally enforced.
+        carries no positive ``suggested_quantity`` to size the order;
+        :class:`OrderIntentBlockedError` if the candidate's session is
+        kill-switched or buys are paused; :class:`RiskLimitBlockedError` if a
+        CAPI limit above is breached. This is where the *approved-only* rule
+        that ``create_order`` deliberately deferred (D-010) is finally enforced.
+        """
+
+    @abstractmethod
+    async def current_exposure(self) -> float:
+        """Total current CAPI exposure (D-016b), read as one atomic snapshot.
+
+        Every position's cost basis plus every non-terminal order's remaining
+        notional — see ``app.policy.existing_exposure`` for the pure
+        computation this wraps. Exists as its own store method (rather than
+        making a caller combine ``list_positions()`` + ``list_orders()``
+        itself) specifically so a caller *outside* the store's lock — the
+        approve route's risk-limit pre-check — gets one consistent snapshot
+        under a single lock acquisition, not a torn read across two separate
+        lock-acquire/release cycles. ``create_order_for_candidate``'s own
+        authoritative check computes this the same way, inside its own single
+        lock hold, for the same reason.
+        """
+
+    @abstractmethod
+    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
+        """Atomically claim a ``CREATED`` order for submission (D-017).
+
+        Under a **single lock hold** — mirroring ``set_kill_switch``'s idiom, not
+        a new locking primitive — this re-reads the order, re-reads the current
+        session **and** the order's own originating session, and re-checks every
+        control (kill-switch, buys-paused, session-closed, session-unknown, and
+        that the order is still ``CREATED``). Then:
+
+        * order no longer ``CREATED`` → ``SubmissionClaim(CLAIM_SKIPPED)``, no
+          state change (a session close cancelled it, or it was already claimed);
+        * a control blocks it → ``SubmissionClaim(CLAIM_BLOCKED, reason=...)``,
+          no state change (the loop audits the hold once, as before);
+        * all clear → transition ``CREATED → SUBMITTING``, write an
+          ``order_submission_claimed`` audit event, and return
+          ``SubmissionClaim(CLAIM_CLAIMED, order=<the SUBMITTING order>)``.
+
+        Because the control mutation (``set_kill_switch`` etc.) and this claim
+        serialize through the same lock, a flip can no longer land *inside* the
+        claim→broker-call window undetected: it lands before the claim (order
+        stays ``CREATED``, held) or after ``SUBMITTING`` (already committed to
+        submission — the human approved it and the backend atomically claimed it
+        before the stop). This is the F-001/F-002 fix; the monitoring loop calls
+        this first and only submits ``CLAIM_CLAIMED`` orders.
+        """
+
+    @abstractmethod
+    async def create_submit_recovery(
+        self,
+        *,
+        local_order_id: str,
+        broker_order_id: str,
+        client_order_id: Optional[str] = None,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        limit_price: Optional[float] = None,
+        failure_reason: str,
+        session_id: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+    ) -> SubmitRecoveryRecord:
+        """Durably record a broker order that was accepted but whose local
+        ``SUBMITTING → SUBMITTED`` persist failed (D-017 / F-002). Atomic +
+        audited (``submit_recovery_recorded``). The monitoring tick's recovery
+        step then polls/cancels ``broker_order_id`` until resolved — a single
+        best-effort cancel is not enough, so this replaces it.
+
+        ``candidate_id`` (D-020) correlates the ``submit_recovery_recorded``
+        event to the owning candidate's lifecycle. It is not stored on
+        :class:`SubmitRecoveryRecord` itself (D-020 stays to one nullable
+        ``Event`` field, not a new entity column) — ``update_submit_recovery``
+        resolves it later by looking up the local order via ``local_order_id``
+        (orders are never deleted, so this reliably resolves).
+        """
+
+    @abstractmethod
+    async def list_submit_recoveries(
+        self, *, statuses: Optional[Iterable[str]] = None
+    ) -> list[SubmitRecoveryRecord]:
+        """Broker-submit recovery records (newest last), optionally filtered to a
+        set of ``cleanup_status`` values.
+
+        ``statuses=None`` returns all. The recovery loop passes
+        ``{RECOVERY_UNRESOLVED}`` (records it should still act on); the operator
+        surface passes ``RECOVERY_OPEN_STATUSES`` (unresolved **and**
+        needs-review — everything still needing attention, since a needs-review
+        record holds a real untracked position a human must reconcile).
+        """
+
+    @abstractmethod
+    async def update_submit_recovery(
+        self,
+        recovery_id: str,
+        *,
+        cleanup_status: Optional[str] = None,
+        bump_attempt: bool = False,
+    ) -> SubmitRecoveryRecord:
+        """Update a recovery record (atomic). ``bump_attempt`` increments
+        ``retry_count`` and stamps ``last_attempt_at`` (recording that the
+        recovery loop tried this cadence). Setting ``cleanup_status`` to a
+        resolved value writes a ``submit_recovery_resolved`` audit event. Raises
+        :class:`UnknownEntityError` if the id is unknown.
+        """
+
+    @abstractmethod
+    async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
+        """Atomically revert ``APPROVED → PENDING`` when dispatch was refused.
+
+        Recovery for the approve/dispatch race (D-013): if a safety control flips
+        between the approve transition and the order-creation handoff, the store
+        refuses the order (``OrderIntentBlockedError``) but the candidate is
+        already ``APPROVED`` — stranded ``APPROVED`` with no order under a safety
+        stop. The approve route calls this to put it back to ``PENDING`` (still
+        rejectable / re-approvable). Acts **only** on an ``APPROVED`` candidate
+        with no linked order; otherwise it is an idempotent no-op (so a candidate
+        that actually became ``ORDERED`` is never disturbed). Atomic + audited.
         """
 
     @abstractmethod
@@ -357,7 +586,12 @@ class StateStore(ABC):
         fill_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Event:
+        """``correlation_id`` ties a whole candidate lifecycle together for
+        incident reconstruction (D-020). When not passed it defaults to
+        ``candidate_id`` (the owning candidate's id is the correlation key), so
+        every event that names a candidate correlates automatically."""
         ...
 
     @abstractmethod
@@ -365,9 +599,18 @@ class StateStore(ABC):
         self,
         *,
         session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        correlation_id: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Event]:
-        ...
+        """``event_type``, when given, filters to exactly that
+        :class:`EventType` value (e.g. ``"order_stale"``) — the audit log
+        accumulates across days (``docs/02``) and a caller that only cares
+        about one rare event type shouldn't have to pull the full log (or an
+        arbitrarily-sized recent window that a high write-rate producer, like
+        the Phase 5 strategy loop's per-tick staleness/candidate events, can
+        scroll a rare event out of) just to find it.
+        """
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags
@@ -381,12 +624,17 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
-    async def list_sessions(self) -> list[SessionRecord]:
-        ...
+    async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
+        """The session with this id, or ``None``.
+
+        Used by the monitoring loop to gate a held order's submission against its
+        **own** originating session (D-013a), independent of which session is
+        currently live.
+        """
 
     @abstractmethod
-    async def set_session_type(self, session_type: SessionType) -> SessionRecord:
-        """Set the active session's type (atomic + audit event)."""
+    async def list_sessions(self) -> list[SessionRecord]:
+        ...
 
     @abstractmethod
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
@@ -408,11 +656,16 @@ class StateStore(ABC):
 
         1. Transition every ``PENDING``/``APPROVED`` candidate in this session
            to ``EXPIRED`` (terminal candidates are left untouched).
-        2. Snapshot current positions — every symbol with a nonzero derived
+        2. Cancel every still-``CREATED`` (never-submitted) order in this
+           session (D-013a) — a clean terminal state instead of a zombie
+           ``CREATED`` order the per-order-session submission gate would
+           otherwise hold forever. Already-``SUBMITTED`` orders are untouched
+           and keep reconciling after close (D-011).
+        3. Snapshot current positions — every symbol with a nonzero derived
            quantity — into ``position_snapshots``, keyed by this session id.
-        3. Set ``status=CLOSED`` and ``closed_at=now``.
-        4. Write one audit event recording the close and how many candidates
-           were expired.
+        4. Set ``status=CLOSED`` and ``closed_at=now``.
+        5. Write one audit event recording the close, how many candidates
+           were expired, and how many orders were canceled.
 
         Raises :class:`SessionAlreadyClosedError` if the session is already
         closed, and :class:`UnknownEntityError` if ``session_id`` is unknown.

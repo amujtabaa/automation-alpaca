@@ -1,0 +1,35 @@
+name: CI
+
+# Runs the full test suite with a coverage gate on every push and PR.
+# Integration tests (tests/integration/) are skipif-gated on ALPACA_PAPER_API_KEY
+# / ALPACA_PAPER_API_SECRET, which are not set here, so they skip automatically —
+# CI never opens a network connection to Alpaca (Rule 9/10). alpaca-py IS
+# installed (from requirements.txt) so the mocked SDK-boundary unit tests run and
+# keep app/marketdata/ and app/broker/ covered.
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 and 3.12 are both exercised locally (both bytecode caches exist);
+        # keep both green so a version-specific regression is caught.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests with coverage
+        # --cov-branch + the fail_under floor in pyproject [tool.coverage.report]
+        # gate the build; a real coverage regression fails here.
+        run: pytest --cov=app --cov-branch --cov-report=term-missing

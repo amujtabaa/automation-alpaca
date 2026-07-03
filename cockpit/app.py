@@ -15,7 +15,7 @@ call via cockpit.api_client.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 
 import streamlit as st
 
@@ -67,8 +67,9 @@ def _backend_banner() -> bool:
 def screen_session_control() -> None:
     st.header("Session Control")
     st.caption(
-        "Mode is **paper** only (beta). Controls below persist a flag on the "
-        "backend session; enforcement on order intent comes later."
+        "Mode is **paper** only (beta). The kill switch and pause-buys are "
+        "**enforced** on the order path — new order intent is refused and order "
+        "submission is held while engaged. (CAPI risk sizing is Phase 6.)"
     )
     try:
         session = api_client.get_session()
@@ -146,27 +147,50 @@ def screen_watchlist() -> None:
         st.info("Watchlist is empty. Paste symbols above to get started.")
         return
 
+    # Phase 5: last price / % move next to each armed symbol, display only.
+    # pct_move is computed by the BACKEND (GET /api/marketdata/snapshots, via
+    # app/features.py — the same function the Strategy Engine decides on) and
+    # only formatted here; the cockpit never re-derives the number, so what's
+    # shown always matches what the strategy actually saw (Streamlit stays a
+    # pure display client, per 01_ARCHITECTURE.md).
+    try:
+        snapshots = {s["symbol"]: s for s in api_client.list_marketdata_snapshots()}
+    except BackendError:
+        snapshots = {}
+
     st.subheader(f"Current watchlist ({len(watchlist)})")
-    hdr = st.columns([3, 2, 2, 2])
+    hdr = st.columns([2, 2, 2, 2, 2, 2])
     hdr[0].markdown("**Symbol**")
     hdr[1].markdown("**State**")
-    hdr[2].markdown("**Arm / Disarm**")
-    hdr[3].markdown("**Remove**")
+    hdr[2].markdown("**Last**")
+    hdr[3].markdown("**% Move**")
+    hdr[4].markdown("**Arm / Disarm**")
+    hdr[5].markdown("**Remove**")
     for entry in watchlist:
         sym = entry["symbol"]
         armed = bool(entry["armed"])
-        row = st.columns([3, 2, 2, 2])
+        snap = snapshots.get(sym)
+        last_display = f"${snap['last_price']:.2f}" if snap and snap.get("last_price") is not None else "—"
+        move_display = "—"
+        if snap and snap.get("pct_move") is not None:
+            move_display = f"{snap['pct_move']:+.1f}%"
+        if snap and snap.get("stale"):
+            last_display += " ⚠️"
+
+        row = st.columns([2, 2, 2, 2, 2, 2])
         row[0].write(sym)
         row[1].write("🟢 armed" if armed else "⚪ disarmed")
+        row[2].write(last_display)
+        row[3].write(move_display)
         if armed:
-            if row[2].button("Disarm", key=f"disarm_{sym}", width='stretch'):
+            if row[4].button("Disarm", key=f"disarm_{sym}", width='stretch'):
                 _do(lambda s=sym: api_client.upsert_watchlist(s, armed=False),
                     f"{sym} disarmed")
         else:
-            if row[2].button("Arm", key=f"arm_{sym}", width='stretch'):
+            if row[4].button("Arm", key=f"arm_{sym}", width='stretch'):
                 _do(lambda s=sym: api_client.upsert_watchlist(s, armed=True),
                     f"{sym} armed")
-        if row[3].button("Remove", key=f"rm_{sym}", width='stretch'):
+        if row[5].button("Remove", key=f"rm_{sym}", width='stretch'):
             _do(lambda s=sym: api_client.remove_watchlist(s), f"{sym} removed")
 
 
@@ -174,15 +198,16 @@ def screen_candidates() -> None:
     st.header("Candidate Monitor")
     st.caption(
         "Proposals awaiting human review — the Approval Gate's human-in-the-loop "
-        "mode. Approving a candidate creates a **paper** order record (no live "
-        "trading; nothing is sent to a broker yet). Rejecting dismisses it."
+        "mode. Approving a candidate creates a **paper** order record that the "
+        "backend monitoring loop then submits to Alpaca **paper** (no live trading, "
+        "ever). Rejecting dismisses it."
     )
 
     with st.expander("➕ Inject mock candidate (dev)"):
         st.caption(
-            "DEV/MOCK scaffolding — Phase 5's Strategy Engine replaces this. "
-            "Use it to inject a candidate so the approve/reject flow is "
-            "exercisable now."
+            "DEV/MOCK scaffolding for hand-testing an exact candidate. The "
+            "real Strategy Engine generates candidates independently — this "
+            "is for testing states it wouldn't naturally produce."
         )
         with st.form("inject_candidate", clear_on_submit=True):
             symbol_input = st.text_input("Symbol", placeholder="AAPL")
@@ -209,22 +234,24 @@ def screen_candidates() -> None:
 
     if not candidates:
         st.info(
-            "No candidates yet. Inject one above (dev) or wait for the "
-            "strategy engine in Phase 5."
+            "No candidates yet. Inject one above (dev), or arm a watchlist "
+            "symbol and wait for the Strategy Engine to propose one during "
+            "premarket/after-hours."
         )
         return
 
     st.subheader(f"Candidates ({len(candidates)})")
 
-    # Column widths: symbol, status, strategy, reason, qty, price, actions
-    hdr = st.columns([2, 2, 2, 4, 1, 2, 3])
+    # Column widths: symbol, status, strategy, reason, risk, qty, price, actions
+    hdr = st.columns([2, 2, 2, 4, 3, 1, 2, 3])
     hdr[0].markdown("**Symbol**")
     hdr[1].markdown("**Status**")
     hdr[2].markdown("**Strategy**")
     hdr[3].markdown("**Reason**")
-    hdr[4].markdown("**Qty**")
-    hdr[5].markdown("**Limit price**")
-    hdr[6].markdown("**Action**")
+    hdr[4].markdown("**Risk decision**")
+    hdr[5].markdown("**Qty**")
+    hdr[6].markdown("**Limit price**")
+    hdr[7].markdown("**Action**")
 
     for candidate in candidates:
         cid = candidate["id"]
@@ -232,20 +259,22 @@ def screen_candidates() -> None:
         status = candidate.get("status", "—")
         strategy = candidate.get("strategy") or "—"
         reason = candidate.get("reason") or "—"
+        risk_decision = candidate.get("risk_decision") or "—"
         qty = candidate.get("suggested_quantity", "—")
         price = candidate.get("suggested_limit_price")
         price_display = f"${price:.2f}" if price is not None else "—"
 
-        row = st.columns([2, 2, 2, 4, 1, 2, 3])
+        row = st.columns([2, 2, 2, 4, 3, 1, 2, 3])
         row[0].write(symbol)
         row[1].write(status)
         row[2].write(strategy)
         row[3].write(reason)
-        row[4].write(str(qty))
-        row[5].write(price_display)
+        row[4].write(risk_decision)
+        row[5].write(str(qty))
+        row[6].write(price_display)
 
         if status == "pending":
-            with row[6]:
+            with row[7]:
                 btn_cols = st.columns(2)
                 if btn_cols[0].button("Approve", key=f"approve_{cid}", type="primary"):
                     _do(
@@ -258,24 +287,206 @@ def screen_candidates() -> None:
                         f"{symbol} rejected",
                     )
         else:
-            row[6].write(status)
+            row[7].write(status)
+
+
+def _format_age(created_at: str) -> str:
+    """Return a human-readable age string from an ISO timestamp. Display-only."""
+    try:
+        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta_seconds = int((now - dt).total_seconds())
+        if delta_seconds < 0:
+            return "just now"
+        if delta_seconds < 60:
+            return f"{delta_seconds}s"
+        minutes = delta_seconds // 60
+        if minutes < 60:
+            return f"{minutes}m"
+        hours = minutes // 60
+        return f"{hours}h {minutes % 60}m"
+    except Exception:
+        return "—"
+
+
+# The backend now classifies order lifecycle server-side (D-020): the cockpit
+# renders the operational_status label GET /api/operator/orders returns and no
+# longer owns an open-status filter or derives the state from status + audit
+# events itself. This map is presentation-only — a friendly string per backend
+# label — not lifecycle logic.
+_OP_DISPLAY = {
+    "awaiting_submission": "created · awaiting submission",
+    "held_kill_switch": "created · held by kill switch",
+    "held_buys_paused": "created · held (buys paused)",
+    "held_session_closed": "created · held (session closed)",
+    "held": "created · held",
+    "submitting": "submitting · claimed, sending to broker",
+    "submitted": "submitted",
+    "partially_filled": "partially filled",
+    "cancel_pending": "cancel requested",
+}
+
+
+def _op_label(operational_status: str, reason: str | None) -> str:
+    """Friendly display string for a backend ``operational_status`` — presentation
+    only (the backend owns the classification, D-020). A generic ``held`` with a
+    known reason shows that reason inline."""
+
+    if operational_status == "held" and reason:
+        return f"created · held ({reason})"
+    return _OP_DISPLAY.get(operational_status, operational_status)
 
 
 def screen_positions() -> None:
     st.header("Position Monitor")
-    st.caption("Positions are derived from filled orders. Quantity changes only "
-               "on fills — there are none yet.")
+    st.caption(
+        "Positions are derived from filled orders — quantity changes only on "
+        "fills. The Phase 5 price feed exists (see the Watchlist screen), but "
+        "P/L computation from it is not yet wired into this screen."
+    )
+
+    # ------------------------------------------------------------------ #
+    # A) POSITIONS
+    # ------------------------------------------------------------------ #
     try:
         positions = api_client.list_positions()
     except BackendError as exc:
         st.error(str(exc))
         return
+
     open_positions = [p for p in positions if p.get("quantity")]
+
+    st.subheader("Positions")
     if not open_positions:
-        st.info("No open positions. Positions appear here once fills are recorded "
-                "(Phase 4).")
+        st.info(
+            "No open positions. Positions appear here once fills are recorded "
+            "(Phase 4)."
+        )
+    else:
+        hdr = st.columns([2, 2, 2, 3, 3])
+        hdr[0].markdown("**Symbol**")
+        hdr[1].markdown("**Quantity**")
+        hdr[2].markdown("**Avg Price**")
+        hdr[3].markdown("**P/L**")
+        hdr[4].markdown("**Action**")
+
+        for pos in open_positions:
+            sym = pos.get("symbol", "—")
+            qty = pos.get("quantity", 0)
+            avg = pos.get("average_price")
+            avg_display = f"${avg:.2f}" if avg is not None else "—"
+
+            row = st.columns([2, 2, 2, 3, 3])
+            row[0].write(sym)
+            row[1].write(str(qty))
+            row[2].write(avg_display)
+            # The Phase 5 price feed exists (see the Watchlist screen), but
+            # computing unrealized P/L from it here is a deliberate small scope
+            # decision, not yet built — not an oversight.
+            row[3].caption("P/L: not yet wired to the live price feed")
+            with row[4]:
+                st.button(
+                    "Flatten",
+                    key=f"flatten_{sym}",
+                    disabled=True,
+                    help=(
+                        "Placeholder — position flatten is wired in Phase 7 "
+                        "(Sell-Side Protection owns exits); not functional yet."
+                    ),
+                )
+
+    st.divider()
+
+    # ------------------------------------------------------------------ #
+    # B) OPEN ORDERS
+    # ------------------------------------------------------------------ #
+    st.subheader("Open Orders")
+
+    # The backend classifies lifecycle now (D-020): one call returns every
+    # durable non-terminal order already labeled (operational_status, hold
+    # reason, cancelable, stale) plus every open recovery record. The cockpit
+    # renders that verbatim — it no longer owns the open-status filter, the
+    # hold-reason lookup, the stale-event scan, or the status labeling.
+    try:
+        operator = api_client.list_operator_orders()
+    except BackendError as exc:
+        st.error(str(exc))
         return
-    st.dataframe(open_positions, width='stretch', hide_index=True)
+
+    order_views = operator.get("orders", [])
+    recoveries = operator.get("recoveries", [])
+
+    # Broker-submit recovery records (D-017 / F-002): a broker order accepted
+    # upstream the local state can't otherwise show. Surfaced prominently.
+    if recoveries:
+        st.error(
+            f"⚠️ {len(recoveries)} broker order(s) need recovery — accepted by the "
+            "broker but not tracked locally. The monitoring loop is cancelling "
+            "them; verify at the broker if this persists."
+        )
+        for rec in recoveries:
+            record = rec.get("record", {})
+            st.caption(
+                f"• {record.get('symbol', '—')} broker id "
+                f"{record.get('broker_order_id', '—')} — "
+                f"{rec.get('operational_status', '—')} "
+                f"(attempts: {record.get('retry_count', 0)})"
+            )
+
+    if not order_views:
+        st.caption("No open orders.")
+    else:
+        hdr = st.columns([2, 1, 2, 2, 1, 2, 3])
+        hdr[0].markdown("**Symbol**")
+        hdr[1].markdown("**Qty**")
+        hdr[2].markdown("**Limit Price**")
+        hdr[3].markdown("**Status**")
+        hdr[4].markdown("**Filled**")
+        hdr[5].markdown("**Age**")
+        hdr[6].markdown("**Action**")
+
+        for view in order_views:
+            order = view.get("order", {})
+            order_id = order.get("id", "")
+            symbol = order.get("symbol", "—")
+            qty = order.get("quantity", "—")
+            limit_price = order.get("limit_price")
+            price_display = f"${limit_price:.2f}" if limit_price is not None else "—"
+            filled_qty = order.get("filled_quantity", 0)
+            created_at = order.get("created_at", "")
+            age_display = _format_age(created_at) if created_at else "—"
+            label = _op_label(view.get("operational_status", ""), view.get("reason"))
+
+            if view.get("stale"):
+                st.warning(f"⚠️ STALE order detected for {symbol} (id: {order_id})")
+
+            row = st.columns([2, 1, 2, 2, 1, 2, 3])
+            row[0].write(symbol)
+            row[1].write(str(qty))
+            row[2].write(price_display)
+            row[3].write(label)
+            row[4].write(str(filled_qty))
+            row[5].write(age_display)
+
+            confirm_key = f"pending_cancel_{order_id}"
+            with row[6]:
+                if not view.get("cancelable", False):
+                    # Not cancelable — a cancel was already requested and the
+                    # backend loop is winding it down. No button (re-cancelling is
+                    # a no-op); the backend, not the cockpit, decides cancelability.
+                    st.caption("⏳ cancel requested")
+                elif st.session_state.get(confirm_key):
+                    st.caption("⚠️ Confirm cancel?")
+                    if st.button("Yes, cancel", key=f"confirm_cancel_{order_id}"):
+                        st.session_state[confirm_key] = False
+                        _do(
+                            lambda oid=order_id: api_client.cancel_order(oid),
+                            f"{symbol} order cancel requested",
+                        )
+                else:
+                    if st.button("Cancel", key=f"cancel_{order_id}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
 
 
 def screen_review() -> None:

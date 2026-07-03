@@ -4,5 +4,26 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-# Async tests use the bundled anyio plugin (see tests/conftest.py for the
-# asyncio-only backend fixture). Unit tests remain IO-free (Rule 9).
+# Async tests use the bundled anyio plugin (see conftest.py at the repo root for
+# the asyncio-only backend fixture). Unit tests remain IO-free (Rule 9).
+# Coverage is NOT in addopts on purpose: a bare `pytest tests/test_x.py` for one
+# file shouldn't trip the whole-suite floor. CI runs `pytest --cov=app
+# --cov-branch` explicitly (see .github/workflows/ci.yml); the floor below then
+# applies.
+# A leaked/unclosed sqlite connection (F-008) surfaces as a ResourceWarning at
+# GC; promote it to an error so a future fixture that forgets to close its store
+# fails the suite instead of warning quietly.
+filterwarnings = [
+    "error::ResourceWarning",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# Floor set a few points under the current ~95% branch coverage so it catches a
+# real regression without flaking on normal churn. It is a RATCHET: raise it as
+# coverage improves; never lower it silently to make a red build pass.
+fail_under = 93

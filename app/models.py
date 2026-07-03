@@ -75,11 +75,30 @@ class CandidateStatus(str, Enum):
 
 
 class OrderStatus(str, Enum):
-    """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6)."""
+    """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6).
+
+    ``cancel_pending`` is a non-terminal state: a cancel has been requested at the
+    broker but not yet confirmed, so the order keeps being polled — a late fill
+    arriving before the venue finalizes the cancel is still recorded, never
+    missed (CHAOS-1). It resolves to ``canceled`` (broker confirms) or ``filled``
+    (a late fill completes it).
+    """
 
     CREATED = "created"
+    # Intermediate submission-claim state (D-017): the monitoring loop has
+    # atomically claimed a CREATED order for submission — re-checked every
+    # control under one store-lock hold and committed to sending it — but the
+    # broker call has not yet returned. It is the *only* path from CREATED to
+    # SUBMITTED, which is what makes the kill-switch/session-close race
+    # unwinnable (F-001/F-002): a control flip either lands before the claim
+    # (order stays CREATED, held) or after it (already committed to submission).
+    # Non-terminal (it has outgoing transitions) so it counts toward CAPI
+    # exposure; it carries no broker_order_id yet, so reconcile naturally skips
+    # it.
+    SUBMITTING = "submitting"
     SUBMITTED = "submitted"
     PARTIALLY_FILLED = "partially_filled"
+    CANCEL_PENDING = "cancel_pending"
     FILLED = "filled"
     CANCELED = "canceled"
     REJECTED = "rejected"
@@ -91,8 +110,17 @@ class OrderSide(str, Enum):
 
 
 class OrderType(str, Enum):
-    """Order types. Session policy (Rule 12) is enforced later, not in beta;
-    the enum simply has to be able to express the allowed types."""
+    """Order types.
+
+    Beta's submission path (``app.broker.alpaca_paper.AlpacaPaperAdapter.
+    submit_order``) always constructs a ``LIMIT`` order and sets Alpaca's
+    ``extended_hours`` flag based on the current session at submission time
+    (D-015) — the limit-only half of Rule 12 is enforced. The other half —
+    actually selecting ``MARKET``/``TRAILING_STOP`` during regular hours when
+    a strategy calls for it — is not yet wired up; those members exist so the
+    enum can already express the allowed types once that selection logic is
+    built, without a model change.
+    """
 
     LIMIT = "limit"
     MARKET = "market"
@@ -114,6 +142,19 @@ class EventType(str, Enum):
     ORDER_CREATED = "order_created"
     ORDER_TRANSITION = "order_transition"
     ORDER_FILL_PROGRESS = "order_fill_progress"
+    ORDER_STALE = "order_stale"  # open order past the unfilled timeout (Phase 4)
+    # Broker accepted an order the DB could not then mark SUBMITTED (Phase 4) —
+    # a real open broker order the local state didn't capture; surfaced, never
+    # left silent.
+    ORDER_SUBMIT_UNPERSISTED = "order_submit_unpersisted"
+    # Safety controls (Rule 8) blocking the order path (Phase 4 enforcement).
+    ORDER_INTENT_BLOCKED = "order_intent_blocked"  # creation blocked by kill/pause
+    ORDER_SUBMISSION_BLOCKED = "order_submission_blocked"  # loop held a submission
+    # Submission-claim + durable broker-submit recovery (D-017 / Wave 0).
+    ORDER_SUBMISSION_CLAIMED = "order_submission_claimed"  # CREATED -> SUBMITTING
+    SUBMIT_RECOVERY_RECORDED = "submit_recovery_recorded"  # a stranded broker order logged
+    SUBMIT_RECOVERY_RESOLVED = "submit_recovery_resolved"  # recovery loop cleanly cancelled it
+    SUBMIT_RECOVERY_NEEDS_REVIEW = "submit_recovery_needs_review"  # stranded order had fills
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
@@ -127,6 +168,12 @@ class EventType(str, Enum):
 
     SESSION_OPENED = "session_opened"
     SESSION_CLOSED = "session_closed"
+
+    # Market data feed (Phase 5): the feed has been disconnected longer than
+    # the configured staleness threshold — surfaced, never silently stale
+    # (D-005).
+    MARKET_DATA_STALE = "market_data_stale"
+    MARKET_DATA_RECOVERED = "market_data_recovered"
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +311,52 @@ class PositionSnapshot(_Entity):
     captured_at: datetime = Field(default_factory=utcnow)
 
 
+# SubmitRecoveryRecord.cleanup_status values (D-017 / F-002).
+RECOVERY_UNRESOLVED = "unresolved"          # the recovery loop is still working it
+RECOVERY_RESOLVED = "resolved_canceled"     # cleanly cancelled at the broker — no position
+RECOVERY_NEEDS_REVIEW = "needs_review"      # the broker order had fills — a real untracked
+                                            # position exists; a human must reconcile it
+# Statuses the operator must still SEE (not cleanly resolved). The recovery loop
+# itself acts only on RECOVERY_UNRESOLVED — a needs_review record is done being
+# worked automatically and must not be re-cancelled.
+RECOVERY_OPEN_STATUSES = frozenset({RECOVERY_UNRESOLVED, RECOVERY_NEEDS_REVIEW})
+
+
+class SubmitRecoveryRecord(_Entity):
+    """A durable record of a broker order that was accepted upstream but whose
+    local ``SUBMITTING -> SUBMITTED`` persist failed (D-017 / F-002).
+
+    The order is *live at the broker* while the local state does not track it as
+    open (it went CANCELED/REJECTED locally, e.g. a manual cancel raced the
+    submit). A single best-effort cancel is not enough — if that cancel fails the
+    broker order is orphaned. This record is written instead, and the monitoring
+    tick's recovery step polls/cancels its ``broker_order_id`` on every cadence
+    until it is confirmed resolved (not one attempt). Unresolved records are
+    surfaced prominently to the operator.
+    """
+
+    id: str = Field(default_factory=new_id)
+    local_order_id: str
+    broker_order_id: str
+    # Alpaca's client_order_id (idempotency key); the paper adapter may not
+    # expose one for a given order, so it is nullable.
+    client_order_id: Optional[str] = None
+    symbol: str
+    side: OrderSide
+    quantity: int
+    limit_price: Optional[float] = None
+    failure_reason: str
+    # RECOVERY_UNRESOLVED until the recovery loop confirms the broker order is no
+    # longer live (RECOVERY_RESOLVED), or RECOVERY_NEEDS_REVIEW if it turns out to
+    # have any fills (a real untracked position — surfaced, never silently
+    # dropped). See app/monitoring.py's recovery step.
+    cleanup_status: str = RECOVERY_UNRESOLVED
+    retry_count: int = 0
+    session_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
+    last_attempt_at: Optional[datetime] = None
+
+
 class Event(_Entity):
     """Append-only audit/event row."""
 
@@ -276,6 +369,16 @@ class Event(_Entity):
     fill_id: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
+    # One key that ties a whole candidate lifecycle together for incident
+    # reconstruction (D-020): candidate creation stamps it, and every downstream
+    # event (approval, order creation, claim, submission, blocked/recovery,
+    # fills, transitions) carries the same value. It is the owning candidate's id
+    # — the store resolves it from the event's candidate_id when not passed
+    # explicitly, so one filter (GET /api/events?correlation_id=) returns the
+    # full lifecycle even for events that historically only named an order.
+    # Nullable + additive: pre-D-020 rows and non-candidate events (e.g.
+    # market_data_stale) are None.
+    correlation_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -290,6 +393,12 @@ class SessionRecord(_Entity):
     id: str = Field(default_factory=new_id)
     session_date: str  # ISO date "YYYY-MM-DD"
     mode: TradingMode = TradingMode.PAPER
+    # Not persisted meaningfully — GET /api/session overlays this live from
+    # session_type_for(utcnow()) on every read rather than a stored value,
+    # since a single day's session spans all three windows as wall-clock time
+    # passes (see routes_system.py's session() docstring). Left as a plain
+    # column here (not removed) only because the field/model shape is shared
+    # with reading rows back out of storage.
     session_type: Optional[SessionType] = None
     status: SessionStatus = SessionStatus.ACTIVE
 

@@ -19,6 +19,7 @@ from app.models import (
     Order,
     Position,
     SessionRecord,
+    SubmitRecoveryRecord,
 )
 
 
@@ -49,17 +50,56 @@ class HealthResponse(BaseModel):
 class MockCandidateCreate(BaseModel):
     """Body for POST /api/dev/candidates — DEV/MOCK scaffolding only.
 
-    A minimal way to inject a candidate so the review flow is exercisable before
-    Phase 5's real Strategy Engine exists. NOT strategy logic; Phase 5 replaces it.
+    A minimal way to hand-inject an arbitrary candidate for manual testing —
+    NOT strategy logic. Phase 5's real Strategy Engine (``app/strategy.py`` +
+    ``app/strategy_loop.py``) now generates real candidates independently; this
+    route remains useful for testing states the strategy wouldn't naturally
+    produce (an exact symbol/price/quantity on demand).
     """
 
     symbol: str = Field(min_length=1)
     strategy: Optional[str] = "mock"
     reason: Optional[str] = "injected mock candidate for manual testing"
-    suggested_quantity: int = Field(default=10, gt=0)
+    # ``strict=True`` (D-021 follow-up): a lax int/float field silently coerces
+    # a JSON ``true``/``"5"`` (bool/numeric-string) to ``1``/``5`` *before* this
+    # request even reaches the store — by the time
+    # ``app.policy.suggested_value_type_reason`` runs inside
+    # ``create_candidate``, the original type is already gone, so that guard
+    # can't catch it on this path. Strict mode rejects bool/string outright
+    # (422) while still accepting a genuine JSON number (including a whole-
+    # number int for the float field) — closing the same silent-coercion gap
+    # for this route that D-021 closed at the direct-store-call boundary.
+    suggested_quantity: int = Field(default=10, gt=0, strict=True)
     # Non-optional: a JSON ``null`` must be rejected (422), not accepted and then
-    # turned into a LIMIT order with no price. ``gt=0`` rejects zero/negative.
-    suggested_limit_price: float = Field(default=1.00, gt=0)
+    # turned into a LIMIT order with no price. ``gt=0`` rejects zero/negative;
+    # ``allow_inf_nan=False`` rejects ``Infinity``/``NaN`` (which slip past ``gt=0``:
+    # ``inf > 0`` is ``True``) before they can reach the store (BACKEND-1).
+    suggested_limit_price: float = Field(
+        default=1.00, gt=0, allow_inf_nan=False, strict=True
+    )
+
+
+class MarketSnapshotResponse(BaseModel):
+    """One symbol's current market-data snapshot (Phase 5).
+
+    Mirrors ``app.marketdata.service.MarketSnapshot`` as a Pydantic model for
+    the HTTP layer — the dataclass itself is working data (never persisted,
+    ``docs/02_DATA_AND_PERSISTENCE.md``) and stays IO/framework-agnostic.
+    ``pct_move`` is computed by the route via ``app.features.pct_move`` (the
+    same function the Strategy Engine decides on) and included here so the
+    cockpit never has to recompute it — Streamlit stays a pure display client
+    instead of re-deriving a number a decision was actually made from.
+    """
+
+    symbol: str
+    last_price: Optional[float]
+    bid: Optional[float]
+    ask: Optional[float]
+    volume: Optional[int]
+    prev_close: Optional[float]
+    pct_move: Optional[float]
+    updated_at: datetime
+    stale: bool
 
 
 class ReviewResponse(BaseModel):
@@ -72,3 +112,49 @@ class ReviewResponse(BaseModel):
     fills: list[Fill]
     positions: list[Position]
     events: list[Event]
+
+
+class OperatorOrderView(BaseModel):
+    """One durable non-terminal order, classified server-side (D-020).
+
+    The cockpit used to interpret ``order.status`` + the latest submission-block
+    audit event into a human operational state and owned the "which statuses are
+    still open" filter. This carries the backend's own classification so the UI
+    renders it verbatim — ``operational_status`` (from
+    ``app.policy.operational_status_for``), the ``reason`` behind a held state
+    (raw block-reason code, ``None`` when not held), whether a manual cancel is
+    offerable, and whether the order is flagged stale — and never re-derives
+    lifecycle. The full ``order`` is included for the display fields (symbol,
+    quantity, price, filled, age).
+    """
+
+    order: Order
+    operational_status: str
+    reason: Optional[str] = None
+    cancelable: bool
+    stale: bool = False
+
+
+class OperatorRecoveryView(BaseModel):
+    """One unresolved broker-submit recovery record, classified (D-017 / D-020).
+
+    A broker order accepted upstream that local order state can't otherwise
+    show. ``operational_status`` is ``broker_submission_failed`` while the
+    recovery loop is still working it or ``recovery_required`` once escalated to
+    ``needs_review`` (a real untracked position a human must reconcile).
+    """
+
+    record: SubmitRecoveryRecord
+    operational_status: str
+    reason: Optional[str] = None
+
+
+class OperatorOrdersResponse(BaseModel):
+    """The operator's single source of order-lifecycle truth (``GET
+    /api/operator/orders``). Every durable non-terminal order and every open
+    recovery record, each already classified — read-only; no mutation lives
+    here (the existing ``/orders`` raw read and the ``/orders/{id}/cancel``
+    action are unchanged)."""
+
+    orders: list[OperatorOrderView]
+    recoveries: list[OperatorRecoveryView]
