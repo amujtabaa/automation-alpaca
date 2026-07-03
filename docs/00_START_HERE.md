@@ -98,6 +98,26 @@ order-creation, unchanged) is checked in both stores' `create_candidate`,
 **before** the `Candidate(...)` call, while the raw value still carries its real
 type. Verified live against both stores pre- and post-fix.
 
+**(1b) Follow-up (PR review): the store-level guard alone didn't close the gap
+for the HTTP dev-injection route.** A Codex review on the D-021 PR pointed out
+that `POST /api/dev/candidates` parses the JSON body into `MockCandidateCreate`
+— a plain (lax) pydantic schema — *before* the request ever reaches
+`create_candidate`; pydantic's own lax `int`/`float` field coercion already
+turns a JSON `true`/`"5"` into `1`/`5` at that layer, so by the time
+`suggested_value_type_reason` runs, the original type is already gone.
+Reproduced live over real HTTP (both cases returned `201`, silently). Fixed by
+declaring both `MockCandidateCreate` numeric fields `strict=True` — pydantic
+strict mode rejects a JSON `bool`/`str` outright as a clean `422` (confirmed:
+`bool`→`int`, `bool`→`float`, `str`→`int`, `str`→`float` all now reject) while
+still accepting every genuine numeric input, including a whole-number JSON
+`int` supplied for the `float` price field (strict mode still widens `int` →
+`float`, just not `bool`/`str`) — verified no existing test payload (all send
+plain ints/floats) was affected. This is the same defect class as (1) and (2)
+above, closed at the one remaining externally-reachable entry point; the
+Strategy Engine's real candidate-creation path calls `create_candidate`
+directly with Python values it computed itself, never through a JSON schema,
+so `MockCandidateCreate` was the only externally-reachable gap.
+
 **(3) The F-002 submit-recovery ledger's own bookkeeping events didn't
 correlate.** D-020 always correlated the recovery *trigger* event
 (`order_submit_unpersisted`, which carries `candidate_id`), but the ledger's own
@@ -123,10 +143,12 @@ create→cancel-races-submit→recovery→needs_review chain now returns under o
 (`create_candidate`'s new boundary guard; `create_submit_recovery`/
 `update_submit_recovery`'s `candidate_id` threading), `app/store/base.py`
 (abstract signature), `app/monitoring.py` (the one `create_submit_recovery`
-call site). All three fixes are behavior-preserving or additive-only — no
+call site), `app/api/schemas.py` (`MockCandidateCreate`'s `strict=True`, the
+(1b) follow-up). All fixes are behavior-preserving or additive-only — no
 existing test needed to change, all 791 pre-fix tests still pass unchanged;
-30 new tests pin the fixes (`tests/test_wave0_numeric_hardening.py`,
-`tests/test_correlation_id.py`). Suite: 821 passed / 3 skipped, coverage 95.42%.
+39 new tests pin the fixes (`tests/test_wave0_numeric_hardening.py`,
+`tests/test_correlation_id.py`, `tests/test_candidate_flow_sequences.py`).
+Suite: 830 passed / 3 skipped, coverage 95.42%.
 
 **Gate status: GREEN.** All 12 Phase-7 readiness preconditions now hold,
 independently audited and cross-checked. Per the runbook, only the Phase-7

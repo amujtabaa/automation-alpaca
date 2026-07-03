@@ -60,12 +60,23 @@ class MockCandidateCreate(BaseModel):
     symbol: str = Field(min_length=1)
     strategy: Optional[str] = "mock"
     reason: Optional[str] = "injected mock candidate for manual testing"
-    suggested_quantity: int = Field(default=10, gt=0)
+    # ``strict=True`` (D-021 follow-up): a lax int/float field silently coerces
+    # a JSON ``true``/``"5"`` (bool/numeric-string) to ``1``/``5`` *before* this
+    # request even reaches the store — by the time
+    # ``app.policy.suggested_value_type_reason`` runs inside
+    # ``create_candidate``, the original type is already gone, so that guard
+    # can't catch it on this path. Strict mode rejects bool/string outright
+    # (422) while still accepting a genuine JSON number (including a whole-
+    # number int for the float field) — closing the same silent-coercion gap
+    # for this route that D-021 closed at the direct-store-call boundary.
+    suggested_quantity: int = Field(default=10, gt=0, strict=True)
     # Non-optional: a JSON ``null`` must be rejected (422), not accepted and then
     # turned into a LIMIT order with no price. ``gt=0`` rejects zero/negative;
     # ``allow_inf_nan=False`` rejects ``Infinity``/``NaN`` (which slip past ``gt=0``:
     # ``inf > 0`` is ``True``) before they can reach the store (BACKEND-1).
-    suggested_limit_price: float = Field(default=1.00, gt=0, allow_inf_nan=False)
+    suggested_limit_price: float = Field(
+        default=1.00, gt=0, allow_inf_nan=False, strict=True
+    )
 
 
 class MarketSnapshotResponse(BaseModel):

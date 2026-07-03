@@ -42,6 +42,18 @@ def client():
         {"symbol": "AAPL", "suggested_quantity": 0},  # gt=0
         {"symbol": "AAPL", "suggested_quantity": -5},
         {"symbol": "AAPL", "suggested_limit_price": -1.0},  # gt=0
+        # D-021 follow-up: a PR review (Codex) found that store.create_candidate's
+        # bool/numeric-string guard (suggested_value_type_reason) can't see this
+        # path — MockCandidateCreate parses the JSON body, and pydantic's lax
+        # int/float fields silently coerce True->1 / "5"->5 *before* the store
+        # ever runs, so the store-level fix alone left this HTTP route open.
+        # MockCandidateCreate now declares strict=True on both numeric fields,
+        # which rejects bool/string outright as a clean 422 instead of coercing.
+        {"symbol": "AAPL", "suggested_quantity": True},  # bool coerces to 1 under lax mode
+        {"symbol": "AAPL", "suggested_quantity": False},  # bool coerces to 0 under lax mode
+        {"symbol": "AAPL", "suggested_quantity": "5"},  # numeric string coerces under lax mode
+        {"symbol": "AAPL", "suggested_limit_price": True},
+        {"symbol": "AAPL", "suggested_limit_price": "1.5"},
     ],
 )
 def test_dev_inject_rejects_bad_input_without_500(client, payload):
@@ -50,6 +62,23 @@ def test_dev_inject_rejects_bad_input_without_500(client, payload):
     assert resp.status_code == 422, resp.text
     # And nothing was created.
     assert client.get("/api/candidates").json() == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"symbol": "AAPL"},  # all defaults
+        {"symbol": "AAPL", "suggested_quantity": 10},
+        {"symbol": "AAPL", "suggested_limit_price": 1.5},
+        {"symbol": "AAPL", "suggested_limit_price": 5},  # a whole-number int for the float field
+    ],
+)
+def test_dev_inject_strict_numeric_fields_still_accept_genuine_numbers(client, payload):
+    # strict=True must not become a new footgun: genuine ints/floats (including
+    # an int supplied for the float price field, which pydantic strict mode
+    # still widens) are unaffected.
+    resp = client.post("/api/dev/candidates", json=payload)
+    assert resp.status_code == 201, resp.text
 
 
 # --------------------------------------------------------------------------- #
