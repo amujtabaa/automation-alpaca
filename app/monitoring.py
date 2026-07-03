@@ -319,6 +319,7 @@ async def _handle_unpersisted_submit(
             limit_price=order.limit_price,
             failure_reason=str(exc),
             session_id=order.session_id,
+            candidate_id=order.candidate_id,
         )
     except Exception:  # noqa: BLE001 - even the recovery write is best-effort here
         _log.exception(

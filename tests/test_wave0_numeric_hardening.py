@@ -148,3 +148,130 @@ class TestStrategyRejectsNonFiniteSnapshot:
     def test_non_finite_field_yields_no_candidate(self, field, bad):
         proposal = self._evaluate(self._snapshot(**{field: bad}))
         assert proposal is None  # never a candidate, never suggested_limit_price=inf
+
+
+# --------------------------------------------------------------------------- #
+# Phase-7 readiness follow-up — whole_count_reason genuinely wired in, not dead
+# code, and the two silent-coercion gaps (bool/numeric-string suggested_quantity
+# / suggested_limit_price surviving all the way to a persisted order with zero
+# rejection) closed at the create_candidate boundary, both stores.
+# --------------------------------------------------------------------------- #
+class TestWholeCountReasonIsWiredIn:
+    """``whole_count_reason`` was defined but had zero call sites — the two
+    functions it exists to back (``fill_value_reason``/``filled_quantity_reason``)
+    each re-implemented its finite/integer/non-negative logic inline instead of
+    delegating. A Phase-7 readiness audit found this contradicts D-019's own
+    "one shared guard" claim. Both now delegate; these pin that the reason codes
+    produced are byte-identical to the pre-delegation strings (behavior-preserving)."""
+
+    @pytest.mark.parametrize(
+        "quantity,expected",
+        [
+            (True, "non_numeric_quantity"),
+            ("5", "non_numeric_quantity"),
+            (math.nan, "non_finite_quantity"),
+            (math.inf, "non_finite_quantity"),
+            (2.5, "non_integer_quantity"),
+            (-5, "non_positive_quantity"),
+            (0, "non_positive_quantity"),
+            (10, None),
+        ],
+    )
+    def test_fill_value_reason_quantity_reason_codes_unchanged(self, quantity, expected):
+        from app.policy import fill_value_reason
+
+        assert fill_value_reason(quantity, 1.0) == expected
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (True, "non_numeric_filled_quantity"),
+            ("5", "non_numeric_filled_quantity"),
+            (math.nan, "non_finite_filled_quantity"),
+            (2.5, "non_integer_filled_quantity"),
+            (-5, "negative_filled_quantity"),
+        ],
+    )
+    def test_filled_quantity_reason_reason_codes_unchanged(self, value, expected):
+        from app.models import Order, OrderSide, OrderType
+        from app.policy import filled_quantity_reason
+
+        order = Order(
+            candidate_id="c1", symbol="AAPL", side=OrderSide.BUY,
+            order_type=OrderType.LIMIT, quantity=100, limit_price=1.0,
+            filled_quantity=40,
+        )
+        assert filled_quantity_reason(order, value) == expected
+
+    def test_whole_count_reason_has_real_callers(self):
+        # Regression guard for the "orphaned single-source" finding itself:
+        # both consolidated functions must route through it, not reimplement it.
+        import inspect
+
+        from app.policy import fill_value_reason, filled_quantity_reason
+
+        assert "whole_count_reason" in inspect.getsource(fill_value_reason)
+        assert "whole_count_reason" in inspect.getsource(filled_quantity_reason)
+
+
+class TestCandidateCreationRejectsSilentTypeCoercion:
+    """A ``bool`` or numeric ``str`` raw ``suggested_quantity``/
+    ``suggested_limit_price`` silently coerces once pydantic builds the
+    ``Candidate`` (``True`` -> ``1``, ``"5"`` -> ``5``, no error) — and once
+    coerced, the type is unrecoverable, so a REAL PERSISTED ORDER could be
+    created from it with zero rejection anywhere (a Phase-7 readiness audit
+    reproduced this live against both stores). ``NaN``/``Inf``/fractional are
+    unaffected (pydantic's own field validators already reject those on
+    construction) and negative/zero suggested_quantity remain deferred to
+    order-creation time (unchanged, existing behavior) — this guard is scoped
+    exactly to the two genuinely silent cases."""
+
+    @pytest.mark.parametrize("bad_quantity", [True, False, "5"])
+    async def test_bool_or_string_suggested_quantity_rejected(self, any_store, bad_quantity):
+        from app.store.base import InvalidOrderError
+
+        await any_store.initialize()
+        with pytest.raises(InvalidOrderError):
+            await any_store.create_candidate(
+                "AAPL", suggested_quantity=bad_quantity, suggested_limit_price=1.0
+            )
+        assert await any_store.list_candidates() == []  # no persisted mutation
+
+    @pytest.mark.parametrize("bad_price", [True, "5.0"])
+    async def test_bool_or_string_suggested_limit_price_rejected(self, any_store, bad_price):
+        from app.store.base import InvalidOrderError
+
+        await any_store.initialize()
+        with pytest.raises(InvalidOrderError):
+            await any_store.create_candidate(
+                "AAPL", suggested_quantity=10, suggested_limit_price=bad_price
+            )
+        assert await any_store.list_candidates() == []
+
+    async def test_none_and_valid_numbers_still_pass(self, any_store):
+        # The guard must not become a new footgun: unset (None) and genuine
+        # int/float values are unaffected.
+        await any_store.initialize()
+        cand = await any_store.create_candidate(
+            "AAPL", suggested_quantity=10, suggested_limit_price=1.5
+        )
+        assert cand.suggested_quantity == 10
+        assert cand.suggested_limit_price == 1.5
+
+        cand2 = await any_store.create_candidate("MSFT")
+        assert cand2.suggested_quantity is None
+        assert cand2.suggested_limit_price is None
+
+    async def test_previously_silent_bool_quantity_no_longer_reaches_an_order(
+        self, any_store
+    ):
+        # The concrete failure the audit reproduced: True silently became
+        # quantity=1 on a real, persisted Order. Now it never gets that far.
+        from app.store.base import InvalidOrderError
+
+        await any_store.initialize()
+        with pytest.raises(InvalidOrderError):
+            await any_store.create_candidate(
+                "AAPL", suggested_quantity=True, suggested_limit_price=1.0
+            )
+        assert await any_store.list_orders() == []

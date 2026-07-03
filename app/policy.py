@@ -178,6 +178,35 @@ def finite_number_reason(value: object) -> Optional[str]:
     return None
 
 
+def suggested_value_type_reason(value: object) -> Optional[str]:
+    """Reject a candidate's raw ``suggested_quantity``/``suggested_limit_price``
+    input at the *type* level, before it is coerced into the ``Candidate``
+    pydantic model. ``None`` (not yet suggested) is always accepted.
+
+    This exists because, once a bare ``bool`` or numeric ``str`` is assigned to
+    a pydantic ``int``/``float`` field, it silently coerces (``True`` -> ``1``,
+    ``"5"`` -> ``5``) with no error and no way to recover the original type
+    afterward — the exact "boolean silently persisting" defect class
+    :func:`finite_number_reason`'s docstring names for fills, reachable here
+    too because ``create_candidate``'s parameters are plain Python (not
+    pydantic-validated) until the ``Candidate(...)`` call inside it. Reject
+    those two cases here, at the boundary, while they still carry their real
+    type. Deliberately narrower than :func:`finite_number_reason`: ``NaN``/
+    ``Inf``/fractional/negative/zero are NOT rejected here — pydantic's own
+    field validators already reject ``NaN``/``Inf``/fractional on the ``int``
+    quantity field, and the rest (a non-finite price, a non-positive quantity
+    or price) is deliberately deferred to order-creation time
+    (``limit_price_reason`` / the quantity check in
+    ``plan_create_order_for_candidate``), unchanged by this guard.
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "non_numeric"
+    return None
+
+
 def whole_count_reason(value: object) -> Optional[str]:
     """Reject a value that is not a finite, whole (integer-valued), non-negative
     share count. Builds on :func:`finite_number_reason`, then rejects a
@@ -205,11 +234,15 @@ def fill_value_reason(quantity: object, price: object) -> Optional[str]:
     quantity/price directly violates the derived-position invariant.
     """
 
-    qty_bad = finite_number_reason(quantity)
+    qty_bad = whole_count_reason(quantity)
     if qty_bad is not None:
-        return f"{qty_bad}_quantity"
-    if isinstance(quantity, float) and not quantity.is_integer():
-        return "non_integer_quantity"
+        # whole_count_reason permits 0 and reports a negative value as
+        # "negative" (it has no strict-positivity opinion); a fill's quantity
+        # must be strictly positive, so both collapse into the same
+        # "non_positive_quantity" reason a plain 0 gets below — quantity's
+        # sign, unlike its type/finiteness/wholeness, isn't a distinct reason
+        # code here (preserves the pre-D-019 reason vocabulary exactly).
+        return "non_positive_quantity" if qty_bad == "negative" else f"{qty_bad}_quantity"
     if quantity <= 0:
         return "non_positive_quantity"
 
@@ -295,13 +328,12 @@ def filled_quantity_reason(order: Order, new_filled_quantity: object) -> Optiona
     upstream as a no-op).
     """
 
-    base = finite_number_reason(new_filled_quantity)
+    base = whole_count_reason(new_filled_quantity)
     if base is not None:
+        # whole_count_reason's reasons (non_numeric/non_finite/non_integer/
+        # negative) suffix identically to the pre-D-019 checks this replaces —
+        # e.g. "negative" + "_filled_quantity" == "negative_filled_quantity".
         return f"{base}_filled_quantity"
-    if isinstance(new_filled_quantity, float) and not new_filled_quantity.is_integer():
-        return "non_integer_filled_quantity"
-    if new_filled_quantity < 0:
-        return "negative_filled_quantity"
     if new_filled_quantity > order.quantity:
         return "filled_quantity_exceeds_order_quantity"
     if new_filled_quantity < order.filled_quantity:

@@ -87,6 +87,7 @@ from app.policy import (
     NON_TERMINAL_ORDER_STATUSES,
     existing_exposure,
     order_candidate_match_reason,
+    suggested_value_type_reason,
 )
 
 SCHEMA = """
@@ -728,6 +729,20 @@ class SqliteStateStore(StateStore):
                 raise SessionClosedError(
                     f"session {session_id} is closed; cannot create candidate"
                 )
+            # A bool or numeric-string raw input silently coerces once assigned
+            # to Candidate's pydantic int/float fields (True -> 1, "5" -> 5,
+            # no error) and the type is unrecoverable afterward — reject at the
+            # boundary, while it's still the caller's real type (D-019 follow-up).
+            # Identical guard to InMemoryStateStore's — parity.
+            for label, value in (
+                ("suggested_quantity", suggested_quantity),
+                ("suggested_limit_price", suggested_limit_price),
+            ):
+                bad = suggested_value_type_reason(value)
+                if bad is not None:
+                    raise InvalidOrderError(
+                        f"candidate {key} has an invalid {label} ({bad}: {value!r})"
+                    )
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -1124,6 +1139,7 @@ class SqliteStateStore(StateStore):
         limit_price: Optional[float] = None,
         failure_reason: str,
         session_id: Optional[str] = None,
+        candidate_id: Optional[str] = None,
     ) -> SubmitRecoveryRecord:
         key = normalize_symbol(symbol)
         async with self._lock:
@@ -1148,6 +1164,7 @@ class SqliteStateStore(StateStore):
                         f"recovery: {failure_reason}"
                     ),
                     symbol=key,
+                    candidate_id=candidate_id,
                     order_id=local_order_id,
                     payload={
                         "broker_order_id": broker_order_id,
@@ -1214,6 +1231,14 @@ class SqliteStateStore(StateStore):
                     ),
                 )
                 if terminal_event is not None:
+                    # SubmitRecoveryRecord carries no candidate_id (D-020 stays
+                    # to one nullable Event field); resolve it from the local
+                    # order for correlation — orders are never deleted, so this
+                    # reliably resolves for the lifetime of the record.
+                    order_row = cur.execute(
+                        "SELECT candidate_id FROM orders WHERE id = ?",
+                        (updated.local_order_id,),
+                    ).fetchone()
                     self._insert_event(
                         cur,
                         terminal_event,
@@ -1222,6 +1247,9 @@ class SqliteStateStore(StateStore):
                             f"{cleanup_status}"
                         ),
                         symbol=updated.symbol,
+                        candidate_id=(
+                            order_row["candidate_id"] if order_row is not None else None
+                        ),
                         order_id=updated.local_order_id,
                         payload={
                             "broker_order_id": updated.broker_order_id,

@@ -49,6 +49,91 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-021 — Phase-7 readiness gate: audited green, three follow-up fixes landed
+**Context.** Per the wave runbook, once Waves 0–2 are merged the capstone
+Phase-7 readiness gate (12 preconditions spanning D-017 through D-020) must be
+independently audited before the Phase-7 sell-side ADR can be written. Each
+precondition was verified against the *actual current code and tests*, not
+against what a decision-log entry claims — reading the real source, running the
+real tests, and in several cases reproducing a claimed behavior live — then
+cross-checked by a second, independent skeptic agent per item.
+
+**Result: 10 of 12 preconditions passed cleanly on first read; two came back
+`PARTIAL`, both real and reachable, both closed by this entry's fixes.**
+
+**(1) `whole_count_reason` was dead code.** `app/policy.py` defined it (finite +
+whole + non-negative) but `fill_value_reason` and `filled_quantity_reason` each
+re-implemented the same logic inline instead of delegating — directly
+contradicting the module's own "one shared guard" framing and, more
+concretely, `docs/05_REVIEW_CHECKLIST.md`'s Wave 0 line that claimed the F-003
+guard was implemented "via one shared `finite_number_reason`/`whole_count_reason`
+guard." Fixed by making both functions delegate to it. Every reason-code string
+the original inline logic produced is preserved exactly — verified by direct
+probing of all 22 input cases (bool/string/NaN/Inf/fractional/negative/zero/
+valid, both quantity and price) before and after, byte-for-byte identical.
+`filled_quantity_reason`'s delegation is a pure drop-in (its "negative" reason
+already matched `whole_count_reason`'s suffix exactly); `fill_value_reason`'s
+needed one explicit remap (`whole_count_reason`'s bare `"negative"` collapses
+into the pre-existing `"non_positive_quantity"` fill's stricter positivity
+check already used for zero, rather than surfacing as a new, never-before-seen
+`"negative_quantity"` reason code).
+
+**(2) A live, reachable silent-coercion gap the audit reproduced against both
+stores.** `Candidate.suggested_quantity`/`suggested_limit_price` are plain
+pydantic `int`/`float` fields with no strict mode. Pydantic's lax coercion
+already rejects `NaN`/`Inf`/a fractional value assigned to the `int` quantity
+field (a real, if unfriendly, `ValidationError` — not silent), and negative/zero
+correctly still reject at order-creation time via the existing
+`qty is None or qty <= 0` check — but a **`bool`** (`True` → `1`) or a
+**numeric `str`** (`"5"` → `5`) coerces with *zero error*, and once inside the
+pydantic model the original type is unrecoverable — `plan_create_order_for_
+candidate`'s later check just sees a clean positive int and creates a real,
+persisted `Order`. This is exactly the "boolean silently persisting" defect
+class `finite_number_reason`'s own docstring names as a *reproduced* defect for
+fills — reachable here too, and previously unguarded. Fixed narrowly: a new
+`app.policy.suggested_value_type_reason` predicate (bool / non-numeric-type
+only — deliberately **not** `NaN`/`Inf`/fractional/negative/zero, which are
+either already handled by pydantic or deliberately still deferred to
+order-creation, unchanged) is checked in both stores' `create_candidate`,
+**before** the `Candidate(...)` call, while the raw value still carries its real
+type. Verified live against both stores pre- and post-fix.
+
+**(3) The F-002 submit-recovery ledger's own bookkeeping events didn't
+correlate.** D-020 always correlated the recovery *trigger* event
+(`order_submit_unpersisted`, which carries `candidate_id`), but the ledger's own
+three lifecycle events (`submit_recovery_recorded`, `submit_recovery_needs_
+review`, `submit_recovery_resolved`) never did — `SubmitRecoveryRecord` itself
+carries no `candidate_id` (a deliberate D-020 scope decision: "one nullable
+`Event` field, not a new entity column"), so an operator reconstructing a
+candidate's incident history via `?correlation_id=` would silently miss the
+recovery outcome, despite the `Event` model's own docstring generically
+claiming "blocked/recovery" events all correlate. Fixed **without** adding a
+column: `create_submit_recovery` gained an optional `candidate_id` kwarg
+(threaded from `order.candidate_id`, already in scope at the one call site in
+`app/monitoring.py::_handle_unpersisted_submit`) used only for the creation
+event; `update_submit_recovery` resolves `candidate_id` for its later terminal
+events by looking up the local order via `record.local_order_id` at write time
+— reliable because orders are never deleted (`docs/02`'s append-only/no-delete
+rule). Verified end-to-end against both stores: the full
+create→cancel-races-submit→recovery→needs_review chain now returns under one
+`correlation_id` query.
+
+**Enforcement points:** `app/policy.py` (`whole_count_reason` delegation,
+`suggested_value_type_reason`), `app/store/memory.py` + `sqlite.py`
+(`create_candidate`'s new boundary guard; `create_submit_recovery`/
+`update_submit_recovery`'s `candidate_id` threading), `app/store/base.py`
+(abstract signature), `app/monitoring.py` (the one `create_submit_recovery`
+call site). All three fixes are behavior-preserving or additive-only — no
+existing test needed to change, all 791 pre-fix tests still pass unchanged;
+30 new tests pin the fixes (`tests/test_wave0_numeric_hardening.py`,
+`tests/test_correlation_id.py`). Suite: 821 passed / 3 skipped, coverage 95.42%.
+
+**Gate status: GREEN.** All 12 Phase-7 readiness preconditions now hold,
+independently audited and cross-checked. Per the runbook, only the Phase-7
+sell-side ADR (its own sell-intent lifecycle and risk model, never sells bolted
+onto the buy-candidate path) is unblocked by this — Phase 7 *implementation*
+is explicitly out of scope for this entry and has not been started.
+
 ### D-020 — Operator-truth endpoint + audit correlation IDs (Wave 2)
 **Context.** Two observability gaps. (A) The cockpit *interpreted* order
 lifecycle itself — which statuses count as "open", each order's hold reason from
