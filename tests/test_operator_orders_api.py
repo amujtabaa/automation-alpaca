@@ -94,6 +94,11 @@ async def test_awaiting_submission_when_created_and_unblocked():
         ("buys_paused", "held_buys_paused"),
         ("session_closed", "held_session_closed"),
         ("unknown_session", "held_session_closed"),
+        # The D-013a cross-session hold reasons plan_claim_order_for_submission
+        # actually emits (own session permissive, live session stopped) — a kill
+        # switch is a kill switch regardless of which session tripped it.
+        ("current_kill_switch", "held_kill_switch"),
+        ("current_buys_paused", "held_buys_paused"),
         ("something_new", "held"),  # unrecognized reason -> generic held, reason kept
     ],
 )

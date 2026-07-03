@@ -164,6 +164,11 @@ def plan_append_fill(
                 "fill_rejected_invalid",
                 message=f"fill for {symbol} rejected: {value_reason}",
                 symbol=symbol,
+                # This value check runs before the order-existence check, so the
+                # order may be absent here; correlate when it is present so a
+                # malformed-fill rejection still shows up in the candidate's
+                # lifecycle (D-020), matching the other fill events below.
+                candidate_id=order.candidate_id if order is not None else None,
                 order_id=order_id,
                 payload={"reason": value_reason, "quantity": quantity, "price": price},
                 session_id=session_id,

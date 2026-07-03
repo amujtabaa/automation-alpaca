@@ -450,12 +450,23 @@ OP_CANCEL_PENDING = "cancel_pending"
 OP_BROKER_SUBMISSION_FAILED = "broker_submission_failed"  # unresolved: live at broker, being reconciled
 OP_RECOVERY_REQUIRED = "recovery_required"  # needs_review: real untracked position, human must act
 
-# Maps a submission-block reason (from an order_submission_blocked audit event,
-# ultimately session_submission_block_reason) to a held label. An unknown or
-# unresolvable session both read as "no live session backing this order."
+# Maps a submission-block reason (from an order_submission_blocked audit event)
+# to a held label. Two families of reason reach here:
+#   * the order's OWN session being stopped — session_submission_block_reason:
+#     kill_switch / buys_paused / session_closed / unknown_session;
+#   * the LIVE/current session being stopped while the order's own session is
+#     permissive — plan_claim_order_for_submission wraps those as
+#     f"current_{...}", i.e. current_kill_switch / current_buys_paused (the
+#     D-013a cross-session emergency-stop after a date rollover). A kill switch
+#     is a kill switch regardless of which session tripped it, so both prefixes
+#     map to the same operational label (only order_intent_block_reason feeds the
+#     current_ path, so only kill_switch/buys_paused have current_ variants —
+#     session_closed does not).
 _HELD_REASON_LABELS = {
     "kill_switch": OP_HELD_KILL_SWITCH,
+    "current_kill_switch": OP_HELD_KILL_SWITCH,
     "buys_paused": OP_HELD_BUYS_PAUSED,
+    "current_buys_paused": OP_HELD_BUYS_PAUSED,
     "session_closed": OP_HELD_SESSION_CLOSED,
     "unknown_session": OP_HELD_SESSION_CLOSED,
 }
