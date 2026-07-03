@@ -49,6 +49,87 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-017 — Atomic submission claim (`SUBMITTING`) + durable broker-submit recovery ledger
+**Context.** An independent post-Phase-6 review found two blocker races
+(F-001, F-002) with the *same* root cause: there was no durable
+"submission-in-progress" state. `_submit_pending_orders` read the controls,
+`await`ed `adapter.submit_order`, and only *then* marked the order — a window in
+which a `set_kill_switch(True)` (F-001) or a `close_session` that cancels the
+still-`CREATED` order (F-002) could slip in undetected. The kill switch could
+lose the race (a stopped account still submitted); a session close could cancel
+an order the broker had already accepted, leaving it live upstream but
+locally `canceled` with no `broker_order_id`, orphaned (nothing polled a
+terminal order).
+
+**(a) A new intermediate `OrderStatus.SUBMITTING`, claimed atomically.**
+`StateStore.claim_order_for_submission(order_id)` re-reads the order, re-reads
+the current **and** the order's own originating session, re-checks every
+control (kill-switch / buys-paused / session-closed / session-unknown / status
+still `CREATED`), and — all under **one lock hold**, the same idiom as
+`set_kill_switch`, no new primitive — transitions `CREATED → SUBMITTING` and
+audits it. The monitoring loop calls this **first** and only submits claimed
+(`SUBMITTING`) orders. Because the claim and every control mutation serialize
+through the same lock, a flip lands either *before* the claim (order stays
+`CREATED`, held) or *after* `SUBMITTING` (already committed to submission — the
+human approved it and the backend atomically claimed it before the stop). The
+transition table is **strict**: `CREATED → {SUBMITTING, CANCELED, REJECTED}`
+(no direct `CREATED → SUBMITTED`) and `SUBMITTING → {SUBMITTED, CREATED,
+CANCELED, REJECTED}` — so the claim is the *only* path to the broker, not just
+the path the loop happens to use. `CREATED → SUBMITTED` is gone; test setup
+that needs "an order as if submitted" uses the two-step helper
+`tests/store_helpers.submit_created_order`. A transient `submit_order` raise
+releases the claim (`SUBMITTING → CREATED`) so the next tick re-runs the *full*
+gate (a flip during the retry window is then honored) — **unless the order's own
+session closed during the submit await**, in which case the release goes
+`SUBMITTING → CANCELED` instead: releasing to `CREATED` there would strand a
+zombie `CREATED` order in a closed session forever (close is one-shot; nothing
+else cleans it up), permanently inflating CAPI exposure — cancelling it is
+exactly what close would have done to a `CREATED` order (D-013a). Session close
+never cancels a `SUBMITTING` order — its cancel filter keys on `status is
+CREATED`, so `SUBMITTING` is naturally excluded (pinned by a test). `SUBMITTING` is
+non-terminal (it has outgoing transitions), so it counts toward CAPI exposure
+automatically via the derived `NON_TERMINAL_ORDER_STATUSES`; it carries no
+`broker_order_id`, so reconcile (which keys on `broker_order_id is not None`)
+skips it.
+
+**(b) A durable broker-submit recovery ledger, retried until resolved.** When
+the broker accepts an order but the local `SUBMITTING → SUBMITTED` persist
+fails, the handling now splits by *why*:
+- **Order still `SUBMITTING`** (a transient persist hiccup) — it is genuinely
+  open at the broker, so *retry* marking it `SUBMITTED`; do not cancel a
+  legitimately-open order.
+- **Order went `CANCELED`/`REJECTED` locally** (a manual cancel raced the
+  submit) — the true F-002 orphan: live at the broker, terminal locally. A
+  single best-effort cancel is not enough (if it fails the broker order is
+  lost), so a **durable `SubmitRecoveryRecord`** is written (new table +
+  `create/list/update_submit_recovery` store methods, mirrored in both stores).
+  A recovery step folded into the monitoring tick polls/cancels the
+  `broker_order_id` **every cadence until resolved**: zero fills and terminal
+  → `resolved_canceled`; zero fills and still live → cancel and confirm; **any
+  fills at all (partial *or* full)** → `needs_review`, because those executed
+  shares are a real untracked position that a human must reconcile — it is
+  never cancelled-and-dropped. A `needs_review` record stays in the operator's
+  open view (`RECOVERY_OPEN_STATUSES`) until a human clears it; only the
+  recovery loop's own `unresolved`-scoped query excludes it, so it is not
+  re-cancelled. (The naive "cancel anything not already fully filled" version
+  silently discarded a partial fill's shares — a hole the pre-merge review
+  caught.)
+
+**Explicitly out of scope (kept minimal per the remediation prompt):** a full
+OMS-lite command/outbox layer beyond this claim + recovery record. **Known
+limitation:** a hard process crash *between* the claim and the broker call can
+leave an order stuck `SUBMITTING` with no `broker_order_id` (we can't know if
+the broker received it); Wave 0 does not auto-recover that (auto-releasing to
+`CREATED` risks a double-submit on a broker without an idempotency key, and the
+claim window is a single `await`). Restart-recovery of orphaned `SUBMITTING`
+orders is a noted follow-up, not a beta blocker.
+
+**Enforcement points:** `app/store/core.py`'s pure `plan_claim_order_for_submission`
+(the re-check + `CREATED → SUBMITTING` decision, storage-agnostic like the
+other `plan_*`), both stores' `claim_order_for_submission` + recovery methods,
+and `app/monitoring.py`'s rewritten `_submit_pending_orders` /
+`_handle_unpersisted_submit` / new `_recover_unpersisted_submits`.
+
 ### D-016 — CAPI is a pure pre-trade risk *gate*, not a position-sizing engine; local-derived exposure; reject-not-resize
 **Scope.** Phase 6 ships the **preservation** half of CAPI (max shares/notional
 per order, max total exposure, a trading allowlist) as a hard pre-trade gate.

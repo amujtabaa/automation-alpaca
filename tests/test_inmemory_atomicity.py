@@ -100,8 +100,11 @@ async def test_transition_order_rolls_back_on_audit_failure(store):
     order = await _ordered(store)
     restore = _raise_on(store, "order_transition")
     with pytest.raises(RuntimeError):
+        # CREATED -> SUBMITTING (the submission claim, D-017) is a genuine
+        # status change that writes an order_transition event; forcing that
+        # write to fail must roll the whole mutation back.
         await store.transition_order(
-            order.id, OrderStatus.SUBMITTED, broker_order_id="b-1"
+            order.id, OrderStatus.SUBMITTING, broker_order_id="b-1"
         )
     restore()
     fresh = await store.get_order(order.id)

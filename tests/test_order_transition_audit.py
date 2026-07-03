@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from app.models import OrderSide, OrderStatus
+from tests.store_helpers import submit_created_order
 
 pytestmark = pytest.mark.anyio
 
@@ -30,19 +31,19 @@ def _order_audit(events, order_id):
 
 async def test_noop_transition_writes_zero_events(any_store):
     order = await _new_order(any_store)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED)  # genuine
+    await any_store.transition_order(order.id, OrderStatus.SUBMITTING)  # genuine
     before = len(await any_store.list_events())
 
     # Same status, nothing else changed -> true no-op.
-    result = await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+    result = await any_store.transition_order(order.id, OrderStatus.SUBMITTING)
 
     assert len(await any_store.list_events()) == before
-    assert result.status is OrderStatus.SUBMITTED
+    assert result.status is OrderStatus.SUBMITTING
 
 
 async def test_filled_quantity_change_writes_one_progress_event(any_store):
     order = await _new_order(any_store)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+    await submit_created_order(any_store, order.id)
     await any_store.transition_order(
         order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=40
     )
@@ -67,9 +68,9 @@ async def test_genuine_transition_still_writes_one_transition_event(any_store):
     order = await _new_order(any_store)
     n_before = len(await any_store.list_events())
 
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+    await any_store.transition_order(order.id, OrderStatus.SUBMITTING)
 
     new_events = (await any_store.list_events())[n_before:]
     transitions = [e for e in new_events if e.event_type == "order_transition"]
     assert len(transitions) == 1
-    assert transitions[0].payload == {"from": "created", "to": "submitted"}
+    assert transitions[0].payload == {"from": "created", "to": "submitting"}

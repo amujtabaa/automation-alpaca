@@ -25,7 +25,11 @@ from app.store.base import (
     StoreError,
     UnknownEntityError,
 )
-from app.store.validation import order_intent_block_reason, risk_limit_reason
+from app.store.validation import (
+    limit_price_reason,
+    order_intent_block_reason,
+    risk_limit_reason,
+)
 
 router = APIRouter(prefix="/api", tags=["candidates"])
 
@@ -125,17 +129,22 @@ async def approve_candidate(
         )
     # Dispatchability pre-check (see docstring). Skip it for an already-ordered
     # candidate: re-approving it is an idempotent no-op that needs no sizing.
-    if candidate.status is not CandidateStatus.ORDERED and not (
-        candidate.suggested_quantity
-        and candidate.suggested_quantity > 0
-        and candidate.suggested_limit_price
-        and candidate.suggested_limit_price > 0
+    # The limit price is validated with the SAME shared predicate the store's
+    # authoritative check uses (limit_price_reason), not a bare `> 0` — an inf
+    # price passes `inf > 0` but is rejected here (F-005/F-002), so it is caught
+    # *before* approval and the candidate stays PENDING rather than being
+    # approved into a dispatch that then strands it.
+    if candidate.status is not CandidateStatus.ORDERED and (
+        not candidate.suggested_quantity
+        or candidate.suggested_quantity <= 0
+        or limit_price_reason(candidate.suggested_limit_price) is not None
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"candidate {candidate_id} cannot be ordered: a positive "
-                f"suggested_quantity and suggested_limit_price are required"
+                f"suggested_quantity and a valid positive suggested_limit_price "
+                f"are required"
             ),
         )
 
@@ -199,6 +208,15 @@ async def approve_candidate(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
     except _MAPPED_ERRORS as exc:
+        # Any OTHER post-approval dispatch failure must revert too (F-002): e.g.
+        # an InvalidOrderError from a malformed price that slipped a pre-check
+        # would otherwise strand the candidate APPROVED with no order and no
+        # path forward (the candidate machine only leaves APPROVED via ORDERED
+        # or a session-close expiry). revert_candidate_approval is a guaranteed
+        # no-op unless the candidate is genuinely stranded APPROVED-with-no-order
+        # — so it is also safe when the failure came from gate.approve() itself
+        # (the candidate never reached APPROVED, and revert leaves it untouched).
+        await store.revert_candidate_approval(candidate_id)
         raise _http_error(exc) from exc
 
     # The candidate exists (fetched above) and is never deleted, so the refreshed

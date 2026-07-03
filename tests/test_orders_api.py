@@ -59,6 +59,41 @@ async def _submitted_order(store, adapter, **kw):
 
 
 # --------------------------------------------------------------------------- #
+# GET /api/order-recoveries (D-017 / F-002, F-006)
+# --------------------------------------------------------------------------- #
+async def test_list_order_recoveries_returns_unresolved_by_default():
+    from app.models import OrderSide
+
+    app, store, adapter = await _app_store_adapter()
+    rec = await store.create_submit_recovery(
+        local_order_id="o1",
+        broker_order_id="bk-1",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        quantity=10,
+        limit_price=1.0,
+        failure_reason="unpersisted",
+    )
+    async with _client(app) as client:
+        resp = await client.get("/api/order-recoveries")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [r["id"] for r in body] == [rec.id]
+        assert body[0]["broker_order_id"] == "bk-1"
+        assert body[0]["cleanup_status"] == "unresolved"
+
+        # The literal path is not captured as an order_id by /orders/{order_id}.
+        assert (await client.get("/api/orders/order-recoveries")).status_code == 404
+
+    # Once cleanly resolved, it drops out of the default (open) view.
+    await store.update_submit_recovery(rec.id, cleanup_status="resolved_canceled")
+    async with _client(app) as client:
+        assert (await client.get("/api/order-recoveries")).json() == []
+        allrecs = await client.get("/api/order-recoveries?open_only=false")
+        assert [r["id"] for r in allrecs.json()] == [rec.id]
+
+
+# --------------------------------------------------------------------------- #
 # GET /api/orders/{id}
 # --------------------------------------------------------------------------- #
 async def test_get_order_known_and_unknown():

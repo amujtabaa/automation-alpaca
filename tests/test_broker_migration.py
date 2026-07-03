@@ -33,6 +33,7 @@ async def test_transition_persists_broker_order_id(any_store):
     await any_store.initialize()
     order = await _ordered(any_store)
 
+    await any_store.transition_order(order.id, OrderStatus.SUBMITTING)  # claim (D-017)
     updated = await any_store.transition_order(
         order.id, OrderStatus.SUBMITTED, broker_order_id="alpaca-uuid-123"
     )
@@ -98,6 +99,7 @@ async def test_migration_adds_broker_order_id_to_legacy_db(tmp_path):
 
     # The migrated db is fully usable: create + transition with a broker id.
     order = await _ordered(store)
+    await store.transition_order(order.id, OrderStatus.SUBMITTING)  # claim (D-017)
     updated = await store.transition_order(
         order.id, OrderStatus.SUBMITTED, broker_order_id="b-xyz"
     )

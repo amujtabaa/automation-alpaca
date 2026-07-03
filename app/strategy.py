@@ -20,6 +20,7 @@ from typing import Optional
 from app.features import pct_move, spread_pct
 from app.marketdata.service import MarketSnapshot
 from app.models import SessionType
+from app.store.validation import finite_number_reason
 
 STRATEGY_ID = "premarket_momentum_v1"
 
@@ -87,6 +88,25 @@ def evaluate(
         return None
     if snapshot is None or snapshot.stale:
         return None
+
+    # Corrupt market data must never become a candidate (F-005): a non-finite
+    # field (NaN/±Inf from a bad tick or an upstream divide-by-zero) would
+    # otherwise sail through the comparisons below (every comparison against
+    # NaN is False; inf passes a `< threshold` volume/spread gate) and, worst,
+    # produce a candidate with suggested_limit_price=inf. Reject the whole
+    # snapshot if any *present* numeric field is non-finite — a missing (None)
+    # field is fine, the individual gates below already handle absence. Uses the
+    # same shared guard as the store boundary so "is this a real number" is
+    # decided in one place.
+    for value in (
+        snapshot.last_price,
+        snapshot.prev_close,
+        snapshot.bid,
+        snapshot.ask,
+        snapshot.volume,
+    ):
+        if value is not None and finite_number_reason(value) is not None:
+            return None
 
     move = pct_move(snapshot.last_price, snapshot.prev_close)
     if move is None or move <= 0 or move < momentum_threshold_pct:

@@ -39,11 +39,16 @@ from app.models import (
     OrderType,
     Position,
     PositionSnapshot,
+    RECOVERY_NEEDS_REVIEW,
+    RECOVERY_UNRESOLVED,
     SessionRecord,
     utcnow,
 )
 from app.position import NegativePositionError, would_go_negative
 from app.store.base import (
+    CLAIM_BLOCKED,
+    CLAIM_CLAIMED,
+    CLAIM_SKIPPED,
     CandidateTransitionError,
     InvalidFillError,
     InvalidOrderError,
@@ -61,6 +66,7 @@ from app.store.validation import (
     limit_price_reason,
     order_intent_block_reason,
     risk_limit_reason,
+    session_submission_block_reason,
 )
 
 
@@ -322,6 +328,29 @@ def plan_create_order_for_candidate(
             ),
         )
 
+    # Unresolved session (F-004): a candidate whose declared session no longer
+    # resolves must not produce order intent. This is a *distinct* guard from
+    # order_intent_block_reason(session) below — that predicate deliberately
+    # treats None as "no live session to stop" for the monitoring loop's
+    # current-session emergency-stop check, so it must NOT be changed to block
+    # on None. create_candidate already rejects an explicit unresolvable
+    # session id up front; this is the dispatch-time backstop, audited.
+    if session is None:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=OrderIntentBlockedError("order intent blocked: unresolved_session"),
+            reject_event=EventSpec(
+                "order_intent_blocked",
+                message=(
+                    f"order intent for {candidate.symbol} blocked: unresolved_session"
+                ),
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                payload={"reason": "unresolved_session"},
+                session_id=candidate.session_id,
+            ),
+        )
+
     # Safety controls (Rule 8): refuse new order intent when kill-switched /
     # buys-paused — gated at the backend boundary (not just the UI), and audited.
     block = order_intent_block_reason(session)
@@ -426,6 +455,95 @@ def plan_create_order_for_candidate(
             ),
         ),
     )
+
+
+# ---- submit-recovery ledger (D-017) --------------------------------------- #
+
+
+def recovery_status_event(
+    prev_status: str, new_status: Optional[str]
+) -> Optional[str]:
+    """The audit event type to write when a recovery record's ``cleanup_status``
+    changes to ``new_status``, or ``None`` if nothing should be recorded (no
+    change, or it stays ``RECOVERY_UNRESOLVED``). A move to needs-review writes
+    ``submit_recovery_needs_review`` (a real untracked position — not "resolved");
+    a clean cancel writes ``submit_recovery_resolved``. Shared so both stores
+    emit identical events.
+    """
+
+    if (
+        new_status is None
+        or new_status == prev_status
+        or new_status == RECOVERY_UNRESOLVED
+    ):
+        return None
+    if new_status == RECOVERY_NEEDS_REVIEW:
+        return "submit_recovery_needs_review"
+    return "submit_recovery_resolved"
+
+
+# ---- claim_order_for_submission (D-017) ----------------------------------- #
+
+
+@dataclass(frozen=True)
+class ClaimPlan:
+    """Pure outcome of the submission-claim decision (the store has already
+    fetched the order and both sessions). ``outcome`` is one of
+    :data:`CLAIM_CLAIMED` / :data:`CLAIM_BLOCKED` / :data:`CLAIM_SKIPPED`. On a
+    claim, ``order`` is the updated (``SUBMITTING``) copy the store persists and
+    ``event`` the ``order_submission_claimed`` audit row. On a block, ``reason``
+    is set and nothing is written.
+    """
+
+    outcome: str
+    order: Optional[Order] = None
+    event: Optional[EventSpec] = None
+    reason: Optional[str] = None
+
+
+def plan_claim_order_for_submission(
+    *,
+    order: Optional[Order],
+    own_session: Optional[SessionRecord],
+    current_session: Optional[SessionRecord],
+) -> ClaimPlan:
+    """Decide whether a ``CREATED`` order may be claimed for submission.
+
+    ``own_session`` is the order's originating session (D-013a: a held order is
+    gated against its OWN session, not merely the live one, so a kill-switched
+    order from a prior session can't slip through after a date rollover mints a
+    fresh permissive session). ``current_session`` is the live session, checked
+    as a process-wide emergency stop. The store calls this under its lock, so
+    the control state read here cannot change between the decision and the
+    ``CREATED → SUBMITTING`` write the store then applies.
+    """
+
+    if order is None or order.status is not OrderStatus.CREATED:
+        # No longer submittable: a session close cancelled it, it was already
+        # claimed, or it never existed. Nothing to do.
+        return ClaimPlan(CLAIM_SKIPPED)
+
+    hold = session_submission_block_reason(own_session)
+    if hold is None:
+        current_block = order_intent_block_reason(current_session)
+        if current_block is not None:
+            hold = f"current_{current_block}"
+    if hold is not None:
+        return ClaimPlan(CLAIM_BLOCKED, reason=hold)
+
+    updated = order.model_copy(deep=True)
+    updated.status = OrderStatus.SUBMITTING
+    updated.updated_at = utcnow()
+    event = EventSpec(
+        "order_submission_claimed",
+        message=f"submission claimed for {order.symbol}",
+        symbol=order.symbol,
+        candidate_id=order.candidate_id,
+        order_id=order.id,
+        payload={"from": "created", "to": "submitting"},
+        session_id=order.session_id,
+    )
+    return ClaimPlan(CLAIM_CLAIMED, order=updated, event=event)
 
 
 # ---- transition_order ----------------------------------------------------- #

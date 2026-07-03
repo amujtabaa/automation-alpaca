@@ -101,8 +101,10 @@ async def test_order_status_is_independent_of_candidate(store):
     candidate = await store.create_candidate("AAPL")
     order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
 
-    submitted = await store.transition_order(order.id, OrderStatus.SUBMITTED)
-    assert submitted.status is OrderStatus.SUBMITTED
+    # CREATED -> SUBMITTING (the submission claim, D-017) — the order moving
+    # forward is independent of its candidate either way.
+    submitting = await store.transition_order(order.id, OrderStatus.SUBMITTING)
+    assert submitting.status is OrderStatus.SUBMITTING
     # The candidate's status is untouched by the order moving forward.
     fresh = await store.get_candidate(candidate.id)
     assert fresh.status is CandidateStatus.PENDING

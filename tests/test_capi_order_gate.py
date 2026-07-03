@@ -13,6 +13,7 @@ import pytest
 
 from app.models import CandidateStatus, OrderSide, OrderStatus
 from app.store.base import RiskLimitBlockedError, RiskLimits
+from tests.store_helpers import submit_created_order
 
 pytestmark = pytest.mark.anyio
 
@@ -134,7 +135,7 @@ class TestMaxTotalExposure:
         )
         await any_store.transition_candidate(seed_candidate.id, CandidateStatus.APPROVED)
         seed_order = await any_store.create_order_for_candidate(seed_candidate.id)
-        await any_store.transition_order(seed_order.id, OrderStatus.SUBMITTED)
+        await submit_created_order(any_store, seed_order.id)
         await any_store.append_fill(seed_order.id, "MSFT", OrderSide.BUY, 10, 90.0)
         await any_store.transition_order(
             seed_order.id, OrderStatus.FILLED, filled_quantity=10
@@ -164,7 +165,7 @@ class TestMaxTotalExposure:
         )
         await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
         order = await any_store.create_order_for_candidate(candidate.id)
-        await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
+        await submit_created_order(any_store, order.id)
 
         await any_store.append_fill(order.id, "MSFT", OrderSide.BUY, 100, 9.0)
         # transition_order deliberately NOT called yet: order.filled_quantity
