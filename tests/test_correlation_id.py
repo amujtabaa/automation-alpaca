@@ -97,6 +97,44 @@ async def test_rejected_fill_against_known_order_still_correlates(any_store):
     assert all(e.correlation_id == cand.id for e in rejected)
 
 
+async def test_submit_recovery_ledger_events_correlate(any_store):
+    """A Phase-7 readiness audit found the F-002 submit-recovery ledger's own
+    bookkeeping events (submit_recovery_recorded / _needs_review / _resolved)
+    carried no candidate_id and so silently dropped out of the correlation
+    filter — an operator reconstructing an incident via correlation_id would
+    miss the recovery outcome entirely. create_submit_recovery now threads
+    candidate_id through (order.candidate_id is available at the call site);
+    update_submit_recovery resolves it from the local order (orders are never
+    deleted, so this reliably resolves) for its later terminal-status events."""
+
+    store = any_store
+    await store.initialize()
+    cand, order = await _drive_lifecycle(store, sfid="orig")
+    # Simulate the F-002 orphan: order accepted by the broker but locally
+    # terminal (a manual cancel raced the submit).
+    await store.transition_order(order.id, OrderStatus.CANCELED)
+    rec = await store.create_submit_recovery(
+        local_order_id=order.id,
+        broker_order_id="bk-orphan",
+        symbol=order.symbol,
+        side=order.side,
+        quantity=order.quantity,
+        limit_price=order.limit_price,
+        failure_reason="unpersisted",
+        session_id=order.session_id,
+        candidate_id=order.candidate_id,
+    )
+    await store.update_submit_recovery(
+        rec.id, cleanup_status="needs_review", bump_attempt=True
+    )
+
+    corr = await store.list_events(correlation_id=cand.id)
+    types = {e.event_type for e in corr}
+    assert "submit_recovery_recorded" in types, types
+    assert "submit_recovery_needs_review" in types, types
+    assert all(e.correlation_id == cand.id for e in corr)
+
+
 async def test_non_candidate_events_have_no_correlation_id(any_store):
     store = any_store
     await store.initialize()

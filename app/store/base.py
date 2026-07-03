@@ -440,12 +440,20 @@ class StateStore(ABC):
         limit_price: Optional[float] = None,
         failure_reason: str,
         session_id: Optional[str] = None,
+        candidate_id: Optional[str] = None,
     ) -> SubmitRecoveryRecord:
         """Durably record a broker order that was accepted but whose local
         ``SUBMITTING → SUBMITTED`` persist failed (D-017 / F-002). Atomic +
         audited (``submit_recovery_recorded``). The monitoring tick's recovery
         step then polls/cancels ``broker_order_id`` until resolved — a single
         best-effort cancel is not enough, so this replaces it.
+
+        ``candidate_id`` (D-020) correlates the ``submit_recovery_recorded``
+        event to the owning candidate's lifecycle. It is not stored on
+        :class:`SubmitRecoveryRecord` itself (D-020 stays to one nullable
+        ``Event`` field, not a new entity column) — ``update_submit_recovery``
+        resolves it later by looking up the local order via ``local_order_id``
+        (orders are never deleted, so this reliably resolves).
         """
 
     @abstractmethod

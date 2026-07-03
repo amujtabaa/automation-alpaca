@@ -176,6 +176,34 @@ Use when reviewing Codex or Claude Code output.
       live credentials + market hours) — see
       `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
 
+## Phase-7 readiness gate (capstone — D-021)
+- [ ] All 12 preconditions from the wave runbook's Phase-7 readiness gate are
+      independently verified against the actual current code/tests (not
+      against a decision-log claim) — each with concrete evidence (file:line,
+      test name/result), ideally cross-checked by a second, independent
+      reviewer.
+- [ ] `whole_count_reason` (`app/policy.py`) has real callers —
+      `fill_value_reason`/`filled_quantity_reason` delegate to it rather than
+      re-implementing its logic inline; every reason-code string it produces
+      is unchanged from before the delegation (behavior-preserving).
+- [ ] `create_candidate` (both stores) rejects a `bool` or numeric `str`
+      `suggested_quantity`/`suggested_limit_price` — the type-level silent-
+      coercion gap (`True` -> `1`, `"5"` -> `5` via pydantic's lax field
+      coercion, unrecoverable once inside the model) — while leaving
+      `NaN`/`Inf`/fractional/negative/zero handling exactly where it already
+      was (pydantic's own field validators, or deferred to order-creation).
+- [ ] The F-002 submit-recovery ledger's own bookkeeping events
+      (`submit_recovery_recorded`/`_needs_review`/`_resolved`) carry
+      `candidate_id`/correlate under the owning candidate's `correlation_id` —
+      not just the recovery *trigger* event
+      (`order_submit_unpersisted`). `SubmitRecoveryRecord` itself still gains
+      no new column (D-020's "one nullable `Event` field" scope preserved);
+      `update_submit_recovery` resolves `candidate_id` via a `local_order_id`
+      lookup at write time.
+- [ ] D-021 is recorded in `docs/00_START_HERE.md`, and the gate's final
+      status (GREEN/NOT_GREEN, with what's still open if not) is stated
+      explicitly — this is the go/no-go for writing the Phase-7 sell-side ADR.
+
 ## Wave 2 (policy module + operator endpoint + correlation IDs — D-019/D-020)
 - [ ] `app/policy.py` is the single source for numeric / limit / session /
       control / risk / market-data validity; every caller imports it and none
