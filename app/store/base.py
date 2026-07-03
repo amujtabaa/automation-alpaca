@@ -144,7 +144,7 @@ class RiskLimitBlockedError(StoreError):
     isn't on the trading allowlist, or would exceed the configured max
     shares/notional per order or max total exposure — computed from local
     state only (folded positions + non-terminal orders' remaining notional; see
-    ``app.store.validation.risk_limit_reason``), never a live broker/market-data
+    ``app.policy.risk_limit_reason``), never a live broker/market-data
     call. Beta gates-and-rejects: a breach blocks the order outright, it is
     never silently resized to fit. Distinct from :class:`OrderIntentBlockedError`
     (Rule 8's binary kill-switch/pause-buys control, no numeric limits).
@@ -371,7 +371,7 @@ class StateStore(ABC):
         an unrestricted mode, but the approve route always passes real,
         validated-positive values loaded from ``Settings``. A breach raises
         :class:`RiskLimitBlockedError` and writes a ``risk_limit_blocked``
-        audit event (see ``app.store.validation.risk_limit_reason`` for the
+        audit event (see ``app.policy.risk_limit_reason`` for the
         exact checks and their order).
 
         Raises :class:`UnknownEntityError` if the candidate does not exist;
@@ -389,7 +389,7 @@ class StateStore(ABC):
         """Total current CAPI exposure (D-016b), read as one atomic snapshot.
 
         Every position's cost basis plus every non-terminal order's remaining
-        notional — see ``app.store.validation.existing_exposure`` for the pure
+        notional — see ``app.policy.existing_exposure`` for the pure
         computation this wraps. Exists as its own store method (rather than
         making a caller combine ``list_positions()`` + ``list_orders()``
         itself) specifically so a caller *outside* the store's lock — the

@@ -1,7 +1,7 @@
 """Shared store *orchestration* — the domain-core layer.
 
-``app/store/validation.py`` already extracts the pure input *predicates* both
-stores share; ``app/store/transitions.py`` the state-machine tables;
+``app/policy.py`` already extracts the pure input *predicates* both
+stores share; ``app/transitions.py`` the state-machine tables;
 ``app/position.py`` the fold. This module extends that same "pure decision in
 one place, storage wiring in each store" pattern up one level, to the multi-step
 *pipelines* that were otherwise duplicated near-verbatim between
@@ -58,13 +58,14 @@ from app.store.base import (
     RiskLimits,
     UnknownEntityError,
 )
-from app.store.transitions import ORDER_TIMESTAMP, ORDER_TRANSITIONS
-from app.store.validation import (
+from app.transitions import ORDER_TIMESTAMP, ORDER_TRANSITIONS
+from app.policy import (
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
     limit_price_reason,
     order_intent_block_reason,
+    order_session_resolution_reason,
     risk_limit_reason,
     session_submission_block_reason,
 )
@@ -313,7 +314,7 @@ def plan_create_order_for_candidate(
     ``exposure_before_order`` is the store's current total CAPI exposure (every
     position's cost basis plus every non-terminal order's remaining notional —
     unscoped by session, since exposure is a live, cross-session concept; see
-    ``app.store.validation.existing_exposure``, which the store computes this
+    ``app.policy.existing_exposure``, which the store computes this
     from before calling in). ``risk_limits`` bundles the Phase 6 CAPI risk gate's
     (D-016) independently-optional limits (``RiskLimits()`` = none enforced).
     """
@@ -329,24 +330,25 @@ def plan_create_order_for_candidate(
         )
 
     # Unresolved session (F-004): a candidate whose declared session no longer
-    # resolves must not produce order intent. This is a *distinct* guard from
-    # order_intent_block_reason(session) below — that predicate deliberately
-    # treats None as "no live session to stop" for the monitoring loop's
-    # current-session emergency-stop check, so it must NOT be changed to block
-    # on None. create_candidate already rejects an explicit unresolvable
+    # resolves must not produce order intent. order_session_resolution_reason is
+    # a *distinct* predicate from order_intent_block_reason(session) below — that
+    # one deliberately treats None as "no live session to stop" for the
+    # monitoring loop's current-session emergency-stop check, so it must NOT
+    # block on None. create_candidate already rejects an explicit unresolvable
     # session id up front; this is the dispatch-time backstop, audited.
-    if session is None:
+    session_reason = order_session_resolution_reason(session)
+    if session_reason is not None:
         return CreateOrderPlan(
             CREATE_ORDER_REJECT,
-            error=OrderIntentBlockedError("order intent blocked: unresolved_session"),
+            error=OrderIntentBlockedError(f"order intent blocked: {session_reason}"),
             reject_event=EventSpec(
                 "order_intent_blocked",
                 message=(
-                    f"order intent for {candidate.symbol} blocked: unresolved_session"
+                    f"order intent for {candidate.symbol} blocked: {session_reason}"
                 ),
                 symbol=candidate.symbol,
                 candidate_id=candidate.id,
-                payload={"reason": "unresolved_session"},
+                payload={"reason": session_reason},
                 session_id=candidate.session_id,
             ),
         )

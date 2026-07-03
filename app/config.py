@@ -54,7 +54,7 @@ STRATEGY_DEFAULT_QUANTITY_ENV = "STRATEGY_DEFAULT_QUANTITY"
 
 # Phase 6 — Capital Intelligence Layer (CAPI) pre-trade risk gate (D-016).
 # Enforced in app.store.core's create_order_for_candidate (authoritative) and
-# pre-checked in the approve route (UX) — see app.store.validation.risk_limit_reason.
+# pre-checked in the approve route (UX) — see app.policy.risk_limit_reason.
 CAPI_MAX_SHARES_PER_ORDER_ENV = "CAPI_MAX_SHARES_PER_ORDER"
 CAPI_MAX_NOTIONAL_PER_ORDER_ENV = "CAPI_MAX_NOTIONAL_PER_ORDER"
 CAPI_MAX_TOTAL_EXPOSURE_ENV = "CAPI_MAX_TOTAL_EXPOSURE"

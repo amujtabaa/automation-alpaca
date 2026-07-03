@@ -20,7 +20,7 @@ from typing import Optional
 from app.features import pct_move, spread_pct
 from app.marketdata.service import MarketSnapshot
 from app.models import SessionType
-from app.store.validation import finite_number_reason
+from app.policy import finite_number_reason
 
 STRATEGY_ID = "premarket_momentum_v1"
 

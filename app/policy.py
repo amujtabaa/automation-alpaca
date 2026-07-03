@@ -1,16 +1,29 @@
-"""Pure input-validation predicates shared by both StateStore implementations.
+"""The single source of pre-trade policy — pure reason-code predicates (D-019).
 
-These functions encode the D-010 input-boundary rules in *one* place so
-``InMemoryStateStore`` and ``SqliteStateStore`` reject identical inputs — the
-parity the ``any_store`` tests assert. They are pure (no IO, no async, no
-state): each returns a short, greppable *reason code* string when the input is
-invalid, or ``None`` when it is acceptable. The stores translate a reason into
-the appropriate audit event + ``StoreError`` subclass; keeping the *decision*
-here and the *event/raise wiring* in each store avoids the one thing that would
-break parity — the two stores drifting on what counts as invalid.
+Both post-Phase-6 reviews named the same root cause: "each layer invents its own
+check." Wave 0 planted one shared numeric predicate; Wave 2 (D-019) finishes the
+job by making this module the *one* home every layer imports from — routes, both
+StateStore implementations, the strategy engine, and the market-data path — so a
+policy decision (is this a real number, a valid limit price, a resolvable
+session, a stopped control, a breached CAPI limit, a usable market-data field) is
+made in exactly one place and can never drift between callers. That is why it
+lives at ``app/policy.py`` and not under ``app/store/`` (it was
+``app/store/validation.py`` through Wave 1): it is not store-specific.
 
+They are pure (no IO, no async, no state): each returns a short, greppable
+*reason code* string when the input is invalid/blocked, or ``None`` when it is
+acceptable. The stores translate a reason into the appropriate audit event +
+``StoreError`` subclass; keeping the *decision* here and the *event/raise wiring*
+in each caller is what preserves parity — the one thing that would break it is
+two callers drifting on what counts as invalid, which a single source prevents.
 The reason codes are also written into rejection-event payloads, so the audit
 log says *why* a fill/order was rejected, not just that it was.
+
+This is deliberately a module of pure functions, **not** a ``PolicyEngine``/ABC
+or an async seam (D-016c): nothing needs a second implementation yet, and the
+approve-route pre-check and the authoritative store check must keep calling the
+*same* function with the *same* inputs. Consolidation is de-duplication, not a
+new indirection layer.
 """
 
 from __future__ import annotations
@@ -27,12 +40,12 @@ from app.models import (
     SessionRecord,
     SessionStatus,
 )
-from app.store.transitions import ORDER_TRANSITIONS
+from app.transitions import ORDER_TRANSITIONS
 
 # An order still in one of these statuses represents live risk: it could fill
 # at any moment, so it counts toward exposure exactly like an already-filled
 # position. Everything else (FILLED/CANCELED/REJECTED) is terminal and settled.
-# Derived from app/store/transitions.py's ORDER_TRANSITIONS rather than
+# Derived from app/transitions.py's ORDER_TRANSITIONS rather than
 # hand-copied, so the two can never silently drift apart: a status is
 # non-terminal exactly when it has at least one legal outgoing transition.
 NON_TERMINAL_ORDER_STATUSES = frozenset(
@@ -81,6 +94,48 @@ def session_submission_block_reason(
     if session.status is SessionStatus.CLOSED:
         return "session_closed"
     return order_intent_block_reason(session)
+
+
+def order_session_resolution_reason(
+    session: Optional[SessionRecord],
+) -> Optional[str]:
+    """Why an APPROVED candidate's declared session can't back new order intent
+    at dispatch, or ``None`` if it resolves.
+
+    The F-004 dispatch-time backstop, centralized (D-019): an APPROVED candidate
+    whose declared ``session_id`` no longer resolves (``session is None``) must
+    not produce order intent — it is blocked as ``unresolved_session`` and
+    audited. ``create_candidate`` already rejects an explicit unresolvable
+    session id up front; this covers the order-creation path.
+
+    This is a **distinct** predicate from ``order_intent_block_reason``, and the
+    difference is load-bearing: that one deliberately treats ``None`` as "no live
+    session to stop" (returns ``None``/unblocked) so the monitoring loop's
+    current-session emergency-stop check reads a missing current session as
+    nothing to halt. Blocking on ``None`` belongs *only* to the order-creation
+    path, which is exactly why it is its own function rather than a change to
+    ``order_intent_block_reason``.
+    """
+
+    if session is None:
+        return "unresolved_session"
+    return None
+
+
+def market_data_field_reason(value: object) -> Optional[str]:
+    """Why a market-data snapshot field is unusable, or ``None`` if it is a real,
+    finite number.
+
+    The F-005 guard, centralized (D-019): a ``NaN``/``Inf``/``None``/boolean/
+    non-numeric last-price, previous-close, bid, or ask must never flow into a
+    feature computation or a candidate's ``suggested_limit_price``. This is just
+    :func:`finite_number_reason` under a market-data name so the strategy/feature
+    layer reads from the same single source as the order/fill layer instead of
+    forking its own ``math.isfinite`` check. ``None`` (a missing field) is
+    reported as ``non_numeric`` — a missing snapshot value is not usable.
+    """
+
+    return finite_number_reason(value)
 
 
 # --------------------------------------------------------------------------- #

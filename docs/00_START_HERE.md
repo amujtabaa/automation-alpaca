@@ -49,6 +49,54 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-019 — One pre-trade policy module (`app/policy.py`), the single source for every gate (Wave 2)
+**Context.** Both post-Phase-6 reviews named the same root cause — "each layer
+invents its own check." Wave 0 planted *one* shared numeric predicate
+(`finite_number_reason`); Wave 2 finishes the consolidation so that every
+pre-trade policy decision — numeric validity, limit price, session resolution,
+control state, CAPI risk limit + exposure, market-data field finiteness — is made
+in exactly one place that routes, both stores, the strategy engine, and the
+market-data path all import from.
+
+**What changed.**
+- **Promoted `app/store/validation.py` → `app/policy.py`.** The module was
+  already ~80% of the policy surface, but it is used by routes / strategy /
+  market-data, not just the store, so its home under `app/store/` was a
+  misnomer. It is now a top-level module; its role is stated in its docstring as
+  *the* single source.
+- **Centralized the two remaining forks.** `order_session_resolution_reason`
+  (the F-004 dispatch-time "unresolved session blocks order intent" rule, which
+  had been inline in `plan_create_order_for_candidate`) and
+  `market_data_field_reason` (the F-005 market-data finiteness guard). The
+  feature engine's `_finite` now *delegates* to `market_data_field_reason`
+  instead of forking its own `math.isfinite` — so the strategy/feature layer and
+  the order/fill layer decide "is this a real number" identically.
+- **Moved `app/store/transitions.py` → `app/transitions.py`.** The order
+  state-machine table is domain config, not store implementation — and the move
+  was also *required* to break an import cycle the promotion exposed
+  (`app.policy` → `app.store.transitions` would trigger `app/store/__init__`'s
+  eager `import memory → core → app.policy`, a partially-initialized-module
+  error). At top level, `app.policy` → `app.transitions` → `app.models` has no
+  cycle.
+
+**Constraints honored (this is a refactor, not a rewrite).**
+- **Behavior-preserving.** All 730 pre-existing tests pass with *only* import
+  paths changed; no reason code changed meaning, no gate loosened or tightened
+  on any input the type contracts admit. (`_finite`'s sole divergence is
+  rejecting a *boolean* market-data field, which `Optional[float]` forbids and
+  which the order/fill layer already rejected — an alignment, not a live gate
+  change.)
+- **No `RiskEngine`/policy ABC or async seam** (D-016c preserved): `app/policy.py`
+  is pure functions only, so the approve-route pre-check and the authoritative
+  store check keep calling the *same* function with the *same* inputs.
+- **`order_intent_block_reason(None)` emergency-stop semantics preserved** and
+  now pinned *distinct* from `order_session_resolution_reason(None)`: the former
+  stays `None` (a missing current session = nothing to stop, for the monitoring
+  loop); only the latter blocks `None` as `unresolved_session` (order-creation
+  path). `tests/test_policy_consolidation.py` asserts this non-uniformity did not
+  get flattened by centralizing.
+- **`NON_TERMINAL_ORDER_STATUSES` stays derived** from `ORDER_TRANSITIONS`.
+
 ### D-018 — Controllable broker sim + stateful lifecycle harness (Wave 1)
 **Context.** Every serious defect in this project's history was a
 *temporal-sequence* bug found by luck of tracing the right interleaving

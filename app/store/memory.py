@@ -67,11 +67,11 @@ from app.store.core import (
     plan_transition_order,
     recovery_status_event,
 )
-from app.store.transitions import (
+from app.transitions import (
     CANDIDATE_TIMESTAMP as _CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
 )
-from app.store.validation import (
+from app.policy import (
     NON_TERMINAL_ORDER_STATUSES,
     existing_exposure,
     order_candidate_match_reason,
