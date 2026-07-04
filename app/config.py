@@ -64,6 +64,14 @@ CAPI_MAX_TOTAL_EXPOSURE_ENV = "CAPI_MAX_TOTAL_EXPOSURE"
 # numeric limits above, which reject 0 — see load_settings).
 CAPI_TRADING_ALLOWLIST_ENV = "CAPI_TRADING_ALLOWLIST"
 
+# Phase 7 — Sell-Side Protection (always-on safety exits). The floor is a fixed
+# percentage below average cost; a breach auto-submits a full-exit protective
+# sell behind the Approval Gate seam (D-P1). See app/protection.py.
+PROTECTION_ENABLED_ENV = "PROTECTION_ENABLED"
+PROTECTION_STOP_LOSS_PCT_ENV = "PROTECTION_STOP_LOSS_PCT"
+PROTECTION_LIMIT_BUFFER_PCT_ENV = "PROTECTION_LIMIT_BUFFER_PCT"
+PROTECTION_CADENCE_SECONDS_ENV = "PROTECTION_CADENCE_SECONDS"
+
 DEFAULT_DB_PATH = "./data/app.db"
 DEFAULT_POLL_CADENCE_SECONDS = 15.0
 DEFAULT_UNFILLED_TIMEOUT_MINUTES = 60.0
@@ -87,6 +95,12 @@ DEFAULT_STRATEGY_DEFAULT_QUANTITY = 10
 DEFAULT_CAPI_MAX_SHARES_PER_ORDER = 500.0
 DEFAULT_CAPI_MAX_NOTIONAL_PER_ORDER = 5_000.0
 DEFAULT_CAPI_MAX_TOTAL_EXPOSURE = 25_000.0
+
+# Phase 7 — Sell-Side Protection. An 8% hard floor below average cost; a
+# protective pre/after-hours limit placed 0.5% below the marketable reference so
+# it crosses the spread and fills in thin liquidity.
+DEFAULT_PROTECTION_STOP_LOSS_PCT = 0.08
+DEFAULT_PROTECTION_LIMIT_BUFFER_PCT = 0.005
 
 _FALSEY = {"false", "0", "no", "off"}
 
@@ -153,6 +167,19 @@ class Settings:
     capi_max_total_exposure: float = DEFAULT_CAPI_MAX_TOTAL_EXPOSURE
     # Empty = no restriction beyond the watchlist itself.
     capi_trading_allowlist: frozenset[str] = field(default_factory=frozenset)
+
+    # --- Phase 7: Sell-Side Protection (always-on safety exits) ----------- #
+    # On by default: a beta operator shouldn't have to opt in to a stop-loss.
+    protection_enabled: bool = True
+    # Hard floor as a fraction below average cost (0.08 = 8%); in (0, 1).
+    protection_stop_loss_pct: float = DEFAULT_PROTECTION_STOP_LOSS_PCT
+    # How far below the marketable reference a pre/after-hours protective limit
+    # is placed (0.005 = 0.5%); in [0, 1).
+    protection_limit_buffer_pct: float = DEFAULT_PROTECTION_LIMIT_BUFFER_PCT
+    # None (default) = protection runs inside the monitoring tick (documented
+    # ~poll-cadence detection latency). A positive value is reserved for a future
+    # dedicated fast loop; beta keeps it in the tick.
+    protection_cadence_seconds: Optional[float] = None
 
     @property
     def db_file(self) -> Path:
@@ -333,6 +360,45 @@ def load_settings() -> Settings:
         if s.strip()
     )
 
+    # --- Phase 7: Sell-Side Protection ----------------------------------- #
+    protection_enabled = (
+        os.environ.get(PROTECTION_ENABLED_ENV, "true").strip().lower() not in _FALSEY
+    )
+    # Strictly inside (0, 1): a floor at 0% (== average cost) would trip on the
+    # first tick at or below cost, and a floor at >= 100% would put the floor at
+    # or below zero (never breaches) — both misconfigurations, rejected at load.
+    # _env_float already rejects non-numeric/NaN/Inf; the strict range is here.
+    protection_stop_loss_pct = _env_float(
+        PROTECTION_STOP_LOSS_PCT_ENV, DEFAULT_PROTECTION_STOP_LOSS_PCT
+    )
+    if not (0.0 < protection_stop_loss_pct < 1.0):
+        raise ValueError(
+            f"{PROTECTION_STOP_LOSS_PCT_ENV} must be in (0, 1), got "
+            f"{protection_stop_loss_pct}"
+        )
+    # [0, 1): 0 = price the protective limit exactly at the reference (still
+    # marketable); >= 1 would price it at or below zero.
+    protection_limit_buffer_pct = _env_float(
+        PROTECTION_LIMIT_BUFFER_PCT_ENV, DEFAULT_PROTECTION_LIMIT_BUFFER_PCT, minimum=0.0
+    )
+    if not (protection_limit_buffer_pct < 1.0):
+        raise ValueError(
+            f"{PROTECTION_LIMIT_BUFFER_PCT_ENV} must be in [0, 1), got "
+            f"{protection_limit_buffer_pct}"
+        )
+    # Optional: unset/blank = None (run in the monitoring tick). When set it must
+    # be strictly positive (a zero/negative dedicated cadence is meaningless).
+    _raw_cadence = os.environ.get(PROTECTION_CADENCE_SECONDS_ENV)
+    if _raw_cadence is None or not _raw_cadence.strip():
+        protection_cadence_seconds: Optional[float] = None
+    else:
+        protection_cadence_seconds = _env_float(PROTECTION_CADENCE_SECONDS_ENV, 0.0)
+        if protection_cadence_seconds <= 0:
+            raise ValueError(
+                f"{PROTECTION_CADENCE_SECONDS_ENV} must be > 0 when set, got "
+                f"{protection_cadence_seconds}"
+            )
+
     return Settings(
         state_store=state_store,
         db_path=db_path,
@@ -357,4 +423,8 @@ def load_settings() -> Settings:
         capi_max_notional_per_order=capi_max_notional_per_order,
         capi_max_total_exposure=capi_max_total_exposure,
         capi_trading_allowlist=capi_trading_allowlist,
+        protection_enabled=protection_enabled,
+        protection_stop_loss_pct=protection_stop_loss_pct,
+        protection_limit_buffer_pct=protection_limit_buffer_pct,
+        protection_cadence_seconds=protection_cadence_seconds,
     )
