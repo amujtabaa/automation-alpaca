@@ -55,13 +55,21 @@ from app.models import (
     OrderSide,
     OrderStatus,
     OrderType,
+    Position,
+    SellIntentStatus,
+    SellReason,
     SessionStatus,
     SessionType,
     utcnow,
 )
 from app.policy import finite_number_reason
 from app.position import NegativePositionError
-from app.protection import ProtectionConfig, protective_limit_price
+from app.protection import (
+    FloorBreach,
+    ProtectionConfig,
+    floor_breach_reason,
+    protective_limit_price,
+)
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -184,6 +192,222 @@ async def _snapshot_fill_fallback(
     return last_price
 
 
+# --------------------------------------------------------------------------- #
+# Sell-Side Protection (Phase 7 §5) — the autonomous breach -> exit driver.
+# --------------------------------------------------------------------------- #
+
+# Non-terminal BUY statuses a protective exit must clear so it truly reaches flat
+# (§5.3). SUBMITTING (mid-claim, no broker id yet) and CANCEL_PENDING (already
+# winding down) are left for the normal pipeline; everything else is terminal.
+_CANCELLABLE_BUY_STATUSES = frozenset(
+    {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
+)
+
+
+async def cancel_open_buys(
+    store: StateStore, adapter: BrokerAdapter, symbol: str
+) -> None:
+    """Cancel every open BUY for ``symbol`` before a protective exit (§5.3).
+
+    Position derives only from *filled* shares, so an open unfilled BUY is
+    invisible to the exit size — leaving one live would let a BUY fill and a
+    protective SELL execute at the same time (a self-cross), or re-grow the very
+    position being exited. A never-submitted ``CREATED`` buy is canceled locally;
+    a live ``SUBMITTED``/``PARTIALLY_FILLED`` buy is canceled at the broker and
+    moved to ``CANCEL_PENDING`` (a late fill still reconciles). Idempotent and
+    audited via the store's transitions; shared with the flatten route."""
+
+    orders = await store.list_orders()
+    for order in orders:
+        if order.symbol != symbol:
+            continue
+        if OrderSide(order.side) is not OrderSide.BUY:
+            continue
+        if order.status not in _CANCELLABLE_BUY_STATUSES:
+            continue
+        try:
+            if order.status is OrderStatus.CREATED:
+                # Never sent to the broker — cancel locally (D-013a style).
+                await store.transition_order(order.id, OrderStatus.CANCELED)
+            elif order.broker_order_id is not None:
+                await adapter.cancel_order(order.broker_order_id)
+                await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+        except (BrokerError, *_TRANSITION_ERRORS) as exc:
+            # Best-effort per order — a failure here must not crash the tick; the
+            # next tick re-attempts (the order is still open).
+            _log.warning(
+                "protection: could not cancel open buy %s (%s): %s",
+                order.id,
+                symbol,
+                exc,
+            )
+
+
+async def _run_protection(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    market_data: Optional[MarketDataService],
+    settings: Settings,
+) -> None:
+    """The first monitoring phase (§5): detect hard-floor breaches on held
+    positions and open protective exits behind the Approval Gate.
+
+    A no-op when there is no market-data handle or protection is disabled. Never
+    raises out of the tick (per-symbol try/except) — the loop's never-crash
+    contract. Session auto-mint discipline: ``get_current_session`` is only called
+    once there is a held position to evaluate, never on an idle tick."""
+
+    if market_data is None or not settings.protection_enabled:
+        return
+    positions = [p for p in await store.list_positions() if p.quantity > 0]
+    if not positions:
+        return
+
+    held = sorted({p.symbol for p in positions})
+    # §5.1: make the monitoring loop the authority that keeps held symbols
+    # subscribed (additive/idempotent) — protection covers a held-but-unarmed
+    # symbol even when the strategy engine is disabled.
+    try:
+        await market_data.subscribe(held)
+    except Exception:  # noqa: BLE001 - a feed hiccup must not crash the tick
+        _log.exception("protection: subscribe(held=%s) failed", held)
+
+    config = _protection_config(settings)
+    session = await store.get_current_session()
+    kill_switched = session.kill_switch
+    paused_breaching: set[str] = set()
+
+    for position in positions:
+        try:
+            snapshot = await market_data.get_snapshot(position.symbol)
+            breach = floor_breach_reason(position, snapshot, config)
+            if breach is None:
+                continue
+            if kill_switched:
+                # D-P2: the kill switch pauses autonomous protection. Record the
+                # symbol as paused-and-breaching; the paused/resumed transition is
+                # reconciled after the loop. Manual flatten still works (routes).
+                paused_breaching.add(position.symbol)
+                continue
+            await _open_protective_exit(store, adapter, position, breach, session.id)
+        except Exception:  # noqa: BLE001 - one symbol must not block the others
+            _log.exception("protection tick failed for %s", position.symbol)
+
+    await _reconcile_protection_pause(store, paused_breaching)
+
+
+async def _open_protective_exit(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    position: Position,
+    breach: FloorBreach,
+    session_id: str,
+) -> None:
+    """Open one protective exit for a breaching symbol: cancel open buys, create a
+    single-flight ``PROTECTION_FLOOR`` intent, auto-approve it, dispatch a MARKET
+    order (type re-derived at submission — §5.4), and audit ``protection_triggered``.
+    Idempotent: an already-active sell intent for the symbol short-circuits."""
+
+    # Dedup: an exit is already in flight for this symbol (single-flight also
+    # enforces this atomically in the store, but skipping here avoids re-cancelling
+    # buys and re-auditing every tick while the first exit works).
+    if await store.active_sell_intent_for(position.symbol) is not None:
+        return
+
+    # §5.3: clear open buys FIRST so the exit reaches — and stays — flat.
+    await cancel_open_buys(store, adapter, position.symbol)
+
+    # Re-read the live position after cancelling buys (a partial buy fill may have
+    # landed); never size an exit above what is actually held (Rule 7 / no short).
+    live = await store.get_position(position.symbol)
+    if live.quantity <= 0:
+        return
+
+    intent = await store.create_sell_intent(
+        symbol=position.symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=live.quantity,
+        floor_price=breach.floor_price,
+        observed_price=breach.observed_price,
+        session_id=session_id,
+    )
+    # create_sell_intent is single-flight: if it returned a pre-existing active
+    # intent that is already past PENDING, don't re-drive it.
+    if intent.status is SellIntentStatus.PENDING:
+        await store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)
+    refreshed = await store.get_sell_intent(intent.id)
+    if refreshed is None or refreshed.status is not SellIntentStatus.APPROVED:
+        return
+
+    order = await store.create_order_for_sell_intent(
+        intent.id, order_type=OrderType.MARKET
+    )
+    await store.append_event(
+        EventType.PROTECTION_TRIGGERED.value,
+        message=(
+            f"protection floor breached for {position.symbol}: last "
+            f"{breach.observed_price} <= floor {breach.floor_price}; exiting "
+            f"{live.quantity} shares"
+        ),
+        symbol=position.symbol,
+        order_id=order.id,
+        payload={
+            "average_price": breach.average_price,
+            "floor_price": breach.floor_price,
+            "observed_price": breach.observed_price,
+            "quantity": live.quantity,
+        },
+        session_id=session_id,
+        correlation_id=intent.id,
+    )
+
+
+async def _currently_paused_symbols(store: StateStore) -> set[str]:
+    """Symbols whose latest protection pause/resume event is a PAUSE — the durable
+    "currently frozen by the kill switch" set, read from the append-only log so it
+    survives a restart (mirrors the market-data stale/recovered pattern)."""
+
+    paused: set[str] = set()
+    for event in await store.list_events():
+        if event.symbol is None:
+            continue
+        if event.event_type == EventType.PROTECTION_PAUSED.value:
+            paused.add(event.symbol)
+        elif event.event_type == EventType.PROTECTION_RESUMED.value:
+            paused.discard(event.symbol)
+    return paused
+
+
+async def _reconcile_protection_pause(
+    store: StateStore, paused_breaching: set[str]
+) -> None:
+    """Emit a per-symbol ``protection_paused`` when a symbol newly enters the
+    kill-switched-and-breaching set, and ``protection_resumed`` when it leaves —
+    a paired transition, never an unpaired once-ever flag (§5 step 4). So the
+    operator sees exactly which positions are frozen, and the freeze clears (in
+    the log) the moment the kill switch releases or the breach ends."""
+
+    previously = await _currently_paused_symbols(store)
+    for symbol in sorted(paused_breaching - previously):
+        await store.append_event(
+            EventType.PROTECTION_PAUSED.value,
+            message=(
+                f"protection for {symbol} is PAUSED while the kill switch is "
+                f"engaged (floor breached; autonomous exit held)"
+            ),
+            symbol=symbol,
+        )
+    for symbol in sorted(previously - paused_breaching):
+        await store.append_event(
+            EventType.PROTECTION_RESUMED.value,
+            message=(
+                f"protection for {symbol} RESUMED (no longer kill-switched-and-"
+                f"breaching)"
+            ),
+            symbol=symbol,
+        )
+
+
 async def monitoring_loop(
     store: StateStore,
     adapter: BrokerAdapter,
@@ -234,6 +458,10 @@ async def run_monitoring_tick(
     protective-sell order-type re-derivation and §7 fill-price fallback.
     """
 
+    # Phase 7: protection runs FIRST so a protective order it creates is claimed
+    # + submitted in the SAME tick (no extra cadence of latency). No-op when there
+    # is no market-data handle or protection is disabled.
+    await _run_protection(store, adapter, market_data, settings)
     await _submit_pending_orders(
         store, adapter, settings, market_data=market_data
     )

@@ -125,10 +125,15 @@ async def run_strategy_tick(
 
     watchlist = await store.list_watchlist()
     armed_symbols = [w.symbol for w in watchlist if w.armed]
+    # §5.1 (Phase 7): a symbol with an OPEN position must never be unsubscribed,
+    # even if unarmed — protection needs a live snapshot for every held symbol.
+    # The subscription set is armed ∪ held; the strategy loop owns unsubscribe and
+    # _run_protection additively subscribes held, so the two can't disagree.
+    held_symbols = [p.symbol for p in await store.list_positions() if p.quantity > 0]
 
     # Never gated on session state (see module docstring): a disarm must
     # always be synced, and a dead feed must always be surfaced.
-    await _sync_subscriptions(market_data, armed_symbols)
+    await _sync_subscriptions(market_data, armed_symbols, held_symbols)
     await _surface_market_data_staleness(store, market_data, stale_state)
 
     if not armed_symbols:
@@ -171,9 +176,13 @@ async def run_strategy_tick(
 
 
 async def _sync_subscriptions(
-    market_data: MarketDataService, armed_symbols: list[str]
+    market_data: MarketDataService,
+    armed_symbols: list[str],
+    held_symbols: "list[str] | tuple[str, ...]" = (),
 ) -> None:
-    """Subscribe newly-armed symbols; unsubscribe newly-disarmed ones.
+    """Subscribe newly-armed symbols; unsubscribe symbols that are neither armed
+    NOR held (§5.1). A held (open-position) symbol is kept subscribed even when
+    unarmed so protection always has a live snapshot for it.
 
     Derives "currently subscribed" from the feed's own snapshot list rather
     than tracking separate loop-side state, so it can never drift out of sync
@@ -182,8 +191,10 @@ async def _sync_subscriptions(
 
     subscribed = {s.symbol for s in await market_data.list_snapshots()}
     armed_set = set(armed_symbols)
-    to_subscribe = sorted(armed_set - subscribed)
-    to_unsubscribe = sorted(subscribed - armed_set)
+    held_set = set(held_symbols)
+    desired = armed_set | held_set
+    to_subscribe = sorted(armed_set - subscribed)  # protection subscribes held itself
+    to_unsubscribe = sorted(subscribed - desired)
     if to_subscribe:
         await market_data.subscribe(to_subscribe)
     if to_unsubscribe:
