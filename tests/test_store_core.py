@@ -17,6 +17,9 @@ from app.models import (
     OrderStatus,
     OrderType,
     Position,
+    SellIntent,
+    SellIntentStatus,
+    SellReason,
     SessionRecord,
     utcnow,
 )
@@ -271,6 +274,15 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         _candidate(status=CandidateStatus.APPROVED, session_id=session.id),
     ]
     created_orders = [_order(status=OrderStatus.CREATED, session_id=session.id)]
+    open_sell_intents = [
+        SellIntent(
+            symbol="MSFT",
+            reason=SellReason.PROTECTION_FLOOR,
+            status=SellIntentStatus.APPROVED,
+            target_quantity=10,
+            session_id=session.id,
+        )
+    ]
     nonzero_positions = [
         Position(symbol="AAPL", quantity=100, cost_basis=150.0, average_price=1.5)
     ]
@@ -279,6 +291,7 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         session=session,
         open_candidates=open_candidates,
         created_orders=created_orders,
+        open_sell_intents=open_sell_intents,
         nonzero_positions=nonzero_positions,
         now=now,
     )
@@ -291,10 +304,19 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         "to": "canceled",
         "reason": "session_close",
     }
+    # The sell-intent expiry event carries the intent id as its correlation key.
+    assert len(plan.sell_intent_events) == 1
+    assert plan.sell_intent_events[0].payload == {
+        "from": "approved",
+        "to": "expired",
+        "reason": "session_close",
+    }
+    assert plan.sell_intent_events[0].correlation_id == open_sell_intents[0].id
     assert len(plan.snapshots) == 1
     assert plan.snapshots[0].captured_at == now
     assert plan.close_event.payload == {
         "expired_candidates": 2,
         "canceled_orders": 1,
+        "expired_sell_intents": 1,
         "position_snapshots": 1,
     }

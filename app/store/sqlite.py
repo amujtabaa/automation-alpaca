@@ -45,6 +45,9 @@ from app.models import (
     OrderType,
     Position,
     PositionSnapshot,
+    SellIntent,
+    SellIntentStatus,
+    SellReason,
     SessionRecord,
     SessionStatus,
     SubmitRecoveryRecord,
@@ -60,6 +63,7 @@ from app.store.base import (
     FillAppendResult,
     InvalidOrderError,
     RiskLimits,
+    SellIntentTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
@@ -77,21 +81,26 @@ from app.store.core import (
     plan_claim_order_for_submission,
     plan_close_session,
     plan_create_order_for_candidate,
+    plan_create_order_for_sell_intent,
     plan_transition_order,
     require_bool,
     require_recovery_status,
     require_status_enum,
     recovery_status_event,
+    sell_intent_is_active,
 )
 from app.transitions import (
     CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS,
+    SELL_INTENT_TIMESTAMP,
+    SELL_INTENT_TRANSITIONS,
 )
 from app.policy import (
     NON_TERMINAL_ORDER_STATUSES,
     candidate_numeric_reason,
     existing_exposure,
     order_candidate_match_reason,
+    whole_count_reason,
 )
 
 SCHEMA = """
@@ -470,6 +479,26 @@ class SqliteStateStore(StateStore):
             risk_decision=row["risk_decision"],
             suggested_quantity=row["suggested_quantity"],
             suggested_limit_price=row["suggested_limit_price"],
+            session_id=row["session_id"],
+            order_id=row["order_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            approved_at=row["approved_at"],
+            rejected_at=row["rejected_at"],
+            expired_at=row["expired_at"],
+            ordered_at=row["ordered_at"],
+        )
+
+    @staticmethod
+    def _sell_intent(row: sqlite3.Row) -> SellIntent:
+        return SellIntent(
+            id=row["id"],
+            symbol=row["symbol"],
+            reason=row["reason"],
+            status=row["status"],
+            target_quantity=row["target_quantity"],
+            floor_price=row["floor_price"],
+            observed_price=row["observed_price"],
             session_id=row["session_id"],
             order_id=row["order_id"],
             created_at=row["created_at"],
@@ -973,6 +1002,264 @@ class SqliteStateStore(StateStore):
                     session_id=candidate.session_id,
                 )
             return candidate
+
+    # ------------------------------------------------------------------ #
+    # Sell intents (Phase 7 — Sell-Side Protection)
+    # ------------------------------------------------------------------ #
+    def _insert_sell_intent(self, cur: sqlite3.Cursor, si: SellIntent) -> None:
+        cur.execute(
+            """INSERT INTO sell_intents
+               (id, symbol, reason, status, target_quantity, floor_price,
+                observed_price, session_id, order_id, created_at, updated_at,
+                approved_at, rejected_at, expired_at, ordered_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                si.id,
+                si.symbol,
+                si.reason.value,
+                si.status.value,
+                si.target_quantity,
+                si.floor_price,
+                si.observed_price,
+                si.session_id,
+                si.order_id,
+                _dt(si.created_at),
+                _dt(si.updated_at),
+                _dt(si.approved_at),
+                _dt(si.rejected_at),
+                _dt(si.expired_at),
+                _dt(si.ordered_at),
+            ),
+        )
+
+    def _update_sell_intent(self, cur: sqlite3.Cursor, si: SellIntent) -> None:
+        cur.execute(
+            """UPDATE sell_intents SET status=?, order_id=?, updated_at=?,
+               approved_at=?, rejected_at=?, expired_at=?, ordered_at=?
+               WHERE id=?""",
+            (
+                si.status.value,
+                si.order_id,
+                _dt(si.updated_at),
+                _dt(si.approved_at),
+                _dt(si.rejected_at),
+                _dt(si.expired_at),
+                _dt(si.ordered_at),
+                si.id,
+            ),
+        )
+
+    def _active_sell_intent_locked(self, symbol: str) -> Optional[SellIntent]:
+        # Scan this symbol's intents newest-first; the linked order (if any)
+        # decides whether an ORDERED intent is still in flight (shared predicate).
+        rows = self._read_all(
+            "SELECT * FROM sell_intents WHERE symbol = ? ORDER BY rowid DESC",
+            (symbol,),
+        )
+        for row in rows:
+            si = self._sell_intent(row)
+            order = None
+            if si.order_id is not None:
+                order_row = self._read_one(
+                    "SELECT * FROM orders WHERE id = ?", (si.order_id,)
+                )
+                order = self._order(order_row) if order_row is not None else None
+            if sell_intent_is_active(si, order):
+                return si
+        return None
+
+    async def create_sell_intent(
+        self,
+        *,
+        symbol: str,
+        reason: SellReason,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> SellIntent:
+        if not isinstance(reason, SellReason):
+            raise InvalidOrderError(
+                f"sell intent reason must be a SellReason, not {reason!r}"
+            )
+        key = normalize_symbol(symbol)
+        bad = whole_count_reason(target_quantity)
+        if bad is not None or target_quantity <= 0:
+            raise InvalidOrderError(
+                f"sell intent for {key} needs a positive whole target_quantity "
+                f"(got {target_quantity!r})"
+            )
+        async with self._lock:
+            # Single-flight (atomic dedup): the active-check and the insert are one
+            # lock hold, so a flatten POST and a protection tick cannot both create
+            # an intent for the same symbol.
+            active = self._active_sell_intent_locked(key)
+            if active is not None:
+                return active
+            intent = SellIntent(
+                symbol=key,
+                reason=reason,
+                target_quantity=target_quantity,
+                floor_price=floor_price,
+                observed_price=observed_price,
+                session_id=session_id,
+            )
+            with self._tx() as cur:
+                self._insert_sell_intent(cur, intent)
+                self._insert_event(
+                    cur,
+                    "sell_intent_created",
+                    message=f"sell intent ({reason.value}) created for {key}",
+                    symbol=key,
+                    session_id=session_id,
+                    correlation_id=intent.id,
+                    payload={
+                        "reason": reason.value,
+                        "target_quantity": target_quantity,
+                    },
+                )
+            return intent
+
+    async def transition_sell_intent(
+        self,
+        intent_id: str,
+        new_status: SellIntentStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> SellIntent:
+        require_status_enum(new_status, SellIntentStatus, field="new_status")
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM sell_intents WHERE id = ?", (intent_id,)
+            )
+            if row is None:
+                raise UnknownEntityError(f"sell intent {intent_id} not found")
+            intent = self._sell_intent(row)
+            current = intent.status
+            if new_status is current:
+                return intent  # idempotent no-op
+            if new_status not in SELL_INTENT_TRANSITIONS.get(current, set()):
+                raise SellIntentTransitionError(
+                    f"illegal sell intent transition {current.value} -> "
+                    f"{new_status.value}"
+                )
+            intent.status = new_status
+            intent.updated_at = utcnow()
+            ts_field = SELL_INTENT_TIMESTAMP.get(new_status)
+            if ts_field:
+                setattr(intent, ts_field, utcnow())
+            if new_status is SellIntentStatus.ORDERED and order_id is not None:
+                intent.order_id = order_id
+            with self._tx() as cur:
+                self._update_sell_intent(cur, intent)
+                self._insert_event(
+                    cur,
+                    "sell_intent_transition",
+                    message=f"sell intent {current.value} -> {new_status.value}",
+                    symbol=intent.symbol,
+                    order_id=order_id,
+                    payload={"from": current.value, "to": new_status.value},
+                    session_id=intent.session_id,
+                    correlation_id=intent.id,
+                )
+            return intent
+
+    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM sell_intents WHERE id = ?", (intent_id,)
+            )
+            return self._sell_intent(row) if row else None
+
+    async def list_sell_intents(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        status: Optional[SellIntentStatus] = None,
+        symbol: Optional[str] = None,
+    ) -> list[SellIntent]:
+        clauses, params = [], []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if status is not None:
+            require_status_enum(status, SellIntentStatus, field="status filter")
+            clauses.append("status = ?")
+            params.append(status.value)
+        if symbol is not None:
+            clauses.append("symbol = ?")
+            params.append(normalize_symbol(symbol))
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with self._lock:
+            rows = self._read_all(
+                f"SELECT * FROM sell_intents{where} ORDER BY rowid", tuple(params)
+            )
+            return [self._sell_intent(r) for r in rows]
+
+    async def active_sell_intent_for(self, symbol: str) -> Optional[SellIntent]:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            return self._active_sell_intent_locked(key)
+
+    async def create_order_for_sell_intent(
+        self,
+        intent_id: str,
+        *,
+        order_type: OrderType,
+        limit_price: Optional[float] = None,
+    ) -> Order:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM sell_intents WHERE id = ?", (intent_id,)
+            )
+            if row is None:
+                raise UnknownEntityError(f"sell intent {intent_id} not found")
+            intent = self._sell_intent(row)
+            # Idempotent: an intent already dispatched returns its existing order.
+            if intent.status is SellIntentStatus.ORDERED:
+                if intent.order_id is None:
+                    raise InvalidOrderError(
+                        f"sell intent {intent_id} is ORDERED but has no linked order"
+                    )
+                order_row = self._read_one(
+                    "SELECT * FROM orders WHERE id = ?", (intent.order_id,)
+                )
+                if order_row is None:
+                    raise InvalidOrderError(
+                        f"sell intent {intent_id} links to missing order "
+                        f"{intent.order_id}"
+                    )
+                return self._order(order_row)
+            # Re-read the LIVE position under the lock so a race that reduced it
+            # cannot oversell (never a short).
+            live_qty = self._position_locked(intent.symbol).quantity
+            plan = plan_create_order_for_sell_intent(
+                intent=intent,
+                live_position_quantity=live_qty,
+                order_type=order_type,
+                limit_price=limit_price,
+            )
+            if plan.outcome == CREATE_ORDER_REJECT:
+                if plan.reject_event is not None:
+                    with self._tx() as cur:
+                        self._insert_event(
+                            cur,
+                            plan.reject_event.event_type,
+                            **plan.reject_event.as_kwargs(),
+                        )
+                raise plan.error
+            order = plan.order
+            now = utcnow()
+            intent.status = SellIntentStatus.ORDERED
+            intent.order_id = order.id
+            intent.ordered_at = now
+            intent.updated_at = now
+            with self._tx() as cur:
+                self._insert_order(cur, order)
+                self._update_sell_intent(cur, intent)
+                for event in plan.events:
+                    self._insert_event(cur, event.event_type, **event.as_kwargs())
+            return order
 
     # ------------------------------------------------------------------ #
     # Orders
@@ -1830,15 +2117,31 @@ class SqliteStateStore(StateStore):
                     ),
                 )
             ]
-            # Still-CREATED (never-submitted) orders in this session are cancelled
-            # at close (D-013a) so they cannot sit submittable afterward; already-
-            # submitted orders are untouched and keep reconciling (D-011).
+            # Still-CREATED (never-submitted) **BUY** orders in this session are
+            # cancelled at close (D-013a) so they cannot sit submittable afterward;
+            # already-submitted orders are untouched and keep reconciling (D-011).
+            # A CREATED **SELL** is a protective/flatten exit that must remain
+            # submittable after close — protection is always-on (Phase 7 §5.2), so
+            # it is filtered out here, in SQL.
             created_orders = [
                 self._order(r)
                 for r in self._read_all(
                     "SELECT * FROM orders WHERE session_id = ? AND status = ? "
-                    "ORDER BY rowid",
-                    (session.id, OrderStatus.CREATED.value),
+                    "AND side = ? ORDER BY rowid",
+                    (session.id, OrderStatus.CREATED.value, OrderSide.BUY.value),
+                )
+            ]
+            # PENDING/APPROVED sell intents expire at close, like candidates.
+            open_sell_intents = [
+                self._sell_intent(r)
+                for r in self._read_all(
+                    "SELECT * FROM sell_intents WHERE session_id = ? "
+                    "AND status IN (?, ?) ORDER BY rowid",
+                    (
+                        session.id,
+                        SellIntentStatus.PENDING.value,
+                        SellIntentStatus.APPROVED.value,
+                    ),
                 )
             ]
             nonzero_positions = []
@@ -1853,6 +2156,7 @@ class SqliteStateStore(StateStore):
                 session=session,
                 open_candidates=open_candidates,
                 created_orders=created_orders,
+                open_sell_intents=open_sell_intents,
                 nonzero_positions=nonzero_positions,
                 now=now,
             )
@@ -1880,6 +2184,18 @@ class SqliteStateStore(StateStore):
                             _dt(now),
                             _dt(now),
                             order.id,
+                        ),
+                    )
+                    self._insert_event(cur, event.event_type, **event.as_kwargs())
+                for intent, event in zip(open_sell_intents, plan.sell_intent_events):
+                    cur.execute(
+                        "UPDATE sell_intents SET status=?, expired_at=?, "
+                        "updated_at=? WHERE id=?",
+                        (
+                            SellIntentStatus.EXPIRED.value,
+                            _dt(now),
+                            _dt(now),
+                            intent.id,
                         ),
                     )
                     self._insert_event(cur, event.event_type, **event.as_kwargs())

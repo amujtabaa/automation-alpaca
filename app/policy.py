@@ -408,6 +408,11 @@ def existing_exposure(
         (o.quantity - filled_by_order.get(o.id, o.filled_quantity)) * (o.limit_price or 0.0)
         for o in open_orders
         if o.status in NON_TERMINAL_ORDER_STATUSES
+        # A pending/in-flight SELL (Phase 7 protective exit / flatten) REDUCES
+        # risk, not adds it — counting its remaining notional as positive CAPI
+        # exposure could push a concurrent legitimate BUY over max_total_exposure
+        # and wrongly reject it. Only open BUY orders add exposure here.
+        and OrderSide(o.side) is OrderSide.BUY
     )
     return position_exposure + order_exposure
 

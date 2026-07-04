@@ -33,6 +33,9 @@ from app.models import (
     OrderType,
     Position,
     PositionSnapshot,
+    SellIntent,
+    SellIntentStatus,
+    SellReason,
     SessionRecord,
     SessionStatus,
     SubmitRecoveryRecord,
@@ -48,6 +51,7 @@ from app.store.base import (
     FillAppendResult,
     InvalidOrderError,
     RiskLimits,
+    SellIntentTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
@@ -65,21 +69,26 @@ from app.store.core import (
     plan_claim_order_for_submission,
     plan_close_session,
     plan_create_order_for_candidate,
+    plan_create_order_for_sell_intent,
     plan_transition_order,
     require_bool,
     require_recovery_status,
     require_status_enum,
     recovery_status_event,
+    sell_intent_is_active,
 )
 from app.transitions import (
     CANDIDATE_TIMESTAMP as _CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
+    SELL_INTENT_TIMESTAMP as _SELL_INTENT_TIMESTAMP,
+    SELL_INTENT_TRANSITIONS as _SELL_INTENT_TRANSITIONS,
 )
 from app.policy import (
     NON_TERMINAL_ORDER_STATUSES,
     candidate_numeric_reason,
     existing_exposure,
     order_candidate_match_reason,
+    whole_count_reason,
 )
 
 
@@ -98,6 +107,7 @@ class InMemoryStateStore(StateStore):
         self._sessions: list[SessionRecord] = []
         self._position_snapshots: list[PositionSnapshot] = []
         self._submit_recoveries: list[SubmitRecoveryRecord] = []  # D-017
+        self._sell_intents: dict[str, SellIntent] = {}  # Phase 7
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -135,6 +145,9 @@ class InMemoryStateStore(StateStore):
             k: v.model_copy(deep=True) for k, v in self._candidates.items()
         }
         saved_orders = {k: v.model_copy(deep=True) for k, v in self._orders.items()}
+        saved_sell_intents = {
+            k: v.model_copy(deep=True) for k, v in self._sell_intents.items()
+        }
         saved_fills = list(self._fills)
         saved_source_ids = set(self._fill_source_ids)
         saved_events = list(self._events)
@@ -149,6 +162,7 @@ class InMemoryStateStore(StateStore):
             self._watchlist = saved_watchlist
             self._candidates = saved_candidates
             self._orders = saved_orders
+            self._sell_intents = saved_sell_intents
             self._fills = saved_fills
             self._submit_recoveries = saved_recoveries
             self._fill_source_ids = saved_source_ids
@@ -451,6 +465,193 @@ class InMemoryStateStore(StateStore):
                     session_id=candidate.session_id,
                 )
             return candidate.model_copy(deep=True)
+
+    # ------------------------------------------------------------------ #
+    # Sell intents (Phase 7 — Sell-Side Protection)
+    # ------------------------------------------------------------------ #
+    def _active_sell_intent_unlocked(self, symbol: str) -> Optional[SellIntent]:
+        for si in self._sell_intents.values():
+            if si.symbol != symbol:
+                continue
+            order = (
+                self._orders.get(si.order_id) if si.order_id is not None else None
+            )
+            if sell_intent_is_active(si, order):
+                return si
+        return None
+
+    async def create_sell_intent(
+        self,
+        *,
+        symbol: str,
+        reason: SellReason,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> SellIntent:
+        if not isinstance(reason, SellReason):
+            raise InvalidOrderError(
+                f"sell intent reason must be a SellReason, not {reason!r}"
+            )
+        key = normalize_symbol(symbol)
+        bad = whole_count_reason(target_quantity)
+        if bad is not None or target_quantity <= 0:
+            raise InvalidOrderError(
+                f"sell intent for {key} needs a positive whole target_quantity "
+                f"(got {target_quantity!r})"
+            )
+        async with self._lock:
+            # Single-flight (atomic dedup): the active-check and the insert are one
+            # lock hold, so a flatten POST and a protection tick cannot both create
+            # an intent for the same symbol.
+            active = self._active_sell_intent_unlocked(key)
+            if active is not None:
+                return active.model_copy(deep=True)
+            intent = SellIntent(
+                symbol=key,
+                reason=reason,
+                target_quantity=target_quantity,
+                floor_price=floor_price,
+                observed_price=observed_price,
+                session_id=session_id,
+            )
+            with self._atomic():
+                self._sell_intents[intent.id] = intent
+                self._append_event_unlocked(
+                    "sell_intent_created",
+                    message=f"sell intent ({reason.value}) created for {key}",
+                    symbol=key,
+                    session_id=session_id,
+                    correlation_id=intent.id,
+                    payload={
+                        "reason": reason.value,
+                        "target_quantity": target_quantity,
+                    },
+                )
+            return intent.model_copy(deep=True)
+
+    async def transition_sell_intent(
+        self,
+        intent_id: str,
+        new_status: SellIntentStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> SellIntent:
+        require_status_enum(new_status, SellIntentStatus, field="new_status")
+        async with self._lock:
+            intent = self._sell_intents.get(intent_id)
+            if intent is None:
+                raise UnknownEntityError(f"sell intent {intent_id} not found")
+            current = intent.status
+            if new_status is current:
+                return intent.model_copy(deep=True)  # idempotent no-op
+            if new_status not in _SELL_INTENT_TRANSITIONS.get(current, set()):
+                raise SellIntentTransitionError(
+                    f"illegal sell intent transition {current.value} -> "
+                    f"{new_status.value}"
+                )
+            with self._atomic():
+                intent.status = new_status
+                intent.updated_at = utcnow()
+                ts_field = _SELL_INTENT_TIMESTAMP.get(new_status)
+                if ts_field:
+                    setattr(intent, ts_field, utcnow())
+                if new_status is SellIntentStatus.ORDERED and order_id is not None:
+                    intent.order_id = order_id
+                self._append_event_unlocked(
+                    "sell_intent_transition",
+                    message=f"sell intent {current.value} -> {new_status.value}",
+                    symbol=intent.symbol,
+                    order_id=order_id,
+                    payload={"from": current.value, "to": new_status.value},
+                    session_id=intent.session_id,
+                    correlation_id=intent.id,
+                )
+            return intent.model_copy(deep=True)
+
+    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]:
+        async with self._lock:
+            si = self._sell_intents.get(intent_id)
+            return si.model_copy(deep=True) if si else None
+
+    async def list_sell_intents(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        status: Optional[SellIntentStatus] = None,
+        symbol: Optional[str] = None,
+    ) -> list[SellIntent]:
+        if status is not None:
+            require_status_enum(status, SellIntentStatus, field="status filter")
+        key = normalize_symbol(symbol) if symbol is not None else None
+        async with self._lock:
+            out = []
+            for si in self._sell_intents.values():
+                if session_id is not None and si.session_id != session_id:
+                    continue
+                if status is not None and si.status is not status:
+                    continue
+                if key is not None and si.symbol != key:
+                    continue
+                out.append(si.model_copy(deep=True))
+            return out
+
+    async def active_sell_intent_for(self, symbol: str) -> Optional[SellIntent]:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            active = self._active_sell_intent_unlocked(key)
+            return active.model_copy(deep=True) if active else None
+
+    async def create_order_for_sell_intent(
+        self,
+        intent_id: str,
+        *,
+        order_type: OrderType,
+        limit_price: Optional[float] = None,
+    ) -> Order:
+        async with self._lock:
+            intent = self._sell_intents.get(intent_id)
+            if intent is None:
+                raise UnknownEntityError(f"sell intent {intent_id} not found")
+            # Idempotent: an intent already dispatched returns its existing order.
+            if intent.status is SellIntentStatus.ORDERED:
+                existing = (
+                    self._orders.get(intent.order_id)
+                    if intent.order_id is not None
+                    else None
+                )
+                if existing is None:
+                    raise InvalidOrderError(
+                        f"sell intent {intent_id} is ORDERED but has no linked order"
+                    )
+                return existing.model_copy(deep=True)
+            # Re-read the LIVE position under the lock so a race that reduced it
+            # cannot oversell (never a short).
+            live_qty = self._position_unlocked(intent.symbol).quantity
+            plan = plan_create_order_for_sell_intent(
+                intent=intent,
+                live_position_quantity=live_qty,
+                order_type=order_type,
+                limit_price=limit_price,
+            )
+            if plan.outcome == CREATE_ORDER_REJECT:
+                if plan.reject_event is not None:
+                    self._append_event_unlocked(
+                        plan.reject_event.event_type, **plan.reject_event.as_kwargs()
+                    )
+                raise plan.error
+            order = plan.order
+            now = utcnow()
+            with self._atomic():
+                self._orders[order.id] = order
+                intent.status = SellIntentStatus.ORDERED
+                intent.order_id = order.id
+                intent.ordered_at = now
+                intent.updated_at = now
+                for spec in plan.events:
+                    self._append_event_unlocked(spec.event_type, **spec.as_kwargs())
+            return order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #
     # Orders
@@ -1080,10 +1281,23 @@ class InMemoryStateStore(StateStore):
             if c.session_id == session.id
             and c.status in (CandidateStatus.PENDING, CandidateStatus.APPROVED)
         ]
+        # Only CREATED **BUY** orders are canceled at close (D-013a). A CREATED
+        # SELL is a protective/flatten exit that must remain submittable after the
+        # session closes — protection is always-on and doesn't stop at the bell
+        # (Phase 7 §5.2). Filter those out here, before the planner.
         created_orders = [
             o
             for o in self._orders.values()
-            if o.session_id == session.id and o.status is OrderStatus.CREATED
+            if o.session_id == session.id
+            and o.status is OrderStatus.CREATED
+            and OrderSide(o.side) is OrderSide.BUY
+        ]
+        # PENDING/APPROVED sell intents expire at close, like candidates.
+        open_sell_intents = [
+            si
+            for si in self._sell_intents.values()
+            if si.session_id == session.id
+            and si.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED)
         ]
         nonzero_positions = []
         for sym in sorted({f.symbol for f in self._fills}):
@@ -1095,6 +1309,7 @@ class InMemoryStateStore(StateStore):
             session=session,
             open_candidates=open_candidates,
             created_orders=created_orders,
+            open_sell_intents=open_sell_intents,
             nonzero_positions=nonzero_positions,
             now=now,
         )
@@ -1112,6 +1327,11 @@ class InMemoryStateStore(StateStore):
             order.status = OrderStatus.CANCELED
             order.canceled_at = now
             order.updated_at = now
+            self._append_event_unlocked(event.event_type, **event.as_kwargs())
+        for intent, event in zip(open_sell_intents, plan.sell_intent_events):
+            intent.status = SellIntentStatus.EXPIRED
+            intent.expired_at = now
+            intent.updated_at = now
             self._append_event_unlocked(event.event_type, **event.as_kwargs())
         self._position_snapshots.extend(plan.snapshots)
         session.status = SessionStatus.CLOSED

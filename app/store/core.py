@@ -42,6 +42,8 @@ from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_STATUSES,
     RECOVERY_TRANSITIONS,
+    SellIntent,
+    SellIntentStatus,
     SessionRecord,
     utcnow,
 )
@@ -60,6 +62,7 @@ from app.store.base import (
     RecoveryTransitionError,
     RiskLimitBlockedError,
     RiskLimits,
+    SellIntentTransitionError,
     UnknownEntityError,
 )
 from app.transitions import ORDER_TIMESTAMP, ORDER_TRANSITIONS
@@ -93,6 +96,11 @@ class EventSpec:
     fill_id: Optional[str] = None
     payload: dict[str, Any] = field(default_factory=dict)
     session_id: Optional[str] = None
+    # Lifecycle correlation key (D-020). Buy events leave this None and the store
+    # writer defaults it to candidate_id; sell-side events (Phase 7, candidate_id
+    # is None) set it explicitly to the owning sell_intent_id so a whole protective
+    # exit is reconstructable via GET /api/events?correlation_id=<sell_intent_id>.
+    correlation_id: Optional[str] = None
 
     def as_kwargs(self) -> dict[str, Any]:
         """Keyword args for a store's event writer (``event_type`` stays positional)."""
@@ -104,6 +112,7 @@ class EventSpec:
             "fill_id": self.fill_id,
             "payload": self.payload,
             "session_id": self.session_id,
+            "correlation_id": self.correlation_id,
         }
 
 
@@ -472,6 +481,136 @@ def plan_create_order_for_candidate(
     )
 
 
+# ---- sell-intent -> order handoff (Phase 7) ------------------------------- #
+
+# Terminal order statuses (no outgoing transitions) — an ordered intent whose
+# order has reached one of these is no longer in flight.
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
+
+
+def sell_intent_is_active(intent: SellIntent, order: Optional[Order]) -> bool:
+    """Whether a sell intent is still 'in flight' for the single-flight dedup /
+    ``active_sell_intent_for``. Active = ``pending``/``approved`` (not yet
+    ordered), or ``ordered`` with an Order still in a non-terminal status.
+    ``rejected``/``expired`` intents, and ``ordered`` intents whose order reached
+    a terminal state (filled/canceled/rejected), are inactive — the symbol is
+    eligible for a fresh protective intent (the residual re-evaluation path)."""
+
+    if intent.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
+        return True
+    if intent.status is SellIntentStatus.ORDERED:
+        return order is not None and order.status not in _TERMINAL_ORDER_STATUSES
+    return False
+
+
+def plan_create_order_for_sell_intent(
+    *,
+    intent: SellIntent,
+    live_position_quantity: int,
+    order_type: OrderType,
+    limit_price: Optional[float],
+) -> CreateOrderPlan:
+    """The shared validation cascade + SELL order construction for the
+    sell-intent→order dispatch (Phase 7). ``intent`` is known to exist and *not*
+    already ORDERED (the store handles those first). No CAPI risk gate and no
+    kill-switch/session block here — a protective exit reduces risk and its
+    submission is gated separately at claim time (see the side/reason-aware claim).
+
+    ``live_position_quantity`` is the symbol's current derived position quantity,
+    re-read by the store under its lock: a sell may never exceed it (never a
+    short — Rule 7 / long-only). The order carries ``sell_intent_id`` and
+    ``candidate_id=None`` (the XOR origin); the ``correlation_id`` on both events
+    is the intent id, so the whole protective-exit lifecycle is one filterable key.
+    """
+
+    if intent.status is not SellIntentStatus.APPROVED:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=SellIntentTransitionError(
+                f"cannot order sell intent {intent.id} in status "
+                f"{intent.status.value}; must be approved"
+            ),
+        )
+
+    qty = intent.target_quantity
+    if qty is None or qty <= 0:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=InvalidOrderError(
+                f"sell intent {intent.id} has no positive target_quantity"
+            ),
+        )
+    # Never a short (Rule 7 / long-only): the exit cannot exceed the live
+    # position. Re-checked here against the freshly-read quantity so a race that
+    # reduced the position (another fill) between approve and order cannot oversell.
+    if qty > live_position_quantity:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=InvalidOrderError(
+                f"sell intent {intent.id} target_quantity {qty} exceeds the live "
+                f"{intent.symbol} position quantity {live_position_quantity} "
+                f"(would create a short)"
+            ),
+        )
+
+    # Order-type/price coherence (Rule 12 exit types): a LIMIT sell needs a
+    # finite positive limit; a MARKET sell must carry NO limit price. Do NOT run
+    # limit_price_reason unconditionally (it would reject the MARKET exit path).
+    if order_type is OrderType.LIMIT:
+        bad_price = limit_price_reason(limit_price)
+        if bad_price is not None:
+            return CreateOrderPlan(
+                CREATE_ORDER_REJECT,
+                error=InvalidOrderError(
+                    f"limit sell for intent {intent.id} needs a valid limit_price "
+                    f"({bad_price})"
+                ),
+            )
+    elif limit_price is not None:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=InvalidOrderError(
+                f"{order_type.value} sell for intent {intent.id} must not carry a "
+                f"limit_price (got {limit_price!r})"
+            ),
+        )
+
+    order = Order(
+        sell_intent_id=intent.id,
+        symbol=intent.symbol,
+        side=OrderSide.SELL,
+        order_type=order_type,
+        quantity=qty,
+        limit_price=limit_price,
+        session_id=intent.session_id,
+    )
+    return CreateOrderPlan(
+        CREATE_ORDER_CREATE,
+        order=order,
+        events=(
+            EventSpec(
+                "order_created",
+                message=f"protective sell order created for {intent.symbol}",
+                symbol=intent.symbol,
+                order_id=order.id,
+                session_id=intent.session_id,
+                correlation_id=intent.id,
+            ),
+            EventSpec(
+                "sell_intent_transition",
+                message="sell intent approved -> ordered",
+                symbol=intent.symbol,
+                order_id=order.id,
+                payload={"from": "approved", "to": "ordered"},
+                session_id=intent.session_id,
+                correlation_id=intent.id,
+            ),
+        ),
+    )
+
+
 # ---- submit-recovery ledger (D-017) --------------------------------------- #
 
 
@@ -784,6 +923,7 @@ class SessionClosePlan:
 
     candidate_events: tuple[EventSpec, ...]
     order_events: tuple[EventSpec, ...]
+    sell_intent_events: tuple[EventSpec, ...]
     snapshots: tuple[PositionSnapshot, ...]
     close_event: EventSpec
 
@@ -793,12 +933,16 @@ def plan_close_session(
     session: SessionRecord,
     open_candidates: list[Candidate],
     created_orders: list[Order],
+    open_sell_intents: list[SellIntent],
     nonzero_positions: list[Position],
     now: datetime,
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
-    ``created_orders`` its still-CREATED (never-submitted) orders, and
+    ``created_orders`` its still-CREATED (never-submitted) **BUY** orders (a
+    CREATED SELL is a protective/flatten exit that must remain submittable
+    post-close, Phase 7 — the store filters those out), ``open_sell_intents`` its
+    PENDING/APPROVED sell intents (expired like candidates), and
     ``nonzero_positions`` every symbol with a nonzero derived position. The
     counts drive the summary event.
     """
@@ -830,6 +974,22 @@ def plan_close_session(
         )
         for order in created_orders
     )
+    sell_intent_events = tuple(
+        EventSpec(
+            "sell_intent_transition",
+            message=f"sell intent {si.status.value} -> expired (session close)",
+            symbol=si.symbol,
+            order_id=None,
+            payload={
+                "from": si.status.value,
+                "to": "expired",
+                "reason": "session_close",
+            },
+            session_id=session.id,
+            correlation_id=si.id,
+        )
+        for si in open_sell_intents
+    )
     snapshots = tuple(
         PositionSnapshot(
             session_id=session.id,
@@ -846,18 +1006,21 @@ def plan_close_session(
         message=(
             f"session closed ({len(open_candidates)} candidates expired, "
             f"{len(created_orders)} created orders canceled, "
+            f"{len(open_sell_intents)} sell intents expired, "
             f"{len(snapshots)} positions snapshotted)"
         ),
         session_id=session.id,
         payload={
             "expired_candidates": len(open_candidates),
             "canceled_orders": len(created_orders),
+            "expired_sell_intents": len(open_sell_intents),
             "position_snapshots": len(snapshots),
         },
     )
     return SessionClosePlan(
         candidate_events=candidate_events,
         order_events=order_events,
+        sell_intent_events=sell_intent_events,
         snapshots=snapshots,
         close_event=close_event,
     )

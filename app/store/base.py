@@ -34,8 +34,12 @@ from app.models import (
     Order,
     OrderSide,
     OrderStatus,
+    OrderType,
     Position,
     PositionSnapshot,
+    SellIntent,
+    SellIntentStatus,
+    SellReason,
     SessionRecord,
     SubmitRecoveryRecord,
     WatchlistSymbol,
@@ -88,6 +92,12 @@ class CandidateTransitionError(StoreError):
 
 class OrderTransitionError(StoreError):
     """An illegal order lifecycle transition was attempted."""
+
+
+class SellIntentTransitionError(StoreError):
+    """An illegal sell-intent lifecycle transition was attempted (Phase 7) —
+    e.g. ordering an intent that is not ``approved``, or reviving a terminal
+    (``rejected``/``expired``/``ordered``) one."""
 
 
 class RecoveryTransitionError(StoreError):
@@ -351,6 +361,102 @@ class StateStore(ABC):
 
         ``new_status`` is typed as :class:`CandidateStatus`, so a broker state
         cannot be passed here.
+        """
+
+    # ------------------------------------------------------------------ #
+    # Sell intents (Phase 7 — Sell-Side Protection). The sell-side analogue of
+    # candidates: a first-class exit decision with its own lifecycle, producing
+    # one SELL order. See docs/IMPLEMENTATION_PROMPT_PHASE_7.md.
+    # ------------------------------------------------------------------ #
+    @abstractmethod
+    async def create_sell_intent(
+        self,
+        *,
+        symbol: str,
+        reason: SellReason,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> SellIntent:
+        """Create a sell intent (an exit decision) atomically + audited.
+
+        **Single-flight (atomic dedup).** The active-intent check and the insert
+        happen under ONE lock hold: if an *active* sell intent already exists for
+        ``symbol`` (a ``pending``/``approved`` one, or an ``ordered`` one whose
+        Order is still non-terminal), the existing intent is returned and nothing
+        is written — a concurrent flatten request and protection tick cannot both
+        create one (TOCTOU). Validates a positive whole ``target_quantity`` and a
+        real :class:`SellReason`.
+        """
+
+    @abstractmethod
+    async def transition_sell_intent(
+        self,
+        intent_id: str,
+        new_status: SellIntentStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> SellIntent:
+        """Atomically transition a sell intent and write an audit event. Mirrors
+        :meth:`transition_candidate` (enum-typed status, idempotent same-status
+        no-op, audited genuine transitions). ``approved -> expired`` is the
+        self-heal used when the intent->order handoff is rejected — no intent is
+        ever left stranded ``approved`` with no order."""
+
+    @abstractmethod
+    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]:
+        ...
+
+    @abstractmethod
+    async def list_sell_intents(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        status: Optional[SellIntentStatus] = None,
+        symbol: Optional[str] = None,
+    ) -> list[SellIntent]:
+        ...
+
+    @abstractmethod
+    async def active_sell_intent_for(self, symbol: str) -> Optional[SellIntent]:
+        """The current active (in-flight) sell intent for ``symbol``, or ``None``.
+
+        Active = ``pending``/``approved``, or ``ordered`` with a still-open
+        (non-terminal) Order. Used for the single-flight dedup and the
+        operator/protection status surface. Once the linked Order reaches a
+        terminal state (filled/canceled/rejected), the intent is no longer active
+        and the symbol is eligible for a fresh protective intent (the residual
+        re-evaluation path), so a partial-then-canceled exit that leaves a
+        still-breaching residual can be re-protected.
+        """
+
+    @abstractmethod
+    async def create_order_for_sell_intent(
+        self,
+        intent_id: str,
+        *,
+        order_type: OrderType,
+        limit_price: Optional[float] = None,
+    ) -> Order:
+        """Atomic ``APPROVED -> ORDERED`` handoff for a sell intent — the sell-side
+        analogue of :meth:`create_order_for_candidate`.
+
+        Creates the SELL :class:`Order` (``side=SELL``, ``sell_intent_id`` set,
+        ``candidate_id=None`` — the XOR origin), transitions the intent to
+        ``ordered`` linking it, and writes both audit events, atomically. **No
+        CAPI risk gate** (a protective exit reduces risk). **Re-reads the live
+        derived position under the lock and rejects an oversell** (never a short:
+        ``target_quantity`` may not exceed the current position quantity).
+        ``order_type`` is a placeholder here (``MARKET`` for the full-exit intent);
+        the concrete session-conditional type is (re)decided at submission time
+        (Rule 12 / D-015 — see monitoring). For ``LIMIT`` a positive
+        ``limit_price`` is required; for ``MARKET`` it must be ``None``.
+
+        **Idempotent:** an intent already ``ORDERED`` returns its existing order.
+        Raises :class:`UnknownEntityError` (unknown intent),
+        :class:`SellIntentTransitionError` (not ``approved``), or
+        :class:`InvalidOrderError` (oversell / bad limit-vs-market).
         """
 
     # ------------------------------------------------------------------ #
