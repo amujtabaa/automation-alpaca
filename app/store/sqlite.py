@@ -122,9 +122,15 @@ CREATE TABLE IF NOT EXISTS candidates (
     ordered_at            TEXT
 );
 
+-- Phase 7: candidate_id is nullable (a SELL order carries sell_intent_id instead
+-- of candidate_id — the XOR-origin invariant). On a pre-Phase-7 DB the live
+-- column is candidate_id TEXT NOT NULL with no sell_intent_id; _migrate() rebuilds
+-- this table (SQLite has no ALTER COLUMN and CREATE TABLE IF NOT EXISTS is a
+-- no-op against an existing table).
 CREATE TABLE IF NOT EXISTS orders (
     id                TEXT PRIMARY KEY,
-    candidate_id      TEXT NOT NULL,
+    candidate_id      TEXT,
+    sell_intent_id    TEXT,
     symbol            TEXT NOT NULL,
     side              TEXT NOT NULL,
     order_type        TEXT NOT NULL,
@@ -142,6 +148,27 @@ CREATE TABLE IF NOT EXISTS orders (
     canceled_at       TEXT,
     rejected_at       TEXT
 );
+
+-- Phase 7 — Sell-Side Protection: the sell-intent lifecycle (analogue of
+-- candidates). One SELL order per intent; open intents expire at session close.
+CREATE TABLE IF NOT EXISTS sell_intents (
+    id              TEXT PRIMARY KEY,
+    symbol          TEXT NOT NULL,
+    reason          TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    target_quantity INTEGER NOT NULL,
+    floor_price     REAL,
+    observed_price  REAL,
+    session_id      TEXT,
+    order_id        TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    approved_at     TEXT,
+    rejected_at     TEXT,
+    expired_at      TEXT,
+    ordered_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sell_intents_symbol ON sell_intents(symbol);
 
 -- Append-only. No UPDATE/DELETE is ever issued against this table.
 -- Dedup is per-(order_id, source_fill_id) via idx_fills_order_source, NOT a
@@ -322,6 +349,54 @@ class SqliteStateStore(StateStore):
             # on an orders table created before the column existed.
             conn.execute("ALTER TABLE orders ADD COLUMN broker_order_id TEXT")
 
+        # Phase 7: `candidate_id` becomes NULLABLE and a `sell_intent_id` column is
+        # added (a SELL order carries an intent, not a candidate — the XOR origin).
+        # SQLite has no ALTER COLUMN to drop the old `candidate_id TEXT NOT NULL`
+        # constraint, and CREATE TABLE IF NOT EXISTS is a no-op against an existing
+        # table, so an orders table created before Phase 7 must be REBUILT (rows
+        # preserved, sell_intent_id NULL for every pre-existing buy). Detected by
+        # the absent column. Runs after the broker_order_id guard so that column is
+        # guaranteed present to copy. No orders indexes exist to recreate.
+        if "sell_intent_id" not in order_cols:
+            conn.executescript(
+                """
+                ALTER TABLE orders RENAME TO orders_old;
+                CREATE TABLE orders (
+                    id                TEXT PRIMARY KEY,
+                    candidate_id      TEXT,
+                    sell_intent_id    TEXT,
+                    symbol            TEXT NOT NULL,
+                    side              TEXT NOT NULL,
+                    order_type        TEXT NOT NULL,
+                    quantity          INTEGER NOT NULL,
+                    limit_price       REAL,
+                    status            TEXT NOT NULL,
+                    filled_quantity   INTEGER NOT NULL DEFAULT 0,
+                    replaces_order_id TEXT,
+                    broker_order_id   TEXT,
+                    session_id        TEXT,
+                    created_at        TEXT NOT NULL,
+                    updated_at        TEXT NOT NULL,
+                    submitted_at      TEXT,
+                    filled_at         TEXT,
+                    canceled_at       TEXT,
+                    rejected_at       TEXT
+                );
+                INSERT INTO orders
+                    (id, candidate_id, sell_intent_id, symbol, side, order_type,
+                     quantity, limit_price, status, filled_quantity,
+                     replaces_order_id, broker_order_id, session_id, created_at,
+                     updated_at, submitted_at, filled_at, canceled_at, rejected_at)
+                    SELECT id, candidate_id, NULL, symbol, side, order_type,
+                           quantity, limit_price, status, filled_quantity,
+                           replaces_order_id, broker_order_id, session_id,
+                           created_at, updated_at, submitted_at, filled_at,
+                           canceled_at, rejected_at
+                    FROM orders_old;
+                DROP TABLE orders_old;
+                """
+            )
+
         event_cols = {
             r["name"] for r in conn.execute("PRAGMA table_info(events)").fetchall()
         }
@@ -410,6 +485,7 @@ class SqliteStateStore(StateStore):
         return Order(
             id=row["id"],
             candidate_id=row["candidate_id"],
+            sell_intent_id=row["sell_intent_id"],
             symbol=row["symbol"],
             side=row["side"],
             order_type=row["order_type"],
@@ -1339,14 +1415,15 @@ class SqliteStateStore(StateStore):
     def _insert_order(self, cur: sqlite3.Cursor, o: Order) -> None:
         cur.execute(
             """INSERT INTO orders
-               (id, candidate_id, symbol, side, order_type, quantity, limit_price,
-                status, filled_quantity, replaces_order_id, broker_order_id,
-                session_id, created_at, updated_at, submitted_at, filled_at,
-                canceled_at, rejected_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               (id, candidate_id, sell_intent_id, symbol, side, order_type,
+                quantity, limit_price, status, filled_quantity, replaces_order_id,
+                broker_order_id, session_id, created_at, updated_at, submitted_at,
+                filled_at, canceled_at, rejected_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 o.id,
                 o.candidate_id,
+                o.sell_intent_id,
                 o.symbol,
                 o.side.value,
                 o.order_type.value,

@@ -8,7 +8,7 @@ transitions are handled as idempotent no-ops by the stores, not encoded here.
 
 from __future__ import annotations
 
-from app.models import CandidateStatus, OrderStatus
+from app.models import CandidateStatus, OrderStatus, SellIntentStatus
 
 CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
     CandidateStatus.PENDING: {
@@ -20,6 +20,26 @@ CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
     CandidateStatus.REJECTED: set(),
     CandidateStatus.EXPIRED: set(),
     CandidateStatus.ORDERED: set(),
+}
+
+# Sell-intent lifecycle (Phase 7) — a PARALLEL table of identical shape to the
+# candidate machine (not a literal reuse: CANDIDATE_TRANSITIONS is typed on
+# CandidateStatus and cannot key on SellIntentStatus). approved -> expired is a
+# real path (the self-heal when the intent->order handoff is rejected, e.g. the
+# position vanished): an intent is never left stranded APPROVED with no order.
+SELL_INTENT_TRANSITIONS: dict[SellIntentStatus, set[SellIntentStatus]] = {
+    SellIntentStatus.PENDING: {
+        SellIntentStatus.APPROVED,
+        SellIntentStatus.REJECTED,
+        SellIntentStatus.EXPIRED,
+    },
+    SellIntentStatus.APPROVED: {
+        SellIntentStatus.ORDERED,
+        SellIntentStatus.EXPIRED,  # self-heal on a rejected intent->order handoff
+    },
+    SellIntentStatus.REJECTED: set(),
+    SellIntentStatus.EXPIRED: set(),
+    SellIntentStatus.ORDERED: set(),
 }
 
 ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
@@ -74,6 +94,14 @@ CANDIDATE_TIMESTAMP: dict[CandidateStatus, str] = {
     CandidateStatus.REJECTED: "rejected_at",
     CandidateStatus.EXPIRED: "expired_at",
     CandidateStatus.ORDERED: "ordered_at",
+}
+
+# Sell-intent transition timestamps (parallel to CANDIDATE_TIMESTAMP).
+SELL_INTENT_TIMESTAMP: dict[SellIntentStatus, str] = {
+    SellIntentStatus.APPROVED: "approved_at",
+    SellIntentStatus.REJECTED: "rejected_at",
+    SellIntentStatus.EXPIRED: "expired_at",
+    SellIntentStatus.ORDERED: "ordered_at",
 }
 
 ORDER_TIMESTAMP: dict[OrderStatus, str] = {

@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 
 def new_id() -> str:
@@ -93,6 +93,35 @@ class CandidateStatus(str, Enum):
 
     Broker-execution states are deliberately absent here; they belong to
     :class:`OrderStatus`. See ``docs/02_DATA_AND_PERSISTENCE.md``.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    ORDERED = "ordered"
+
+
+class SellReason(str, Enum):
+    """Why a position is being exited (Phase 7 — Sell-Side Protection).
+
+    ``manual_flatten`` is operator-initiated (always exits — the click is the
+    approval, and it bypasses the kill switch as a risk-reducing exit).
+    ``protection_floor`` is an autonomous hard-floor breach (pauses under the
+    kill switch). A future ``auto_sell`` (Phase 8 profit-taking) attaches here
+    without a new lifecycle.
+    """
+
+    MANUAL_FLATTEN = "manual_flatten"
+    PROTECTION_FLOOR = "protection_floor"
+
+
+class SellIntentStatus(str, Enum):
+    """Sell-intent proposal/review lifecycle — parallel to
+    :class:`CandidateStatus` (stops at ``ordered``; broker-execution states live
+    on the Order). The sell-side analogue of the candidate lifecycle, so an exit
+    decision is a first-class entity and not a sell bolted onto the buy path
+    (``docs/IMPLEMENTATION_PROMPT_PHASE_7.md``).
     """
 
     PENDING = "pending"
@@ -209,6 +238,15 @@ class EventType(str, Enum):
     MARKET_DATA_STALE = "market_data_stale"
     MARKET_DATA_RECOVERED = "market_data_recovered"
 
+    # Sell-Side Protection Engine (Phase 7). The sell-intent lifecycle mirrors
+    # the candidate lifecycle; protection_* events are the safety engine's own.
+    SELL_INTENT_CREATED = "sell_intent_created"
+    SELL_INTENT_TRANSITION = "sell_intent_transition"
+    PROTECTION_TRIGGERED = "protection_triggered"      # floor breach -> auto exit
+    PROTECTION_PAUSED = "protection_paused"            # kill switch froze auto exit
+    PROTECTION_RESUMED = "protection_resumed"          # kill switch released
+    PROTECTION_STALLED = "protection_stalled"          # a protective order sits unfilled
+
 
 # --------------------------------------------------------------------------- #
 # Persisted entities
@@ -257,7 +295,12 @@ class Candidate(_Entity):
 
 class Order(_Entity):
     id: str = Field(default_factory=new_id)
-    candidate_id: str  # the candidate this order was produced from
+    # An order originates from EXACTLY ONE of: a Candidate (a BUY) or a SellIntent
+    # (a SELL — Phase 7). The XOR is enforced by the validator below and again at
+    # the store boundary. ``candidate_id`` was required pre-Phase-7; it is now
+    # nullable so a protective/flatten sell can carry ``sell_intent_id`` instead.
+    candidate_id: Optional[str] = None
+    sell_intent_id: Optional[str] = None
     symbol: str
     side: OrderSide
     order_type: OrderType = OrderType.LIMIT
@@ -283,6 +326,59 @@ class Order(_Entity):
     filled_at: Optional[datetime] = None
     canceled_at: Optional[datetime] = None
     rejected_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def _exactly_one_origin(self) -> "Order":
+        """Enforce the order-origin XOR (Phase 7): an order comes from EXACTLY one
+        of a Candidate (buy) or a SellIntent (sell). Both-set or neither-set is a
+        structural error — a sell with no intent, or a buy mislabeled with an
+        intent, must never persist. The stores re-check at their boundary too."""
+
+        has_candidate = self.candidate_id is not None
+        has_sell_intent = self.sell_intent_id is not None
+        if has_candidate == has_sell_intent:
+            raise ValueError(
+                "order must have exactly one origin: candidate_id XOR "
+                f"sell_intent_id (got candidate_id={self.candidate_id!r}, "
+                f"sell_intent_id={self.sell_intent_id!r})"
+            )
+        return self
+
+
+class SellIntent(_Entity):
+    """A decision to reduce/exit an open long position (Phase 7 — Sell-Side
+    Protection). The sell-side analogue of :class:`Candidate`: its own lifecycle
+    (``pending → approved → ordered``), producing one SELL :class:`Order`. A
+    ``manual_flatten`` intent is operator-initiated; a ``protection_floor`` intent
+    is an autonomous hard-floor breach. See
+    ``docs/IMPLEMENTATION_PROMPT_PHASE_7.md``.
+    """
+
+    id: str = Field(default_factory=new_id)
+    symbol: str
+    reason: SellReason
+    status: SellIntentStatus = SellIntentStatus.PENDING
+
+    # Shares to exit (capped at the live position at order-creation time — never
+    # a short). For a full flatten / floor exit this is the whole position.
+    target_quantity: int
+
+    # Protection context (set for PROTECTION_FLOOR; None for MANUAL_FLATTEN):
+    # the breached hard floor and the last price that triggered it.
+    floor_price: ResponseSafeFloat = None
+    observed_price: ResponseSafeFloat = None
+
+    session_id: Optional[str] = None
+    # Set when the intent reaches ``ordered`` — links to the SELL Order it produced.
+    order_id: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+    approved_at: Optional[datetime] = None
+    rejected_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    ordered_at: Optional[datetime] = None
 
 
 class Fill(_Entity):
