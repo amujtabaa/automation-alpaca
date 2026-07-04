@@ -456,9 +456,9 @@ async def list_events(
     store: StateStore = Depends(get_store),
 ) -> list[Event]:
     """``correlation_id`` (D-020) returns the complete lifecycle of one
-    candidate — creation, approval, order creation, claim, submission,
-    blocked/recovery, fills, and transitions — in one query, for incident
-    reconstruction."""
+    candidate OR one sell intent (X-004) — creation, approval, order creation,
+    claim, submission, blocked/recovery, fills, and transitions — in one
+    query, for incident reconstruction."""
 
     return await store.list_events(
         limit=limit, event_type=event_type, correlation_id=correlation_id

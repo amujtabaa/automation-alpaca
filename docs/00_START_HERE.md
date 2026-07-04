@@ -13,7 +13,9 @@ or Claude Code against the repository, using these files as the spec.
 4. `03_UI_WORKFLOW.md` — cockpit screens and user flow
 5. `04_IMPLEMENTATION_PLAN.md` — phased build sequence and tooling
 6. `05_REVIEW_CHECKLIST.md` — what to verify in agent output
-7. `AGENTS.md` / `CLAUDE.md` — short rule files for coding agents
+7. `INVARIANTS.md` — the living invariant registry; the oracle for review,
+   kept separate from any implementer's own tests (see D-025)
+8. `AGENTS.md` / `CLAUDE.md` — short rule files for coding agents
 
 ## What This Project Is
 
@@ -48,6 +50,129 @@ and implement code.
 
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
+
+### D-025 — Phase-7 sell-intent lifecycle remediation (X-001..X-005): atomic flatten, self-heal, needs_review eligibility, sell correlation
+**Context.** Two rounds of independent review of the Phase-7 sell-side work —
+D-021's readiness gate and D-024's own AIR Group C — had already passed. A
+*third*, different-lineage review (external tooling, not this codebase's own
+review loop) then found one CRITICAL and two HIGH defects the in-loop review
+had missed, plus two lower-severity gaps. `docs/INVARIANTS.md`'s companion
+retro (`REVIEW_LOOP_REFINEMENT.md`, kept outside the docs tree as project
+history rather than architecture) names the root causes: the in-loop reviewer
+had been checking the implementer's own tests as its oracle (X-002's tell —
+the ADR required self-heal, the code didn't do it, and the test *asserted the
+buggy behavior* as correct), review was scoped per-increment so a race
+*between* two increments was invisible (X-001), and shared context between
+implementer and reviewer meant a shared blind spot (X-003: this project's own
+prior session had rewritten `base.py`'s docstrings to *delete* the
+needs_review clause, so the code and the ADR came to silently disagree with
+each other, not just with the truth). `docs/INVARIANTS.md` — an oracle
+deliberately separate from any implementation's own tests — is the direct
+structural fix for the first root cause; this entry records the four
+technical fixes plus the process gap.
+
+**(X-001, CRITICAL) `POST /positions/{symbol}/flatten` is now backed by one
+atomic `StateStore.flatten_position` operation, not a route-level
+check-then-later-create.** The prior route shape — call
+`active_sell_intent_for(symbol)`, then *separately* call
+`create_sell_intent(MANUAL_FLATTEN, ...)` as its own lock hold — left a window
+where a concurrent protection tick's own `create_sell_intent(PROTECTION_FLOOR,
+...)` call could win the single-flight dedup. The human's flatten click would
+silently receive back a `protection_floor` intent instead of the
+`manual_flatten` it asked for; under a kill switch that intent is held
+unsubmitted (D-P2's protection-pauses-but-buys-block rule), so the click reads
+as success while the position keeps bleeding. Fixed by a single new store
+method, `flatten_position(symbol)`, that reads the live position, stands down
+any non-live `PROTECTION_FLOOR` exit (a `CREATED` order is canceled; a
+stranded no-order `APPROVED`/`PENDING` intent is expired), then
+creates+approves+dispatches a fresh `MANUAL_FLATTEN` — all under **one
+continuous lock hold**, mirroring D-017's `claim_order_for_submission`
+pattern (pure planner + single lock, not a new primitive). The route is now a
+thin caller: normalize the symbol, check for a position, run the
+broker-facing `cancel_open_buys` pre-step (this stays outside the atomic op
+deliberately — it needs a broker round-trip, and the store lock must never be
+held across network IO; `flatten_position` re-reads the live position under
+its own lock regardless, so a buy that fills concurrently with the cancel is
+still sized correctly), then call `store.flatten_position` and translate its
+result. See `docs/INVARIANTS.md` INV-034 through INV-037. Both stores
+implement the same lock-acquisition semantics via different internal
+structuring — `InMemoryStateStore` nests everything in one `_atomic()` (pure
+Python snapshot/restore, safely nestable); `SqliteStateStore` runs several
+small sequential `_tx()` transactions under the one continuous lock hold,
+since real SQL transactions can't nest — the **lock**, not transaction
+granularity, is what closes the race; a crash mid-sequence in the SQLite path
+leaves a safe, independently-recoverable state at each step. Proven under real
+concurrent scheduling (`asyncio.gather`, both interleaving orders) at both the
+store layer (`tests/test_phase7_flatten_atomic.py`) and the HTTP layer
+(`tests/test_phase7_routes.py::test_flatten_http_race_with_concurrent_protection_create`).
+
+**(X-002, HIGH) `create_order_for_sell_intent` self-heals `approved → expired`
+on every dispatch rejection, closing a gap between the code and the ADR's
+explicit "Self-heal (blocker)" clause.** Any rejection after approval —
+oversell, an invalid quantity, an unpriceable LIMIT, a MARKET order carrying a
+limit price — now atomically expires the intent in the same operation that
+raises the error, instead of raising and leaving the intent stranded
+`APPROVED`. A stranded `APPROVED` intent would have permanently poisoned
+X-001/INV-031's single-flight dedup for that symbol. The regression test that
+had asserted the *old* (wrong) `APPROVED` result as the expected outcome was
+corrected to assert `EXPIRED` — see `docs/INVARIANTS.md` INV-033 and
+`REVIEW_LOOP_REFINEMENT.md` for why that test itself was the miss, not just
+the code.
+
+**(X-003, HIGH) `active_sell_intent_for`'s "active" definition is needs_review-
+aware again, matching the ADR's "Stranded-order eligibility (blocker)"
+clause.** An `ordered` intent whose order is stuck in an OPEN `needs_review`
+recovery (AIR-002, e.g. a transiently un-priceable fill) no longer counts as
+active — a spurious escalation must never permanently disable protection for a
+still-breaching symbol. `unresolved` recoveries still count as active (the
+recovery loop is still working them transiently). This is now the **one**
+canonical definition, in `app.store.core.sell_intent_is_active`, consulted
+identically by both stores — see `docs/INVARIANTS.md` INV-032.
+
+**(X-004, MEDIUM) Every event on a protective-sell's order now carries
+`correlation_id = sell_intent_id`, not just the creation events.** The generic
+event writer in both stores previously defaulted `correlation_id` from
+`candidate_id` only (D-020) — always `None` for a sell order, since order
+origin is `candidate_id` XOR `sell_intent_id` (never both). Claim,
+blocked-claim, submission, stale, fill, and recovery events for a protective
+sell all lost the correlation key, so `GET
+/api/events?correlation_id=<sell_intent_id>` returned only the creation
+events, never the execution trail (only the sell-intent planners in
+`app/store/core.py` that already passed `correlation_id=intent.id` explicitly
+were unaffected). Fixed centrally in the event-write path: resolve
+`correlation_id` from the owning order's `sell_intent_id` whenever neither an
+explicit `correlation_id` nor a `candidate_id` is available but `order_id` is.
+See `docs/INVARIANTS.md` INV-041, verified end-to-end through the real
+monitoring-loop functions (not just the planners) in
+`tests/test_phase7_sell_correlation.py`.
+
+**(X-005) This entry, plus `docs/INVARIANTS.md`.** The registry is the
+structural answer to the review-loop retro's core lesson: an invariant that
+lives only in an ADR paragraph (X-003) or only in the implementer's own test
+assertions (X-002) is not actually pinned — it can drift silently. Future
+reviews of this codebase should probe against `docs/INVARIANTS.md` directly,
+write fresh tests against its statements rather than re-running the linked
+pinning tests, and add an entry here in the same session a new blocker-level
+rule is introduced, not as a follow-up.
+
+**Explicitly not closed by this entry:** an independent, different-lineage
+adversarial re-review of the X-001..X-003 diff is a merge-blocker for this
+work per the remediation plan — an in-repo review (however fresh-framed) is
+not a substitute for that external half of the gate, and this entry does not
+claim to satisfy it.
+
+**Enforcement points:** `app/store/core.py` (`plan_flatten_position`,
+`FlattenPlan`; `plan_create_order_for_sell_intent`'s self-heal;
+`sell_intent_is_active`'s `order_needs_review` param), `app/store/base.py`
+(`StateStore.flatten_position` abstract method, `FlattenResult`),
+`app/store/memory.py` + `sqlite.py` (`flatten_position`,
+`_order_needs_review_unlocked`/`_locked`, the `_insert_event`/
+`_append_event_unlocked` correlation resolution), `app/api/routes_trading.py`
+(`flatten_position` route, now a thin caller). New tests:
+`tests/test_phase7_flatten_atomic.py`, `tests/test_phase7_sell_correlation.py`;
+extended: `tests/test_phase7_sell_intents.py`, `tests/test_store_core.py`,
+`tests/test_phase7_routes.py`. `docs/INVARIANTS.md` added as a new canonical
+file (see its own header for how to use it).
 
 ### D-024 — AIR remediation Group C: test-quality (harness rare-branch proof + version-proof warnings)
 **Context.** The final AIR subset is about the *tests* themselves, not production

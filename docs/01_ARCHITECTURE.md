@@ -19,7 +19,10 @@ faster beta iteration *as long as it stays thin*.
 ## Non-Negotiable Rules
 
 These are the project's safety and structure invariants. They override
-convenience.
+convenience. `docs/INVARIANTS.md` is the fuller, living registry (every
+blocker-level rule from every ADR, plus the pinning test(s) for each) — this
+list is the short form that belongs in an auto-loaded file; add a new
+blocker-level rule to both places, not just one (D-025).
 
 1. No live trading in beta. Alpaca Paper only.
 2. No real credentials. Paper keys only, environment-gated.

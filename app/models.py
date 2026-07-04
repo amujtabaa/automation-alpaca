@@ -515,15 +515,17 @@ class Event(_Entity):
     fill_id: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
-    # One key that ties a whole candidate lifecycle together for incident
-    # reconstruction (D-020): candidate creation stamps it, and every downstream
-    # event (approval, order creation, claim, submission, blocked/recovery,
-    # fills, transitions) carries the same value. It is the owning candidate's id
-    # — the store resolves it from the event's candidate_id when not passed
-    # explicitly, so one filter (GET /api/events?correlation_id=) returns the
-    # full lifecycle even for events that historically only named an order.
-    # Nullable + additive: pre-D-020 rows and non-candidate events (e.g.
-    # market_data_stale) are None.
+    # One key that ties a whole candidate (or sell-intent) lifecycle together
+    # for incident reconstruction (D-020): candidate creation stamps it, and
+    # every downstream event (approval, order creation, claim, submission,
+    # blocked/recovery, fills, transitions) carries the same value. It is the
+    # owning candidate's id — the store resolves it from the event's
+    # candidate_id when not passed explicitly — OR, when candidate_id is also
+    # absent, from the owning order's sell_intent_id (X-004), so a protective
+    # sell's claim/submit/stale/fill/recovery events correlate too, not just
+    # its creation events. One filter (GET /api/events?correlation_id=) returns
+    # the full lifecycle either way. Nullable + additive: pre-D-020 rows and
+    # non-candidate/non-sell-intent events (e.g. market_data_stale) are None.
     correlation_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
 

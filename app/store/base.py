@@ -149,11 +149,16 @@ class InvalidFillError(StoreError):
 class InvalidOrderError(StoreError):
     """An order operation was rejected for invalid inputs (D-010).
 
-    Raised by ``create_order`` when the order's symbol does not match its
-    candidate, and by ``transition_order`` when ``filled_quantity`` is out of
-    range (`0 <= filled_quantity <= order.quantity`) or would move backward
-    (no broker-correction path exists in beta). A *missing* candidate is
-    reported as :class:`UnknownEntityError`.
+    Raised by ``create_order_for_candidate`` when the order's symbol does not
+    match its candidate; by ``create_order_for_sell_intent``/
+    ``flatten_position`` for an oversell, a non-positive/fractional quantity,
+    an unpriceable LIMIT, or a MARKET order carrying a limit price (each such
+    rejection also self-heals the sell-intent ``approved -> expired``, X-002 —
+    see ``docs/INVARIANTS.md`` INV-033); and by ``transition_order`` when
+    ``filled_quantity`` is out of range (`0 <= filled_quantity <=
+    order.quantity`) or would move backward (no broker-correction path exists
+    in beta). A *missing* candidate/order is reported as
+    :class:`UnknownEntityError`.
     """
 
 
@@ -835,10 +840,15 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> Event:
-        """``correlation_id`` ties a whole candidate lifecycle together for
-        incident reconstruction (D-020). When not passed it defaults to
-        ``candidate_id`` (the owning candidate's id is the correlation key), so
-        every event that names a candidate correlates automatically."""
+        """``correlation_id`` ties a whole candidate (or sell-intent) lifecycle
+        together for incident reconstruction (D-020). When not passed it
+        defaults to ``candidate_id`` (the owning candidate's id is the
+        correlation key), so every event that names a candidate correlates
+        automatically. When ``candidate_id`` is also absent but ``order_id`` is
+        present, it resolves instead from that order's ``sell_intent_id``
+        (X-004) — so a protective-sell order's claim/submit/stale/fill/recovery
+        events correlate on the sell intent, not just its creation events. See
+        ``docs/INVARIANTS.md`` INV-041."""
         ...
 
     @abstractmethod
