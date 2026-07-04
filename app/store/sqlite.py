@@ -1449,10 +1449,21 @@ class SqliteStateStore(StateStore):
                 )
                 own_session = self._session(srow) if srow is not None else None
             current_session = self._ensure_current_session_locked()
+            # Phase 7 §5.2: the owning intent's reason drives the side/reason-aware
+            # gate. Fetched under the same lock so a concurrent transition can't
+            # change it between the read and the CREATED -> SUBMITTING write.
+            sell_reason = None
+            if order is not None and order.sell_intent_id is not None:
+                si_row = self._read_one(
+                    "SELECT reason FROM sell_intents WHERE id = ?",
+                    (order.sell_intent_id,),
+                )
+                sell_reason = SellReason(si_row["reason"]) if si_row is not None else None
             plan = plan_claim_order_for_submission(
                 order=order,
                 own_session=own_session,
                 current_session=current_session,
+                sell_reason=sell_reason,
             )
             if plan.outcome == CLAIM_CLAIMED:
                 updated = plan.order

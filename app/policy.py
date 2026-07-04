@@ -98,6 +98,25 @@ def session_submission_block_reason(
     return order_intent_block_reason(session)
 
 
+def kill_switch_block_reason(session: Optional[SessionRecord]) -> Optional[str]:
+    """Only the **kill-switch** component of the Rule 8 controls, or ``None``.
+
+    Phase 7 / D-P2: a ``PROTECTION_FLOOR`` autonomous exit bypasses ``buys_paused``
+    and closed/unknown-session holds (a lingering position must stay exitable) but
+    **must still be held by the kill switch** — the operator's all-stop. This is a
+    deliberately narrower predicate than ``order_intent_block_reason`` (which also
+    blocks on ``buys_paused``); keeping it separate means the existing BUY gate
+    predicates stay byte-for-byte unchanged (§5.2). ``None`` session ⇒ ``None``
+    (no session to stop), matching ``order_intent_block_reason``'s convention.
+    """
+
+    if session is None:
+        return None
+    if session.kill_switch:
+        return "kill_switch"
+    return None
+
+
 def order_session_resolution_reason(
     session: Optional[SessionRecord],
 ) -> Optional[str]:

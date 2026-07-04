@@ -23,8 +23,14 @@ from app.models import (
     SessionRecord,
     utcnow,
 )
+from app.models import SessionStatus, TradingMode
 from app.store import core
-from app.store.base import OrderTransitionError
+from app.store.base import (
+    CLAIM_BLOCKED,
+    CLAIM_CLAIMED,
+    CLAIM_SKIPPED,
+    OrderTransitionError,
+)
 
 
 def _order(**kw) -> Order:
@@ -320,3 +326,125 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         "expired_sell_intents": 1,
         "position_snapshots": 1,
     }
+
+
+# --- plan_claim_order_for_submission — §5.2 side/reason-aware gate ---------- #
+def _sess(*, kill=False, paused=False, closed=False) -> SessionRecord:
+    return SessionRecord(
+        session_date="2026-07-04",
+        mode=TradingMode.PAPER,
+        status=SessionStatus.CLOSED if closed else SessionStatus.ACTIVE,
+        kill_switch=kill,
+        buys_paused=paused,
+    )
+
+
+def _sell_order(reason_origin="si1", **kw) -> Order:
+    """A CREATED SELL order (XOR origin: sell_intent_id set, candidate_id None)."""
+    defaults = dict(
+        candidate_id=None,
+        sell_intent_id=reason_origin,
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=100,
+        limit_price=None,
+        status=OrderStatus.CREATED,
+    )
+    defaults.update(kw)
+    return Order(**defaults)
+
+
+class TestPlanClaimSellGate:
+    def test_buy_gate_unchanged_blocks_on_kill(self):
+        plan = core.plan_claim_order_for_submission(
+            order=_order(status=OrderStatus.CREATED),
+            own_session=_sess(kill=True),
+            current_session=_sess(kill=True),
+        )
+        assert plan.outcome == CLAIM_BLOCKED
+        assert plan.reason == "kill_switch"
+
+    def test_buy_gate_unchanged_current_session_block(self):
+        # own clean, current paused -> blocked as current_buys_paused (unchanged).
+        plan = core.plan_claim_order_for_submission(
+            order=_order(status=OrderStatus.CREATED),
+            own_session=_sess(),
+            current_session=_sess(paused=True),
+        )
+        assert plan.outcome == CLAIM_BLOCKED
+        assert plan.reason == "current_buys_paused"
+
+    def test_manual_flatten_bypasses_everything(self):
+        plan = core.plan_claim_order_for_submission(
+            order=_sell_order(),
+            own_session=_sess(kill=True, paused=True, closed=True),
+            current_session=_sess(kill=True, paused=True),
+            sell_reason=SellReason.MANUAL_FLATTEN,
+        )
+        assert plan.outcome == CLAIM_CLAIMED
+        assert plan.order.status is OrderStatus.SUBMITTING
+
+    def test_protection_floor_bypasses_pause_and_close(self):
+        plan = core.plan_claim_order_for_submission(
+            order=_sell_order(),
+            own_session=_sess(paused=True, closed=True),
+            current_session=_sess(paused=True),
+            sell_reason=SellReason.PROTECTION_FLOOR,
+        )
+        assert plan.outcome == CLAIM_CLAIMED
+
+    def test_protection_floor_blocked_by_own_kill(self):
+        plan = core.plan_claim_order_for_submission(
+            order=_sell_order(),
+            own_session=_sess(kill=True),
+            current_session=_sess(),
+            sell_reason=SellReason.PROTECTION_FLOOR,
+        )
+        assert plan.outcome == CLAIM_BLOCKED
+        assert plan.reason == "kill_switch"
+
+    def test_protection_floor_blocked_by_current_kill_when_own_clean(self):
+        # The cross-session case the store can't build: own session clean, the
+        # LIVE session kill-switched -> held as current_kill_switch.
+        plan = core.plan_claim_order_for_submission(
+            order=_sell_order(),
+            own_session=_sess(),
+            current_session=_sess(kill=True),
+            sell_reason=SellReason.PROTECTION_FLOOR,
+        )
+        assert plan.outcome == CLAIM_BLOCKED
+        assert plan.reason == "current_kill_switch"
+
+    def test_mislabeled_sell_without_intent_falls_to_strict_path(self):
+        # side SELL but sell_intent_id None (a buy-origin order mislabeled SELL):
+        # does NOT get the bypass — the strict BUY gate applies (fail-safe).
+        order = _sell_order(reason_origin=None, candidate_id="c1", sell_intent_id=None)
+        plan = core.plan_claim_order_for_submission(
+            order=order,
+            own_session=_sess(paused=True),
+            current_session=_sess(),
+            sell_reason=None,
+        )
+        assert plan.outcome == CLAIM_BLOCKED
+        assert plan.reason == "buys_paused"
+
+    def test_sell_with_none_reason_falls_to_strict_path(self):
+        # A SELL whose intent couldn't be resolved (reason None) is NOT bypassed.
+        plan = core.plan_claim_order_for_submission(
+            order=_sell_order(),
+            own_session=_sess(kill=True),
+            current_session=_sess(),
+            sell_reason=None,
+        )
+        assert plan.outcome == CLAIM_BLOCKED
+        assert plan.reason == "kill_switch"
+
+    def test_non_created_order_skipped(self):
+        plan = core.plan_claim_order_for_submission(
+            order=_sell_order(status=OrderStatus.SUBMITTED),
+            own_session=_sess(),
+            current_session=_sess(),
+            sell_reason=SellReason.MANUAL_FLATTEN,
+        )
+        assert plan.outcome == CLAIM_SKIPPED

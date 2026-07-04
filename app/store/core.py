@@ -44,6 +44,7 @@ from app.models import (
     RECOVERY_TRANSITIONS,
     SellIntent,
     SellIntentStatus,
+    SellReason,
     SessionRecord,
     utcnow,
 )
@@ -70,6 +71,7 @@ from app.policy import (
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
+    kill_switch_block_reason,
     limit_price_reason,
     order_intent_block_reason,
     order_session_resolution_reason,
@@ -683,11 +685,76 @@ class ClaimPlan:
     reason: Optional[str] = None
 
 
+def _buy_claim_hold_reason(
+    own_session: Optional[SessionRecord],
+    current_session: Optional[SessionRecord],
+) -> Optional[str]:
+    """The original Rule 8 submission gate, unchanged: a held order is blocked
+    against its OWN session (D-013a) and, failing that, the live session as a
+    process-wide emergency stop. This is exactly the pre-Phase-7 logic, extracted
+    verbatim so every BUY caller and its tests are provably byte-for-byte
+    untouched (§5.2) — the sell-side branch is layered *around* it, never inside
+    it."""
+
+    hold = session_submission_block_reason(own_session)
+    if hold is None:
+        current_block = order_intent_block_reason(current_session)
+        if current_block is not None:
+            hold = f"current_{current_block}"
+    return hold
+
+
+def _claim_hold_reason(
+    order: Order,
+    own_session: Optional[SessionRecord],
+    current_session: Optional[SessionRecord],
+    sell_reason: Optional[SellReason],
+) -> Optional[str]:
+    """Why this ``CREATED`` order must not be claimed for submission, or ``None``.
+
+    Phase 7 side/reason-aware gate (§5.2 / D-P2). A well-formed protective/flatten
+    SELL short-circuits the BUY control checks based on its owning intent's
+    ``reason``. The qualifying gate is deliberately strict — ``side is SELL`` AND
+    ``sell_intent_id`` set AND ``candidate_id`` is ``None`` AND a *known* reason —
+    so a mislabeled or origin-corrupt order can never inherit the bypass; it falls
+    through to the strict BUY path instead (fail-safe).
+
+    * ``MANUAL_FLATTEN`` → never held: a human-commanded flatten always exits,
+      even kill-switched / buys-paused / closed / unknown-session (D-P2).
+    * ``PROTECTION_FLOOR`` → bypass ``buys_paused`` / ``session_closed`` /
+      ``unknown_session`` (a lingering position must stay exitable after close),
+      **but stays blocked by the kill switch** on EITHER the own or the current
+      session — the operator's all-stop halts even autonomous protection, which is
+      then wound down separately (a held protective order is expired, not left
+      forever).
+    * Anything else (a BUY, or a degenerate SELL) → the unchanged BUY gate.
+    """
+
+    is_protective_sell = (
+        OrderSide(order.side) is OrderSide.SELL
+        and order.sell_intent_id is not None
+        and order.candidate_id is None
+        and sell_reason is not None
+    )
+    if is_protective_sell:
+        if sell_reason is SellReason.MANUAL_FLATTEN:
+            return None
+        if sell_reason is SellReason.PROTECTION_FLOOR:
+            if kill_switch_block_reason(own_session) is not None:
+                return "kill_switch"
+            if kill_switch_block_reason(current_session) is not None:
+                return "current_kill_switch"
+            return None
+        # An unrecognized future reason falls through to the strict path.
+    return _buy_claim_hold_reason(own_session, current_session)
+
+
 def plan_claim_order_for_submission(
     *,
     order: Optional[Order],
     own_session: Optional[SessionRecord],
     current_session: Optional[SessionRecord],
+    sell_reason: Optional[SellReason] = None,
 ) -> ClaimPlan:
     """Decide whether a ``CREATED`` order may be claimed for submission.
 
@@ -695,9 +762,11 @@ def plan_claim_order_for_submission(
     gated against its OWN session, not merely the live one, so a kill-switched
     order from a prior session can't slip through after a date rollover mints a
     fresh permissive session). ``current_session`` is the live session, checked
-    as a process-wide emergency stop. The store calls this under its lock, so
-    the control state read here cannot change between the decision and the
-    ``CREATED → SUBMITTING`` write the store then applies.
+    as a process-wide emergency stop. ``sell_reason`` is the owning
+    ``SellIntent.reason`` for a SELL order (``None`` for a BUY, or when the intent
+    can't be resolved) — the store fetches it under the same lock. The store calls
+    this under its lock, so the control state read here cannot change between the
+    decision and the ``CREATED → SUBMITTING`` write the store then applies.
     """
 
     if order is None or order.status is not OrderStatus.CREATED:
@@ -705,11 +774,7 @@ def plan_claim_order_for_submission(
         # claimed, or it never existed. Nothing to do.
         return ClaimPlan(CLAIM_SKIPPED)
 
-    hold = session_submission_block_reason(own_session)
-    if hold is None:
-        current_block = order_intent_block_reason(current_session)
-        if current_block is not None:
-            hold = f"current_{current_block}"
+    hold = _claim_hold_reason(order, own_session, current_session, sell_reason)
     if hold is not None:
         return ClaimPlan(CLAIM_BLOCKED, reason=hold)
 
