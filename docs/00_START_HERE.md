@@ -94,17 +94,46 @@ deliberately — it needs a broker round-trip, and the store lock must never be
 held across network IO; `flatten_position` re-reads the live position under
 its own lock regardless, so a buy that fills concurrently with the cancel is
 still sized correctly), then call `store.flatten_position` and translate its
-result. See `docs/INVARIANTS.md` INV-034 through INV-037. Both stores
+result. See `docs/INVARIANTS.md` INV-034 through INV-038. Both stores
 implement the same lock-acquisition semantics via different internal
 structuring — `InMemoryStateStore` nests everything in one `_atomic()` (pure
 Python snapshot/restore, safely nestable); `SqliteStateStore` runs several
 small sequential `_tx()` transactions under the one continuous lock hold,
 since real SQL transactions can't nest — the **lock**, not transaction
-granularity, is what closes the race; a crash mid-sequence in the SQLite path
-leaves a safe, independently-recoverable state at each step. Proven under real
+granularity, is what closes the CONCURRENCY race. Proven under real
 concurrent scheduling (`asyncio.gather`, both interleaving orders) at both the
 store layer (`tests/test_phase7_flatten_atomic.py`) and the HTTP layer
 (`tests/test_phase7_routes.py::test_flatten_http_race_with_concurrent_protection_create`).
+
+**Follow-up (mandatory adversarial re-review of this diff, per the
+remediation plan's merge-blocker checklist): a real crash-durability gap, not
+just a cosmetic one.** The first draft of this entry claimed "a crash
+mid-sequence in the SQLite path leaves a safe, independently-recoverable
+state at each step" — a fresh-context review of the diff (given only
+`docs/INVARIANTS.md` and the source, no rationale or tests) disproved that
+for one specific step: `SqliteStateStore.flatten_position` committed the
+fresh intent's insert+approve in one transaction, then dispatched its order
+in a SEPARATE transaction. A crash landing between those two commits (not a
+concurrency race — no `await` occurs between them, so no other coroutine can
+interleave; only a hard process kill) durably strands a `MANUAL_FLATTEN`
+intent `APPROVED` with no order. `plan_flatten_position` (the shared planner
+in `app/store/core.py`) treated ANY `MANUAL_FLATTEN` active intent as "the
+existing exit" unconditionally, so a later flatten call for the same symbol
+returned the dead, order-less intent as success (HTTP 200, `order=None`)
+forever, and permanently poisoned single-flight dedup — a protection tick
+could never open a real protective exit for the symbol either. Fixed in the
+shared planner (not sqlite-specific): a `MANUAL_FLATTEN` active intent is
+only "existing" when `status is ORDERED`; a `pending`/`approved` one falls
+through to the same self-heal/supersede path a stranded `PROTECTION_FLOOR`
+intent already had. `InMemoryStateStore` cannot reach this exact state via a
+crash (its whole sequence is one `_atomic()` block with no durability
+window), but the fix lives in the shared pure function, so both stores'
+*contract* is now correct, not just sqlite's crash window. See
+`docs/INVARIANTS.md` INV-038;
+`tests/test_phase7_flatten_atomic.py::test_stranded_manual_flatten_with_no_order_self_heals`
+constructs the stranded state directly (confirmed to fail without the fix on
+`InMemoryStateStore` too, via this same public API — not only reachable
+through sqlite's specific crash window).
 
 **(X-002, HIGH) `create_order_for_sell_intent` self-heals `approved → expired`
 on every dispatch rejection, closing a gap between the code and the ADR's

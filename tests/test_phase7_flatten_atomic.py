@@ -110,6 +110,48 @@ async def test_idempotent_when_own_manual_flatten_active(any_store):
     assert len(sells) == 1
 
 
+# ---- a stranded MANUAL_FLATTEN (crash between commits) self-heals -------- #
+
+
+async def test_stranded_manual_flatten_with_no_order_self_heals(any_store):
+    """Adversarial re-review finding on the X-001 diff: ``SqliteStateStore.
+    flatten_position`` commits the fresh intent's insert+approve in one
+    transaction, then dispatches the order in a SEPARATE transaction. A crash
+    landing between those two commits durably strands a ``MANUAL_FLATTEN``
+    intent at APPROVED with no order at all. Before this fix, a later flatten
+    call trusted ANY MANUAL_FLATTEN active intent as "the existing exit" and
+    returned it as-is — silently no-op'ing forever (HTTP 200, order=None)
+    while permanently poisoning single-flight dedup for the symbol. Simulates
+    the stranded state directly (bypassing the atomic dispatch, exactly as a
+    crash would leave it) rather than trying to interrupt a real transaction
+    mid-flight."""
+
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    session = await any_store.get_current_session()
+    stranded = await any_store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=100,
+        session_id=session.id,
+    )
+    await any_store.transition_sell_intent(stranded.id, SellIntentStatus.APPROVED)
+    assert stranded.order_id is None
+
+    result = await any_store.flatten_position("AAPL")
+
+    assert result.outcome == FLATTEN_CREATED
+    assert result.superseded is True
+    assert result.intent.reason is SellReason.MANUAL_FLATTEN
+    assert result.intent.id != stranded.id
+    assert result.order is not None
+    assert result.order.status is OrderStatus.CREATED
+    assert (await any_store.get_sell_intent(stranded.id)).status is SellIntentStatus.EXPIRED
+    # A THIRD call is idempotent against the freshly-created (real) exit —
+    # not against the now-expired stranded one.
+    third = await any_store.flatten_position("AAPL")
+    assert third.outcome == FLATTEN_EXISTING
+    assert third.intent.id == result.intent.id
+
+
 # ---- supersede an unsent PROTECTION_FLOOR exit ---------------------------- #
 
 

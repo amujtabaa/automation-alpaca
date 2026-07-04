@@ -1394,9 +1394,19 @@ class SqliteStateStore(StateStore):
             # their own small SQL transaction (matching close_session's and
             # _run_protection's existing multi-step-under-one-lock shape) —
             # what makes this safe against the CONCURRENCY race is the
-            # continuous lock hold, not a single giant transaction; a crash
-            # between steps leaves a safe, recoverable intermediate state
-            # (never a double-sell, never a silently-blocked symbol).
+            # continuous lock hold, not a single giant transaction; never a
+            # double-sell (this is verified for real races). A hard CRASH
+            # between the two commits below (insert+approve, then dispatch) is
+            # a separate, narrower concern: it durably strands the fresh
+            # MANUAL_FLATTEN intent APPROVED with no order. That is NOT
+            # silently unrecoverable — plan_flatten_position (app/store/core.py)
+            # treats a MANUAL_FLATTEN intent found here as "existing" only when
+            # it is already ORDERED; a stranded pending/approved one instead
+            # self-heals on the next flatten call, exactly like a stranded
+            # PROTECTION_FLOOR intent (see docs/INVARIANTS.md INV-038 — an
+            # adversarial re-review of this diff found the earlier version of
+            # this comment's "never a silently-blocked symbol" claim was false
+            # before that fix).
             position = self._position_locked(key)
             active = self._active_sell_intent_locked(key)
             active_order = None

@@ -706,22 +706,26 @@ class FlattenPlan:
 
     ``flat``: no open position; the caller (route) surfaces a 409.
 
-    ``existing``: return ``existing_intent``/``existing_order`` as-is —
-    either it is ALREADY the caller's own ``manual_flatten`` (idempotent), or a
-    ``protection_floor`` exit that is genuinely LIVE at the broker (executing;
-    left alone, never captured or duplicated).
+    ``existing``: return ``existing_intent``/``existing_order`` as-is — either
+    it is ALREADY the caller's own ``manual_flatten`` and has a real order
+    (``ORDERED``; idempotent), or a ``protection_floor`` exit that is
+    genuinely LIVE at the broker (executing; left alone, never captured or
+    duplicated).
 
-    ``supersede_and_create``: any active ``protection_floor`` exit that is
-    NOT yet live (no order at all — a stranded ``pending``/``approved``
-    intent — or a still-``created`` order) is stood down first
-    (``supersede_*`` fields, applied in the SAME atomic block as the create
-    below), then a fresh ``manual_flatten`` intent for ``target_quantity`` is
-    inserted directly and dispatched through the same order-handoff machinery
-    ``create_order_for_sell_intent`` uses — so the returned intent's ``reason``
-    is GUARANTEED ``manual_flatten``, never a deduped intent of a different
-    reason. This is what closes X-001: nothing else can write to this symbol's
-    sell intents between the supersede and the create, because both happen
-    without ever releasing the lock.
+    ``supersede_and_create``: any active exit that is NOT yet live is stood
+    down first (``supersede_*`` fields, applied in the SAME atomic block as
+    the create below), then a fresh ``manual_flatten`` intent for
+    ``target_quantity`` is inserted directly and dispatched through the same
+    order-handoff machinery ``create_order_for_sell_intent`` uses — so the
+    returned intent's ``reason`` is GUARANTEED ``manual_flatten``, never a
+    deduped intent of a different reason. "Not yet live" covers: a
+    ``protection_floor`` intent with no order at all, or a still-``created``
+    order; AND a ``manual_flatten`` intent stranded ``pending``/``approved``
+    with no order — reachable only via a crash between two separate commits
+    in ``SqliteStateStore.flatten_position`` (see the inline comment below),
+    never in ordinary operation. This is what closes X-001: nothing else can
+    write to this symbol's sell intents between the supersede and the create,
+    because both happen without ever releasing the lock.
     """
 
     outcome: str
@@ -755,7 +759,10 @@ def plan_flatten_position(
         return FlattenPlan(FLATTEN_FLAT)
 
     if active_intent is not None:
-        if active_intent.reason is SellReason.MANUAL_FLATTEN:
+        if (
+            active_intent.reason is SellReason.MANUAL_FLATTEN
+            and active_intent.status is SellIntentStatus.ORDERED
+        ):
             return FlattenPlan(
                 FLATTEN_EXISTING,
                 existing_intent=active_intent,
@@ -763,14 +770,33 @@ def plan_flatten_position(
             )
         # A protection_floor exit is active. Genuinely live at the broker (an
         # order exists and is no longer CREATED) -> already executing, leave it.
-        if active_order is not None and active_order.status is not OrderStatus.CREATED:
+        if (
+            active_intent.reason is SellReason.PROTECTION_FLOOR
+            and active_order is not None
+            and active_order.status is not OrderStatus.CREATED
+        ):
             return FlattenPlan(
                 FLATTEN_EXISTING,
                 existing_intent=active_intent,
                 existing_order=active_order,
             )
         # Not live: supersede. A CREATED order cancels locally; a stranded
-        # pending/approved intent with no order at all expires.
+        # pending/approved intent with no order at all expires. This also
+        # covers a MANUAL_FLATTEN intent found here at PENDING/APPROVED (not
+        # ORDERED) with no order (X-001 follow-up, adversarial re-review
+        # finding): in normal operation a fresh MANUAL_FLATTEN only sits at
+        # PENDING/APPROVED transiently, mid-dispatch, under the SAME
+        # continuous lock this function is always called within — reaching
+        # here on a LATER call means a hard crash landed between the
+        # intent-approve commit and the order-dispatch commit
+        # (SqliteStateStore.flatten_position commits those as two separate
+        # transactions; InMemoryStateStore's single _atomic() block cannot
+        # produce this state at all). Treating a stranded MANUAL_FLATTEN as
+        # "the existing exit" would silently no-op forever — HTTP 200,
+        # order=None — and permanently poison single-flight dedup for the
+        # symbol. Self-healing it here (same as a stranded protection_floor
+        # intent) closes that window: the dead intent expires and a real
+        # exit is created in its place.
         now = utcnow()
         supersede_order_cancel = None
         supersede_cancel_event = None

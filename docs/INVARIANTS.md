@@ -198,6 +198,34 @@ supersede logic of its own.
 three `asyncio.gather` concurrent race tests),
 `tests/test_phase7_routes.py::test_flatten_http_race_with_concurrent_protection_create`.
 
+**INV-038 — A `MANUAL_FLATTEN` intent returned as "existing" must have a REAL
+order** — not just the right `reason` (INV-034), but `status is ORDERED` with
+a linked order. A `MANUAL_FLATTEN` intent found `pending`/`approved` with no
+order is stranded and must be self-healed (expired, then a fresh one
+created), never trusted as-is.
+*Why:* an adversarial re-review of the X-001 diff found that
+`SqliteStateStore.flatten_position` commits the intent's insert+approve and
+the order's dispatch as two SEPARATE SQL transactions (the lock, not
+transaction granularity, closes the concurrency race — see INV-050 — but a
+hard crash between those two commits is a real durability gap). A
+`MANUAL_FLATTEN` intent only sits at `pending`/`approved` transiently,
+mid-dispatch; before this fix, `plan_flatten_position` treated ANY
+`MANUAL_FLATTEN` active intent as "the existing exit" unconditionally,
+so a later flatten call for the same symbol returned the dead, order-less
+intent as success (`order=None`, HTTP 200) forever, and permanently
+poisoned single-flight dedup for the symbol — a protection tick could never
+create a real protective order either. `InMemoryStateStore` cannot reach
+this exact state via a crash (its whole sequence is one `_atomic()` block),
+but `plan_flatten_position` is a shared pure function, so the fix (only
+treat `MANUAL_FLATTEN` as "existing" when `status is ORDERED`; otherwise fall
+through to the same supersede/self-heal logic a stranded `PROTECTION_FLOOR`
+intent already gets) closes the gap for both stores' contract, not just
+sqlite's crash window.
+*Pinned by:* `tests/test_phase7_flatten_atomic.py::test_stranded_manual_flatten_with_no_order_self_heals`
+(both stores — confirmed to fail without the fix on memory.py too, not only
+sqlite.py, since the test constructs the stranded state directly rather than
+via an interrupted transaction).
+
 **INV-035 — A stranded `PROTECTION_FLOOR` intent with no order at all (crash
 between approve and order-create) is superseded by a flatten exactly like one
 with a `CREATED`-but-unsent order** — a human flatten must never be a no-op

@@ -531,9 +531,13 @@ class StateStore(ABC):
     ) -> FlattenResult:
         """Atomically open (or return the existing) ``manual_flatten`` exit for
         ``symbol`` — the whole "read the live position, stand down any
-        non-live ``protection_floor`` exit, create + approve + dispatch a fresh
+        non-live exit (a ``protection_floor`` intent, OR a stranded
+        ``manual_flatten`` intent that never got as far as having an order —
+        docs/INVARIANTS.md INV-038), create + approve + dispatch a fresh
         ``manual_flatten``" sequence, evaluated and applied under ONE lock hold
-        (X-001).
+        (X-001). "The existing" one is only ever returned as-is when it is
+        already ``ORDERED`` (has a real order) — never a merely
+        ``pending``/``approved`` one, which would mean nothing actually exits.
 
         This is the ONLY correct way to flatten a position from a route or any
         other caller that must guarantee it gets back a ``manual_flatten``
