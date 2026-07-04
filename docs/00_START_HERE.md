@@ -49,6 +49,48 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-024 — AIR remediation Group C: test-quality (harness rare-branch proof + version-proof warnings)
+**Context.** The final AIR subset is about the *tests* themselves, not production
+behaviour — a harness that passes its invariants can still be silently blind to the
+rare recovery branches, and a warning-as-error guard can silently stop firing on a
+newer Python. Both are "green but not actually protecting you" failure modes.
+
+**(C1 · AIR-010) The lifecycle harness now *proves* it reaches the rare recovery
+branches.** `tests/test_lifecycle_state_machine.py` gained `hypothesis.event()`
+markers, a `target()` (peak open-recovery count, fed once per example at teardown)
+to bias the random search toward recovery-rich interleavings, and cross-instance
+`_COVERAGE` counters. Three self-contained rules construct the rare states directly
+so they are reachable regardless of luck: `crash_after_claim` (a stale, id-less
+`SUBMITTING` order — the B2/AIR-003 precondition), `force_submit_cancel_orphan`
+(the F-002 orphan tracked only by an open recovery record), and
+`divergent_fill_and_reconcile` (a B3/AIR-002 unrecordable fill escalated to
+`needs_review`, position still deriving only from fills). The **hard** "a critical
+recovery branch is unreachable" assertion lives in a **deterministic driver**
+(`test_harness_rules_reach_recovery_branches`, parametrized over both stores), not
+in the random run — asserting a random run hit a specific branch is inherently
+seed-flaky (verified: it failed under some `--hypothesis-seed`s), so the guard
+instead invokes each rare-branch rule directly and asserts its counter advanced.
+The `event()`/`target()` calls are wrapped so they no-op outside a Hypothesis
+context (the driver calls the rules directly). Also pinned: the `SimBrokerAdapter`
+models `client_order_id` idempotency (a duplicate `submit_order` returns the same
+broker id and preserves broker-side state) — the exact property B2's re-drive
+relies on, so the harness exercising that path is not a lie
+(`test_sim_submit_is_idempotent_by_client_order_id`).
+
+**(C2 · AIR-011) Resource-leak enforcement is version-proof.** `pyproject.toml`
+promoted an unclosed-`sqlite3.Connection` `ResourceWarning` to an error (F-008), but
+on Python 3.13+ pytest delivers a GC-time (unraisable) `ResourceWarning` wrapped in
+`PytestUnraisableExceptionWarning` — **not** a `ResourceWarning` subclass, so the
+plain filter would let a leaked connection escape on newer Pythons. Added
+`error::pytest.PytestUnraisableExceptionWarning` alongside the existing filter so
+both the plain and wrapped forms fail the suite on every Python version.
+`tests/test_warning_hygiene.py` pins both (the wrapped test fails without the new
+filter — verified). This immediately earned its keep: it caught a real leaked event
+loop in the C1 deterministic driver (its `teardown` had aborted before
+`loop.close()` when `target()` raised outside a Hypothesis context), which was then
+fixed. Full suite is green under the stricter filter — no unclosed
+connections/cursors remain.
+
 ### D-022 — AIR remediation Group B: durable submission/fill recovery
 **Context.** Group B is the temporal/recovery subset of the AIR findings
 (AIR-001/002/003) — higher blast radius than Group A because it spans the broker
