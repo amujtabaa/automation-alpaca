@@ -27,7 +27,13 @@ from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import TimeInForce
 from alpaca.trading.requests import LimitOrderRequest
 
-from app.broker.adapter import BrokerAdapter, BrokerError, BrokerFill, BrokerOrderUpdate
+from app.broker.adapter import (
+    BrokerAdapter,
+    BrokerError,
+    BrokerFill,
+    BrokerOrderUpdate,
+    TerminalBrokerError,
+)
 from app.features import session_type_for
 from app.models import Order, OrderSide, OrderStatus, SessionType, utcnow
 
@@ -226,18 +232,36 @@ class AlpacaPaperAdapter(BrokerAdapter):
                     )
                     return str(existing.id)
                 except Exception as lookup_exc:
-                    raise BrokerError(
+                    # The broker says this client_order_id is a duplicate but we
+                    # cannot look up the existing order — its fate is unknowable
+                    # from here, so a re-drive cannot safely retry it. Terminal
+                    # (AIR-003): escalate to needs_review rather than loop forever.
+                    raise TerminalBrokerError(
                         f"Duplicate submit for order {order.id!r}: original submit "
                         f"rejected but lookup of existing order also failed."
                     ) from lookup_exc
             # Do NOT include exc in the message string — it may echo back request
             # params that could include keys if the SDK surfaces them.
+            #
+            # AIR-003 classification: a definitive 4xx rejection (bad request,
+            # auth, forbidden/restricted account, unprocessable — e.g. insufficient
+            # buying power, non-tradable/delisted symbol) will NOT succeed on
+            # retry, so surface it as TerminalBrokerError. A stale-SUBMITTING
+            # re-drive then escalates it to a durable needs_review record instead
+            # of livelocking every tick and inflating exposure forever. Everything
+            # else (429 rate-limit, 5xx, unknown) is transient -> plain BrokerError.
+            if code in (400, 401, 403, 404, 422):
+                raise TerminalBrokerError(
+                    f"Broker definitively rejected order {order.id!r} "
+                    f"({order.symbol} {order.quantity} shares, HTTP {code})."
+                ) from exc
             raise BrokerError(
                 f"Failed to submit order {order.id!r} ({order.symbol} "
                 f"{order.quantity} shares)."
             ) from exc
         except Exception as exc:
-            # Network/timeout/unknown — a real failure, surfaced (never silent).
+            # Network/timeout/unknown — a transient failure, surfaced (never
+            # silent). Retryable: a re-drive may succeed on the next tick.
             raise BrokerError(
                 f"Failed to submit order {order.id!r} ({order.symbol} "
                 f"{order.quantity} shares)."

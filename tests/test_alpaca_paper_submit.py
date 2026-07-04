@@ -17,16 +17,27 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 
 pytest.importorskip("alpaca")
 
+from alpaca.common.exceptions import APIError  # noqa: E402
+
+from app.broker.adapter import BrokerError, TerminalBrokerError  # noqa: E402
 from app.broker.alpaca_paper import AlpacaPaperAdapter  # noqa: E402
 from app.models import Order, OrderSide, OrderType  # noqa: E402
 
 pytestmark = pytest.mark.anyio
+
+
+def _api_error(status_code: int, message: str = "rejected") -> APIError:
+    """An ``APIError`` whose read-only ``status_code`` resolves to ``status_code``
+    (derived from the SDK's ``http_error.response.status_code``)."""
+
+    http_error = SimpleNamespace(response=SimpleNamespace(status_code=status_code))
+    return APIError('{"message": "%s"}' % message, http_error=http_error)
 
 # 2026-01-07 (Wednesday). ET offsets: EST = UTC-5 in January.
 _PRE_MARKET = datetime(2026, 1, 7, 10, 0, tzinfo=timezone.utc)  # 05:00 ET
@@ -129,3 +140,64 @@ class TestRequestConstruction:
         (req,) = adapter._client.submit_order.call_args.args
         assert req.type == AlpacaOrderType.LIMIT
         assert req.time_in_force == TimeInForce.DAY
+
+
+class TestSubmitErrorClassification:
+    """AIR-003 review: a definitive broker rejection must surface as
+    TerminalBrokerError so a stale-SUBMITTING re-drive escalates to needs_review
+    instead of livelocking forever; a transient failure stays a plain BrokerError
+    (retryable)."""
+
+    @pytest.mark.parametrize("code", [400, 401, 403, 404, 422])
+    async def test_definitive_4xx_is_terminal(self, monkeypatch, code):
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(side_effect=_api_error(code, "no buying power"))
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+        with pytest.raises(TerminalBrokerError):
+            await adapter.submit_order(_order())
+
+    @pytest.mark.parametrize("code", [429, 500, 502, 503])
+    async def test_transient_5xx_or_rate_limit_is_plain_broker_error(
+        self, monkeypatch, code
+    ):
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(side_effect=_api_error(code, "try later"))
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+        with pytest.raises(BrokerError) as ei:
+            await adapter.submit_order(_order())
+        assert not isinstance(ei.value, TerminalBrokerError)  # retryable
+
+    async def test_network_error_is_transient(self, monkeypatch):
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(side_effect=ConnectionError("boom"))
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+        with pytest.raises(BrokerError) as ei:
+            await adapter.submit_order(_order())
+        assert not isinstance(ei.value, TerminalBrokerError)
+
+    async def test_duplicate_recovered_returns_existing_id(self, monkeypatch):
+        # Idempotency preserved: a duplicate client_order_id whose existing order
+        # looks up cleanly returns that broker id (never raises, never re-submits).
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(
+            side_effect=_api_error(409, "duplicate client_order_id")
+        )
+        adapter._client.get_order_by_client_order_id = Mock(
+            return_value=SimpleNamespace(id="existing-broker-id")
+        )
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+        assert await adapter.submit_order(_order()) == "existing-broker-id"
+
+    async def test_duplicate_but_lookup_fails_is_terminal(self, monkeypatch):
+        # The broker says duplicate but we cannot confirm the existing order — its
+        # fate is unknowable, so a re-drive must escalate, not retry forever.
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(
+            side_effect=_api_error(422, "duplicate client_order_id")
+        )
+        adapter._client.get_order_by_client_order_id = Mock(
+            side_effect=ConnectionError("lookup failed")
+        )
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+        with pytest.raises(TerminalBrokerError):
+            await adapter.submit_order(_order())

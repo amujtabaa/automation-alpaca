@@ -127,7 +127,7 @@ async def run_monitoring_tick(
     """
 
     await _submit_pending_orders(store, adapter)
-    await _redrive_stale_submitting(store, adapter)
+    await _redrive_stale_submitting(store, adapter, settings)
     await _reconcile_open_orders(store, adapter, settings)
     await _recover_unpersisted_submits(store, adapter)
 
@@ -246,7 +246,9 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
             )
 
 
-async def _redrive_stale_submitting(store: StateStore, adapter: BrokerAdapter) -> None:
+async def _redrive_stale_submitting(
+    store: StateStore, adapter: BrokerAdapter, settings: Settings
+) -> None:
     """Recover ``SUBMITTING`` orders left id-less by a crash between claim and
     submit (AIR-003).
 
@@ -270,6 +272,16 @@ async def _redrive_stale_submitting(store: StateStore, adapter: BrokerAdapter) -
       transition) → escalate to a durable ``needs_review`` recovery record rather
       than guessing. Deduped: an order already carrying an open recovery record is
       neither re-driven nor re-recorded.
+
+    **Livelock backstop (AIR-003 review).** The transient path retries every tick.
+    A *permanent* broker rejection that a (buggy or unknown-error) adapter reports
+    as a plain ``BrokerError`` would otherwise retry forever, inflating exposure and
+    never surfacing. So each transient failure records a durable
+    ``stale_submitting_redrive_deferred`` audit event; once an order accumulates
+    ``settings.stale_submitting_max_redrive_attempts`` of them it is escalated to a
+    ``needs_review`` record instead of re-driven again — a bound the correct
+    :class:`TerminalBrokerError` classification should normally beat, but which no
+    misclassification can slip past.
     """
 
     stale = [
@@ -284,9 +296,31 @@ async def _redrive_stale_submitting(store: StateStore, adapter: BrokerAdapter) -
         statuses=RECOVERY_OPEN_STATUSES
     )
     already_covered = {r.local_order_id for r in open_recoveries}
+    max_attempts = settings.stale_submitting_max_redrive_attempts
 
     for order in stale:
         if order.id in already_covered:
+            continue
+        # Backstop: too many transient re-drive failures already → treat as a
+        # permanent failure the classifier missed and escalate rather than loop.
+        prior_attempts = await _order_event_count(
+            store, order.id, EventType.STALE_SUBMITTING_REDRIVE_DEFERRED.value
+        )
+        if prior_attempts >= max_attempts:
+            _log.error(
+                "stale SUBMITTING order %s exhausted %s transient re-drive "
+                "attempts; escalating to needs_review",
+                order.id,
+                prior_attempts,
+            )
+            await _escalate_stale_submitting(
+                store,
+                order,
+                RuntimeError(
+                    f"exhausted {prior_attempts} transient re-drive attempts "
+                    f"(>= max {max_attempts})"
+                ),
+            )
             continue
         try:
             broker_order_id = await adapter.submit_order(order)
@@ -306,12 +340,16 @@ async def _redrive_stale_submitting(store: StateStore, adapter: BrokerAdapter) -
             continue
         except BrokerError as exc:
             # Transient — leave it SUBMITTING; the next tick re-drives idempotently.
+            # Record the attempt durably so the backstop above can bound it.
             _log.warning(
-                "stale SUBMITTING order %s re-drive failed (transient), will "
-                "retry next tick: %s",
+                "stale SUBMITTING order %s re-drive failed (transient, attempt "
+                "%s/%s), will retry next tick: %s",
                 order.id,
+                prior_attempts + 1,
+                max_attempts,
                 exc,
             )
+            await _record_redrive_deferral(store, order, prior_attempts + 1, exc)
             continue
 
         try:
@@ -334,25 +372,69 @@ async def _escalate_stale_submitting(
     store: StateStore, order: Order, exc: Exception
 ) -> None:
     """Write a durable ``needs_review`` recovery record for a stale ``SUBMITTING``
-    order whose idempotent re-drive hit a terminal error — the broker's acceptance
-    can't be confirmed, so a human must reconcile rather than the loop guessing."""
+    order whose idempotent re-drive hit a terminal error (or exhausted the transient
+    retry bound) — the broker's acceptance can't be confirmed, so a human must
+    reconcile rather than the loop guessing. Best-effort: a store error here must
+    not crash the tick (the order stays SUBMITTING and is retried next cadence)."""
 
-    await store.create_submit_recovery(
-        local_order_id=order.id,
-        # The re-drive could not confirm a broker id (terminal error / failed
-        # duplicate lookup); the client_order_id (order.id) is the only handle.
-        broker_order_id=order.broker_order_id or "",
-        client_order_id=order.id,
-        symbol=order.symbol,
-        side=order.side,
-        quantity=order.quantity,
-        limit_price=order.limit_price,
-        failure_reason=f"stale SUBMITTING re-drive hit a terminal broker error: {exc}",
-        session_id=order.session_id,
-        candidate_id=order.candidate_id,
-        cleanup_status=RECOVERY_NEEDS_REVIEW,
-        event_type="submit_recovery_needs_review",
-    )
+    try:
+        await store.create_submit_recovery(
+            local_order_id=order.id,
+            # The re-drive could not confirm a broker id (terminal error / failed
+            # duplicate lookup); the client_order_id (order.id) is the only handle.
+            broker_order_id=order.broker_order_id or "",
+            client_order_id=order.id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            failure_reason=f"stale SUBMITTING re-drive could not be resolved: {exc}",
+            session_id=order.session_id,
+            candidate_id=order.candidate_id,
+            cleanup_status=RECOVERY_NEEDS_REVIEW,
+            event_type=EventType.SUBMIT_RECOVERY_NEEDS_REVIEW.value,
+        )
+    except Exception:  # noqa: BLE001 - escalation is best-effort on a failure path
+        _log.exception(
+            "could not escalate stale SUBMITTING order %s to needs_review", order.id
+        )
+
+
+async def _record_redrive_deferral(
+    store: StateStore, order: Order, attempt: int, exc: Exception
+) -> None:
+    """Durably record one transient re-drive deferral so the livelock backstop can
+    count them across ticks and restarts. Best-effort (never crashes the tick)."""
+
+    try:
+        await store.append_event(
+            EventType.STALE_SUBMITTING_REDRIVE_DEFERRED.value,
+            message=(
+                f"stale SUBMITTING order {order.symbol} re-drive deferred "
+                f"(transient, attempt {attempt})"
+            ),
+            symbol=order.symbol,
+            candidate_id=order.candidate_id,
+            order_id=order.id,
+            payload={"attempt": attempt, "error": str(exc)},
+            session_id=order.session_id,
+        )
+    except Exception:  # noqa: BLE001 - audit is best-effort on a failure path
+        _log.exception(
+            "could not record re-drive deferral for order %s", order.id
+        )
+
+
+async def _order_event_count(
+    store: StateStore, order_id: str, event_type: str
+) -> int:
+    """How many events of ``event_type`` are recorded for ``order_id`` (durable,
+    survives restart). Uses the store-side ``event_type`` filter, then counts the
+    order's own rows — the beta-scale event log is small; an indexed query is the
+    upgrade if it ever grows large."""
+
+    events = await store.list_events(event_type=event_type)
+    return sum(1 for e in events if e.order_id == order_id)
 
 
 async def _handle_unpersisted_submit(
@@ -733,35 +815,44 @@ async def _escalate_fill_divergence(
     an open recovery record is not re-recorded on every subsequent diverging tick.
     """
 
-    open_recoveries = await store.list_submit_recoveries(
-        statuses=RECOVERY_OPEN_STATUSES
-    )
-    if any(r.local_order_id == order.id for r in open_recoveries):
-        return
-    await store.create_submit_recovery(
-        local_order_id=order.id,
-        broker_order_id=order.broker_order_id or "",
-        client_order_id=order.id,
-        symbol=order.symbol,
-        side=order.side,
-        quantity=order.quantity,
-        limit_price=order.limit_price,
-        failure_reason=(
-            f"broker/local fill divergence: broker reports filled="
-            f"{update.filled_quantity} ({update.status.value}) but only "
-            f"{recorded} shares recorded locally — a real untracked position"
-        ),
-        session_id=order.session_id,
-        candidate_id=order.candidate_id,
-        cleanup_status=RECOVERY_NEEDS_REVIEW,
-        event_type="fill_reconciliation_needed",
-        extra_payload={
-            "broker_status": update.status.value,
-            "broker_filled_quantity": update.filled_quantity,
-            "recorded_filled_quantity": recorded,
-            "rejected_fills": rejected,
-        },
-    )
+    try:
+        open_recoveries = await store.list_submit_recoveries(
+            statuses=RECOVERY_OPEN_STATUSES
+        )
+        if any(r.local_order_id == order.id for r in open_recoveries):
+            return
+        await store.create_submit_recovery(
+            local_order_id=order.id,
+            broker_order_id=order.broker_order_id or "",
+            client_order_id=order.id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            failure_reason=(
+                f"broker/local fill divergence: broker reports filled="
+                f"{update.filled_quantity} ({update.status.value}) but only "
+                f"{recorded} shares recorded locally — a real untracked position"
+            ),
+            session_id=order.session_id,
+            candidate_id=order.candidate_id,
+            cleanup_status=RECOVERY_NEEDS_REVIEW,
+            event_type=EventType.FILL_RECONCILIATION_NEEDED.value,
+            extra_payload={
+                "broker_status": update.status.value,
+                "broker_filled_quantity": update.filled_quantity,
+                "recorded_filled_quantity": recorded,
+                "rejected_fills": rejected,
+            },
+        )
+    except Exception:  # noqa: BLE001 - escalation is best-effort; retried next tick
+        # Per-order isolation on a failure path: a store error here must not abort
+        # reconciliation of the other open orders in this tick (matches
+        # _handle_unpersisted_submit). The divergence re-escalates next cadence.
+        _log.exception(
+            "could not escalate fill divergence for order %s to needs_review",
+            order.id,
+        )
 
 
 def _divergence_safe_status(order: Order, recorded: int) -> OrderStatus:

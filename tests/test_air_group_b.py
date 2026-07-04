@@ -164,6 +164,37 @@ class TestAir003StaleSubmittingRecovery:
         assert rec.local_order_id == order.id
         assert rec.cleanup_status == RECOVERY_NEEDS_REVIEW
 
+    async def test_transient_livelock_escalates_after_max_attempts(self, any_store):
+        # AIR-003 review backstop: a permanent rejection that an adapter MISCLASSIFIES
+        # as transient (plain BrokerError) must not retry every tick forever. After
+        # stale_submitting_max_redrive_attempts consecutive transient failures the
+        # order is escalated to a durable needs_review record instead of re-driven.
+        order = await _submitting_order(any_store)
+
+        class _AlwaysTransient(MockBrokerAdapter):
+            async def submit_order(self, order):  # noqa: D401
+                self.submitted.append(order)
+                raise BrokerError("permanent failure masquerading as transient")
+
+        adapter = _AlwaysTransient()
+        settings = Settings(stale_submitting_max_redrive_attempts=3)
+
+        # Ticks 1-3: transient failures, deferred, order stays SUBMITTING, no record.
+        for _ in range(3):
+            await run_monitoring_tick(any_store, adapter, settings)
+        assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTING
+        assert await any_store.list_submit_recoveries() == []
+        submits_at_cap = len(adapter.submitted)
+
+        # Tick 4: cap reached -> escalate to needs_review, do NOT submit again.
+        await run_monitoring_tick(any_store, adapter, settings)
+        recoveries = await any_store.list_submit_recoveries(
+            statuses=RECOVERY_OPEN_STATUSES
+        )
+        assert len(recoveries) == 1
+        assert recoveries[0].cleanup_status == RECOVERY_NEEDS_REVIEW
+        assert len(adapter.submitted) == submits_at_cap  # bounded — no more re-drives
+
     async def test_stale_submitting_needs_review_not_redriven_again(self, any_store):
         # Once escalated, the order is not re-driven every tick (deduped by the
         # open recovery record) — no second record, no repeated submit attempt.

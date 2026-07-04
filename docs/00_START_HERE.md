@@ -137,8 +137,26 @@ divergence branch, `_escalate_fill_divergence`, `_divergence_safe_status`). Suit
 derive only from fills; no live-trading path; the atomic claim remains the sole
 entry into `SUBMITTING`.
 
-**Gate B** additionally requires an **independent adversarial re-review of the
-B1–B3 + A1 diff by a fresh context** — see the review checklist.
+**Gate B independent re-review — one confirmed finding, fixed.** A fresh-context
+adversarial workflow (6 lenses → skeptic-verify) over the B1–B3 + A1 diff confirmed
+one **major** defect: the B2 transient-vs-terminal split was unreachable in
+production because the only real adapter, `AlpacaPaperAdapter.submit_order`, raised
+**plain `BrokerError` for every failure** — so a *permanently*-rejected re-drive
+(403 restricted account, 422 insufficient buying power, delisted symbol, or a
+duplicate whose existing order can't be looked up) was classified transient and
+retried **every tick forever**, inflating CAPI exposure indefinitely and never
+escalating. Fixed two ways: (1) `AlpacaPaperAdapter.submit_order` now maps
+definitive 4xx rejections (400/401/403/404/422) and the duplicate-lookup-failed
+case to **`TerminalBrokerError`** (429/5xx/network stay transient `BrokerError`);
+(2) a **bounded backstop** — each transient re-drive deferral writes a durable
+`stale_submitting_redrive_deferred` audit event, and after
+`stale_submitting_max_redrive_attempts` (default 10, configurable) the order is
+escalated to `needs_review` regardless of classification, so no *misclassified*
+permanent failure can livelock. The two other findings were adversarially refuted
+(a planner same-status-reaffirm edge unreachable by any caller; an "unguarded store
+write aborts the tick" claim that matched documented tick-isolation and a
+pre-existing unguarded read) — the escalation store-writes were nonetheless wrapped
+best-effort for per-order isolation consistency with `_handle_unpersisted_submit`.
 
 ### D-023 — AIR remediation Group A: deterministic validation & contract fixes
 **Context.** An independent adversarial review (the "AIR" findings, AIR-001…011)

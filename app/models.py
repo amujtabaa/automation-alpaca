@@ -183,6 +183,12 @@ class EventType(str, Enum):
     SUBMIT_RECOVERY_RECORDED = "submit_recovery_recorded"  # a stranded broker order logged
     SUBMIT_RECOVERY_RESOLVED = "submit_recovery_resolved"  # recovery loop cleanly cancelled it
     SUBMIT_RECOVERY_NEEDS_REVIEW = "submit_recovery_needs_review"  # stranded order had fills
+    # A stale SUBMITTING order's idempotent re-drive hit a transient broker error
+    # and was deferred to the next tick (AIR-003). Counted to bound livelock.
+    STALE_SUBMITTING_REDRIVE_DEFERRED = "stale_submitting_redrive_deferred"
+    # A broker/local fill divergence (broker filled > locally recorded) escalated
+    # to a durable needs_review reconciliation record (AIR-002).
+    FILL_RECONCILIATION_NEEDED = "fill_reconciliation_needed"
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"

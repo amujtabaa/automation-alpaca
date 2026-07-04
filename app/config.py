@@ -32,6 +32,7 @@ ALPACA_KEY_ENV = "ALPACA_PAPER_API_KEY"
 ALPACA_SECRET_ENV = "ALPACA_PAPER_API_SECRET"
 POLL_CADENCE_ENV = "ALPACA_POLL_CADENCE_SECONDS"
 UNFILLED_TIMEOUT_ENV = "ALPACA_UNFILLED_TIMEOUT_MINUTES"
+STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS_ENV = "STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS"
 # Which BrokerAdapter the running app uses:
 #   "auto"   -> AlpacaPaperAdapter when both paper keys are present, else mock
 #   "mock"   -> MockBrokerAdapter always (no network; default-safe for dev/CI)
@@ -66,6 +67,11 @@ CAPI_TRADING_ALLOWLIST_ENV = "CAPI_TRADING_ALLOWLIST"
 DEFAULT_DB_PATH = "./data/app.db"
 DEFAULT_POLL_CADENCE_SECONDS = 15.0
 DEFAULT_UNFILLED_TIMEOUT_MINUTES = 60.0
+# AIR-003 backstop: how many consecutive transient re-drive failures a stale
+# SUBMITTING order tolerates before it is escalated to a durable needs_review
+# recovery record — a bound so a permanent broker rejection *misclassified* as
+# transient can never livelock (retry every tick, inflating exposure forever).
+DEFAULT_STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS = 10
 DEFAULT_MARKET_DATA_STALE_MINUTES = 5.0
 DEFAULT_STRATEGY_DECISION_CADENCE_SECONDS = 5.0
 DEFAULT_STRATEGY_MOMENTUM_THRESHOLD_PCT = 3.0
@@ -114,6 +120,11 @@ class Settings:
     # An open order older than this is surfaced as a stale ``order_stale`` audit
     # event (D-011: surface only, no auto-cancel).
     unfilled_timeout_minutes: float = DEFAULT_UNFILLED_TIMEOUT_MINUTES
+    # AIR-003 backstop: consecutive transient re-drive failures a stale
+    # SUBMITTING order tolerates before escalation to a needs_review record.
+    stale_submitting_max_redrive_attempts: int = (
+        DEFAULT_STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS
+    )
     # Whether the background monitoring loop starts at app startup.
     enable_monitoring: bool = True
 
@@ -242,6 +253,13 @@ def load_settings() -> Settings:
     unfilled_timeout = _env_float(
         UNFILLED_TIMEOUT_ENV, DEFAULT_UNFILLED_TIMEOUT_MINUTES, minimum=0.0
     )
+    # At least 1 attempt before escalation (0 would escalate before ever trying
+    # a re-drive, defeating the idempotent-recovery path).
+    stale_submitting_max_redrive_attempts = _env_int(
+        STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS_ENV,
+        DEFAULT_STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS,
+        minimum=1,
+    )
     enable_monitoring = (
         os.environ.get(ENABLE_MONITORING_ENV, "true").strip().lower() not in _FALSEY
     )
@@ -324,6 +342,7 @@ def load_settings() -> Settings:
         broker_adapter=broker_adapter,
         poll_cadence_seconds=poll_cadence,
         unfilled_timeout_minutes=unfilled_timeout,
+        stale_submitting_max_redrive_attempts=stale_submitting_max_redrive_attempts,
         enable_monitoring=enable_monitoring,
         market_data_feed=market_data_feed,
         market_data_stale_minutes=market_data_stale_minutes,
