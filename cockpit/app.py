@@ -337,6 +337,43 @@ def _op_label(operational_status: str, reason: str | None) -> str:
     return _OP_DISPLAY.get(operational_status, operational_status)
 
 
+def _protection_label(prot: dict) -> str:
+    """A one-glance protection state for a position, from its GET /api/protection
+    view (classified server-side — the cockpit only maps it to a label)."""
+
+    if not prot:
+        return "—"
+    if prot.get("stalled"):
+        return "⏳ exit stalled"
+    if prot.get("active_sell_intent"):
+        return "🟠 exiting"
+    if prot.get("paused_by_kill_switch"):
+        return "⏸️ paused (kill switch)"
+    if prot.get("breaching"):
+        return "🔴 breaching"
+    return "🟢 safe"
+
+
+def _flatten_button(symbol: str) -> None:
+    """A working manual-flatten button (Phase 7 / D-P2) with a confirm step,
+    mirroring the order-cancel pattern. The backend always accepts it (it bypasses
+    the kill switch / pause / closed session)."""
+
+    confirm_key = f"pending_flatten_{symbol}"
+    if st.session_state.get(confirm_key):
+        st.caption("⚠️ Flatten now?")
+        if st.button("Yes, flatten", key=f"confirm_flatten_{symbol}", type="primary"):
+            st.session_state[confirm_key] = False
+            _do(
+                lambda s=symbol: api_client.flatten_position(s),
+                f"{symbol} flatten submitted",
+            )
+    else:
+        if st.button("Flatten", key=f"flatten_{symbol}"):
+            st.session_state[confirm_key] = True
+            st.rerun()
+
+
 def screen_positions() -> None:
     st.header("Position Monitor")
     st.caption(
@@ -356,44 +393,62 @@ def screen_positions() -> None:
 
     open_positions = [p for p in positions if p.get("quantity")]
 
+    # Sell-Side Protection status (Phase 7). Best-effort: the positions table
+    # still renders if this call fails — protection columns just show "—".
+    protection_by_symbol: dict[str, dict] = {}
+    protection_active = None
+    try:
+        protection = api_client.get_protection()
+        protection_active = protection.get("config", {}).get("protection_active")
+        for view in protection.get("positions", []):
+            protection_by_symbol[view.get("symbol")] = view
+    except BackendError as exc:
+        st.caption(f"⚠️ protection status unavailable: {exc}")
+
     st.subheader("Positions")
+    if protection_active is True:
+        st.caption("🛡️ Sell-Side Protection is active (hard floor exits armed).")
+    elif protection_active is False:
+        st.caption(
+            "🛡️ Sell-Side Protection is configured but not live (monitoring or "
+            "protection is disabled) — only manual flatten will exit."
+        )
     if not open_positions:
         st.info(
             "No open positions. Positions appear here once fills are recorded "
             "(Phase 4)."
         )
     else:
-        hdr = st.columns([2, 2, 2, 3, 3])
+        hdr = st.columns([2, 1, 2, 3, 3, 2])
         hdr[0].markdown("**Symbol**")
-        hdr[1].markdown("**Quantity**")
+        hdr[1].markdown("**Qty**")
         hdr[2].markdown("**Avg Price**")
-        hdr[3].markdown("**P/L**")
-        hdr[4].markdown("**Action**")
+        hdr[3].markdown("**Floor**")
+        hdr[4].markdown("**Protection**")
+        hdr[5].markdown("**Action**")
 
         for pos in open_positions:
             sym = pos.get("symbol", "—")
             qty = pos.get("quantity", 0)
             avg = pos.get("average_price")
             avg_display = f"${avg:.2f}" if avg is not None else "—"
+            prot = protection_by_symbol.get(sym, {})
+            floor = prot.get("floor_price")
+            observed = prot.get("observed_price")
+            floor_display = f"${floor:.2f}" if floor is not None else "—"
 
-            row = st.columns([2, 2, 2, 3, 3])
+            row = st.columns([2, 1, 2, 3, 3, 2])
             row[0].write(sym)
             row[1].write(str(qty))
             row[2].write(avg_display)
-            # The Phase 5 price feed exists (see the Watchlist screen), but
-            # computing unrealized P/L from it here is a deliberate small scope
-            # decision, not yet built — not an oversight.
-            row[3].caption("P/L: not yet wired to the live price feed")
+            with row[3]:
+                st.write(floor_display)
+                if observed is not None:
+                    st.caption(f"last ${observed:.2f}")
             with row[4]:
-                st.button(
-                    "Flatten",
-                    key=f"flatten_{sym}",
-                    disabled=True,
-                    help=(
-                        "Placeholder — position flatten is wired in Phase 7 "
-                        "(Sell-Side Protection owns exits); not functional yet."
-                    ),
-                )
+                row[4].markdown(_protection_label(prot))
+            with row[5]:
+                _flatten_button(sym)
 
     st.divider()
 

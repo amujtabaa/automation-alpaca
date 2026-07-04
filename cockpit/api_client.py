@@ -107,6 +107,23 @@ def list_positions() -> list[dict]:
     return _request("GET", "/api/positions")
 
 
+def get_protection() -> dict:
+    """Sell-Side Protection status (Phase 7): ``{"config": {...}, "positions":
+    [...]}`` — the effective config plus each open position classified
+    server-side (floor, observed price, breaching, paused_by_kill_switch,
+    stalled, active_sell_intent). The cockpit renders it verbatim."""
+
+    return _request("GET", "/api/protection")
+
+
+def flatten_position(symbol: str) -> dict:
+    """Manually flatten a position (Phase 7 / D-P2). Returns
+    ``{"intent": {...}, "order": {...}}``. Always works — bypasses the kill
+    switch / pause / closed session at the backend."""
+
+    return _request("POST", f"/api/positions/{symbol}/flatten")
+
+
 def list_orders() -> list[dict]:
     return _request("GET", "/api/orders")
 
