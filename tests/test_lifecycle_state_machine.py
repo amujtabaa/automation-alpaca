@@ -12,6 +12,15 @@ invariants below are the system's steady-state safety contract, distilled from
 ``docs/01_ARCHITECTURE.md``'s non-negotiables, D-013a, D-016, and the Wave 0
 fixes.
 
+D-025 (X-001..X-004 remediation): this machine originally never touched the
+Phase 7 sell-side surface (flatten/protection/sell-intents) at all — exactly
+the "review is scoped per-increment, so a cross-increment race is invisible"
+root cause behind the missed X-001 CRITICAL. ``flatten``, ``protection_tick``,
+and ``sell_fill`` rules, plus the ``no_sell_intent_stranded_approved``,
+``at_most_one_active_sell_intent_per_symbol``, and
+``correlation_id_matches_owning_sell_intent`` invariants, close that gap —
+see ``docs/INVARIANTS.md`` INV-031 through INV-041.
+
 Async note: Hypothesis rules are synchronous, so each machine instance owns one
 persistent asyncio event loop and runs every store/loop coroutine on it via
 ``self._run`` — one loop for the instance's whole life keeps the store's
@@ -25,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import unittest.mock as mock
 from collections import Counter
 
 import pytest
@@ -42,16 +52,22 @@ from hypothesis import strategies as st
 from app.broker.adapter import BrokerFill, BrokerOrderUpdate
 from app.broker.sim import SimBrokerAdapter
 from app.config import Settings
+from app.marketdata.fake import FakeMarketDataFeed
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
     CandidateStatus,
+    OrderSide,
     OrderStatus,
+    SellIntentStatus,
+    SellReason,
+    SessionType,
     utcnow,
 )
-from app.monitoring import _submit_pending_orders, run_monitoring_tick
+from app.monitoring import _run_protection, _submit_pending_orders, run_monitoring_tick
 from app.store.base import (
     CLAIM_CLAIMED,
+    FLATTEN_FLAT,
     CandidateTransitionError,
     InvalidOrderError,
     OrderIntentBlockedError,
@@ -67,6 +83,14 @@ from app.store.sqlite import SqliteStateStore
 
 _SYMBOLS = ["AAPL", "MSFT", "TSLA"]
 _SETTINGS = Settings()
+
+# A sell-intent's ADR "active" definition (docs/INVARIANTS.md INV-032),
+# recomputed independently here rather than by calling the store's own
+# ``active_sell_intent_for`` — the whole point of a probe the implementer's
+# own oracle didn't write (REVIEW_LOOP_REFINEMENT.md's X-002/X-003 lesson).
+_SELL_ORDER_TERMINAL_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
 
 def _event(msg: str) -> None:
     """``hypothesis.event()`` for observability, but a no-op outside a Hypothesis
@@ -118,6 +142,7 @@ class LifecycleMachine(RuleBasedStateMachine):
         super().__init__()
         self._loop = asyncio.new_event_loop()
         self.sim = SimBrokerAdapter()
+        self.market_data = FakeMarketDataFeed()
         self._sfid = 0  # monotonic source_fill_id counter (global uniqueness)
         # Peak count of open recovery records seen this example — fed to
         # hypothesis target() ONCE at teardown (target() rejects a repeated label
@@ -125,6 +150,19 @@ class LifecycleMachine(RuleBasedStateMachine):
         self._max_open_recovery = 0
         self.store = self.new_store()
         self._run(self.store.initialize())
+        # Force regular-hours for this machine's whole life (X-004 harness
+        # extension): a protective MARKET sell only submits as-is in REGULAR
+        # hours (§5.4/D-015); without this a sell_fill/protection_tick rule's
+        # ability to reach SUBMITTED would depend on wall-clock time when the
+        # suite happens to run. Only the sell/MARKET submit-time decision reads
+        # this (app/monitoring.py::_effective_submit_order) — the BUY path is
+        # untouched. Session-type-at-submission itself is covered separately by
+        # tests/test_phase7_monitoring_submit.py; this harness is about the
+        # sell-intent STATE MACHINE, not that.
+        self._session_type_patcher = mock.patch(
+            "app.monitoring.session_type_for", lambda _t: SessionType.REGULAR
+        )
+        self._session_type_patcher.start()
 
     def _run(self, coro):
         return self._loop.run_until_complete(coro)
@@ -134,6 +172,7 @@ class LifecycleMachine(RuleBasedStateMachine):
         return f"sfid-{self._sfid}"
 
     def teardown(self) -> None:
+        self._session_type_patcher.stop()
         # AIR-010: bias Hypothesis toward interleavings richer in open recovery
         # activity — one target() per example (the peak seen), here at teardown
         # rather than in a per-step invariant (which would repeat the label).
@@ -459,6 +498,103 @@ class LifecycleMachine(RuleBasedStateMachine):
             pass
 
     # ------------------------------------------------------------------ #
+    # Phase 7 sell-side rules (X-001..X-004 remediation harness extension) —
+    # this class previously never touched flatten/protection/sell-intent code
+    # at all; that blind spot is exactly the "review is scoped per-increment,
+    # so a cross-increment interaction bug is invisible" root cause
+    # REVIEW_LOOP_REFINEMENT.md names for X-001.
+    # ------------------------------------------------------------------ #
+    async def _force_breach_and_protect(self):
+        # Force every held symbol's snapshot far below any possible floor so a
+        # REAL breach (not a coin-flip on a Hypothesis-generated price) drives
+        # the protective-intent path on every call.
+        positions = [p for p in await self.store.list_positions() if p.quantity > 0]
+        for p in positions:
+            self.market_data.set_snapshot(p.symbol, last_price=0.01, bid=0.01)
+        await _run_protection(self.store, self.sim, self.market_data, _SETTINGS)
+
+    @rule()
+    def protection_tick(self):
+        """The autonomous protection phase (§5), run directly rather than
+        waiting for a random breach — see ``_force_breach_and_protect``. The
+        resulting ``PROTECTION_FLOOR`` intent (if any) is exercised by the
+        existing ``monitoring_tick``/``sell_fill``/``cancel_order`` rules like
+        any other order; the invariants below prove it is never duplicated and
+        never leaves an intent stranded ``APPROVED``."""
+
+        self._run(self._force_breach_and_protect())
+        _COVERAGE["protection_tick"] += 1
+
+    @rule(symbol=st.sampled_from(_SYMBOLS))
+    def flatten(self, symbol):
+        """Model ``POST /positions/{symbol}/flatten`` (X-001) directly against
+        the atomic store op — the route's own ``cancel_open_buys`` pre-step
+        needs a real broker round-trip and is out of scope for this
+        store-level harness (``flatten_position`` re-reads the live position
+        under its own lock regardless, so skipping the cancel here never
+        affects correctness, only sizing against whatever buys are still
+        open). Checked INLINE rather than via a steady-state ``@invariant``
+        because X-001 is a guarantee about this call's return value, not a
+        property of the system at rest: every call must return either 'flat'
+        or an intent whose reason is ``MANUAL_FLATTEN`` — never a
+        silently-substituted ``protection_floor`` intent, even interleaved
+        with a concurrent ``protection_tick``."""
+
+        result = self._run(self.store.flatten_position(symbol))
+        if result.outcome == FLATTEN_FLAT:
+            return
+        assert (
+            result.intent is not None
+            and result.intent.reason is SellReason.MANUAL_FLATTEN
+        ), (
+            f"flatten_position({symbol}) returned a non-flat result without a "
+            f"MANUAL_FLATTEN intent (X-001): {result}"
+        )
+        _COVERAGE["flatten_non_flat"] += 1
+
+    @rule(portion=st.floats(min_value=0.1, max_value=1.0))
+    def sell_fill(self, portion):
+        """Queue a (partial or full) fill for an open protective/manual SELL
+        order and reconcile it via a real monitoring tick — the sell-side
+        analogue of ``script_broker_fill``. SELL orders are not tracked via
+        the ``orders`` bundle (they originate from ``protection_tick``/
+        ``flatten``, not ``approve_and_dispatch``), so this queries the store
+        directly for one to fill."""
+
+        sell_orders = [
+            o
+            for o in self._run(self.store.list_orders())
+            if o.side is OrderSide.SELL
+            and o.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+            and o.broker_order_id is not None
+        ]
+        if not sell_orders:
+            return
+        o = sell_orders[0]
+        remaining = o.quantity - o.filled_quantity
+        if remaining <= 0:
+            return
+        delta = max(1, min(remaining, round(remaining * portion)))
+        cumulative = o.filled_quantity + delta
+        new_status = (
+            OrderStatus.FILLED
+            if cumulative >= o.quantity
+            else OrderStatus.PARTIALLY_FILLED
+        )
+        self.sim.script(
+            o.broker_order_id,
+            [
+                BrokerOrderUpdate(
+                    new_status,
+                    cumulative,
+                    [BrokerFill(self._next_sfid(), delta, o.limit_price or 1.0, utcnow())],
+                )
+            ],
+        )
+        self._run(run_monitoring_tick(self.store, self.sim, _SETTINGS))
+        _COVERAGE["sell_fill"] += 1
+
+    # ------------------------------------------------------------------ #
     # Invariants — checked after EVERY rule
     # ------------------------------------------------------------------ #
     @invariant()
@@ -494,6 +630,50 @@ class LifecycleMachine(RuleBasedStateMachine):
             )
 
     @invariant()
+    def no_sell_intent_stranded_approved(self):
+        # X-002: every create_order_for_sell_intent rejection self-heals
+        # approved -> expired in the same operation that raises — mirrors
+        # no_candidate_stranded_approved above. A sell intent is never left
+        # APPROVED with no order between actions.
+        for si in self._run(self.store.list_sell_intents()):
+            assert si.status is not SellIntentStatus.APPROVED, (
+                f"sell intent {si.id} ({si.symbol}) stranded APPROVED"
+            )
+
+    @invariant()
+    def at_most_one_active_sell_intent_per_symbol(self):
+        """X-001/X-003 (docs/INVARIANTS.md INV-031/INV-032): independently
+        recomputes the ADR's "active" definition per symbol here, rather than
+        calling the store's own ``active_sell_intent_for`` — the whole point of
+        a probe the implementer's own oracle didn't write. Active = pending/
+        approved, or ordered with a non-terminal order that has no OPEN
+        needs_review recovery."""
+
+        orders_by_id = {o.id: o for o in self._run(self.store.list_orders())}
+        needs_review_order_ids = {
+            r.local_order_id
+            for r in self._run(self.store.list_submit_recoveries())
+            if r.cleanup_status == RECOVERY_NEEDS_REVIEW
+        }
+        active_by_symbol: dict[str, list[str]] = {}
+        for si in self._run(self.store.list_sell_intents()):
+            if si.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
+                is_active = True
+            elif si.status is SellIntentStatus.ORDERED:
+                order = orders_by_id.get(si.order_id) if si.order_id else None
+                is_active = (
+                    order is not None
+                    and order.status not in _SELL_ORDER_TERMINAL_STATUSES
+                    and order.id not in needs_review_order_ids
+                )
+            else:
+                is_active = False
+            if is_active:
+                active_by_symbol.setdefault(si.symbol, []).append(si.id)
+        for symbol, ids in active_by_symbol.items():
+            assert len(ids) <= 1, f"{symbol} has multiple active sell intents: {ids}"
+
+    @invariant()
     def correlation_id_matches_owning_candidate(self):
         # D-020: every event that names a candidate carries that candidate's id
         # as its correlation_id, so one filter reconstructs a whole lifecycle.
@@ -505,6 +685,26 @@ class LifecycleMachine(RuleBasedStateMachine):
                 assert ev.correlation_id == ev.candidate_id, (
                     f"event {ev.id} ({ev.event_type}) candidate_id "
                     f"{ev.candidate_id} != correlation_id {ev.correlation_id}"
+                )
+
+    @invariant()
+    def correlation_id_matches_owning_sell_intent(self):
+        # X-004: every event on an order whose origin is a sell-intent (no
+        # candidate_id) carries that sell-intent's id as correlation_id — not
+        # just its creation events. Independently recomputes the expected value
+        # from list_orders() rather than trusting the event's own derivation,
+        # for the same "don't just re-check the implementer's own path" reason
+        # as the invariant above.
+        orders_by_id = {o.id: o for o in self._run(self.store.list_orders())}
+        for ev in self._run(self.store.list_events()):
+            if ev.candidate_id is not None or ev.order_id is None:
+                continue
+            order = orders_by_id.get(ev.order_id)
+            if order is not None and order.sell_intent_id is not None:
+                assert ev.correlation_id == order.sell_intent_id, (
+                    f"event {ev.id} ({ev.event_type}) order_id {ev.order_id}"
+                    f" sell_intent_id {order.sell_intent_id} != correlation_id"
+                    f" {ev.correlation_id}"
                 )
 
     @invariant()
