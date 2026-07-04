@@ -193,6 +193,32 @@ class InMemoryStateStore(StateStore):
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> Event:
+        # The owning candidate's id is the correlation key (D-020): default it
+        # from candidate_id so every event in a candidate's lifecycle shares one
+        # filterable key with no per-call-site threading. Same rule in
+        # SqliteStateStore._insert_event — parity.
+        #
+        # X-004: candidate_id is always None for a sell order (XOR origin), so
+        # the buy-side default alone left every generic order/fill/recovery
+        # event for a protective sell with correlation_id=None —
+        # order_submission_claimed, order_transition, order_fill_progress,
+        # fill_appended/fill_rejected_*/fill_duplicate_ignored, order_stale,
+        # stale_submitting_redrive_deferred, submit_recovery_* all lost the
+        # sell_intent_id key, so GET /api/events?correlation_id=<sell_intent_id>
+        # returned only the creation events, not the claim/fill/recovery trail
+        # (only the sell-intent planners in app/store/core.py that explicitly
+        # pass correlation_id=intent.id were unaffected). Resolved HERE, once,
+        # for every call site: when neither an explicit correlation_id nor a
+        # candidate_id is available but order_id is, look up that order's
+        # sell_intent_id. A non-existent/unresolvable order_id (e.g. the
+        # "unknown order" fill-reject path) simply finds nothing and falls
+        # through to None, same as before.
+        resolved_correlation_id = correlation_id or candidate_id
+        if resolved_correlation_id is None and order_id is not None:
+            owning_order = self._orders.get(order_id)
+            if owning_order is not None and owning_order.sell_intent_id is not None:
+                resolved_correlation_id = owning_order.sell_intent_id
+
         event = Event(
             event_type=str(event_type),
             message=message,
@@ -202,11 +228,7 @@ class InMemoryStateStore(StateStore):
             fill_id=fill_id,
             payload=payload or {},
             session_id=session_id,
-            # The owning candidate's id is the correlation key (D-020): default it
-            # from candidate_id so every event in a candidate's lifecycle shares
-            # one filterable key with no per-call-site threading. Same rule in
-            # SqliteStateStore._insert_event — parity.
-            correlation_id=correlation_id or candidate_id,
+            correlation_id=resolved_correlation_id,
         )
         self._events.append(event)
         return event.model_copy(deep=True)

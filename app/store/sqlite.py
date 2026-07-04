@@ -618,6 +618,26 @@ class SqliteStateStore(StateStore):
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> Event:
+        # Owning candidate's id is the correlation key (D-020); default from
+        # candidate_id so a whole lifecycle shares one filterable key with no
+        # per-call-site threading. Same rule in InMemoryStateStore — parity.
+        #
+        # X-004: candidate_id is always None for a sell order (XOR origin), so
+        # the buy-side default alone left every generic order/fill/recovery
+        # event for a protective sell with correlation_id=None. Resolved HERE,
+        # once, for every call site: when neither an explicit correlation_id
+        # nor a candidate_id is available but order_id is, look up that
+        # order's sell_intent_id via the SAME cursor/transaction (so it also
+        # sees this transaction's own not-yet-committed order writes). See
+        # InMemoryStateStore._append_event_unlocked for the full rationale.
+        resolved_correlation_id = correlation_id or candidate_id
+        if resolved_correlation_id is None and order_id is not None:
+            owning_row = cur.execute(
+                "SELECT sell_intent_id FROM orders WHERE id = ?", (order_id,)
+            ).fetchone()
+            if owning_row is not None and owning_row["sell_intent_id"] is not None:
+                resolved_correlation_id = owning_row["sell_intent_id"]
+
         event = Event(
             event_type=str(event_type),
             message=message,
@@ -627,10 +647,7 @@ class SqliteStateStore(StateStore):
             fill_id=fill_id,
             payload=payload or {},
             session_id=session_id,
-            # Owning candidate's id is the correlation key (D-020); default from
-            # candidate_id so a whole lifecycle shares one filterable key with no
-            # per-call-site threading. Same rule in InMemoryStateStore — parity.
-            correlation_id=correlation_id or candidate_id,
+            correlation_id=resolved_correlation_id,
         )
         cur.execute(
             """INSERT INTO events
