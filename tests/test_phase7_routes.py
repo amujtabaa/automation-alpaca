@@ -6,6 +6,8 @@ Async (httpx ASGI), app state wired by hand (no lifespan -> no background loop).
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -197,6 +199,32 @@ async def test_flatten_bad_symbol_422():
     async with _client(app) as client:
         r = await client.post("/api/positions/@@/flatten")
     assert r.status_code == 422
+
+
+async def test_flatten_http_race_with_concurrent_protection_create():
+    """X-001 at the HTTP layer: a POST /flatten racing a concurrent protection
+    tick's own create_sell_intent call must ALWAYS come back with a
+    manual_flatten intent — never silently handed a deduped protection_floor
+    intent (which a kill switch would then hold unsubmitted, the click reading
+    as success while nothing actually exits)."""
+
+    app, store, _, _ = await _app()
+    await _hold(store, "AAPL", 100)
+
+    async def racing_protection_create():
+        return await store.create_sell_intent(
+            symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+        )
+
+    async with _client(app) as client:
+        response, _ = await asyncio.gather(
+            client.post("/api/positions/AAPL/flatten"),
+            racing_protection_create(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["intent"]["reason"] == "manual_flatten"
+    assert response.json()["order"]["side"] == "sell"
 
 
 # ---- GET /protection ------------------------------------------------------ #

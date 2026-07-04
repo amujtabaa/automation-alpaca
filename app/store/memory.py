@@ -48,8 +48,12 @@ from app.position import fold_fills
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
+    FLATTEN_CREATED,
+    FLATTEN_EXISTING,
+    FLATTEN_FLAT,
     CandidateTransitionError,
     FillAppendResult,
+    FlattenResult,
     InvalidOrderError,
     RiskLimits,
     SellIntentTransitionError,
@@ -64,6 +68,9 @@ from app.store.core import (
     CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
+    FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
+    FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
+    FLATTEN_SUPERSEDE_AND_CREATE,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     plan_append_fill,
@@ -71,6 +78,7 @@ from app.store.core import (
     plan_close_session,
     plan_create_order_for_candidate,
     plan_create_order_for_sell_intent,
+    plan_flatten_position,
     plan_transition_order,
     require_bool,
     require_recovery_status,
@@ -499,6 +507,85 @@ class InMemoryStateStore(StateStore):
                 return si
         return None
 
+    def _insert_sell_intent_unlocked(
+        self,
+        *,
+        symbol: str,
+        reason: SellReason,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> SellIntent:
+        """Build + insert a fresh sell intent row + its ``sell_intent_created``
+        event (assumes the lock and an ``_atomic()`` block are already held by
+        the caller — either the public ``create_sell_intent`` or
+        ``flatten_position``, X-001). No input validation: a caller that
+        accepts external input (``create_sell_intent``) validates before
+        calling this; a caller building the intent from trusted internal state
+        (``flatten_position``, sizing from the live position) does not need to.
+        """
+
+        intent = SellIntent(
+            symbol=symbol,
+            reason=reason,
+            target_quantity=target_quantity,
+            floor_price=floor_price,
+            observed_price=observed_price,
+            session_id=session_id,
+        )
+        self._sell_intents[intent.id] = intent
+        self._append_event_unlocked(
+            "sell_intent_created",
+            message=f"sell intent ({reason.value}) created for {symbol}",
+            symbol=symbol,
+            session_id=session_id,
+            correlation_id=intent.id,
+            payload={"reason": reason.value, "target_quantity": target_quantity},
+        )
+        return intent
+
+    def _transition_sell_intent_unlocked(
+        self,
+        intent: SellIntent,
+        new_status: SellIntentStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> bool:
+        """Apply a sell-intent status transition in place (assumes the lock and
+        an ``_atomic()`` block are already held by the caller). Returns
+        ``False`` for a same-status no-op (nothing applied, no event written);
+        ``True`` if it actually transitioned. Raises
+        :class:`SellIntentTransitionError` for an illegal transition (nothing
+        mutated).
+        """
+
+        current = intent.status
+        if new_status is current:
+            return False
+        if new_status not in _SELL_INTENT_TRANSITIONS.get(current, set()):
+            raise SellIntentTransitionError(
+                f"illegal sell intent transition {current.value} -> "
+                f"{new_status.value}"
+            )
+        intent.status = new_status
+        intent.updated_at = utcnow()
+        ts_field = _SELL_INTENT_TIMESTAMP.get(new_status)
+        if ts_field:
+            setattr(intent, ts_field, utcnow())
+        if new_status is SellIntentStatus.ORDERED and order_id is not None:
+            intent.order_id = order_id
+        self._append_event_unlocked(
+            "sell_intent_transition",
+            message=f"sell intent {current.value} -> {new_status.value}",
+            symbol=intent.symbol,
+            order_id=order_id,
+            payload={"from": current.value, "to": new_status.value},
+            session_id=intent.session_id,
+            correlation_id=intent.id,
+        )
+        return True
+
     async def create_sell_intent(
         self,
         *,
@@ -527,26 +614,14 @@ class InMemoryStateStore(StateStore):
             active = self._active_sell_intent_unlocked(key)
             if active is not None:
                 return active.model_copy(deep=True)
-            intent = SellIntent(
-                symbol=key,
-                reason=reason,
-                target_quantity=target_quantity,
-                floor_price=floor_price,
-                observed_price=observed_price,
-                session_id=session_id,
-            )
             with self._atomic():
-                self._sell_intents[intent.id] = intent
-                self._append_event_unlocked(
-                    "sell_intent_created",
-                    message=f"sell intent ({reason.value}) created for {key}",
+                intent = self._insert_sell_intent_unlocked(
                     symbol=key,
+                    reason=reason,
+                    target_quantity=target_quantity,
+                    floor_price=floor_price,
+                    observed_price=observed_price,
                     session_id=session_id,
-                    correlation_id=intent.id,
-                    payload={
-                        "reason": reason.value,
-                        "target_quantity": target_quantity,
-                    },
                 )
             return intent.model_copy(deep=True)
 
@@ -562,30 +637,9 @@ class InMemoryStateStore(StateStore):
             intent = self._sell_intents.get(intent_id)
             if intent is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
-            current = intent.status
-            if new_status is current:
-                return intent.model_copy(deep=True)  # idempotent no-op
-            if new_status not in _SELL_INTENT_TRANSITIONS.get(current, set()):
-                raise SellIntentTransitionError(
-                    f"illegal sell intent transition {current.value} -> "
-                    f"{new_status.value}"
-                )
             with self._atomic():
-                intent.status = new_status
-                intent.updated_at = utcnow()
-                ts_field = _SELL_INTENT_TIMESTAMP.get(new_status)
-                if ts_field:
-                    setattr(intent, ts_field, utcnow())
-                if new_status is SellIntentStatus.ORDERED and order_id is not None:
-                    intent.order_id = order_id
-                self._append_event_unlocked(
-                    "sell_intent_transition",
-                    message=f"sell intent {current.value} -> {new_status.value}",
-                    symbol=intent.symbol,
-                    order_id=order_id,
-                    payload={"from": current.value, "to": new_status.value},
-                    session_id=intent.session_id,
-                    correlation_id=intent.id,
+                self._transition_sell_intent_unlocked(
+                    intent, new_status, order_id=order_id
                 )
             return intent.model_copy(deep=True)
 
@@ -701,6 +755,86 @@ class InMemoryStateStore(StateStore):
                 intent, order_type=order_type, limit_price=limit_price
             )
             return order.model_copy(deep=True)
+
+    async def flatten_position(
+        self, symbol: str, *, session_id: Optional[str] = None
+    ) -> FlattenResult:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            # Every read this decision depends on happens under this ONE lock
+            # hold, continuously through to the write below — a concurrent
+            # protection tick's own create_sell_intent call cannot interleave
+            # anywhere in between (X-001).
+            position = self._position_unlocked(key)
+            active = self._active_sell_intent_unlocked(key)
+            active_order = (
+                self._orders.get(active.order_id)
+                if active is not None and active.order_id is not None
+                else None
+            )
+            plan = plan_flatten_position(
+                position=position, active_intent=active, active_order=active_order
+            )
+
+            if plan.outcome == _PLAN_FLATTEN_FLAT:
+                return FlattenResult(FLATTEN_FLAT)
+            if plan.outcome == _PLAN_FLATTEN_EXISTING:
+                return FlattenResult(
+                    FLATTEN_EXISTING,
+                    intent=plan.existing_intent.model_copy(deep=True),
+                    order=(
+                        plan.existing_order.model_copy(deep=True)
+                        if plan.existing_order is not None
+                        else None
+                    ),
+                )
+
+            # FLATTEN_SUPERSEDE_AND_CREATE — the whole supersede (if any) +
+            # create + approve + dispatch sequence is ONE atomic block: nothing
+            # else can write to this symbol's sell intents/orders until this
+            # entire method returns, which is what guarantees the returned
+            # intent's reason is manual_flatten, never a raced-in dedup target.
+            assert plan.outcome == FLATTEN_SUPERSEDE_AND_CREATE
+            if session_id is None:
+                session_id = self._ensure_current_session_unlocked().id
+            superseded = False
+            with self._atomic():
+                if plan.supersede_order_cancel is not None:
+                    self._orders[plan.supersede_order_cancel.id] = (
+                        plan.supersede_order_cancel
+                    )
+                    self._append_event_unlocked(
+                        plan.supersede_cancel_event.event_type,
+                        **plan.supersede_cancel_event.as_kwargs(),
+                    )
+                    superseded = True
+                if plan.supersede_intent_expire is not None:
+                    self._sell_intents[plan.supersede_intent_expire.id] = (
+                        plan.supersede_intent_expire
+                    )
+                    self._append_event_unlocked(
+                        plan.supersede_expire_event.event_type,
+                        **plan.supersede_expire_event.as_kwargs(),
+                    )
+                    superseded = True
+                intent = self._insert_sell_intent_unlocked(
+                    symbol=key,
+                    reason=SellReason.MANUAL_FLATTEN,
+                    target_quantity=plan.target_quantity,
+                    session_id=session_id,
+                )
+                self._transition_sell_intent_unlocked(
+                    intent, SellIntentStatus.APPROVED
+                )
+                order = self._dispatch_order_for_sell_intent_unlocked(
+                    intent, order_type=OrderType.MARKET, limit_price=None
+                )
+            return FlattenResult(
+                FLATTEN_CREATED,
+                intent=intent.model_copy(deep=True),
+                order=order.model_copy(deep=True),
+                superseded=superseded,
+            )
 
     # ------------------------------------------------------------------ #
     # Orders

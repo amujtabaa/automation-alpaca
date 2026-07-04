@@ -35,11 +35,8 @@ from app.models import (
     Event,
     Order,
     OrderStatus,
-    OrderType,
     Position,
     SellIntent,
-    SellIntentStatus,
-    SellReason,
     SubmitRecoveryRecord,
 )
 from app.monitoring import cancel_open_buys
@@ -52,6 +49,7 @@ from app.policy import (
 )
 from app.protection import ProtectionConfig, floor_breach_reason, floor_price
 from app.store.base import (
+    FLATTEN_FLAT,
     InvalidOrderError,
     OrderTransitionError,
     StateStore,
@@ -101,20 +99,32 @@ async def flatten_position(
     closed session (§5.2), because a human getting out must never be blocked by a
     control meant to stop *new* intent.
 
-    Cancels every open BUY for the symbol first (§5.3) so the exit reaches — and
-    stays — flat, then opens a ``MANUAL_FLATTEN`` sell intent for the full live
-    position, approves it (the click IS the approval), and dispatches a SELL order
-    (type re-decided at submission — MARKET in regular hours, aggressive LIMIT in
-    pre/after-hours). Order submission is the monitoring loop's job (same
-    side-agnostic pipeline).
+    A THIN caller (X-001): the whole "stand down a non-live autonomous exit,
+    then create + approve + dispatch a fresh MANUAL_FLATTEN" decision lives in
+    ``StateStore.flatten_position`` as ONE atomic, single-lock-hold operation —
+    NOT here. An earlier version of this route made that decision across
+    several separate store calls (read active intent, then later create one);
+    a protection tick's own intent-creation could win the single-flight race in
+    the gap between them, silently handing a human's flatten a
+    ``protection_floor`` intent instead (which a kill switch then holds
+    unsubmitted). ``flatten_position`` closes that gap structurally — see its
+    docstring in ``app/store/base.py``.
 
-    * No position (flat) → ``409``.
+    Cancels every open BUY for the symbol first (§5.3, best-effort — this needs
+    a broker call, which must never happen under the store's lock) so the exit
+    reaches — and stays — flat; ``flatten_position`` re-reads the live position
+    under its own lock regardless, so sizing always reflects whatever this
+    achieved, never a stale read.
+
+    * No position (flat) → ``409`` (checked before AND after the buy-cancel
+      step, so a flat symbol has no side effects at all — a stray unrelated
+      pending buy for a symbol with nothing to flatten is left untouched).
     * An in-flight ``MANUAL_FLATTEN`` already owns the exit → **idempotent**
       (returns it, no second order).
-    * An in-flight autonomous ``PROTECTION_FLOOR`` exit whose order has *not* yet
-      been sent is superseded (its CREATED order is canceled) so the human's
-      flatten takes over; one already live at the broker is returned as-is (it is
-      already exiting — cancel it via ``/orders/{id}/cancel`` first to re-issue).
+    * An in-flight autonomous ``PROTECTION_FLOOR`` exit whose order is not yet
+      live at the broker is superseded so the human's flatten takes over; one
+      already live is returned as-is (already exiting — cancel it via
+      ``/orders/{id}/cancel`` first to re-issue).
     """
 
     try:
@@ -131,65 +141,25 @@ async def flatten_position(
             detail=f"no open {key} position to flatten",
         )
 
-    active = await store.active_sell_intent_for(key)
-    if active is not None:
-        active_order = (
-            await store.get_order(active.order_id)
-            if active.order_id is not None
-            else None
-        )
-        if active.reason is SellReason.MANUAL_FLATTEN:
-            return FlattenResponse(intent=active, order=active_order)
-        # An autonomous PROTECTION_FLOOR exit is active. A human flatten takes
-        # over UNLESS the protective order is genuinely LIVE at the broker — a
-        # not-yet-sent form (no order at all — a stranded pending/approved intent,
-        # e.g. from a crash between the approve and the order write — OR a still
-        # CREATED order) is stood down so the manual flatten can supersede it. If
-        # we returned such a stranded intent as-is, the click would 200 but never
-        # exit, and protection's own dedup would keep the position exit-less
-        # (violating "flatten must ALWAYS let a human exit").
-        if active_order is not None and active_order.status is not OrderStatus.CREATED:
-            return FlattenResponse(intent=active, order=active_order)  # live — leave it
-        if active_order is not None:
-            # A CREATED protective order — cancel it locally (terminal), which also
-            # makes its ORDERED intent inactive so the fresh flatten isn't deduped.
-            await _transition_cancel(store, active_order.id, OrderStatus.CANCELED)
-        elif active.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
-            # A stranded intent with NO order — expire it to free the single-flight
-            # dedup so a fresh MANUAL_FLATTEN can be created below.
-            await store.transition_sell_intent(active.id, SellIntentStatus.EXPIRED)
-
-    # §5.3: clear open buys so the exit truly reaches flat, then re-read the live
-    # position (a partial buy fill may have landed) before sizing the exit.
+    # §5.3: clear open buys so the exit truly reaches flat. Best-effort/
+    # idempotent; a broker failure here is logged by cancel_open_buys itself
+    # and does not block the flatten attempt below.
     await cancel_open_buys(store, adapter, key)
-    position = await store.get_position(key)
-    if position.quantity <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"no open {key} position to flatten",
-        )
 
-    session = await store.get_current_session()
     try:
-        intent = await store.create_sell_intent(
-            symbol=key,
-            reason=SellReason.MANUAL_FLATTEN,
-            target_quantity=position.quantity,
-            observed_price=None,
-            session_id=session.id,
-        )
-        if intent.status is SellIntentStatus.PENDING:
-            await store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)
-        order = await store.create_order_for_sell_intent(
-            intent.id, order_type=OrderType.MARKET
-        )
+        result = await store.flatten_position(key)
     except InvalidOrderError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
 
-    refreshed = await store.get_sell_intent(intent.id)
-    return FlattenResponse(intent=refreshed or intent, order=order)
+    if result.outcome == FLATTEN_FLAT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"no open {key} position to flatten",
+        )
+
+    return FlattenResponse(intent=result.intent, order=result.order)
 
 
 @router.get("/protection", response_model=ProtectionStatusResponse)

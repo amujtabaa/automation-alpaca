@@ -680,6 +680,162 @@ def plan_create_order_for_sell_intent(
     )
 
 
+# ---- flatten_position (X-001, atomic manual-flatten) ---------------------- #
+
+# FlattenPlan.outcome values:
+FLATTEN_FLAT = "flat"                                   # no open position
+FLATTEN_EXISTING = "existing"                           # return an existing intent as-is
+FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"    # stand down + create fresh
+
+
+@dataclass(frozen=True)
+class FlattenPlan:
+    """Pure outcome of the manual-flatten decision (X-001).
+
+    Evaluated over state the store fetched ENTIRELY under ONE lock hold, so no
+    concurrent writer — most critically a protection tick's own
+    ``create_sell_intent`` call — can interleave between "decide" and "act".
+    That interleaving was the actual defect: the route used to read the active
+    intent, then LATER call ``create_sell_intent(MANUAL_FLATTEN, ...)`` as a
+    SEPARATE lock hold; a protection tick's own create call could win the
+    single-flight race in the gap, and the route never verified the ``reason``
+    of what it got back — so a human's flatten could silently be handed a
+    ``protection_floor`` intent, which a kill switch would then hold
+    unsubmitted. This planner's caller (``StateStore.flatten_position``) never
+    releases the lock between fetching this input and applying this plan.
+
+    ``flat``: no open position; the caller (route) surfaces a 409.
+
+    ``existing``: return ``existing_intent``/``existing_order`` as-is —
+    either it is ALREADY the caller's own ``manual_flatten`` (idempotent), or a
+    ``protection_floor`` exit that is genuinely LIVE at the broker (executing;
+    left alone, never captured or duplicated).
+
+    ``supersede_and_create``: any active ``protection_floor`` exit that is
+    NOT yet live (no order at all — a stranded ``pending``/``approved``
+    intent — or a still-``created`` order) is stood down first
+    (``supersede_*`` fields, applied in the SAME atomic block as the create
+    below), then a fresh ``manual_flatten`` intent for ``target_quantity`` is
+    inserted directly and dispatched through the same order-handoff machinery
+    ``create_order_for_sell_intent`` uses — so the returned intent's ``reason``
+    is GUARANTEED ``manual_flatten``, never a deduped intent of a different
+    reason. This is what closes X-001: nothing else can write to this symbol's
+    sell intents between the supersede and the create, because both happen
+    without ever releasing the lock.
+    """
+
+    outcome: str
+    existing_intent: Optional[SellIntent] = None
+    existing_order: Optional[Order] = None
+    supersede_order_cancel: Optional[Order] = None
+    supersede_cancel_event: Optional[EventSpec] = None
+    supersede_intent_expire: Optional[SellIntent] = None
+    supersede_expire_event: Optional[EventSpec] = None
+    target_quantity: int = 0
+
+
+def plan_flatten_position(
+    *,
+    position: Position,
+    active_intent: Optional[SellIntent],
+    active_order: Optional[Order],
+) -> FlattenPlan:
+    """Decide the manual-flatten outcome for one symbol.
+
+    ``position`` is the LIVE derived position; ``active_intent`` is the
+    symbol's current *active* sell intent (already filtered through
+    :func:`sell_intent_is_active`, including the X-003 ``needs_review``
+    exclusion) or ``None``; ``active_order`` is its linked order (if any). All
+    three are read by the caller under the SAME lock hold this plan is applied
+    under — the decision and the eventual write can never straddle a
+    concurrent mutation.
+    """
+
+    if position.quantity <= 0:
+        return FlattenPlan(FLATTEN_FLAT)
+
+    if active_intent is not None:
+        if active_intent.reason is SellReason.MANUAL_FLATTEN:
+            return FlattenPlan(
+                FLATTEN_EXISTING,
+                existing_intent=active_intent,
+                existing_order=active_order,
+            )
+        # A protection_floor exit is active. Genuinely live at the broker (an
+        # order exists and is no longer CREATED) -> already executing, leave it.
+        if active_order is not None and active_order.status is not OrderStatus.CREATED:
+            return FlattenPlan(
+                FLATTEN_EXISTING,
+                existing_intent=active_intent,
+                existing_order=active_order,
+            )
+        # Not live: supersede. A CREATED order cancels locally; a stranded
+        # pending/approved intent with no order at all expires.
+        now = utcnow()
+        supersede_order_cancel = None
+        supersede_cancel_event = None
+        supersede_intent_expire = None
+        supersede_expire_event = None
+        if active_order is not None:
+            updated_order = active_order.model_copy(deep=True)
+            updated_order.status = OrderStatus.CANCELED
+            updated_order.canceled_at = now
+            updated_order.updated_at = now
+            supersede_order_cancel = updated_order
+            supersede_cancel_event = EventSpec(
+                "order_transition",
+                message=(
+                    f"order {active_order.symbol} created -> canceled "
+                    f"(superseded by manual flatten)"
+                ),
+                symbol=active_order.symbol,
+                order_id=active_order.id,
+                payload={
+                    "from": "created",
+                    "to": "canceled",
+                    "reason": "superseded_by_manual_flatten",
+                },
+                session_id=active_order.session_id,
+                correlation_id=active_intent.id,
+            )
+        elif active_intent.status in (
+            SellIntentStatus.PENDING,
+            SellIntentStatus.APPROVED,
+        ):
+            updated_intent = active_intent.model_copy(deep=True)
+            updated_intent.status = SellIntentStatus.EXPIRED
+            updated_intent.expired_at = now
+            updated_intent.updated_at = now
+            supersede_intent_expire = updated_intent
+            supersede_expire_event = EventSpec(
+                "sell_intent_transition",
+                message=(
+                    f"sell intent {active_intent.status.value} -> expired "
+                    f"(superseded by manual flatten)"
+                ),
+                symbol=active_intent.symbol,
+                payload={
+                    "from": active_intent.status.value,
+                    "to": "expired",
+                    "reason": "superseded_by_manual_flatten",
+                },
+                session_id=active_intent.session_id,
+                correlation_id=active_intent.id,
+            )
+        return FlattenPlan(
+            FLATTEN_SUPERSEDE_AND_CREATE,
+            supersede_order_cancel=supersede_order_cancel,
+            supersede_cancel_event=supersede_cancel_event,
+            supersede_intent_expire=supersede_intent_expire,
+            supersede_expire_event=supersede_expire_event,
+            target_quantity=position.quantity,
+        )
+
+    return FlattenPlan(
+        FLATTEN_SUPERSEDE_AND_CREATE, target_quantity=position.quantity
+    )
+
+
 # ---- submit-recovery ledger (D-017) --------------------------------------- #
 
 

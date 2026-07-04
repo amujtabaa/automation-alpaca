@@ -60,8 +60,12 @@ from app.position import fold_fills
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
+    FLATTEN_CREATED,
+    FLATTEN_EXISTING,
+    FLATTEN_FLAT,
     CandidateTransitionError,
     FillAppendResult,
+    FlattenResult,
     InvalidOrderError,
     RiskLimits,
     SellIntentTransitionError,
@@ -76,6 +80,9 @@ from app.store.core import (
     CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
+    FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
+    FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
+    FLATTEN_SUPERSEDE_AND_CREATE,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     plan_append_fill,
@@ -83,6 +90,7 @@ from app.store.core import (
     plan_close_session,
     plan_create_order_for_candidate,
     plan_create_order_for_sell_intent,
+    plan_flatten_position,
     plan_transition_order,
     require_bool,
     require_recovery_status,
@@ -1085,6 +1093,89 @@ class SqliteStateStore(StateStore):
                 return si
         return None
 
+    def _insert_sell_intent_locked(
+        self,
+        cur: sqlite3.Cursor,
+        *,
+        symbol: str,
+        reason: SellReason,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> SellIntent:
+        """Build + insert a fresh sell intent row + its ``sell_intent_created``
+        event (assumes the caller already holds ``self._lock`` and is inside a
+        ``with self._tx() as cur:`` block — either the public
+        ``create_sell_intent`` or ``flatten_position``, X-001). No input
+        validation: a caller that accepts external input
+        (``create_sell_intent``) validates before calling this; a caller
+        building the intent from trusted internal state (``flatten_position``,
+        sizing from the live position) does not need to."""
+
+        intent = SellIntent(
+            symbol=symbol,
+            reason=reason,
+            target_quantity=target_quantity,
+            floor_price=floor_price,
+            observed_price=observed_price,
+            session_id=session_id,
+        )
+        self._insert_sell_intent(cur, intent)
+        self._insert_event(
+            cur,
+            "sell_intent_created",
+            message=f"sell intent ({reason.value}) created for {symbol}",
+            symbol=symbol,
+            session_id=session_id,
+            correlation_id=intent.id,
+            payload={"reason": reason.value, "target_quantity": target_quantity},
+        )
+        return intent
+
+    def _transition_sell_intent_locked(
+        self,
+        cur: sqlite3.Cursor,
+        intent: SellIntent,
+        new_status: SellIntentStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> bool:
+        """Apply a sell-intent status transition in place + persist it (assumes
+        the caller already holds ``self._lock`` and is inside a
+        ``with self._tx() as cur:`` block). Returns ``False`` for a
+        same-status no-op (nothing applied, no event written); ``True`` if it
+        actually transitioned. Raises :class:`SellIntentTransitionError` for an
+        illegal transition (nothing mutated, nothing persisted)."""
+
+        current = intent.status
+        if new_status is current:
+            return False
+        if new_status not in SELL_INTENT_TRANSITIONS.get(current, set()):
+            raise SellIntentTransitionError(
+                f"illegal sell intent transition {current.value} -> "
+                f"{new_status.value}"
+            )
+        intent.status = new_status
+        intent.updated_at = utcnow()
+        ts_field = SELL_INTENT_TIMESTAMP.get(new_status)
+        if ts_field:
+            setattr(intent, ts_field, utcnow())
+        if new_status is SellIntentStatus.ORDERED and order_id is not None:
+            intent.order_id = order_id
+        self._update_sell_intent(cur, intent)
+        self._insert_event(
+            cur,
+            "sell_intent_transition",
+            message=f"sell intent {current.value} -> {new_status.value}",
+            symbol=intent.symbol,
+            order_id=order_id,
+            payload={"from": current.value, "to": new_status.value},
+            session_id=intent.session_id,
+            correlation_id=intent.id,
+        )
+        return True
+
     async def create_sell_intent(
         self,
         *,
@@ -1113,27 +1204,15 @@ class SqliteStateStore(StateStore):
             active = self._active_sell_intent_locked(key)
             if active is not None:
                 return active
-            intent = SellIntent(
-                symbol=key,
-                reason=reason,
-                target_quantity=target_quantity,
-                floor_price=floor_price,
-                observed_price=observed_price,
-                session_id=session_id,
-            )
             with self._tx() as cur:
-                self._insert_sell_intent(cur, intent)
-                self._insert_event(
+                intent = self._insert_sell_intent_locked(
                     cur,
-                    "sell_intent_created",
-                    message=f"sell intent ({reason.value}) created for {key}",
                     symbol=key,
+                    reason=reason,
+                    target_quantity=target_quantity,
+                    floor_price=floor_price,
+                    observed_price=observed_price,
                     session_id=session_id,
-                    correlation_id=intent.id,
-                    payload={
-                        "reason": reason.value,
-                        "target_quantity": target_quantity,
-                    },
                 )
             return intent
 
@@ -1152,32 +1231,9 @@ class SqliteStateStore(StateStore):
             if row is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
             intent = self._sell_intent(row)
-            current = intent.status
-            if new_status is current:
-                return intent  # idempotent no-op
-            if new_status not in SELL_INTENT_TRANSITIONS.get(current, set()):
-                raise SellIntentTransitionError(
-                    f"illegal sell intent transition {current.value} -> "
-                    f"{new_status.value}"
-                )
-            intent.status = new_status
-            intent.updated_at = utcnow()
-            ts_field = SELL_INTENT_TIMESTAMP.get(new_status)
-            if ts_field:
-                setattr(intent, ts_field, utcnow())
-            if new_status is SellIntentStatus.ORDERED and order_id is not None:
-                intent.order_id = order_id
             with self._tx() as cur:
-                self._update_sell_intent(cur, intent)
-                self._insert_event(
-                    cur,
-                    "sell_intent_transition",
-                    message=f"sell intent {current.value} -> {new_status.value}",
-                    symbol=intent.symbol,
-                    order_id=order_id,
-                    payload={"from": current.value, "to": new_status.value},
-                    session_id=intent.session_id,
-                    correlation_id=intent.id,
+                self._transition_sell_intent_locked(
+                    cur, intent, new_status, order_id=order_id
                 )
             return intent
 
@@ -1307,6 +1363,95 @@ class SqliteStateStore(StateStore):
                 return self._order(order_row)
             return self._dispatch_order_for_sell_intent_locked(
                 intent, order_type=order_type, limit_price=limit_price
+            )
+
+    async def flatten_position(
+        self, symbol: str, *, session_id: Optional[str] = None
+    ) -> FlattenResult:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            # Every read this decision depends on happens under this ONE lock
+            # hold, continuously through to the writes below — a concurrent
+            # protection tick's own create_sell_intent call cannot interleave
+            # anywhere in between (X-001). Individual steps below each commit
+            # their own small SQL transaction (matching close_session's and
+            # _run_protection's existing multi-step-under-one-lock shape) —
+            # what makes this safe against the CONCURRENCY race is the
+            # continuous lock hold, not a single giant transaction; a crash
+            # between steps leaves a safe, recoverable intermediate state
+            # (never a double-sell, never a silently-blocked symbol).
+            position = self._position_locked(key)
+            active = self._active_sell_intent_locked(key)
+            active_order = None
+            if active is not None and active.order_id is not None:
+                order_row = self._read_one(
+                    "SELECT * FROM orders WHERE id = ?", (active.order_id,)
+                )
+                active_order = self._order(order_row) if order_row is not None else None
+
+            plan = plan_flatten_position(
+                position=position, active_intent=active, active_order=active_order
+            )
+
+            if plan.outcome == _PLAN_FLATTEN_FLAT:
+                return FlattenResult(FLATTEN_FLAT)
+            if plan.outcome == _PLAN_FLATTEN_EXISTING:
+                return FlattenResult(
+                    FLATTEN_EXISTING,
+                    intent=plan.existing_intent,
+                    order=plan.existing_order,
+                )
+
+            assert plan.outcome == FLATTEN_SUPERSEDE_AND_CREATE
+            if session_id is None:
+                session_id = self._ensure_current_session_locked().id
+
+            superseded = False
+            if plan.supersede_order_cancel is not None:
+                with self._tx() as cur:
+                    cur.execute(
+                        "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
+                        "WHERE id=?",
+                        (
+                            OrderStatus.CANCELED.value,
+                            _dt(plan.supersede_order_cancel.canceled_at),
+                            _dt(plan.supersede_order_cancel.updated_at),
+                            plan.supersede_order_cancel.id,
+                        ),
+                    )
+                    self._insert_event(
+                        cur,
+                        plan.supersede_cancel_event.event_type,
+                        **plan.supersede_cancel_event.as_kwargs(),
+                    )
+                superseded = True
+            if plan.supersede_intent_expire is not None:
+                with self._tx() as cur:
+                    self._update_sell_intent(cur, plan.supersede_intent_expire)
+                    self._insert_event(
+                        cur,
+                        plan.supersede_expire_event.event_type,
+                        **plan.supersede_expire_event.as_kwargs(),
+                    )
+                superseded = True
+
+            with self._tx() as cur:
+                intent = self._insert_sell_intent_locked(
+                    cur,
+                    symbol=key,
+                    reason=SellReason.MANUAL_FLATTEN,
+                    target_quantity=plan.target_quantity,
+                    session_id=session_id,
+                )
+                self._transition_sell_intent_locked(
+                    cur, intent, SellIntentStatus.APPROVED
+                )
+
+            order = self._dispatch_order_for_sell_intent_locked(
+                intent, order_type=OrderType.MARKET, limit_price=None
+            )
+            return FlattenResult(
+                FLATTEN_CREATED, intent=intent, order=order, superseded=superseded
             )
 
     # ------------------------------------------------------------------ #

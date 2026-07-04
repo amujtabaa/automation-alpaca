@@ -276,6 +276,41 @@ class SubmissionClaim:
     reason: Optional[str] = None
 
 
+# FlattenResult.outcome values (X-001). The route dispatches on these:
+FLATTEN_FLAT = "flat"        # no open position; route surfaces 409
+FLATTEN_EXISTING = "existing"  # an existing intent returned as-is (idempotent
+                               # own manual_flatten, or a genuinely-live
+                               # protection_floor exit left untouched)
+FLATTEN_CREATED = "created"  # a fresh manual_flatten intent was created + ordered
+                             # (superseding a non-live protection_floor exit first,
+                             # if one was active)
+
+
+@dataclass(frozen=True)
+class FlattenResult:
+    """Outcome of :meth:`StateStore.flatten_position` (X-001).
+
+    ``flat``: no open position for the symbol (the route surfaces a 409).
+    ``existing``: ``intent``/``order`` are returned as-is — no new intent was
+    created. ``created``: a fresh ``manual_flatten`` intent (``intent``) and its
+    SELL order (``order``) were created, atomically superseding any non-live
+    ``protection_floor`` exit first (``superseded`` is ``True`` when that
+    supersede happened — an observability flag, not part of the contract).
+
+    In BOTH ``existing`` and ``created``, ``intent.reason`` is **guaranteed**
+    to be ``manual_flatten`` UNLESS ``existing`` is returning a genuinely-live
+    ``protection_floor`` exit that was already executing — the caller can tell
+    the two apart via ``intent.reason`` itself. This is the whole point of the
+    method: no caller of ``flatten_position`` can ever be handed a *newly
+    created/deduped* intent whose reason isn't what was asked for (X-001).
+    """
+
+    outcome: str
+    intent: Optional[SellIntent] = None
+    order: Optional[Order] = None
+    superseded: bool = False
+
+
 class StateStore(ABC):
     """Abstract persistence interface. All methods are async."""
 
@@ -483,6 +518,43 @@ class StateStore(ABC):
         Raises :class:`UnknownEntityError` (unknown intent),
         :class:`SellIntentTransitionError` (not ``approved``), or
         :class:`InvalidOrderError` (oversell / bad limit-vs-market).
+        """
+
+    @abstractmethod
+    async def flatten_position(
+        self, symbol: str, *, session_id: Optional[str] = None
+    ) -> FlattenResult:
+        """Atomically open (or return the existing) ``manual_flatten`` exit for
+        ``symbol`` — the whole "read the live position, stand down any
+        non-live ``protection_floor`` exit, create + approve + dispatch a fresh
+        ``manual_flatten``" sequence, evaluated and applied under ONE lock hold
+        (X-001).
+
+        This is the ONLY correct way to flatten a position from a route or any
+        other caller that must guarantee it gets back a ``manual_flatten``
+        intent. Calling :meth:`create_sell_intent` directly with
+        ``reason=manual_flatten`` does NOT give this guarantee: its
+        single-flight dedup returns *whatever* intent is active regardless of
+        the requested reason, so a concurrent protection tick's own
+        ``create_sell_intent(protection_floor, ...)`` call can win the race in
+        the gap between a caller's own separate "check active" and "create"
+        calls, silently handing the caller a ``protection_floor`` intent
+        instead — which a kill switch then holds unsubmitted (the exact defect
+        this method exists to close). ``flatten_position`` has no such gap:
+        every read this decision depends on, and every write it performs, share
+        one lock hold from start to finish.
+
+        Does **not** cancel a LIVE (broker-submitted) BUY order — that needs a
+        broker call, which must never happen while this lock is held (the
+        concurrency model: no network call under the store lock). Callers
+        cancel open buys via ``app.monitoring.cancel_open_buys`` (best-effort,
+        idempotent) BEFORE calling this method; this method re-reads the live
+        position under its own lock regardless, so sizing always reflects
+        whatever the buy-cancel step actually achieved — never oversized, never
+        racing a partial fill.
+
+        Returns :class:`FlattenResult`. ``session_id`` seeds a freshly-created
+        intent only (ignored when returning an existing one).
         """
 
     # ------------------------------------------------------------------ #
