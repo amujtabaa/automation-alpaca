@@ -45,7 +45,13 @@ size, current state (pending/approved/…), approve and reject buttons.
 
 ### 4. Position Monitor
 Per position: symbol, quantity (derived from fills), average price, unrealized
-P/L, protection mode, flatten button.
+P/L, protection mode, flatten button. **Protection mode (Phase 7)** reads
+`GET /api/protection`: the hard floor, the last price, and a state label
+(safe / breaching / paused-by-kill-switch / exiting / exit-stalled), all
+classified server-side. The **flatten** button is now functional (a confirm step
+then `POST /api/positions/{symbol}/flatten`) — a manual full exit that always
+works, even while kill-switched (D-P2). Unrealized P/L from the live feed remains
+the one deferred item on this screen.
 
 ### 5. Daily Review
 For the current or a **past session selected by date** (`/api/review?date=`):

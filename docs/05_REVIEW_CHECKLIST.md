@@ -316,6 +316,58 @@ Use when reviewing Codex or Claude Code output.
       an error.
 - [ ] D-017 is recorded in `docs/00_START_HERE.md` as part of the fix.
 
+## Phase 7 (Sell-Side Protection — always-on safety exits)
+See `docs/IMPLEMENTATION_PROMPT_PHASE_7.md` for the full design + finding→fix
+traceability. The build-round invariants a reviewer should re-verify:
+- [ ] **No short (Rule 7).** A protective/flatten exit's quantity never exceeds
+      the live derived position: `protection.exit_quantity` caps at the position,
+      `create_order_for_sell_intent` re-reads the live fold **under the store
+      lock** and rejects an oversell, `_open_protective_exit`/the flatten route
+      re-read after cancelling buys, and `fold_fills`' `NegativePositionError` is
+      the structural backstop. Protection code never mutates a position — only an
+      appended fill does.
+- [ ] **Order-origin XOR.** Every order has `candidate_id` XOR `sell_intent_id`
+      (model validator + both stores). A SELL carries the intent, not a candidate.
+- [ ] **Kill switch (D-P2).** A `manual_flatten` SELL is always claimable; a
+      `protection_floor` SELL bypasses buys-paused/closed-session but STAYS blocked
+      by the kill switch (own OR current session). The BUY gate is byte-for-byte
+      unchanged (the pre-Phase-7 logic is extracted verbatim; the sell branch
+      layers around it). Autonomous protection *pauses* (paired per-symbol
+      `protection_paused`/`_resumed`, read from the durable log), never silently
+      disables.
+- [ ] **Rule 12 at submission (D-015).** A protective sell is created `MARKET`;
+      the type is re-derived at EVERY submit choke point (first submit + stale
+      re-drive) — MARKET in regular hours, a live-priced LIMIT pre/after-hours,
+      HELD when it can't be priced (no/stale/untrustworthy snapshot). The
+      `AlpacaPaperAdapter` refuses a MARKET outside regular hours as a backstop.
+- [ ] **Side-aware transient release.** A SELL always releases `SUBMITTING→CREATED`
+      on submit failure (never CANCELED); only a BUY keeps the closed-session
+      no-zombie CANCELED (D-013a).
+- [ ] **Fill pricing (§7).** A MARKET protective sell's fill is priced off the
+      reconcile-time snapshot `last_price` when the broker gives no price (else it
+      would be withheld and, with single-flight dedup, strand protection); the
+      fallback is tried LAST (a real price wins) and refuses stale/None/≤0.
+- [ ] **Single active exit per symbol.** `create_sell_intent` is atomic
+      single-flight; `_run_protection` and the flatten route dedup on
+      `active_sell_intent_for`; `protection_triggered` is not re-emitted each tick.
+      A terminal (filled/canceled) exit frees the symbol for re-protection.
+- [ ] **Cancel open buys before exiting.** A protective/flatten exit cancels every
+      non-terminal BUY for the symbol first (CREATED→local CANCELED; live→broker
+      cancel + CANCEL_PENDING) so it truly reaches flat — no live BUY + protective
+      SELL self-cross.
+- [ ] **Parity.** Every sell-intent store method and the claim gate behave
+      identically across `InMemoryStateStore` and `SqliteStateStore` (`any_store`);
+      the SQLite orders-table rebuild migration preserves rows.
+- [ ] **Session close.** Open (pending/approved) sell-intents expire like
+      candidates; a CREATED **SELL** survives close (a protective exit stays
+      submittable post-close) — only CREATED **BUY** orders are canceled.
+- [ ] **Never-crash + auto-mint discipline.** `_run_protection` is per-symbol
+      try/except and never raises out of the tick; `get_current_session` is only
+      reached once a held position exists (no idle-tick session mint).
+- [ ] **CAPI exposure excludes SELL.** A pending protective SELL reduces risk; it
+      is excluded from `existing_exposure`'s order-notional sum, so it can't push a
+      concurrent BUY over `max_total_exposure`.
+
 ## Phase 6 (Capital Intelligence Layer — pre-trade risk gate)
 - [ ] CAPI gates-and-rejects on a limit breach; it never silently resizes an
       order down to fit (D-016a).

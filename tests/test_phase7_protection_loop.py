@@ -161,6 +161,33 @@ async def test_pause_is_not_re_emitted_each_tick(store):
     assert len(await _events(store, EventType.PROTECTION_PAUSED.value, "AAPL")) == 1
 
 
+async def test_resume_emitted_when_paused_position_goes_flat(store):
+    # Regression (execution review): a paused symbol that is flattened (position
+    # -> 0) while kill-switched must still get its PAIRED protection_resumed, even
+    # though the next tick has NO held positions — not an unpaired PAUSED forever.
+    await store.initialize()
+    await _hold(store, "AAPL", 100, 10.0)
+    await store.set_kill_switch(True)
+    md = _breaching_feed()
+    await _run_protection(store, MockBrokerAdapter(), md, Settings())  # paused
+    assert len(await _events(store, EventType.PROTECTION_PAUSED.value, "AAPL")) == 1
+
+    # Flatten AAPL to zero via a manual-flatten exit that fills.
+    session = await store.get_current_session()
+    si = await store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=100,
+        session_id=session.id,
+    )
+    await store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
+    sell = await store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
+    await store.append_fill(sell.id, "AAPL", OrderSide.SELL, 100, 9.0, session_id=session.id)
+    assert (await store.get_position("AAPL")).quantity == 0
+
+    # Next tick: no held positions, but the lingering pause must resolve.
+    await _run_protection(store, MockBrokerAdapter(), md, Settings())
+    assert len(await _events(store, EventType.PROTECTION_RESUMED.value, "AAPL")) == 1
+
+
 async def test_resume_and_exit_when_kill_released(store):
     await store.initialize()
     await _hold(store, "AAPL", 100, 10.0)

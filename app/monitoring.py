@@ -261,6 +261,13 @@ async def _run_protection(
         return
     positions = [p for p in await store.list_positions() if p.quantity > 0]
     if not positions:
+        # Even with nothing held, close out any lingering pause: a previously
+        # paused symbol that went flat (e.g. a manual flatten under the kill
+        # switch, D-P2) must still get its PAIRED protection_resumed rather than
+        # leave an unpaired protection_paused in the durable log. Nothing is held,
+        # so nothing is paused-and-breaching -> every currently-paused symbol
+        # resumes. (No-op write when nothing was paused.)
+        await _reconcile_protection_pause(store, set())
         return
 
     held = sorted({p.symbol for p in positions})

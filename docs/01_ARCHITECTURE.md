@@ -28,7 +28,16 @@ convenience.
 5. The FastAPI backend owns strategy, risk, order, fill, and position state.
 6. A submitted order does **not** equal a filled order.
 7. Only fill events mutate position quantity.
-8. The kill switch blocks all new order intent.
+8. The kill switch blocks all new order intent. **Exits are exempt (Phase 7,
+   D-P2):** a *manual flatten* — a human-commanded exit that only reduces risk —
+   is always allowed even while kill-switched, and *autonomous* Sell-Side
+   Protection does not fire but **pauses** (surfaced as a per-symbol
+   `protection_paused`/`protection_resumed` transition), rather than being
+   silently disabled. New BUY intent stays blocked. The carve-out is narrow: it
+   is enforced inside the submission claim gate for a SELL order whose owning
+   sell-intent reason is `manual_flatten` (all controls bypassed) or
+   `protection_floor` (buys-paused/closed-session bypassed, but the kill switch
+   still holds it), and nowhere else.
 9. Unit tests make no network or live-IO calls.
 10. Integration tests are gated by environment variables.
 11. Do not add Webull, IBKR, TradersPost, Dash, React, or TradingView Advanced
@@ -151,16 +160,21 @@ POST   /api/candidates/{candidate_id}/reject
 
 GET    /api/positions
 GET    /api/positions/{symbol}
-POST   /api/positions/{symbol}/flatten  # Phase 7 (Sell-Side Protection); not yet
-                                         # implemented — cockpit button is a
-                                         # disabled placeholder until then
+POST   /api/positions/{symbol}/flatten  # Phase 7 (Sell-Side Protection) — a
+                                         # human-commanded full exit; always
+                                         # works (D-P2), idempotent, 409 when flat
+
+GET    /api/protection                 # Phase 7; read-only Sell-Side Protection
+                                        # status (config + per-position floor,
+                                        # breach, pause, stall, active exit)
+GET    /api/sell-intents               # Phase 7; read-only sell-intent lifecycle
 
 GET    /api/orders
 GET    /api/orders/{order_id}
 POST   /api/orders/{order_id}/cancel   # manual cancel of an open order (Phase 4)
 GET    /api/events
 
-GET    /api/review?date=YYYY-MM-DD     # query a past session
+GET    /api/review?date=YYYY-MM-DD     # query a past session (now incl. sell_intents)
 
 POST   /api/controls/kill-switch
 POST   /api/controls/pause-buys
