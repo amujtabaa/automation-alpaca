@@ -196,6 +196,24 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
                 raise BrokerError(
                     f"adapter returned an empty broker id for order {claimed.id}"
                 )
+        except TerminalBrokerError as exc:
+            # AIR-003 (review follow-up): a *definitive* broker rejection on the
+            # first submit (403/422/delisted, or a duplicate whose lookup fails).
+            # Releasing SUBMITTING -> CREATED here would re-submit a doomed order
+            # every tick forever (a CREATED<->SUBMITTING livelock hammering the
+            # broker, never escalated) — the same class this wave closed on the
+            # re-drive path. Escalate to a durable needs_review record instead, so
+            # a human reconciles rather than the loop guessing. Deduped/skipped by
+            # the stale-SUBMITTING re-drive step (it carries an open recovery now).
+            _log.error(
+                "submit of order %s (%s) definitively rejected (terminal); "
+                "escalating to needs_review instead of retrying: %s",
+                claimed.id,
+                claimed.symbol,
+                exc,
+            )
+            await _escalate_stale_submitting(store, claimed, exc)
+            continue
         except Exception as exc:  # noqa: BLE001 - release the claim, retry next tick
             # Releasing SUBMITTING -> CREATED lets the next tick re-run the full
             # gate. But if the order's OWN session closed during the submit await

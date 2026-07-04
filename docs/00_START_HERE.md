@@ -158,6 +158,15 @@ write aborts the tick" claim that matched documented tick-isolation and a
 pre-existing unguarded read) — the escalation store-writes were nonetheless wrapped
 best-effort for per-order isolation consistency with `_handle_unpersisted_submit`.
 
+A follow-up fresh-context verification of the fix confirmed it closes the livelock
+with no regression, and flagged one **minor, pre-existing** analogue: the *first*-
+submit path (`_submit_pending_orders`) also ignored terminal classification — a
+definitive rejection on a brand-new order released `SUBMITTING → CREATED` and
+re-submitted every tick (a `CREATED ↔ SUBMITTING` livelock hammering the broker).
+Closed the same way: a `TerminalBrokerError` on first submit now escalates to a
+durable `needs_review` record instead of releasing to CREATED, completing the
+"no submission livelock" invariant across **both** submission paths.
+
 ### D-023 — AIR remediation Group A: deterministic validation & contract fixes
 **Context.** An independent adversarial review (the "AIR" findings, AIR-001…011)
 flagged eleven defects across validation, recovery, and test quality. Group A is

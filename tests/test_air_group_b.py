@@ -164,6 +164,38 @@ class TestAir003StaleSubmittingRecovery:
         assert rec.local_order_id == order.id
         assert rec.cleanup_status == RECOVERY_NEEDS_REVIEW
 
+    async def test_first_submit_terminal_rejection_escalates_not_livelocks(
+        self, any_store
+    ):
+        # AIR-003 review follow-up: a definitive rejection on the FIRST submit must
+        # escalate to needs_review, not release CREATED and re-submit every tick.
+        await any_store.initialize()
+        candidate = await any_store.create_candidate(
+            "AAPL", suggested_quantity=10, suggested_limit_price=1.0
+        )
+        order = await any_store.create_order_for_test(
+            candidate.id, "AAPL", OrderSide.BUY, 10, limit_price=1.0
+        )
+
+        class _TerminalOnSubmit(MockBrokerAdapter):
+            async def submit_order(self, order):  # noqa: D401
+                self.submitted.append(order)
+                raise TerminalBrokerError("403 restricted account")
+
+        adapter = _TerminalOnSubmit()
+        await run_monitoring_tick(any_store, adapter, Settings())
+        submits_after_first = len(adapter.submitted)
+
+        recoveries = await any_store.list_submit_recoveries(
+            statuses=RECOVERY_OPEN_STATUSES
+        )
+        assert len(recoveries) == 1
+        assert recoveries[0].cleanup_status == RECOVERY_NEEDS_REVIEW
+        assert recoveries[0].local_order_id == order.id
+        # Not re-submitted every tick (deduped by the open recovery record).
+        await run_monitoring_tick(any_store, adapter, Settings())
+        assert len(adapter.submitted) == submits_after_first
+
     async def test_transient_livelock_escalates_after_max_attempts(self, any_store):
         # AIR-003 review backstop: a permanent rejection that an adapter MISCLASSIFIES
         # as transient (plain BrokerError) must not retry every tick forever. After
