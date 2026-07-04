@@ -43,6 +43,8 @@ from app.broker.adapter import (
     TerminalBrokerError,
 )
 from app.config import Settings
+from app.features import session_type_for
+from app.marketdata.service import MarketDataService
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
@@ -50,11 +52,16 @@ from app.models import (
     RECOVERY_UNRESOLVED,
     EventType,
     Order,
+    OrderSide,
     OrderStatus,
+    OrderType,
     SessionStatus,
+    SessionType,
     utcnow,
 )
+from app.policy import finite_number_reason
 from app.position import NegativePositionError
+from app.protection import ProtectionConfig, protective_limit_price
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -91,14 +98,106 @@ _FILL_ERRORS = (InvalidFillError, UnknownEntityError, NegativePositionError)
 _TRANSITION_ERRORS = (OrderTransitionError, InvalidOrderError, UnknownEntityError)
 
 
+def _protection_config(settings: Optional[Settings]) -> ProtectionConfig:
+    """Build the pure-engine :class:`ProtectionConfig` from ``settings`` (only its
+    ``limit_buffer_pct`` matters for pricing a protective sell). Defaults when
+    ``settings`` is ``None`` — the private submit helpers accept ``settings=None``
+    for the handful of legacy direct test callers that submit only BUYs, where no
+    protective pricing is ever needed."""
+
+    if settings is None:
+        return ProtectionConfig()
+    return ProtectionConfig(
+        enabled=settings.protection_enabled,
+        stop_loss_pct=settings.protection_stop_loss_pct,
+        limit_buffer_pct=settings.protection_limit_buffer_pct,
+    )
+
+
+async def _effective_submit_order(
+    order: Order,
+    market_data: Optional[MarketDataService],
+    settings: Optional[Settings],
+) -> Optional[Order]:
+    """The order to ACTUALLY submit (§5.4 / D-015 / Rule 12) — the single choke
+    point where a protective sell's session-conditional order type is decided.
+
+    A protective sell is created ``MARKET`` (the "full exit" intent). Only at
+    submission, against the live session:
+
+    * **REGULAR hours** → submit ``MARKET`` unchanged.
+    * **PRE_MARKET / AFTER_HOURS** → a MARKET is forbidden (Rule 12), so return a
+      COPY downgraded to ``LIMIT`` priced live by ``protective_limit_price`` — an
+      aggressive marketable limit that fills in thin liquidity. Returns ``None``
+      when it can't be priced (no market-data handle, or an untrustworthy/stale
+      snapshot) — the caller HOLDS the order this tick rather than send a market
+      order into a limit-only session or an un-priceable limit.
+
+    A BUY, or any order that isn't a ``MARKET`` sell, is returned unchanged (the
+    persisted order is never mutated here — the downgrade is a per-submit
+    rendering; the stored order stays ``MARKET`` so the §7 reconcile fill-price
+    fallback keys off it)."""
+
+    if OrderSide(order.side) is not OrderSide.SELL:
+        return order
+    if OrderType(order.order_type) is not OrderType.MARKET:
+        return order
+    if session_type_for(utcnow()) is SessionType.REGULAR:
+        return order
+    snapshot = (
+        await market_data.get_snapshot(order.symbol)
+        if market_data is not None
+        else None
+    )
+    # A stale feed can't price a marketable limit safely — a price off stale data
+    # could place the sell limit far above the live market and never fill (a failed
+    # protective exit). Treat stale as un-priceable and hold + retry (consistent
+    # with the §7 fill-price fallback, which also refuses a stale snapshot); the
+    # feed's staleness is surfaced separately as market_data_stale.
+    if snapshot is not None and snapshot.stale:
+        snapshot = None
+    price = protective_limit_price(snapshot, _protection_config(settings))
+    if price is None:
+        return None
+    downgraded = order.model_copy(deep=True)
+    downgraded.order_type = OrderType.LIMIT
+    downgraded.limit_price = price
+    return downgraded
+
+
+async def _snapshot_fill_fallback(
+    market_data: Optional[MarketDataService], symbol: str
+) -> Optional[float]:
+    """A trustworthy reconcile-time ``last_price`` for a MARKET order's fill-price
+    fallback (§7), or ``None`` if the feed is absent / stale / untrustworthy. A
+    stale or missing snapshot yields no fallback (never trade through bad data);
+    the fill is then withheld and escalated exactly as before."""
+
+    if market_data is None:
+        return None
+    snapshot = await market_data.get_snapshot(symbol)
+    if snapshot is None or snapshot.stale:
+        return None
+    last_price = snapshot.last_price
+    if finite_number_reason(last_price) is not None or last_price <= 0:
+        return None
+    return last_price
+
+
 async def monitoring_loop(
-    store: StateStore, adapter: BrokerAdapter, settings: Settings
+    store: StateStore,
+    adapter: BrokerAdapter,
+    settings: Settings,
+    *,
+    market_data: Optional[MarketDataService] = None,
 ) -> None:
     """Run forever: sleep one cadence, then run a tick. Never crashes.
 
     Sleeps *before* the first tick so app startup is not blocked and an injected
     store in a short-lived test (which is torn down well within one cadence)
-    never reaches the tick body.
+    never reaches the tick body. ``market_data`` (Phase 7) is threaded to the
+    tick for protective-sell pricing (§5.4) and fill-price fallback (§7); ``None``
+    disables those paths (the loop still submits/reconciles BUYs unchanged).
     """
 
     _log.info(
@@ -109,7 +208,9 @@ async def monitoring_loop(
     while True:
         try:
             await asyncio.sleep(settings.poll_cadence_seconds)
-            await run_monitoring_tick(store, adapter, settings)
+            await run_monitoring_tick(
+                store, adapter, settings, market_data=market_data
+            )
         except asyncio.CancelledError:
             _log.info("monitoring loop cancelled; shutting down")
             raise
@@ -118,21 +219,40 @@ async def monitoring_loop(
 
 
 async def run_monitoring_tick(
-    store: StateStore, adapter: BrokerAdapter, settings: Settings
+    store: StateStore,
+    adapter: BrokerAdapter,
+    settings: Settings,
+    *,
+    market_data: Optional[MarketDataService] = None,
 ) -> None:
     """One monitoring iteration: submit pending orders, then reconcile open ones.
 
     Exposed separately from :func:`monitoring_loop` so tests drive a single,
-    deterministic tick without the sleep/``while True`` wrapper.
+    deterministic tick without the sleep/``while True`` wrapper. ``market_data``
+    is **keyword-only with a ``None`` default** so every existing positional
+    caller (tests, the Hypothesis state machine) is untouched; it feeds §5.4
+    protective-sell order-type re-derivation and §7 fill-price fallback.
     """
 
-    await _submit_pending_orders(store, adapter)
-    await _redrive_stale_submitting(store, adapter, settings)
-    await _reconcile_open_orders(store, adapter, settings)
+    await _submit_pending_orders(
+        store, adapter, settings, market_data=market_data
+    )
+    await _redrive_stale_submitting(
+        store, adapter, settings, market_data=market_data
+    )
+    await _reconcile_open_orders(
+        store, adapter, settings, market_data=market_data
+    )
     await _recover_unpersisted_submits(store, adapter)
 
 
-async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> None:
+async def _submit_pending_orders(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    settings: Optional[Settings] = None,
+    *,
+    market_data: Optional[MarketDataService] = None,
+) -> None:
     """Claim eligible ``CREATED`` orders atomically, then submit only the claims.
 
     The submission-claim (D-017) closes the F-001/F-002 race: instead of reading
@@ -185,8 +305,30 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
 
         # The order is now SUBMITTING — the backend has committed to sending it.
         claimed = claim.order
+
+        # §5.4 (Rule 12 / D-015): decide a protective sell's session-conditional
+        # order type HERE, at the single submission choke point, not at creation.
+        # A MARKET sell stays MARKET in regular hours, downgrades to a live-priced
+        # LIMIT in pre/after-hours; an un-priceable pre/after-hours sell holds.
+        effective = await _effective_submit_order(claimed, market_data, settings)
+        if effective is None:
+            _log.info(
+                "holding protective sell %s (%s): no priceable snapshot this tick; "
+                "releasing claim to retry",
+                claimed.id,
+                claimed.symbol,
+            )
+            # A SELL always releases to CREATED (never CANCELED) — §5.5.
+            try:
+                await store.transition_order(claimed.id, OrderStatus.CREATED)
+            except _TRANSITION_ERRORS as rel_exc:
+                _log.warning(
+                    "could not release un-priceable sell %s: %s", claimed.id, rel_exc
+                )
+            continue
+
         try:
-            broker_order_id = await adapter.submit_order(claimed)
+            broker_order_id = await adapter.submit_order(effective)
             # AIR-001: a well-behaved adapter returns a non-empty id or raises.
             # Defend against a contract violation here too — an empty id must
             # never reach the SUBMITTING -> SUBMITTED transition (it would strand
@@ -226,13 +368,20 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
             # cancel it instead — exactly what close would have done to a CREATED
             # order. A merely kill-switched/paused session still releases to
             # CREATED (reversible: the next claim holds it until the stop clears).
-            own_session = await store.get_session_by_id(claimed.session_id)
-            release_target = (
-                OrderStatus.CANCELED
-                if own_session is not None
-                and own_session.status is SessionStatus.CLOSED
-                else OrderStatus.CREATED
-            )
+            # §5.5 (side-aware release): a SELL is legitimately submittable in a
+            # closed session (§5.2) and keeps reconciling post-close (D-011), so it
+            # ALWAYS releases SUBMITTING -> CREATED to retry next tick — never
+            # CANCELED. Only a BUY keeps D-013a's no-zombie CANCELED when its own
+            # session closed during the submit await (close is one-shot and would
+            # otherwise leave a CREATED buy counting toward exposure forever).
+            release_target = OrderStatus.CREATED
+            if OrderSide(claimed.side) is OrderSide.BUY:
+                own_session = await store.get_session_by_id(claimed.session_id)
+                if (
+                    own_session is not None
+                    and own_session.status is SessionStatus.CLOSED
+                ):
+                    release_target = OrderStatus.CANCELED
             _log.warning(
                 "submit failed for order %s (%s); releasing claim to %s: %s",
                 claimed.id,
@@ -265,7 +414,11 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
 
 
 async def _redrive_stale_submitting(
-    store: StateStore, adapter: BrokerAdapter, settings: Settings
+    store: StateStore,
+    adapter: BrokerAdapter,
+    settings: Settings,
+    *,
+    market_data: Optional[MarketDataService] = None,
 ) -> None:
     """Recover ``SUBMITTING`` orders left id-less by a crash between claim and
     submit (AIR-003).
@@ -340,8 +493,21 @@ async def _redrive_stale_submitting(
                 ),
             )
             continue
+        # §5.4: re-derive a protective sell's order type at THIS submission too
+        # (the stale-re-drive is one of the three submit choke points). An
+        # un-priceable pre/after-hours sell is left SUBMITTING to retry next tick
+        # (identical to the transient-BrokerError disposition below).
+        effective = await _effective_submit_order(order, market_data, settings)
+        if effective is None:
+            _log.info(
+                "stale protective sell %s (%s): no priceable snapshot; leaving "
+                "SUBMITTING to retry next tick",
+                order.id,
+                order.symbol,
+            )
+            continue
         try:
-            broker_order_id = await adapter.submit_order(order)
+            broker_order_id = await adapter.submit_order(effective)
             if not isinstance(broker_order_id, str) or not broker_order_id.strip():
                 raise TerminalBrokerError(
                     f"adapter returned an empty broker id re-driving stale "
@@ -655,7 +821,11 @@ async def _recover_unpersisted_submits(
 
 
 async def _reconcile_open_orders(
-    store: StateStore, adapter: BrokerAdapter, settings: Settings
+    store: StateStore,
+    adapter: BrokerAdapter,
+    settings: Settings,
+    *,
+    market_data: Optional[MarketDataService] = None,
 ) -> None:
     """Poll each open order, apply fills + status, and flag stale ones.
 
@@ -675,11 +845,25 @@ async def _reconcile_open_orders(
 
     for order in open_orders:
         if order.broker_order_id is not None:
+            # §7: a MARKET order (only ever a protective sell) has no limit_price,
+            # so a transiently-absent broker fill price would withhold a
+            # position-critical fill and — with the single-flight dedup — strand
+            # protection. Supply the reconcile-time snapshot last_price as the
+            # last-resort audit price (a long-only sell's price doesn't change the
+            # quantity/cost-basis fold). Only for a MARKET order; a BUY/LIMIT keeps
+            # the filled_avg -> limit resolution untouched.
+            fallback_price = None
+            if OrderType(order.order_type) is OrderType.MARKET:
+                fallback_price = await _snapshot_fill_fallback(
+                    market_data, order.symbol
+                )
             try:
                 # Pass what we've already recorded so an adapter that only sees
                 # the broker's cumulative fill can emit a correct delta.
                 update = await adapter.get_order_status(
-                    order.broker_order_id, recorded_quantity=order.filled_quantity
+                    order.broker_order_id,
+                    recorded_quantity=order.filled_quantity,
+                    fallback_price=fallback_price,
                 )
             except Exception as exc:  # noqa: BLE001 - skip this order, never crash
                 _log.warning(

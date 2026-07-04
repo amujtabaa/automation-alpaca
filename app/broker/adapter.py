@@ -18,6 +18,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 from app.models import Order, OrderStatus
 
@@ -112,7 +113,11 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     async def get_order_status(
-        self, broker_order_id: str, *, recorded_quantity: int = 0
+        self,
+        broker_order_id: str,
+        *,
+        recorded_quantity: int = 0,
+        fallback_price: Optional[float] = None,
     ) -> BrokerOrderUpdate:
         """Poll the broker for the current state of an order.
 
@@ -124,6 +129,16 @@ class BrokerAdapter(ABC):
         (``cumulative - recorded_quantity``) rather than re-reporting the whole
         cumulative (which the store would reject as an overfill). Raises
         :class:`BrokerError` on failure.
+
+        ``fallback_price`` (Phase 7 §7) is a last-resort *audit* price for a fill
+        the broker reports with no trustworthy ``filled_avg_price`` **and** no
+        ``limit_price`` — i.e. a MARKET order (which has no limit). The monitoring
+        reconcile path passes the reconcile-time snapshot ``last_price`` here for a
+        MARKET order so a transiently-absent execution price never withholds a
+        position-critical protective-sell fill (which, with the single-flight
+        dedup, would strand protection). A long-only fill's exact price does not
+        change the quantity/cost-basis fold — it is for the record. Adapters whose
+        fills always carry a real price (the mock/sim) accept and ignore it.
         """
 
     @abstractmethod

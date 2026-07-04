@@ -142,6 +142,61 @@ class TestRequestConstruction:
         assert req.time_in_force == TimeInForce.DAY
 
 
+def _market_sell(**kw):
+    defaults = dict(
+        candidate_id=None,
+        sell_intent_id="si1",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=10,
+        limit_price=None,
+    )
+    defaults.update(kw)
+    return Order(**defaults)
+
+
+class TestMarketOrder:
+    """Phase 7 §7: a MARKET order (a protective sell, only ever submitted in
+    regular hours by §5.4) becomes a MarketOrderRequest; a MARKET reaching the
+    adapter outside regular hours is refused (Rule 12 defensive backstop)."""
+
+    async def test_regular_hours_builds_market_request(self, monkeypatch):
+        from alpaca.trading.enums import OrderType as AlpacaOrderType
+        from alpaca.trading.enums import TimeInForce
+        from alpaca.trading.requests import MarketOrderRequest
+
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(return_value=SimpleNamespace(id="m1"))
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+
+        order = _market_sell(symbol="MSFT", quantity=25)
+        broker_id = await adapter.submit_order(order)
+
+        assert broker_id == "m1"
+        (req,) = adapter._client.submit_order.call_args.args
+        assert isinstance(req, MarketOrderRequest)
+        assert req.type == AlpacaOrderType.MARKET
+        assert req.time_in_force == TimeInForce.DAY
+        assert req.symbol == "MSFT"
+        assert req.qty == 25
+        assert req.client_order_id == order.id
+        # No limit price on a market request.
+        assert getattr(req, "limit_price", None) is None
+
+    @pytest.mark.parametrize("now", [_PRE_MARKET, _AFTER_HOURS, _OVERNIGHT])
+    async def test_market_refused_outside_regular_hours(self, monkeypatch, now):
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(return_value=SimpleNamespace(id="x"))
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: now)
+
+        # The §5.4 submit path must have downgraded to LIMIT; a MARKET reaching
+        # here in a limit-only session is a bug -> fail closed, never sent.
+        with pytest.raises(BrokerError):
+            await adapter.submit_order(_market_sell())
+        adapter._client.submit_order.assert_not_called()
+
+
 class TestSubmitErrorClassification:
     """AIR-003 review: a definitive broker rejection must surface as
     TerminalBrokerError so a stale-SUBMITTING re-drive escalates to needs_review

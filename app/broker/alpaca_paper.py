@@ -25,7 +25,7 @@ from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import TimeInForce
-from alpaca.trading.requests import LimitOrderRequest
+from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
 from app.broker.adapter import (
     BrokerAdapter,
@@ -35,7 +35,7 @@ from app.broker.adapter import (
     TerminalBrokerError,
 )
 from app.features import session_type_for
-from app.models import Order, OrderSide, OrderStatus, SessionType, utcnow
+from app.models import Order, OrderSide, OrderStatus, OrderType, SessionType, utcnow
 
 _log = logging.getLogger(__name__)
 
@@ -100,11 +100,14 @@ def _utcnow() -> datetime:
 
 
 def _resolve_fill_price(
-    filled_avg_price: Optional[object], limit_price: Optional[object]
+    filled_avg_price: Optional[object],
+    limit_price: Optional[object],
+    fallback_price: Optional[object] = None,
 ) -> Optional[float]:
     """Best *trustworthy* price for a delta fill: the broker's filled average if
-    present and usable, else the order's limit. Returns ``None`` when neither is
-    a finite, strictly-positive number.
+    present and usable, else the order's limit, else a caller-supplied
+    ``fallback_price``. Returns ``None`` when none is a finite, strictly-positive
+    number.
 
     AIR-002: this used to fall back to ``0.0`` when no price was available, which
     fabricated a $0 execution — corrupting cost basis / average price and letting
@@ -112,9 +115,15 @@ def _resolve_fill_price(
     *untrustworthy*, not a real price, so it is rejected here too. The caller
     surfaces an un-priceable fill as unrecordable (the divergence is escalated to
     a durable reconciliation record), never as a normal ``0.0`` fill. Tolerant of
-    the SDK's string/Decimal/None shapes."""
+    the SDK's string/Decimal/None shapes.
 
-    for candidate in (filled_avg_price, limit_price):
+    Phase 7 §7: ``fallback_price`` is the reconcile-time snapshot ``last_price``
+    the monitoring path supplies for a MARKET order (which has no ``limit_price``),
+    so a transiently-absent ``filled_avg_price`` on a protective market-sell never
+    withholds a position-critical fill (which, with the single-flight dedup, would
+    strand protection). Tried LAST, so a real execution price always wins."""
+
+    for candidate in (filled_avg_price, limit_price, fallback_price):
         if candidate is None:
             continue
         try:
@@ -199,15 +208,39 @@ class AlpacaPaperAdapter(BrokerAdapter):
             SessionType.AFTER_HOURS,
         )
 
-        req = LimitOrderRequest(
-            symbol=order.symbol,
-            qty=order.quantity,
-            side=alpaca_side,
-            time_in_force=TimeInForce.DAY,
-            extended_hours=extended_hours,
-            limit_price=order.limit_price,
-            client_order_id=order.id,  # idempotency key — see docstring
-        )
+        # Phase 7 §7: side/type-aware request. A MARKET order (only ever a
+        # protective SELL, and only submitted in REGULAR hours by §5.4) becomes a
+        # MarketOrderRequest — no limit_price, no extended_hours (market orders are
+        # regular-session only). Everything else stays the existing LimitOrderRequest
+        # path (BUYs, and protective sells downgraded to LIMIT in pre/after-hours).
+        if order.order_type is OrderType.MARKET:
+            # Defensive backstop for the D-015/Rule-12 guarantee: the submit path
+            # (§5.4) must have downgraded to LIMIT outside regular hours, so a
+            # MARKET request reaching here in a limit-only session is a bug. Fail
+            # closed (retryable) rather than send a market order into thin
+            # premarket/after-hours liquidity.
+            if current_session is not SessionType.REGULAR:
+                raise BrokerError(
+                    f"refusing to submit MARKET order {order.id!r} outside regular "
+                    f"hours ({current_session}); Rule 12 requires limit-only"
+                )
+            req = MarketOrderRequest(
+                symbol=order.symbol,
+                qty=order.quantity,
+                side=alpaca_side,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=order.id,  # idempotency key — see docstring
+            )
+        else:
+            req = LimitOrderRequest(
+                symbol=order.symbol,
+                qty=order.quantity,
+                side=alpaca_side,
+                time_in_force=TimeInForce.DAY,
+                extended_hours=extended_hours,
+                limit_price=order.limit_price,
+                client_order_id=order.id,  # idempotency key — see docstring
+            )
 
         try:
             resp = await asyncio.to_thread(self._client.submit_order, req)
@@ -268,7 +301,11 @@ class AlpacaPaperAdapter(BrokerAdapter):
             ) from exc
 
     async def get_order_status(
-        self, broker_order_id: str, *, recorded_quantity: int = 0
+        self,
+        broker_order_id: str,
+        *,
+        recorded_quantity: int = 0,
+        fallback_price: Optional[float] = None,
     ) -> BrokerOrderUpdate:
         """Poll Alpaca for the current state of one open order.
 
@@ -276,6 +313,10 @@ class AlpacaPaperAdapter(BrokerAdapter):
         Falls back to a synthesised fill if the activities call fails or returns
         nothing while ``filled_qty > 0`` — sized as the **delta** over
         ``recorded_quantity`` so it never re-reports already-counted shares.
+
+        ``fallback_price`` (§7) is the last-resort audit price for a fill with no
+        trustworthy ``filled_avg_price`` and no ``limit_price`` (a MARKET order) —
+        see :func:`_resolve_fill_price`.
         """
         try:
             alpaca_order = await asyncio.to_thread(
@@ -295,6 +336,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
             recorded_quantity=recorded_quantity,
             filled_avg_price=alpaca_order.filled_avg_price,
             limit_price=alpaca_order.limit_price,
+            fallback_price=fallback_price,
         )
 
         return BrokerOrderUpdate(
@@ -352,6 +394,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
         recorded_quantity: int,
         filled_avg_price: Optional[object],
         limit_price: Optional[object],
+        fallback_price: Optional[float] = None,
     ) -> list[BrokerFill]:
         """Return this order's fills as a single scalar **delta** over what's
         already recorded, under ONE consistent fill-identity scheme.
@@ -376,7 +419,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
         delta = filled_qty - recorded_quantity
         if delta <= 0:
             return []
-        fill_price = _resolve_fill_price(filled_avg_price, limit_price)
+        fill_price = _resolve_fill_price(filled_avg_price, limit_price, fallback_price)
         if fill_price is None:
             # AIR-002: the broker executed `delta` shares but exposes no
             # trustworthy price for them. Do NOT fabricate a 0.0 fill — omit it.
