@@ -21,7 +21,7 @@ async def _session_with_data(store):
     rejected = await store.create_candidate("TSLA", session_id=session.id)
     await store.transition_candidate(rejected.id, CandidateStatus.REJECTED)
     # A position in MSFT: 100 @ 1.00 then 100 @ 2.00 -> 200 @ avg 1.50.
-    order = await store.create_order(
+    order = await store.create_order_for_test(
         approved.id, "MSFT", OrderSide.BUY, 200, session_id=session.id
     )
     await store.append_fill(order.id, "MSFT", OrderSide.BUY, 100, 1.0,
@@ -77,10 +77,10 @@ async def test_close_excludes_flat_positions(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    buy_order = await any_store.create_order(
+    buy_order = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
     )
-    sell_order = await any_store.create_order(
+    sell_order = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 100, session_id=session.id
     )
     await any_store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0,

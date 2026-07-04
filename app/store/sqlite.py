@@ -77,6 +77,8 @@ from app.store.core import (
     plan_close_session,
     plan_create_order_for_candidate,
     plan_transition_order,
+    require_bool,
+    require_status_enum,
     recovery_status_event,
 )
 from app.transitions import (
@@ -85,9 +87,9 @@ from app.transitions import (
 )
 from app.policy import (
     NON_TERMINAL_ORDER_STATUSES,
+    candidate_numeric_reason,
     existing_exposure,
     order_candidate_match_reason,
-    suggested_value_type_reason,
 )
 
 SCHEMA = """
@@ -595,6 +597,7 @@ class SqliteStateStore(StateStore):
     async def add_watchlist_symbol(
         self, symbol: str, *, armed: bool = False
     ) -> WatchlistSymbol:
+        require_bool(armed, field="armed")
         key = normalize_symbol(symbol)
         async with self._lock:
             existing = self._read_one(
@@ -644,6 +647,7 @@ class SqliteStateStore(StateStore):
             return self._watchlist(row) if row else None
 
     async def set_watchlist_armed(self, symbol: str, armed: bool) -> WatchlistSymbol:
+        require_bool(armed, field="armed")
         key = normalize_symbol(symbol)
         async with self._lock:
             row = self._read_one("SELECT * FROM watchlist WHERE symbol = ?", (key,))
@@ -729,20 +733,25 @@ class SqliteStateStore(StateStore):
                 raise SessionClosedError(
                     f"session {session_id} is closed; cannot create candidate"
                 )
-            # A bool or numeric-string raw input silently coerces once assigned
-            # to Candidate's pydantic int/float fields (True -> 1, "5" -> 5,
-            # no error) and the type is unrecoverable afterward — reject at the
-            # boundary, while it's still the caller's real type (D-019 follow-up).
-            # Identical guard to InMemoryStateStore's — parity.
-            for label, value in (
-                ("suggested_quantity", suggested_quantity),
-                ("suggested_limit_price", suggested_limit_price),
-            ):
-                bad = suggested_value_type_reason(value)
-                if bad is not None:
-                    raise InvalidOrderError(
-                        f"candidate {key} has an invalid {label} ({bad}: {value!r})"
-                    )
+            # Validate candidate numerics at the boundary (AIR-008) — identical
+            # guard to InMemoryStateStore's, so a NaN/Inf/zero/negative/
+            # fractional/bool/string quantity or price is rejected with a clean
+            # domain error in BOTH stores (SQLite used to roundtrip a NaN price as
+            # NULL while memory roundtripped nan — the parity break this closes).
+            bad = candidate_numeric_reason(
+                suggested_quantity=suggested_quantity,
+                suggested_limit_price=suggested_limit_price,
+            )
+            if bad is not None:
+                field, why = bad
+                value = (
+                    suggested_quantity
+                    if field == "suggested_quantity"
+                    else suggested_limit_price
+                )
+                raise InvalidOrderError(
+                    f"candidate {key} has an invalid {field} ({why}: {value!r})"
+                )
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -803,8 +812,11 @@ class SqliteStateStore(StateStore):
             clauses.append("session_id = ?")
             params.append(session_id)
         if status is not None:
+            # Require a real enum (AIR-009) — not CandidateStatus(status), which
+            # coerced a bare string and silently matched what memory returned [].
+            require_status_enum(status, CandidateStatus, field="status filter")
             clauses.append("status = ?")
-            params.append(CandidateStatus(status).value)
+            params.append(status.value)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         async with self._lock:
             rows = self._read_all(
@@ -826,7 +838,10 @@ class SqliteStateStore(StateStore):
         *,
         order_id: Optional[str] = None,
     ) -> Candidate:
-        new_status = CandidateStatus(new_status)
+        # Require a real enum (AIR-009) — do NOT coerce a bare string via
+        # CandidateStatus(new_status), which silently accepted what
+        # InMemoryStateStore rejected.
+        require_status_enum(new_status, CandidateStatus, field="new_status")
         async with self._lock:
             row = self._read_one(
                 "SELECT * FROM candidates WHERE id = ?", (candidate_id,)
@@ -884,7 +899,7 @@ class SqliteStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Orders
     # ------------------------------------------------------------------ #
-    async def create_order(
+    async def create_order_for_test(
         self,
         candidate_id: str,
         symbol: str,
@@ -896,6 +911,11 @@ class SqliteStateStore(StateStore):
         replaces_order_id: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> Order:
+        """TEST-ONLY order-setup helper — NOT part of the public ``StateStore``
+        contract (AIR-006). Production orders are created *only* via
+        ``create_order_for_candidate`` (approved-only rule + CAPI/control gates).
+        Mirrors ``InMemoryStateStore.create_order_for_test`` exactly."""
+
         key = normalize_symbol(symbol)
         async with self._lock:
             # Validate the order against its candidate (Fix 4). Existence +
@@ -920,7 +940,13 @@ class SqliteStateStore(StateStore):
                 quantity=quantity,
                 limit_price=limit_price,
                 replaces_order_id=replaces_order_id,
-                session_id=session_id,
+                # Inherit the candidate's session when not given (parity with
+                # memory + production) so a test order can be claimed like a real one.
+                session_id=(
+                    session_id
+                    if session_id is not None
+                    else self._candidate(cand_row).session_id
+                ),
             )
             with self._tx() as cur:
                 self._insert_order(cur, order)
@@ -1362,7 +1388,9 @@ class SqliteStateStore(StateStore):
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
     ) -> Order:
-        new_status = OrderStatus(new_status)
+        # No OrderStatus(new_status) coercion (AIR-009): plan_transition_order
+        # validates the enum type itself, identically to InMemoryStateStore, so a
+        # bare string is rejected here rather than silently coerced.
         async with self._lock:
             row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
             if row is None:
@@ -1631,6 +1659,7 @@ class SqliteStateStore(StateStore):
             return [self._session(r) for r in rows]
 
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
+        require_bool(engaged, field="engaged")
         async with self._lock:
             session = self._ensure_current_session_locked()
             session.kill_switch = engaged
@@ -1650,6 +1679,7 @@ class SqliteStateStore(StateStore):
             return session
 
     async def set_buys_paused(self, paused: bool) -> SessionRecord:
+        require_bool(paused, field="paused")
         async with self._lock:
             session = self._ensure_current_session_locked()
             session.buys_paused = paused

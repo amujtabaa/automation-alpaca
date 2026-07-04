@@ -24,11 +24,17 @@ CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
 
 ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.CREATED: {
-        OrderStatus.SUBMITTING,  # atomic submission claim (D-017) — the ONLY
-                                 # path to the broker; CREATED never goes
-                                 # straight to SUBMITTED anymore, so a control
-                                 # flip can't sneak between "decided to submit"
-                                 # and "sent" (F-001/F-002).
+        # NOTE (AIR-007): CREATED -> SUBMITTING is deliberately ABSENT here.
+        # The atomic submission claim (D-017, claim_order_for_submission) is the
+        # sole entry into SUBMITTING and writes that status *directly* (memory:
+        # self._orders[id] = plan.order; SQLite: raw UPDATE ... SET status),
+        # never consulting this table. Only the *generic* transition_order reads
+        # this table, so listing SUBMITTING here would make transition_order a
+        # back door into SUBMITTING that bypasses the claim's atomic control
+        # re-check (kill switch / buys paused / session) — a control-flip
+        # bypass. Leaving it out closes that door without affecting the claim
+        # path. (SUBMITTING -> CREATED, the transient-submit-failure release,
+        # still goes through transition_order and stays listed below.)
         OrderStatus.CANCELED,  # never-submitted order cancelled locally
         OrderStatus.REJECTED,
     },

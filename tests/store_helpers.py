@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 from app.models import OrderStatus
+from app.store.base import CLAIM_CLAIMED
 
 
 async def submit_created_order(store, order_id, *, broker_order_id="broker-test"):
     """Move a ``CREATED`` order to ``SUBMITTED`` via the mandatory ``SUBMITTING``
-    claim state (D-017).
+    claim state (D-017 / AIR-007).
 
-    Since Wave 0, ``CREATED`` no longer transitions straight to ``SUBMITTED`` —
-    the atomic submission claim (``CREATED -> SUBMITTING``) is the only path to
-    the broker — so test setup that just needs an order "as if the loop
-    submitted it" uses this two-step helper instead of a single
-    ``transition_order(..., SUBMITTED)`` call.
+    ``CREATED`` reaches ``SUBMITTED`` *only* through the atomic submission claim
+    (``claim_order_for_submission``); since AIR-007 the generic
+    ``transition_order`` can no longer enter ``SUBMITTING`` at all, so this helper
+    drives the real claim (the order must therefore carry an open, permissive
+    session — ``create_order_for_test`` inherits the candidate's, matching
+    production) and then records the broker ack.
     """
 
-    await store.transition_order(order_id, OrderStatus.SUBMITTING)
+    claim = await store.claim_order_for_submission(order_id)
+    assert claim.outcome == CLAIM_CLAIMED, (
+        f"submit_created_order: order {order_id} could not be claimed "
+        f"(outcome={claim.outcome!r}, reason={getattr(claim, 'reason', None)!r})"
+    )
     return await store.transition_order(
         order_id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
     )

@@ -65,6 +65,8 @@ from app.store.core import (
     plan_close_session,
     plan_create_order_for_candidate,
     plan_transition_order,
+    require_bool,
+    require_status_enum,
     recovery_status_event,
 )
 from app.transitions import (
@@ -73,9 +75,9 @@ from app.transitions import (
 )
 from app.policy import (
     NON_TERMINAL_ORDER_STATUSES,
+    candidate_numeric_reason,
     existing_exposure,
     order_candidate_match_reason,
-    suggested_value_type_reason,
 )
 
 
@@ -229,6 +231,7 @@ class InMemoryStateStore(StateStore):
     async def add_watchlist_symbol(
         self, symbol: str, *, armed: bool = False
     ) -> WatchlistSymbol:
+        require_bool(armed, field="armed")
         key = normalize_symbol(symbol)
         async with self._lock:
             existing = self._watchlist.get(key)
@@ -264,6 +267,7 @@ class InMemoryStateStore(StateStore):
             return entry.model_copy(deep=True) if entry else None
 
     async def set_watchlist_armed(self, symbol: str, armed: bool) -> WatchlistSymbol:
+        require_bool(armed, field="armed")
         key = normalize_symbol(symbol)
         async with self._lock:
             entry = self._watchlist.get(key)
@@ -339,19 +343,26 @@ class InMemoryStateStore(StateStore):
                 raise SessionClosedError(
                     f"session {session_id} is closed; cannot create candidate"
                 )
-            # A bool or numeric-string raw input silently coerces once assigned
-            # to Candidate's pydantic int/float fields (True -> 1, "5" -> 5,
-            # no error) and the type is unrecoverable afterward — reject at the
-            # boundary, while it's still the caller's real type (D-019 follow-up).
-            for label, value in (
-                ("suggested_quantity", suggested_quantity),
-                ("suggested_limit_price", suggested_limit_price),
-            ):
-                bad = suggested_value_type_reason(value)
-                if bad is not None:
-                    raise InvalidOrderError(
-                        f"candidate {key} has an invalid {label} ({bad}: {value!r})"
-                    )
+            # Validate candidate numerics at the boundary (AIR-008): a present
+            # quantity/price must be a positive whole share count / a finite
+            # positive number. Rejects the full coercion class (NaN/Inf/zero/
+            # negative/fractional/bool/string) with a clean domain error, while
+            # its raw type is still recoverable and before a non-finite value
+            # could roundtrip differently across the two stores.
+            bad = candidate_numeric_reason(
+                suggested_quantity=suggested_quantity,
+                suggested_limit_price=suggested_limit_price,
+            )
+            if bad is not None:
+                field, why = bad
+                value = (
+                    suggested_quantity
+                    if field == "suggested_quantity"
+                    else suggested_limit_price
+                )
+                raise InvalidOrderError(
+                    f"candidate {key} has an invalid {field} ({why}: {value!r})"
+                )
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -378,6 +389,8 @@ class InMemoryStateStore(StateStore):
         session_id: Optional[str] = None,
         status: Optional[CandidateStatus] = None,
     ) -> list[Candidate]:
+        if status is not None:
+            require_status_enum(status, CandidateStatus, field="status filter")
         async with self._lock:
             out = []
             for c in self._candidates.values():
@@ -400,6 +413,7 @@ class InMemoryStateStore(StateStore):
         *,
         order_id: Optional[str] = None,
     ) -> Candidate:
+        require_status_enum(new_status, CandidateStatus, field="new_status")
         async with self._lock:
             candidate = self._candidates.get(candidate_id)
             if candidate is None:
@@ -439,7 +453,7 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Orders
     # ------------------------------------------------------------------ #
-    async def create_order(
+    async def create_order_for_test(
         self,
         candidate_id: str,
         symbol: str,
@@ -451,6 +465,14 @@ class InMemoryStateStore(StateStore):
         replaces_order_id: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> Order:
+        """TEST-ONLY order-setup helper — NOT part of the public ``StateStore``
+        contract (AIR-006). Production orders are created *only* via
+        ``create_order_for_candidate`` (approved-only rule + CAPI/control gates).
+        This low-level insert validates existence + symbol match only and does
+        not gate quantity/side, so it must never be reachable from a route or the
+        monitoring loop — it exists to let tests set an order into an arbitrary
+        starting state directly."""
+
         key = normalize_symbol(symbol)
         async with self._lock:
             # Validate the order against its candidate (Fix 4). Existence +
@@ -473,7 +495,10 @@ class InMemoryStateStore(StateStore):
                 quantity=quantity,
                 limit_price=limit_price,
                 replaces_order_id=replaces_order_id,
-                session_id=session_id,
+                # Inherit the candidate's session when not given, exactly as a
+                # production order does (plan_create_order_for_candidate) — so a
+                # test order can be claimed for submission like a real one.
+                session_id=session_id if session_id is not None else candidate.session_id,
             )
             with self._atomic():
                 self._orders[order.id] = order
@@ -966,6 +991,7 @@ class InMemoryStateStore(StateStore):
             return [s.model_copy(deep=True) for s in self._sessions]
 
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
+        require_bool(engaged, field="engaged")
         async with self._lock:
             with self._atomic():
                 session = self._ensure_current_session_unlocked()
@@ -980,6 +1006,7 @@ class InMemoryStateStore(StateStore):
             return session.model_copy(deep=True)
 
     async def set_buys_paused(self, paused: bool) -> SessionRecord:
+        require_bool(paused, field="paused")
         async with self._lock:
             with self._atomic():
                 session = self._ensure_current_session_unlocked()

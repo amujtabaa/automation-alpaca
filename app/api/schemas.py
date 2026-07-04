@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 from app.models import (
     Candidate,
@@ -31,13 +31,17 @@ class WatchlistCreate(BaseModel):
     """
 
     symbol: str = Field(min_length=1)
-    armed: bool = False
+    # StrictBool (AIR-005): a JSON string like "true"/"false" or a number 0/1 is
+    # rejected (422), never coerced — the arm state is a control flag.
+    armed: StrictBool = False
 
 
 class KillSwitchRequest(BaseModel):
     """Body for ``POST /api/controls/kill-switch``. Defaults to engaging it."""
 
-    engaged: bool = True
+    # StrictBool (AIR-005): `{"engaged": "false"}` meant to DISENGAGE must be a
+    # clean 422, not a truthy-string coercion that *engages* the emergency stop.
+    engaged: StrictBool = True
 
 
 class HealthResponse(BaseModel):
@@ -60,15 +64,15 @@ class MockCandidateCreate(BaseModel):
     symbol: str = Field(min_length=1)
     strategy: Optional[str] = "mock"
     reason: Optional[str] = "injected mock candidate for manual testing"
-    # ``strict=True`` (D-021 follow-up): a lax int/float field silently coerces
+    # ``strict=True`` (D-021 / D-023): a lax int/float field silently coerces
     # a JSON ``true``/``"5"`` (bool/numeric-string) to ``1``/``5`` *before* this
     # request even reaches the store — by the time
-    # ``app.policy.suggested_value_type_reason`` runs inside
-    # ``create_candidate``, the original type is already gone, so that guard
-    # can't catch it on this path. Strict mode rejects bool/string outright
-    # (422) while still accepting a genuine JSON number (including a whole-
-    # number int for the float field) — closing the same silent-coercion gap
-    # for this route that D-021 closed at the direct-store-call boundary.
+    # ``app.policy.candidate_numeric_reason`` runs inside ``create_candidate``,
+    # the original type is already gone, so that store-boundary guard can't
+    # catch it on this path. Strict mode rejects bool/string outright (422)
+    # while still accepting a genuine JSON number (including a whole-number int
+    # for the float field) — closing the same silent-coercion gap for this
+    # route that the store-call boundary closes with ``candidate_numeric_reason``.
     suggested_quantity: int = Field(default=10, gt=0, strict=True)
     # Non-optional: a JSON ``null`` must be rejected (422), not accepted and then
     # turned into a LIMIT order with no price. ``gt=0`` rejects zero/negative;

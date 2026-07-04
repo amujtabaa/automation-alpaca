@@ -42,8 +42,8 @@ def client():
         {"symbol": "AAPL", "suggested_quantity": 0},  # gt=0
         {"symbol": "AAPL", "suggested_quantity": -5},
         {"symbol": "AAPL", "suggested_limit_price": -1.0},  # gt=0
-        # D-021 follow-up: a PR review (Codex) found that store.create_candidate's
-        # bool/numeric-string guard (suggested_value_type_reason) can't see this
+        # D-021 / D-023: a PR review (Codex) found that store.create_candidate's
+        # bool/numeric-string guard (candidate_numeric_reason) can't see this
         # path — MockCandidateCreate parses the JSON body, and pydantic's lax
         # int/float fields silently coerce True->1 / "5"->5 *before* the store
         # ever runs, so the store-level fix alone left this HTTP route open.

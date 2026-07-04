@@ -18,18 +18,46 @@ shapes encode the non-negotiable structural rules:
 
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
 
 def new_id() -> str:
     """A fresh opaque identifier (uuid4 hex)."""
 
     return uuid.uuid4().hex
+
+
+def _finite_or_none(value: Optional[float]) -> Optional[float]:
+    """Map a non-finite float to ``None`` for JSON serialization (AIR-008).
+
+    A non-finite ``suggested_limit_price``/``limit_price``/``price`` can only
+    reach a model from legacy or non-boundary-validated persisted data — the
+    write paths now reject NaN/Inf — but an API *response* must be valid JSON
+    regardless: ``json.dumps(float("inf"))`` emits ``Infinity`` (invalid JSON)
+    on 3.12 and raises on 3.13. Emitting ``null`` instead makes both impossible.
+    """
+
+    return value if value is None or math.isfinite(value) else None
+
+
+# A float that serializes to ``null`` rather than an invalid ``Infinity``/``NaN``
+# in a JSON response. Validation is unchanged; only the JSON serialization is
+# guarded. ``when_used="json"`` leaves ``model_dump()`` (Python) untouched so
+# internal derivations are unaffected. Two variants for the optional vs required
+# float fields.
+ResponseSafeFloat = Annotated[
+    Optional[float], PlainSerializer(_finite_or_none, when_used="json")
+]
+ResponseSafeRequiredFloat = Annotated[
+    float,
+    PlainSerializer(_finite_or_none, when_used="json", return_type=Optional[float]),
+]
 
 
 def utcnow() -> datetime:
@@ -205,7 +233,7 @@ class Candidate(_Entity):
     reason: Optional[str] = None
     risk_decision: Optional[str] = None
     suggested_quantity: Optional[int] = None
-    suggested_limit_price: Optional[float] = None
+    suggested_limit_price: ResponseSafeFloat = None
 
     session_id: Optional[str] = None
     # Set when the candidate reaches ``ordered`` — links to the Order it produced.
@@ -228,7 +256,7 @@ class Order(_Entity):
     side: OrderSide
     order_type: OrderType = OrderType.LIMIT
     quantity: int
-    limit_price: Optional[float] = None
+    limit_price: ResponseSafeFloat = None
 
     status: OrderStatus = OrderStatus.CREATED
     filled_quantity: int = 0
@@ -264,7 +292,7 @@ class Fill(_Entity):
     symbol: str
     side: OrderSide
     quantity: int
-    price: float
+    price: ResponseSafeRequiredFloat
 
     # Alpaca's own fill/execution id. Unique when present; used to detect and
     # ignore duplicate observations during polling-based reconciliation.
@@ -288,8 +316,8 @@ class Position(_Entity):
 
     symbol: str
     quantity: int = 0
-    cost_basis: float = 0.0
-    average_price: Optional[float] = None
+    cost_basis: ResponseSafeRequiredFloat = 0.0
+    average_price: ResponseSafeFloat = None
     updated_at: Optional[datetime] = None  # timestamp of the most recent fill
 
 
@@ -306,8 +334,8 @@ class PositionSnapshot(_Entity):
     session_id: str
     symbol: str
     quantity: int
-    cost_basis: float
-    average_price: Optional[float] = None
+    cost_basis: ResponseSafeRequiredFloat
+    average_price: ResponseSafeFloat = None
     captured_at: datetime = Field(default_factory=utcnow)
 
 
@@ -320,6 +348,22 @@ RECOVERY_NEEDS_REVIEW = "needs_review"      # the broker order had fills — a r
 # itself acts only on RECOVERY_UNRESOLVED — a needs_review record is done being
 # worked automatically and must not be re-cancelled.
 RECOVERY_OPEN_STATUSES = frozenset({RECOVERY_UNRESOLVED, RECOVERY_NEEDS_REVIEW})
+
+# The complete, closed set of legal cleanup_status values, and the allowed
+# transitions between them (AIR-004). Free-form status strings are gone: an
+# unknown value ("typo_resolved") or a silent reopen of a terminal record
+# (resolved_canceled/needs_review -> unresolved) is a RecoveryTransitionError, not
+# a hidden mutation. Only the recovery loop's two automatic outcomes are legal
+# moves; both terminal states stay terminal (no automatic un-resolve path — a
+# human clearing a needs_review record is out of band and not modeled in beta).
+RECOVERY_STATUSES = frozenset(
+    {RECOVERY_UNRESOLVED, RECOVERY_RESOLVED, RECOVERY_NEEDS_REVIEW}
+)
+RECOVERY_TRANSITIONS: dict[str, frozenset[str]] = {
+    RECOVERY_UNRESOLVED: frozenset({RECOVERY_RESOLVED, RECOVERY_NEEDS_REVIEW}),
+    RECOVERY_RESOLVED: frozenset(),
+    RECOVERY_NEEDS_REVIEW: frozenset(),
+}
 
 
 class SubmitRecoveryRecord(_Entity):
@@ -344,7 +388,7 @@ class SubmitRecoveryRecord(_Entity):
     symbol: str
     side: OrderSide
     quantity: int
-    limit_price: Optional[float] = None
+    limit_price: ResponseSafeFloat = None
     failure_reason: str
     # RECOVERY_UNRESOLVED until the recovery loop confirms the broker order is no
     # longer live (RECOVERY_RESOLVED), or RECOVERY_NEEDS_REVIEW if it turns out to

@@ -49,6 +49,136 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-023 — AIR remediation Group A: deterministic validation & contract fixes
+**Context.** An independent adversarial review (the "AIR" findings, AIR-001…011)
+flagged eleven defects across validation, recovery, and test quality. Group A is
+the deterministic subset — five findings (AIR-004/005/006/007/008/009) that are
+fully decidable without any temporal or broker-recovery reasoning. Each was
+reproduced firsthand as a **red test first**, then fixed to green, exercised
+through the `any_store` fixture so `InMemoryStateStore` and `SqliteStateStore`
+are proven to accept/reject/persist/read-back/audit **identically**, and every
+new rejection raises a **domain error**, never a raw `ValueError`/`TypeError`/
+pydantic `ValidationError`/JSON `ValueError`. Regressions live in
+`tests/test_air_remediation.py`.
+
+**The unifying root cause behind three of the five: silent coercion.** Python's
+str-enums and pydantic's lax mode both *accept* an input that looks close enough
+and quietly convert it — a bare `"pending"` string matching a `CandidateStatus`
+member, `"false"` becoming a truthy bool, `True` becoming `1`. Each conversion
+erases the caller's real intent before any guard can see it. The fix is the same
+shape everywhere: **validate the concrete value at the store/domain boundary,
+require the real type, reject the coercion class with a domain error.**
+
+**(A1 · AIR-004) Recovery status is a validated enum with an explicit transition
+table.** `SubmitRecoveryRecord.cleanup_status` transitions had no state machine —
+any string could be written, and an already-resolved record could silently
+re-open. Added `RECOVERY_STATUSES` (the frozenset of the three valid values) and
+`RECOVERY_TRANSITIONS` (`unresolved → {resolved, needs_review}`; both terminal
+states → `∅`) in `app/models.py`. `app.store.core.recovery_status_event` now
+raises `RecoveryTransitionError` on an unknown status or a disallowed transition;
+`None`/same-status is a no-op returning `None` (no spurious audit row), matching
+the candidate/order same-status rule.
+
+**(A2 · AIR-005 + AIR-008) The coercion class, swept.** Three sub-fixes, then a
+grep of every store entrypoint and route schema to confirm no fourth surface was
+missed:
+- **Strict booleans on all four control surfaces.** `set_kill_switch`,
+  `set_buys_paused`, `set_watchlist_armed`, `add_watchlist_symbol` now call
+  `app.store.core.require_bool` (raises `InvalidControlValueError` on a non-`bool`)
+  in **both** stores; the route schemas `KillSwitchRequest.engaged` and
+  `WatchlistCreate.armed` use `StrictBool`. The reproduced defect this closes:
+  `{"engaged": "false"}` — a payload *meant to disengage the emergency stop* —
+  used to be accepted, memory storing the truthy string `'false'` and SQLite
+  coercing it to `True`, so the disengage request would have **engaged** the kill
+  switch. Now it is a clean `422` at the route and an `InvalidControlValueError`
+  at the store. (The buys-pause/resume routes carry no body — they toggle a fixed
+  value server-side — so there is no schema field to stricten there; the store
+  setter `require_bool` is still the backstop for any direct caller.)
+- **Candidate numerics validated at the store boundary.** A new
+  `app.policy.candidate_numeric_reason` (reusing the existing
+  `whole_count_reason`/`limit_price_reason`/`finite_number_reason` family — not a
+  re-implementation) is checked in **both** `create_candidate`s *before* the
+  pydantic `Candidate` is constructed, rejecting `NaN`/`Inf`/`-Inf`, zero,
+  negative, a fractional quantity, a `bool`, and a string with `InvalidOrderError`.
+  A genuinely-absent value is `None` (allowed — an unsized/unpriced candidate),
+  never a non-finite sentinel. This **converges a real parity break**: a `nan`
+  price used to roundtrip as `nan` through memory but as `NULL` through SQLite
+  (SQLite stores `NaN` as `NULL`), so the two stores disagreed on what was
+  persisted; now neither persists it at all. This **supersedes D-021's narrower
+  `suggested_value_type_reason`** (bool/string only), which is now removed as dead
+  code — `candidate_numeric_reason` subsumes it (bool/string rejection still flows
+  through `finite_number_reason`) and additionally closes the non-finite/
+  non-positive gap D-021 had deliberately deferred to order-creation time. The
+  order-creation guards remain as **defense-in-depth** and as the sole guard for
+  the one value the candidate boundary allows — a `None` price on a LIMIT order.
+- **Serialization guard so no API response can emit a non-JSON float.** A
+  persisted `inf`/`nan` (a legacy row, or any path that bypassed the write guard)
+  would crash readback on Py3.13 and emit invalid `Infinity` on 3.12. Added
+  `ResponseSafeFloat`/`ResponseSafeRequiredFloat` in `app/models.py` — `Annotated`
+  float types with a `PlainSerializer(when_used="json")` that maps a non-finite
+  value to JSON `null` — applied to every persisted float field (candidate/order
+  limit price, fill price, position + snapshot cost basis/average price, recovery
+  limit price). Verified end-to-end: a raw `inf` row inserted straight into SQLite
+  reads back and serializes as `null` through the real FastAPI response path.
+
+**(A3 · AIR-006) The test-only `create_order` is off the public contract.**
+`create_order` had no production caller (every real order goes through
+`create_order_for_candidate`) yet sat on the public `StateStore` surface as a
+latent hazard — it accepted `qty=-100` and bypassed every gate. Removed from
+`app/store/base.py` and renamed to `create_order_for_test` in both stores, with a
+TEST-ONLY docstring; it inherits the candidate's `session_id` so a test order can
+still be claimed for submission like a real one. Not threaded through the policy
+plan (deliberately — it is a fixture helper, not a code path).
+
+**(A4 · AIR-007) One path into `SUBMITTING`.** Removed `CREATED → SUBMITTING`
+from `app.transitions.ORDER_TRANSITIONS`. The atomic submission claim
+(`claim_order_for_submission`, D-017) writes `SUBMITTING` directly (never through
+the generic `transition_order`), so removing the table entry closes a bypass and
+breaks nothing — `claim_order_for_submission` is now provably the *sole* entry
+into `SUBMITTING`. The stale comment that had called the claim "the ONLY path to
+the broker" was corrected (submission, not the broker, is what the claim gates).
+
+**(A5 · AIR-009) Enum/string parity at the store boundary.** The chosen public
+contract: **status arguments must be real enum instances.** `transition_candidate`,
+`list_candidates(status=)`, and `transition_order` (via `plan_transition_order`)
+now call `app.store.core.require_status_enum`, raising `InvalidStatusError` on a
+string/bool/None. This closes a silent parity divergence: `InMemoryStateStore`
+compared with `is`/set-membership (a bare `"pending"` string *is* a member of a
+str-enum set, so it matched and mutated), while `SqliteStateStore` pre-coerced
+via `CandidateStatus(x)`/`OrderStatus(x)` — the two stores accepted or rejected
+the same bare string differently. All such coercions of a caller-supplied status
+were removed; both stores now require the enum and reject identically. (Verified
+no production caller passes a string — routes pass enum members.) The remaining
+`OrderSide(...)`/`OrderType(...)` coercions are out of scope: they are internal
+callers only, symmetric across both stores (no parity divergence), and validated
+at pydantic construction anyway.
+
+**Sweep result.** Every store entrypoint and route schema taking a bool/enum/
+numeric field was checked. Beyond the surfaces above, the only bool input found
+was `open_only: bool = Query(default=True)` on the order-list read filter — a
+display filter that mutates no state, so a lax coerce there carries no safety
+consequence; recorded as reviewed-and-benign rather than strictened.
+
+**Enforcement points:** `app/models.py` (recovery enum + transition table,
+`ResponseSafe*` serializers), `app/store/core.py` (`require_bool`,
+`require_status_enum`, `recovery_status_event`), `app/store/base.py` (new domain
+errors `RecoveryTransitionError`/`InvalidStatusError`/`InvalidControlValueError`,
+`create_order` removed from the ABC), `app/store/memory.py` + `sqlite.py`
+(guards wired into all four bool setters, candidate numerics, status transitions;
+`create_order` → `create_order_for_test`), `app/policy.py`
+(`candidate_numeric_reason`; dead `suggested_value_type_reason` removed),
+`app/transitions.py` (`CREATED → SUBMITTING` removed), `app/api/schemas.py`
+(`StrictBool` on the two control-flag bodies). Suite: **1026 passed / 3 skipped,
+branch coverage 95.49%** (floor 93%). Pre-existing tests that had asserted the
+*old, later* rejection boundary (non-finite/non-positive rejected at
+order-creation) were adapted to assert the new earlier-and-stronger candidate
+boundary — the guarantee (bad value → rejected, nothing persisted) is preserved
+and tightened, not relaxed.
+
+**Gate A: GREEN.** Groups B (temporal/recovery: AIR-001/002/003) and C (test
+quality: AIR-010/011) are tracked separately; Group B's gate additionally
+requires an independent adversarial re-review of its diff by a fresh context.
+
 ### D-021 — Phase-7 readiness gate: audited green, three follow-up fixes landed
 **Context.** Per the wave runbook, once Waves 0–2 are merged the capstone
 Phase-7 readiness gate (12 preconditions spanning D-017 through D-020) must be

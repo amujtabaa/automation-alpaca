@@ -178,35 +178,6 @@ def finite_number_reason(value: object) -> Optional[str]:
     return None
 
 
-def suggested_value_type_reason(value: object) -> Optional[str]:
-    """Reject a candidate's raw ``suggested_quantity``/``suggested_limit_price``
-    input at the *type* level, before it is coerced into the ``Candidate``
-    pydantic model. ``None`` (not yet suggested) is always accepted.
-
-    This exists because, once a bare ``bool`` or numeric ``str`` is assigned to
-    a pydantic ``int``/``float`` field, it silently coerces (``True`` -> ``1``,
-    ``"5"`` -> ``5``) with no error and no way to recover the original type
-    afterward — the exact "boolean silently persisting" defect class
-    :func:`finite_number_reason`'s docstring names for fills, reachable here
-    too because ``create_candidate``'s parameters are plain Python (not
-    pydantic-validated) until the ``Candidate(...)`` call inside it. Reject
-    those two cases here, at the boundary, while they still carry their real
-    type. Deliberately narrower than :func:`finite_number_reason`: ``NaN``/
-    ``Inf``/fractional/negative/zero are NOT rejected here — pydantic's own
-    field validators already reject ``NaN``/``Inf``/fractional on the ``int``
-    quantity field, and the rest (a non-finite price, a non-positive quantity
-    or price) is deliberately deferred to order-creation time
-    (``limit_price_reason`` / the quantity check in
-    ``plan_create_order_for_candidate``), unchanged by this guard.
-    """
-
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return "non_numeric"
-    return None
-
-
 def whole_count_reason(value: object) -> Optional[str]:
     """Reject a value that is not a finite, whole (integer-valued), non-negative
     share count. Builds on :func:`finite_number_reason`, then rejects a
@@ -271,6 +242,36 @@ def limit_price_reason(limit_price: object) -> Optional[str]:
         return f"{bad}_limit_price"
     if limit_price <= 0:
         return "non_positive_limit_price"
+    return None
+
+
+def candidate_numeric_reason(
+    *, suggested_quantity: object, suggested_limit_price: object
+) -> Optional[tuple[str, str]]:
+    """Reject malformed candidate numerics at the store boundary (AIR-008).
+
+    A genuinely-absent value is ``None`` (allowed — a candidate need not be
+    sized/priced yet). A **present** ``suggested_quantity`` must be a positive
+    whole share count; a **present** ``suggested_limit_price`` must be a finite,
+    positive number. So this rejects the full coercion class —
+    ``NaN``/``Inf``/``-Inf``, zero, negative, a fractional quantity, a ``bool``,
+    and a string — *before* the pydantic ``Candidate`` is constructed, so both
+    stores reject identically with a clean domain error rather than one
+    roundtripping ``nan`` (memory) while the other roundtrips ``None`` (SQLite
+    stores ``NaN`` as ``NULL``), and neither leaks a raw pydantic
+    ``ValidationError``. Returns ``(field, reason)`` or ``None``.
+    """
+
+    if suggested_quantity is not None:
+        reason = whole_count_reason(suggested_quantity)
+        if reason is None and suggested_quantity <= 0:
+            reason = "non_positive"
+        if reason is not None:
+            return ("suggested_quantity", reason)
+    if suggested_limit_price is not None:
+        reason = limit_price_reason(suggested_limit_price)
+        if reason is not None:
+            return ("suggested_limit_price", reason)
     return None
 
 

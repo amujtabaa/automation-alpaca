@@ -45,7 +45,7 @@ async def test_review_closed_returns_snapshot_active_returns_live():
         candidate = await store.create_candidate("AAPL", session_id=session.id)
         # Order sized for both buy fills (cumulative 200): the first fills 100
         # before close, the second (post-close) moves the live fold to 200.
-        order = await store.create_order(
+        order = await store.create_order_for_test(
             candidate.id, "AAPL", OrderSide.BUY, 200, session_id=session.id
         )
         await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,
@@ -85,7 +85,7 @@ async def test_get_session_between_close_and_review_keeps_snapshots_visible():
     async with client:
         session = await store.get_current_session()
         candidate = await store.create_candidate("AAPL", session_id=session.id)
-        order = await store.create_order(
+        order = await store.create_order_for_test(
             candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
         )
         await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,

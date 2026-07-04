@@ -33,7 +33,6 @@ from app.models import (
     Order,
     OrderSide,
     OrderStatus,
-    OrderType,
     Position,
     PositionSnapshot,
     SessionRecord,
@@ -88,6 +87,39 @@ class CandidateTransitionError(StoreError):
 
 class OrderTransitionError(StoreError):
     """An illegal order lifecycle transition was attempted."""
+
+
+class RecoveryTransitionError(StoreError):
+    """An illegal submit-recovery ``cleanup_status`` transition was attempted
+    (AIR-004): an unknown status value, or a disallowed move such as reopening a
+    terminal (``resolved_canceled``/``needs_review``) record back to
+    ``unresolved``. The record and its audit trail are left unchanged.
+    """
+
+
+class InvalidStatusError(StoreError):
+    """A status argument was not a proper enum member (AIR-009).
+
+    ``list_candidates(status=)``, ``transition_candidate`` and
+    ``transition_order`` require a real ``CandidateStatus`` / ``OrderStatus``
+    instance. A raw string (``"pending"``/``"approved"``) — which a ``str``-enum
+    would otherwise *silently* match in SQLite while ``InMemoryStateStore``
+    diverged (empty result / ``AttributeError``) — or a ``bool``/``None`` where a
+    status is required is rejected here, so both stores accept and reject
+    identically with no mutation.
+    """
+
+
+class InvalidControlValueError(StoreError):
+    """A control/flag setter received a non-``bool`` value (AIR-005).
+
+    ``set_kill_switch``/``set_buys_paused``/``set_watchlist_armed`` and
+    ``create_watchlist(armed=)`` take a real ``bool`` only — a string like
+    ``"false"`` or an int like ``0`` is rejected here rather than silently
+    coerced (memory would store the truthy string, SQLite would coerce to
+    ``True``, so ``{"engaged": "false"}`` meant to *disengage* would engage the
+    switch — an emergency-stop inversion).
+    """
 
 
 class InvalidFillError(StoreError):
@@ -323,20 +355,15 @@ class StateStore(ABC):
     # ------------------------------------------------------------------ #
     # Orders (broker lifecycle: created/submitted/partially_filled/filled/...)
     # ------------------------------------------------------------------ #
-    @abstractmethod
-    async def create_order(
-        self,
-        candidate_id: str,
-        symbol: str,
-        side: OrderSide,
-        quantity: int,
-        *,
-        order_type: OrderType = OrderType.LIMIT,
-        limit_price: Optional[float] = None,
-        replaces_order_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-    ) -> Order:
-        ...
+    # NOTE (AIR-006): the low-level ``create_order(candidate_id, symbol, side,
+    # quantity, ...)`` used to live on this public contract. It has **no
+    # production caller** (every real order goes through
+    # ``create_order_for_candidate`` above, which enforces the approved-only rule
+    # and the CAPI/control gates), yet it accepted ``quantity=-100`` and bypassed
+    # every gate — a latent public-contract hazard. It has been removed from the
+    # public ``StateStore`` surface and survives only as
+    # ``create_order_for_test`` on the concrete stores, a clearly non-production
+    # test-setup helper. Do not add it back to this ABC.
 
     @abstractmethod
     async def create_order_for_candidate(

@@ -40,7 +40,8 @@ from app.models import (
     Position,
     PositionSnapshot,
     RECOVERY_NEEDS_REVIEW,
-    RECOVERY_UNRESOLVED,
+    RECOVERY_STATUSES,
+    RECOVERY_TRANSITIONS,
     SessionRecord,
     utcnow,
 )
@@ -50,10 +51,13 @@ from app.store.base import (
     CLAIM_CLAIMED,
     CLAIM_SKIPPED,
     CandidateTransitionError,
+    InvalidControlValueError,
     InvalidFillError,
     InvalidOrderError,
+    InvalidStatusError,
     OrderIntentBlockedError,
     OrderTransitionError,
+    RecoveryTransitionError,
     RiskLimitBlockedError,
     RiskLimits,
     UnknownEntityError,
@@ -474,20 +478,35 @@ def plan_create_order_for_candidate(
 def recovery_status_event(
     prev_status: str, new_status: Optional[str]
 ) -> Optional[str]:
-    """The audit event type to write when a recovery record's ``cleanup_status``
-    changes to ``new_status``, or ``None`` if nothing should be recorded (no
-    change, or it stays ``RECOVERY_UNRESOLVED``). A move to needs-review writes
+    """Validate a recovery ``cleanup_status`` transition and return the audit
+    event type to write, or ``None`` when nothing should change (AIR-004).
+
+    ``new_status is None`` is a bump-only update (retry_count) with no status
+    change — a legal no-op that emits no event, regardless of the current status.
+    A same-status "change" is likewise a no-op. Otherwise the transition must be
+    one of the explicit allowed moves in ``RECOVERY_TRANSITIONS``
+    (``unresolved -> resolved_canceled`` / ``unresolved -> needs_review``); an
+    **unknown** status value or a **disallowed** move (notably reopening a
+    terminal record back to ``unresolved``) raises
+    :class:`RecoveryTransitionError` and the caller must leave the record and its
+    audit trail unchanged. A move to needs-review writes
     ``submit_recovery_needs_review`` (a real untracked position — not "resolved");
     a clean cancel writes ``submit_recovery_resolved``. Shared so both stores
-    emit identical events.
+    validate and emit identically.
     """
 
-    if (
-        new_status is None
-        or new_status == prev_status
-        or new_status == RECOVERY_UNRESOLVED
-    ):
+    if new_status is None or new_status == prev_status:
         return None
+    if new_status not in RECOVERY_STATUSES:
+        raise RecoveryTransitionError(
+            f"unknown recovery cleanup_status {new_status!r}; "
+            f"must be one of {sorted(RECOVERY_STATUSES)}"
+        )
+    if new_status not in RECOVERY_TRANSITIONS.get(prev_status, frozenset()):
+        raise RecoveryTransitionError(
+            f"illegal recovery transition {prev_status!r} -> {new_status!r} "
+            f"(no silent reopen of a terminal record)"
+        )
     if new_status == RECOVERY_NEEDS_REVIEW:
         return "submit_recovery_needs_review"
     return "submit_recovery_resolved"
@@ -579,6 +598,40 @@ class OrderTransitionPlan:
     event: Optional[EventSpec] = None
 
 
+def require_bool(value: object, *, field: str) -> None:
+    """Reject a non-``bool`` control/flag value at the store boundary (AIR-005).
+
+    Strict: only ``True``/``False`` pass. A string (``"false"``), an int
+    (``0``/``1`` — note ``isinstance(1, bool)`` is ``False``), a list/dict, or
+    ``None`` is rejected with :class:`InvalidControlValueError` and no mutation.
+    This is what stops a ``{"engaged": "false"}`` payload — a truthy non-empty
+    string — from *engaging* the kill switch (an emergency-stop inversion).
+    """
+
+    if not isinstance(value, bool):
+        raise InvalidControlValueError(
+            f"{field} must be a bool, not {type(value).__name__} {value!r}"
+        )
+
+
+def require_status_enum(value: object, enum_cls: type, *, field: str) -> None:
+    """Reject a non-enum status argument at the store boundary (AIR-009).
+
+    ``value`` must be an actual member of ``enum_cls`` — a bare string like
+    ``"pending"`` does **not** qualify even though ``enum_cls`` is a ``str``-enum
+    (``isinstance("pending", CandidateStatus)`` is ``False``). This is what makes
+    both stores reject strings/bools/``None`` identically instead of one silently
+    coercing and the other leaking ``AttributeError``. Raises
+    :class:`InvalidStatusError`; performs no mutation.
+    """
+
+    if not isinstance(value, enum_cls):
+        raise InvalidStatusError(
+            f"{field} must be a {enum_cls.__name__} instance, not "
+            f"{type(value).__name__} {value!r}"
+        )
+
+
 def plan_transition_order(
     *,
     order: Order,
@@ -589,8 +642,13 @@ def plan_transition_order(
     """Decide an order transition — the shared logic (legality, monotonic
     filled-quantity, the true-no-op rule, and the D-008 ``order_transition`` vs
     ``order_fill_progress`` audit split) that was duplicated between the stores.
+
+    ``new_status`` must be an ``OrderStatus`` instance (AIR-009): a bare string
+    or a bool/None is rejected up front, before any legality check, so both
+    stores behave identically.
     """
 
+    require_status_enum(new_status, OrderStatus, field="new_status")
     current = order.status
     status_changed = new_status is not current
     if status_changed and new_status not in ORDER_TRANSITIONS.get(current, set()):

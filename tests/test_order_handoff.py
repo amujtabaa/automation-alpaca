@@ -132,22 +132,39 @@ async def test_handoff_without_suggested_quantity_raises(any_store):
     assert (await any_store.get_candidate(candidate.id)).status is CandidateStatus.APPROVED
 
 
+# AIR-008: a non-positive quantity/price is now rejected at the *candidate*
+# boundary (both stores identically), before any row is persisted — earlier and
+# stronger than the old order-creation reject. The handoff guard below still
+# stands as defense-in-depth for the one value the candidate boundary allows
+# (a genuinely-absent None price on an unsized candidate).
 @pytest.mark.parametrize("bad_qty", [0, -5])
-async def test_handoff_rejects_non_positive_quantity(any_store, bad_qty):
+async def test_create_candidate_rejects_non_positive_quantity(any_store, bad_qty):
     await any_store.initialize()
-    candidate = await any_store.create_candidate("AAPL", suggested_quantity=bad_qty)
-    await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
     with pytest.raises(InvalidOrderError):
-        await any_store.create_order_for_candidate(candidate.id)
+        await any_store.create_candidate("AAPL", suggested_quantity=bad_qty)
+    assert await any_store.list_candidates() == []
     assert await any_store.list_orders() == []
 
 
-# A LIMIT order must never be persisted without a positive limit price (F1).
-@pytest.mark.parametrize("bad_price", [None, 0, -1.0])
-async def test_handoff_rejects_non_positive_limit_price(any_store, bad_price):
+@pytest.mark.parametrize("bad_price", [0, -1.0])
+async def test_create_candidate_rejects_non_positive_limit_price(any_store, bad_price):
+    await any_store.initialize()
+    with pytest.raises(InvalidOrderError):
+        await any_store.create_candidate(
+            "AAPL", suggested_quantity=10, suggested_limit_price=bad_price
+        )
+    assert await any_store.list_candidates() == []
+    assert await any_store.list_orders() == []
+
+
+# A LIMIT order must never be persisted without a positive limit price (F1). A
+# None price is a *valid* candidate (unsized/unpriced), so the candidate
+# boundary allows it — the handoff is the last line of defense that refuses to
+# build a LIMIT order with no price.
+async def test_handoff_rejects_missing_limit_price(any_store):
     await any_store.initialize()
     candidate = await any_store.create_candidate(
-        "AAPL", suggested_quantity=10, suggested_limit_price=bad_price
+        "AAPL", suggested_quantity=10, suggested_limit_price=None
     )
     await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
     with pytest.raises(InvalidOrderError):
