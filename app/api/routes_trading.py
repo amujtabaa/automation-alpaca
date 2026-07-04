@@ -140,13 +140,24 @@ async def flatten_position(
         )
         if active.reason is SellReason.MANUAL_FLATTEN:
             return FlattenResponse(intent=active, order=active_order)
-        # An autonomous PROTECTION_FLOOR exit is in flight. If its order hasn't
-        # reached the broker yet, cancel it locally so a fresh manual flatten can
-        # supersede it; otherwise it is genuinely executing — return it.
-        if active_order is not None and active_order.status is OrderStatus.CREATED:
+        # An autonomous PROTECTION_FLOOR exit is active. A human flatten takes
+        # over UNLESS the protective order is genuinely LIVE at the broker — a
+        # not-yet-sent form (no order at all — a stranded pending/approved intent,
+        # e.g. from a crash between the approve and the order write — OR a still
+        # CREATED order) is stood down so the manual flatten can supersede it. If
+        # we returned such a stranded intent as-is, the click would 200 but never
+        # exit, and protection's own dedup would keep the position exit-less
+        # (violating "flatten must ALWAYS let a human exit").
+        if active_order is not None and active_order.status is not OrderStatus.CREATED:
+            return FlattenResponse(intent=active, order=active_order)  # live — leave it
+        if active_order is not None:
+            # A CREATED protective order — cancel it locally (terminal), which also
+            # makes its ORDERED intent inactive so the fresh flatten isn't deduped.
             await _transition_cancel(store, active_order.id, OrderStatus.CANCELED)
-        else:
-            return FlattenResponse(intent=active, order=active_order)
+        elif active.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
+            # A stranded intent with NO order — expire it to free the single-flight
+            # dedup so a fresh MANUAL_FLATTEN can be created below.
+            await store.transition_sell_intent(active.id, SellIntentStatus.EXPIRED)
 
     # §5.3: clear open buys so the exit truly reaches flat, then re-read the live
     # position (a partial buy fill may have landed) before sizing the exit.

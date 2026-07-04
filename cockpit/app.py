@@ -337,12 +337,20 @@ def _op_label(operational_status: str, reason: str | None) -> str:
     return _OP_DISPLAY.get(operational_status, operational_status)
 
 
-def _protection_label(prot: dict) -> str:
+def _protection_label(prot: dict, protection_active=None) -> str:
     """A one-glance protection state for a position, from its GET /api/protection
-    view (classified server-side — the cockpit only maps it to a label)."""
+    view (classified server-side — the cockpit only maps it to a label).
+
+    ``🟢 safe`` is asserted ONLY when protection is actually live AND there is a
+    trustworthy price the floor was evaluated against. A stale/missing feed leaves
+    ``breaching`` false because the backend *declined to judge* (not because the
+    position is safe) — surfaced as a distinct neutral state so the operator never
+    gets a false all-clear during the window protection is blind."""
 
     if not prot:
         return "—"
+    # In-flight / alarm states first — these hold regardless of the current price
+    # (an exit already in flight matters even if the feed later goes stale).
     if prot.get("stalled"):
         return "⏳ exit stalled"
     if prot.get("active_sell_intent"):
@@ -351,6 +359,11 @@ def _protection_label(prot: dict) -> str:
         return "⏸️ paused (kill switch)"
     if prot.get("breaching"):
         return "🔴 breaching"
+    # No alarm — but only call it "safe" if protection is live and priced.
+    if protection_active is False:
+        return "⚪ protection off"
+    if prot.get("observed_price") is None:
+        return "⚪ no live price"
     return "🟢 safe"
 
 
@@ -446,7 +459,7 @@ def screen_positions() -> None:
                 if observed is not None:
                     st.caption(f"last ${observed:.2f}")
             with row[4]:
-                row[4].markdown(_protection_label(prot))
+                row[4].markdown(_protection_label(prot, protection_active))
             with row[5]:
                 _flatten_button(sym)
 

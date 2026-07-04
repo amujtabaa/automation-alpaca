@@ -141,6 +141,57 @@ async def test_flatten_supersedes_unsent_protection_order():
     assert r.json()["intent"]["reason"] == "manual_flatten"
 
 
+async def test_flatten_supersedes_stranded_protection_intent_without_order():
+    # Regression (routes review, major): a stranded PROTECTION_FLOOR intent with
+    # NO order (APPROVED, order_id None — e.g. a crash between approve and order)
+    # must be superseded so the human flatten still exits, not returned as a no-op.
+    app, store, _, _ = await _app()
+    await _hold(store, "AAPL", 100)
+    session = await store.get_current_session()
+    stranded = await store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        session_id=session.id,
+    )
+    await store.transition_sell_intent(stranded.id, SellIntentStatus.APPROVED)
+    # Intentionally do NOT create the order — this is the stranded state.
+    assert stranded.order_id is None
+
+    async with _client(app) as client:
+        r = await client.post("/api/positions/AAPL/flatten")
+    assert r.status_code == 200
+    # A real MANUAL_FLATTEN exit now exists (not the stranded protective intent).
+    assert r.json()["intent"]["reason"] == "manual_flatten"
+    assert r.json()["intent"]["id"] != stranded.id
+    assert r.json()["order"]["side"] == "sell"
+    # The stranded intent was expired to free the dedup.
+    assert (await store.get_sell_intent(stranded.id)).status is SellIntentStatus.EXPIRED
+
+
+async def test_flatten_leaves_live_protection_order_alone():
+    # A genuinely LIVE protective exit (order submitted) is returned as-is — the
+    # human is told it is already exiting (not double-exited).
+    app, store, _, _ = await _app()
+    await _hold(store, "AAPL", 100)
+    session = await store.get_current_session()
+    prot = await store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        session_id=session.id,
+    )
+    await store.transition_sell_intent(prot.id, SellIntentStatus.APPROVED)
+    order = await store.create_order_for_sell_intent(prot.id, order_type=OrderType.MARKET)
+    # Make the order live at the broker.
+    claim = await store.claim_order_for_submission(order.id)
+    await store.transition_order(
+        claim.order.id, OrderStatus.SUBMITTED, broker_order_id="b-1"
+    )
+    async with _client(app) as client:
+        r = await client.post("/api/positions/AAPL/flatten")
+    assert r.status_code == 200
+    # Returned as-is — the protective exit is left executing.
+    assert r.json()["intent"]["id"] == prot.id
+    assert (await store.get_order(order.id)).status is OrderStatus.SUBMITTED
+
+
 async def test_flatten_bad_symbol_422():
     app, *_ = await _app()
     async with _client(app) as client:

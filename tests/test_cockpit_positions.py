@@ -195,6 +195,55 @@ def test_protection_paused_label(monkeypatch):
     assert "paused (kill switch)" in _screen_text(at)
 
 
+def test_no_live_price_is_not_shown_as_safe(monkeypatch):
+    # Regression (routes/cockpit review): a stale/missing feed leaves breaching
+    # False because the backend DECLINED to judge — the cockpit must not render a
+    # false green "safe" all-clear during the window protection is blind.
+    prot = _protection(
+        breaching=False, observed_price=None, paused_by_kill_switch=False
+    )
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=prot,
+    )
+    assert not at.exception
+    text = _screen_text(at)
+    assert "no live price" in text
+    assert "🟢 safe" not in text
+
+
+def test_protection_off_is_not_shown_as_safe(monkeypatch):
+    prot = _protection(breaching=False, observed_price=1.30)
+    prot["config"]["protection_active"] = False
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=prot,
+    )
+    assert not at.exception
+    text = _screen_text(at)
+    assert "protection off" in text
+    assert "🟢 safe" not in text
+
+
+def test_safe_shown_when_live_and_priced(monkeypatch):
+    prot = _protection(breaching=False, observed_price=1.60)  # above floor, priced
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=prot,
+    )
+    assert not at.exception
+    assert "🟢 safe" in _screen_text(at)
+
+
 def test_flatten_button_present_and_functional(monkeypatch):
     recorder: list = []
     at = _run(
