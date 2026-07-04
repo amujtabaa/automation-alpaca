@@ -49,6 +49,97 @@ and implement code.
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
 
+### D-022 — AIR remediation Group B: durable submission/fill recovery
+**Context.** Group B is the temporal/recovery subset of the AIR findings
+(AIR-001/002/003) — higher blast radius than Group A because it spans the broker
+adapter, the monitoring loop, and the recovery ledger, and because the failures
+are about *what happens across a crash or a broker disagreement*, not a single
+call's inputs. Each defect was reproduced red-first and driven green, store-facing
+behavior parametrized over both stores (`any_store`), all in
+`tests/test_air_group_b.py` (+ the rewritten `test_store_core.py` /
+`test_alpaca_paper_fills.py` unit pins).
+
+**The unifying principle: a broker truth the local state can't reconcile is never
+dropped and never guessed — it is either recovered idempotently or escalated to a
+durable, operator-visible record.**
+
+**(B1 · AIR-001) No `SUBMITTED` without a real broker id.** `SUBMITTED` means the
+broker accepted the order and handed back the id we poll and cancel by; an order
+that reached `SUBMITTED` with `broker_order_id=None` was untrackable. Fixed at
+three layers: (1) the `BrokerAdapter.submit_order` **contract** now documents that
+an implementation must return a non-empty `str` or raise; (2) the shared
+`plan_transition_order` **rejects** a status change *into* `SUBMITTED` without a
+non-empty effective broker id (`OrderTransitionError`) — so **both** stores
+enforce the invariant, not just the caller; (3) `monitoring._submit_pending_orders`
+**validates** the returned id and treats an empty one as a submit failure (release
+the claim, re-drive next tick) rather than persisting an untrackable order. The
+one store-core unit test that asserted the old `SUBMITTING → SUBMITTED, id=None`
+apply was rewritten to pass a real id (its real purpose was the `submitted_at`
+assertion).
+
+**(B2 · AIR-003) Stale `SUBMITTING` is recovered by idempotent re-drive, not left
+stranded.** A claim (D-017) writes `SUBMITTING` durably *before* the broker call,
+so a crash between claim and persist leaves an order `SUBMITTING` with
+`broker_order_id=None` — excluded from both the `CREATED` submit sweep and the
+open-order reconcile poll, so nothing ever touched it again (it silently inflated
+CAPI exposure forever). **The durable `SUBMITTING` row plus the stable
+`client_order_id` (`order.id`) already *is* the outbox — no new table.** A new
+monitoring step `_redrive_stale_submitting` (run every tick, so within one cadence
+of a restart) re-drives each such order through `adapter.submit_order`, which is
+inherently double-submit-safe: a fresh submit either creates the broker order or
+recovers the already-accepted one by client id. A non-empty id back →
+`SUBMITTING → SUBMITTED`; a transient `BrokerError` → left `SUBMITTING` to retry
+(idempotent, not a blind double-submit); a `TerminalBrokerError` / empty id / "can't
+confirm" → a durable `needs_review` recovery record (the loop does not guess).
+Deduped: an order already carrying an open recovery record is neither re-driven nor
+re-recorded. A new `TerminalBrokerError(BrokerError)` subclass makes the transient-
+vs-terminal distinction explicit (plain `BrokerError` stays transient-by-default).
+Stale `SUBMITTING` orders are already surfaced in the operator view — they are in
+`NON_TERMINAL_ORDER_STATUSES`, which the operator-orders endpoint filters on.
+
+**(B3 · AIR-002) A broker/local fill divergence is escalated durably.** Two halves:
+- **Adapter (`alpaca_paper._resolve_fill_price`)** no longer synthesizes a `0.0`
+  price when neither the broker average nor the limit is a trustworthy (finite,
+  positive) number — it returns `None`, and `_get_fills` then **omits** the fill
+  entirely rather than appending a corrupt `$0` execution. The broker's cumulative
+  `filled_quantity` still carries the truth, so the omission surfaces as a
+  divergence downstream instead of a bogus fill.
+- **Monitoring (`_apply_update`)** now escalates when, after appending every
+  recordable fill, the broker's cumulative `filled_quantity` still **exceeds** what
+  we recorded (a fill the store rejected, or one the adapter withheld). It writes a
+  durable `needs_review` reconciliation record (via the recovery ledger — `event_type=
+  fill_reconciliation_needed`, payload carrying broker status / broker filled /
+  recorded / rejected-fill summary), deduped per order, and **holds the order
+  non-terminal** (`_divergence_safe_status`: `cancel_pending` stays winding down,
+  else `partially_filled`/`submitted`) so a real untracked position is never buried
+  under a terminal `CANCELED`/`FILLED`. **The invariant is preserved: positions still
+  derive only from appended fills** — the reconciliation record is the truth-divergence
+  signal, not a position mutation. The verified defect (broker `FILLED`=10 + an
+  un-priceable fill → order stuck `SUBMITTED`/`filled=0` forever, no escalation) is
+  closed on both stores.
+
+**Ledger reuse, not a new entity.** B2 and B3 both write through the existing
+`SubmitRecoveryRecord` ledger — its meaning is broadened from "submission orphan"
+to "any broker truth the local order state can't reconcile, surfaced to the
+operator." `create_submit_recovery` gained three optional, additive params
+(`cleanup_status` to birth a record directly `needs_review`, validated against
+`RECOVERY_STATUSES` via the A1 machinery; `event_type` and `extra_payload` for the
+distinct fill-divergence audit event). No new table, no schema migration.
+
+**Enforcement points:** `app/broker/adapter.py` (`TerminalBrokerError`,
+`submit_order` contract), `app/broker/alpaca_paper.py` (`_resolve_fill_price` →
+`Optional`, `_get_fills` omit), `app/store/core.py` (`plan_transition_order` B1
+guard, `require_recovery_status`), `app/store/base.py` + `memory.py` + `sqlite.py`
+(`create_submit_recovery` new params), `app/monitoring.py`
+(`_redrive_stale_submitting`, `_escalate_stale_submitting`, `_apply_update`
+divergence branch, `_escalate_fill_divergence`, `_divergence_safe_status`). Suite:
+**1053 passed / 3 skipped, branch coverage ~95%** (floor 93%). Positions still
+derive only from fills; no live-trading path; the atomic claim remains the sole
+entry into `SUBMITTING`.
+
+**Gate B** additionally requires an **independent adversarial re-review of the
+B1–B3 + A1 diff by a fresh context** — see the review checklist.
+
 ### D-023 — AIR remediation Group A: deterministic validation & contract fixes
 **Context.** An independent adversarial review (the "AIR" findings, AIR-001…011)
 flagged eleven defects across validation, recovery, and test quality. Group A is

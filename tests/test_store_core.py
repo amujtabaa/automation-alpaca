@@ -21,6 +21,7 @@ from app.models import (
     utcnow,
 )
 from app.store import core
+from app.store.base import OrderTransitionError
 
 
 def _order(**kw) -> Order:
@@ -172,19 +173,36 @@ class TestPlanCreateOrder:
 class TestPlanTransitionOrder:
     def test_apply_status_change(self):
         # created -> submitted is no longer legal in one hop (D-017: the claim
-        # is the only path); submitted from submitting IS. This still exercises
-        # a genuine status-change apply that sets the submitted_at timestamp.
+        # is the only path); submitted from submitting IS. A SUBMITTING ->
+        # SUBMITTED transition now REQUIRES a non-empty broker id (AIR-001), so
+        # pass a real one — this test's real purpose is the submitted_at
+        # assertion on a genuine status-change apply.
         order = _order(status=OrderStatus.SUBMITTING)
         plan = core.plan_transition_order(
             order=order,
             new_status=OrderStatus.SUBMITTED,
             filled_quantity=None,
-            broker_order_id=None,
+            broker_order_id="alpaca-abc",
         )
         assert plan.outcome == core.ORDER_TRANSITION_APPLY
         assert plan.order.status is OrderStatus.SUBMITTED
+        assert plan.order.broker_order_id == "alpaca-abc"
         assert plan.order.submitted_at is not None
         assert plan.event.event_type == "order_transition"
+
+    def test_reject_submitted_without_broker_id(self):
+        # AIR-001: SUBMITTING -> SUBMITTED with no/empty broker id is rejected in
+        # the shared planner (both stores inherit the invariant).
+        for bad_id in (None, "", "   "):
+            order = _order(status=OrderStatus.SUBMITTING)
+            plan = core.plan_transition_order(
+                order=order,
+                new_status=OrderStatus.SUBMITTED,
+                filled_quantity=None,
+                broker_order_id=bad_id,
+            )
+            assert plan.outcome == core.ORDER_TRANSITION_REJECT, bad_id
+            assert isinstance(plan.error, OrderTransitionError)
 
     def test_true_noop(self):
         order = _order(status=OrderStatus.SUBMITTED)

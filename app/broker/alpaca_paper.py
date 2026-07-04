@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -94,19 +95,29 @@ def _utcnow() -> datetime:
 
 def _resolve_fill_price(
     filled_avg_price: Optional[object], limit_price: Optional[object]
-) -> float:
-    """Best available price for a synthetic delta fill: the broker's filled
-    average if present, else the order's limit, else 0.0. Tolerant of the SDK's
-    string/Decimal/None shapes."""
+) -> Optional[float]:
+    """Best *trustworthy* price for a delta fill: the broker's filled average if
+    present and usable, else the order's limit. Returns ``None`` when neither is
+    a finite, strictly-positive number.
+
+    AIR-002: this used to fall back to ``0.0`` when no price was available, which
+    fabricated a $0 execution — corrupting cost basis / average price and letting
+    a bogus fill append silently. A ``0.0``/negative/``NaN``/``Inf`` average is
+    *untrustworthy*, not a real price, so it is rejected here too. The caller
+    surfaces an un-priceable fill as unrecordable (the divergence is escalated to
+    a durable reconciliation record), never as a normal ``0.0`` fill. Tolerant of
+    the SDK's string/Decimal/None shapes."""
 
     for candidate in (filled_avg_price, limit_price):
         if candidate is None:
             continue
         try:
-            return float(candidate)
+            price = float(candidate)
         except (TypeError, ValueError):
             continue
-    return 0.0
+        if math.isfinite(price) and price > 0:
+            return price
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -342,6 +353,22 @@ class AlpacaPaperAdapter(BrokerAdapter):
         if delta <= 0:
             return []
         fill_price = _resolve_fill_price(filled_avg_price, limit_price)
+        if fill_price is None:
+            # AIR-002: the broker executed `delta` shares but exposes no
+            # trustworthy price for them. Do NOT fabricate a 0.0 fill — omit it.
+            # The BrokerOrderUpdate's `filled_quantity` still carries the broker's
+            # cumulative truth, so monitoring sees `broker_filled > recorded` and
+            # escalates to a durable needs_review reconciliation record instead of
+            # recording a corrupt $0 execution.
+            _log.error(
+                "broker order %s reports filled_qty=%s but no trustworthy price "
+                "(filled_avg_price=%r, limit_price=%r); surfacing as unrecordable.",
+                broker_order_id,
+                filled_qty,
+                filled_avg_price,
+                limit_price,
+            )
+            return []
         return [
             BrokerFill(
                 source_fill_id=f"{broker_order_id}:{filled_qty}",

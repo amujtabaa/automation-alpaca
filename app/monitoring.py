@@ -34,12 +34,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from app.broker.adapter import BrokerAdapter, BrokerOrderUpdate
+from app.broker.adapter import (
+    BrokerAdapter,
+    BrokerError,
+    BrokerOrderUpdate,
+    TerminalBrokerError,
+)
 from app.config import Settings
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
+    RECOVERY_OPEN_STATUSES,
     RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
     EventType,
@@ -121,6 +127,7 @@ async def run_monitoring_tick(
     """
 
     await _submit_pending_orders(store, adapter)
+    await _redrive_stale_submitting(store, adapter)
     await _reconcile_open_orders(store, adapter, settings)
     await _recover_unpersisted_submits(store, adapter)
 
@@ -180,6 +187,15 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
         claimed = claim.order
         try:
             broker_order_id = await adapter.submit_order(claimed)
+            # AIR-001: a well-behaved adapter returns a non-empty id or raises.
+            # Defend against a contract violation here too — an empty id must
+            # never reach the SUBMITTING -> SUBMITTED transition (it would strand
+            # an untrackable "submitted" order). Treat it as a submit failure so
+            # the claim releases and the next tick re-drives idempotently.
+            if not isinstance(broker_order_id, str) or not broker_order_id.strip():
+                raise BrokerError(
+                    f"adapter returned an empty broker id for order {claimed.id}"
+                )
         except Exception as exc:  # noqa: BLE001 - release the claim, retry next tick
             # Releasing SUBMITTING -> CREATED lets the next tick re-run the full
             # gate. But if the order's OWN session closed during the submit await
@@ -228,6 +244,115 @@ async def _submit_pending_orders(store: StateStore, adapter: BrokerAdapter) -> N
             await _handle_unpersisted_submit(
                 store, adapter, claimed, broker_order_id, exc
             )
+
+
+async def _redrive_stale_submitting(store: StateStore, adapter: BrokerAdapter) -> None:
+    """Recover ``SUBMITTING`` orders left id-less by a crash between claim and
+    submit (AIR-003).
+
+    A claim (D-017) writes ``SUBMITTING`` durably *before* the broker call; if the
+    process dies before ``submit_order`` returns and is persisted, the order is
+    stuck ``SUBMITTING`` with ``broker_order_id=None`` — excluded from both the
+    ``CREATED`` submit sweep and the open-order reconcile poll, so nothing else
+    ever touches it. It inflates CAPI exposure (correct — it may be live at the
+    broker) but is otherwise invisible and never advances.
+
+    The durable ``SUBMITTING`` row plus the stable ``client_order_id`` (``order.id``)
+    IS the outbox — no separate table needed. Re-driving each such order through
+    ``adapter.submit_order`` is inherently double-submit-safe: a fresh submit either
+    creates the broker order or recovers the already-accepted one by client id.
+
+    * A non-empty broker id back → ``SUBMITTING → SUBMITTED`` with it; reconcile
+      then tracks it normally.
+    * A transient :class:`BrokerError` → leave it ``SUBMITTING`` to retry next tick
+      (idempotent, not a blind double-submit).
+    * A :class:`TerminalBrokerError` (or an empty id, or the store rejecting the
+      transition) → escalate to a durable ``needs_review`` recovery record rather
+      than guessing. Deduped: an order already carrying an open recovery record is
+      neither re-driven nor re-recorded.
+    """
+
+    stale = [
+        o
+        for o in await store.list_orders()
+        if o.status is OrderStatus.SUBMITTING and not o.broker_order_id
+    ]
+    if not stale:
+        return
+
+    open_recoveries = await store.list_submit_recoveries(
+        statuses=RECOVERY_OPEN_STATUSES
+    )
+    already_covered = {r.local_order_id for r in open_recoveries}
+
+    for order in stale:
+        if order.id in already_covered:
+            continue
+        try:
+            broker_order_id = await adapter.submit_order(order)
+            if not isinstance(broker_order_id, str) or not broker_order_id.strip():
+                raise TerminalBrokerError(
+                    f"adapter returned an empty broker id re-driving stale "
+                    f"SUBMITTING order {order.id}"
+                )
+        except TerminalBrokerError as exc:
+            _log.error(
+                "stale SUBMITTING order %s could not be re-driven (terminal); "
+                "escalating to needs_review: %s",
+                order.id,
+                exc,
+            )
+            await _escalate_stale_submitting(store, order, exc)
+            continue
+        except BrokerError as exc:
+            # Transient — leave it SUBMITTING; the next tick re-drives idempotently.
+            _log.warning(
+                "stale SUBMITTING order %s re-drive failed (transient), will "
+                "retry next tick: %s",
+                order.id,
+                exc,
+            )
+            continue
+
+        try:
+            await store.transition_order(
+                order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
+            )
+            _log.info(
+                "re-drove stale SUBMITTING order %s to SUBMITTED as broker %s",
+                order.id,
+                broker_order_id,
+            )
+        except _TRANSITION_ERRORS as exc:
+            # The order left SUBMITTING some other way (e.g. a manual cancel) while
+            # we re-drove it — the broker order is live but locally terminal. Same
+            # durable path as the primary submit's unpersisted case.
+            await _handle_unpersisted_submit(store, adapter, order, broker_order_id, exc)
+
+
+async def _escalate_stale_submitting(
+    store: StateStore, order: Order, exc: Exception
+) -> None:
+    """Write a durable ``needs_review`` recovery record for a stale ``SUBMITTING``
+    order whose idempotent re-drive hit a terminal error — the broker's acceptance
+    can't be confirmed, so a human must reconcile rather than the loop guessing."""
+
+    await store.create_submit_recovery(
+        local_order_id=order.id,
+        # The re-drive could not confirm a broker id (terminal error / failed
+        # duplicate lookup); the client_order_id (order.id) is the only handle.
+        broker_order_id=order.broker_order_id or "",
+        client_order_id=order.id,
+        symbol=order.symbol,
+        side=order.side,
+        quantity=order.quantity,
+        limit_price=order.limit_price,
+        failure_reason=f"stale SUBMITTING re-drive hit a terminal broker error: {exc}",
+        session_id=order.session_id,
+        candidate_id=order.candidate_id,
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+        event_type="submit_recovery_needs_review",
+    )
 
 
 async def _handle_unpersisted_submit(
@@ -514,8 +639,20 @@ async def _apply_update(
     can never let the order claim more filled than the position supports — and
     the order is never marked FILLED without the fills to back it. A broker
     cancel/reject is still honoured as a terminal state.
+
+    **AIR-002 divergence escalation:** if, after appending, the broker's cumulative
+    ``filled_quantity`` still *exceeds* what we could record (a fill the store
+    rejected, or one the adapter withheld as un-priceable), that is a real
+    untracked position — the broker executed shares we have no fill for. Rather
+    than silently reconciling to the local number (which would strand the order
+    forever, or worse mark it terminal CANCELED and discard the executed shares),
+    write a durable operator-visible ``needs_review`` reconciliation record and
+    hold the order in a non-terminal, still-visible state. Positions still derive
+    only from appended fills — the record is the truth-divergence signal, not a
+    position mutation.
     """
 
+    rejected: list[dict[str, Any]] = []
     for bf in update.fills:
         try:
             await store.append_fill(
@@ -535,19 +672,41 @@ async def _apply_update(
                 order.symbol,
                 exc,
             )
+            rejected.append(
+                {
+                    "source_fill_id": bf.source_fill_id,
+                    "quantity": bf.quantity,
+                    "price": bf.price,
+                    "error": str(exc),
+                }
+            )
 
     recorded = sum(f.quantity for f in await store.list_fills(order_id=order.id))
-    if update.filled_quantity != recorded:
-        # Surface a divergence rather than trusting the broker scalar over the
-        # fills we could actually record (e.g. a fill the store rejected).
-        _log.warning(
-            "order %s: broker reports filled=%s but recorded fills sum to %s; "
-            "reconciling order to recorded.",
+    if update.filled_quantity > recorded:
+        # Broker executed more than we could record — a durable, unrecordable
+        # divergence (AIR-002). Escalate and hold the order non-terminal so the
+        # untracked position is never buried under a terminal state.
+        _log.error(
+            "order %s: broker reports filled=%s but only %s recorded; escalating "
+            "to a needs_review reconciliation record.",
             order.id,
             update.filled_quantity,
             recorded,
         )
-    target = _reconciled_status(order, update.status, recorded)
+        await _escalate_fill_divergence(store, order, update, recorded, rejected)
+        target = _divergence_safe_status(order, recorded)
+    else:
+        if update.filled_quantity != recorded:
+            # recorded > broker (should not happen for a monotonic broker feed);
+            # trust the recorded fills, which are the position's source of truth.
+            _log.warning(
+                "order %s: recorded fills (%s) exceed broker filled (%s); "
+                "reconciling to recorded.",
+                order.id,
+                recorded,
+                update.filled_quantity,
+            )
+        target = _reconciled_status(order, update.status, recorded)
     try:
         await store.transition_order(
             order.id, target, filled_quantity=recorded
@@ -560,6 +719,62 @@ async def _apply_update(
             recorded,
             exc,
         )
+
+
+async def _escalate_fill_divergence(
+    store: StateStore,
+    order: Order,
+    update: BrokerOrderUpdate,
+    recorded: int,
+    rejected: list[dict[str, Any]],
+) -> None:
+    """Durably record a broker>local fill divergence as a ``needs_review``
+    reconciliation record (AIR-002). Deduped per order: an order already carrying
+    an open recovery record is not re-recorded on every subsequent diverging tick.
+    """
+
+    open_recoveries = await store.list_submit_recoveries(
+        statuses=RECOVERY_OPEN_STATUSES
+    )
+    if any(r.local_order_id == order.id for r in open_recoveries):
+        return
+    await store.create_submit_recovery(
+        local_order_id=order.id,
+        broker_order_id=order.broker_order_id or "",
+        client_order_id=order.id,
+        symbol=order.symbol,
+        side=order.side,
+        quantity=order.quantity,
+        limit_price=order.limit_price,
+        failure_reason=(
+            f"broker/local fill divergence: broker reports filled="
+            f"{update.filled_quantity} ({update.status.value}) but only "
+            f"{recorded} shares recorded locally — a real untracked position"
+        ),
+        session_id=order.session_id,
+        candidate_id=order.candidate_id,
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+        event_type="fill_reconciliation_needed",
+        extra_payload={
+            "broker_status": update.status.value,
+            "broker_filled_quantity": update.filled_quantity,
+            "recorded_filled_quantity": recorded,
+            "rejected_fills": rejected,
+        },
+    )
+
+
+def _divergence_safe_status(order: Order, recorded: int) -> OrderStatus:
+    """A NON-terminal status to hold a fill-diverged order in, so the untracked
+    position stays visible and polled and is never buried under a terminal
+    CANCELED/FILLED. A ``cancel_pending`` order keeps winding down (CHAOS-1);
+    otherwise it reflects the recorded fills without ever finalizing."""
+
+    if order.status is OrderStatus.CANCEL_PENDING:
+        return OrderStatus.CANCEL_PENDING
+    if recorded > 0:
+        return OrderStatus.PARTIALLY_FILLED
+    return OrderStatus.SUBMITTED
 
 
 def _reconciled_status(

@@ -22,6 +22,7 @@ from datetime import date
 from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
+    RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
     Event,
@@ -66,6 +67,7 @@ from app.store.core import (
     plan_create_order_for_candidate,
     plan_transition_order,
     require_bool,
+    require_recovery_status,
     require_status_enum,
     recovery_status_event,
 )
@@ -624,7 +626,11 @@ class InMemoryStateStore(StateStore):
         failure_reason: str,
         session_id: Optional[str] = None,
         candidate_id: Optional[str] = None,
+        cleanup_status: str = RECOVERY_UNRESOLVED,
+        event_type: str = "submit_recovery_recorded",
+        extra_payload: Optional[dict[str, Any]] = None,
     ) -> SubmitRecoveryRecord:
+        require_recovery_status(cleanup_status)
         key = normalize_symbol(symbol)
         async with self._lock:
             record = SubmitRecoveryRecord(
@@ -636,12 +642,20 @@ class InMemoryStateStore(StateStore):
                 quantity=quantity,
                 limit_price=limit_price,
                 failure_reason=failure_reason,
+                cleanup_status=cleanup_status,
                 session_id=session_id,
             )
+            payload: dict[str, Any] = {
+                "broker_order_id": broker_order_id,
+                "failure_reason": failure_reason,
+                "cleanup_status": cleanup_status,
+            }
+            if extra_payload:
+                payload.update(extra_payload)
             with self._atomic():
                 self._submit_recoveries.append(record)
                 self._append_event_unlocked(
-                    "submit_recovery_recorded",
+                    event_type,
                     message=(
                         f"broker order {broker_order_id} for {key} needs "
                         f"recovery: {failure_reason}"
@@ -649,10 +663,7 @@ class InMemoryStateStore(StateStore):
                     symbol=key,
                     candidate_id=candidate_id,
                     order_id=local_order_id,
-                    payload={
-                        "broker_order_id": broker_order_id,
-                        "failure_reason": failure_reason,
-                    },
+                    payload=payload,
                     session_id=session_id,
                 )
             return record.model_copy(deep=True)

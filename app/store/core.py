@@ -475,6 +475,19 @@ def plan_create_order_for_candidate(
 # ---- submit-recovery ledger (D-017) --------------------------------------- #
 
 
+def require_recovery_status(value: str, *, field: str = "cleanup_status") -> None:
+    """Reject a recovery ``cleanup_status`` that is not one of the closed
+    ``RECOVERY_STATUSES`` (AIR-004) — the same domain error the transition
+    validator raises, so a record can never be *born* in an invalid state either.
+    """
+
+    if value not in RECOVERY_STATUSES:
+        raise RecoveryTransitionError(
+            f"{field} {value!r} is not a valid recovery status; "
+            f"must be one of {sorted(RECOVERY_STATUSES)}"
+        )
+
+
 def recovery_status_event(
     prev_status: str, new_status: Optional[str]
 ) -> Optional[str]:
@@ -658,6 +671,26 @@ def plan_transition_order(
                 f"illegal order transition {current.value} -> {new_status.value}"
             ),
         )
+
+    # AIR-001: reaching SUBMITTED means the broker accepted the order and handed
+    # back an id — the only key we can poll/cancel by. A status change *into*
+    # SUBMITTED without a non-empty broker id would persist an untrackable
+    # "submitted" order, so reject it here in the shared planner (both stores
+    # enforce it identically, not just the monitoring caller). The effective id
+    # is the one being assigned, falling back to whatever the order already
+    # carries; a same-status no-op/reaffirm is not re-validated.
+    if status_changed and new_status is OrderStatus.SUBMITTED:
+        effective_broker_id = (
+            broker_order_id if broker_order_id is not None else order.broker_order_id
+        )
+        if not (isinstance(effective_broker_id, str) and effective_broker_id.strip()):
+            return OrderTransitionPlan(
+                ORDER_TRANSITION_REJECT,
+                error=OrderTransitionError(
+                    f"cannot mark order {order.id} SUBMITTED without a non-empty "
+                    f"broker_order_id (AIR-001)"
+                ),
+            )
 
     # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward progress
     # raises and writes nothing. Equality is allowed (handled as a no-op below).

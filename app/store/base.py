@@ -26,6 +26,7 @@ from datetime import date
 from typing import Any, Iterable, Literal, Optional
 
 from app.models import (
+    RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
     Event,
@@ -468,19 +469,34 @@ class StateStore(ABC):
         failure_reason: str,
         session_id: Optional[str] = None,
         candidate_id: Optional[str] = None,
+        cleanup_status: str = RECOVERY_UNRESOLVED,
+        event_type: str = "submit_recovery_recorded",
+        extra_payload: Optional[dict[str, Any]] = None,
     ) -> SubmitRecoveryRecord:
-        """Durably record a broker order that was accepted but whose local
-        ``SUBMITTING → SUBMITTED`` persist failed (D-017 / F-002). Atomic +
-        audited (``submit_recovery_recorded``). The monitoring tick's recovery
-        step then polls/cancels ``broker_order_id`` until resolved — a single
-        best-effort cancel is not enough, so this replaces it.
+        """Durably record a broker truth the local order state cannot otherwise
+        reconcile, surfaced to the operator. Atomic + audited. Two incident kinds
+        share this one ledger:
 
-        ``candidate_id`` (D-020) correlates the ``submit_recovery_recorded``
-        event to the owning candidate's lifecycle. It is not stored on
-        :class:`SubmitRecoveryRecord` itself (D-020 stays to one nullable
-        ``Event`` field, not a new entity column) — ``update_submit_recovery``
-        resolves it later by looking up the local order via ``local_order_id``
-        (orders are never deleted, so this reliably resolves).
+        * **Submission orphan (D-017 / F-002 / AIR-003):** a broker order accepted
+          upstream but whose local ``SUBMITTING → SUBMITTED`` persist failed, or a
+          stale ``SUBMITTING`` order whose idempotent re-drive hit a terminal
+          error. Born ``RECOVERY_UNRESOLVED`` (default): the monitoring tick's
+          recovery step polls/cancels ``broker_order_id`` until resolved.
+        * **Fill divergence (AIR-002):** the broker reports more filled than we
+          could record (e.g. an un-priceable fill). Born ``cleanup_status=
+          RECOVERY_NEEDS_REVIEW`` — a real untracked position a human must
+          reconcile; the recovery loop must not auto-cancel it.
+
+        ``cleanup_status`` must be a valid recovery status (``RECOVERY_STATUSES``);
+        ``event_type`` names the creation audit event and ``extra_payload`` is
+        merged into it (e.g. the broker/local fill counts for a divergence).
+
+        ``candidate_id`` (D-020) correlates the creation event to the owning
+        candidate's lifecycle. It is not stored on :class:`SubmitRecoveryRecord`
+        itself (D-020 stays to one nullable ``Event`` field, not a new entity
+        column) — ``update_submit_recovery`` resolves it later by looking up the
+        local order via ``local_order_id`` (orders are never deleted, so this
+        reliably resolves).
         """
 
     @abstractmethod

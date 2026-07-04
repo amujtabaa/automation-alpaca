@@ -28,6 +28,23 @@ class BrokerError(Exception):
     Adapters raise this (or a subclass) for failures the caller may want to
     handle. The monitoring loop logs-and-continues on these; it never lets one
     transient broker error stop the loop.
+
+    **Transient by default.** A plain ``BrokerError`` is treated as a *retryable*
+    failure — a network blip, a timeout, a momentary 5xx. The stale-``SUBMITTING``
+    recovery step (AIR-003) leaves the order ``SUBMITTING`` and re-drives it on the
+    next tick (safe: the stable ``client_order_id`` makes re-submit idempotent).
+    Raise :class:`TerminalBrokerError` instead when the failure is *definitive*.
+    """
+
+
+class TerminalBrokerError(BrokerError):
+    """A broker submit failed definitively and cannot be safely retried (AIR-003).
+
+    The submit was rejected in a way that will not succeed on retry, *or* the
+    order's fate cannot be confirmed (e.g. a duplicate ``client_order_id`` whose
+    existing order could not then be looked up). The stale-``SUBMITTING`` recovery
+    step does **not** keep re-driving one of these — it escalates the order to a
+    durable, operator-visible ``needs_review`` recovery record instead of guessing.
     """
 
 
@@ -73,9 +90,24 @@ class BrokerAdapter(ABC):
     async def submit_order(self, order: Order) -> str:
         """Submit ``order`` to the broker. Returns the broker's order id.
 
-        The returned id is stored on the order (``broker_order_id``) and is the
-        key used to poll and cancel. Raises :class:`BrokerError` on failure; the
-        caller leaves the order unsubmitted to retry on the next loop tick.
+        **Contract (AIR-001):** an implementation MUST return a **non-empty**
+        ``str`` broker id, or raise :class:`BrokerError`. It must never return
+        ``None``, ``""``, or a whitespace-only string — the returned id is stored
+        as ``broker_order_id`` and is the *only* key used to poll and cancel, so an
+        empty id would create an untrackable "submitted" order. The store enforces
+        the mirror of this invariant: a ``SUBMITTING → SUBMITTED`` transition with
+        a missing/empty ``broker_order_id`` is rejected.
+
+        Raise :class:`BrokerError` for a transient failure (the caller leaves the
+        order unsubmitted / ``SUBMITTING`` and retries next tick) or
+        :class:`TerminalBrokerError` for a definitive one (the caller escalates to
+        a durable ``needs_review`` record rather than retrying).
+
+        **Idempotency (AIR-003):** the implementation submits with a stable
+        ``client_order_id`` (``order.id``) so a retry after a crash between
+        submit-and-persist recovers the already-accepted broker order rather than
+        double-submitting. This is what makes re-driving a stale ``SUBMITTING``
+        order safe.
         """
 
     @abstractmethod
