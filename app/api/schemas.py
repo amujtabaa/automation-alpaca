@@ -18,6 +18,7 @@ from app.models import (
     Fill,
     Order,
     Position,
+    SellIntent,
     SessionRecord,
     SubmitRecoveryRecord,
 )
@@ -116,6 +117,55 @@ class ReviewResponse(BaseModel):
     fills: list[Fill]
     positions: list[Position]
     events: list[Event]
+    # Phase 7: the sell-intent lifecycle for the queried session (additive) — a
+    # closed session's protective/flatten exits are reviewable alongside its
+    # candidates and orders.
+    sell_intents: list[SellIntent] = Field(default_factory=list)
+
+
+# --- Phase 7: Sell-Side Protection ---------------------------------------- #
+class FlattenResponse(BaseModel):
+    """Result of ``POST /api/positions/{symbol}/flatten`` — the sell intent that
+    now owns the exit and the SELL order it produced (``order`` is ``None`` only
+    in the degenerate case where the intent exists but its order can't be read)."""
+
+    intent: SellIntent
+    order: Optional[Order] = None
+
+
+class ProtectionConfigView(BaseModel):
+    """The effective protection configuration (``GET /api/protection``)."""
+
+    enabled: bool
+    stop_loss_pct: float
+    limit_buffer_pct: float
+    # enabled AND the monitoring loop is actually running (so a breach would be
+    # acted on) — the cockpit's "protection is live" light.
+    protection_active: bool
+
+
+class ProtectionPositionView(BaseModel):
+    """Per open position, classified server-side (D-020: the cockpit renders,
+    never re-derives). ``floor_price``/``observed_price`` are ``None`` when they
+    can't be computed (no average cost / no trustworthy snapshot)."""
+
+    symbol: str
+    quantity: int
+    average_price: Optional[float] = None
+    floor_price: Optional[float] = None
+    observed_price: Optional[float] = None
+    breaching: bool = False
+    paused_by_kill_switch: bool = False
+    stalled: bool = False
+    active_sell_intent: Optional[SellIntent] = None
+
+
+class ProtectionStatusResponse(BaseModel):
+    """``GET /api/protection`` — effective config + the protection state of every
+    open position, for the cockpit's Position Monitor "protection mode"."""
+
+    config: ProtectionConfigView
+    positions: list[ProtectionPositionView]
 
 
 class OperatorOrderView(BaseModel):
