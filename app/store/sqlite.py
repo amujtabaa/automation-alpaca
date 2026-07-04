@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
+    RECOVERY_NEEDS_REVIEW,
     RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
@@ -1049,6 +1050,19 @@ class SqliteStateStore(StateStore):
             ),
         )
 
+    def _order_needs_review_locked(self, order_id: str) -> bool:
+        """X-003: whether ``order_id`` currently carries an OPEN
+        ``needs_review`` broker-submit recovery record (D-017). See
+        ``InMemoryStateStore._order_needs_review_unlocked`` for the full
+        rationale — mirrored here for parity."""
+
+        row = self._read_one(
+            "SELECT 1 FROM submit_recoveries WHERE local_order_id = ? "
+            "AND cleanup_status = ? LIMIT 1",
+            (order_id, RECOVERY_NEEDS_REVIEW),
+        )
+        return row is not None
+
     def _active_sell_intent_locked(self, symbol: str) -> Optional[SellIntent]:
         # Scan this symbol's intents newest-first; the linked order (if any)
         # decides whether an ORDERED intent is still in flight (shared predicate).
@@ -1064,7 +1078,10 @@ class SqliteStateStore(StateStore):
                     "SELECT * FROM orders WHERE id = ?", (si.order_id,)
                 )
                 order = self._order(order_row) if order_row is not None else None
-            if sell_intent_is_active(si, order):
+            needs_review = (
+                order is not None and self._order_needs_review_locked(order.id)
+            )
+            if sell_intent_is_active(si, order, order_needs_review=needs_review):
                 return si
         return None
 
@@ -1201,6 +1218,64 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             return self._active_sell_intent_locked(key)
 
+    def _dispatch_order_for_sell_intent_locked(
+        self,
+        intent: SellIntent,
+        *,
+        order_type: OrderType,
+        limit_price: Optional[float],
+    ) -> Order:
+        """The plan+apply body of the APPROVED->ORDERED handoff (assumes the
+        caller already holds ``self._lock`` — either the public
+        ``create_order_for_sell_intent`` or ``flatten_position``, X-001, which
+        needs this same dispatch inlined into its own single lock hold rather
+        than calling the public method and re-acquiring the lock).
+
+        Re-reads the LIVE position so a race that reduced it cannot oversell.
+        On reject, atomically applies the X-002 self-heal (``expire_intent``/
+        ``expire_event``) alongside any ``reject_event`` before raising — an
+        intent is never left stranded ``approved``. On create, atomically
+        inserts the order + transitions the intent to ``ordered`` + writes both
+        events.
+        """
+
+        live_qty = self._position_locked(intent.symbol).quantity
+        plan = plan_create_order_for_sell_intent(
+            intent=intent,
+            live_position_quantity=live_qty,
+            order_type=order_type,
+            limit_price=limit_price,
+        )
+        if plan.outcome == CREATE_ORDER_REJECT:
+            if plan.reject_event is not None or plan.expire_intent is not None:
+                with self._tx() as cur:
+                    if plan.reject_event is not None:
+                        self._insert_event(
+                            cur,
+                            plan.reject_event.event_type,
+                            **plan.reject_event.as_kwargs(),
+                        )
+                    if plan.expire_intent is not None:
+                        self._update_sell_intent(cur, plan.expire_intent)
+                        self._insert_event(
+                            cur,
+                            plan.expire_event.event_type,
+                            **plan.expire_event.as_kwargs(),
+                        )
+            raise plan.error
+        order = plan.order
+        now = utcnow()
+        intent.status = SellIntentStatus.ORDERED
+        intent.order_id = order.id
+        intent.ordered_at = now
+        intent.updated_at = now
+        with self._tx() as cur:
+            self._insert_order(cur, order)
+            self._update_sell_intent(cur, intent)
+            for event in plan.events:
+                self._insert_event(cur, event.event_type, **event.as_kwargs())
+        return order
+
     async def create_order_for_sell_intent(
         self,
         intent_id: str,
@@ -1230,36 +1305,9 @@ class SqliteStateStore(StateStore):
                         f"{intent.order_id}"
                     )
                 return self._order(order_row)
-            # Re-read the LIVE position under the lock so a race that reduced it
-            # cannot oversell (never a short).
-            live_qty = self._position_locked(intent.symbol).quantity
-            plan = plan_create_order_for_sell_intent(
-                intent=intent,
-                live_position_quantity=live_qty,
-                order_type=order_type,
-                limit_price=limit_price,
+            return self._dispatch_order_for_sell_intent_locked(
+                intent, order_type=order_type, limit_price=limit_price
             )
-            if plan.outcome == CREATE_ORDER_REJECT:
-                if plan.reject_event is not None:
-                    with self._tx() as cur:
-                        self._insert_event(
-                            cur,
-                            plan.reject_event.event_type,
-                            **plan.reject_event.as_kwargs(),
-                        )
-                raise plan.error
-            order = plan.order
-            now = utcnow()
-            intent.status = SellIntentStatus.ORDERED
-            intent.order_id = order.id
-            intent.ordered_at = now
-            intent.updated_at = now
-            with self._tx() as cur:
-                self._insert_order(cur, order)
-                self._update_sell_intent(cur, intent)
-                for event in plan.events:
-                    self._insert_event(cur, event.event_type, **event.as_kwargs())
-            return order
 
     # ------------------------------------------------------------------ #
     # Orders

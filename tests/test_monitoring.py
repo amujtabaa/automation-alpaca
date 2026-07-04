@@ -11,7 +11,7 @@ InMemoryStateStore and SqliteStateStore.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -222,10 +222,23 @@ async def test_poll_error_does_not_crash_tick(any_store):
 # --------------------------------------------------------------------------- #
 # Stale detection — once per order, persisted
 # --------------------------------------------------------------------------- #
-async def test_stale_event_written_once(any_store):
+async def test_stale_event_written_once(any_store, monkeypatch):
     order = await _created_order(any_store)
     adapter = MockBrokerAdapter()
     await _submit_pending_orders(any_store, adapter)
+
+    # B-2 (cross-platform determinism): with a real (unfrozen) clock, `age =
+    # now - created_at` can be exactly timedelta(0) if the two back-to-back
+    # utcnow() calls tie — routine on a coarser timer (observed on Windows),
+    # rare but not impossible on Linux. `0 > 0` is False, so the order would
+    # never be flagged stale — a flaky, platform-dependent failure, not a real
+    # production concern (the default unfilled_timeout_minutes is 60.0; only
+    # this test's `0.0` puts it on the tie's razor edge). Freeze "now" strictly
+    # after created_at so staleness is deterministic regardless of clock
+    # resolution.
+    fresh = await any_store.get_order(order.id)
+    frozen_now = fresh.created_at + timedelta(minutes=1)
+    monkeypatch.setattr("app.monitoring.utcnow", lambda: frozen_now)
 
     # timeout 0 => any open order is immediately stale.
     settings = Settings(unfilled_timeout_minutes=0.0)

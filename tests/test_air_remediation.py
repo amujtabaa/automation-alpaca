@@ -424,5 +424,17 @@ class TestAir008SerializationGuard:
                 body = json.loads(resp.text)  # valid JSON or this raises
                 row = next(c for c in body if c["id"] == "cid")
                 assert row["suggested_limit_price"] is None
+            # B-1 (Windows portability): `store` was constructed OUTSIDE
+            # create_app and passed in, so create_app's lifespan treats it as
+            # caller-owned and does not close it on shutdown (owns_store=False,
+            # app/main.py) — only the caller closing the TestClient. Without
+            # closing the connection here, the open sqlite3 handle survives past
+            # this block; POSIX allows unlinking an open file (os.remove below
+            # succeeds regardless), but Windows cannot delete a file with a live
+            # handle, raising PermissionError. Direct/synchronous close (mirrors
+            # conftest.py's any_store fixture finalizer) — no event loop needed.
+            if store._conn is not None:
+                store._conn.close()
+                store._conn = None
         finally:
             os.remove(path)

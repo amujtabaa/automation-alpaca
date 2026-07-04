@@ -383,11 +383,20 @@ class StateStore(ABC):
 
         **Single-flight (atomic dedup).** The active-intent check and the insert
         happen under ONE lock hold: if an *active* sell intent already exists for
-        ``symbol`` (a ``pending``/``approved`` one, or an ``ordered`` one whose
-        Order is still non-terminal), the existing intent is returned and nothing
-        is written — a concurrent flatten request and protection tick cannot both
-        create one (TOCTOU). Validates a positive whole ``target_quantity`` and a
-        real :class:`SellReason`.
+        ``symbol`` — see :meth:`active_sell_intent_for` for the exact "active"
+        definition, kept in that one place so this docstring can't drift from it
+        again (X-003) — the existing intent is returned and nothing is written.
+        Validates a positive whole ``target_quantity`` and a real
+        :class:`SellReason`.
+
+        **This alone does not close the X-001 race** for a *specific* reason
+        (``MANUAL_FLATTEN``): this method's dedup returns *whatever* intent is
+        active regardless of the ``reason`` requested, so a caller that needs a
+        guaranteed ``MANUAL_FLATTEN`` outcome — even racing a concurrent
+        ``PROTECTION_FLOOR`` intent's own creation — must use
+        :meth:`flatten_position` instead, which performs the whole
+        supersede-then-create sequence as one atomic unit and verifies the
+        reason of what it returns.
         """
 
     @abstractmethod
@@ -422,13 +431,30 @@ class StateStore(ABC):
     async def active_sell_intent_for(self, symbol: str) -> Optional[SellIntent]:
         """The current active (in-flight) sell intent for ``symbol``, or ``None``.
 
+        **This is the ONE canonical "active" definition** — every other
+        docstring in this class refers back to this one rather than restating
+        it, so the store's behavior and this definition cannot drift apart
+        again the way they did before X-003 (the code used to silently drop the
+        ``needs_review`` clause the ADR always specified).
+
         Active = ``pending``/``approved``, or ``ordered`` with a still-open
-        (non-terminal) Order. Used for the single-flight dedup and the
-        operator/protection status surface. Once the linked Order reaches a
-        terminal state (filled/canceled/rejected), the intent is no longer active
-        and the symbol is eligible for a fresh protective intent (the residual
-        re-evaluation path), so a partial-then-canceled exit that leaves a
-        still-breaching residual can be re-protected.
+        (non-terminal) Order that does **not** carry an OPEN ``needs_review``
+        broker-submit recovery record (D-017 / X-003). Once the linked Order
+        reaches a terminal state (filled/canceled/rejected), OR is stranded in
+        ``needs_review`` (a broker order accepted upstream that local state
+        can't confirm as live — the recovery loop has escalated it for a human,
+        not left it "still working"), the intent is no longer active and the
+        symbol is eligible for a fresh protective intent (the residual
+        re-evaluation path) — so neither a partial-then-canceled exit nor a
+        stuck ``needs_review`` order can permanently block re-protection for a
+        still-breaching symbol. The recovery record and its operator alert stay
+        independently visible regardless (this definition only decides
+        single-flight eligibility, never recovery visibility). An ``unresolved``
+        recovery (the loop still actively working it) does NOT free the symbol —
+        only the terminal-for-automation ``needs_review`` escalation does.
+
+        Used for the single-flight dedup (:meth:`create_sell_intent`) and the
+        operator/protection status surface.
         """
 
     @abstractmethod

@@ -315,6 +315,16 @@ class CreateOrderPlan:
     ``create``: append ``order``, transition the candidate to ORDERED linking it,
     and write ``events`` (``order_created`` then ``candidate_transition``) — all
     atomically.
+
+    ``expire_intent``/``expire_event`` (X-002, sell-intent path only): on a
+    rejection *after* the intent was genuinely ``approved`` (oversell, a
+    vanished position, bad limit/market price coherence — never the "not
+    approved" precondition reject, which has no ``approved`` state to heal
+    from), the intent is atomically self-healed ``approved → expired`` alongside
+    the reject event, so it is never left stranded ``approved`` poisoning the
+    single-flight dedup forever (the ADR's "Self-heal (blocker)" clause). The
+    store applies both writes in the SAME atomic block as the reject, before
+    raising ``error``.
     """
 
     outcome: str
@@ -322,6 +332,8 @@ class CreateOrderPlan:
     reject_event: Optional[EventSpec] = None
     order: Optional[Order] = None
     events: tuple[EventSpec, ...] = ()
+    expire_intent: Optional[SellIntent] = None
+    expire_event: Optional[EventSpec] = None
 
 
 def plan_create_order_for_candidate(
@@ -492,18 +504,40 @@ _TERMINAL_ORDER_STATUSES = frozenset(
 )
 
 
-def sell_intent_is_active(intent: SellIntent, order: Optional[Order]) -> bool:
+def sell_intent_is_active(
+    intent: SellIntent,
+    order: Optional[Order],
+    *,
+    order_needs_review: bool = False,
+) -> bool:
     """Whether a sell intent is still 'in flight' for the single-flight dedup /
     ``active_sell_intent_for``. Active = ``pending``/``approved`` (not yet
-    ordered), or ``ordered`` with an Order still in a non-terminal status.
-    ``rejected``/``expired`` intents, and ``ordered`` intents whose order reached
-    a terminal state (filled/canceled/rejected), are inactive — the symbol is
-    eligible for a fresh protective intent (the residual re-evaluation path)."""
+    ordered), or ``ordered`` with an Order still in a non-terminal status AND
+    without an open ``needs_review`` broker-submit recovery. ``rejected``/
+    ``expired`` intents, ``ordered`` intents whose order reached a terminal
+    state (filled/canceled/rejected), and an ``ordered`` intent whose order is
+    stranded in ``needs_review`` are all inactive — the symbol is eligible for a
+    fresh protective intent (the residual re-evaluation path).
+
+    ``order_needs_review`` (X-003 / ADR "Stranded-order eligibility (blocker)"):
+    the caller passes whether ``order`` currently carries an OPEN
+    ``needs_review`` broker-submit recovery record (D-017) — a broker order
+    accepted upstream that local state can't otherwise confirm as live.
+    Treating that as still-active would let a single stuck ``needs_review``
+    order permanently block re-protection for the symbol forever, even though
+    the recovery record and its operator alert stay independently visible (this
+    function only decides single-flight eligibility, never recovery
+    visibility). This function stays pure — the store fetches the recovery
+    state under its own lock and passes the boolean in, mirroring how ``order``
+    itself is fetched and passed in rather than looked up here.
+    """
 
     if intent.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
         return True
     if intent.status is SellIntentStatus.ORDERED:
-        return order is not None and order.status not in _TERMINAL_ORDER_STATUSES
+        if order is None or order.status in _TERMINAL_ORDER_STATUSES:
+            return False
+        return not order_needs_review
     return False
 
 
@@ -528,6 +562,10 @@ def plan_create_order_for_sell_intent(
     """
 
     if intent.status is not SellIntentStatus.APPROVED:
+        # A precondition violation, not a "the approved handoff failed" case —
+        # there is no `approved` state to self-heal FROM (the intent is either
+        # not yet approved, already ordered/terminal, or a caller-contract bug
+        # elsewhere). No expire; matches the pre-X-002 behavior for this branch.
         return CreateOrderPlan(
             CREATE_ORDER_REJECT,
             error=SellIntentTransitionError(
@@ -536,25 +574,56 @@ def plan_create_order_for_sell_intent(
             ),
         )
 
-    qty = intent.target_quantity
-    if qty is None or qty <= 0:
+    def _reject_and_self_heal(error: Exception) -> CreateOrderPlan:
+        """X-002: every rejection below is a genuine "the approved handoff
+        failed" case — self-heal `approved -> expired` atomically alongside the
+        rejection, so the intent is never left stranded `approved` poisoning the
+        single-flight dedup forever (`no_sell_intent_stranded_approved`)."""
+
+        now = utcnow()
+        expired = intent.model_copy(deep=True)
+        expired.status = SellIntentStatus.EXPIRED
+        expired.expired_at = now
+        expired.updated_at = now
+        expire_event = EventSpec(
+            "sell_intent_transition",
+            message=(
+                f"sell intent approved -> expired (order dispatch rejected: "
+                f"{error})"
+            ),
+            symbol=intent.symbol,
+            payload={
+                "from": "approved",
+                "to": "expired",
+                "reason": "dispatch_rejected",
+            },
+            session_id=intent.session_id,
+            correlation_id=intent.id,
+        )
         return CreateOrderPlan(
             CREATE_ORDER_REJECT,
-            error=InvalidOrderError(
+            error=error,
+            expire_intent=expired,
+            expire_event=expire_event,
+        )
+
+    qty = intent.target_quantity
+    if qty is None or qty <= 0:
+        return _reject_and_self_heal(
+            InvalidOrderError(
                 f"sell intent {intent.id} has no positive target_quantity"
-            ),
+            )
         )
     # Never a short (Rule 7 / long-only): the exit cannot exceed the live
     # position. Re-checked here against the freshly-read quantity so a race that
     # reduced the position (another fill) between approve and order cannot oversell.
     if qty > live_position_quantity:
-        return CreateOrderPlan(
-            CREATE_ORDER_REJECT,
-            error=InvalidOrderError(
+        return _reject_and_self_heal(
+            InvalidOrderError(
                 f"sell intent {intent.id} target_quantity {qty} exceeds the live "
                 f"{intent.symbol} position quantity {live_position_quantity} "
                 f"(would create a short)"
-            ),
+            )
         )
 
     # Order-type/price coherence (Rule 12 exit types): a LIMIT sell needs a
@@ -563,20 +632,18 @@ def plan_create_order_for_sell_intent(
     if order_type is OrderType.LIMIT:
         bad_price = limit_price_reason(limit_price)
         if bad_price is not None:
-            return CreateOrderPlan(
-                CREATE_ORDER_REJECT,
-                error=InvalidOrderError(
+            return _reject_and_self_heal(
+                InvalidOrderError(
                     f"limit sell for intent {intent.id} needs a valid limit_price "
                     f"({bad_price})"
-                ),
+                )
             )
     elif limit_price is not None:
-        return CreateOrderPlan(
-            CREATE_ORDER_REJECT,
-            error=InvalidOrderError(
+        return _reject_and_self_heal(
+            InvalidOrderError(
                 f"{order_type.value} sell for intent {intent.id} must not carry a "
                 f"limit_price (got {limit_price!r})"
-            ),
+            )
         )
 
     order = Order(

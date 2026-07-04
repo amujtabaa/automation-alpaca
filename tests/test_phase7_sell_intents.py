@@ -15,6 +15,8 @@ from __future__ import annotations
 import pytest
 
 from app.models import (
+    RECOVERY_NEEDS_REVIEW,
+    RECOVERY_UNRESOLVED,
     CandidateStatus,
     OrderSide,
     OrderStatus,
@@ -309,6 +311,13 @@ async def test_create_order_for_sell_intent_requires_approved(any_store):
 
 
 async def test_create_order_for_sell_intent_oversell_rejected(any_store):
+    # X-002 regression: an earlier version of this test asserted the intent
+    # STAYED `approved` after a rejected handoff — that was the bug, not the
+    # spec. The ADR's self-heal ("Self-heal (blocker)") requires an intent
+    # whose approved->ordered handoff is rejected to atomically self-heal
+    # `approved -> expired`, so it is never left stranded `approved` poisoning
+    # `active_sell_intent_for`'s single-flight dedup forever (see
+    # `no_sell_intent_stranded_approved` below for the general property).
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
     si = await any_store.create_sell_intent(
@@ -318,11 +327,75 @@ async def test_create_order_for_sell_intent_oversell_rejected(any_store):
     # target 150 > live 100 → would create a short (Rule 7 / long-only).
     with pytest.raises(InvalidOrderError):
         await any_store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
-    # The intent stays APPROVED (no partial mutation); no order was created.
-    assert (await any_store.get_sell_intent(si.id)).status is SellIntentStatus.APPROVED
+    # The intent self-heals to EXPIRED (never left stranded APPROVED); no order
+    # was created.
+    healed = await any_store.get_sell_intent(si.id)
+    assert healed.status is SellIntentStatus.EXPIRED
+    assert healed.expired_at is not None
     assert await any_store.list_orders() == [] or all(
         o.sell_intent_id != si.id for o in await any_store.list_orders()
     )
+    # The symbol is immediately eligible for a fresh protective/manual intent —
+    # the self-heal frees the single-flight dedup, not just the status field.
+    assert await any_store.active_sell_intent_for("AAPL") is None
+
+
+async def test_no_sell_intent_stranded_approved_after_any_rejection(any_store):
+    """X-002 general property (`no_sell_intent_stranded_approved`): for EVERY
+    rejection path in the approved->ordered handoff (oversell, bad limit price,
+    a MARKET order carrying a limit price), the intent never survives as
+    `approved` — it always self-heals to `expired`."""
+
+    await any_store.initialize()
+
+    # Oversell.
+    await _hold(any_store, "AAPL", 100)
+    si1 = await any_store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=101
+    )
+    await any_store.transition_sell_intent(si1.id, SellIntentStatus.APPROVED)
+    with pytest.raises(InvalidOrderError):
+        await any_store.create_order_for_sell_intent(si1.id, order_type=OrderType.MARKET)
+    assert (await any_store.get_sell_intent(si1.id)).status is SellIntentStatus.EXPIRED
+
+    # LIMIT with no price.
+    await _hold(any_store, "MSFT", 50)
+    si2 = await any_store.create_sell_intent(
+        symbol="MSFT", reason=SellReason.PROTECTION_FLOOR, target_quantity=50
+    )
+    await any_store.transition_sell_intent(si2.id, SellIntentStatus.APPROVED)
+    with pytest.raises(InvalidOrderError):
+        await any_store.create_order_for_sell_intent(
+            si2.id, order_type=OrderType.LIMIT, limit_price=None
+        )
+    assert (await any_store.get_sell_intent(si2.id)).status is SellIntentStatus.EXPIRED
+
+    # MARKET with a (disallowed) limit price.
+    await _hold(any_store, "TSLA", 20)
+    si3 = await any_store.create_sell_intent(
+        symbol="TSLA", reason=SellReason.PROTECTION_FLOOR, target_quantity=20
+    )
+    await any_store.transition_sell_intent(si3.id, SellIntentStatus.APPROVED)
+    with pytest.raises(InvalidOrderError):
+        await any_store.create_order_for_sell_intent(
+            si3.id, order_type=OrderType.MARKET, limit_price=9.0
+        )
+    assert (await any_store.get_sell_intent(si3.id)).status is SellIntentStatus.EXPIRED
+
+    # None of the three symbols is left with a stranded active intent.
+    for sym in ("AAPL", "MSFT", "TSLA"):
+        assert await any_store.active_sell_intent_for(sym) is None
+
+    # An audit event records each self-heal (correlation_id = the intent).
+    for si in (si1, si2, si3):
+        events = await any_store.list_events(correlation_id=si.id)
+        healed_events = [
+            e
+            for e in events
+            if e.event_type == "sell_intent_transition"
+            and e.payload.get("to") == "expired"
+        ]
+        assert len(healed_events) == 1, events
 
 
 async def test_create_order_for_sell_intent_market_with_limit_price_rejected(any_store):
@@ -408,6 +481,75 @@ async def test_active_sell_intent_lifecycle(any_store):
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
     assert fresh.id != si.id
+
+
+async def test_needs_review_order_does_not_block_re_protection(any_store):
+    """X-003: an ORDERED intent whose order is stranded with an OPEN
+    ``needs_review`` broker-submit recovery (D-017 — a broker order accepted
+    upstream that local state can't confirm as live) must NOT count as active —
+    otherwise a single stuck order permanently blocks re-protection for the
+    symbol forever. Parity both stores."""
+
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    si = await any_store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
+    order = await any_store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
+    # The order is still non-terminal (CREATED) — normally still "active".
+    assert (await any_store.active_sell_intent_for("AAPL")).id == si.id
+
+    # Escalate to needs_review (the broker accepted it upstream but local state
+    # can't otherwise confirm/track it — a real untracked-risk situation).
+    await any_store.create_submit_recovery(
+        local_order_id=order.id,
+        broker_order_id="broker-x1",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        quantity=100,
+        failure_reason="submit accepted but local persist failed",
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+    )
+
+    # The symbol is now eligible for a FRESH protective intent — needs_review
+    # does not block re-protection.
+    assert await any_store.active_sell_intent_for("AAPL") is None
+    fresh = await any_store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    assert fresh.id != si.id
+
+    # The recovery record itself stays independently visible (this only
+    # affects single-flight dedup eligibility, never recovery/operator visibility).
+    recoveries = await any_store.list_submit_recoveries()
+    assert any(r.local_order_id == order.id for r in recoveries)
+
+
+async def test_unresolved_recovery_still_counts_as_active(any_store):
+    """The narrower half of X-003: an `unresolved` recovery (the recovery loop
+    still actively working it — a normal, likely-transient in-progress cancel)
+    does NOT free the symbol, only the terminal-for-automation `needs_review`
+    escalation does. Prevents a premature second exit attempt while the
+    original one might still resolve cleanly."""
+
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    si = await any_store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
+    order = await any_store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
+    await any_store.create_submit_recovery(
+        local_order_id=order.id,
+        broker_order_id="broker-x2",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        quantity=100,
+        failure_reason="transient",
+        cleanup_status=RECOVERY_UNRESOLVED,
+    )
+    assert (await any_store.active_sell_intent_for("AAPL")).id == si.id
 
 
 # ---- session close semantics ---------------------------------------------- #

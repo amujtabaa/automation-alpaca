@@ -22,6 +22,7 @@ from datetime import date
 from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
+    RECOVERY_NEEDS_REVIEW,
     RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
@@ -469,6 +470,21 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Sell intents (Phase 7 — Sell-Side Protection)
     # ------------------------------------------------------------------ #
+    def _order_needs_review_unlocked(self, order_id: str) -> bool:
+        """X-003: whether ``order_id`` currently carries an OPEN
+        ``needs_review`` broker-submit recovery record (D-017) — a broker order
+        accepted upstream that local state can't otherwise confirm as live.
+        Deliberately narrower than every open recovery status: an
+        ``unresolved`` record is the recovery loop actively still working it
+        (a normal, likely-transient in-progress cancel) and stays active for
+        dedup; only the terminal-for-automation ``needs_review`` escalation
+        (a real untracked position needing a human) frees the symbol."""
+
+        return any(
+            r.local_order_id == order_id and r.cleanup_status == RECOVERY_NEEDS_REVIEW
+            for r in self._submit_recoveries
+        )
+
     def _active_sell_intent_unlocked(self, symbol: str) -> Optional[SellIntent]:
         for si in self._sell_intents.values():
             if si.symbol != symbol:
@@ -476,7 +492,10 @@ class InMemoryStateStore(StateStore):
             order = (
                 self._orders.get(si.order_id) if si.order_id is not None else None
             )
-            if sell_intent_is_active(si, order):
+            needs_review = (
+                order is not None and self._order_needs_review_unlocked(order.id)
+            )
+            if sell_intent_is_active(si, order, order_needs_review=needs_review):
                 return si
         return None
 
@@ -603,6 +622,58 @@ class InMemoryStateStore(StateStore):
             active = self._active_sell_intent_unlocked(key)
             return active.model_copy(deep=True) if active else None
 
+    def _dispatch_order_for_sell_intent_unlocked(
+        self,
+        intent: SellIntent,
+        *,
+        order_type: OrderType,
+        limit_price: Optional[float],
+    ) -> Order:
+        """The plan+apply body of the APPROVED->ORDERED handoff (assumes the
+        lock is already held by the caller — either the public
+        ``create_order_for_sell_intent`` or ``flatten_position``, X-001, which
+        needs this same dispatch inlined into its own single lock hold rather
+        than calling the public method and re-acquiring the lock).
+
+        Re-reads the LIVE position so a race that reduced it cannot oversell.
+        On reject, atomically applies the X-002 self-heal (``expire_intent``/
+        ``expire_event``) alongside any ``reject_event`` before raising — an
+        intent is never left stranded ``approved``. On create, atomically
+        inserts the order + transitions the intent to ``ordered`` + writes both
+        events.
+        """
+
+        live_qty = self._position_unlocked(intent.symbol).quantity
+        plan = plan_create_order_for_sell_intent(
+            intent=intent,
+            live_position_quantity=live_qty,
+            order_type=order_type,
+            limit_price=limit_price,
+        )
+        if plan.outcome == CREATE_ORDER_REJECT:
+            with self._atomic():
+                if plan.reject_event is not None:
+                    self._append_event_unlocked(
+                        plan.reject_event.event_type, **plan.reject_event.as_kwargs()
+                    )
+                if plan.expire_intent is not None:
+                    self._sell_intents[intent.id] = plan.expire_intent
+                    self._append_event_unlocked(
+                        plan.expire_event.event_type, **plan.expire_event.as_kwargs()
+                    )
+            raise plan.error
+        order = plan.order
+        now = utcnow()
+        with self._atomic():
+            self._orders[order.id] = order
+            intent.status = SellIntentStatus.ORDERED
+            intent.order_id = order.id
+            intent.ordered_at = now
+            intent.updated_at = now
+            for spec in plan.events:
+                self._append_event_unlocked(spec.event_type, **spec.as_kwargs())
+        return order
+
     async def create_order_for_sell_intent(
         self,
         intent_id: str,
@@ -626,31 +697,9 @@ class InMemoryStateStore(StateStore):
                         f"sell intent {intent_id} is ORDERED but has no linked order"
                     )
                 return existing.model_copy(deep=True)
-            # Re-read the LIVE position under the lock so a race that reduced it
-            # cannot oversell (never a short).
-            live_qty = self._position_unlocked(intent.symbol).quantity
-            plan = plan_create_order_for_sell_intent(
-                intent=intent,
-                live_position_quantity=live_qty,
-                order_type=order_type,
-                limit_price=limit_price,
+            order = self._dispatch_order_for_sell_intent_unlocked(
+                intent, order_type=order_type, limit_price=limit_price
             )
-            if plan.outcome == CREATE_ORDER_REJECT:
-                if plan.reject_event is not None:
-                    self._append_event_unlocked(
-                        plan.reject_event.event_type, **plan.reject_event.as_kwargs()
-                    )
-                raise plan.error
-            order = plan.order
-            now = utcnow()
-            with self._atomic():
-                self._orders[order.id] = order
-                intent.status = SellIntentStatus.ORDERED
-                intent.order_id = order.id
-                intent.ordered_at = now
-                intent.updated_at = now
-                for spec in plan.events:
-                    self._append_event_unlocked(spec.event_type, **spec.as_kwargs())
             return order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #

@@ -448,3 +448,144 @@ class TestPlanClaimSellGate:
             sell_reason=SellReason.MANUAL_FLATTEN,
         )
         assert plan.outcome == CLAIM_SKIPPED
+
+
+# --- sell_intent_is_active (X-003) ------------------------------------------ #
+def _sell_intent(**kw) -> SellIntent:
+    defaults = dict(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id="s1",
+    )
+    defaults.update(kw)
+    return SellIntent(**defaults)
+
+
+class TestSellIntentIsActive:
+    def test_pending_and_approved_are_active(self):
+        assert core.sell_intent_is_active(
+            _sell_intent(status=SellIntentStatus.PENDING), None
+        )
+        assert core.sell_intent_is_active(
+            _sell_intent(status=SellIntentStatus.APPROVED), None
+        )
+
+    def test_rejected_and_expired_are_inactive(self):
+        assert not core.sell_intent_is_active(
+            _sell_intent(status=SellIntentStatus.REJECTED), None
+        )
+        assert not core.sell_intent_is_active(
+            _sell_intent(status=SellIntentStatus.EXPIRED), None
+        )
+
+    def test_ordered_with_non_terminal_order_is_active(self):
+        intent = _sell_intent(status=SellIntentStatus.ORDERED, order_id="o1")
+        order = _sell_order(status=OrderStatus.SUBMITTED)
+        assert core.sell_intent_is_active(intent, order)
+
+    def test_ordered_with_terminal_order_is_inactive(self):
+        intent = _sell_intent(status=SellIntentStatus.ORDERED, order_id="o1")
+        order = _sell_order(status=OrderStatus.FILLED)
+        assert not core.sell_intent_is_active(intent, order)
+
+    def test_ordered_with_no_order_is_inactive(self):
+        # A corrupt-invariant defensive case (ORDERED but order missing) — never
+        # treated as active (the symbol must stay re-protectable).
+        intent = _sell_intent(status=SellIntentStatus.ORDERED, order_id="o1")
+        assert not core.sell_intent_is_active(intent, None)
+
+    def test_needs_review_order_is_inactive(self):
+        # X-003: a non-terminal order stranded with an OPEN needs_review
+        # recovery does NOT count as active — the symbol must stay eligible for
+        # a fresh protective intent rather than being blocked forever.
+        intent = _sell_intent(status=SellIntentStatus.ORDERED, order_id="o1")
+        order = _sell_order(status=OrderStatus.SUBMITTED)
+        assert not core.sell_intent_is_active(
+            intent, order, order_needs_review=True
+        )
+
+    def test_needs_review_false_default_preserves_prior_behavior(self):
+        # order_needs_review defaults False — a caller that hasn't been updated
+        # to pass it sees the pre-X-003 behavior (non-terminal -> active), never
+        # a silent behavior change from omitting the new kwarg.
+        intent = _sell_intent(status=SellIntentStatus.ORDERED, order_id="o1")
+        order = _sell_order(status=OrderStatus.SUBMITTED)
+        assert core.sell_intent_is_active(intent, order)
+
+
+# --- plan_create_order_for_sell_intent self-heal (X-002) -------------------- #
+class TestPlanCreateOrderForSellIntentSelfHeal:
+    def _approved(self, **kw) -> SellIntent:
+        defaults = dict(status=SellIntentStatus.APPROVED, target_quantity=100)
+        defaults.update(kw)
+        return _sell_intent(**defaults)
+
+    def test_not_approved_rejects_without_self_heal(self):
+        # No `approved` state to heal FROM — matches pre-X-002 behavior exactly.
+        intent = _sell_intent(status=SellIntentStatus.PENDING)
+        plan = core.plan_create_order_for_sell_intent(
+            intent=intent,
+            live_position_quantity=100,
+            order_type=OrderType.MARKET,
+            limit_price=None,
+        )
+        assert plan.outcome == core.CREATE_ORDER_REJECT
+        assert plan.expire_intent is None
+        assert plan.expire_event is None
+
+    def test_oversell_self_heals_to_expired(self):
+        intent = self._approved(target_quantity=150)
+        plan = core.plan_create_order_for_sell_intent(
+            intent=intent,
+            live_position_quantity=100,
+            order_type=OrderType.MARKET,
+            limit_price=None,
+        )
+        assert plan.outcome == core.CREATE_ORDER_REJECT
+        assert plan.expire_intent is not None
+        assert plan.expire_intent.status is SellIntentStatus.EXPIRED
+        assert plan.expire_intent.expired_at is not None
+        assert plan.expire_event is not None
+        assert plan.expire_event.payload == {
+            "from": "approved",
+            "to": "expired",
+            "reason": "dispatch_rejected",
+        }
+        assert plan.expire_event.correlation_id == intent.id
+
+    def test_bad_limit_price_self_heals(self):
+        intent = self._approved()
+        plan = core.plan_create_order_for_sell_intent(
+            intent=intent,
+            live_position_quantity=100,
+            order_type=OrderType.LIMIT,
+            limit_price=None,
+        )
+        assert plan.outcome == core.CREATE_ORDER_REJECT
+        assert plan.expire_intent is not None
+        assert plan.expire_intent.status is SellIntentStatus.EXPIRED
+
+    def test_market_with_limit_price_self_heals(self):
+        intent = self._approved()
+        plan = core.plan_create_order_for_sell_intent(
+            intent=intent,
+            live_position_quantity=100,
+            order_type=OrderType.MARKET,
+            limit_price=9.0,
+        )
+        assert plan.outcome == core.CREATE_ORDER_REJECT
+        assert plan.expire_intent is not None
+        assert plan.expire_intent.status is SellIntentStatus.EXPIRED
+
+    def test_successful_create_has_no_expire_fields(self):
+        intent = self._approved(target_quantity=50)
+        plan = core.plan_create_order_for_sell_intent(
+            intent=intent,
+            live_position_quantity=100,
+            order_type=OrderType.MARKET,
+            limit_price=None,
+        )
+        assert plan.outcome == core.CREATE_ORDER_CREATE
+        assert plan.expire_intent is None
+        assert plan.expire_event is None
