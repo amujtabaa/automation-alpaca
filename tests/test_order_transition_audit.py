@@ -17,7 +17,7 @@ pytestmark = pytest.mark.anyio
 async def _new_order(store):
     await store.initialize()
     candidate = await store.create_candidate("AAPL")
-    return await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    return await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
 
 
 def _order_audit(events, order_id):
@@ -31,14 +31,15 @@ def _order_audit(events, order_id):
 
 async def test_noop_transition_writes_zero_events(any_store):
     order = await _new_order(any_store)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTING)  # genuine
+    # Reach a submitted order the sanctioned way (claim -> SUBMITTED, AIR-007).
+    await submit_created_order(any_store, order.id)
     before = len(await any_store.list_events())
 
     # Same status, nothing else changed -> true no-op.
-    result = await any_store.transition_order(order.id, OrderStatus.SUBMITTING)
+    result = await any_store.transition_order(order.id, OrderStatus.SUBMITTED)
 
     assert len(await any_store.list_events()) == before
-    assert result.status is OrderStatus.SUBMITTING
+    assert result.status is OrderStatus.SUBMITTED
 
 
 async def test_filled_quantity_change_writes_one_progress_event(any_store):
@@ -66,11 +67,17 @@ async def test_filled_quantity_change_writes_one_progress_event(any_store):
 
 async def test_genuine_transition_still_writes_one_transition_event(any_store):
     order = await _new_order(any_store)
+    # The claim (CREATED -> SUBMITTING) is audited as order_submission_claimed,
+    # not order_transition; the genuine order_transition here is the subsequent
+    # SUBMITTING -> SUBMITTED (which now requires a real broker id, AIR-001).
+    await any_store.claim_order_for_submission(order.id)
     n_before = len(await any_store.list_events())
 
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTING)
+    await any_store.transition_order(
+        order.id, OrderStatus.SUBMITTED, broker_order_id="bk-1"
+    )
 
     new_events = (await any_store.list_events())[n_before:]
     transitions = [e for e in new_events if e.event_type == "order_transition"]
     assert len(transitions) == 1
-    assert transitions[0].payload == {"from": "created", "to": "submitting"}
+    assert transitions[0].payload == {"from": "submitting", "to": "submitted"}

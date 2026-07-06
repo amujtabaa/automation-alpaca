@@ -96,12 +96,23 @@ All persist across days and are queryable by session/date:
 
 - watchlists (and arming state)
 - candidates (proposal lifecycle: pending/approved/rejected/expired/ordered)
-- orders (broker-order lifecycle, linked to the candidate that produced them)
+- sell_intents (Phase 7 — the **sell-side analogue of a candidate**: a first-class
+  exit decision with its own lifecycle pending/approved/rejected/expired/ordered,
+  a `reason` of `manual_flatten` or `protection_floor`, producing one SELL order.
+  Open ones expire at session close, like candidates. See
+  `docs/IMPLEMENTATION_PROMPT_PHASE_7.md` for the full lifecycle and rationale.)
+- orders (broker-order lifecycle. **Order-origin XOR (Phase 7):** every order has
+  exactly one of `candidate_id` (a BUY from the candidate flow) *or*
+  `sell_intent_id` (a SELL from the sell-intent flow) — never both, never neither;
+  enforced by a model validator and both store implementations. A nullable
+  self-referencing `replaces_order_id` remains for a future Auto-Sell reprice.)
 - fills (append-only, linked to the order; carries `source_fill_id` for
   duplicate protection)
 - positions (derived view + a `position_snapshots` table populated at session
   close — see "Session Close Mechanics" below)
-- events / audit log (append-only)
+- events / audit log (append-only; sell-side events carry `correlation_id =
+  sell_intent_id` so a whole protective exit is reconstructable, symmetric to the
+  buy side's candidate correlation)
 - session records (for `/api/review?date=...`)
 
 ## Candidate Lifecycle, Order Lifecycle, and Fill — Three Separate Things

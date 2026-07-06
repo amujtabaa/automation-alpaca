@@ -12,6 +12,7 @@ ENV/
 
 # Pytest temp basetemp (used on Windows when the default temp dir errors)
 .pytest_tmp/
+.pytest-tmp/
 .pytest_cache/
 
 # Coverage artifacts (measured in CI; not committed)

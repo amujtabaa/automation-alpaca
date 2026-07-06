@@ -68,13 +68,22 @@ A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
   the Candidate Monitor (list + approve/reject), and the Position/Order monitor
   (with cancel) are functional; the rest render real backend data.
 
+**Sell-Side Protection (Phase 7)** is now built: an always-on hard price floor
+(a configurable % below average cost) that autonomously opens a full protective
+exit on breach — behind the same human-approval seam, on paper only — plus a
+manual **flatten** (`POST /api/positions/{symbol}/flatten`) that always works,
+even while kill-switched (an exit only reduces risk, D-P2). Protection has its
+own sell-intent lifecycle (not sells bolted onto the buy path), is session-order-
+type-aware (MARKET in regular hours, aggressive LIMIT pre/after-hours — Rule 12),
+and pauses (never silently disables) under the kill switch. See
+[`docs/IMPLEMENTATION_PROMPT_PHASE_7.md`](docs/IMPLEMENTATION_PROMPT_PHASE_7.md).
+
 Not yet built (later phases, deliberately out of scope here): real
 capital-based position **sizing** (account-equity-aware, feeding the same CAPI
-gate above — still a fixed placeholder), and sell-side protection / position
-**flatten** (Phase 7 — the `/positions/{symbol}/flatten` endpoint and its
-cockpit button are placeholders until then). Premarket/after-hours Alpaca
-paper feed *quality* (as opposed to the plumbing, which is built) is an
-empirical unknown — see
+gate above — still a fixed placeholder), and strategy-driven **Auto-Sell** /
+**Auto-Buy** (protection is a safety floor, not a profit-taking strategy).
+Premarket/after-hours Alpaca paper feed *quality* (as opposed to the plumbing,
+which is built) is an empirical unknown — see
 [`docs/IMPLEMENTATION_PROMPT_PHASE_5.md`](docs/IMPLEMENTATION_PROMPT_PHASE_5.md#known-unknown--explicitly-deferred).
 See [`docs/04_IMPLEMENTATION_PLAN.md`](docs/04_IMPLEMENTATION_PLAN.md).
 

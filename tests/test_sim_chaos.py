@@ -215,3 +215,38 @@ async def test_f002_orphan_with_partial_fill_flags_needs_review():
     assert recs[0].cleanup_status == RECOVERY_NEEDS_REVIEW
     assert len(await store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)) == 1  # still visible
     assert bid not in sim.canceled  # not cancelled-and-dropped
+
+
+async def test_sim_submit_is_idempotent_by_client_order_id():
+    """AIR-010: the ``SimBrokerAdapter`` must model ``client_order_id`` idempotency
+    the way the real ``AlpacaPaperAdapter`` does — a duplicate ``submit_order`` of
+    the same order returns the SAME broker id and preserves the broker-side state,
+    never mints a second logical order. This is exactly the property B2's stale-
+    ``SUBMITTING`` re-drive (AIR-003) relies on to be safe, so the harness that
+    exercises the re-drive path must honour it or that coverage would be a lie."""
+
+    from app.models import Order, OrderSide, OrderType
+
+    sim = SimBrokerAdapter()
+    order = Order(
+        candidate_id="c1",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=10,
+        limit_price=2.0,
+    )
+
+    first_id = await sim.submit_order(order)
+    # Broker-side progress happens between the two submits.
+    sim.set_response(first_id, BrokerOrderUpdate(OrderStatus.PARTIALLY_FILLED, 4, []))
+
+    # A duplicate submit of the SAME order (same client_order_id == order.id).
+    second_id = await sim.submit_order(order)
+
+    assert second_id == first_id  # same broker id — no second logical order
+    # ...and the broker-side state is preserved, not reset to a fresh SUBMITTED/0.
+    status = await sim.get_order_status(second_id)
+    assert status.filled_quantity == 4
+    assert status.status is OrderStatus.PARTIALLY_FILLED
+    assert sim.is_live(second_id)

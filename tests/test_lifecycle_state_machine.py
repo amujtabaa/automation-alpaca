@@ -12,6 +12,15 @@ invariants below are the system's steady-state safety contract, distilled from
 ``docs/01_ARCHITECTURE.md``'s non-negotiables, D-013a, D-016, and the Wave 0
 fixes.
 
+D-025 (X-001..X-004 remediation): this machine originally never touched the
+Phase 7 sell-side surface (flatten/protection/sell-intents) at all — exactly
+the "review is scoped per-increment, so a cross-increment race is invisible"
+root cause behind the missed X-001 CRITICAL. ``flatten``, ``protection_tick``,
+and ``sell_fill`` rules, plus the ``no_sell_intent_stranded_approved``,
+``at_most_one_active_sell_intent_per_symbol``, and
+``correlation_id_matches_owning_sell_intent`` invariants, close that gap —
+see ``docs/INVARIANTS.md`` INV-031 through INV-041.
+
 Async note: Hypothesis rules are synchronous, so each machine instance owns one
 persistent asyncio event loop and runs every store/loop coroutine on it via
 ``self._run`` — one loop for the instance's whole life keeps the store's
@@ -25,8 +34,12 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import unittest.mock as mock
+from collections import Counter
 
-from hypothesis import settings
+import pytest
+from hypothesis import event, settings, target
+from hypothesis.control import currently_in_test_context
 from hypothesis.stateful import (
     Bundle,
     RuleBasedStateMachine,
@@ -39,14 +52,22 @@ from hypothesis import strategies as st
 from app.broker.adapter import BrokerFill, BrokerOrderUpdate
 from app.broker.sim import SimBrokerAdapter
 from app.config import Settings
+from app.marketdata.fake import FakeMarketDataFeed
 from app.models import (
+    RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
     CandidateStatus,
+    OrderSide,
     OrderStatus,
+    SellIntentStatus,
+    SellReason,
+    SessionType,
     utcnow,
 )
-from app.monitoring import _submit_pending_orders, run_monitoring_tick
+from app.monitoring import _run_protection, _submit_pending_orders, run_monitoring_tick
 from app.store.base import (
+    CLAIM_CLAIMED,
+    FLATTEN_FLAT,
     CandidateTransitionError,
     InvalidOrderError,
     OrderIntentBlockedError,
@@ -62,6 +83,32 @@ from app.store.sqlite import SqliteStateStore
 
 _SYMBOLS = ["AAPL", "MSFT", "TSLA"]
 _SETTINGS = Settings()
+
+# A sell-intent's ADR "active" definition (docs/INVARIANTS.md INV-032),
+# recomputed independently here rather than by calling the store's own
+# ``active_sell_intent_for`` — the whole point of a probe the implementer's
+# own oracle didn't write (REVIEW_LOOP_REFINEMENT.md's X-002/X-003 lesson).
+_SELL_ORDER_TERMINAL_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
+
+def _event(msg: str) -> None:
+    """``hypothesis.event()`` for observability, but a no-op outside a Hypothesis
+    test context — the deterministic driver at the bottom of this file invokes the
+    rules directly, where ``event()`` (like ``target()``) raises."""
+
+    if currently_in_test_context():
+        event(msg)
+
+
+# Cross-instance coverage ledger (AIR-010): shared across every machine instance
+# and example in a run. The random machines emit ``event()`` markers and bump
+# these counters purely for observability (``--hypothesis-show-statistics``); the
+# HARD "a critical recovery branch is unreachable" guard is the deterministic
+# driver at the bottom of this file, which invokes the self-contained rare-branch
+# rules (crash_after_claim, force_submit_cancel_orphan, divergent_fill_and_reconcile)
+# directly — no seed-flaky reliance on random search landing the sequence.
+_COVERAGE: Counter = Counter()
 
 # Statuses from which a manual cancel makes sense (mirrors routes_trading).
 _CANCELLABLE = frozenset(
@@ -95,9 +142,27 @@ class LifecycleMachine(RuleBasedStateMachine):
         super().__init__()
         self._loop = asyncio.new_event_loop()
         self.sim = SimBrokerAdapter()
+        self.market_data = FakeMarketDataFeed()
         self._sfid = 0  # monotonic source_fill_id counter (global uniqueness)
+        # Peak count of open recovery records seen this example — fed to
+        # hypothesis target() ONCE at teardown (target() rejects a repeated label
+        # within one example, so it can't live in a per-step invariant).
+        self._max_open_recovery = 0
         self.store = self.new_store()
         self._run(self.store.initialize())
+        # Force regular-hours for this machine's whole life (X-004 harness
+        # extension): a protective MARKET sell only submits as-is in REGULAR
+        # hours (§5.4/D-015); without this a sell_fill/protection_tick rule's
+        # ability to reach SUBMITTED would depend on wall-clock time when the
+        # suite happens to run. Only the sell/MARKET submit-time decision reads
+        # this (app/monitoring.py::_effective_submit_order) — the BUY path is
+        # untouched. Session-type-at-submission itself is covered separately by
+        # tests/test_phase7_monitoring_submit.py; this harness is about the
+        # sell-intent STATE MACHINE, not that.
+        self._session_type_patcher = mock.patch(
+            "app.monitoring.session_type_for", lambda _t: SessionType.REGULAR
+        )
+        self._session_type_patcher.start()
 
     def _run(self, coro):
         return self._loop.run_until_complete(coro)
@@ -107,6 +172,15 @@ class LifecycleMachine(RuleBasedStateMachine):
         return f"sfid-{self._sfid}"
 
     def teardown(self) -> None:
+        self._session_type_patcher.stop()
+        # AIR-010: bias Hypothesis toward interleavings richer in open recovery
+        # activity — one target() per example (the peak seen), here at teardown
+        # rather than in a per-step invariant (which would repeat the label).
+        # Guarded: teardown is ALSO called by the deterministic driver below, which
+        # runs outside a Hypothesis test context where target() would raise (and
+        # abort teardown before closing the loop — a leaked-loop ResourceWarning).
+        if currently_in_test_context():
+            target(float(self._max_open_recovery), label="open_recovery_records")
         try:
             # Close the SQLite connection synchronously (teardown has no
             # concurrency; awaiting close() from this loop is also fine). Avoids
@@ -168,7 +242,161 @@ class LifecycleMachine(RuleBasedStateMachine):
         """The real submit(claim) + reconcile + recover tick — the integration
         heart. Never raises (the loop is crash-proof by contract)."""
 
+        _COVERAGE["tick"] += 1
         self._run(run_monitoring_tick(self.store, self.sim, _SETTINGS))
+
+    @rule()
+    def crash_after_claim(self):
+        """Model a crash between the atomic claim and the ``SUBMITTED`` persist
+        (B2 / AIR-003): dispatch a candidate to a ``CREATED`` order, then claim it
+        (→ ``SUBMITTING`` with ``broker_order_id=None``) but never submit. That is
+        exactly the stale, id-less ``SUBMITTING`` row a restart inherits — excluded
+        from both the CREATED submit sweep and the open-order reconcile poll —
+        which the next ``monitoring_tick``'s re-drive step must recover (the sim's
+        ``submit_order`` is idempotent by client_order_id, so re-drive is safe).
+
+        Self-contained (own candidate → dispatch → claim) so the B2 precondition is
+        reached whenever controls are clear, not only on the rare tick where a
+        random bundle order happens to still be ``CREATED``. Skips silently under a
+        closed session or a control stop — a legitimate interleaving."""
+
+        try:
+            cand = self._run(
+                self.store.create_candidate(
+                    "MSFT", suggested_quantity=5, suggested_limit_price=1.0
+                )
+            )
+        except SessionClosedError:
+            return
+        self._run(self.store.transition_candidate(cand.id, CandidateStatus.APPROVED))
+        try:
+            order = self._run(
+                self.store.create_order_for_candidate(cand.id, risk_limits=RiskLimits())
+            )
+        except (
+            OrderIntentBlockedError,
+            RiskLimitBlockedError,
+            InvalidOrderError,
+            CandidateTransitionError,
+        ):
+            self._run(self.store.revert_candidate_approval(cand.id))
+            return
+        claim = self._run(self.store.claim_order_for_submission(order.id))
+        if claim.outcome == CLAIM_CLAIMED:
+            _COVERAGE["crash_after_claim"] += 1
+            _event("stale SUBMITTING created (crash after claim)")
+
+    @rule()
+    def divergent_fill_and_reconcile(self):
+        """Model an unrecordable broker fill (B3 / AIR-002) end-to-end: the broker
+        reports an order fully filled but exposes NO recordable fill row (the
+        adapter withheld an un-priceable one), then a real reconcile tick runs. The
+        tick must escalate to a durable ``needs_review`` reconciliation record and
+        hold the order non-terminal — never fabricate the position from the broker
+        scalar (positions still derive only from appended fills).
+
+        Self-contained (its own candidate → clean submit → diverge → reconcile) so
+        the B3 branch is exercised whenever controls are clear, instead of
+        depending on a random pollable order surviving the aggressive orphaning
+        the other rules do. Skips silently when the session is closed or a control
+        stop blocks submission — itself a legitimate interleaving."""
+
+        self.sim.set_on_submit(None)  # no orphan hook on this clean submit
+        try:
+            cand = self._run(
+                self.store.create_candidate(
+                    "AAPL", suggested_quantity=5, suggested_limit_price=1.0
+                )
+            )
+        except SessionClosedError:
+            return
+        self._run(self.store.transition_candidate(cand.id, CandidateStatus.APPROVED))
+        try:
+            order = self._run(
+                self.store.create_order_for_candidate(cand.id, risk_limits=RiskLimits())
+            )
+        except (
+            OrderIntentBlockedError,
+            RiskLimitBlockedError,
+            InvalidOrderError,
+            CandidateTransitionError,
+        ):
+            self._run(self.store.revert_candidate_approval(cand.id))
+            return
+        self._run(_submit_pending_orders(self.store, self.sim))
+        o = self._run(self.store.get_order(order.id))
+        if (
+            o is None
+            or o.broker_order_id is None
+            or o.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+        ):
+            return  # a control stop held the submission this time — legitimate
+        # Broker claims the full quantity filled but emits no fill row.
+        self.sim.script(
+            o.broker_order_id,
+            [BrokerOrderUpdate(OrderStatus.FILLED, o.quantity, [])],
+        )
+        _COVERAGE["divergent_fill_scripted"] += 1
+        self._run(run_monitoring_tick(self.store, self.sim, _SETTINGS))
+        # The escalation must produce a needs_review record for this order, and
+        # must NOT fabricate the position from the broker scalar (still 0 recorded).
+        after = self._run(self.store.get_order(order.id))
+        recs = self._run(self.store.list_submit_recoveries())
+        if (
+            after is not None
+            and after.filled_quantity == 0
+            and any(
+                r.local_order_id == order.id
+                and r.cleanup_status == RECOVERY_NEEDS_REVIEW
+                for r in recs
+            )
+        ):
+            _COVERAGE["fill_divergence_needs_review"] += 1
+            _event("B3 fill divergence escalated to needs_review")
+
+    @rule()
+    def force_submit_cancel_orphan(self):
+        """Deterministically construct the F-002 orphan (D-017): dispatch a fresh
+        candidate to a ``CREATED`` order, arm the mid-submit cancel, and run ONLY
+        the submit phase — leaving the broker order live while the local order is
+        ``CANCELED``, reconciled solely by an open recovery record. Atomic and
+        self-contained so the ``open_recovery`` invariant disjunct is reliably
+        exercised, not left to a lucky arm→submit_pending_only interleaving. Skips
+        silently under a closed session or a control stop."""
+
+        try:
+            cand = self._run(
+                self.store.create_candidate(
+                    "TSLA", suggested_quantity=5, suggested_limit_price=1.0
+                )
+            )
+        except SessionClosedError:
+            return
+        self._run(self.store.transition_candidate(cand.id, CandidateStatus.APPROVED))
+        try:
+            self._run(
+                self.store.create_order_for_candidate(cand.id, risk_limits=RiskLimits())
+            )
+        except (
+            OrderIntentBlockedError,
+            RiskLimitBlockedError,
+            InvalidOrderError,
+            CandidateTransitionError,
+        ):
+            self._run(self.store.revert_candidate_approval(cand.id))
+            return
+
+        async def cancel_mid_submit(order, broker_id):
+            self.sim.set_on_submit(None)
+            try:
+                await self.store.transition_order(order.id, OrderStatus.CANCELED)
+            except (OrderTransitionError, UnknownEntityError):
+                pass
+
+        self.sim.set_on_submit(cancel_mid_submit)
+        # Submit ONLY (no recover) — the orphan is observable at the next
+        # invariant checkpoint before a full tick would heal it.
+        self._run(_submit_pending_orders(self.store, self.sim))
 
     @rule()
     def submit_pending_only(self):
@@ -270,6 +498,103 @@ class LifecycleMachine(RuleBasedStateMachine):
             pass
 
     # ------------------------------------------------------------------ #
+    # Phase 7 sell-side rules (X-001..X-004 remediation harness extension) —
+    # this class previously never touched flatten/protection/sell-intent code
+    # at all; that blind spot is exactly the "review is scoped per-increment,
+    # so a cross-increment interaction bug is invisible" root cause
+    # REVIEW_LOOP_REFINEMENT.md names for X-001.
+    # ------------------------------------------------------------------ #
+    async def _force_breach_and_protect(self):
+        # Force every held symbol's snapshot far below any possible floor so a
+        # REAL breach (not a coin-flip on a Hypothesis-generated price) drives
+        # the protective-intent path on every call.
+        positions = [p for p in await self.store.list_positions() if p.quantity > 0]
+        for p in positions:
+            self.market_data.set_snapshot(p.symbol, last_price=0.01, bid=0.01)
+        await _run_protection(self.store, self.sim, self.market_data, _SETTINGS)
+
+    @rule()
+    def protection_tick(self):
+        """The autonomous protection phase (§5), run directly rather than
+        waiting for a random breach — see ``_force_breach_and_protect``. The
+        resulting ``PROTECTION_FLOOR`` intent (if any) is exercised by the
+        existing ``monitoring_tick``/``sell_fill``/``cancel_order`` rules like
+        any other order; the invariants below prove it is never duplicated and
+        never leaves an intent stranded ``APPROVED``."""
+
+        self._run(self._force_breach_and_protect())
+        _COVERAGE["protection_tick"] += 1
+
+    @rule(symbol=st.sampled_from(_SYMBOLS))
+    def flatten(self, symbol):
+        """Model ``POST /positions/{symbol}/flatten`` (X-001) directly against
+        the atomic store op — the route's own ``cancel_open_buys`` pre-step
+        needs a real broker round-trip and is out of scope for this
+        store-level harness (``flatten_position`` re-reads the live position
+        under its own lock regardless, so skipping the cancel here never
+        affects correctness, only sizing against whatever buys are still
+        open). Checked INLINE rather than via a steady-state ``@invariant``
+        because X-001 is a guarantee about this call's return value, not a
+        property of the system at rest: every call must return either 'flat'
+        or an intent whose reason is ``MANUAL_FLATTEN`` — never a
+        silently-substituted ``protection_floor`` intent, even interleaved
+        with a concurrent ``protection_tick``."""
+
+        result = self._run(self.store.flatten_position(symbol))
+        if result.outcome == FLATTEN_FLAT:
+            return
+        assert (
+            result.intent is not None
+            and result.intent.reason is SellReason.MANUAL_FLATTEN
+        ), (
+            f"flatten_position({symbol}) returned a non-flat result without a "
+            f"MANUAL_FLATTEN intent (X-001): {result}"
+        )
+        _COVERAGE["flatten_non_flat"] += 1
+
+    @rule(portion=st.floats(min_value=0.1, max_value=1.0))
+    def sell_fill(self, portion):
+        """Queue a (partial or full) fill for an open protective/manual SELL
+        order and reconcile it via a real monitoring tick — the sell-side
+        analogue of ``script_broker_fill``. SELL orders are not tracked via
+        the ``orders`` bundle (they originate from ``protection_tick``/
+        ``flatten``, not ``approve_and_dispatch``), so this queries the store
+        directly for one to fill."""
+
+        sell_orders = [
+            o
+            for o in self._run(self.store.list_orders())
+            if o.side is OrderSide.SELL
+            and o.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+            and o.broker_order_id is not None
+        ]
+        if not sell_orders:
+            return
+        o = sell_orders[0]
+        remaining = o.quantity - o.filled_quantity
+        if remaining <= 0:
+            return
+        delta = max(1, min(remaining, round(remaining * portion)))
+        cumulative = o.filled_quantity + delta
+        new_status = (
+            OrderStatus.FILLED
+            if cumulative >= o.quantity
+            else OrderStatus.PARTIALLY_FILLED
+        )
+        self.sim.script(
+            o.broker_order_id,
+            [
+                BrokerOrderUpdate(
+                    new_status,
+                    cumulative,
+                    [BrokerFill(self._next_sfid(), delta, o.limit_price or 1.0, utcnow())],
+                )
+            ],
+        )
+        self._run(run_monitoring_tick(self.store, self.sim, _SETTINGS))
+        _COVERAGE["sell_fill"] += 1
+
+    # ------------------------------------------------------------------ #
     # Invariants — checked after EVERY rule
     # ------------------------------------------------------------------ #
     @invariant()
@@ -305,17 +630,81 @@ class LifecycleMachine(RuleBasedStateMachine):
             )
 
     @invariant()
+    def no_sell_intent_stranded_approved(self):
+        # X-002: every create_order_for_sell_intent rejection self-heals
+        # approved -> expired in the same operation that raises — mirrors
+        # no_candidate_stranded_approved above. A sell intent is never left
+        # APPROVED with no order between actions.
+        for si in self._run(self.store.list_sell_intents()):
+            assert si.status is not SellIntentStatus.APPROVED, (
+                f"sell intent {si.id} ({si.symbol}) stranded APPROVED"
+            )
+
+    @invariant()
+    def at_most_one_active_sell_intent_per_symbol(self):
+        """X-001/X-003 (docs/INVARIANTS.md INV-031/INV-032): independently
+        recomputes the ADR's "active" definition per symbol here, rather than
+        calling the store's own ``active_sell_intent_for`` — the whole point of
+        a probe the implementer's own oracle didn't write. Active = pending/
+        approved, or ordered with a non-terminal order that has no OPEN
+        needs_review recovery."""
+
+        orders_by_id = {o.id: o for o in self._run(self.store.list_orders())}
+        needs_review_order_ids = {
+            r.local_order_id
+            for r in self._run(self.store.list_submit_recoveries())
+            if r.cleanup_status == RECOVERY_NEEDS_REVIEW
+        }
+        active_by_symbol: dict[str, list[str]] = {}
+        for si in self._run(self.store.list_sell_intents()):
+            if si.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
+                is_active = True
+            elif si.status is SellIntentStatus.ORDERED:
+                order = orders_by_id.get(si.order_id) if si.order_id else None
+                is_active = (
+                    order is not None
+                    and order.status not in _SELL_ORDER_TERMINAL_STATUSES
+                    and order.id not in needs_review_order_ids
+                )
+            else:
+                is_active = False
+            if is_active:
+                active_by_symbol.setdefault(si.symbol, []).append(si.id)
+        for symbol, ids in active_by_symbol.items():
+            assert len(ids) <= 1, f"{symbol} has multiple active sell intents: {ids}"
+
+    @invariant()
     def correlation_id_matches_owning_candidate(self):
         # D-020: every event that names a candidate carries that candidate's id
         # as its correlation_id, so one filter reconstructs a whole lifecycle.
         # Holding this across every random interleaving proves the derive rule
         # (correlation_id defaults to candidate_id) is applied uniformly in both
         # stores, not just on the happy path.
-        for event in self._run(self.store.list_events()):
-            if event.candidate_id is not None:
-                assert event.correlation_id == event.candidate_id, (
-                    f"event {event.id} ({event.event_type}) candidate_id "
-                    f"{event.candidate_id} != correlation_id {event.correlation_id}"
+        for ev in self._run(self.store.list_events()):
+            if ev.candidate_id is not None:
+                assert ev.correlation_id == ev.candidate_id, (
+                    f"event {ev.id} ({ev.event_type}) candidate_id "
+                    f"{ev.candidate_id} != correlation_id {ev.correlation_id}"
+                )
+
+    @invariant()
+    def correlation_id_matches_owning_sell_intent(self):
+        # X-004: every event on an order whose origin is a sell-intent (no
+        # candidate_id) carries that sell-intent's id as correlation_id — not
+        # just its creation events. Independently recomputes the expected value
+        # from list_orders() rather than trusting the event's own derivation,
+        # for the same "don't just re-check the implementer's own path" reason
+        # as the invariant above.
+        orders_by_id = {o.id: o for o in self._run(self.store.list_orders())}
+        for ev in self._run(self.store.list_events()):
+            if ev.candidate_id is not None or ev.order_id is None:
+                continue
+            order = orders_by_id.get(ev.order_id)
+            if order is not None and order.sell_intent_id is not None:
+                assert ev.correlation_id == order.sell_intent_id, (
+                    f"event {ev.id} ({ev.event_type}) order_id {ev.order_id}"
+                    f" sell_intent_id {order.sell_intent_id} != correlation_id"
+                    f" {ev.correlation_id}"
                 )
 
     @invariant()
@@ -343,9 +732,31 @@ class LifecycleMachine(RuleBasedStateMachine):
         }
         for broker_id in list(self.sim._broker_ids.values()):
             if self.sim.is_live(broker_id):
-                assert broker_id in tracked or broker_id in open_recovery, (
+                in_tracked = broker_id in tracked
+                assert in_tracked or broker_id in open_recovery, (
                     f"live broker order {broker_id} is untracked (no order, no recovery)"
                 )
+                # AIR-010 coverage: record when the invariant is satisfied via the
+                # open-recovery DISJUNCT (a live broker order the local order state
+                # no longer tracks) — the F-002 orphan branch, dead code without
+                # the arm_submit_cancel_race seam.
+                if not in_tracked and broker_id in open_recovery:
+                    _COVERAGE["orphan_via_open_recovery"] += 1
+                    _event("live broker order tracked only via open recovery")
+
+        # AIR-010: record + bias toward the durable needs_review escalations
+        # (B2 terminal re-drive / B3 fill divergence). A stale, id-less SUBMITTING
+        # order (crash_after_claim) is the B2 precondition; count it too.
+        if any(r.cleanup_status == RECOVERY_NEEDS_REVIEW for r in recoveries):
+            _COVERAGE["needs_review_present"] += 1
+            _event("needs_review recovery record present")
+        if any(
+            o.status is OrderStatus.SUBMITTING and not o.broker_order_id
+            for o in orders
+        ):
+            _COVERAGE["stale_submitting_present"] += 1
+        # Accumulate the peak for teardown's single target() call.
+        self._max_open_recovery = max(self._max_open_recovery, len(open_recovery))
 
 
 class MemoryLifecycleMachine(LifecycleMachine):
@@ -369,3 +780,56 @@ TestMemoryLifecycle = MemoryLifecycleMachine.TestCase
 TestMemoryLifecycle.settings = _MACHINE_SETTINGS
 TestSqliteLifecycle = SqliteLifecycleMachine.TestCase
 TestSqliteLifecycle.settings = _MACHINE_SETTINGS
+
+
+# AIR-010: the harness must *prove* it reaches the rare recovery branches, not
+# just pass its invariants on the happy path. The random TestCases above emit
+# ``event()`` markers (visible in ``--hypothesis-show-statistics``) and accumulate
+# ``_COVERAGE`` for observability — but asserting a random run reached a specific
+# branch is inherently seed-flaky (a bad seed may just never sequence it). So the
+# HARD "fails if a critical recovery branch is unreachable" guard lives here, in a
+# DETERMINISTIC driver: it instantiates the real machine and invokes each
+# rare-branch rule + the invariant that records it, with no random search. Each
+# rule is self-contained (own candidate, clear controls on a fresh machine), so
+# this reliably proves every critical branch is REACHABLE by the harness's own
+# rules. If a refactor makes one unreachable (the AIR-010 failure mode — a harness
+# that has gone blind to a recovery path), the matching assertion fails.
+@pytest.mark.parametrize(
+    "machine_cls", [MemoryLifecycleMachine, SqliteLifecycleMachine]
+)
+def test_harness_rules_reach_recovery_branches(machine_cls):
+    machine = machine_cls()
+    try:
+        before = _COVERAGE.copy()
+
+        # B2: a crash between claim and persist leaves a stale, id-less SUBMITTING
+        # order; the invariant checkpoint must observe it.
+        machine.crash_after_claim()
+        machine.no_live_untracked_broker_order()
+        assert _COVERAGE["crash_after_claim"] > before["crash_after_claim"], (
+            "crash_after_claim rule did not create a stale SUBMITTING order"
+        )
+        assert (
+            _COVERAGE["stale_submitting_present"] > before["stale_submitting_present"]
+        ), "stale SUBMITTING order was not observed at an invariant checkpoint"
+
+        # F-002: an orphan (broker live, local CANCELED) tracked ONLY by an open
+        # recovery record — the open_recovery invariant disjunct.
+        machine.force_submit_cancel_orphan()
+        machine.no_live_untracked_broker_order()
+        assert (
+            _COVERAGE["orphan_via_open_recovery"] > before["orphan_via_open_recovery"]
+        ), "F-002 orphan was not reconciled via the open-recovery branch"
+
+        # B3: an unrecordable broker fill must escalate to a durable needs_review
+        # record while the position stays derived only from (zero) recorded fills.
+        machine.divergent_fill_and_reconcile()
+        assert (
+            _COVERAGE["divergent_fill_scripted"] > before["divergent_fill_scripted"]
+        ), "divergent (unrecordable) broker fill was not set up"
+        assert (
+            _COVERAGE["fill_divergence_needs_review"]
+            > before["fill_divergence_needs_review"]
+        ), "B3 fill divergence did not escalate to a needs_review record"
+    finally:
+        machine.teardown()

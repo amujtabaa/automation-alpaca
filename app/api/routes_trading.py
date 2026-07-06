@@ -12,31 +12,49 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import get_broker_adapter, get_store
+from app.api.deps import (
+    get_broker_adapter,
+    get_market_data_service,
+    get_settings,
+    get_store,
+)
 from app.api.schemas import (
+    FlattenResponse,
     OperatorOrdersResponse,
     OperatorOrderView,
     OperatorRecoveryView,
+    ProtectionConfigView,
+    ProtectionPositionView,
+    ProtectionStatusResponse,
 )
 from app.broker.adapter import BrokerAdapter, BrokerError
+from app.config import Settings
+from app.marketdata.service import MarketDataService
 from app.models import (
     RECOVERY_OPEN_STATUSES,
     Event,
     Order,
     OrderStatus,
     Position,
+    SellIntent,
     SubmitRecoveryRecord,
 )
+from app.monitoring import cancel_open_buys
 from app.policy import (
     NON_TERMINAL_ORDER_STATUSES,
+    finite_number_reason,
     operational_status_for,
     order_is_cancelable,
     recovery_operational_status,
 )
+from app.protection import ProtectionConfig, floor_breach_reason, floor_price
 from app.store.base import (
+    FLATTEN_FLAT,
+    InvalidOrderError,
     OrderTransitionError,
     StateStore,
     UnknownEntityError,
+    normalize_symbol,
 )
 
 router = APIRouter(prefix="/api", tags=["trading"])
@@ -65,6 +83,172 @@ async def get_position(
     except ValueError as exc:
         # normalize_symbol rejects an out-of-domain ticker (DATA-2). Surface it as
         # a clean 422 rather than a leaked 500 (matches the watchlist routes).
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.post("/positions/{symbol}/flatten", response_model=FlattenResponse)
+async def flatten_position(
+    symbol: str,
+    store: StateStore = Depends(get_store),
+    adapter: BrokerAdapter = Depends(get_broker_adapter),
+) -> FlattenResponse:
+    """Manually flatten a position (Phase 7 / D-P2) — an operator-commanded full
+    exit that **always works**: it bypasses the kill switch, buys-paused, and a
+    closed session (§5.2), because a human getting out must never be blocked by a
+    control meant to stop *new* intent.
+
+    A THIN caller (X-001): the whole "stand down a non-live autonomous exit,
+    then create + approve + dispatch a fresh MANUAL_FLATTEN" decision lives in
+    ``StateStore.flatten_position`` as ONE atomic, single-lock-hold operation —
+    NOT here. An earlier version of this route made that decision across
+    several separate store calls (read active intent, then later create one);
+    a protection tick's own intent-creation could win the single-flight race in
+    the gap between them, silently handing a human's flatten a
+    ``protection_floor`` intent instead (which a kill switch then holds
+    unsubmitted). ``flatten_position`` closes that gap structurally — see its
+    docstring in ``app/store/base.py``.
+
+    Cancels every open BUY for the symbol first (§5.3, best-effort — this needs
+    a broker call, which must never happen under the store's lock) so the exit
+    reaches — and stays — flat; ``flatten_position`` re-reads the live position
+    under its own lock regardless, so sizing always reflects whatever this
+    achieved, never a stale read.
+
+    * No position (flat) → ``409`` (checked before AND after the buy-cancel
+      step, so a flat symbol has no side effects at all — a stray unrelated
+      pending buy for a symbol with nothing to flatten is left untouched).
+    * An in-flight ``MANUAL_FLATTEN`` already owns the exit → **idempotent**
+      (returns it, no second order).
+    * An in-flight autonomous ``PROTECTION_FLOOR`` exit whose order is not yet
+      live at the broker is superseded so the human's flatten takes over; one
+      already live is returned as-is (already exiting — cancel it via
+      ``/orders/{id}/cancel`` first to re-issue).
+    """
+
+    try:
+        key = normalize_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    position = await store.get_position(key)
+    if position.quantity <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"no open {key} position to flatten",
+        )
+
+    # §5.3: clear open buys so the exit truly reaches flat. Best-effort/
+    # idempotent; a broker failure here is logged by cancel_open_buys itself
+    # and does not block the flatten attempt below.
+    await cancel_open_buys(store, adapter, key)
+
+    try:
+        result = await store.flatten_position(key)
+    except InvalidOrderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+
+    if result.outcome == FLATTEN_FLAT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"no open {key} position to flatten",
+        )
+
+    return FlattenResponse(intent=result.intent, order=result.order)
+
+
+@router.get("/protection", response_model=ProtectionStatusResponse)
+async def protection_status(
+    store: StateStore = Depends(get_store),
+    settings: Settings = Depends(get_settings),
+    market_data: MarketDataService = Depends(get_market_data_service),
+) -> ProtectionStatusResponse:
+    """The live Sell-Side Protection state (Phase 7), classified server-side so the
+    cockpit renders it verbatim (D-020). Effective config plus, per open position:
+    its hard floor, the observed last price, whether it is breaching, whether an
+    autonomous exit is paused by the kill switch, whether a protective order is
+    stalled (unfilled past the timeout), and any active sell intent."""
+
+    config = ProtectionConfig(
+        enabled=settings.protection_enabled,
+        stop_loss_pct=settings.protection_stop_loss_pct,
+        limit_buffer_pct=settings.protection_limit_buffer_pct,
+    )
+    session = await store.get_current_session()
+    stale_order_ids = {
+        e.order_id
+        for e in await store.list_events(event_type="order_stale")
+        if e.order_id
+    }
+
+    positions = [p for p in await store.list_positions() if p.quantity > 0]
+    views: list[ProtectionPositionView] = []
+    for position in positions:
+        snapshot = await market_data.get_snapshot(position.symbol)
+        breach = floor_breach_reason(position, snapshot, config)
+        avg = position.average_price
+        floor = (
+            floor_price(avg, config.stop_loss_pct)
+            if avg is not None
+            and finite_number_reason(avg) is None
+            and avg > 0
+            else None
+        )
+        observed = None
+        if snapshot is not None and not snapshot.stale:
+            last = snapshot.last_price
+            if finite_number_reason(last) is None and last > 0:
+                observed = last
+        active = await store.active_sell_intent_for(position.symbol)
+        stalled = (
+            active is not None
+            and active.order_id is not None
+            and active.order_id in stale_order_ids
+        )
+        views.append(
+            ProtectionPositionView(
+                symbol=position.symbol,
+                quantity=position.quantity,
+                average_price=avg,
+                floor_price=floor,
+                observed_price=observed,
+                breaching=breach is not None,
+                # Frozen only when the switch is engaged AND this position would
+                # otherwise be exiting (it is breaching).
+                paused_by_kill_switch=session.kill_switch and breach is not None,
+                stalled=stalled,
+                active_sell_intent=active,
+            )
+        )
+
+    return ProtectionStatusResponse(
+        config=ProtectionConfigView(
+            enabled=settings.protection_enabled,
+            stop_loss_pct=settings.protection_stop_loss_pct,
+            limit_buffer_pct=settings.protection_limit_buffer_pct,
+            protection_active=settings.protection_enabled and settings.enable_monitoring,
+        ),
+        positions=views,
+    )
+
+
+@router.get("/sell-intents", response_model=list[SellIntent])
+async def list_sell_intents(
+    session_id: Optional[str] = Query(default=None),
+    symbol: Optional[str] = Query(default=None),
+    store: StateStore = Depends(get_store),
+) -> list[SellIntent]:
+    """Read-only view of the sell-intent lifecycle (Phase 7). Optional
+    ``session_id`` / ``symbol`` filters mirror the store method."""
+
+    try:
+        return await store.list_sell_intents(session_id=session_id, symbol=symbol)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
@@ -272,9 +456,9 @@ async def list_events(
     store: StateStore = Depends(get_store),
 ) -> list[Event]:
     """``correlation_id`` (D-020) returns the complete lifecycle of one
-    candidate — creation, approval, order creation, claim, submission,
-    blocked/recovery, fills, and transitions — in one query, for incident
-    reconstruction."""
+    candidate OR one sell intent (X-004) — creation, approval, order creation,
+    claim, submission, blocked/recovery, fills, and transitions — in one
+    query, for incident reconstruction."""
 
     return await store.list_events(
         limit=limit, event_type=event_type, correlation_id=correlation_id

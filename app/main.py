@@ -88,7 +88,14 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
         monitor_task: Optional[asyncio.Task] = None
         if settings.enable_monitoring:
             monitor_task = asyncio.create_task(
-                monitoring_loop(active_store, app.state.broker_adapter, settings),
+                monitoring_loop(
+                    active_store,
+                    app.state.broker_adapter,
+                    settings,
+                    # Phase 7: the monitoring tick prices protective sells (§5.4)
+                    # and supplies fill-price fallbacks (§7) off the live feed.
+                    market_data=app.state.market_data,
+                ),
                 name="monitoring-loop",
             )
         # The feed's own connection/reconnect lifecycle runs for the process

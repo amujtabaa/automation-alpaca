@@ -49,8 +49,8 @@ async def test_position_folding_through_store(store):
     candidate = await store.create_candidate("AAPL")
     # Buys and sells now go through side-matched orders (D-010); the position
     # still folds across all of the symbol's fills regardless of which order.
-    buy_order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 200)
-    sell_order = await store.create_order(candidate.id, "AAPL", OrderSide.SELL, 200)
+    buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 200)
+    sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
 
     # order submitted, no fill yet -> position quantity 0
     assert (await store.get_position("AAPL")).quantity == 0
@@ -74,13 +74,13 @@ async def test_position_folding_through_store(store):
 
 async def test_oversell_is_rejected_with_audit_and_no_negative(store):
     candidate = await store.create_candidate("AAPL")
-    buy_order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
     await store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.00)
 
     # The oversell goes through a side-matched SELL order so it reaches the
     # long-only guard (not the side-match guard); selling 101 vs a 100 position
     # is the data-integrity error under test.
-    sell_order = await store.create_order(candidate.id, "AAPL", OrderSide.SELL, 101)
+    sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 101)
     with pytest.raises(NegativePositionError):
         await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 101, 1.00)
 

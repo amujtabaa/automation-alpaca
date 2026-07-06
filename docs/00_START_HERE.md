@@ -13,7 +13,9 @@ or Claude Code against the repository, using these files as the spec.
 4. `03_UI_WORKFLOW.md` — cockpit screens and user flow
 5. `04_IMPLEMENTATION_PLAN.md` — phased build sequence and tooling
 6. `05_REVIEW_CHECKLIST.md` — what to verify in agent output
-7. `AGENTS.md` / `CLAUDE.md` — short rule files for coding agents
+7. `INVARIANTS.md` — the living invariant registry; the oracle for review,
+   kept separate from any implementer's own tests (see D-025)
+8. `AGENTS.md` / `CLAUDE.md` — short rule files for coding agents
 
 ## What This Project Is
 
@@ -48,6 +50,448 @@ and implement code.
 
 Records *why* the architecture is what it is, so the reasoning survives across
 chats. Newest first.
+
+### D-025 — Phase-7 sell-intent lifecycle remediation (X-001..X-005): atomic flatten, self-heal, needs_review eligibility, sell correlation
+**Context.** Two rounds of independent review of the Phase-7 sell-side work —
+D-021's readiness gate and D-024's own AIR Group C — had already passed. A
+*third*, different-lineage review (external tooling, not this codebase's own
+review loop) then found one CRITICAL and two HIGH defects the in-loop review
+had missed, plus two lower-severity gaps. `docs/INVARIANTS.md`'s companion
+retro (`REVIEW_LOOP_REFINEMENT.md`, kept outside the docs tree as project
+history rather than architecture) names the root causes: the in-loop reviewer
+had been checking the implementer's own tests as its oracle (X-002's tell —
+the ADR required self-heal, the code didn't do it, and the test *asserted the
+buggy behavior* as correct), review was scoped per-increment so a race
+*between* two increments was invisible (X-001), and shared context between
+implementer and reviewer meant a shared blind spot (X-003: this project's own
+prior session had rewritten `base.py`'s docstrings to *delete* the
+needs_review clause, so the code and the ADR came to silently disagree with
+each other, not just with the truth). `docs/INVARIANTS.md` — an oracle
+deliberately separate from any implementation's own tests — is the direct
+structural fix for the first root cause; this entry records the four
+technical fixes plus the process gap.
+
+**(X-001, CRITICAL) `POST /positions/{symbol}/flatten` is now backed by one
+atomic `StateStore.flatten_position` operation, not a route-level
+check-then-later-create.** The prior route shape — call
+`active_sell_intent_for(symbol)`, then *separately* call
+`create_sell_intent(MANUAL_FLATTEN, ...)` as its own lock hold — left a window
+where a concurrent protection tick's own `create_sell_intent(PROTECTION_FLOOR,
+...)` call could win the single-flight dedup. The human's flatten click would
+silently receive back a `protection_floor` intent instead of the
+`manual_flatten` it asked for; under a kill switch that intent is held
+unsubmitted (D-P2's protection-pauses-but-buys-block rule), so the click reads
+as success while the position keeps bleeding. Fixed by a single new store
+method, `flatten_position(symbol)`, that reads the live position, stands down
+any non-live `PROTECTION_FLOOR` exit (a `CREATED` order is canceled; a
+stranded no-order `APPROVED`/`PENDING` intent is expired), then
+creates+approves+dispatches a fresh `MANUAL_FLATTEN` — all under **one
+continuous lock hold**, mirroring D-017's `claim_order_for_submission`
+pattern (pure planner + single lock, not a new primitive). The route is now a
+thin caller: normalize the symbol, check for a position, run the
+broker-facing `cancel_open_buys` pre-step (this stays outside the atomic op
+deliberately — it needs a broker round-trip, and the store lock must never be
+held across network IO; `flatten_position` re-reads the live position under
+its own lock regardless, so a buy that fills concurrently with the cancel is
+still sized correctly), then call `store.flatten_position` and translate its
+result. See `docs/INVARIANTS.md` INV-034 through INV-038. Both stores
+implement the same lock-acquisition semantics via different internal
+structuring — `InMemoryStateStore` nests everything in one `_atomic()` (pure
+Python snapshot/restore, safely nestable); `SqliteStateStore` runs several
+small sequential `_tx()` transactions under the one continuous lock hold,
+since real SQL transactions can't nest — the **lock**, not transaction
+granularity, is what closes the CONCURRENCY race. Proven under real
+concurrent scheduling (`asyncio.gather`, both interleaving orders) at both the
+store layer (`tests/test_phase7_flatten_atomic.py`) and the HTTP layer
+(`tests/test_phase7_routes.py::test_flatten_http_race_with_concurrent_protection_create`).
+
+**Follow-up (mandatory adversarial re-review of this diff, per the
+remediation plan's merge-blocker checklist): a real crash-durability gap, not
+just a cosmetic one.** The first draft of this entry claimed "a crash
+mid-sequence in the SQLite path leaves a safe, independently-recoverable
+state at each step" — a fresh-context review of the diff (given only
+`docs/INVARIANTS.md` and the source, no rationale or tests) disproved that
+for one specific step: `SqliteStateStore.flatten_position` committed the
+fresh intent's insert+approve in one transaction, then dispatched its order
+in a SEPARATE transaction. A crash landing between those two commits (not a
+concurrency race — no `await` occurs between them, so no other coroutine can
+interleave; only a hard process kill) durably strands a `MANUAL_FLATTEN`
+intent `APPROVED` with no order. `plan_flatten_position` (the shared planner
+in `app/store/core.py`) treated ANY `MANUAL_FLATTEN` active intent as "the
+existing exit" unconditionally, so a later flatten call for the same symbol
+returned the dead, order-less intent as success (HTTP 200, `order=None`)
+forever, and permanently poisoned single-flight dedup — a protection tick
+could never open a real protective exit for the symbol either. Fixed in the
+shared planner (not sqlite-specific): a `MANUAL_FLATTEN` active intent is
+only "existing" when `status is ORDERED`; a `pending`/`approved` one falls
+through to the same self-heal/supersede path a stranded `PROTECTION_FLOOR`
+intent already had. `InMemoryStateStore` cannot reach this exact state via a
+crash (its whole sequence is one `_atomic()` block with no durability
+window), but the fix lives in the shared pure function, so both stores'
+*contract* is now correct, not just sqlite's crash window. See
+`docs/INVARIANTS.md` INV-038;
+`tests/test_phase7_flatten_atomic.py::test_stranded_manual_flatten_with_no_order_self_heals`
+constructs the stranded state directly (confirmed to fail without the fix on
+`InMemoryStateStore` too, via this same public API — not only reachable
+through sqlite's specific crash window).
+
+**(X-002, HIGH) `create_order_for_sell_intent` self-heals `approved → expired`
+on every dispatch rejection, closing a gap between the code and the ADR's
+explicit "Self-heal (blocker)" clause.** Any rejection after approval —
+oversell, an invalid quantity, an unpriceable LIMIT, a MARKET order carrying a
+limit price — now atomically expires the intent in the same operation that
+raises the error, instead of raising and leaving the intent stranded
+`APPROVED`. A stranded `APPROVED` intent would have permanently poisoned
+X-001/INV-031's single-flight dedup for that symbol. The regression test that
+had asserted the *old* (wrong) `APPROVED` result as the expected outcome was
+corrected to assert `EXPIRED` — see `docs/INVARIANTS.md` INV-033 and
+`REVIEW_LOOP_REFINEMENT.md` for why that test itself was the miss, not just
+the code.
+
+**(X-003, HIGH) `active_sell_intent_for`'s "active" definition is needs_review-
+aware again, matching the ADR's "Stranded-order eligibility (blocker)"
+clause.** An `ordered` intent whose order is stuck in an OPEN `needs_review`
+recovery (AIR-002, e.g. a transiently un-priceable fill) no longer counts as
+active — a spurious escalation must never permanently disable protection for a
+still-breaching symbol. `unresolved` recoveries still count as active (the
+recovery loop is still working them transiently). This is now the **one**
+canonical definition, in `app.store.core.sell_intent_is_active`, consulted
+identically by both stores — see `docs/INVARIANTS.md` INV-032.
+
+**(X-004, MEDIUM) Every event on a protective-sell's order now carries
+`correlation_id = sell_intent_id`, not just the creation events.** The generic
+event writer in both stores previously defaulted `correlation_id` from
+`candidate_id` only (D-020) — always `None` for a sell order, since order
+origin is `candidate_id` XOR `sell_intent_id` (never both). Claim,
+blocked-claim, submission, stale, fill, and recovery events for a protective
+sell all lost the correlation key, so `GET
+/api/events?correlation_id=<sell_intent_id>` returned only the creation
+events, never the execution trail (only the sell-intent planners in
+`app/store/core.py` that already passed `correlation_id=intent.id` explicitly
+were unaffected). Fixed centrally in the event-write path: resolve
+`correlation_id` from the owning order's `sell_intent_id` whenever neither an
+explicit `correlation_id` nor a `candidate_id` is available but `order_id` is.
+See `docs/INVARIANTS.md` INV-041, verified end-to-end through the real
+monitoring-loop functions (not just the planners) in
+`tests/test_phase7_sell_correlation.py`.
+
+**(X-005) This entry, plus `docs/INVARIANTS.md`.** The registry is the
+structural answer to the review-loop retro's core lesson: an invariant that
+lives only in an ADR paragraph (X-003) or only in the implementer's own test
+assertions (X-002) is not actually pinned — it can drift silently. Future
+reviews of this codebase should probe against `docs/INVARIANTS.md` directly,
+write fresh tests against its statements rather than re-running the linked
+pinning tests, and add an entry here in the same session a new blocker-level
+rule is introduced, not as a follow-up.
+
+**Explicitly not closed by this entry:** an independent, different-lineage
+adversarial re-review of the X-001..X-003 diff is a merge-blocker for this
+work per the remediation plan — an in-repo review (however fresh-framed) is
+not a substitute for that external half of the gate, and this entry does not
+claim to satisfy it.
+
+**Enforcement points:** `app/store/core.py` (`plan_flatten_position`,
+`FlattenPlan`; `plan_create_order_for_sell_intent`'s self-heal;
+`sell_intent_is_active`'s `order_needs_review` param), `app/store/base.py`
+(`StateStore.flatten_position` abstract method, `FlattenResult`),
+`app/store/memory.py` + `sqlite.py` (`flatten_position`,
+`_order_needs_review_unlocked`/`_locked`, the `_insert_event`/
+`_append_event_unlocked` correlation resolution), `app/api/routes_trading.py`
+(`flatten_position` route, now a thin caller). New tests:
+`tests/test_phase7_flatten_atomic.py`, `tests/test_phase7_sell_correlation.py`;
+extended: `tests/test_phase7_sell_intents.py`, `tests/test_store_core.py`,
+`tests/test_phase7_routes.py`. `docs/INVARIANTS.md` added as a new canonical
+file (see its own header for how to use it).
+
+### D-024 — AIR remediation Group C: test-quality (harness rare-branch proof + version-proof warnings)
+**Context.** The final AIR subset is about the *tests* themselves, not production
+behaviour — a harness that passes its invariants can still be silently blind to the
+rare recovery branches, and a warning-as-error guard can silently stop firing on a
+newer Python. Both are "green but not actually protecting you" failure modes.
+
+**(C1 · AIR-010) The lifecycle harness now *proves* it reaches the rare recovery
+branches.** `tests/test_lifecycle_state_machine.py` gained `hypothesis.event()`
+markers, a `target()` (peak open-recovery count, fed once per example at teardown)
+to bias the random search toward recovery-rich interleavings, and cross-instance
+`_COVERAGE` counters. Three self-contained rules construct the rare states directly
+so they are reachable regardless of luck: `crash_after_claim` (a stale, id-less
+`SUBMITTING` order — the B2/AIR-003 precondition), `force_submit_cancel_orphan`
+(the F-002 orphan tracked only by an open recovery record), and
+`divergent_fill_and_reconcile` (a B3/AIR-002 unrecordable fill escalated to
+`needs_review`, position still deriving only from fills). The **hard** "a critical
+recovery branch is unreachable" assertion lives in a **deterministic driver**
+(`test_harness_rules_reach_recovery_branches`, parametrized over both stores), not
+in the random run — asserting a random run hit a specific branch is inherently
+seed-flaky (verified: it failed under some `--hypothesis-seed`s), so the guard
+instead invokes each rare-branch rule directly and asserts its counter advanced.
+The `event()`/`target()` calls are wrapped so they no-op outside a Hypothesis
+context (the driver calls the rules directly). Also pinned: the `SimBrokerAdapter`
+models `client_order_id` idempotency (a duplicate `submit_order` returns the same
+broker id and preserves broker-side state) — the exact property B2's re-drive
+relies on, so the harness exercising that path is not a lie
+(`test_sim_submit_is_idempotent_by_client_order_id`).
+
+**(C2 · AIR-011) Resource-leak enforcement is version-proof.** `pyproject.toml`
+promoted an unclosed-`sqlite3.Connection` `ResourceWarning` to an error (F-008), but
+on Python 3.13+ pytest delivers a GC-time (unraisable) `ResourceWarning` wrapped in
+`PytestUnraisableExceptionWarning` — **not** a `ResourceWarning` subclass, so the
+plain filter would let a leaked connection escape on newer Pythons. Added
+`error::pytest.PytestUnraisableExceptionWarning` alongside the existing filter so
+both the plain and wrapped forms fail the suite on every Python version.
+`tests/test_warning_hygiene.py` pins both (the wrapped test fails without the new
+filter — verified). This immediately earned its keep: it caught a real leaked event
+loop in the C1 deterministic driver (its `teardown` had aborted before
+`loop.close()` when `target()` raised outside a Hypothesis context), which was then
+fixed. Full suite is green under the stricter filter — no unclosed
+connections/cursors remain.
+
+### D-022 — AIR remediation Group B: durable submission/fill recovery
+**Context.** Group B is the temporal/recovery subset of the AIR findings
+(AIR-001/002/003) — higher blast radius than Group A because it spans the broker
+adapter, the monitoring loop, and the recovery ledger, and because the failures
+are about *what happens across a crash or a broker disagreement*, not a single
+call's inputs. Each defect was reproduced red-first and driven green, store-facing
+behavior parametrized over both stores (`any_store`), all in
+`tests/test_air_group_b.py` (+ the rewritten `test_store_core.py` /
+`test_alpaca_paper_fills.py` unit pins).
+
+**The unifying principle: a broker truth the local state can't reconcile is never
+dropped and never guessed — it is either recovered idempotently or escalated to a
+durable, operator-visible record.**
+
+**(B1 · AIR-001) No `SUBMITTED` without a real broker id.** `SUBMITTED` means the
+broker accepted the order and handed back the id we poll and cancel by; an order
+that reached `SUBMITTED` with `broker_order_id=None` was untrackable. Fixed at
+three layers: (1) the `BrokerAdapter.submit_order` **contract** now documents that
+an implementation must return a non-empty `str` or raise; (2) the shared
+`plan_transition_order` **rejects** a status change *into* `SUBMITTED` without a
+non-empty effective broker id (`OrderTransitionError`) — so **both** stores
+enforce the invariant, not just the caller; (3) `monitoring._submit_pending_orders`
+**validates** the returned id and treats an empty one as a submit failure (release
+the claim, re-drive next tick) rather than persisting an untrackable order. The
+one store-core unit test that asserted the old `SUBMITTING → SUBMITTED, id=None`
+apply was rewritten to pass a real id (its real purpose was the `submitted_at`
+assertion).
+
+**(B2 · AIR-003) Stale `SUBMITTING` is recovered by idempotent re-drive, not left
+stranded.** A claim (D-017) writes `SUBMITTING` durably *before* the broker call,
+so a crash between claim and persist leaves an order `SUBMITTING` with
+`broker_order_id=None` — excluded from both the `CREATED` submit sweep and the
+open-order reconcile poll, so nothing ever touched it again (it silently inflated
+CAPI exposure forever). **The durable `SUBMITTING` row plus the stable
+`client_order_id` (`order.id`) already *is* the outbox — no new table.** A new
+monitoring step `_redrive_stale_submitting` (run every tick, so within one cadence
+of a restart) re-drives each such order through `adapter.submit_order`, which is
+inherently double-submit-safe: a fresh submit either creates the broker order or
+recovers the already-accepted one by client id. A non-empty id back →
+`SUBMITTING → SUBMITTED`; a transient `BrokerError` → left `SUBMITTING` to retry
+(idempotent, not a blind double-submit); a `TerminalBrokerError` / empty id / "can't
+confirm" → a durable `needs_review` recovery record (the loop does not guess).
+Deduped: an order already carrying an open recovery record is neither re-driven nor
+re-recorded. A new `TerminalBrokerError(BrokerError)` subclass makes the transient-
+vs-terminal distinction explicit (plain `BrokerError` stays transient-by-default).
+Stale `SUBMITTING` orders are already surfaced in the operator view — they are in
+`NON_TERMINAL_ORDER_STATUSES`, which the operator-orders endpoint filters on.
+
+**(B3 · AIR-002) A broker/local fill divergence is escalated durably.** Two halves:
+- **Adapter (`alpaca_paper._resolve_fill_price`)** no longer synthesizes a `0.0`
+  price when neither the broker average nor the limit is a trustworthy (finite,
+  positive) number — it returns `None`, and `_get_fills` then **omits** the fill
+  entirely rather than appending a corrupt `$0` execution. The broker's cumulative
+  `filled_quantity` still carries the truth, so the omission surfaces as a
+  divergence downstream instead of a bogus fill.
+- **Monitoring (`_apply_update`)** now escalates when, after appending every
+  recordable fill, the broker's cumulative `filled_quantity` still **exceeds** what
+  we recorded (a fill the store rejected, or one the adapter withheld). It writes a
+  durable `needs_review` reconciliation record (via the recovery ledger — `event_type=
+  fill_reconciliation_needed`, payload carrying broker status / broker filled /
+  recorded / rejected-fill summary), deduped per order, and **holds the order
+  non-terminal** (`_divergence_safe_status`: `cancel_pending` stays winding down,
+  else `partially_filled`/`submitted`) so a real untracked position is never buried
+  under a terminal `CANCELED`/`FILLED`. **The invariant is preserved: positions still
+  derive only from appended fills** — the reconciliation record is the truth-divergence
+  signal, not a position mutation. The verified defect (broker `FILLED`=10 + an
+  un-priceable fill → order stuck `SUBMITTED`/`filled=0` forever, no escalation) is
+  closed on both stores.
+
+**Ledger reuse, not a new entity.** B2 and B3 both write through the existing
+`SubmitRecoveryRecord` ledger — its meaning is broadened from "submission orphan"
+to "any broker truth the local order state can't reconcile, surfaced to the
+operator." `create_submit_recovery` gained three optional, additive params
+(`cleanup_status` to birth a record directly `needs_review`, validated against
+`RECOVERY_STATUSES` via the A1 machinery; `event_type` and `extra_payload` for the
+distinct fill-divergence audit event). No new table, no schema migration.
+
+**Enforcement points:** `app/broker/adapter.py` (`TerminalBrokerError`,
+`submit_order` contract), `app/broker/alpaca_paper.py` (`_resolve_fill_price` →
+`Optional`, `_get_fills` omit), `app/store/core.py` (`plan_transition_order` B1
+guard, `require_recovery_status`), `app/store/base.py` + `memory.py` + `sqlite.py`
+(`create_submit_recovery` new params), `app/monitoring.py`
+(`_redrive_stale_submitting`, `_escalate_stale_submitting`, `_apply_update`
+divergence branch, `_escalate_fill_divergence`, `_divergence_safe_status`). Suite:
+**1053 passed / 3 skipped, branch coverage ~95%** (floor 93%). Positions still
+derive only from fills; no live-trading path; the atomic claim remains the sole
+entry into `SUBMITTING`.
+
+**Gate B independent re-review — one confirmed finding, fixed.** A fresh-context
+adversarial workflow (6 lenses → skeptic-verify) over the B1–B3 + A1 diff confirmed
+one **major** defect: the B2 transient-vs-terminal split was unreachable in
+production because the only real adapter, `AlpacaPaperAdapter.submit_order`, raised
+**plain `BrokerError` for every failure** — so a *permanently*-rejected re-drive
+(403 restricted account, 422 insufficient buying power, delisted symbol, or a
+duplicate whose existing order can't be looked up) was classified transient and
+retried **every tick forever**, inflating CAPI exposure indefinitely and never
+escalating. Fixed two ways: (1) `AlpacaPaperAdapter.submit_order` now maps
+definitive 4xx rejections (400/401/403/404/422) and the duplicate-lookup-failed
+case to **`TerminalBrokerError`** (429/5xx/network stay transient `BrokerError`);
+(2) a **bounded backstop** — each transient re-drive deferral writes a durable
+`stale_submitting_redrive_deferred` audit event, and after
+`stale_submitting_max_redrive_attempts` (default 10, configurable) the order is
+escalated to `needs_review` regardless of classification, so no *misclassified*
+permanent failure can livelock. The two other findings were adversarially refuted
+(a planner same-status-reaffirm edge unreachable by any caller; an "unguarded store
+write aborts the tick" claim that matched documented tick-isolation and a
+pre-existing unguarded read) — the escalation store-writes were nonetheless wrapped
+best-effort for per-order isolation consistency with `_handle_unpersisted_submit`.
+
+A follow-up fresh-context verification of the fix confirmed it closes the livelock
+with no regression, and flagged one **minor, pre-existing** analogue: the *first*-
+submit path (`_submit_pending_orders`) also ignored terminal classification — a
+definitive rejection on a brand-new order released `SUBMITTING → CREATED` and
+re-submitted every tick (a `CREATED ↔ SUBMITTING` livelock hammering the broker).
+Closed the same way: a `TerminalBrokerError` on first submit now escalates to a
+durable `needs_review` record instead of releasing to CREATED, completing the
+"no submission livelock" invariant across **both** submission paths.
+
+### D-023 — AIR remediation Group A: deterministic validation & contract fixes
+**Context.** An independent adversarial review (the "AIR" findings, AIR-001…011)
+flagged eleven defects across validation, recovery, and test quality. Group A is
+the deterministic subset — five findings (AIR-004/005/006/007/008/009) that are
+fully decidable without any temporal or broker-recovery reasoning. Each was
+reproduced firsthand as a **red test first**, then fixed to green, exercised
+through the `any_store` fixture so `InMemoryStateStore` and `SqliteStateStore`
+are proven to accept/reject/persist/read-back/audit **identically**, and every
+new rejection raises a **domain error**, never a raw `ValueError`/`TypeError`/
+pydantic `ValidationError`/JSON `ValueError`. Regressions live in
+`tests/test_air_remediation.py`.
+
+**The unifying root cause behind three of the five: silent coercion.** Python's
+str-enums and pydantic's lax mode both *accept* an input that looks close enough
+and quietly convert it — a bare `"pending"` string matching a `CandidateStatus`
+member, `"false"` becoming a truthy bool, `True` becoming `1`. Each conversion
+erases the caller's real intent before any guard can see it. The fix is the same
+shape everywhere: **validate the concrete value at the store/domain boundary,
+require the real type, reject the coercion class with a domain error.**
+
+**(A1 · AIR-004) Recovery status is a validated enum with an explicit transition
+table.** `SubmitRecoveryRecord.cleanup_status` transitions had no state machine —
+any string could be written, and an already-resolved record could silently
+re-open. Added `RECOVERY_STATUSES` (the frozenset of the three valid values) and
+`RECOVERY_TRANSITIONS` (`unresolved → {resolved, needs_review}`; both terminal
+states → `∅`) in `app/models.py`. `app.store.core.recovery_status_event` now
+raises `RecoveryTransitionError` on an unknown status or a disallowed transition;
+`None`/same-status is a no-op returning `None` (no spurious audit row), matching
+the candidate/order same-status rule.
+
+**(A2 · AIR-005 + AIR-008) The coercion class, swept.** Three sub-fixes, then a
+grep of every store entrypoint and route schema to confirm no fourth surface was
+missed:
+- **Strict booleans on all four control surfaces.** `set_kill_switch`,
+  `set_buys_paused`, `set_watchlist_armed`, `add_watchlist_symbol` now call
+  `app.store.core.require_bool` (raises `InvalidControlValueError` on a non-`bool`)
+  in **both** stores; the route schemas `KillSwitchRequest.engaged` and
+  `WatchlistCreate.armed` use `StrictBool`. The reproduced defect this closes:
+  `{"engaged": "false"}` — a payload *meant to disengage the emergency stop* —
+  used to be accepted, memory storing the truthy string `'false'` and SQLite
+  coercing it to `True`, so the disengage request would have **engaged** the kill
+  switch. Now it is a clean `422` at the route and an `InvalidControlValueError`
+  at the store. (The buys-pause/resume routes carry no body — they toggle a fixed
+  value server-side — so there is no schema field to stricten there; the store
+  setter `require_bool` is still the backstop for any direct caller.)
+- **Candidate numerics validated at the store boundary.** A new
+  `app.policy.candidate_numeric_reason` (reusing the existing
+  `whole_count_reason`/`limit_price_reason`/`finite_number_reason` family — not a
+  re-implementation) is checked in **both** `create_candidate`s *before* the
+  pydantic `Candidate` is constructed, rejecting `NaN`/`Inf`/`-Inf`, zero,
+  negative, a fractional quantity, a `bool`, and a string with `InvalidOrderError`.
+  A genuinely-absent value is `None` (allowed — an unsized/unpriced candidate),
+  never a non-finite sentinel. This **converges a real parity break**: a `nan`
+  price used to roundtrip as `nan` through memory but as `NULL` through SQLite
+  (SQLite stores `NaN` as `NULL`), so the two stores disagreed on what was
+  persisted; now neither persists it at all. This **supersedes D-021's narrower
+  `suggested_value_type_reason`** (bool/string only), which is now removed as dead
+  code — `candidate_numeric_reason` subsumes it (bool/string rejection still flows
+  through `finite_number_reason`) and additionally closes the non-finite/
+  non-positive gap D-021 had deliberately deferred to order-creation time. The
+  order-creation guards remain as **defense-in-depth** and as the sole guard for
+  the one value the candidate boundary allows — a `None` price on a LIMIT order.
+- **Serialization guard so no API response can emit a non-JSON float.** A
+  persisted `inf`/`nan` (a legacy row, or any path that bypassed the write guard)
+  would crash readback on Py3.13 and emit invalid `Infinity` on 3.12. Added
+  `ResponseSafeFloat`/`ResponseSafeRequiredFloat` in `app/models.py` — `Annotated`
+  float types with a `PlainSerializer(when_used="json")` that maps a non-finite
+  value to JSON `null` — applied to every persisted float field (candidate/order
+  limit price, fill price, position + snapshot cost basis/average price, recovery
+  limit price). Verified end-to-end: a raw `inf` row inserted straight into SQLite
+  reads back and serializes as `null` through the real FastAPI response path.
+
+**(A3 · AIR-006) The test-only `create_order` is off the public contract.**
+`create_order` had no production caller (every real order goes through
+`create_order_for_candidate`) yet sat on the public `StateStore` surface as a
+latent hazard — it accepted `qty=-100` and bypassed every gate. Removed from
+`app/store/base.py` and renamed to `create_order_for_test` in both stores, with a
+TEST-ONLY docstring; it inherits the candidate's `session_id` so a test order can
+still be claimed for submission like a real one. Not threaded through the policy
+plan (deliberately — it is a fixture helper, not a code path).
+
+**(A4 · AIR-007) One path into `SUBMITTING`.** Removed `CREATED → SUBMITTING`
+from `app.transitions.ORDER_TRANSITIONS`. The atomic submission claim
+(`claim_order_for_submission`, D-017) writes `SUBMITTING` directly (never through
+the generic `transition_order`), so removing the table entry closes a bypass and
+breaks nothing — `claim_order_for_submission` is now provably the *sole* entry
+into `SUBMITTING`. The stale comment that had called the claim "the ONLY path to
+the broker" was corrected (submission, not the broker, is what the claim gates).
+
+**(A5 · AIR-009) Enum/string parity at the store boundary.** The chosen public
+contract: **status arguments must be real enum instances.** `transition_candidate`,
+`list_candidates(status=)`, and `transition_order` (via `plan_transition_order`)
+now call `app.store.core.require_status_enum`, raising `InvalidStatusError` on a
+string/bool/None. This closes a silent parity divergence: `InMemoryStateStore`
+compared with `is`/set-membership (a bare `"pending"` string *is* a member of a
+str-enum set, so it matched and mutated), while `SqliteStateStore` pre-coerced
+via `CandidateStatus(x)`/`OrderStatus(x)` — the two stores accepted or rejected
+the same bare string differently. All such coercions of a caller-supplied status
+were removed; both stores now require the enum and reject identically. (Verified
+no production caller passes a string — routes pass enum members.) The remaining
+`OrderSide(...)`/`OrderType(...)` coercions are out of scope: they are internal
+callers only, symmetric across both stores (no parity divergence), and validated
+at pydantic construction anyway.
+
+**Sweep result.** Every store entrypoint and route schema taking a bool/enum/
+numeric field was checked. Beyond the surfaces above, the only bool input found
+was `open_only: bool = Query(default=True)` on the order-list read filter — a
+display filter that mutates no state, so a lax coerce there carries no safety
+consequence; recorded as reviewed-and-benign rather than strictened.
+
+**Enforcement points:** `app/models.py` (recovery enum + transition table,
+`ResponseSafe*` serializers), `app/store/core.py` (`require_bool`,
+`require_status_enum`, `recovery_status_event`), `app/store/base.py` (new domain
+errors `RecoveryTransitionError`/`InvalidStatusError`/`InvalidControlValueError`,
+`create_order` removed from the ABC), `app/store/memory.py` + `sqlite.py`
+(guards wired into all four bool setters, candidate numerics, status transitions;
+`create_order` → `create_order_for_test`), `app/policy.py`
+(`candidate_numeric_reason`; dead `suggested_value_type_reason` removed),
+`app/transitions.py` (`CREATED → SUBMITTING` removed), `app/api/schemas.py`
+(`StrictBool` on the two control-flag bodies). Suite: **1026 passed / 3 skipped,
+branch coverage 95.49%** (floor 93%). Pre-existing tests that had asserted the
+*old, later* rejection boundary (non-finite/non-positive rejected at
+order-creation) were adapted to assert the new earlier-and-stronger candidate
+boundary — the guarantee (bad value → rejected, nothing persisted) is preserved
+and tightened, not relaxed.
+
+**Gate A: GREEN.** Groups B (temporal/recovery: AIR-001/002/003) and C (test
+quality: AIR-010/011) are tracked separately; Group B's gate additionally
+requires an independent adversarial re-review of its diff by a fresh context.
 
 ### D-021 — Phase-7 readiness gate: audited green, three follow-up fixes landed
 **Context.** Per the wave runbook, once Waves 0–2 are merged the capstone

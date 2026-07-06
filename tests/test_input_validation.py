@@ -28,7 +28,7 @@ async def _order(any_store, *, side=OrderSide.BUY, quantity=100, symbol="AAPL"):
 
     await any_store.initialize()
     candidate = await any_store.create_candidate(symbol)
-    order = await any_store.create_order(candidate.id, symbol, side, quantity)
+    order = await any_store.create_order_for_test(candidate.id, symbol, side, quantity)
     return candidate, order
 
 
@@ -112,7 +112,7 @@ async def test_duplicate_and_oversell_paths_unchanged(any_store):
     assert (await any_store.get_position("AAPL")).quantity == 100
 
     # Oversell through a side-matched sell order still raises (long-only guard).
-    sell = await any_store.create_order(candidate.id, "AAPL", OrderSide.SELL, 200)
+    sell = await any_store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
     with pytest.raises(NegativePositionError):
         await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0)
 
@@ -123,7 +123,7 @@ async def test_duplicate_and_oversell_paths_unchanged(any_store):
 async def test_create_order_unknown_candidate_raises(any_store):
     await any_store.initialize()
     with pytest.raises(UnknownEntityError):
-        await any_store.create_order("no-such-candidate", "AAPL", OrderSide.BUY, 10)
+        await any_store.create_order_for_test("no-such-candidate", "AAPL", OrderSide.BUY, 10)
     assert await any_store.list_orders() == []
 
 
@@ -131,7 +131,7 @@ async def test_create_order_symbol_mismatch_raises(any_store):
     await any_store.initialize()
     candidate = await any_store.create_candidate("AAPL")
     with pytest.raises(InvalidOrderError):
-        await any_store.create_order(candidate.id, "MSFT", OrderSide.BUY, 10)
+        await any_store.create_order_for_test(candidate.id, "MSFT", OrderSide.BUY, 10)
     assert await any_store.list_orders() == []
 
 
@@ -141,7 +141,7 @@ async def test_create_order_valid_candidate_any_status_succeeds(any_store):
     await any_store.initialize()
     candidate = await any_store.create_candidate("AAPL")
     assert candidate.status is CandidateStatus.PENDING
-    order = await any_store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await any_store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
     assert order.candidate_id == candidate.id
     assert order.symbol == "AAPL"
 
@@ -229,7 +229,7 @@ async def test_candidate_order_id_set_only_on_ordered(any_store):
     await any_store.initialize()
     candidate = await any_store.create_candidate("AAPL")
     await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
-    order = await any_store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await any_store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
     ordered = await any_store.transition_candidate(
         candidate.id, CandidateStatus.ORDERED, order_id=order.id
     )

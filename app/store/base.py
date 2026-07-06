@@ -26,6 +26,7 @@ from datetime import date
 from typing import Any, Iterable, Literal, Optional
 
 from app.models import (
+    RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
     Event,
@@ -36,6 +37,9 @@ from app.models import (
     OrderType,
     Position,
     PositionSnapshot,
+    SellIntent,
+    SellIntentStatus,
+    SellReason,
     SessionRecord,
     SubmitRecoveryRecord,
     WatchlistSymbol,
@@ -90,6 +94,45 @@ class OrderTransitionError(StoreError):
     """An illegal order lifecycle transition was attempted."""
 
 
+class SellIntentTransitionError(StoreError):
+    """An illegal sell-intent lifecycle transition was attempted (Phase 7) —
+    e.g. ordering an intent that is not ``approved``, or reviving a terminal
+    (``rejected``/``expired``/``ordered``) one."""
+
+
+class RecoveryTransitionError(StoreError):
+    """An illegal submit-recovery ``cleanup_status`` transition was attempted
+    (AIR-004): an unknown status value, or a disallowed move such as reopening a
+    terminal (``resolved_canceled``/``needs_review``) record back to
+    ``unresolved``. The record and its audit trail are left unchanged.
+    """
+
+
+class InvalidStatusError(StoreError):
+    """A status argument was not a proper enum member (AIR-009).
+
+    ``list_candidates(status=)``, ``transition_candidate`` and
+    ``transition_order`` require a real ``CandidateStatus`` / ``OrderStatus``
+    instance. A raw string (``"pending"``/``"approved"``) — which a ``str``-enum
+    would otherwise *silently* match in SQLite while ``InMemoryStateStore``
+    diverged (empty result / ``AttributeError``) — or a ``bool``/``None`` where a
+    status is required is rejected here, so both stores accept and reject
+    identically with no mutation.
+    """
+
+
+class InvalidControlValueError(StoreError):
+    """A control/flag setter received a non-``bool`` value (AIR-005).
+
+    ``set_kill_switch``/``set_buys_paused``/``set_watchlist_armed`` and
+    ``create_watchlist(armed=)`` take a real ``bool`` only — a string like
+    ``"false"`` or an int like ``0`` is rejected here rather than silently
+    coerced (memory would store the truthy string, SQLite would coerce to
+    ``True``, so ``{"engaged": "false"}`` meant to *disengage* would engage the
+    switch — an emergency-stop inversion).
+    """
+
+
 class InvalidFillError(StoreError):
     """A fill was rejected at the store boundary for a bad value or a mismatch
     against its order (D-010).
@@ -106,11 +149,16 @@ class InvalidFillError(StoreError):
 class InvalidOrderError(StoreError):
     """An order operation was rejected for invalid inputs (D-010).
 
-    Raised by ``create_order`` when the order's symbol does not match its
-    candidate, and by ``transition_order`` when ``filled_quantity`` is out of
-    range (`0 <= filled_quantity <= order.quantity`) or would move backward
-    (no broker-correction path exists in beta). A *missing* candidate is
-    reported as :class:`UnknownEntityError`.
+    Raised by ``create_order_for_candidate`` when the order's symbol does not
+    match its candidate; by ``create_order_for_sell_intent``/
+    ``flatten_position`` for an oversell, a non-positive/fractional quantity,
+    an unpriceable LIMIT, or a MARKET order carrying a limit price (each such
+    rejection also self-heals the sell-intent ``approved -> expired``, X-002 —
+    see ``docs/INVARIANTS.md`` INV-033); and by ``transition_order`` when
+    ``filled_quantity`` is out of range (`0 <= filled_quantity <=
+    order.quantity`) or would move backward (no broker-correction path exists
+    in beta). A *missing* candidate/order is reported as
+    :class:`UnknownEntityError`.
     """
 
 
@@ -233,6 +281,41 @@ class SubmissionClaim:
     reason: Optional[str] = None
 
 
+# FlattenResult.outcome values (X-001). The route dispatches on these:
+FLATTEN_FLAT = "flat"        # no open position; route surfaces 409
+FLATTEN_EXISTING = "existing"  # an existing intent returned as-is (idempotent
+                               # own manual_flatten, or a genuinely-live
+                               # protection_floor exit left untouched)
+FLATTEN_CREATED = "created"  # a fresh manual_flatten intent was created + ordered
+                             # (superseding a non-live protection_floor exit first,
+                             # if one was active)
+
+
+@dataclass(frozen=True)
+class FlattenResult:
+    """Outcome of :meth:`StateStore.flatten_position` (X-001).
+
+    ``flat``: no open position for the symbol (the route surfaces a 409).
+    ``existing``: ``intent``/``order`` are returned as-is — no new intent was
+    created. ``created``: a fresh ``manual_flatten`` intent (``intent``) and its
+    SELL order (``order``) were created, atomically superseding any non-live
+    ``protection_floor`` exit first (``superseded`` is ``True`` when that
+    supersede happened — an observability flag, not part of the contract).
+
+    In BOTH ``existing`` and ``created``, ``intent.reason`` is **guaranteed**
+    to be ``manual_flatten`` UNLESS ``existing`` is returning a genuinely-live
+    ``protection_floor`` exit that was already executing — the caller can tell
+    the two apart via ``intent.reason`` itself. This is the whole point of the
+    method: no caller of ``flatten_position`` can ever be handed a *newly
+    created/deduped* intent whose reason isn't what was asked for (X-001).
+    """
+
+    outcome: str
+    intent: Optional[SellIntent] = None
+    order: Optional[Order] = None
+    superseded: bool = False
+
+
 class StateStore(ABC):
     """Abstract persistence interface. All methods are async."""
 
@@ -321,22 +404,180 @@ class StateStore(ABC):
         """
 
     # ------------------------------------------------------------------ #
-    # Orders (broker lifecycle: created/submitted/partially_filled/filled/...)
+    # Sell intents (Phase 7 — Sell-Side Protection). The sell-side analogue of
+    # candidates: a first-class exit decision with its own lifecycle, producing
+    # one SELL order. See docs/IMPLEMENTATION_PROMPT_PHASE_7.md.
     # ------------------------------------------------------------------ #
     @abstractmethod
-    async def create_order(
+    async def create_sell_intent(
         self,
-        candidate_id: str,
-        symbol: str,
-        side: OrderSide,
-        quantity: int,
         *,
-        order_type: OrderType = OrderType.LIMIT,
-        limit_price: Optional[float] = None,
-        replaces_order_id: Optional[str] = None,
+        symbol: str,
+        reason: SellReason,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
         session_id: Optional[str] = None,
-    ) -> Order:
+    ) -> SellIntent:
+        """Create a sell intent (an exit decision) atomically + audited.
+
+        **Single-flight (atomic dedup).** The active-intent check and the insert
+        happen under ONE lock hold: if an *active* sell intent already exists for
+        ``symbol`` — see :meth:`active_sell_intent_for` for the exact "active"
+        definition, kept in that one place so this docstring can't drift from it
+        again (X-003) — the existing intent is returned and nothing is written.
+        Validates a positive whole ``target_quantity`` and a real
+        :class:`SellReason`.
+
+        **This alone does not close the X-001 race** for a *specific* reason
+        (``MANUAL_FLATTEN``): this method's dedup returns *whatever* intent is
+        active regardless of the ``reason`` requested, so a caller that needs a
+        guaranteed ``MANUAL_FLATTEN`` outcome — even racing a concurrent
+        ``PROTECTION_FLOOR`` intent's own creation — must use
+        :meth:`flatten_position` instead, which performs the whole
+        supersede-then-create sequence as one atomic unit and verifies the
+        reason of what it returns.
+        """
+
+    @abstractmethod
+    async def transition_sell_intent(
+        self,
+        intent_id: str,
+        new_status: SellIntentStatus,
+        *,
+        order_id: Optional[str] = None,
+    ) -> SellIntent:
+        """Atomically transition a sell intent and write an audit event. Mirrors
+        :meth:`transition_candidate` (enum-typed status, idempotent same-status
+        no-op, audited genuine transitions). ``approved -> expired`` is the
+        self-heal used when the intent->order handoff is rejected — no intent is
+        ever left stranded ``approved`` with no order."""
+
+    @abstractmethod
+    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]:
         ...
+
+    @abstractmethod
+    async def list_sell_intents(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        status: Optional[SellIntentStatus] = None,
+        symbol: Optional[str] = None,
+    ) -> list[SellIntent]:
+        ...
+
+    @abstractmethod
+    async def active_sell_intent_for(self, symbol: str) -> Optional[SellIntent]:
+        """The current active (in-flight) sell intent for ``symbol``, or ``None``.
+
+        **This is the ONE canonical "active" definition** — every other
+        docstring in this class refers back to this one rather than restating
+        it, so the store's behavior and this definition cannot drift apart
+        again the way they did before X-003 (the code used to silently drop the
+        ``needs_review`` clause the ADR always specified).
+
+        Active = ``pending``/``approved``, or ``ordered`` with a still-open
+        (non-terminal) Order that does **not** carry an OPEN ``needs_review``
+        broker-submit recovery record (D-017 / X-003). Once the linked Order
+        reaches a terminal state (filled/canceled/rejected), OR is stranded in
+        ``needs_review`` (a broker order accepted upstream that local state
+        can't confirm as live — the recovery loop has escalated it for a human,
+        not left it "still working"), the intent is no longer active and the
+        symbol is eligible for a fresh protective intent (the residual
+        re-evaluation path) — so neither a partial-then-canceled exit nor a
+        stuck ``needs_review`` order can permanently block re-protection for a
+        still-breaching symbol. The recovery record and its operator alert stay
+        independently visible regardless (this definition only decides
+        single-flight eligibility, never recovery visibility). An ``unresolved``
+        recovery (the loop still actively working it) does NOT free the symbol —
+        only the terminal-for-automation ``needs_review`` escalation does.
+
+        Used for the single-flight dedup (:meth:`create_sell_intent`) and the
+        operator/protection status surface.
+        """
+
+    @abstractmethod
+    async def create_order_for_sell_intent(
+        self,
+        intent_id: str,
+        *,
+        order_type: OrderType,
+        limit_price: Optional[float] = None,
+    ) -> Order:
+        """Atomic ``APPROVED -> ORDERED`` handoff for a sell intent — the sell-side
+        analogue of :meth:`create_order_for_candidate`.
+
+        Creates the SELL :class:`Order` (``side=SELL``, ``sell_intent_id`` set,
+        ``candidate_id=None`` — the XOR origin), transitions the intent to
+        ``ordered`` linking it, and writes both audit events, atomically. **No
+        CAPI risk gate** (a protective exit reduces risk). **Re-reads the live
+        derived position under the lock and rejects an oversell** (never a short:
+        ``target_quantity`` may not exceed the current position quantity).
+        ``order_type`` is a placeholder here (``MARKET`` for the full-exit intent);
+        the concrete session-conditional type is (re)decided at submission time
+        (Rule 12 / D-015 — see monitoring). For ``LIMIT`` a positive
+        ``limit_price`` is required; for ``MARKET`` it must be ``None``.
+
+        **Idempotent:** an intent already ``ORDERED`` returns its existing order.
+        Raises :class:`UnknownEntityError` (unknown intent),
+        :class:`SellIntentTransitionError` (not ``approved``), or
+        :class:`InvalidOrderError` (oversell / bad limit-vs-market).
+        """
+
+    @abstractmethod
+    async def flatten_position(
+        self, symbol: str, *, session_id: Optional[str] = None
+    ) -> FlattenResult:
+        """Atomically open (or return the existing) ``manual_flatten`` exit for
+        ``symbol`` — the whole "read the live position, stand down any
+        non-live exit (a ``protection_floor`` intent, OR a stranded
+        ``manual_flatten`` intent that never got as far as having an order —
+        docs/INVARIANTS.md INV-038), create + approve + dispatch a fresh
+        ``manual_flatten``" sequence, evaluated and applied under ONE lock hold
+        (X-001). "The existing" one is only ever returned as-is when it is
+        already ``ORDERED`` (has a real order) — never a merely
+        ``pending``/``approved`` one, which would mean nothing actually exits.
+
+        This is the ONLY correct way to flatten a position from a route or any
+        other caller that must guarantee it gets back a ``manual_flatten``
+        intent. Calling :meth:`create_sell_intent` directly with
+        ``reason=manual_flatten`` does NOT give this guarantee: its
+        single-flight dedup returns *whatever* intent is active regardless of
+        the requested reason, so a concurrent protection tick's own
+        ``create_sell_intent(protection_floor, ...)`` call can win the race in
+        the gap between a caller's own separate "check active" and "create"
+        calls, silently handing the caller a ``protection_floor`` intent
+        instead — which a kill switch then holds unsubmitted (the exact defect
+        this method exists to close). ``flatten_position`` has no such gap:
+        every read this decision depends on, and every write it performs, share
+        one lock hold from start to finish.
+
+        Does **not** cancel a LIVE (broker-submitted) BUY order — that needs a
+        broker call, which must never happen while this lock is held (the
+        concurrency model: no network call under the store lock). Callers
+        cancel open buys via ``app.monitoring.cancel_open_buys`` (best-effort,
+        idempotent) BEFORE calling this method; this method re-reads the live
+        position under its own lock regardless, so sizing always reflects
+        whatever the buy-cancel step actually achieved — never oversized, never
+        racing a partial fill.
+
+        Returns :class:`FlattenResult`. ``session_id`` seeds a freshly-created
+        intent only (ignored when returning an existing one).
+        """
+
+    # ------------------------------------------------------------------ #
+    # Orders (broker lifecycle: created/submitted/partially_filled/filled/...)
+    # ------------------------------------------------------------------ #
+    # NOTE (AIR-006): the low-level ``create_order(candidate_id, symbol, side,
+    # quantity, ...)`` used to live on this public contract. It has **no
+    # production caller** (every real order goes through
+    # ``create_order_for_candidate`` above, which enforces the approved-only rule
+    # and the CAPI/control gates), yet it accepted ``quantity=-100`` and bypassed
+    # every gate — a latent public-contract hazard. It has been removed from the
+    # public ``StateStore`` surface and survives only as
+    # ``create_order_for_test`` on the concrete stores, a clearly non-production
+    # test-setup helper. Do not add it back to this ABC.
 
     @abstractmethod
     async def create_order_for_candidate(
@@ -441,19 +682,34 @@ class StateStore(ABC):
         failure_reason: str,
         session_id: Optional[str] = None,
         candidate_id: Optional[str] = None,
+        cleanup_status: str = RECOVERY_UNRESOLVED,
+        event_type: str = "submit_recovery_recorded",
+        extra_payload: Optional[dict[str, Any]] = None,
     ) -> SubmitRecoveryRecord:
-        """Durably record a broker order that was accepted but whose local
-        ``SUBMITTING → SUBMITTED`` persist failed (D-017 / F-002). Atomic +
-        audited (``submit_recovery_recorded``). The monitoring tick's recovery
-        step then polls/cancels ``broker_order_id`` until resolved — a single
-        best-effort cancel is not enough, so this replaces it.
+        """Durably record a broker truth the local order state cannot otherwise
+        reconcile, surfaced to the operator. Atomic + audited. Two incident kinds
+        share this one ledger:
 
-        ``candidate_id`` (D-020) correlates the ``submit_recovery_recorded``
-        event to the owning candidate's lifecycle. It is not stored on
-        :class:`SubmitRecoveryRecord` itself (D-020 stays to one nullable
-        ``Event`` field, not a new entity column) — ``update_submit_recovery``
-        resolves it later by looking up the local order via ``local_order_id``
-        (orders are never deleted, so this reliably resolves).
+        * **Submission orphan (D-017 / F-002 / AIR-003):** a broker order accepted
+          upstream but whose local ``SUBMITTING → SUBMITTED`` persist failed, or a
+          stale ``SUBMITTING`` order whose idempotent re-drive hit a terminal
+          error. Born ``RECOVERY_UNRESOLVED`` (default): the monitoring tick's
+          recovery step polls/cancels ``broker_order_id`` until resolved.
+        * **Fill divergence (AIR-002):** the broker reports more filled than we
+          could record (e.g. an un-priceable fill). Born ``cleanup_status=
+          RECOVERY_NEEDS_REVIEW`` — a real untracked position a human must
+          reconcile; the recovery loop must not auto-cancel it.
+
+        ``cleanup_status`` must be a valid recovery status (``RECOVERY_STATUSES``);
+        ``event_type`` names the creation audit event and ``extra_payload`` is
+        merged into it (e.g. the broker/local fill counts for a divergence).
+
+        ``candidate_id`` (D-020) correlates the creation event to the owning
+        candidate's lifecycle. It is not stored on :class:`SubmitRecoveryRecord`
+        itself (D-020 stays to one nullable ``Event`` field, not a new entity
+        column) — ``update_submit_recovery`` resolves it later by looking up the
+        local order via ``local_order_id`` (orders are never deleted, so this
+        reliably resolves).
         """
 
     @abstractmethod
@@ -588,10 +844,15 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> Event:
-        """``correlation_id`` ties a whole candidate lifecycle together for
-        incident reconstruction (D-020). When not passed it defaults to
-        ``candidate_id`` (the owning candidate's id is the correlation key), so
-        every event that names a candidate correlates automatically."""
+        """``correlation_id`` ties a whole candidate (or sell-intent) lifecycle
+        together for incident reconstruction (D-020). When not passed it
+        defaults to ``candidate_id`` (the owning candidate's id is the
+        correlation key), so every event that names a candidate correlates
+        automatically. When ``candidate_id`` is also absent but ``order_id`` is
+        present, it resolves instead from that order's ``sell_intent_id``
+        (X-004) — so a protective-sell order's claim/submit/stale/fill/recovery
+        events correlate on the sell intent, not just its creation events. See
+        ``docs/INVARIANTS.md`` INV-041."""
         ...
 
     @abstractmethod

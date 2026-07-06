@@ -37,7 +37,7 @@ async def test_schema_creation_is_idempotent(tmp_path):
 async def test_data_survives_reopen(tmp_path):
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 200)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 200)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 2.0)
     await store.set_kill_switch(True)
@@ -56,7 +56,7 @@ async def test_data_survives_reopen(tmp_path):
 async def test_duplicate_fill_protection_in_sqlite(tmp_path):
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="x")
     dup = await store.append_fill(
         order.id, "AAPL", OrderSide.BUY, 100, 9.0, source_fill_id="x"
@@ -69,10 +69,10 @@ async def test_duplicate_fill_protection_in_sqlite(tmp_path):
 async def test_oversell_rejected_in_sqlite(tmp_path):
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
-    buy_order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
     await store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0)
     # Sell through a side-matched order so the long-only guard is what rejects.
-    sell_order = await store.create_order(candidate.id, "AAPL", OrderSide.SELL, 200)
+    sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
     with pytest.raises(NegativePositionError):
         await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 200, 1.0)
     assert (await store.get_position("AAPL")).quantity == 100
@@ -92,7 +92,7 @@ async def test_multi_row_write_is_atomic_rolls_back(tmp_path):
 
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 100)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
 
     original = store._insert_event
 
@@ -114,7 +114,7 @@ async def test_position_snapshots_survive_restart(tmp_path):
     store = await _fresh(tmp_path)
     session = await store.get_current_session()
     candidate = await store.create_candidate("AAPL", session_id=session.id)
-    order = await store.create_order(
+    order = await store.create_order_for_test(
         candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
     )
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.5,
@@ -148,7 +148,7 @@ async def test_migration_adds_fills_session_id_to_old_db(tmp_path):
     store = SqliteStateStore(path)
     await store.initialize()  # _migrate must ALTER fills to add session_id
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 10, 1.0,
                             session_id="sess-x")
     fills = await store.list_fills(symbol="AAPL")

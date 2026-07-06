@@ -37,7 +37,7 @@ def test_sqlite_source_never_updates_or_deletes_fills():
 async def test_append_only_grows_by_one(store):
     candidate = await store.create_candidate("AAPL")
     # Order sized for the cumulative 150 of both fills (D-010 cumulative guard).
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 200)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 200)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0)
     await store.append_fill(order.id, "AAPL", OrderSide.BUY, 50, 2.0)
     fills = await store.list_fills(symbol="AAPL")

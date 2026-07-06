@@ -47,6 +47,8 @@ async def review(
     # Fills are scoped to this session directly (D-007), not returned in full
     # regardless of date.
     fills = await store.list_fills(session_id=session.id)
+    # Phase 7: the session's protective/flatten exits, reviewable alongside it.
+    sell_intents = await store.list_sell_intents(session_id=session.id)
 
     if session.status is SessionStatus.CLOSED:
         # Point-in-time: return the snapshot captured at close, not today's live
@@ -78,4 +80,5 @@ async def review(
         fills=fills,
         positions=positions,
         events=events,
+        sell_intents=sell_intents,
     )

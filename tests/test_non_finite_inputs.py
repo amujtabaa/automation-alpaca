@@ -49,19 +49,19 @@ async def test_append_fill_rejects_non_finite_quantity(any_store, bad_qty):
 
 
 @pytest.mark.parametrize("bad_price", _NON_FINITE)
-async def test_create_order_rejects_non_finite_limit_price(any_store, bad_price):
+async def test_create_candidate_rejects_non_finite_limit_price(any_store, bad_price):
+    # AIR-008: the non-finite price is rejected at the *candidate* boundary now
+    # (both stores identically), before a corrupt row can ever be persisted —
+    # a strictly earlier and stronger guard than the old order-creation reject.
+    # The parity break is closed: neither store roundtrips nan (memory) or NULL
+    # (SQLite); both refuse and store nothing.
     await any_store.initialize()
-    candidate = await any_store.create_candidate(
-        "AAPL", suggested_quantity=10, suggested_limit_price=bad_price
-    )
-    await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
     with pytest.raises(InvalidOrderError):
-        await any_store.create_order_for_candidate(candidate.id)
-    # Rejected before any state changed: no order, candidate stays APPROVED.
+        await any_store.create_candidate(
+            "AAPL", suggested_quantity=10, suggested_limit_price=bad_price
+        )
+    assert await any_store.list_candidates() == []
     assert await any_store.list_orders() == []
-    assert (
-        await any_store.get_candidate(candidate.id)
-    ).status is CandidateStatus.APPROVED
 
 
 def test_schema_rejects_non_finite_limit_price():

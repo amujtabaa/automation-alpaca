@@ -104,8 +104,14 @@ class SimBrokerAdapter(MockBrokerAdapter):
         return broker_order_id
 
     async def get_order_status(
-        self, broker_order_id: str, *, recorded_quantity: int = 0
+        self,
+        broker_order_id: str,
+        *,
+        recorded_quantity: int = 0,
+        fallback_price: Optional[float] = None,
     ) -> BrokerOrderUpdate:
+        # fallback_price (§7) is accepted for interface parity and ignored: the
+        # sim's scripted/queued fills always carry an explicit price.
         # 1. Simulated disconnect window: raise, no matter what else is set.
         if self._disconnect_remaining > 0:
             self._disconnect_remaining -= 1

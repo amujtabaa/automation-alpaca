@@ -98,17 +98,21 @@ async def test_set_buys_paused_rolls_back_on_audit_failure(store):
 
 async def test_transition_order_rolls_back_on_audit_failure(store):
     order = await _ordered(store)
+    # Reach SUBMITTING via the claim first (AIR-007: the only entry into
+    # SUBMITTING); the genuine order_transition under test is SUBMITTING ->
+    # SUBMITTED.
+    await store.claim_order_for_submission(order.id)
     restore = _raise_on(store, "order_transition")
     with pytest.raises(RuntimeError):
-        # CREATED -> SUBMITTING (the submission claim, D-017) is a genuine
-        # status change that writes an order_transition event; forcing that
-        # write to fail must roll the whole mutation back.
+        # SUBMITTING -> SUBMITTED is a genuine status change that writes an
+        # order_transition event; forcing that write to fail must roll the whole
+        # mutation back.
         await store.transition_order(
-            order.id, OrderStatus.SUBMITTING, broker_order_id="b-1"
+            order.id, OrderStatus.SUBMITTED, broker_order_id="b-1"
         )
     restore()
     fresh = await store.get_order(order.id)
-    assert fresh.status is OrderStatus.CREATED  # status not advanced
+    assert fresh.status is OrderStatus.SUBMITTING  # status not advanced
     assert fresh.broker_order_id is None  # broker id not persisted
 
 

@@ -40,7 +40,11 @@ from app.models import (
     Position,
     PositionSnapshot,
     RECOVERY_NEEDS_REVIEW,
-    RECOVERY_UNRESOLVED,
+    RECOVERY_STATUSES,
+    RECOVERY_TRANSITIONS,
+    SellIntent,
+    SellIntentStatus,
+    SellReason,
     SessionRecord,
     utcnow,
 )
@@ -50,12 +54,16 @@ from app.store.base import (
     CLAIM_CLAIMED,
     CLAIM_SKIPPED,
     CandidateTransitionError,
+    InvalidControlValueError,
     InvalidFillError,
     InvalidOrderError,
+    InvalidStatusError,
     OrderIntentBlockedError,
     OrderTransitionError,
+    RecoveryTransitionError,
     RiskLimitBlockedError,
     RiskLimits,
+    SellIntentTransitionError,
     UnknownEntityError,
 )
 from app.transitions import ORDER_TIMESTAMP, ORDER_TRANSITIONS
@@ -63,6 +71,7 @@ from app.policy import (
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
+    kill_switch_block_reason,
     limit_price_reason,
     order_intent_block_reason,
     order_session_resolution_reason,
@@ -89,6 +98,11 @@ class EventSpec:
     fill_id: Optional[str] = None
     payload: dict[str, Any] = field(default_factory=dict)
     session_id: Optional[str] = None
+    # Lifecycle correlation key (D-020). Buy events leave this None and the store
+    # writer defaults it to candidate_id; sell-side events (Phase 7, candidate_id
+    # is None) set it explicitly to the owning sell_intent_id so a whole protective
+    # exit is reconstructable via GET /api/events?correlation_id=<sell_intent_id>.
+    correlation_id: Optional[str] = None
 
     def as_kwargs(self) -> dict[str, Any]:
         """Keyword args for a store's event writer (``event_type`` stays positional)."""
@@ -100,6 +114,7 @@ class EventSpec:
             "fill_id": self.fill_id,
             "payload": self.payload,
             "session_id": self.session_id,
+            "correlation_id": self.correlation_id,
         }
 
 
@@ -300,6 +315,16 @@ class CreateOrderPlan:
     ``create``: append ``order``, transition the candidate to ORDERED linking it,
     and write ``events`` (``order_created`` then ``candidate_transition``) — all
     atomically.
+
+    ``expire_intent``/``expire_event`` (X-002, sell-intent path only): on a
+    rejection *after* the intent was genuinely ``approved`` (oversell, a
+    vanished position, bad limit/market price coherence — never the "not
+    approved" precondition reject, which has no ``approved`` state to heal
+    from), the intent is atomically self-healed ``approved → expired`` alongside
+    the reject event, so it is never left stranded ``approved`` poisoning the
+    single-flight dedup forever (the ADR's "Self-heal (blocker)" clause). The
+    store applies both writes in the SAME atomic block as the reject, before
+    raising ``error``.
     """
 
     outcome: str
@@ -307,6 +332,8 @@ class CreateOrderPlan:
     reject_event: Optional[EventSpec] = None
     order: Optional[Order] = None
     events: tuple[EventSpec, ...] = ()
+    expire_intent: Optional[SellIntent] = None
+    expire_event: Optional[EventSpec] = None
 
 
 def plan_create_order_for_candidate(
@@ -468,26 +495,421 @@ def plan_create_order_for_candidate(
     )
 
 
+# ---- sell-intent -> order handoff (Phase 7) ------------------------------- #
+
+# Terminal order statuses (no outgoing transitions) — an ordered intent whose
+# order has reached one of these is no longer in flight.
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
+
+
+def sell_intent_is_active(
+    intent: SellIntent,
+    order: Optional[Order],
+    *,
+    order_needs_review: bool = False,
+) -> bool:
+    """Whether a sell intent is still 'in flight' for the single-flight dedup /
+    ``active_sell_intent_for``. Active = ``pending``/``approved`` (not yet
+    ordered), or ``ordered`` with an Order still in a non-terminal status AND
+    without an open ``needs_review`` broker-submit recovery. ``rejected``/
+    ``expired`` intents, ``ordered`` intents whose order reached a terminal
+    state (filled/canceled/rejected), and an ``ordered`` intent whose order is
+    stranded in ``needs_review`` are all inactive — the symbol is eligible for a
+    fresh protective intent (the residual re-evaluation path).
+
+    ``order_needs_review`` (X-003 / ADR "Stranded-order eligibility (blocker)"):
+    the caller passes whether ``order`` currently carries an OPEN
+    ``needs_review`` broker-submit recovery record (D-017) — a broker order
+    accepted upstream that local state can't otherwise confirm as live.
+    Treating that as still-active would let a single stuck ``needs_review``
+    order permanently block re-protection for the symbol forever, even though
+    the recovery record and its operator alert stay independently visible (this
+    function only decides single-flight eligibility, never recovery
+    visibility). This function stays pure — the store fetches the recovery
+    state under its own lock and passes the boolean in, mirroring how ``order``
+    itself is fetched and passed in rather than looked up here.
+    """
+
+    if intent.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
+        return True
+    if intent.status is SellIntentStatus.ORDERED:
+        if order is None or order.status in _TERMINAL_ORDER_STATUSES:
+            return False
+        return not order_needs_review
+    return False
+
+
+def plan_create_order_for_sell_intent(
+    *,
+    intent: SellIntent,
+    live_position_quantity: int,
+    order_type: OrderType,
+    limit_price: Optional[float],
+) -> CreateOrderPlan:
+    """The shared validation cascade + SELL order construction for the
+    sell-intent→order dispatch (Phase 7). ``intent`` is known to exist and *not*
+    already ORDERED (the store handles those first). No CAPI risk gate and no
+    kill-switch/session block here — a protective exit reduces risk and its
+    submission is gated separately at claim time (see the side/reason-aware claim).
+
+    ``live_position_quantity`` is the symbol's current derived position quantity,
+    re-read by the store under its lock: a sell may never exceed it (never a
+    short — Rule 7 / long-only). The order carries ``sell_intent_id`` and
+    ``candidate_id=None`` (the XOR origin); the ``correlation_id`` on both events
+    is the intent id, so the whole protective-exit lifecycle is one filterable key.
+    """
+
+    if intent.status is not SellIntentStatus.APPROVED:
+        # A precondition violation, not a "the approved handoff failed" case —
+        # there is no `approved` state to self-heal FROM (the intent is either
+        # not yet approved, already ordered/terminal, or a caller-contract bug
+        # elsewhere). No expire; matches the pre-X-002 behavior for this branch.
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=SellIntentTransitionError(
+                f"cannot order sell intent {intent.id} in status "
+                f"{intent.status.value}; must be approved"
+            ),
+        )
+
+    def _reject_and_self_heal(error: Exception) -> CreateOrderPlan:
+        """X-002: every rejection below is a genuine "the approved handoff
+        failed" case — self-heal `approved -> expired` atomically alongside the
+        rejection, so the intent is never left stranded `approved` poisoning the
+        single-flight dedup forever (`no_sell_intent_stranded_approved`)."""
+
+        now = utcnow()
+        expired = intent.model_copy(deep=True)
+        expired.status = SellIntentStatus.EXPIRED
+        expired.expired_at = now
+        expired.updated_at = now
+        expire_event = EventSpec(
+            "sell_intent_transition",
+            message=(
+                f"sell intent approved -> expired (order dispatch rejected: "
+                f"{error})"
+            ),
+            symbol=intent.symbol,
+            payload={
+                "from": "approved",
+                "to": "expired",
+                "reason": "dispatch_rejected",
+            },
+            session_id=intent.session_id,
+            correlation_id=intent.id,
+        )
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=error,
+            expire_intent=expired,
+            expire_event=expire_event,
+        )
+
+    qty = intent.target_quantity
+    if qty is None or qty <= 0:
+        return _reject_and_self_heal(
+            InvalidOrderError(
+                f"sell intent {intent.id} has no positive target_quantity"
+            )
+        )
+    # Never a short (Rule 7 / long-only): the exit cannot exceed the live
+    # position. Re-checked here against the freshly-read quantity so a race that
+    # reduced the position (another fill) between approve and order cannot oversell.
+    if qty > live_position_quantity:
+        return _reject_and_self_heal(
+            InvalidOrderError(
+                f"sell intent {intent.id} target_quantity {qty} exceeds the live "
+                f"{intent.symbol} position quantity {live_position_quantity} "
+                f"(would create a short)"
+            )
+        )
+
+    # Order-type/price coherence (Rule 12 exit types): a LIMIT sell needs a
+    # finite positive limit; a MARKET sell must carry NO limit price. Do NOT run
+    # limit_price_reason unconditionally (it would reject the MARKET exit path).
+    if order_type is OrderType.LIMIT:
+        bad_price = limit_price_reason(limit_price)
+        if bad_price is not None:
+            return _reject_and_self_heal(
+                InvalidOrderError(
+                    f"limit sell for intent {intent.id} needs a valid limit_price "
+                    f"({bad_price})"
+                )
+            )
+    elif limit_price is not None:
+        return _reject_and_self_heal(
+            InvalidOrderError(
+                f"{order_type.value} sell for intent {intent.id} must not carry a "
+                f"limit_price (got {limit_price!r})"
+            )
+        )
+
+    order = Order(
+        sell_intent_id=intent.id,
+        symbol=intent.symbol,
+        side=OrderSide.SELL,
+        order_type=order_type,
+        quantity=qty,
+        limit_price=limit_price,
+        session_id=intent.session_id,
+    )
+    return CreateOrderPlan(
+        CREATE_ORDER_CREATE,
+        order=order,
+        events=(
+            EventSpec(
+                "order_created",
+                message=f"protective sell order created for {intent.symbol}",
+                symbol=intent.symbol,
+                order_id=order.id,
+                session_id=intent.session_id,
+                correlation_id=intent.id,
+            ),
+            EventSpec(
+                "sell_intent_transition",
+                message="sell intent approved -> ordered",
+                symbol=intent.symbol,
+                order_id=order.id,
+                payload={"from": "approved", "to": "ordered"},
+                session_id=intent.session_id,
+                correlation_id=intent.id,
+            ),
+        ),
+    )
+
+
+# ---- flatten_position (X-001, atomic manual-flatten) ---------------------- #
+
+# FlattenPlan.outcome values:
+FLATTEN_FLAT = "flat"                                   # no open position
+FLATTEN_EXISTING = "existing"                           # return an existing intent as-is
+FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"    # stand down + create fresh
+
+
+@dataclass(frozen=True)
+class FlattenPlan:
+    """Pure outcome of the manual-flatten decision (X-001).
+
+    Evaluated over state the store fetched ENTIRELY under ONE lock hold, so no
+    concurrent writer — most critically a protection tick's own
+    ``create_sell_intent`` call — can interleave between "decide" and "act".
+    That interleaving was the actual defect: the route used to read the active
+    intent, then LATER call ``create_sell_intent(MANUAL_FLATTEN, ...)`` as a
+    SEPARATE lock hold; a protection tick's own create call could win the
+    single-flight race in the gap, and the route never verified the ``reason``
+    of what it got back — so a human's flatten could silently be handed a
+    ``protection_floor`` intent, which a kill switch would then hold
+    unsubmitted. This planner's caller (``StateStore.flatten_position``) never
+    releases the lock between fetching this input and applying this plan.
+
+    ``flat``: no open position; the caller (route) surfaces a 409.
+
+    ``existing``: return ``existing_intent``/``existing_order`` as-is — either
+    it is ALREADY the caller's own ``manual_flatten`` and has a real order
+    (``ORDERED``; idempotent), or a ``protection_floor`` exit that is
+    genuinely LIVE at the broker (executing; left alone, never captured or
+    duplicated).
+
+    ``supersede_and_create``: any active exit that is NOT yet live is stood
+    down first (``supersede_*`` fields, applied in the SAME atomic block as
+    the create below), then a fresh ``manual_flatten`` intent for
+    ``target_quantity`` is inserted directly and dispatched through the same
+    order-handoff machinery ``create_order_for_sell_intent`` uses — so the
+    returned intent's ``reason`` is GUARANTEED ``manual_flatten``, never a
+    deduped intent of a different reason. "Not yet live" covers: a
+    ``protection_floor`` intent with no order at all, or a still-``created``
+    order; AND a ``manual_flatten`` intent stranded ``pending``/``approved``
+    with no order — reachable only via a crash between two separate commits
+    in ``SqliteStateStore.flatten_position`` (see the inline comment below),
+    never in ordinary operation. This is what closes X-001: nothing else can
+    write to this symbol's sell intents between the supersede and the create,
+    because both happen without ever releasing the lock.
+    """
+
+    outcome: str
+    existing_intent: Optional[SellIntent] = None
+    existing_order: Optional[Order] = None
+    supersede_order_cancel: Optional[Order] = None
+    supersede_cancel_event: Optional[EventSpec] = None
+    supersede_intent_expire: Optional[SellIntent] = None
+    supersede_expire_event: Optional[EventSpec] = None
+    target_quantity: int = 0
+
+
+def plan_flatten_position(
+    *,
+    position: Position,
+    active_intent: Optional[SellIntent],
+    active_order: Optional[Order],
+) -> FlattenPlan:
+    """Decide the manual-flatten outcome for one symbol.
+
+    ``position`` is the LIVE derived position; ``active_intent`` is the
+    symbol's current *active* sell intent (already filtered through
+    :func:`sell_intent_is_active`, including the X-003 ``needs_review``
+    exclusion) or ``None``; ``active_order`` is its linked order (if any). All
+    three are read by the caller under the SAME lock hold this plan is applied
+    under — the decision and the eventual write can never straddle a
+    concurrent mutation.
+    """
+
+    if position.quantity <= 0:
+        return FlattenPlan(FLATTEN_FLAT)
+
+    if active_intent is not None:
+        if (
+            active_intent.reason is SellReason.MANUAL_FLATTEN
+            and active_intent.status is SellIntentStatus.ORDERED
+        ):
+            return FlattenPlan(
+                FLATTEN_EXISTING,
+                existing_intent=active_intent,
+                existing_order=active_order,
+            )
+        # A protection_floor exit is active. Genuinely live at the broker (an
+        # order exists and is no longer CREATED) -> already executing, leave it.
+        if (
+            active_intent.reason is SellReason.PROTECTION_FLOOR
+            and active_order is not None
+            and active_order.status is not OrderStatus.CREATED
+        ):
+            return FlattenPlan(
+                FLATTEN_EXISTING,
+                existing_intent=active_intent,
+                existing_order=active_order,
+            )
+        # Not live: supersede. A CREATED order cancels locally; a stranded
+        # pending/approved intent with no order at all expires. This also
+        # covers a MANUAL_FLATTEN intent found here at PENDING/APPROVED (not
+        # ORDERED) with no order (X-001 follow-up, adversarial re-review
+        # finding): in normal operation a fresh MANUAL_FLATTEN only sits at
+        # PENDING/APPROVED transiently, mid-dispatch, under the SAME
+        # continuous lock this function is always called within — reaching
+        # here on a LATER call means a hard crash landed between the
+        # intent-approve commit and the order-dispatch commit
+        # (SqliteStateStore.flatten_position commits those as two separate
+        # transactions; InMemoryStateStore's single _atomic() block cannot
+        # produce this state at all). Treating a stranded MANUAL_FLATTEN as
+        # "the existing exit" would silently no-op forever — HTTP 200,
+        # order=None — and permanently poison single-flight dedup for the
+        # symbol. Self-healing it here (same as a stranded protection_floor
+        # intent) closes that window: the dead intent expires and a real
+        # exit is created in its place.
+        now = utcnow()
+        supersede_order_cancel = None
+        supersede_cancel_event = None
+        supersede_intent_expire = None
+        supersede_expire_event = None
+        if active_order is not None:
+            updated_order = active_order.model_copy(deep=True)
+            updated_order.status = OrderStatus.CANCELED
+            updated_order.canceled_at = now
+            updated_order.updated_at = now
+            supersede_order_cancel = updated_order
+            supersede_cancel_event = EventSpec(
+                "order_transition",
+                message=(
+                    f"order {active_order.symbol} created -> canceled "
+                    f"(superseded by manual flatten)"
+                ),
+                symbol=active_order.symbol,
+                order_id=active_order.id,
+                payload={
+                    "from": "created",
+                    "to": "canceled",
+                    "reason": "superseded_by_manual_flatten",
+                },
+                session_id=active_order.session_id,
+                correlation_id=active_intent.id,
+            )
+        elif active_intent.status in (
+            SellIntentStatus.PENDING,
+            SellIntentStatus.APPROVED,
+        ):
+            updated_intent = active_intent.model_copy(deep=True)
+            updated_intent.status = SellIntentStatus.EXPIRED
+            updated_intent.expired_at = now
+            updated_intent.updated_at = now
+            supersede_intent_expire = updated_intent
+            supersede_expire_event = EventSpec(
+                "sell_intent_transition",
+                message=(
+                    f"sell intent {active_intent.status.value} -> expired "
+                    f"(superseded by manual flatten)"
+                ),
+                symbol=active_intent.symbol,
+                payload={
+                    "from": active_intent.status.value,
+                    "to": "expired",
+                    "reason": "superseded_by_manual_flatten",
+                },
+                session_id=active_intent.session_id,
+                correlation_id=active_intent.id,
+            )
+        return FlattenPlan(
+            FLATTEN_SUPERSEDE_AND_CREATE,
+            supersede_order_cancel=supersede_order_cancel,
+            supersede_cancel_event=supersede_cancel_event,
+            supersede_intent_expire=supersede_intent_expire,
+            supersede_expire_event=supersede_expire_event,
+            target_quantity=position.quantity,
+        )
+
+    return FlattenPlan(
+        FLATTEN_SUPERSEDE_AND_CREATE, target_quantity=position.quantity
+    )
+
+
 # ---- submit-recovery ledger (D-017) --------------------------------------- #
+
+
+def require_recovery_status(value: str, *, field: str = "cleanup_status") -> None:
+    """Reject a recovery ``cleanup_status`` that is not one of the closed
+    ``RECOVERY_STATUSES`` (AIR-004) — the same domain error the transition
+    validator raises, so a record can never be *born* in an invalid state either.
+    """
+
+    if value not in RECOVERY_STATUSES:
+        raise RecoveryTransitionError(
+            f"{field} {value!r} is not a valid recovery status; "
+            f"must be one of {sorted(RECOVERY_STATUSES)}"
+        )
 
 
 def recovery_status_event(
     prev_status: str, new_status: Optional[str]
 ) -> Optional[str]:
-    """The audit event type to write when a recovery record's ``cleanup_status``
-    changes to ``new_status``, or ``None`` if nothing should be recorded (no
-    change, or it stays ``RECOVERY_UNRESOLVED``). A move to needs-review writes
+    """Validate a recovery ``cleanup_status`` transition and return the audit
+    event type to write, or ``None`` when nothing should change (AIR-004).
+
+    ``new_status is None`` is a bump-only update (retry_count) with no status
+    change — a legal no-op that emits no event, regardless of the current status.
+    A same-status "change" is likewise a no-op. Otherwise the transition must be
+    one of the explicit allowed moves in ``RECOVERY_TRANSITIONS``
+    (``unresolved -> resolved_canceled`` / ``unresolved -> needs_review``); an
+    **unknown** status value or a **disallowed** move (notably reopening a
+    terminal record back to ``unresolved``) raises
+    :class:`RecoveryTransitionError` and the caller must leave the record and its
+    audit trail unchanged. A move to needs-review writes
     ``submit_recovery_needs_review`` (a real untracked position — not "resolved");
     a clean cancel writes ``submit_recovery_resolved``. Shared so both stores
-    emit identical events.
+    validate and emit identically.
     """
 
-    if (
-        new_status is None
-        or new_status == prev_status
-        or new_status == RECOVERY_UNRESOLVED
-    ):
+    if new_status is None or new_status == prev_status:
         return None
+    if new_status not in RECOVERY_STATUSES:
+        raise RecoveryTransitionError(
+            f"unknown recovery cleanup_status {new_status!r}; "
+            f"must be one of {sorted(RECOVERY_STATUSES)}"
+        )
+    if new_status not in RECOVERY_TRANSITIONS.get(prev_status, frozenset()):
+        raise RecoveryTransitionError(
+            f"illegal recovery transition {prev_status!r} -> {new_status!r} "
+            f"(no silent reopen of a terminal record)"
+        )
     if new_status == RECOVERY_NEEDS_REVIEW:
         return "submit_recovery_needs_review"
     return "submit_recovery_resolved"
@@ -512,11 +934,76 @@ class ClaimPlan:
     reason: Optional[str] = None
 
 
+def _buy_claim_hold_reason(
+    own_session: Optional[SessionRecord],
+    current_session: Optional[SessionRecord],
+) -> Optional[str]:
+    """The original Rule 8 submission gate, unchanged: a held order is blocked
+    against its OWN session (D-013a) and, failing that, the live session as a
+    process-wide emergency stop. This is exactly the pre-Phase-7 logic, extracted
+    verbatim so every BUY caller and its tests are provably byte-for-byte
+    untouched (§5.2) — the sell-side branch is layered *around* it, never inside
+    it."""
+
+    hold = session_submission_block_reason(own_session)
+    if hold is None:
+        current_block = order_intent_block_reason(current_session)
+        if current_block is not None:
+            hold = f"current_{current_block}"
+    return hold
+
+
+def _claim_hold_reason(
+    order: Order,
+    own_session: Optional[SessionRecord],
+    current_session: Optional[SessionRecord],
+    sell_reason: Optional[SellReason],
+) -> Optional[str]:
+    """Why this ``CREATED`` order must not be claimed for submission, or ``None``.
+
+    Phase 7 side/reason-aware gate (§5.2 / D-P2). A well-formed protective/flatten
+    SELL short-circuits the BUY control checks based on its owning intent's
+    ``reason``. The qualifying gate is deliberately strict — ``side is SELL`` AND
+    ``sell_intent_id`` set AND ``candidate_id`` is ``None`` AND a *known* reason —
+    so a mislabeled or origin-corrupt order can never inherit the bypass; it falls
+    through to the strict BUY path instead (fail-safe).
+
+    * ``MANUAL_FLATTEN`` → never held: a human-commanded flatten always exits,
+      even kill-switched / buys-paused / closed / unknown-session (D-P2).
+    * ``PROTECTION_FLOOR`` → bypass ``buys_paused`` / ``session_closed`` /
+      ``unknown_session`` (a lingering position must stay exitable after close),
+      **but stays blocked by the kill switch** on EITHER the own or the current
+      session — the operator's all-stop halts even autonomous protection, which is
+      then wound down separately (a held protective order is expired, not left
+      forever).
+    * Anything else (a BUY, or a degenerate SELL) → the unchanged BUY gate.
+    """
+
+    is_protective_sell = (
+        OrderSide(order.side) is OrderSide.SELL
+        and order.sell_intent_id is not None
+        and order.candidate_id is None
+        and sell_reason is not None
+    )
+    if is_protective_sell:
+        if sell_reason is SellReason.MANUAL_FLATTEN:
+            return None
+        if sell_reason is SellReason.PROTECTION_FLOOR:
+            if kill_switch_block_reason(own_session) is not None:
+                return "kill_switch"
+            if kill_switch_block_reason(current_session) is not None:
+                return "current_kill_switch"
+            return None
+        # An unrecognized future reason falls through to the strict path.
+    return _buy_claim_hold_reason(own_session, current_session)
+
+
 def plan_claim_order_for_submission(
     *,
     order: Optional[Order],
     own_session: Optional[SessionRecord],
     current_session: Optional[SessionRecord],
+    sell_reason: Optional[SellReason] = None,
 ) -> ClaimPlan:
     """Decide whether a ``CREATED`` order may be claimed for submission.
 
@@ -524,9 +1011,11 @@ def plan_claim_order_for_submission(
     gated against its OWN session, not merely the live one, so a kill-switched
     order from a prior session can't slip through after a date rollover mints a
     fresh permissive session). ``current_session`` is the live session, checked
-    as a process-wide emergency stop. The store calls this under its lock, so
-    the control state read here cannot change between the decision and the
-    ``CREATED → SUBMITTING`` write the store then applies.
+    as a process-wide emergency stop. ``sell_reason`` is the owning
+    ``SellIntent.reason`` for a SELL order (``None`` for a BUY, or when the intent
+    can't be resolved) — the store fetches it under the same lock. The store calls
+    this under its lock, so the control state read here cannot change between the
+    decision and the ``CREATED → SUBMITTING`` write the store then applies.
     """
 
     if order is None or order.status is not OrderStatus.CREATED:
@@ -534,11 +1023,7 @@ def plan_claim_order_for_submission(
         # claimed, or it never existed. Nothing to do.
         return ClaimPlan(CLAIM_SKIPPED)
 
-    hold = session_submission_block_reason(own_session)
-    if hold is None:
-        current_block = order_intent_block_reason(current_session)
-        if current_block is not None:
-            hold = f"current_{current_block}"
+    hold = _claim_hold_reason(order, own_session, current_session, sell_reason)
     if hold is not None:
         return ClaimPlan(CLAIM_BLOCKED, reason=hold)
 
@@ -579,6 +1064,40 @@ class OrderTransitionPlan:
     event: Optional[EventSpec] = None
 
 
+def require_bool(value: object, *, field: str) -> None:
+    """Reject a non-``bool`` control/flag value at the store boundary (AIR-005).
+
+    Strict: only ``True``/``False`` pass. A string (``"false"``), an int
+    (``0``/``1`` — note ``isinstance(1, bool)`` is ``False``), a list/dict, or
+    ``None`` is rejected with :class:`InvalidControlValueError` and no mutation.
+    This is what stops a ``{"engaged": "false"}`` payload — a truthy non-empty
+    string — from *engaging* the kill switch (an emergency-stop inversion).
+    """
+
+    if not isinstance(value, bool):
+        raise InvalidControlValueError(
+            f"{field} must be a bool, not {type(value).__name__} {value!r}"
+        )
+
+
+def require_status_enum(value: object, enum_cls: type, *, field: str) -> None:
+    """Reject a non-enum status argument at the store boundary (AIR-009).
+
+    ``value`` must be an actual member of ``enum_cls`` — a bare string like
+    ``"pending"`` does **not** qualify even though ``enum_cls`` is a ``str``-enum
+    (``isinstance("pending", CandidateStatus)`` is ``False``). This is what makes
+    both stores reject strings/bools/``None`` identically instead of one silently
+    coercing and the other leaking ``AttributeError``. Raises
+    :class:`InvalidStatusError`; performs no mutation.
+    """
+
+    if not isinstance(value, enum_cls):
+        raise InvalidStatusError(
+            f"{field} must be a {enum_cls.__name__} instance, not "
+            f"{type(value).__name__} {value!r}"
+        )
+
+
 def plan_transition_order(
     *,
     order: Order,
@@ -589,8 +1108,13 @@ def plan_transition_order(
     """Decide an order transition — the shared logic (legality, monotonic
     filled-quantity, the true-no-op rule, and the D-008 ``order_transition`` vs
     ``order_fill_progress`` audit split) that was duplicated between the stores.
+
+    ``new_status`` must be an ``OrderStatus`` instance (AIR-009): a bare string
+    or a bool/None is rejected up front, before any legality check, so both
+    stores behave identically.
     """
 
+    require_status_enum(new_status, OrderStatus, field="new_status")
     current = order.status
     status_changed = new_status is not current
     if status_changed and new_status not in ORDER_TRANSITIONS.get(current, set()):
@@ -600,6 +1124,26 @@ def plan_transition_order(
                 f"illegal order transition {current.value} -> {new_status.value}"
             ),
         )
+
+    # AIR-001: reaching SUBMITTED means the broker accepted the order and handed
+    # back an id — the only key we can poll/cancel by. A status change *into*
+    # SUBMITTED without a non-empty broker id would persist an untrackable
+    # "submitted" order, so reject it here in the shared planner (both stores
+    # enforce it identically, not just the monitoring caller). The effective id
+    # is the one being assigned, falling back to whatever the order already
+    # carries; a same-status no-op/reaffirm is not re-validated.
+    if status_changed and new_status is OrderStatus.SUBMITTED:
+        effective_broker_id = (
+            broker_order_id if broker_order_id is not None else order.broker_order_id
+        )
+        if not (isinstance(effective_broker_id, str) and effective_broker_id.strip()):
+            return OrderTransitionPlan(
+                ORDER_TRANSITION_REJECT,
+                error=OrderTransitionError(
+                    f"cannot mark order {order.id} SUBMITTED without a non-empty "
+                    f"broker_order_id (AIR-001)"
+                ),
+            )
 
     # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward progress
     # raises and writes nothing. Equality is allowed (handled as a no-op below).
@@ -693,6 +1237,7 @@ class SessionClosePlan:
 
     candidate_events: tuple[EventSpec, ...]
     order_events: tuple[EventSpec, ...]
+    sell_intent_events: tuple[EventSpec, ...]
     snapshots: tuple[PositionSnapshot, ...]
     close_event: EventSpec
 
@@ -702,12 +1247,16 @@ def plan_close_session(
     session: SessionRecord,
     open_candidates: list[Candidate],
     created_orders: list[Order],
+    open_sell_intents: list[SellIntent],
     nonzero_positions: list[Position],
     now: datetime,
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
-    ``created_orders`` its still-CREATED (never-submitted) orders, and
+    ``created_orders`` its still-CREATED (never-submitted) **BUY** orders (a
+    CREATED SELL is a protective/flatten exit that must remain submittable
+    post-close, Phase 7 — the store filters those out), ``open_sell_intents`` its
+    PENDING/APPROVED sell intents (expired like candidates), and
     ``nonzero_positions`` every symbol with a nonzero derived position. The
     counts drive the summary event.
     """
@@ -739,6 +1288,22 @@ def plan_close_session(
         )
         for order in created_orders
     )
+    sell_intent_events = tuple(
+        EventSpec(
+            "sell_intent_transition",
+            message=f"sell intent {si.status.value} -> expired (session close)",
+            symbol=si.symbol,
+            order_id=None,
+            payload={
+                "from": si.status.value,
+                "to": "expired",
+                "reason": "session_close",
+            },
+            session_id=session.id,
+            correlation_id=si.id,
+        )
+        for si in open_sell_intents
+    )
     snapshots = tuple(
         PositionSnapshot(
             session_id=session.id,
@@ -755,18 +1320,21 @@ def plan_close_session(
         message=(
             f"session closed ({len(open_candidates)} candidates expired, "
             f"{len(created_orders)} created orders canceled, "
+            f"{len(open_sell_intents)} sell intents expired, "
             f"{len(snapshots)} positions snapshotted)"
         ),
         session_id=session.id,
         payload={
             "expired_candidates": len(open_candidates),
             "canceled_orders": len(created_orders),
+            "expired_sell_intents": len(open_sell_intents),
             "position_snapshots": len(snapshots),
         },
     )
     return SessionClosePlan(
         candidate_events=candidate_events,
         order_events=order_events,
+        sell_intent_events=sell_intent_events,
         snapshots=snapshots,
         close_event=close_event,
     )

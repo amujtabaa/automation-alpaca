@@ -8,7 +8,7 @@ transitions are handled as idempotent no-ops by the stores, not encoded here.
 
 from __future__ import annotations
 
-from app.models import CandidateStatus, OrderStatus
+from app.models import CandidateStatus, OrderStatus, SellIntentStatus
 
 CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
     CandidateStatus.PENDING: {
@@ -22,13 +22,39 @@ CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
     CandidateStatus.ORDERED: set(),
 }
 
+# Sell-intent lifecycle (Phase 7) — a PARALLEL table of identical shape to the
+# candidate machine (not a literal reuse: CANDIDATE_TRANSITIONS is typed on
+# CandidateStatus and cannot key on SellIntentStatus). approved -> expired is a
+# real path (the self-heal when the intent->order handoff is rejected, e.g. the
+# position vanished): an intent is never left stranded APPROVED with no order.
+SELL_INTENT_TRANSITIONS: dict[SellIntentStatus, set[SellIntentStatus]] = {
+    SellIntentStatus.PENDING: {
+        SellIntentStatus.APPROVED,
+        SellIntentStatus.REJECTED,
+        SellIntentStatus.EXPIRED,
+    },
+    SellIntentStatus.APPROVED: {
+        SellIntentStatus.ORDERED,
+        SellIntentStatus.EXPIRED,  # self-heal on a rejected intent->order handoff
+    },
+    SellIntentStatus.REJECTED: set(),
+    SellIntentStatus.EXPIRED: set(),
+    SellIntentStatus.ORDERED: set(),
+}
+
 ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.CREATED: {
-        OrderStatus.SUBMITTING,  # atomic submission claim (D-017) — the ONLY
-                                 # path to the broker; CREATED never goes
-                                 # straight to SUBMITTED anymore, so a control
-                                 # flip can't sneak between "decided to submit"
-                                 # and "sent" (F-001/F-002).
+        # NOTE (AIR-007): CREATED -> SUBMITTING is deliberately ABSENT here.
+        # The atomic submission claim (D-017, claim_order_for_submission) is the
+        # sole entry into SUBMITTING and writes that status *directly* (memory:
+        # self._orders[id] = plan.order; SQLite: raw UPDATE ... SET status),
+        # never consulting this table. Only the *generic* transition_order reads
+        # this table, so listing SUBMITTING here would make transition_order a
+        # back door into SUBMITTING that bypasses the claim's atomic control
+        # re-check (kill switch / buys paused / session) — a control-flip
+        # bypass. Leaving it out closes that door without affecting the claim
+        # path. (SUBMITTING -> CREATED, the transient-submit-failure release,
+        # still goes through transition_order and stays listed below.)
         OrderStatus.CANCELED,  # never-submitted order cancelled locally
         OrderStatus.REJECTED,
     },
@@ -68,6 +94,14 @@ CANDIDATE_TIMESTAMP: dict[CandidateStatus, str] = {
     CandidateStatus.REJECTED: "rejected_at",
     CandidateStatus.EXPIRED: "expired_at",
     CandidateStatus.ORDERED: "ordered_at",
+}
+
+# Sell-intent transition timestamps (parallel to CANDIDATE_TIMESTAMP).
+SELL_INTENT_TIMESTAMP: dict[SellIntentStatus, str] = {
+    SellIntentStatus.APPROVED: "approved_at",
+    SellIntentStatus.REJECTED: "rejected_at",
+    SellIntentStatus.EXPIRED: "expired_at",
+    SellIntentStatus.ORDERED: "ordered_at",
 }
 
 ORDER_TIMESTAMP: dict[OrderStatus, str] = {

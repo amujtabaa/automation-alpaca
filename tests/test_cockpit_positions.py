@@ -81,18 +81,39 @@ def _operator(orders=None, recoveries=None):
 # Helper: wire up mocks and navigate to Position Monitor
 # --------------------------------------------------------------------------- #
 
-def _run(monkeypatch, positions, operator, recorder) -> AppTest:
-    """Patch api_client, boot AppTest, navigate to Position Monitor, return it."""
+def _run(monkeypatch, positions, operator, recorder, protection=None) -> AppTest:
+    """Patch api_client, boot AppTest, navigate to Position Monitor, return it.
+
+    ``protection`` is the ``GET /api/protection`` payload the Phase 7 columns
+    read; defaults to config-only with no per-position views (so protection cells
+    render "—")."""
 
     monkeypatch.setattr(api_client, "get_health", lambda: {"version": "test"})
     monkeypatch.setattr(api_client, "list_positions", lambda: list(positions))
     monkeypatch.setattr(api_client, "list_operator_orders", lambda: operator)
+
+    prot = protection if protection is not None else {
+        "config": {
+            "enabled": True,
+            "stop_loss_pct": 0.08,
+            "limit_buffer_pct": 0.005,
+            "protection_active": True,
+        },
+        "positions": [],
+    }
+    monkeypatch.setattr(api_client, "get_protection", lambda: prot)
 
     def fake_cancel(order_id: str) -> dict:
         recorder.append(("cancel", order_id))
         return {"id": order_id, "status": "canceled"}
 
     monkeypatch.setattr(api_client, "cancel_order", fake_cancel)
+
+    def fake_flatten(symbol: str) -> dict:
+        recorder.append(("flatten", symbol))
+        return {"intent": {"id": "si1", "reason": "manual_flatten"}, "order": {"id": "o9"}}
+
+    monkeypatch.setattr(api_client, "flatten_position", fake_flatten)
 
     at = AppTest.from_file("cockpit/app.py").run()
     at.sidebar.radio[0].set_value("Position Monitor").run()
@@ -121,6 +142,126 @@ def test_position_present_no_fabricated_pl(monkeypatch):
     at = _run(monkeypatch, positions=[SAMPLE_POSITION], operator=_operator(), recorder=[])
     assert not at.exception
     assert "Phase 5" in _screen_text(at)
+
+
+def _protection(**pos_over) -> dict:
+    view = {
+        "symbol": "AAPL",
+        "quantity": 100,
+        "average_price": 1.5,
+        "floor_price": 1.38,
+        "observed_price": 1.30,
+        "breaching": True,
+        "paused_by_kill_switch": False,
+        "stalled": False,
+        "active_sell_intent": None,
+    }
+    view.update(pos_over)
+    return {
+        "config": {
+            "enabled": True,
+            "stop_loss_pct": 0.08,
+            "limit_buffer_pct": 0.005,
+            "protection_active": True,
+        },
+        "positions": [view],
+    }
+
+
+def test_protection_columns_render(monkeypatch):
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=_protection(breaching=True),
+    )
+    assert not at.exception
+    text = _screen_text(at)
+    assert "🔴 breaching" in text
+    assert "$1.38" in text  # floor
+    assert "Sell-Side Protection is active" in text
+
+
+def test_protection_paused_label(monkeypatch):
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=_protection(paused_by_kill_switch=True),
+    )
+    assert not at.exception
+    assert "paused (kill switch)" in _screen_text(at)
+
+
+def test_no_live_price_is_not_shown_as_safe(monkeypatch):
+    # Regression (routes/cockpit review): a stale/missing feed leaves breaching
+    # False because the backend DECLINED to judge — the cockpit must not render a
+    # false green "safe" all-clear during the window protection is blind.
+    prot = _protection(
+        breaching=False, observed_price=None, paused_by_kill_switch=False
+    )
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=prot,
+    )
+    assert not at.exception
+    text = _screen_text(at)
+    assert "no live price" in text
+    assert "🟢 safe" not in text
+
+
+def test_protection_off_is_not_shown_as_safe(monkeypatch):
+    prot = _protection(breaching=False, observed_price=1.30)
+    prot["config"]["protection_active"] = False
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=prot,
+    )
+    assert not at.exception
+    text = _screen_text(at)
+    assert "protection off" in text
+    assert "🟢 safe" not in text
+
+
+def test_safe_shown_when_live_and_priced(monkeypatch):
+    prot = _protection(breaching=False, observed_price=1.60)  # above floor, priced
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=prot,
+    )
+    assert not at.exception
+    assert "🟢 safe" in _screen_text(at)
+
+
+def test_flatten_button_present_and_functional(monkeypatch):
+    recorder: list = []
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=recorder,
+        protection=_protection(),
+    )
+    assert not at.exception
+    # Button is enabled now (no longer a disabled placeholder).
+    flatten = at.button(key="flatten_AAPL")
+    assert not flatten.disabled
+    flatten.click().run()
+    # Confirm step, then the actual flatten call.
+    at.button(key="confirm_flatten_AAPL").click().run()
+    assert not at.exception
+    assert ("flatten", "AAPL") in recorder
 
 
 def test_open_order_cancel_button_present(monkeypatch):

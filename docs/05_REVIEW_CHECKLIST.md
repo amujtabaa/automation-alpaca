@@ -45,8 +45,10 @@ Use when reviewing Codex or Claude Code output.
       and symbol/side mismatch against the order; cumulative fills cannot
       exceed order quantity. Rejections write an audit event, append no fill,
       and leave position unchanged.
-- [ ] `create_order` rejects an unknown `candidate_id` and a symbol that
-      doesn't match the candidate.
+- [ ] `create_order_for_candidate` rejects an unknown `candidate_id` and a
+      symbol that doesn't match the candidate (the low-level, ungated
+      `create_order` was removed from the public `StateStore` contract per
+      AIR-006/D-023; it survives only as the test-only `create_order_for_test`).
 - [ ] `transition_order` enforces `0 <= filled_quantity <= order.quantity`
       and monotonic non-decreasing fill progress.
 - [ ] Same-status candidate no-ops do not mutate `order_id` or write an event.
@@ -315,6 +317,89 @@ Use when reviewing Codex or Claude Code output.
       `any_store` fixture closes its connection and the warning is promoted to
       an error.
 - [ ] D-017 is recorded in `docs/00_START_HERE.md` as part of the fix.
+
+## Phase 7 (Sell-Side Protection — always-on safety exits)
+See `docs/IMPLEMENTATION_PROMPT_PHASE_7.md` for the full design + finding→fix
+traceability. The build-round invariants a reviewer should re-verify:
+- [ ] **No short (Rule 7).** A protective/flatten exit's quantity never exceeds
+      the live derived position: `protection.exit_quantity` caps at the position,
+      `create_order_for_sell_intent` re-reads the live fold **under the store
+      lock** and rejects an oversell, `_open_protective_exit`/the flatten route
+      re-read after cancelling buys, and `fold_fills`' `NegativePositionError` is
+      the structural backstop. Protection code never mutates a position — only an
+      appended fill does.
+- [ ] **Order-origin XOR.** Every order has `candidate_id` XOR `sell_intent_id`
+      (model validator + both stores). A SELL carries the intent, not a candidate.
+- [ ] **Kill switch (D-P2).** A `manual_flatten` SELL is always claimable; a
+      `protection_floor` SELL bypasses buys-paused/closed-session but STAYS blocked
+      by the kill switch (own OR current session). The BUY gate is byte-for-byte
+      unchanged (the pre-Phase-7 logic is extracted verbatim; the sell branch
+      layers around it). Autonomous protection *pauses* (paired per-symbol
+      `protection_paused`/`_resumed`, read from the durable log), never silently
+      disables.
+- [ ] **Rule 12 at submission (D-015).** A protective sell is created `MARKET`;
+      the type is re-derived at EVERY submit choke point (first submit + stale
+      re-drive) — MARKET in regular hours, a live-priced LIMIT pre/after-hours,
+      HELD when it can't be priced (no/stale/untrustworthy snapshot). The
+      `AlpacaPaperAdapter` refuses a MARKET outside regular hours as a backstop.
+- [ ] **Side-aware transient release.** A SELL always releases `SUBMITTING→CREATED`
+      on submit failure (never CANCELED); only a BUY keeps the closed-session
+      no-zombie CANCELED (D-013a).
+- [ ] **Fill pricing (§7).** A MARKET protective sell's fill is priced off the
+      reconcile-time snapshot `last_price` when the broker gives no price (else it
+      would be withheld and, with single-flight dedup, strand protection); the
+      fallback is tried LAST (a real price wins) and refuses stale/None/≤0.
+- [ ] **Single active exit per symbol.** `create_sell_intent` is atomic
+      single-flight; `_run_protection` and `flatten_position` dedup on
+      `active_sell_intent_for`; `protection_triggered` is not re-emitted each tick.
+      A terminal (filled/canceled) exit frees the symbol for re-protection, and so
+      does an `ordered` exit whose order is stuck in an OPEN `needs_review`
+      recovery (`docs/INVARIANTS.md` INV-032) — a spurious escalation must never
+      permanently disable protection.
+- [ ] **Cancel open buys before exiting.** A protective/flatten exit cancels every
+      non-terminal BUY for the symbol first (CREATED→local CANCELED; live→broker
+      cancel + CANCEL_PENDING) so it truly reaches flat — no live BUY + protective
+      SELL self-cross.
+- [ ] **Parity.** Every sell-intent store method and the claim gate behave
+      identically across `InMemoryStateStore` and `SqliteStateStore` (`any_store`);
+      the SQLite orders-table rebuild migration preserves rows.
+- [ ] **Session close.** Open (pending/approved) sell-intents expire like
+      candidates; a CREATED **SELL** survives close (a protective exit stays
+      submittable post-close) — only CREATED **BUY** orders are canceled.
+- [ ] **Never-crash + auto-mint discipline.** `_run_protection` is per-symbol
+      try/except and never raises out of the tick; `get_current_session` is only
+      reached once a held position exists (no idle-tick session mint).
+- [ ] **CAPI exposure excludes SELL.** A pending protective SELL reduces risk; it
+      is excluded from `existing_exposure`'s order-notional sum, so it can't push a
+      concurrent BUY over `max_total_exposure`.
+
+## Phase 7 remediation (X-001..X-005, D-025) — the different-lineage findings
+See `docs/00_START_HERE.md` D-025 and `docs/INVARIANTS.md` for the full
+statements; re-verify these directly against the current code, not against
+this project's own tests (that oracle-substitution is the exact failure mode
+this remediation exists to close):
+- [ ] **Flatten is atomically guaranteed manual (X-001).** `POST
+      /positions/{symbol}/flatten` calls one atomic `StateStore.flatten_position`
+      — never a check-then-later-create split across two lock holds. A
+      concurrent protection tick can never cause the route to return a
+      `protection_floor` intent (`docs/INVARIANTS.md` INV-034).
+- [ ] **No sell-intent ever stranded `APPROVED` (X-002).** Every
+      `create_order_for_sell_intent` rejection self-heals `approved -> expired`
+      in the same operation that raises (INV-033) — check this by reading the
+      reject branches directly, not by trusting a passing
+      `test_no_sell_intent_stranded_approved_after_any_rejection`.
+- [ ] **`needs_review` never permanently blocks re-protection (X-003).** Only
+      `sell_intent_is_active`'s one canonical definition (INV-032) decides
+      "active" — confirm no route/engine/cockpit code reimplements this check
+      independently.
+- [ ] **Every sell-lifecycle event correlates (X-004).** Claim, submission,
+      stale, fill, and recovery events for a protective sell all carry
+      `correlation_id = sell_intent_id`, not just the creation events
+      (INV-041) — verify via `GET /api/events?correlation_id=<sell_intent_id>`
+      against a real multi-stage exit, not just a unit assertion.
+- [ ] **`docs/INVARIANTS.md` stays current.** A new blocker-level rule from an
+      ADR or a review finding is added to the registry in the same change, not
+      as a follow-up.
 
 ## Phase 6 (Capital Intelligence Layer — pre-trade risk gate)
 - [ ] CAPI gates-and-rejects on a limit breach; it never silently resizes an

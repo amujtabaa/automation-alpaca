@@ -13,8 +13,17 @@ addopts = "-q"
 # A leaked/unclosed sqlite connection (F-008) surfaces as a ResourceWarning at
 # GC; promote it to an error so a future fixture that forgets to close its store
 # fails the suite instead of warning quietly.
+#
+# AIR-011: on Python 3.13+ an unraisable ResourceWarning (one raised inside a
+# GC'd object's __del__, e.g. sqlite3.Connection) is delivered by pytest's
+# unraisableexception plugin WRAPPED in ``PytestUnraisableExceptionWarning`` —
+# which is NOT a ``ResourceWarning`` subclass, so the plain ``error::
+# ResourceWarning`` filter alone would let a leaked connection escape on newer
+# Pythons. Promote the wrapper to an error too so the leak fails the suite on
+# every Python version, not just 3.12.
 filterwarnings = [
     "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.coverage.run]

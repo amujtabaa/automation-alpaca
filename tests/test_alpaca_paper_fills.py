@@ -84,12 +84,55 @@ async def test_get_fills_price_falls_back_to_limit():
     assert f[0].price == 3.5
 
 
-def test_resolve_fill_price_prefers_avg_then_limit_then_zero():
+def test_resolve_fill_price_prefers_avg_then_limit_then_none():
+    # AIR-002: prefer the broker average, then the limit; return None (NOT 0.0)
+    # when neither is a trustworthy price — the caller must not fabricate a $0
+    # execution.
     assert _resolve_fill_price(2.0, 3.0) == 2.0
     assert _resolve_fill_price(None, 3.0) == 3.0
-    assert _resolve_fill_price(None, None) == 0.0
+    assert _resolve_fill_price(None, None) is None
     # Tolerant of the SDK's string/Decimal shapes; an unparseable avg falls back.
     assert _resolve_fill_price("not-a-number", 3.0) == 3.0
+    # An untrustworthy average (0 / negative / NaN / Inf) is rejected, not used —
+    # it falls back to the limit, or None when there is no usable price at all.
+    assert _resolve_fill_price(0.0, 3.5) == 3.5
+    assert _resolve_fill_price(-1.0, 3.5) == 3.5
+    assert _resolve_fill_price(float("nan"), None) is None
+    assert _resolve_fill_price(float("inf"), None) is None
+    assert _resolve_fill_price(0.0, None) is None
+
+
+def test_resolve_fill_price_market_fallback():
+    # Phase 7 §7: a MARKET order has no limit_price, so the reconcile-time
+    # snapshot last_price is the LAST resort — used only when neither the broker
+    # average nor the (absent) limit is trustworthy, so a real price always wins.
+    assert _resolve_fill_price(None, None, 5.0) == 5.0            # both absent -> fallback
+    assert _resolve_fill_price(9.0, None, 5.0) == 9.0            # avg wins over fallback
+    assert _resolve_fill_price(None, 8.0, 5.0) == 8.0           # limit wins over fallback
+    assert _resolve_fill_price("nan", None, 5.0) == 5.0         # bad avg -> fallback
+    assert _resolve_fill_price(None, None, None) is None        # nothing -> None
+    assert _resolve_fill_price(None, None, 0.0) is None         # untrustworthy fallback
+    assert _resolve_fill_price(None, None, float("inf")) is None
+
+
+def test_get_fills_omits_unpriceable_fill_but_keeps_filled_quantity():
+    # AIR-002: broker reports 10 filled but exposes no trustworthy price — the
+    # adapter emits NO fill (never a 0.0 one). Monitoring detects the resulting
+    # broker>recorded divergence and escalates durably.
+    import anyio
+
+    a = _adapter()
+
+    async def _run():
+        return await a._get_fills(
+            broker_order_id="b1",
+            filled_qty=10,
+            recorded_quantity=0,
+            filled_avg_price=None,
+            limit_price=None,
+        )
+
+    assert anyio.run(_run) == []
 
 
 def test_pending_cancel_maps_to_non_terminal_state():

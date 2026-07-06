@@ -63,7 +63,7 @@ async def test_candidate_transitions_and_ordered_is_terminal(store):
     assert approved.approved_at is not None
 
     # Approve -> ordered, linking the order that was produced.
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
     ordered = await store.transition_candidate(
         candidate.id, CandidateStatus.ORDERED, order_id=order.id
     )
@@ -99,12 +99,13 @@ async def test_rejected_candidate_cannot_be_approved(store):
 
 async def test_order_status_is_independent_of_candidate(store):
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
 
-    # CREATED -> SUBMITTING (the submission claim, D-017) — the order moving
-    # forward is independent of its candidate either way.
-    submitting = await store.transition_order(order.id, OrderStatus.SUBMITTING)
-    assert submitting.status is OrderStatus.SUBMITTING
+    # CREATED -> SUBMITTING (the submission claim, D-017 / AIR-007 — the claim is
+    # the only entry into SUBMITTING) — the order moving forward is independent of
+    # its candidate either way.
+    claim = await store.claim_order_for_submission(order.id)
+    assert claim.order.status is OrderStatus.SUBMITTING
     # The candidate's status is untouched by the order moving forward.
     fresh = await store.get_candidate(candidate.id)
     assert fresh.status is CandidateStatus.PENDING
@@ -112,7 +113,7 @@ async def test_order_status_is_independent_of_candidate(store):
 
 async def test_illegal_order_transition_raises(store):
     candidate = await store.create_candidate("AAPL")
-    order = await store.create_order(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
     # created -> filled is not legal; an order must pass through submitted first
     # (submitted != filled, Rule 6).
     with pytest.raises(OrderTransitionError):

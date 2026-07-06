@@ -18,18 +18,46 @@ shapes encode the non-negotiable structural rules:
 
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 
 def new_id() -> str:
     """A fresh opaque identifier (uuid4 hex)."""
 
     return uuid.uuid4().hex
+
+
+def _finite_or_none(value: Optional[float]) -> Optional[float]:
+    """Map a non-finite float to ``None`` for JSON serialization (AIR-008).
+
+    A non-finite ``suggested_limit_price``/``limit_price``/``price`` can only
+    reach a model from legacy or non-boundary-validated persisted data — the
+    write paths now reject NaN/Inf — but an API *response* must be valid JSON
+    regardless: ``json.dumps(float("inf"))`` emits ``Infinity`` (invalid JSON)
+    on 3.12 and raises on 3.13. Emitting ``null`` instead makes both impossible.
+    """
+
+    return value if value is None or math.isfinite(value) else None
+
+
+# A float that serializes to ``null`` rather than an invalid ``Infinity``/``NaN``
+# in a JSON response. Validation is unchanged; only the JSON serialization is
+# guarded. ``when_used="json"`` leaves ``model_dump()`` (Python) untouched so
+# internal derivations are unaffected. Two variants for the optional vs required
+# float fields.
+ResponseSafeFloat = Annotated[
+    Optional[float], PlainSerializer(_finite_or_none, when_used="json")
+]
+ResponseSafeRequiredFloat = Annotated[
+    float,
+    PlainSerializer(_finite_or_none, when_used="json", return_type=Optional[float]),
+]
 
 
 def utcnow() -> datetime:
@@ -65,6 +93,35 @@ class CandidateStatus(str, Enum):
 
     Broker-execution states are deliberately absent here; they belong to
     :class:`OrderStatus`. See ``docs/02_DATA_AND_PERSISTENCE.md``.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    ORDERED = "ordered"
+
+
+class SellReason(str, Enum):
+    """Why a position is being exited (Phase 7 — Sell-Side Protection).
+
+    ``manual_flatten`` is operator-initiated (always exits — the click is the
+    approval, and it bypasses the kill switch as a risk-reducing exit).
+    ``protection_floor`` is an autonomous hard-floor breach (pauses under the
+    kill switch). A future ``auto_sell`` (Phase 8 profit-taking) attaches here
+    without a new lifecycle.
+    """
+
+    MANUAL_FLATTEN = "manual_flatten"
+    PROTECTION_FLOOR = "protection_floor"
+
+
+class SellIntentStatus(str, Enum):
+    """Sell-intent proposal/review lifecycle — parallel to
+    :class:`CandidateStatus` (stops at ``ordered``; broker-execution states live
+    on the Order). The sell-side analogue of the candidate lifecycle, so an exit
+    decision is a first-class entity and not a sell bolted onto the buy path
+    (``docs/IMPLEMENTATION_PROMPT_PHASE_7.md``).
     """
 
     PENDING = "pending"
@@ -155,6 +212,12 @@ class EventType(str, Enum):
     SUBMIT_RECOVERY_RECORDED = "submit_recovery_recorded"  # a stranded broker order logged
     SUBMIT_RECOVERY_RESOLVED = "submit_recovery_resolved"  # recovery loop cleanly cancelled it
     SUBMIT_RECOVERY_NEEDS_REVIEW = "submit_recovery_needs_review"  # stranded order had fills
+    # A stale SUBMITTING order's idempotent re-drive hit a transient broker error
+    # and was deferred to the next tick (AIR-003). Counted to bound livelock.
+    STALE_SUBMITTING_REDRIVE_DEFERRED = "stale_submitting_redrive_deferred"
+    # A broker/local fill divergence (broker filled > locally recorded) escalated
+    # to a durable needs_review reconciliation record (AIR-002).
+    FILL_RECONCILIATION_NEEDED = "fill_reconciliation_needed"
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
@@ -174,6 +237,15 @@ class EventType(str, Enum):
     # (D-005).
     MARKET_DATA_STALE = "market_data_stale"
     MARKET_DATA_RECOVERED = "market_data_recovered"
+
+    # Sell-Side Protection Engine (Phase 7). The sell-intent lifecycle mirrors
+    # the candidate lifecycle; protection_* events are the safety engine's own.
+    SELL_INTENT_CREATED = "sell_intent_created"
+    SELL_INTENT_TRANSITION = "sell_intent_transition"
+    PROTECTION_TRIGGERED = "protection_triggered"      # floor breach -> auto exit
+    PROTECTION_PAUSED = "protection_paused"            # kill switch froze auto exit
+    PROTECTION_RESUMED = "protection_resumed"          # kill switch released
+    PROTECTION_STALLED = "protection_stalled"          # a protective order sits unfilled
 
 
 # --------------------------------------------------------------------------- #
@@ -205,7 +277,7 @@ class Candidate(_Entity):
     reason: Optional[str] = None
     risk_decision: Optional[str] = None
     suggested_quantity: Optional[int] = None
-    suggested_limit_price: Optional[float] = None
+    suggested_limit_price: ResponseSafeFloat = None
 
     session_id: Optional[str] = None
     # Set when the candidate reaches ``ordered`` — links to the Order it produced.
@@ -223,12 +295,17 @@ class Candidate(_Entity):
 
 class Order(_Entity):
     id: str = Field(default_factory=new_id)
-    candidate_id: str  # the candidate this order was produced from
+    # An order originates from EXACTLY ONE of: a Candidate (a BUY) or a SellIntent
+    # (a SELL — Phase 7). The XOR is enforced by the validator below and again at
+    # the store boundary. ``candidate_id`` was required pre-Phase-7; it is now
+    # nullable so a protective/flatten sell can carry ``sell_intent_id`` instead.
+    candidate_id: Optional[str] = None
+    sell_intent_id: Optional[str] = None
     symbol: str
     side: OrderSide
     order_type: OrderType = OrderType.LIMIT
     quantity: int
-    limit_price: Optional[float] = None
+    limit_price: ResponseSafeFloat = None
 
     status: OrderStatus = OrderStatus.CREATED
     filled_quantity: int = 0
@@ -250,6 +327,59 @@ class Order(_Entity):
     canceled_at: Optional[datetime] = None
     rejected_at: Optional[datetime] = None
 
+    @model_validator(mode="after")
+    def _exactly_one_origin(self) -> "Order":
+        """Enforce the order-origin XOR (Phase 7): an order comes from EXACTLY one
+        of a Candidate (buy) or a SellIntent (sell). Both-set or neither-set is a
+        structural error — a sell with no intent, or a buy mislabeled with an
+        intent, must never persist. The stores re-check at their boundary too."""
+
+        has_candidate = self.candidate_id is not None
+        has_sell_intent = self.sell_intent_id is not None
+        if has_candidate == has_sell_intent:
+            raise ValueError(
+                "order must have exactly one origin: candidate_id XOR "
+                f"sell_intent_id (got candidate_id={self.candidate_id!r}, "
+                f"sell_intent_id={self.sell_intent_id!r})"
+            )
+        return self
+
+
+class SellIntent(_Entity):
+    """A decision to reduce/exit an open long position (Phase 7 — Sell-Side
+    Protection). The sell-side analogue of :class:`Candidate`: its own lifecycle
+    (``pending → approved → ordered``), producing one SELL :class:`Order`. A
+    ``manual_flatten`` intent is operator-initiated; a ``protection_floor`` intent
+    is an autonomous hard-floor breach. See
+    ``docs/IMPLEMENTATION_PROMPT_PHASE_7.md``.
+    """
+
+    id: str = Field(default_factory=new_id)
+    symbol: str
+    reason: SellReason
+    status: SellIntentStatus = SellIntentStatus.PENDING
+
+    # Shares to exit (capped at the live position at order-creation time — never
+    # a short). For a full flatten / floor exit this is the whole position.
+    target_quantity: int
+
+    # Protection context (set for PROTECTION_FLOOR; None for MANUAL_FLATTEN):
+    # the breached hard floor and the last price that triggered it.
+    floor_price: ResponseSafeFloat = None
+    observed_price: ResponseSafeFloat = None
+
+    session_id: Optional[str] = None
+    # Set when the intent reaches ``ordered`` — links to the SELL Order it produced.
+    order_id: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+    approved_at: Optional[datetime] = None
+    rejected_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    ordered_at: Optional[datetime] = None
+
 
 class Fill(_Entity):
     """An append-only fact — no status, no transitions, no mutation.
@@ -264,7 +394,7 @@ class Fill(_Entity):
     symbol: str
     side: OrderSide
     quantity: int
-    price: float
+    price: ResponseSafeRequiredFloat
 
     # Alpaca's own fill/execution id. Unique when present; used to detect and
     # ignore duplicate observations during polling-based reconciliation.
@@ -288,8 +418,8 @@ class Position(_Entity):
 
     symbol: str
     quantity: int = 0
-    cost_basis: float = 0.0
-    average_price: Optional[float] = None
+    cost_basis: ResponseSafeRequiredFloat = 0.0
+    average_price: ResponseSafeFloat = None
     updated_at: Optional[datetime] = None  # timestamp of the most recent fill
 
 
@@ -306,8 +436,8 @@ class PositionSnapshot(_Entity):
     session_id: str
     symbol: str
     quantity: int
-    cost_basis: float
-    average_price: Optional[float] = None
+    cost_basis: ResponseSafeRequiredFloat
+    average_price: ResponseSafeFloat = None
     captured_at: datetime = Field(default_factory=utcnow)
 
 
@@ -320,6 +450,22 @@ RECOVERY_NEEDS_REVIEW = "needs_review"      # the broker order had fills — a r
 # itself acts only on RECOVERY_UNRESOLVED — a needs_review record is done being
 # worked automatically and must not be re-cancelled.
 RECOVERY_OPEN_STATUSES = frozenset({RECOVERY_UNRESOLVED, RECOVERY_NEEDS_REVIEW})
+
+# The complete, closed set of legal cleanup_status values, and the allowed
+# transitions between them (AIR-004). Free-form status strings are gone: an
+# unknown value ("typo_resolved") or a silent reopen of a terminal record
+# (resolved_canceled/needs_review -> unresolved) is a RecoveryTransitionError, not
+# a hidden mutation. Only the recovery loop's two automatic outcomes are legal
+# moves; both terminal states stay terminal (no automatic un-resolve path — a
+# human clearing a needs_review record is out of band and not modeled in beta).
+RECOVERY_STATUSES = frozenset(
+    {RECOVERY_UNRESOLVED, RECOVERY_RESOLVED, RECOVERY_NEEDS_REVIEW}
+)
+RECOVERY_TRANSITIONS: dict[str, frozenset[str]] = {
+    RECOVERY_UNRESOLVED: frozenset({RECOVERY_RESOLVED, RECOVERY_NEEDS_REVIEW}),
+    RECOVERY_RESOLVED: frozenset(),
+    RECOVERY_NEEDS_REVIEW: frozenset(),
+}
 
 
 class SubmitRecoveryRecord(_Entity):
@@ -344,7 +490,7 @@ class SubmitRecoveryRecord(_Entity):
     symbol: str
     side: OrderSide
     quantity: int
-    limit_price: Optional[float] = None
+    limit_price: ResponseSafeFloat = None
     failure_reason: str
     # RECOVERY_UNRESOLVED until the recovery loop confirms the broker order is no
     # longer live (RECOVERY_RESOLVED), or RECOVERY_NEEDS_REVIEW if it turns out to
@@ -369,15 +515,17 @@ class Event(_Entity):
     fill_id: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
-    # One key that ties a whole candidate lifecycle together for incident
-    # reconstruction (D-020): candidate creation stamps it, and every downstream
-    # event (approval, order creation, claim, submission, blocked/recovery,
-    # fills, transitions) carries the same value. It is the owning candidate's id
-    # — the store resolves it from the event's candidate_id when not passed
-    # explicitly, so one filter (GET /api/events?correlation_id=) returns the
-    # full lifecycle even for events that historically only named an order.
-    # Nullable + additive: pre-D-020 rows and non-candidate events (e.g.
-    # market_data_stale) are None.
+    # One key that ties a whole candidate (or sell-intent) lifecycle together
+    # for incident reconstruction (D-020): candidate creation stamps it, and
+    # every downstream event (approval, order creation, claim, submission,
+    # blocked/recovery, fills, transitions) carries the same value. It is the
+    # owning candidate's id — the store resolves it from the event's
+    # candidate_id when not passed explicitly — OR, when candidate_id is also
+    # absent, from the owning order's sell_intent_id (X-004), so a protective
+    # sell's claim/submit/stale/fill/recovery events correlate too, not just
+    # its creation events. One filter (GET /api/events?correlation_id=) returns
+    # the full lifecycle either way. Nullable + additive: pre-D-020 rows and
+    # non-candidate/non-sell-intent events (e.g. market_data_stale) are None.
     correlation_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
 
