@@ -419,6 +419,25 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     a not-found absence bites). `tests/test_spine_phase4_reconcile_acting.py` (16, replacing the shadow tests):
     empty-reports-surface-nothing, disabled-makes-no-calls, external-surfaced-without-absorbing, dedup-by-id +
     new-order-relogs, doesn't-change-legacy-fill-outcome, both report failures skip-not-crash, returns-plan.
+  - [x] **Slice 4e-3a — adapter open-order fidelity (E5)** (`237fc6a`). The mock/sim `list_open_orders` now
+    DERIVES the venue's open orders from the adapter's own known-live submits when unseeded (sentinel
+    `_open_order_reports=None`) instead of `[]`, so a locally-open managed order the adapter accepted is
+    reported open — never spuriously *absent* (which would drive a false not-found→reject). Explicit seed
+    still overrides; fresh adapter derives `[]`. Inert to 4e-2. 1655 passed.
+  - [x] **Slice 4e-3b — not-found → targeted-query-before-terminal (the oversell-critical flip).** The acting
+    reconcile resolves open orders ABSENT from the mass report — but absence is NEVER a reject on its own:
+    each gets a READ-ONLY targeted `get_order_by_client_order_id` query first, and only a venue-CONFIRMED
+    absence sustained past `reconcile_open_check_missing_retries` (3) resolves it — `SUBMITTED→REJECTED` /
+    `PARTIALLY_FILLED→CANCELED` (fills preserved), event-authoritative via the new `reconcile_resolve_order`
+    store method + `plan_reconcile_resolve_order` (BROKER_AUTHORITATIVE; FILLED refused — INV-9). Venue-has-it
+    → left to the per-order poll (no bare terminal flip that could drop a fill). Query FAILURE → never read as
+    absent (§7); retried, `needs_review` on a SEPARATE counter so a run of failures can't erode the not-found
+    bound. CANCEL_PENDING excluded (R4). Reuses the wave-3c deferral machinery (`_order_deferral_count` gained
+    an `event_type` param). `tests/test_spine_phase4_reconcile_notfound.py` (18, dual-store): no-premature-
+    reject, partial→canceled-fills-preserved, venue-has-it-never-resolved, query-failure-never-rejects+
+    needs_review, query-errors-don't-erode-not-found-bound, event-authoritative, cancel_pending-untouched,
+    managed-order-not-touched (E5), FILLED-refused. **Ran by default without perturbing the corpus** (E5
+    fidelity + recent-order protection). 1673 passed, cov 95.08%, ruff clean.
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).

@@ -1611,6 +1611,50 @@ def plan_resolve_timeout_quarantine(
     )
 
 
+# ---- reconcile not-found resolution (wave 4e-3) --------------------------- #
+
+# The only terminals the mass-report reconcile may resolve an absent open order to.
+# FILLED is deliberately excluded — a position-affecting terminal must flow through
+# a fill (INV-9), never a bare status flip.
+_RECONCILE_RESOLVE_EXEC: dict[OrderStatus, ExecutionEventType] = {
+    OrderStatus.REJECTED: ExecutionEventType.REJECTED,
+    OrderStatus.CANCELED: ExecutionEventType.CANCELED,
+}
+
+
+def plan_reconcile_resolve_order(
+    order: Order,
+    new_status: OrderStatus,
+    *,
+    reason: Optional[str] = None,
+) -> OrderEventedTransitionPlan:
+    """``SUBMITTED → REJECTED`` / ``PARTIALLY_FILLED → CANCELED`` (fills preserved)
+    for an open order that a read-only targeted ``client_order_id`` query confirmed
+    ABSENT at the venue, after the ``open_check_missing_retries`` bound (§7 / wave
+    4e-3). The venue's confirmed-absence is a broker-authoritative fact
+    (``BROKER_REST`` / ``BROKER_AUTHORITATIVE``); the order-status column becomes a
+    co-written read-model of the ``ExecutionEvent`` (the honest ``event_truth`` scope
+    for an order-lifecycle fact, mirror of wave 3c). ``FILLED`` is never a target —
+    a position-affecting terminal flows through a fill (INV-9)."""
+
+    exec_type = _RECONCILE_RESOLVE_EXEC.get(new_status)
+    if exec_type is None:
+        raise ValueError(
+            f"cannot reconcile-resolve an order to {new_status.value}; must be one "
+            f"of {sorted(s.value for s in _RECONCILE_RESOLVE_EXEC)}"
+        )
+    return plan_transition_order_evented(
+        order=order,
+        new_status=new_status,
+        execution_event_type=exec_type,
+        audit_event_type="order_reconcile_resolved",
+        dedupe_key=f"reconcile_resolve:{order.id}:{new_status.value}",
+        source=EventSource.BROKER_REST,
+        authority=EventAuthority.BROKER_AUTHORITATIVE,
+        reason=reason,
+    )
+
+
 # ---- close_session -------------------------------------------------------- #
 
 

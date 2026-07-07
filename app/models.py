@@ -274,6 +274,16 @@ class EventType(str, Enum):
     # managed state or folded into position (§7). Deduped by broker_order_id (one
     # record per external order, ever). Non-mutating (an audit record only).
     RECONCILE_EXTERNAL_ORDER = "reconcile_external_order"
+    # Phase 4 wave 4e-3: an open order ABSENT from the venue's mass report was
+    # confirmed-absent by a read-only targeted client_order_id query and, after the
+    # open_check_missing_retries bound, resolved to a terminal (SUBMITTED→REJECTED /
+    # PARTIALLY_FILLED→CANCELED, fills preserved). The order-status flip is
+    # event-authoritative; this is the co-written audit trail.
+    ORDER_RECONCILE_RESOLVED = "order_reconcile_resolved"
+    # A targeted-query resolution was DEFERRED this tick — a single not-found could
+    # be venue lag (§7), and a query FAILURE is never read as absent. Counts, per
+    # reason, toward the retry bound; `needs_review` marks a persistently-stuck one.
+    ORDER_RECONCILE_DEFERRED = "order_reconcile_deferred"
     # A broker/local fill divergence (broker filled > locally recorded) escalated
     # to a durable needs_review reconciliation record (AIR-002).
     FILL_RECONCILIATION_NEEDED = "fill_reconciliation_needed"

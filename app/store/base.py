@@ -842,6 +842,23 @@ class StateStore(ABC):
         ``TIMEOUT_QUARANTINE``), so it is replay-stable and dual-store-consistent.
         """
 
+    @abstractmethod
+    async def reconcile_resolve_order(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        reason: Optional[str] = None,
+    ) -> Order:
+        """``SUBMITTED → REJECTED`` / ``PARTIALLY_FILLED → CANCELED`` (fills
+        preserved) for an open order a read-only targeted ``client_order_id`` query
+        confirmed ABSENT at the venue, after the ``open_check_missing_retries`` bound
+        (§7 / wave 4e-3). Co-writes the matching lifecycle ``ExecutionEvent`` (durable
+        truth, ``BROKER_AUTHORITATIVE``) + an ``order_reconcile_resolved`` audit event
+        with the order-row flip, atomically. ``FILLED`` is not a legal target (INV-9).
+        Raises :class:`OrderTransitionError` if the transition is illegal.
+        """
+
     # ------------------------------------------------------------------ #
     # Fills (append-only; the only thing that mutates position)
     # ------------------------------------------------------------------ #

@@ -96,6 +96,7 @@ from app.store.core import (
     plan_create_order_for_sell_intent,
     plan_flatten_position,
     plan_quarantine_timed_out_order,
+    plan_reconcile_resolve_order,
     plan_resolve_timeout_quarantine,
     plan_transition_order,
     trading_state_change_event,
@@ -1415,6 +1416,20 @@ class InMemoryStateStore(StateStore):
                 for oid in sorted(ids)
                 if oid in self._orders
             ]
+
+    async def reconcile_resolve_order(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        reason: Optional[str] = None,
+    ) -> Order:
+        async with self._lock:
+            order = self._orders.get(order_id)
+            if order is None:
+                raise UnknownEntityError(f"order {order_id} not found")
+            plan = plan_reconcile_resolve_order(order, new_status, reason=reason)
+            return self._apply_order_evented_plan_unlocked(plan, order)
 
     # ------------------------------------------------------------------ #
     # Fills (append-only) — the only mutation of position

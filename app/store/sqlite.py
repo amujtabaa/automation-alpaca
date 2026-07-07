@@ -111,6 +111,7 @@ from app.store.core import (
     plan_create_order_for_sell_intent,
     plan_flatten_position,
     plan_quarantine_timed_out_order,
+    plan_reconcile_resolve_order,
     plan_resolve_timeout_quarantine,
     plan_transition_order,
     trading_state_change_event,
@@ -2313,6 +2314,21 @@ class SqliteStateStore(StateStore):
             plan = plan_resolve_timeout_quarantine(
                 order, new_status, broker_order_id=broker_order_id, reason=reason
             )
+            return self._apply_order_evented_plan_locked(plan, order)
+
+    async def reconcile_resolve_order(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        reason: Optional[str] = None,
+    ) -> Order:
+        async with self._lock:
+            row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
+            if row is None:
+                raise UnknownEntityError(f"order {order_id} not found")
+            order = self._order(row)
+            plan = plan_reconcile_resolve_order(order, new_status, reason=reason)
             return self._apply_order_evented_plan_locked(plan, order)
 
     async def list_timeout_quarantined_orders(self) -> list[Order]:
