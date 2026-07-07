@@ -245,13 +245,27 @@ characterize → implement → adversarial-verify → report → commit.
         `current_trading_state()` query; init backfill (pre-wave-3d session →
         consistent, idempotent). 19 tests; suite 1506+ green; the trading_state
         FACT is event_truth + dual-store consistent + independent-release preserved.
-      - [ ] **Slice 5 — enforcement reads the FSM.** Thread `trading_state` into the
-        3 policy predicates + `_claim_hold_reason` `PROTECTION_FLOOR` branch +
-        `monitoring` kill-pauses-protection (keep reason strings; behavior-identical
-        since booleans == derived FSM). Then flip the matrix row to `event_truth`.
-      - [ ] **Slice 7 — Flow-5 full migration** (assert `set_kill_switch → HALTED` /
-        `pause → REDUCING` + the `Reducing`-allows-`PROTECTION_FLOOR` counterpart)
-        + INV-7 reduce-only-under-Reducing test + docs + **adversarial review**.
+      - [x] **Slice 5 — enforcement reads the FSM** (`e4851d7`). The 3
+        Rule-8 predicates (`order_intent_block_reason`/`session_submission_block_reason`/
+        `kill_switch_block_reason`) now decide off `session.trading_state`
+        (HALTED→`kill_switch`, REDUCING→`buys_paused`; reason strings kept for label
+        continuity); `_claim_hold_reason` inherits the FSM read transitively (it calls
+        the same predicates). `monitoring._run_protection_tick` kill-pauses-protection
+        and the `/protection` status DTO's `paused_by_kill_switch` both read
+        `trading_state is HALTED`. Behavior-identical since booleans == derived FSM.
+        **Drift-proofing:** a `SessionRecord` model validator self-heals
+        `trading_state` to `TradingState.of(kill, pause)` so no directly-constructed
+        or row-mapped record can drift (structural §8 read-model invariant).
+      - [x] **Slice 7 — Flow-5 full migration** (`e4851d7`). Characterization
+        Flow-5 migrated: `set_kill_switch → HALTED` (blocks a PROTECTION_FLOOR exit
+        end-to-end via monitoring tick, ADR-003) + `set_buys_paused → REDUCING`, both
+        proven against `current_trading_state()` (event log). `TestEnforcementReadsFsm`
+        pins the FSM→reason mapping; `TestReducingIsReduceOnly` (INV-7 / §8 / ADR-003)
+        proves REDUCING permits a reduce-only PROTECTION_FLOOR claim while denying a
+        BUY, and HALTED denies both. Migration matrix row flipped to `event_truth`.
+        Also cleaned pre-existing ruff debt from earlier 3d slices (F821 forward-refs
+        to `TradingState` in `projectors.py`/`base.py`; F401 unused import in `core.py`).
+        1537 passed, coverage 95.26%, ruff clean, harness green. **Adversarial review: pending.**
       `MANUAL_FLATTEN`-under-Halted denial + emergency-reduce is wave 3e (D3);
       stream→Reducing trigger is Phase 4 (D4).
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
