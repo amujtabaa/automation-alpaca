@@ -36,7 +36,7 @@ for every phase so far (proceeding was explicitly user-authorized).
 |---|---|---|
 | 0 | Docs, inventory, migration seams | ✅ done (`7a25649`) — report: `docs/SPINE_PHASE0_INVENTORY.md`, `docs/SPINE_PHASE0_MIGRATION_PLAN.md` |
 | 1 | Facade shell + characterization | ✅ done (`d146e0e`, `afe8543`) — report: `docs/SPINE_PHASE1_FACADE_REPORT.md` |
-| 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`<phase2-final>`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
+| 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`60d38a0`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
 | 3 | Safety-critical event-first migration | 🚧 next (largest; resolves ADR-001/002/003 conflicts) |
 | 4 | Reconciliation engine | ⬜ not started |
 | 5 | Import-boundary enforcement | ⬜ not started |
@@ -50,7 +50,7 @@ All substeps done; adversarial review (workflow `w32i9qgc8`, 4 lenses +
 synthesis) returned **safe to finalize**; 5 low/nit findings applied (see
 `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` §6). Commits: `7ba8dd0` (log + projector
 + replay), `b0434f3` (coverage→100%), `b46b83b` (matrix/report/ledger),
-`<phase2-final>` (review remediation). Full suite green, `app/events/` 100%.
+`60d38a0` (review remediation). Full suite green, `app/events/` 100%.
 
 Locked design decisions (kept, for the record): `ExecutionEvent` is distinct
 from the audit `Event`; Phase 2 is additive/shadow (no `event_truth` flip, no
