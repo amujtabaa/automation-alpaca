@@ -107,17 +107,28 @@ class TestPlanAppendFill:
         assert plan.outcome == core.FILL_REJECT
         assert plan.event.payload["reason"] == "cumulative_exceeds_order_quantity"
 
-    def test_reject_sell_below_zero(self):
-        # A SELL fill must be against a SELL order (to pass the side-match check)
-        # before the negative-position guard is reached.
+    def test_records_and_quarantines_broker_overfill(self):
+        # Spine v2 wave 3b / ADR-001: a SELL fill that crosses a long-only
+        # position through flat into short is a broker-authoritative OVERFILL —
+        # intrinsic validity already passed, so this is broker REALITY, not
+        # malformed local input. It is now RECORDED (fill + FILL execution event)
+        # and the symbol QUARANTINED, no longer reject-and-dropped. The SELL fill
+        # must be against a SELL order (to clear the side-match check) so the
+        # overfill branch, not the side-match reject, is what's exercised.
         plan = self._call(
             order=_order(side=OrderSide.SELL),
             side=OrderSide.SELL,
             current_quantity=5,
             quantity=10,
         )
-        assert plan.outcome == core.FILL_REJECT
-        assert plan.event.event_type == "fill_rejected_negative_position"
+        assert plan.outcome == core.FILL_APPEND
+        assert plan.event.event_type == "fill_overfill_quarantined"
+        assert plan.event.payload["quarantined"] is True
+        assert plan.event.payload["attempted_sell"] == 10
+        assert plan.event.payload["current_quantity"] == 5
+        assert plan.fill is not None and plan.fill.quantity == 10
+        assert plan.execution_event is not None  # mirrored into the event log
+        assert plan.error is None
 
 
 # --- plan_create_order_for_candidate --------------------------------------- #

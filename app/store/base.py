@@ -828,6 +828,15 @@ class StateStore(ABC):
     async def list_positions(self) -> list[Position]:
         """Derived positions for every symbol that has fills."""
 
+    @abstractmethod
+    async def list_quarantined_symbols(self) -> set[str]:
+        """Symbols quarantined by a broker-authoritative overfill (ADR-001,
+        Spine v2 wave 3b): a recorded FILL crossed the long-only position through
+        flat into short. Derived purely from the event log (a negative projected
+        position), so it is replay-stable. Autonomous BUY order intent for a
+        quarantined symbol is blocked until the operator reconciles and reviews.
+        """
+
     # ------------------------------------------------------------------ #
     # Events / audit log (append-only)
     # ------------------------------------------------------------------ #

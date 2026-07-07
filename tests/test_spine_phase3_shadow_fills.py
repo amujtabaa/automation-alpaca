@@ -24,7 +24,6 @@ from app.models import (
     ExecutionEventType,
     OrderSide,
 )
-from app.position import NegativePositionError
 from app.store.memory import InMemoryStateStore
 from app.store.sqlite import SqliteStateStore
 
@@ -217,11 +216,16 @@ async def test_duplicate_fill_emits_no_execution_event(any_store):
     assert len(await any_store.get_execution_events()) == 1
 
 
-async def test_rejected_negative_fill_emits_no_execution_event(any_store):
+async def test_rejected_invalid_fill_emits_no_execution_event(any_store):
+    # A fill REJECTED for intrinsic malformed values (non-positive price) writes
+    # no fill row and so must emit no shadow event. (A broker OVERFILL is no
+    # longer a reject as of wave 3b — it records + quarantines — so the
+    # no-emission-on-reject property is pinned via a still-rejected path.)
+    from app.store.base import InvalidFillError
+
     await any_store.initialize()
     sess = await any_store.get_current_session()
-    sell = await _order(any_store, "AAPL", OrderSide.SELL, 50, sess.id)
-    with pytest.raises(NegativePositionError):
-        await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 50, 9.0, filled_at=_TS, session_id=sess.id)
-    # A rejected fill changed no position and must leave the event log empty.
+    buy = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
+    with pytest.raises(InvalidFillError):
+        await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 0.0, filled_at=_TS, session_id=sess.id)
     assert await any_store.get_execution_events() == []

@@ -46,7 +46,7 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.events.projectors import project_symbol_position
+from app.events.projectors import project_symbol_position, quarantined_symbols
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -1007,6 +1007,8 @@ class InMemoryStateStore(StateStore):
                 session=session,
                 exposure_before_order=self._current_exposure_unlocked(),
                 risk_limits=risk_limits,
+                quarantined=candidate.symbol
+                in quarantined_symbols(self._execution_events),
             )
             if plan.outcome == CREATE_ORDER_REJECT:
                 # The kill-switch/pause block and the Phase 6 CAPI risk-limit
@@ -1387,6 +1389,10 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             symbols = sorted(self._fill_event_symbols_unlocked())
             return [self._position_unlocked(s) for s in symbols]
+
+    async def list_quarantined_symbols(self) -> set[str]:
+        async with self._lock:
+            return quarantined_symbols(self._execution_events)
 
     # ------------------------------------------------------------------ #
     # Events

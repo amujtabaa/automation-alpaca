@@ -223,6 +223,11 @@ class EventType(str, Enum):
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
     FILL_REJECTED_NEGATIVE = "fill_rejected_negative_position"
     FILL_REJECTED_INVALID = "fill_rejected_invalid"
+    # ADR-001 (Spine v2 wave 3b): a broker-authoritative overfill that crosses a
+    # long-only position through flat into short is RECORDED (not rejected) and
+    # the symbol is QUARANTINED — autonomous order intent for it is then blocked.
+    FILL_OVERFILL_QUARANTINED = "fill_overfill_quarantined"
+    ORDER_INTENT_BLOCKED_QUARANTINE = "order_intent_blocked_quarantine"
 
     KILL_SWITCH_ENGAGED = "kill_switch_engaged"
     KILL_SWITCH_RELEASED = "kill_switch_released"

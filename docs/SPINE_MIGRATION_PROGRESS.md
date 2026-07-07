@@ -37,7 +37,7 @@ for every phase so far (proceeding was explicitly user-authorized).
 | 0 | Docs, inventory, migration seams | ✅ done (`7a25649`) — report: `docs/SPINE_PHASE0_INVENTORY.md`, `docs/SPINE_PHASE0_MIGRATION_PLAN.md` |
 | 1 | Facade shell + characterization | ✅ done (`d146e0e`, `afe8543`) — report: `docs/SPINE_PHASE1_FACADE_REPORT.md` |
 | 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`60d38a0`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
-| 3 | Safety-critical event-first migration | 🚧 in progress — wave 3a-shadow done (`bf60d74`,`e7c423c`); waves 3a-truth/3b/3c/3d/3e remain |
+| 3 | Safety-critical event-first migration | 🚧 in progress — waves 3a-shadow / 3a-truth / 3b done; waves 3c/3d/3e remain |
 | 4 | Reconciliation engine | ⬜ not started |
 | 5 | Import-boundary enforcement | ⬜ not started |
 | 6 | Legacy table demotion/removal | ⬜ not started |
@@ -110,7 +110,7 @@ characterize → implement → adversarial-verify → report → commit.
         `apply_fill` reject-by-raise (comment at `app/events/projectors.py`)
         must become quarantine-tolerant once broker-authoritative overfills can
         be recorded, else a recorded oversell aborts the whole replay.
-- [~] **Wave 3b — overfill / negative-position quarantine** (ADR-001).
+- [x] **Wave 3b — overfill / negative-position quarantine** (ADR-001).
       - [x] **Part 1 — projector oversell-tolerance + quarantine detection**
         (`563ed4d`). `apply_fill(..., allow_short=True)` records a crossing
         sell as a negative position instead of raising (the default still raises
@@ -121,14 +121,27 @@ characterize → implement → adversarial-verify → report → commit.
         records an oversell yet (`append_fill` still rejects local negatives), so
         the whole position/fill corpus stays green.
         `tests/test_spine_phase3b_overfill_quarantine.py`.
-      - [ ] **Part 2 — record path + block.** Change `append_fill` so a
-        *broker-authoritative* overfill is RECORDED (FILL event appended + a
-        `QUARANTINED` event) rather than rejected (`fill_value_reason` intrinsic
-        malformed-input reject stays); add a store `list_quarantined_symbols()`
-        query; block autonomous order creation / spawns for a quarantined
-        symbol; surface for manual review. Then update the Phase-0
-        characterization (`TestCharacterizeBrokerOverfillHandling`) to the
-        migrated behavior. Adversarial-review the record path.
+      - [x] **Part 2 — record path + block** (`<pending-commit>`). `append_fill`
+        now RECORDS a *broker-authoritative* overfill (a SELL crossing long-only
+        through flat) — `plan_append_fill` step 5+6 appends the fill row + a
+        `fill_overfill_quarantined` audit event + the broker-authoritative `FILL`
+        `ExecutionEvent`, all atomically — instead of reject-and-drop. Intrinsic
+        malformed-input rejects (`fill_value_reason`: non-positive qty/price,
+        cumulative-over-order, symbol/side mismatch) are UNCHANGED and still
+        reject. Both stores gained `list_quarantined_symbols()` (derived from the
+        event log via `quarantined_symbols`); `create_order_for_candidate` passes
+        `quarantined=` to the planner, which blocks autonomous BUY intent for a
+        quarantined symbol (`order_intent_blocked_quarantine` audit event,
+        `OrderIntentBlockedError`). Position now derives the recorded short
+        (`get_position` returns negative). Characterization + parity tests
+        migrated (reject→record): `test_spine_v2_characterization`,
+        `test_sqlite_store`, `test_input_validation`, `test_position_folding`,
+        `test_store_core`; the "reject→no shadow event" property re-pinned via a
+        still-rejected `InvalidFillError` path in `test_spine_phase3_shadow_fills`.
+        Replay reproduces the quarantine per-store and across memory+SQLite
+        (ADR-001 required test). Full suite green (1441 passed), coverage 95.65%.
+        Fill overfill / negative-position handling is `event_truth`. **Adversarial
+        review: pending.**
 - [ ] **Wave 3c — timeout/504 `TIMEOUT_QUARANTINE`** (ADR-002). Replace blind
       redrive (characterized in `tests/test_spine_v2_characterization.py`
       Flow 2) with quarantine + targeted reconcile-by-`client_order_id`.
@@ -137,12 +150,14 @@ characterize → implement → adversarial-verify → report → commit.
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
       on the TradingState FSM (3d).
 
-**Resume hint:** Phase 2 is fully closed and pushed. Start Wave 3a. Re-read
-`docs/adr/ADR-001` and `ADR-004`, `tests/test_spine_v2_characterization.py`
-(the pinned current behavior), and the current fill path
-(`app/store/core.py:plan_append_fill`, `app/store/{memory,sqlite}.py:append_fill`).
-Phase 3 flips a flow to `event_truth` only when the 6 conditions in
-`docs/MIGRATION_MATRIX.md` "Migration rule" hold.
+**Resume hint:** Waves 3a + 3b are done and green. Start **Wave 3c
+(timeout/504 `TIMEOUT_QUARANTINE`, ADR-002)**. Re-read `docs/adr/ADR-002`,
+`tests/test_spine_v2_characterization.py` Flow 2 (the pinned blind-redrive
+current behavior), and the submission/claim path
+(`app/store/core.py:plan_claim_order_for_submission`, the broker-submit recovery
+ledger D-017, `app/monitoring.py` submit flow). Phase 3 flips a flow to
+`event_truth` only when the 6 conditions in `docs/MIGRATION_MATRIX.md`
+"Migration rule" hold.
 
 ---
 

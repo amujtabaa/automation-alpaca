@@ -12,7 +12,6 @@ import sqlite3
 import pytest
 
 from app.models import OrderSide
-from app.position import NegativePositionError
 from app.store.sqlite import SqliteStateStore
 
 pytestmark = pytest.mark.anyio
@@ -66,23 +65,24 @@ async def test_duplicate_fill_protection_in_sqlite(tmp_path):
     await store.close()
 
 
-async def test_oversell_rejected_in_sqlite(tmp_path):
+async def test_broker_overfill_recorded_and_quarantined_in_sqlite(tmp_path):
+    # Spine v2 wave 3b / ADR-001: a broker-authoritative overfill (a SELL that
+    # crosses long-only through flat) is now RECORDED and the symbol QUARANTINED,
+    # not reject-and-dropped — same as the in-memory store.
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
     buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
     await store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0)
-    # Sell through a side-matched order so the long-only guard is what rejects.
     sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
-    with pytest.raises(NegativePositionError):
-        await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 200, 1.0)
-    assert (await store.get_position("AAPL")).quantity == 100
-    # The rejection is persisted as an audit event (not silent), just like the
-    # in-memory store.
-    rejects = [
+    result = await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 200, 1.0)
+    assert result.status == "appended"
+    assert (await store.get_position("AAPL")).quantity == -100
+    assert "AAPL" in await store.list_quarantined_symbols()
+    quarantines = [
         e for e in await store.list_events()
-        if e.event_type == "fill_rejected_negative_position"
+        if e.event_type == "fill_overfill_quarantined"
     ]
-    assert len(rejects) == 1
+    assert len(quarantines) == 1
     await store.close()
 
 

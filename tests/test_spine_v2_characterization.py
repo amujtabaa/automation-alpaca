@@ -33,7 +33,6 @@ from app.models import (
     SessionType,
 )
 from app.monitoring import run_monitoring_tick
-from app.position import NegativePositionError
 from app.store.base import CLAIM_CLAIMED
 
 pytestmark = pytest.mark.anyio
@@ -174,32 +173,19 @@ class TestCharacterizeStaleSubmittingRetry:
 # Flow 3 — broker-reported overfill/negative-position vs. ADR-001
 # --------------------------------------------------------------------------- #
 class TestCharacterizeBrokerOverfillHandling:
-    """CURRENT: a fill that would drive the local position negative is
-    REJECTED at ``append_fill`` — raises :class:`NegativePositionError`,
-    appends no fill row, leaves the position untouched. This guard makes no
-    distinction between a malformed/synthetic local input and a
-    broker-authoritative fact reported through the real reconciliation path
-    (``app.monitoring``'s fill-ingestion loop catches this exact exception via
-    its ``_FILL_ERRORS`` tuple and treats it as "rejected," logging a warning
-    and feeding the separate, narrower fill-divergence/``needs_review``
-    escalation — see D-022 B3/AIR-002, ``app.monitoring._escalate_fill_
-    divergence``) — but the broker's fill FACT itself is dropped from the
-    fill/position ledger either way. There is no primary-level ``QUARANTINED``
-    status, and no "block further autonomous spawned orders for this symbol"
-    enforcement tied specifically to this fact.
-
-    ADR-001 CONFLICT (recorded, not resolved here): the target model requires
-    the broker-authoritative fact to be RECORDED (even though it violates the
-    local no-oversell invariant), with the primary explicitly ``QUARANTINED``
-    and blocked from further autonomous orders. Current behavior instead
-    drops the broker fact from the position/fill ledger entirely. This test
-    pins that reject-and-drop shape directly at the store boundary where the
-    decision is actually made — the full broker/monitoring escalation path
-    it triggers is separately covered by ``tests/test_air_group_b.py``'s
-    ``TestAir002FillDivergence``.
+    """MIGRATED (Spine v2 wave 3b — ADR-001 resolved; this class previously
+    *characterized* the pre-migration reject-and-drop behavior, now updated to
+    the target behavior). A broker-authoritative overfill — a SELL that crosses
+    the long-only position through flat — is now RECORDED at ``append_fill``
+    (the FILL is appended, position projects the resulting short) and the symbol
+    is QUARANTINED (derived from the negative event-log position); further
+    autonomous BUY order intent for it is blocked. Intrinsic malformed input
+    (NaN / non-positive qty or price) is *still* rejected at append
+    (``fill_value_reason``) — only the broker-authoritative no-oversell case
+    flipped from reject to record+quarantine.
     """
 
-    async def test_fill_that_would_go_negative_is_rejected_and_position_unaffected(
+    async def test_broker_overfill_is_recorded_and_quarantines_the_symbol(
         self, any_store
     ):
         await any_store.initialize()
@@ -215,20 +201,18 @@ class TestCharacterizeBrokerOverfillHandling:
             cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
         )
 
-        # The broker reports this SELL order fully filled at 150 shares — but
-        # only 100 are actually held. A genuine broker-authoritative
-        # overfill/negative-position fact, exactly like ADR-001 describes.
-        with pytest.raises(NegativePositionError):
-            await any_store.append_fill(
-                sell.id, "AAPL", OrderSide.SELL, 150, 10.0, session_id=session.id
-            )
+        # Broker reports this SELL fully filled at 150 while only 100 are held —
+        # a broker-authoritative overfill. RECORDED, not dropped (ADR-001).
+        result = await any_store.append_fill(
+            sell.id, "AAPL", OrderSide.SELL, 150, 10.0, session_id=session.id
+        )
+        assert result.status == "appended"
 
-        # The fact is dropped, not recorded-and-quarantined: no fill row, no
-        # position change, no QUARANTINED status anywhere (none exists).
-        position = await any_store.get_position("AAPL")
-        assert position.quantity == 100
-        fills = await any_store.list_fills(order_id=sell.id)
-        assert fills == []
+        # The recorded short is projected; the symbol is quarantined; the fill
+        # row exists (fact preserved, not dropped).
+        assert (await any_store.get_position("AAPL")).quantity == -50
+        assert "AAPL" in await any_store.list_quarantined_symbols()
+        assert await any_store.list_fills(order_id=sell.id) != []
 
 
 # --------------------------------------------------------------------------- #

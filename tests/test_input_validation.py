@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 
 from app.models import CandidateStatus, OrderSide, OrderStatus
-from app.position import NegativePositionError
 from app.store.base import (
     InvalidFillError,
     InvalidOrderError,
@@ -96,9 +95,10 @@ async def test_append_fill_cumulative_over_quantity_raises(any_store):
     assert rejects[0].payload["reason"] == "cumulative_exceeds_order_quantity"
 
 
-async def test_duplicate_and_oversell_paths_unchanged(any_store):
-    """The reordered checks must not disturb the pre-existing duplicate and
-    oversell behavior (Fix 2 explicitly preserves both)."""
+async def test_duplicate_and_overfill_paths(any_store):
+    """The reordered checks must not disturb the pre-existing duplicate behavior,
+    and a broker overfill is recorded + quarantined (Spine v2 wave 3b / ADR-001,
+    previously reject-and-drop)."""
 
     candidate, buy = await _order(any_store, side=OrderSide.BUY, quantity=200)
     first = await any_store.append_fill(
@@ -111,10 +111,12 @@ async def test_duplicate_and_oversell_paths_unchanged(any_store):
     assert dup.status == "duplicate"
     assert (await any_store.get_position("AAPL")).quantity == 100
 
-    # Oversell through a side-matched sell order still raises (long-only guard).
+    # A broker overfill (SELL crossing flat) is now RECORDED + quarantined.
     sell = await any_store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
-    with pytest.raises(NegativePositionError):
-        await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0)
+    result = await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0)
+    assert result.status == "appended"
+    assert (await any_store.get_position("AAPL")).quantity == -50
+    assert "AAPL" in await any_store.list_quarantined_symbols()
 
 
 # --------------------------------------------------------------------------- #

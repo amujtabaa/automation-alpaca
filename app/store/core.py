@@ -303,28 +303,16 @@ def plan_append_fill(
             ),
         )
 
-    # 5) Long-only integrity: a sell can never drive quantity negative.
-    if would_go_negative(current_quantity, side, quantity):
-        return FillPlan(
-            FILL_REJECT,
-            EventSpec(
-                "fill_rejected_negative_position",
-                message=(
-                    f"sell of {quantity} {symbol} rejected: exceeds current "
-                    f"quantity {current_quantity}"
-                ),
-                symbol=symbol,
-                candidate_id=order.candidate_id,
-                order_id=order_id,
-                payload={"attempted_sell": quantity, "current_quantity": current_quantity},
-                session_id=session_id,
-            ),
-            error=NegativePositionError(symbol, current_quantity, quantity),
-        )
-
-    # 6) Append. Build the fill row + its audit event; the store writes both
-    #    atomically (a failed audit event must not leave a position-changing fill
-    #    with no fill_appended row and a poisoned dedup set).
+    # 5) + 6) Append. A sell that crosses a long-only position through flat is a
+    #    broker-authoritative OVERFILL (ADR-001, wave 3b): intrinsic validity was
+    #    already checked (step 1), so this is broker REALITY, not malformed local
+    #    input. Rather than reject-and-drop it (the pre-wave-3b behavior), RECORD
+    #    the fill + its FILL event and QUARANTINE the symbol. Position now derives
+    #    from the event log, which projects the recorded short (apply_fill
+    #    allow_short); `create_order_for_candidate` blocks autonomous BUY intent
+    #    for a quarantined symbol, and the operator reconciles + manually reviews.
+    #    The store writes fill row + audit event + FILL event atomically.
+    is_overfill = would_go_negative(current_quantity, side, quantity)
     fill = Fill(
         order_id=order_id,
         symbol=symbol,
@@ -335,10 +323,29 @@ def plan_append_fill(
         session_id=session_id,
         filled_at=filled_at or utcnow(),
     )
-    execution_event = execution_event_for_fill(fill)
-    return FillPlan(
-        FILL_APPEND,
-        EventSpec(
+    if is_overfill:
+        event = EventSpec(
+            "fill_overfill_quarantined",
+            message=(
+                f"broker overfill: sell of {quantity} {symbol} exceeds current "
+                f"quantity {current_quantity} — recorded and quarantined (ADR-001)"
+            ),
+            symbol=symbol,
+            candidate_id=order.candidate_id,
+            order_id=order_id,
+            fill_id=fill.id,
+            payload={
+                "side": side.value,
+                "quantity": quantity,
+                "price": price,
+                "attempted_sell": quantity,
+                "current_quantity": current_quantity,
+                "quarantined": True,
+            },
+            session_id=session_id,
+        )
+    else:
+        event = EventSpec(
             "fill_appended",
             message=f"fill {fill.quantity} {symbol} @ {fill.price}",
             symbol=symbol,
@@ -347,10 +354,8 @@ def plan_append_fill(
             fill_id=fill.id,
             payload={"side": side.value, "quantity": quantity, "price": price},
             session_id=session_id,
-        ),
-        fill=fill,
-        execution_event=execution_event,
-    )
+        )
+    return FillPlan(FILL_APPEND, event, fill=fill, execution_event=execution_event_for_fill(fill))
 
 
 # ---- create_order_for_candidate ------------------------------------------- #
@@ -399,6 +404,7 @@ def plan_create_order_for_candidate(
     session: Optional[SessionRecord],
     exposure_before_order: float = 0.0,
     risk_limits: RiskLimits = RiskLimits(),
+    quarantined: bool = False,
 ) -> CreateOrderPlan:
     """The shared validation cascade + order construction for the candidate→order
     dispatch. ``candidate`` is known to exist and *not* already ORDERED (the store
@@ -459,6 +465,29 @@ def plan_create_order_for_candidate(
                 symbol=candidate.symbol,
                 candidate_id=candidate.id,
                 payload={"reason": block},
+                session_id=candidate.session_id,
+            ),
+        )
+
+    # ADR-001 (wave 3b): block autonomous BUY intent for a symbol quarantined by
+    # a broker-authoritative overfill — no new spawn while the primary is
+    # quarantined. The operator must reconcile + review before trading resumes.
+    if quarantined:
+        return CreateOrderPlan(
+            CREATE_ORDER_REJECT,
+            error=OrderIntentBlockedError(
+                f"order intent for {candidate.symbol} blocked: symbol quarantined "
+                f"after a broker overfill (ADR-001)"
+            ),
+            reject_event=EventSpec(
+                "order_intent_blocked_quarantine",
+                message=(
+                    f"order intent for {candidate.symbol} blocked: symbol "
+                    f"quarantined after a broker overfill (ADR-001)"
+                ),
+                symbol=candidate.symbol,
+                candidate_id=candidate.id,
+                payload={"reason": "symbol_quarantined"},
                 session_id=candidate.session_id,
             ),
         )

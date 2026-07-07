@@ -72,27 +72,33 @@ async def test_position_folding_through_store(store):
     assert p.quantity == 0 and p.average_price is None
 
 
-async def test_oversell_is_rejected_with_audit_and_no_negative(store):
+async def test_broker_overfill_is_recorded_and_quarantines_the_symbol(store):
+    # Spine v2 wave 3b / ADR-001: a broker-authoritative overfill (a SELL that
+    # crosses the long-only position through flat into short) is a FACT to be
+    # RECORDED and quarantined, not reject-and-dropped. The oversell goes through
+    # a side-matched SELL order so it clears the side-match guard and reaches the
+    # overfill branch; selling 101 vs a 100 position is the case under test.
     candidate = await store.create_candidate("AAPL")
     buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
     await store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.00)
 
-    # The oversell goes through a side-matched SELL order so it reaches the
-    # long-only guard (not the side-match guard); selling 101 vs a 100 position
-    # is the data-integrity error under test.
     sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 101)
-    with pytest.raises(NegativePositionError):
-        await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 101, 1.00)
+    result = await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 101, 1.00)
+    assert result.status == "appended"
 
-    # Position is unchanged (no short), and no extra fill row was written.
+    # The recorded short is projected (broker reality is not hidden) and the
+    # symbol is quarantined so autonomous trading cannot resume from it.
     p = await store.get_position("AAPL")
-    assert p.quantity == 100
-    assert len(await store.list_fills(symbol="AAPL")) == 1
+    assert p.quantity == -1
+    assert p.average_price is None
+    assert len(await store.list_fills(symbol="AAPL")) == 2
+    assert "AAPL" in await store.list_quarantined_symbols()
 
-    # The rejection is audit-logged, not silent.
-    rejects = [
+    # The overfill is audit-logged as a quarantine, not silently absorbed.
+    quarantines = [
         e for e in await store.list_events()
-        if e.event_type == "fill_rejected_negative_position"
+        if e.event_type == "fill_overfill_quarantined"
     ]
-    assert len(rejects) == 1
-    assert rejects[0].payload["attempted_sell"] == 101
+    assert len(quarantines) == 1
+    assert quarantines[0].payload["attempted_sell"] == 101
+    assert quarantines[0].payload["quarantined"] is True

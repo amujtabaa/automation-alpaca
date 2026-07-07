@@ -61,7 +61,7 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.events.projectors import project_symbol_position
+from app.events.projectors import project_symbol_position, quarantined_symbols
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -1705,11 +1705,19 @@ class SqliteStateStore(StateStore):
                 "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
             )
             session = self._session(sess_row) if sess_row is not None else None
+            fill_event_rows = self._read_all(
+                "SELECT * FROM execution_events WHERE event_type = 'fill' "
+                "ORDER BY sequence"
+            )
+            quarantined = candidate.symbol in quarantined_symbols(
+                [self._execution_event(r) for r in fill_event_rows]
+            )
             plan = plan_create_order_for_candidate(
                 candidate=candidate,
                 session=session,
                 exposure_before_order=self._current_exposure_locked(),
                 risk_limits=risk_limits,
+                quarantined=quarantined,
             )
             if plan.outcome == CREATE_ORDER_REJECT:
                 # The kill-switch/pause block and the Phase 6 CAPI risk-limit
@@ -2284,6 +2292,14 @@ class SqliteStateStore(StateStore):
                 "WHERE event_type = 'fill' ORDER BY symbol"
             )
             return [self._position_locked(r["symbol"]) for r in rows]
+
+    async def list_quarantined_symbols(self) -> set[str]:
+        async with self._lock:
+            rows = self._read_all(
+                "SELECT * FROM execution_events WHERE event_type = 'fill' "
+                "ORDER BY sequence"
+            )
+            return quarantined_symbols([self._execution_event(r) for r in rows])
 
     # ------------------------------------------------------------------ #
     # Events
