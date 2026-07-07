@@ -179,7 +179,7 @@ characterize → implement → adversarial-verify → report → commit.
       agent over the submit/recovery/adapter path; Phase-3/Phase-4 boundary set —
       wave 3c does a single-order read-only targeted query, defers the mass
       reconcile engine to Phase 4).
-      - [x] **Part 1 — inert scaffolding** (`<pending-commit>`).
+      - [x] **Part 1 — inert scaffolding** (`4bf6362`).
         `OrderStatus.TIMEOUT_QUARANTINE` (+ `SUBMITTING→TQ`, `TQ→{SUBMITTED,
         REJECTED,CANCELED}` transitions) + audit `EventType`s
         (`order_timeout_quarantined`/`_resolved`/`_deferred`); `AmbiguousBrokerError`
