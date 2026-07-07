@@ -193,7 +193,7 @@ characterize → implement → adversarial-verify → report → commit.
         (latest-lifecycle-event-wins, event-truth). Additive/inert — nothing routes
         to it; full corpus green (1455) + 27 new tests
         (`tests/test_spine_phase3c_timeout_quarantine.py`); coverage 95.42%.
-      - [x] **Part 2 — wiring** (`<pending-commit>`). Monitoring routes
+      - [x] **Part 2 — wiring** (`e148876`). Monitoring routes
         `AmbiguousBrokerError` → `quarantine_timed_out_order` at BOTH submit choke
         points (`_submit_pending_orders` guard placed BEFORE the generic release;
         `_redrive_stale_submitting`); new `_resolve_timeout_quarantine` tick step
