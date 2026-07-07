@@ -27,6 +27,7 @@ from app.models import (
     Candidate,
     CandidateStatus,
     Event,
+    ExecutionEvent,
     Fill,
     Order,
     OrderSide,
@@ -117,6 +118,11 @@ class InMemoryStateStore(StateStore):
         self._position_snapshots: list[PositionSnapshot] = []
         self._submit_recoveries: list[SubmitRecoveryRecord] = []  # D-017
         self._sell_intents: dict[str, SellIntent] = {}  # Phase 7
+        # Spine v2 execution-event log (Phase 2): append-only, sequence order.
+        # `_execution_event_dedupe` maps a non-null dedupe_key to its event for
+        # O(1) INV-5 idempotency without scanning the log.
+        self._execution_events: list[ExecutionEvent] = []
+        self._execution_event_dedupe: dict[str, ExecutionEvent] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -165,6 +171,10 @@ class InMemoryStateStore(StateStore):
         # Recovery records are append-then-replace (update swaps in a fresh copy,
         # never mutates in place), so a shallow snapshot restores correctly.
         saved_recoveries = list(self._submit_recoveries)
+        # Execution-event log: append-only, elements never mutated in place, so
+        # a shallow list copy + dict copy of the dedupe index restores fully.
+        saved_execution_events = list(self._execution_events)
+        saved_execution_dedupe = dict(self._execution_event_dedupe)
         try:
             yield
         except BaseException:
@@ -178,6 +188,8 @@ class InMemoryStateStore(StateStore):
             self._events = saved_events
             self._sessions = saved_sessions
             self._position_snapshots = saved_snapshots
+            self._execution_events = saved_execution_events
+            self._execution_event_dedupe = saved_execution_dedupe
             raise
 
     def _append_event_unlocked(
@@ -1386,6 +1398,52 @@ class InMemoryStateStore(StateStore):
             if limit is not None:
                 out = out[-limit:]
             return out
+
+    # ------------------------------------------------------------------ #
+    # Execution-event log (Spine v2 — Phase 2)
+    # ------------------------------------------------------------------ #
+    async def append_execution_event(self, event: ExecutionEvent) -> ExecutionEvent:
+        async with self._lock:
+            with self._atomic():
+                dedupe_key = event.dedupe_key
+                if dedupe_key is not None:
+                    existing = self._execution_event_dedupe.get(dedupe_key)
+                    if existing is not None:
+                        # INV-5: same dedupe_key is a no-op; no sequence consumed.
+                        return existing.model_copy(deep=True)
+                next_sequence = (
+                    self._execution_events[-1].sequence
+                    if self._execution_events
+                    else 0
+                ) + 1
+                stored = event.model_copy(deep=True, update={"sequence": next_sequence})
+                self._execution_events.append(stored)
+                if dedupe_key is not None:
+                    self._execution_event_dedupe[dedupe_key] = stored
+                return stored.model_copy(deep=True)
+
+    async def get_execution_events(
+        self, *, after_sequence: int = 0, limit: Optional[int] = None
+    ) -> list[ExecutionEvent]:
+        async with self._lock:
+            # Appends assign strictly increasing sequences under the lock, so the
+            # list is already in ascending sequence order — no sort needed.
+            out = [
+                e.model_copy(deep=True)
+                for e in self._execution_events
+                if e.sequence > after_sequence
+            ]
+            if limit is not None:
+                out = out[:limit]
+            return out
+
+    async def get_max_execution_sequence(self) -> int:
+        async with self._lock:
+            return (
+                self._execution_events[-1].sequence
+                if self._execution_events
+                else 0
+            )
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

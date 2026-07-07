@@ -30,6 +30,7 @@ from app.models import (
     Candidate,
     CandidateStatus,
     Event,
+    ExecutionEvent,
     Fill,
     Order,
     OrderSide,
@@ -872,6 +873,48 @@ class StateStore(ABC):
         the Phase 5 strategy loop's per-tick staleness/candidate events, can
         scroll a rare event out of) just to find it.
         """
+
+    # ------------------------------------------------------------------ #
+    # Execution-event log (Spine v2 — Phase 2 event-sourcing scaffolding)
+    #
+    # The append-only ``ExecutionEvent`` log (Spine v2 §11), DISTINCT from the
+    # audit event log above. Phase 2 is additive/shadow: the log exists and is
+    # proven correct in isolation (dual-store parity, replay), but no production
+    # flow writes to it yet and nothing treats it as authoritative. Phase 3
+    # flips migrated flows to event-truth (``docs/MIGRATION_MATRIX.md``).
+    # ------------------------------------------------------------------ #
+    @abstractmethod
+    async def append_execution_event(self, event: ExecutionEvent) -> ExecutionEvent:
+        """Append ``event`` to the durable execution-event log, assigning a
+        monotonic per-store ``sequence`` (``max_sequence + 1``) under the write
+        lock. The passed ``event.sequence`` is ignored and overwritten.
+
+        **Idempotent by ``dedupe_key`` (INV-5).** If ``event.dedupe_key`` is
+        non-``None`` and already present in the log, no row is written, no
+        sequence is consumed, and the *existing* event is returned unchanged.
+        A ``None`` ``dedupe_key`` is never deduped (every such append is a new
+        row). Returns the appended (or pre-existing) event, with its assigned
+        ``sequence``.
+
+        The append is atomic: sequence read + assignment + write happen under
+        the same lock/transaction as any other multi-row mutation, so concurrent
+        appends can never collide on a sequence or observe a gap.
+        """
+
+    @abstractmethod
+    async def get_execution_events(
+        self, *, after_sequence: int = 0, limit: Optional[int] = None
+    ) -> list[ExecutionEvent]:
+        """Events with ``sequence > after_sequence``, in ascending sequence
+        order (replay order). ``after_sequence=0`` (default) returns the whole
+        log; a snapshot-based recovery passes the snapshot's ``up_to_sequence``
+        to replay only the tail. ``limit`` caps the batch size (oldest-first)
+        for chunked replay of a large log.
+        """
+
+    @abstractmethod
+    async def get_max_execution_sequence(self) -> int:
+        """The highest assigned ``sequence`` in the log, or ``0`` if empty."""
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

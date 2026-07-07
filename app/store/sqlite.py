@@ -39,6 +39,7 @@ from app.models import (
     Candidate,
     CandidateStatus,
     Event,
+    ExecutionEvent,
     Fill,
     Order,
     OrderSide,
@@ -271,6 +272,36 @@ CREATE TABLE IF NOT EXISTS submit_recoveries (
     last_attempt_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_recoveries_status ON submit_recoveries(cleanup_status);
+
+-- Spine v2 execution-event log (Phase 2): the append-only event-sourcing
+-- truth (§11), distinct from the audit `events` table above. `sequence` is a
+-- monotonic per-store ordering key (UNIQUE enforces no collision/gap at the DB
+-- level); `dedupe_key` UNIQUE enforces INV-5 idempotency (SQLite treats NULLs
+-- as distinct, so un-deduped events with NULL keys coexist freely). Phase 2 is
+-- shadow: nothing writes here on the production path yet.
+CREATE TABLE IF NOT EXISTS execution_events (
+    id              TEXT PRIMARY KEY,
+    sequence        INTEGER NOT NULL UNIQUE,
+    schema_version  INTEGER NOT NULL,
+    event_type      TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    authority       TEXT NOT NULL,
+    dedupe_key      TEXT UNIQUE,
+    ts_event        TEXT,
+    ts_init         TEXT NOT NULL,
+    symbol          TEXT,
+    side            TEXT,
+    quantity        INTEGER,
+    price           REAL,
+    order_id        TEXT,
+    primary_id      TEXT,
+    spawn_id        TEXT,
+    session_id      TEXT,
+    correlation_id  TEXT,
+    payload         TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_execution_events_dedupe
+    ON execution_events(dedupe_key);
 """
 
 
@@ -583,6 +614,30 @@ class SqliteStateStore(StateStore):
             session_id=row["session_id"],
             correlation_id=row["correlation_id"],
             created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _execution_event(row: sqlite3.Row) -> ExecutionEvent:
+        return ExecutionEvent(
+            id=row["id"],
+            sequence=row["sequence"],
+            schema_version=row["schema_version"],
+            event_type=row["event_type"],
+            source=row["source"],
+            authority=row["authority"],
+            dedupe_key=row["dedupe_key"],
+            ts_event=row["ts_event"],
+            ts_init=row["ts_init"],
+            symbol=row["symbol"],
+            side=row["side"],
+            quantity=row["quantity"],
+            price=row["price"],
+            order_id=row["order_id"],
+            primary_id=row["primary_id"],
+            spawn_id=row["spawn_id"],
+            session_id=row["session_id"],
+            correlation_id=row["correlation_id"],
+            payload=json.loads(row["payload"]) if row["payload"] else {},
         )
 
     @staticmethod
@@ -2234,6 +2289,78 @@ class SqliteStateStore(StateStore):
             if limit is not None:
                 events = events[-limit:]
             return events
+
+    # ------------------------------------------------------------------ #
+    # Execution-event log (Spine v2 — Phase 2)
+    # ------------------------------------------------------------------ #
+    async def append_execution_event(self, event: ExecutionEvent) -> ExecutionEvent:
+        async with self._lock:
+            with self._tx() as cur:
+                dedupe_key = event.dedupe_key
+                if dedupe_key is not None:
+                    existing = cur.execute(
+                        "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                        (dedupe_key,),
+                    ).fetchone()
+                    if existing is not None:
+                        # INV-5: idempotent — no row written, no sequence consumed.
+                        return self._execution_event(existing)
+                max_row = cur.execute(
+                    "SELECT MAX(sequence) AS m FROM execution_events"
+                ).fetchone()
+                next_sequence = (max_row["m"] or 0) + 1
+                stored = event.model_copy(update={"sequence": next_sequence})
+                cur.execute(
+                    """INSERT INTO execution_events
+                       (id, sequence, schema_version, event_type, source,
+                        authority, dedupe_key, ts_event, ts_init, symbol, side,
+                        quantity, price, order_id, primary_id, spawn_id,
+                        session_id, correlation_id, payload)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        stored.id,
+                        stored.sequence,
+                        stored.schema_version,
+                        stored.event_type.value,
+                        stored.source.value,
+                        stored.authority.value,
+                        stored.dedupe_key,
+                        _dt(stored.ts_event),
+                        _dt(stored.ts_init),
+                        stored.symbol,
+                        stored.side.value if stored.side is not None else None,
+                        stored.quantity,
+                        stored.price,
+                        stored.order_id,
+                        stored.primary_id,
+                        stored.spawn_id,
+                        stored.session_id,
+                        stored.correlation_id,
+                        json.dumps(stored.payload),
+                    ),
+                )
+                return stored
+
+    async def get_execution_events(
+        self, *, after_sequence: int = 0, limit: Optional[int] = None
+    ) -> list[ExecutionEvent]:
+        sql = (
+            "SELECT * FROM execution_events WHERE sequence > ? ORDER BY sequence"
+        )
+        params: tuple = (after_sequence,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (after_sequence, limit)
+        async with self._lock:
+            rows = self._read_all(sql, params)
+            return [self._execution_event(r) for r in rows]
+
+    async def get_max_execution_sequence(self) -> int:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT MAX(sequence) AS m FROM execution_events", ()
+            )
+            return (row["m"] if row is not None else 0) or 0
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

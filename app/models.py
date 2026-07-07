@@ -249,6 +249,85 @@ class EventType(str, Enum):
 
 
 # --------------------------------------------------------------------------- #
+# Spine v2 execution-event vocabulary (Phase 2 — event-sourcing scaffolding)
+#
+# These enums belong to the append-only ``ExecutionEvent`` log (see the
+# ``ExecutionEvent`` model below and ``docs/SPINE_EXECUTION_ARCHITECTURE_v2.md``
+# §4/§5/§11). They are DISTINCT from the audit ``EventType`` above: the audit
+# log is a human-facing incident trail; the execution-event log is the
+# replayable event-sourcing truth. Kept deliberately separate to avoid
+# conflating the two logs (root ``CLAUDE.md`` conflict rule).
+# --------------------------------------------------------------------------- #
+
+
+class ExecutionEventType(str, Enum):
+    """Vocabulary for the append-only ``ExecutionEvent`` log (Spine v2 §4/§5).
+
+    Declared from the architecture spec so the *schema* is stable across the
+    whole migration. **Phase 2 only projects ``FILL``** (position, via
+    ``app/events/projectors.py``). The order/spawn lifecycle and
+    ``TRADING_STATE_CHANGED``/``QUARANTINED`` types are declared here for schema
+    stability but their projectors (primary/spawn/TradingState) land in Phase 3,
+    where those state machines are actually built — see
+    ``docs/SPINE_MIGRATION_PROGRESS.md``. Declaring vocabulary is not
+    implementing behavior; nothing in Phase 2 *emits* or *projects* these yet.
+    """
+
+    # Position-affecting fact — INV-1: only fill events change quantity.
+    FILL = "fill"
+    # Spawn/order venue lifecycle (§4 state model) — Phase 3 projectors.
+    SUBMIT_PENDING = "submit_pending"
+    SUBMITTED = "submitted"
+    ACCEPTED = "accepted"
+    PARTIALLY_FILLED = "partially_filled"
+    FILLED = "filled"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    REPLACED = "replaced"
+    TIMEOUT_QUARANTINE = "timeout_quarantine"            # ADR-002, Phase 3
+    UNKNOWN_RECONCILE_REQUIRED = "unknown_reconcile_required"
+    # TradingState transition (§8) — Phase 3.
+    TRADING_STATE_CHANGED = "trading_state_changed"
+    # Overfill / negative-position quarantine fact (ADR-001) — Phase 3.
+    QUARANTINED = "quarantined"
+
+
+class EventSource(str, Enum):
+    """Where an ``ExecutionEvent`` originated (provenance for reconciliation).
+
+    ``ts_init - ts_event`` is the staleness signal (§11); ``source`` records
+    which ingestion path produced the event.
+    """
+
+    ENGINE = "engine"                  # local single-writer engine decision
+    BROKER_STREAM = "broker_stream"    # Alpaca trade-update websocket
+    BROKER_REST = "broker_rest"        # Alpaca REST (status/position fetch)
+    RECONCILIATION = "reconciliation"  # inferred by the reconciliation engine
+
+
+class EventAuthority(str, Enum):
+    """How authoritative a fact is (ADR-001).
+
+    A ``BROKER_AUTHORITATIVE`` overfill/negative-position fact is *recorded*
+    even when it violates local no-oversell expectations (Phase 3 quarantines
+    rather than hides it). ``LOCAL``/``SYNTHETIC`` inputs may still be rejected
+    before append. ``SYNTHETIC`` = deterministic reconciliation-inferred fact
+    (§3 ``trade_id``), so restart replays dedupe identically.
+    """
+
+    BROKER_AUTHORITATIVE = "broker_authoritative"
+    LOCAL = "local"
+    SYNTHETIC = "synthetic"
+
+
+# Replay is only valid within a single schema version; a semantics change to
+# the event envelope requires a migration path (§11). Bump on any incompatible
+# change to ``ExecutionEvent``'s persisted shape.
+EXECUTION_EVENT_SCHEMA_VERSION = 1
+
+
+# --------------------------------------------------------------------------- #
 # Persisted entities
 # --------------------------------------------------------------------------- #
 
@@ -528,6 +607,61 @@ class Event(_Entity):
     # non-candidate/non-sell-intent events (e.g. market_data_stale) are None.
     correlation_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class ExecutionEvent(_Entity):
+    """Append-only event-sourcing record — the Spine v2 durable-truth log (§11).
+
+    **Distinct from the audit :class:`Event`.** The audit log is a human-facing
+    incident trail; this log is replayed through the projectors
+    (``app/events/projectors.py``) to *reconstruct* state — position now, and
+    primary/spawn/TradingState in Phase 3. Replay is only valid within a single
+    ``schema_version``.
+
+    Phase 2 is additive/shadow: the log exists and is proven correct in
+    isolation, but no production flow writes to it yet and nothing treats it as
+    authoritative. Phase 3 makes the first durable write of a migrated flow an
+    ``ExecutionEvent`` (``docs/MIGRATION_MATRIX.md`` Decision 4).
+
+    A ``FILL`` event carries ``symbol``/``side``/``quantity``/``price``/
+    ``ts_event`` so the :class:`~app.events.projectors.PositionProjector` can
+    reconstruct a :class:`Fill` and fold it via ``app/position.py:fold_fills``
+    without a join — the folding formula is never duplicated.
+    """
+
+    id: str = Field(default_factory=new_id)
+    # Monotonic per store, assigned by the store at append (1-based, gapless,
+    # never reused). The replay/ordering key (§11). ``0`` means "unassigned
+    # draft, not yet appended"; the store overwrites it with ``max_sequence + 1``
+    # under its write lock, so a persisted event always has ``sequence >= 1``.
+    sequence: int = 0
+    schema_version: int = EXECUTION_EVENT_SCHEMA_VERSION
+    event_type: ExecutionEventType
+    source: EventSource
+    authority: EventAuthority
+    # Idempotency/dedup key (INV-5). For a FILL: the venue ``trade_id`` (real)
+    # or a deterministic synthetic id (reconciliation). A duplicate append with
+    # the same non-null ``dedupe_key`` is a no-op that returns the existing
+    # event. ``None`` for events that are not deduped.
+    dedupe_key: Optional[str] = None
+    # Venue event time (when the broker says it happened); ``ts_init`` is local
+    # ingest time. ``ts_init - ts_event`` is the latency/staleness signal (§11).
+    ts_event: Optional[datetime] = None
+    ts_init: datetime = Field(default_factory=utcnow)
+    # Domain correlation (all nullable — an event need not name every entity).
+    symbol: Optional[str] = None
+    side: Optional[OrderSide] = None
+    quantity: Optional[int] = None
+    price: ResponseSafeFloat = None
+    order_id: Optional[str] = None
+    # primary/spawn ids are the §4 durable-supervisor / venue-attempt handles;
+    # unused in Phase 2 (no state machine emits them yet), declared for schema
+    # stability so Phase 3 does not churn the envelope.
+    primary_id: Optional[str] = None
+    spawn_id: Optional[str] = None
+    session_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class SessionRecord(_Entity):
