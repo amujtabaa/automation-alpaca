@@ -110,9 +110,25 @@ characterize → implement → adversarial-verify → report → commit.
         `apply_fill` reject-by-raise (comment at `app/events/projectors.py`)
         must become quarantine-tolerant once broker-authoritative overfills can
         be recorded, else a recorded oversell aborts the whole replay.
-- [ ] **Wave 3b — overfill / negative-position quarantine** (ADR-001). Record
-      broker reality, mark primary `QUARANTINED`, block autonomous spawns.
-      Requires the projector oversell-tolerance change flagged above.
+- [~] **Wave 3b — overfill / negative-position quarantine** (ADR-001).
+      - [x] **Part 1 — projector oversell-tolerance + quarantine detection**
+        (`<wave3b-p1>`). `apply_fill(..., allow_short=True)` records a crossing
+        sell as a negative position instead of raising (the default still raises
+        — the long-only backstop for *local* input is preserved); the
+        projector uses it (a recorded broker FILL is a fact to project, not an
+        error). `quarantined_symbols(events)` flags any symbol whose event-log
+        position is negative. **Additive/inert on the live path** — nothing
+        records an oversell yet (`append_fill` still rejects local negatives), so
+        the whole position/fill corpus stays green.
+        `tests/test_spine_phase3b_overfill_quarantine.py`.
+      - [ ] **Part 2 — record path + block.** Change `append_fill` so a
+        *broker-authoritative* overfill is RECORDED (FILL event appended + a
+        `QUARANTINED` event) rather than rejected (`fill_value_reason` intrinsic
+        malformed-input reject stays); add a store `list_quarantined_symbols()`
+        query; block autonomous order creation / spawns for a quarantined
+        symbol; surface for manual review. Then update the Phase-0
+        characterization (`TestCharacterizeBrokerOverfillHandling`) to the
+        migrated behavior. Adversarial-review the record path.
 - [ ] **Wave 3c — timeout/504 `TIMEOUT_QUARANTINE`** (ADR-002). Replace blind
       redrive (characterized in `tests/test_spine_v2_characterization.py`
       Flow 2) with quarantine + targeted reconcile-by-`client_order_id`.

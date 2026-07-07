@@ -122,8 +122,30 @@ def project_symbol_position(events: Iterable[ExecutionEvent], symbol: str) -> Po
     for event in events:
         if event.event_type is not ExecutionEventType.FILL or event.symbol != symbol:
             continue
-        position = apply_fill(position, _fill_from_event(event))
+        # allow_short: a recorded FILL is a broker-authoritative FACT. If it
+        # drives the position negative (a broker overfill, ADR-001) the projector
+        # RECORDS the resulting short — it does not raise — so the quarantine
+        # detector can surface it. Local malformed input is rejected earlier, at
+        # append time (would_go_negative), before any event is recorded.
+        position = apply_fill(position, _fill_from_event(event), allow_short=True)
     return position
+
+
+def quarantined_symbols(events: Iterable[ExecutionEvent]) -> set[str]:
+    """Symbols whose event-log position is negative — a broker-authoritative
+    overfill/oversell that ADR-001 requires be recorded and QUARANTINED (autonomous
+    spawns blocked, manual review). Derived purely from the log so it is
+    replay-stable. A long-only book should never be short; a negative projection
+    means a recorded broker fact crossed flat, which must halt autonomous trading
+    for that symbol until reconciled.
+    """
+
+    symbols = {
+        e.symbol
+        for e in events
+        if e.event_type is ExecutionEventType.FILL and e.symbol is not None
+    }
+    return {s for s in symbols if project_symbol_position(events, s).quantity < 0}
 
 
 class PositionProjector:
@@ -172,13 +194,9 @@ class PositionProjector:
                 continue
             fill = _fill_from_event(event)
             current = positions.get(fill.symbol) or Position(symbol=fill.symbol)
-            # NOTE (ADR-001 forward-coupling): apply_fill RAISES NegativePosition
-            # Error on a sell that crosses flat into short — correct for Phase 2
-            # parity with the legacy fold. But ADR-001 says a *broker-authoritative*
-            # overfill must be RECORDED and quarantined, not rejected. When Phase 3
-            # wires broker-authoritative fill events, this path must tolerate a
-            # recorded oversell (project the negative qty + mark the primary
-            # QUARANTINED) rather than abort the whole replay here. Do not assume
-            # apply_fill is safe to replay over recorded broker reality.
-            positions[fill.symbol] = apply_fill(current, fill)
+            # allow_short (wave 3b / ADR-001): a recorded FILL is a broker fact.
+            # An overfill that crosses flat is RECORDED as a negative (quarantine)
+            # position, not rejected — see project_symbol_position + the
+            # quarantine detector. Local malformed input is rejected at append.
+            positions[fill.symbol] = apply_fill(current, fill, allow_short=True)
         return PositionProjection(positions=positions, up_to_sequence=up_to_sequence)

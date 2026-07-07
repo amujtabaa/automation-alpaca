@@ -34,7 +34,7 @@ class NegativePositionError(ValueError):
         )
 
 
-def apply_fill(position: Position, fill: Fill) -> Position:
+def apply_fill(position: Position, fill: Fill, *, allow_short: bool = False) -> Position:
     """Apply a single fill to a running :class:`Position`, returning the next
     :class:`Position` (pure — no mutation of the input).
 
@@ -51,8 +51,16 @@ def apply_fill(position: Position, fill: Fill) -> Position:
       (a sell does not change the average price of the remaining shares)
 
     ``average_price`` is ``cost_basis / quantity`` while long, else ``None``.
-    Raises :class:`NegativePositionError` if the sell would drive quantity below
-    zero.
+
+    By default a sell that would drive quantity below zero raises
+    :class:`NegativePositionError` — the long-only guard for *local* input (a
+    malformed fill must never silently short the book). When ``allow_short`` is
+    set (wave 3b, ADR-001), a crossing sell instead **records** the resulting
+    negative quantity: a *broker-authoritative* overfill is a fact the projector
+    must project (and quarantine), not hide by raising. ``cost_basis``/
+    ``average_price`` are undefined for a short in a long-only book, so a
+    non-positive quantity carries ``cost_basis 0.0`` / ``average_price None`` —
+    the negative quantity is the quarantine signal.
     """
 
     quantity = position.quantity
@@ -64,17 +72,15 @@ def apply_fill(position: Position, fill: Fill) -> Position:
     else:  # SELL
         old_quantity = quantity
         new_quantity = quantity - fill.quantity
-        if new_quantity < 0:
+        if new_quantity < 0 and not allow_short:
             raise NegativePositionError(position.symbol, old_quantity, fill.quantity)
-        if old_quantity > 0:
+        if new_quantity > 0 and old_quantity > 0:
             # Proportional reduction keeps the average price unchanged.
             cost_basis = cost_basis * (new_quantity / old_quantity)
         else:
+            # Flat or (allow_short) a recorded short: no meaningful avg cost.
             cost_basis = 0.0
         quantity = new_quantity
-        if quantity == 0:
-            # Fully flat — drop any floating-point residue in cost_basis.
-            cost_basis = 0.0
 
     average_price = (cost_basis / quantity) if quantity > 0 else None
     return Position(
