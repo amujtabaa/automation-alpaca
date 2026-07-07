@@ -380,32 +380,38 @@ class SqliteStateStore(StateStore):
                 "ON fills(order_id, source_fill_id) "
                 "WHERE source_fill_id IS NOT NULL"
             )
+            # Index the event-log position read path (symbol + event_type); the
+            # flip to event-truth turned an index-backed fills query into an
+            # otherwise-unindexed scan of execution_events (review MEDIUM).
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_events_symbol_type "
+                "ON execution_events(symbol, event_type)"
+            )
             self._backfill_fill_events_locked()
             self._ensure_current_session_locked()
 
     def _backfill_fill_events_locked(self) -> None:
-        """Emit a `FILL` ExecutionEvent for every fill row not yet mirrored in
-        the event log (wave 3a-truth). Position now derives from the event log,
-        so a DB opened on pre-wave-3a fills (fill rows, no events) must have them
-        backfilled or it would read a wrong (understated) position.
+        """Ensure every fill row has a matching `FILL` event (wave 3a-truth).
+        Position now derives from the event log, so a DB opened on fill rows that
+        predate the log would read a wrong (understated) position unless those
+        fills are backfilled.
 
-        Fills and FILL events are 1:1 in append (rowid / sequence) order, so the
-        first N fills already have events where N = current FILL-event count;
-        only ``fills[N:]`` need backfilling. Idempotent and correct for the
-        partial pre+post-wave-3a case. A fresh DB (0 fills) is a no-op.
+        Additive + identity-matched: for each fill in rowid order, append its
+        event through the DEDUPED insert. A fill whose event already exists is a
+        no-op (its deterministic ``dedupe_key`` is already present); a fill
+        lacking one appends it. Idempotent, order-preserving for the realizable
+        pre-event-log migration (0 events → all appended in fill order), and it
+        NEVER deletes an event that has no fill row — reconciliation-inferred
+        fills (Phase 4) and directly-appended FILL events legitimately have none.
+        A fresh DB (0 fills) is a no-op. Mirrors ``InMemoryStateStore``.
         """
 
         conn = self._connect()
-        already = conn.execute(
-            "SELECT COUNT(*) AS c FROM execution_events WHERE event_type = 'fill'"
-        ).fetchone()["c"]
-        rows = conn.execute(
-            "SELECT * FROM fills ORDER BY rowid LIMIT -1 OFFSET ?", (already,)
-        ).fetchall()
-        if not rows:
+        fill_rows = conn.execute("SELECT * FROM fills ORDER BY rowid").fetchall()
+        if not fill_rows:
             return
         with self._tx() as cur:
-            for row in rows:
+            for row in fill_rows:
                 self._insert_execution_event(
                     cur, execution_event_for_fill(self._fill(row))
                 )
@@ -1636,7 +1642,10 @@ class SqliteStateStore(StateStore):
     def _current_exposure_locked(self) -> float:
         positions = [
             self._position_locked(r["symbol"])
-            for r in self._read_all("SELECT DISTINCT symbol FROM fills ORDER BY symbol")
+            for r in self._read_all(
+                "SELECT DISTINCT symbol FROM execution_events "
+                "WHERE event_type = 'fill' ORDER BY symbol"
+            )
         ]
         non_terminal_placeholders = ",".join("?" * len(NON_TERMINAL_ORDER_STATUSES))
         open_orders = [
@@ -2564,8 +2573,12 @@ class SqliteStateStore(StateStore):
                 )
             ]
             nonzero_positions = []
+            # Enumerate symbols from the event log (Rule-7 truth), matching
+            # memory + list_positions, so a FILL event with no fill row is
+            # snapshotted and the two stores agree.
             for r in self._read_all(
-                "SELECT DISTINCT symbol FROM fills ORDER BY symbol"
+                "SELECT DISTINCT symbol FROM execution_events "
+                "WHERE event_type = 'fill' ORDER BY symbol"
             ):
                 pos = self._position_locked(r["symbol"])
                 if pos.quantity != 0:

@@ -95,7 +95,17 @@ characterize → implement → adversarial-verify → report → commit.
       `event_truth`. **Note:** fill + event are written in one atomic block
       (event authoritative, fill table a read-model); `prior_filled`/dedup
       accounting still read the fill-table read-model (accurate, lower-risk —
-      not a position-truth concern).
+      not a position-truth concern). **Adversarial review (`wojsqwhiq`) caught a
+      BLOCKER + MEDIUMs, all fixed + regression-tested (`<wave3a-truth-fix>`):**
+      the initial count/offset backfill was INVERTED (pre-shadow fills are a
+      prefix, not a suffix) — replaced with an additive, identity-matched
+      backfill that appends each fill's event through the deduped writer (never
+      deletes an event-only reconciliation fill); null-source fills now carry a
+      deterministic `fill:{order_id}:@{fill.id}` key so they are matchable.
+      Blocker reproduced firsthand (qty 200→400) + mutation-tested. Also flipped
+      `current_exposure`/`close_session` symbol enumeration to the event log
+      (both stores agree) and added `idx_exec_events_symbol_type`. The
+      behavior-preservation lens found the core flip sound (0 defects).
       - **Still open for wave 3b — ADR-001 oversell tolerance:** the projector's
         `apply_fill` reject-by-raise (comment at `app/events/projectors.py`)
         must become quarantine-tolerant once broker-authoritative overfills can

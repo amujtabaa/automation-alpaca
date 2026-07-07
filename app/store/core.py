@@ -159,24 +159,34 @@ def execution_event_for_fill(fill: Fill) -> ExecutionEvent:
     event-truth backfill (``StateStore`` init) build the SAME event for the same
     fill — a deterministic, replay-stable record. A fill in this system is always
     a broker-reported fact (submitted orders fill and are observed via polling),
-    so authority=BROKER_AUTHORITATIVE. The dedupe_key mirrors the fill table's
-    per-(order_id, source_fill_id) dedup exactly — NOT the bare source_fill_id,
-    since two different orders may legitimately share a venue fill id (F1) while
-    the event log's dedupe_key is global; a fill with no source_fill_id gets a
-    ``None`` key (never deduped), matching the fill table. ``ts_event`` is the
-    fill time so the projected ``Position.updated_at`` matches the fold. Source
-    is a shadow default; a later wave can thread the real ingestion path.
+    so authority=BROKER_AUTHORITATIVE. ``ts_event`` is the fill time so the
+    projected ``Position.updated_at`` matches the fold. Source is a shadow
+    default; a later wave can thread the real ingestion path.
+
+    **dedupe_key** must uniquely and deterministically identify the fill so the
+    backfill can tell whether a fill already has an event (idempotent, additive
+    reconcile — never a positional guess). For a fill with a venue
+    ``source_fill_id`` (the production case — Alpaca fills always carry one), the
+    key is ``fill:{order_id}:{source_fill_id}``, mirroring the fill table's
+    per-(order_id, source_fill_id) dedup exactly (two orders may legitimately
+    share a venue fill id — F1 — so the order id is part of the key). A fill with
+    NO ``source_fill_id`` (tests / hypothetical) has no venue identity, so we key
+    on its unique row id ``fill:{order_id}:@{fill.id}``: still unique per fill (so
+    it never dedups against a different fill, matching the fill table's
+    "null-source is never deduped") yet matchable, so backfill neither skips nor
+    double-emits it. (The row-id key is store-local for null-source fills; this
+    does not affect projected position, only the dedupe identity.)
     """
 
+    if fill.source_fill_id is not None:
+        dedupe_key = f"fill:{fill.order_id}:{fill.source_fill_id}"
+    else:
+        dedupe_key = f"fill:{fill.order_id}:@{fill.id}"
     return ExecutionEvent(
         event_type=ExecutionEventType.FILL,
         source=EventSource.BROKER_REST,
         authority=EventAuthority.BROKER_AUTHORITATIVE,
-        dedupe_key=(
-            f"fill:{fill.order_id}:{fill.source_fill_id}"
-            if fill.source_fill_id is not None
-            else None
-        ),
+        dedupe_key=dedupe_key,
         ts_event=fill.filled_at,
         symbol=fill.symbol,
         side=fill.side,

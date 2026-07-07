@@ -136,25 +136,23 @@ class InMemoryStateStore(StateStore):
                 self._ensure_current_session_unlocked()
 
     def _backfill_fill_events_unlocked(self) -> None:
-        """Emit a `FILL` ExecutionEvent for every fill row not yet mirrored in
-        the event log (wave 3a-truth). Since position now derives from the event
-        log, a store opened on pre-wave-3a fills (fill rows, no events) must have
-        those fills backfilled or it would read a wrong (understated) position.
+        """Ensure every fill row has a matching `FILL` event (wave 3a-truth).
+        Position now derives from the event log, so a store opened on fill rows
+        that predate the log would read a wrong (understated) position unless
+        those fills are backfilled.
 
-        Fills and FILL events are 1:1 in append order (the shadow write emits one
-        per appended fill), so the first N fills already have events where N =
-        current FILL-event count; only ``fills[N:]`` need backfilling. Idempotent
-        (after running, counts match) and correct for the partial pre+post-wave-3a
-        case. An in-memory store is always empty here, so this is a no-op for
-        tests; it matters for a persisted SQLite DB predating wave 3a.
+        Additive + identity-matched: for each fill in append order, append its
+        event through the DEDUPED writer. A fill whose event already exists is a
+        no-op (its deterministic ``dedupe_key`` — see ``execution_event_for_fill``
+        — is already present); a fill lacking one appends it. This is idempotent,
+        preserves order for the realizable pre-event-log migration (0 events →
+        all appended in fill order), and — critically — NEVER deletes an event
+        that has no fill row, since reconciliation-inferred fills (Phase 4) and
+        directly-appended FILL events legitimately have none. A fresh store (0
+        fills) is a no-op.
         """
 
-        already = sum(
-            1
-            for e in self._execution_events
-            if e.event_type is ExecutionEventType.FILL
-        )
-        for fill in self._fills[already:]:
+        for fill in self._fills:
             self._append_execution_event_unlocked(execution_event_for_fill(fill))
 
     # ------------------------------------------------------------------ #
@@ -1623,7 +1621,10 @@ class InMemoryStateStore(StateStore):
             and si.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED)
         ]
         nonzero_positions = []
-        for sym in sorted({f.symbol for f in self._fills}):
+        # Enumerate position symbols from the event log (the Rule-7 truth), not
+        # the fills read-model — so a FILL event with no fill row (reconciliation
+        # -inferred fill) is snapshotted too, and memory/sqlite agree.
+        for sym in sorted(self._fill_event_symbols_unlocked()):
             pos = self._position_unlocked(sym)
             if pos.quantity != 0:
                 nonzero_positions.append(pos)

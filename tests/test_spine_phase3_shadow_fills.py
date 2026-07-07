@@ -173,14 +173,19 @@ async def test_fill_execution_event_dedupe_key_mirrors_fill_table_per_order(any_
     assert events[0].dedupe_key == f"fill:{buy.id}:t1"
 
 
-async def test_fill_without_source_id_emits_null_dedupe_key(any_store):
+async def test_fill_without_source_id_emits_a_unique_row_id_dedupe_key(any_store):
+    """A fill with no venue source_fill_id has no venue identity, so its event is
+    keyed on the fill's unique row id (``fill:{order_id}:@{fill.id}``): unique per
+    fill (so it never dedups against a different fill, matching the fill table's
+    "null-source is never deduped") yet still matchable, so the event-truth
+    backfill neither skips nor double-emits it."""
     await any_store.initialize()
     sess = await any_store.get_current_session()
     buy = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
-    await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, filled_at=_TS, session_id=sess.id)
+    result = await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, filled_at=_TS, session_id=sess.id)
     events = await any_store.get_execution_events()
     assert len(events) == 1
-    assert events[0].dedupe_key is None  # never deduped, like the fill table
+    assert events[0].dedupe_key == f"fill:{buy.id}:@{result.fill.id}"
 
 
 async def test_two_orders_sharing_a_source_fill_id_both_emit(any_store):

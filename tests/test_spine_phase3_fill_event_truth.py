@@ -23,12 +23,30 @@ from app.models import (
     OrderSide,
     new_id,
 )
+from app.store.core import execution_event_for_fill
 from app.store.memory import InMemoryStateStore
 from app.store.sqlite import SqliteStateStore
 
 pytestmark = pytest.mark.anyio
 
 _TS = datetime(2026, 7, 7, 15, 30, tzinfo=timezone.utc)
+
+
+def _reconciliation_fill_event(symbol, qty, price, key):
+    """A FILL event that has NO fill-table row — the reconciliation-inferred
+    fill path (Phase 4) and the mechanism proving position is event-derived."""
+    return ExecutionEvent(
+        event_type=ExecutionEventType.FILL,
+        source=EventSource.RECONCILIATION,
+        authority=EventAuthority.BROKER_AUTHORITATIVE,
+        dedupe_key=key,
+        ts_event=_TS,
+        symbol=symbol,
+        side=OrderSide.BUY,
+        quantity=qty,
+        price=price,
+        order_id="recon",
+    )
 
 
 async def test_position_derives_from_the_event_log_not_the_fill_table(any_store):
@@ -127,3 +145,107 @@ async def test_sqlite_backfill_emits_events_for_preexisting_fills(tmp_path):
     assert (await reopened2.get_position("AAPL")).quantity == 100
     reopened2._conn.close()
     reopened2._conn = None
+
+
+# --------------------------------------------------------------------------- #
+# Review BLOCKER regression: mixed prefix(no-event)/suffix(event) layout. The
+# event-less fills are a PREFIX (pre-shadow), so a count/offset backfill
+# mis-selects; the rebuild must reconstruct the whole FILL log in fill order.
+# --------------------------------------------------------------------------- #
+async def test_memory_backfill_rebuilds_mixed_prefix_suffix_layout():
+    store = InMemoryStateStore()
+    await store.initialize()
+    session = await store.get_current_session()
+    # 2 pre-shadow fills (rows, NO events) then 2 shadow fills (rows + events).
+    for oid, sid in [("o1", "s1"), ("o2", "s2")]:
+        store._fills.append(
+            Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
+                 price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+        )
+    for oid, sid in [("o3", "s3"), ("o4", "s4")]:
+        f = Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
+                 price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+        store._fills.append(f)
+        async with store._lock:
+            with store._atomic():
+                store._append_execution_event_unlocked(execution_event_for_fill(f))
+    # Backfill must REBUILD (not skip the prefix): all 4 fills -> qty 400.
+    async with store._lock:
+        with store._atomic():
+            store._backfill_fill_events_unlocked()
+    assert (await store.get_position("AAPL")).quantity == 400
+    assert len(await store.get_execution_events()) == 4
+
+
+async def test_sqlite_backfill_rebuilds_mixed_prefix_suffix_layout(tmp_path):
+    path = tmp_path / "mixed.db"
+    store = SqliteStateStore(path)
+    await store.initialize()
+    session = await store.get_current_session()
+    conn = store._connect()
+    # 2 pre-shadow fills: rows only.
+    for oid, sid in [("o1", "s1"), ("o2", "s2")]:
+        conn.execute(
+            "INSERT INTO fills (id, order_id, symbol, side, quantity, price, "
+            "source_fill_id, session_id, filled_at, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (new_id(), oid, "AAPL", "buy", 100, 1.0, sid, session.id,
+             _TS.isoformat(), _TS.isoformat()),
+        )
+    # 2 shadow fills: rows + matching FILL events (the suffix).
+    for oid, sid in [("o3", "s3"), ("o4", "s4")]:
+        f = Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
+                 price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+        conn.execute(
+            "INSERT INTO fills (id, order_id, symbol, side, quantity, price, "
+            "source_fill_id, session_id, filled_at, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (f.id, oid, "AAPL", "buy", 100, 1.0, sid, session.id,
+             _TS.isoformat(), _TS.isoformat()),
+        )
+    conn.commit()
+    # Emit the 2 suffix events out-of-band so the log holds only the suffix.
+    for oid, sid in [("o3", "s3"), ("o4", "s4")]:
+        await store.append_execution_event(
+            execution_event_for_fill(
+                Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
+                     price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+            )
+        )
+    store._conn.close()
+    store._conn = None
+
+    # Reopen -> backfill must rebuild the whole FILL log in order -> qty 400.
+    reopened = SqliteStateStore(path)
+    await reopened.initialize()
+    assert (await reopened.get_position("AAPL")).quantity == 400
+    assert len(await reopened.get_execution_events()) == 4
+    reopened._conn.close()
+    reopened._conn = None
+
+
+# --------------------------------------------------------------------------- #
+# Review MEDIUM regression: symbol enumeration for exposure + close_session must
+# read the event log, so an event-only (reconciliation) fill is counted and the
+# two stores agree.
+# --------------------------------------------------------------------------- #
+async def test_current_exposure_enumerates_symbols_from_the_event_log(any_store):
+    await any_store.initialize()
+    await any_store.append_execution_event(
+        _reconciliation_fill_event("AAPL", 100, 3.0, "fill:recon:r1")
+    )
+    # No fill-table row, but the event log has a 100-share AAPL position.
+    assert await any_store.list_fills() == []
+    assert await any_store.current_exposure() == pytest.approx(300.0)
+
+
+async def test_close_session_snapshots_enumerate_from_the_event_log(any_store):
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    await any_store.append_execution_event(
+        _reconciliation_fill_event("AAPL", 100, 3.0, "fill:recon:r1")
+    )
+    await any_store.close_session(session.id)
+    snapshots = await any_store.list_position_snapshots(session.id)
+    assert [s.symbol for s in snapshots] == ["AAPL"]
+    assert snapshots[0].quantity == 100
