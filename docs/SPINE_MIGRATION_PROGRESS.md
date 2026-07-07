@@ -37,7 +37,7 @@ for every phase so far (proceeding was explicitly user-authorized).
 | 0 | Docs, inventory, migration seams | ✅ done (`7a25649`) — report: `docs/SPINE_PHASE0_INVENTORY.md`, `docs/SPINE_PHASE0_MIGRATION_PLAN.md` |
 | 1 | Facade shell + characterization | ✅ done (`d146e0e`, `afe8543`) — report: `docs/SPINE_PHASE1_FACADE_REPORT.md` |
 | 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`60d38a0`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
-| 3 | Safety-critical event-first migration | 🚧 in progress — waves 3a-shadow / 3a-truth / 3b done; waves 3c/3d/3e remain |
+| 3 | Safety-critical event-first migration | 🚧 in progress — waves 3a-shadow / 3a-truth / 3b / 3c done (all reviewed); waves 3d/3e remain |
 | 4 | Reconciliation engine | ⬜ not started |
 | 5 | Import-boundary enforcement | ⬜ not started |
 | 6 | Legacy table demotion/removal | ⬜ not started |
@@ -207,9 +207,25 @@ characterize → implement → adversarial-verify → report → commit.
         **refuses** a quarantined order (409 — a local cancel of a possibly-live
         order is an oversell path). Flow-2 characterization migrated
         (`TestCharacterizeStaleSubmittingRetry`: ambiguous→quarantine+targeted
-        resolve; a plain transient still redrives). Full suite green (1496→ +
-        part-2 tests); coverage 95.3%. Matrix row → `event_truth`. **Adversarial
-        review: pending.**
+        resolve; a plain transient still redrives). Matrix row → `event_truth`.
+        Commit `e148876`.
+      - [x] **Part 2 fix — adversarial-review remediation** (`<pending-commit>`).
+        Review `w698efqy1` (4 lenses + synthesis, mutation-verified) returned
+        **SAFE_TO_FINALIZE** — the core no-double-submit/oversell property was
+        proven structurally sound + live (3 mutations each broke a shipped test).
+        0 BLOCKER/HIGH. 5 follow-ups fixed (none merge-blocking): **M1** the
+        not-found REJECT bound and query-error bound shared one counter (a run of
+        query errors could erode the venue-lag tolerance) → separate reason-scoped
+        counters (`_order_deferral_count`); **M2** resolving to a venue-terminal
+        CANCELED/REJECTED with `filled_quantity>0` dropped broker fills (stranded
+        an untracked long) → route through SUBMITTED unless a CLEAN terminal
+        (filled==0), so reconcile ingests the fills (§7); **M3** the adapter
+        5xx/504/timeout→`AmbiguousBrokerError` classification was unpinned → split
+        the test (429 plain vs 5xx/504/network ambiguous); **L1** persistent query
+        error appended a deferral every tick → bounded at max_attempts; **L2**
+        re-added the dropped `list_submit_recoveries()==[]` assertion. Full suite
+        1505 passed; coverage 95.33%; M2 mutation-verified. **Re-review: not run
+        (all fixes ≤ MEDIUM, individually mutation-/reason-verified).**
 - [ ] **Wave 3d — kill/TradingState FSM** (§8): `Active`/`Reducing`/`Halted`
       replacing the binary flags (Flow 5).
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends

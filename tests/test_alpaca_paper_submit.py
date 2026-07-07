@@ -25,7 +25,11 @@ pytest.importorskip("alpaca")
 
 from alpaca.common.exceptions import APIError  # noqa: E402
 
-from app.broker.adapter import BrokerError, TerminalBrokerError  # noqa: E402
+from app.broker.adapter import (  # noqa: E402
+    AmbiguousBrokerError,
+    BrokerError,
+    TerminalBrokerError,
+)
 from app.broker.alpaca_paper import AlpacaPaperAdapter  # noqa: E402
 from app.models import Order, OrderSide, OrderType  # noqa: E402
 
@@ -211,24 +215,41 @@ class TestSubmitErrorClassification:
         with pytest.raises(TerminalBrokerError):
             await adapter.submit_order(_order())
 
-    @pytest.mark.parametrize("code", [429, 500, 502, 503])
-    async def test_transient_5xx_or_rate_limit_is_plain_broker_error(
-        self, monkeypatch, code
-    ):
+    async def test_rate_limit_429_is_a_plain_safe_transient(self, monkeypatch):
+        # ADR-002 (wave 3c) / conflict C2: a 429 is a PRE-FLIGHT reject — the order
+        # provably never reached the book — so it stays a plain BrokerError (safe
+        # idempotent redrive), NOT ambiguous. Distinguishing this from 5xx is the
+        # whole point: only an ambiguous outcome quarantines.
         adapter = _adapter()
-        adapter._client.submit_order = Mock(side_effect=_api_error(code, "try later"))
-        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
-        with pytest.raises(BrokerError) as ei:
-            await adapter.submit_order(_order())
-        assert not isinstance(ei.value, TerminalBrokerError)  # retryable
-
-    async def test_network_error_is_transient(self, monkeypatch):
-        adapter = _adapter()
-        adapter._client.submit_order = Mock(side_effect=ConnectionError("boom"))
+        adapter._client.submit_order = Mock(side_effect=_api_error(429, "slow down"))
         monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
         with pytest.raises(BrokerError) as ei:
             await adapter.submit_order(_order())
         assert not isinstance(ei.value, TerminalBrokerError)
+        assert not isinstance(ei.value, AmbiguousBrokerError)  # NOT quarantined
+
+    @pytest.mark.parametrize("code", [500, 502, 503, 504])
+    async def test_5xx_is_ambiguous_not_a_plain_transient(self, monkeypatch, code):
+        # ADR-002: a 5xx (incl. 504) means the request REACHED Alpaca's servers,
+        # which then failed — the order MAY be live. This MUST be AmbiguousBrokerError
+        # so the monitoring loop quarantines it instead of blind-redriving (the
+        # oversell path). A regression back to plain BrokerError would revive the
+        # blind redrive — this pins the classification.
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(side_effect=_api_error(code, "server error"))
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+        with pytest.raises(AmbiguousBrokerError):
+            await adapter.submit_order(_order())
+
+    @pytest.mark.parametrize("exc", [ConnectionError("boom"), TimeoutError("slow")])
+    async def test_network_or_timeout_error_is_ambiguous(self, monkeypatch, exc):
+        # A transport/timeout failure AFTER the request may have left the process is
+        # ambiguous (may be live) -> AmbiguousBrokerError, never blind-redriven.
+        adapter = _adapter()
+        adapter._client.submit_order = Mock(side_effect=exc)
+        monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
+        with pytest.raises(AmbiguousBrokerError):
+            await adapter.submit_order(_order())
 
     async def test_duplicate_recovered_returns_existing_id(self, monkeypatch):
         # Idempotency preserved: a duplicate client_order_id whose existing order

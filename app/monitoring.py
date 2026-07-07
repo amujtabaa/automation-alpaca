@@ -884,22 +884,35 @@ async def _resolve_timeout_quarantine(
         try:
             update = await adapter.get_order_by_client_order_id(order.id)
         except BrokerError as exc:
-            # Inconclusive — never "absent". Retry, and surface for manual review
-            # once we've failed to get a clean answer too many times.
-            attempts = await _order_event_count(
-                store, order.id, EventType.ORDER_TIMEOUT_QUARANTINE_DEFERRED.value
-            ) + 1
-            await _record_timeout_query_deferral(
-                store, order, attempts, "query_error",
-                needs_review=attempts >= max_attempts, error=str(exc),
-            )
+            # Inconclusive — a query FAILURE is NEVER read as "absent" (§7): it only
+            # retries. Surface for manual review once we've failed to get a clean
+            # answer max_attempts times, then STOP appending — bounded, so a
+            # persistent venue outage does not grow the event log every tick forever
+            # (full stuck-reconciliation alerting is Phase 4). Counts ONLY
+            # query_error deferrals, independent of the not-found bound below.
+            errors = await _order_deferral_count(store, order.id, "query_error")
+            if errors < max_attempts:
+                await _record_timeout_query_deferral(
+                    store, order, errors + 1, "query_error",
+                    needs_review=errors + 1 >= max_attempts, error=str(exc),
+                )
             continue
 
         if update is not None:
-            if update.status in _QUARANTINE_TERMINAL_RESOLUTIONS:
+            # Route to SUBMITTED (adopt the venue id) unless the venue order is a
+            # CLEAN terminal — canceled/rejected with ZERO fills. A canceled/rejected
+            # order that PARTIALLY FILLED still carries broker-authoritative shares
+            # (get_order_by_client_order_id reports filled_quantity), so it must go
+            # through SUBMITTED first and let the reconcile poll INGEST those fills
+            # (§7 "fills preserved"; INV-9) before finalizing — never drop a real
+            # fill by jumping straight to a terminal (that strands an untracked long).
+            clean_terminal = (
+                update.status in _QUARANTINE_TERMINAL_RESOLUTIONS
+                and update.filled_quantity == 0
+            )
+            if clean_terminal:
                 target, broker_id = update.status, None
             else:
-                # Working OR filled → adopt SUBMITTED; reconcile ingests fills (INV-9).
                 target, broker_id = OrderStatus.SUBMITTED, update.broker_order_id
             try:
                 await store.resolve_timeout_quarantine(
@@ -918,10 +931,11 @@ async def _resolve_timeout_quarantine(
                 )
             continue
 
-        # Confirmed absent at the venue. Bound it before REJECTED (§7).
-        attempts = await _order_event_count(
-            store, order.id, EventType.ORDER_TIMEOUT_QUARANTINE_DEFERRED.value
-        ) + 1
+        # Confirmed absent at the venue. Only a CONFIRMED not-found advances this
+        # bound (query FAILURES use a SEPARATE counter), so the venue-lag tolerance
+        # is exactly max_attempts confirmations (§7) — a run of query errors can
+        # never erode it and prematurely REJECT a possibly-live order.
+        attempts = await _order_deferral_count(store, order.id, "not_found") + 1
         if attempts >= max_attempts:
             _log.info(
                 "quarantined order %s confirmed absent after %s queries; "
@@ -1042,6 +1056,24 @@ async def _order_event_count(
 
     events = await store.list_events(event_type=event_type)
     return sum(1 for e in events if e.order_id == order_id)
+
+
+async def _order_deferral_count(store: StateStore, order_id: str, reason: str) -> int:
+    """Count timeout-quarantine deferrals of a SPECIFIC ``reason`` for one order
+    (ADR-002). The not-found REJECT bound and the query-error needs_review bound
+    must be INDEPENDENT — §7 forbids a query FAILURE from advancing the
+    confirmed-not-found bound (that would let a run of failures prematurely reject a
+    possibly-live order). Filtering on ``payload.reason`` keeps the two bounds
+    separate through the one ``ORDER_TIMEOUT_QUARANTINE_DEFERRED`` event type."""
+
+    events = await store.list_events(
+        event_type=EventType.ORDER_TIMEOUT_QUARANTINE_DEFERRED.value
+    )
+    return sum(
+        1
+        for e in events
+        if e.order_id == order_id and (e.payload or {}).get("reason") == reason
+    )
 
 
 async def _handle_unpersisted_submit(

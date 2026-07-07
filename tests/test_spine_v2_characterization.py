@@ -147,6 +147,9 @@ class TestCharacterizeStaleSubmittingRetry:
         fresh = await any_store.get_order(order.id)
         assert fresh.status is OrderStatus.SUBMITTING  # deferred, not quarantined
         assert fresh.broker_order_id is None
+        # An ordinary transient redrive creates NO broker-submit recovery record
+        # (that ledger is only for definitively-stranded orders).
+        assert await any_store.list_submit_recoveries() == []
 
         await run_monitoring_tick(any_store, adapter, Settings())
         redriven = await any_store.get_order(order.id)

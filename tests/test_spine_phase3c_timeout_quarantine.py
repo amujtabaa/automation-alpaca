@@ -417,6 +417,71 @@ async def test_query_error_leaves_quarantined_and_flags_needs_review(any_store):
     assert deferrals, "expected a needs_review deferral after the bound"
 
 
+async def test_query_errors_do_not_erode_the_not_found_reject_bound(any_store):
+    # Review M1: the not-found REJECT bound and the query-error bound must be
+    # INDEPENDENT (§7) — a run of query failures must NOT let a single confirmed
+    # not-found reject a possibly-live order. It still takes max_attempts CONFIRMED
+    # not-founds regardless of how many query errors happened.
+    adapter = MockBrokerAdapter()
+    settings = Settings()
+    _, order = await _quarantined_via_tick(any_store, adapter, settings)  # not_found #1
+    for _ in range(settings.timeout_quarantine_max_query_attempts + 2):
+        adapter.fail_next_client_query(BrokerError("venue flapping"))
+        await run_monitoring_tick(any_store, adapter, settings)
+    assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    # Now genuine not-founds reach the bound (the quarantine tick was not_found #1).
+    for _ in range(settings.timeout_quarantine_max_query_attempts - 2):
+        await run_monitoring_tick(any_store, adapter, settings)
+        assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    await run_monitoring_tick(any_store, adapter, settings)  # reaches max_attempts
+    assert (await any_store.get_order(order.id)).status is OrderStatus.REJECTED
+
+
+async def test_canceled_with_partial_fills_preserves_the_fills(any_store):
+    # Review M2: a quarantine that resolves to a venue-terminal CANCELED but with
+    # PARTIAL FILLS must not drop those broker-authoritative shares. It adopts
+    # SUBMITTED first so the reconcile poll ingests the fills, then finalizes.
+    adapter = MockBrokerAdapter()
+    settings = Settings()
+    _, order = await _quarantined_via_tick(any_store, adapter, settings, qty=10)
+    broker_id = f"broker-{order.id}"
+    # Venue: canceled, but 4 of 10 shares actually filled (e.g. expired remainder).
+    adapter.seed_venue_order(
+        order.id, BrokerOrderUpdate(OrderStatus.CANCELED, 4, [], broker_order_id=broker_id)
+    )
+    # The reconcile poll reports the same canceled + the 4-share fill.
+    adapter.set_response(
+        broker_id,
+        BrokerOrderUpdate(
+            OrderStatus.CANCELED, 4, [BrokerFill("f1", 4, 1.0, _TS)]
+        ),
+    )
+    await run_monitoring_tick(any_store, adapter, settings)
+    resolved = await any_store.get_order(order.id)
+    assert resolved.status is OrderStatus.CANCELED  # finalized via reconcile
+    assert (await any_store.get_position("AAPL")).quantity == 4  # fills NOT dropped
+
+
+async def test_persistent_query_error_deferral_log_is_bounded(any_store):
+    # Review L1: a persistent venue outage must NOT append a deferral event every
+    # tick forever — the query-error deferrals are bounded at max_attempts (a single
+    # needs_review marker), never unbounded growth.
+    adapter = MockBrokerAdapter()
+    settings = Settings()
+    _, order = await _quarantined_via_tick(any_store, adapter, settings)
+    for _ in range(settings.timeout_quarantine_max_query_attempts + 5):
+        adapter.fail_next_client_query(BrokerError("venue down"))
+        await run_monitoring_tick(any_store, adapter, settings)
+    query_error_deferrals = [
+        e for e in await any_store.list_events()
+        if e.event_type == "order_timeout_quarantine_deferred"
+        and (e.payload or {}).get("reason") == "query_error"
+    ]
+    assert len(query_error_deferrals) == settings.timeout_quarantine_max_query_attempts
+    assert any(e.payload.get("needs_review") for e in query_error_deferrals)
+    assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+
+
 async def test_ambiguous_redrive_of_stale_submitting_quarantines(any_store):
     # The stale-SUBMITTING re-drive path is the other submit choke point: an
     # ambiguous re-drive outcome quarantines too (never blind re-drives).
