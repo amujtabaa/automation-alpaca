@@ -29,6 +29,8 @@ from app.models import (
     RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
+    EventAuthority,
+    EventSource,
     Event,
     ExecutionEvent,
     Fill,
@@ -855,8 +857,15 @@ class StateStore(ABC):
         source_fill_id: Optional[str] = None,
         filled_at: Optional[Any] = None,
         session_id: Optional[str] = None,
+        source: EventSource = EventSource.BROKER_REST,
+        authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
     ) -> FillAppendResult:
         """Append a fill atomically (append + dedup check + audit event).
+
+        ``source``/``authority`` set the FILL ExecutionEvent provenance (Phase 4):
+        a reconciliation-inferred fill passes ``RECONCILIATION``/``SYNTHETIC``;
+        provenance only — dedup/position semantics are unchanged, so a synthetic
+        fill dedups against the real observation of the same execution (INV-5).
 
         * If ``source_fill_id`` duplicates an existing fill: no row is written,
           position is untouched, a duplicate-ignored event is recorded, and the

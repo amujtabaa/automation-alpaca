@@ -41,6 +41,8 @@ from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_UNRESOLVED,
     Candidate,
+    EventAuthority,
+    EventSource,
     CandidateStatus,
     Event,
     ExecutionEvent,
@@ -2345,6 +2347,8 @@ class SqliteStateStore(StateStore):
         source_fill_id: Optional[str] = None,
         filled_at: Optional[Any] = None,
         session_id: Optional[str] = None,
+        source: EventSource = EventSource.BROKER_REST,
+        authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
     ) -> FillAppendResult:
         key = normalize_symbol(symbol)
         side = OrderSide(side)
@@ -2385,6 +2389,8 @@ class SqliteStateStore(StateStore):
                 source_fill_id=source_fill_id,
                 filled_at=filled_at,
                 session_id=session_id,
+                source=source,
+                authority=authority,
             )
 
             if plan.outcome == FILL_REJECT:

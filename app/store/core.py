@@ -153,16 +153,24 @@ class FillPlan:
     execution_event: Optional[ExecutionEvent] = None
 
 
-def execution_event_for_fill(fill: Fill) -> ExecutionEvent:
-    """The broker-authoritative ``FILL`` ExecutionEvent that mirrors a fill row.
+def execution_event_for_fill(
+    fill: Fill,
+    *,
+    source: EventSource = EventSource.BROKER_REST,
+    authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+) -> ExecutionEvent:
+    """The ``FILL`` ExecutionEvent that mirrors a fill row.
 
     Single-sourced so the wave-3a shadow write (``plan_append_fill``) and the
     event-truth backfill (``StateStore`` init) build the SAME event for the same
-    fill — a deterministic, replay-stable record. A fill in this system is always
-    a broker-reported fact (submitted orders fill and are observed via polling),
-    so authority=BROKER_AUTHORITATIVE. ``ts_event`` is the fill time so the
-    projected ``Position.updated_at`` matches the fold. Source is a shadow
-    default; a later wave can thread the real ingestion path.
+    fill — a deterministic, replay-stable record. A normally-observed fill is a
+    broker-reported fact (submitted orders fill and are observed via polling), so
+    ``source``/``authority`` default to ``BROKER_REST``/``BROKER_AUTHORITATIVE``.
+    A **reconciliation-inferred** fill (Phase 4) overrides them to
+    ``RECONCILIATION``/``SYNTHETIC`` — provenance only; the ``dedupe_key`` stays the
+    venue-execution identity, so a synthetic fill and the eventual real observation
+    of the same execution dedup to one (INV-5), never a double-count. ``ts_event``
+    is the fill time so the projected ``Position.updated_at`` matches the fold.
 
     **dedupe_key** must uniquely and deterministically identify the fill so the
     backfill can tell whether a fill already has an event (idempotent, additive
@@ -185,8 +193,8 @@ def execution_event_for_fill(fill: Fill) -> ExecutionEvent:
         dedupe_key = f"fill:{fill.order_id}:@{fill.id}"
     return ExecutionEvent(
         event_type=ExecutionEventType.FILL,
-        source=EventSource.BROKER_REST,
-        authority=EventAuthority.BROKER_AUTHORITATIVE,
+        source=source,
+        authority=authority,
         dedupe_key=dedupe_key,
         ts_event=fill.filled_at,
         symbol=fill.symbol,
@@ -212,6 +220,8 @@ def plan_append_fill(
     source_fill_id: Optional[str],
     filled_at: Optional[Any],
     session_id: Optional[str],
+    source: EventSource = EventSource.BROKER_REST,
+    authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
 ) -> FillPlan:
     """Decide the outcome of appending one fill — the shared logic that was
     duplicated between the two stores.
@@ -223,6 +233,12 @@ def plan_append_fill(
     recorded. The checks run in the same order the stores used, so a duplicate
     still short-circuits before the cumulative/overfill check (never mistaken
     for an overfill).
+
+    ``source``/``authority`` set the FILL ExecutionEvent provenance — the default
+    is a normally-observed broker fill; a reconciliation-inferred fill (Phase 4)
+    passes ``RECONCILIATION``/``SYNTHETIC``. Provenance only: dedup/position are
+    unchanged, so a synthetic fill still dedups against the real observation of the
+    same execution (INV-5).
     """
 
     # 1) Intrinsic value validation: a non-finite/non-positive quantity or price
@@ -356,7 +372,10 @@ def plan_append_fill(
             payload={"side": side.value, "quantity": quantity, "price": price},
             session_id=session_id,
         )
-    return FillPlan(FILL_APPEND, event, fill=fill, execution_event=execution_event_for_fill(fill))
+    return FillPlan(
+        FILL_APPEND, event, fill=fill,
+        execution_event=execution_event_for_fill(fill, source=source, authority=authority),
+    )
 
 
 # ---- TradingState control (§8 / wave 3d) ---------------------------------- #

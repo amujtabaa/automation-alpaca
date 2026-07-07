@@ -68,18 +68,24 @@ DEFAULT_AVG_PRICE_TOLERANCE = 0.0001      # 0.01% (§7)
 
 @dataclass(frozen=True)
 class InferredFill:
-    """A fill the reconciler infers from the broker report (a priced execution the
-    local log is missing). ``quantity`` is the DELTA over what we already recorded;
-    ``dedupe_key`` is a deterministic synthetic id (§3 / R8) so a restart replay —
-    or a real fill later observed for the same shares — dedups to one, never
-    double-counting the position (INV-5)."""
+    """A fill the reconciler infers from a priced execution in the broker report
+    that the local log is missing. ``quantity`` is that execution's share count.
+
+    ``source_fill_id`` is the report execution's OWN id — deliberately the same
+    identity a later per-order poll (``get_order_status``) would carry for the same
+    shares (both derive the fill-event dedup key ``fill:{order_id}:{source_fill_id}``).
+    That is what makes a reconciliation-inferred fill and the eventual real
+    observation of the *same* execution dedup to ONE (INV-5 / R8) — never a
+    double-count. The event's ``authority=SYNTHETIC`` marks it as reconciliation-
+    inferred *provenance*; the *identity* stays the venue execution id so it can't
+    diverge from the real fill's identity."""
 
     order_id: str
     symbol: str
     side: OrderSide
     quantity: int
     price: float
-    dedupe_key: str
+    source_fill_id: str
 
 
 @dataclass(frozen=True)
@@ -133,21 +139,6 @@ class ReconciliationPlan:
     external_orders: list[ExternalOrder] = field(default_factory=list)
     position_mismatches: list[PositionMismatch] = field(default_factory=list)
     skipped_recent: list[str] = field(default_factory=list)
-
-
-def synthetic_fill_dedupe_key(
-    *, broker_order_id: Optional[str], client_order_id: str, cumulative_qty: int
-) -> str:
-    """Deterministic id for a reconciliation-inferred fill (§3 / R8).
-
-    Keyed on the venue id when known (else our stable ``client_order_id``) + the
-    cumulative filled level — mirroring the real-fill scheme
-    (``{broker_order_id}:{filled_qty}`` in ``alpaca_paper._get_fills``) so a real
-    fill and a synthetic one for the *same* shares collide on the same key and
-    dedup, rather than double-counting."""
-
-    anchor = broker_order_id or client_order_id
-    return f"recon:{anchor}:{cumulative_qty}"
 
 
 def _price_tolerance_ok(local: Optional[float], broker: Optional[float], tol: float) -> bool:
@@ -227,11 +218,10 @@ def plan_reconciliation(
                             side=OrderSide(order.side),
                             quantity=fill.quantity,
                             price=fill.price,
-                            dedupe_key=synthetic_fill_dedupe_key(
-                                broker_order_id=order.broker_order_id,
-                                client_order_id=order.id,
-                                cumulative_qty=order.filled_quantity + fill.quantity,
-                            ),
+                            # The execution's OWN venue id — same identity a later
+                            # real poll would carry, so the two dedup (INV-5), never
+                            # double-count.
+                            source_fill_id=fill.source_fill_id,
                         )
                     )
             else:

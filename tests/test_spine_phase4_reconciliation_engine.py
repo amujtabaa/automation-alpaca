@@ -16,11 +16,7 @@ from hypothesis import strategies as st
 
 from app.broker.adapter import BrokerFill, BrokerOrderReport, BrokerPositionReport
 from app.models import Order, OrderSide, OrderStatus, Position
-from app.reconciliation import (
-    OPEN_STATUSES,
-    plan_reconciliation,
-    synthetic_fill_dedupe_key,
-)
+from app.reconciliation import OPEN_STATUSES, plan_reconciliation
 
 _NOW = datetime(2026, 7, 7, 15, 30, tzinfo=timezone.utc)
 _OLD = _NOW - timedelta(hours=1)  # well outside recent-order protection
@@ -133,13 +129,16 @@ def test_our_order_is_never_external():
 def test_inferred_fill_from_priced_report_fill():
     report = _report(
         status=OrderStatus.PARTIALLY_FILLED, filled_quantity=40,
-        fills=[BrokerFill(source_fill_id="x", quantity=40, price=9.5, filled_at=_NOW)],
+        fills=[BrokerFill(source_fill_id="b1:40", quantity=40, price=9.5, filled_at=_NOW)],
     )
     plan = _plan([_order()], breports=[report])
     assert len(plan.inferred_fills) == 1
     f = plan.inferred_fills[0]
     assert f.quantity == 40 and f.price == 9.5
-    assert f.dedupe_key == "recon:b1:40"  # deterministic (§3/R8)
+    # Identity is the execution's OWN venue id — same the real poll would carry, so
+    # a synthetic fill and the eventual real observation dedup (INV-5 / R8), never
+    # double-count.
+    assert f.source_fill_id == "b1:40"
 
 
 def test_filled_qty_delta_with_no_price_asks_for_targeted_query():
@@ -150,16 +149,17 @@ def test_filled_qty_delta_with_no_price_asks_for_targeted_query():
     assert plan.needs_targeted_query == ["o1"]
 
 
-def test_synthetic_dedupe_key_collides_with_real_fill_scheme():
-    # recon key uses the venue id + cumulative level, mirroring the real-fill
-    # scheme ({broker_order_id}:{filled_qty}) so real+synthetic dedup on same shares.
-    assert synthetic_fill_dedupe_key(
-        broker_order_id="b1", client_order_id="o1", cumulative_qty=40
-    ) == "recon:b1:40"
-    # Falls back to client id when the venue id is unknown.
-    assert synthetic_fill_dedupe_key(
-        broker_order_id=None, client_order_id="o1", cumulative_qty=40
-    ) == "recon:o1:40"
+def test_inferred_fill_identity_matches_real_poll_identity():
+    # The inferred fill carries the report execution's own id — byte-identical to
+    # what a real get_order_status poll would carry (alpaca_paper: {broker_id}:{cum}).
+    # So both derive the SAME fill-event dedup key and collapse to one (no double-count).
+    report = _report(
+        status=OrderStatus.PARTIALLY_FILLED, filled_quantity=40,
+        fills=[BrokerFill(source_fill_id="b1:40", quantity=40, price=9.5, filled_at=_NOW)],
+    )
+    inferred = _plan([_order()], breports=[report]).inferred_fills[0]
+    real_poll_source_fill_id = "b1:40"  # {broker_order_id}:{cumulative}
+    assert inferred.source_fill_id == real_poll_source_fill_id
 
 
 # --------------------------------------------------------------------------- #
