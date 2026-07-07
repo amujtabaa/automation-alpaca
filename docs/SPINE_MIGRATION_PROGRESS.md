@@ -81,7 +81,7 @@ characterize → implement → adversarial-verify → report → commit.
       safe to finalize — 0 correctness defects; 3 test-hardening findings
       applied (fault-injection atomicity guard [mutation-tested live],
       multi-symbol/fold-to-flat parity, SELL-event price assertion), 1 future
-      backfill note recorded above.** Commits `bf60d74` + `<wave3a-review>`.
+      backfill note recorded above.** Commits `bf60d74` + `e7c423c`.
 - [ ] **Wave 3a-truth — flip fill ingestion to `event_truth`.** Make the
       first durable write the `ExecutionEvent`; derive position from the event
       log (via `PositionProjector`); demote the fill table to a read-model
