@@ -232,9 +232,11 @@ def current_trading_state(
     Derived purely from the append-only log (events in ascending ``sequence``
     order, latest wins), so it is replay-stable and event-truth — the
     ``SessionRecord.trading_state`` column is a co-written read-model reconstructable
-    from this fold (each event also carries the full ``(kill_switch, buys_paused)``
-    control tuple in its payload, so the boolean read-models are reconstructable
-    too). Session-scoped (unlike the order-scoped quarantine projectors).
+    from this fold. Each event also stamps the resulting ``(kill_switch,
+    buys_paused)`` tuple as context, but the two booleans are NOT purely
+    event-reconstructable (no event fires when a boolean toggle leaves the derived
+    state unchanged); they remain co-written ``sessions``-table columns.
+    Session-scoped (unlike the order-scoped quarantine projectors).
     """
 
     state = TradingState.ACTIVE

@@ -23,7 +23,7 @@ from app.models import (
     SessionRecord,
     utcnow,
 )
-from app.models import SessionStatus, TradingMode
+from app.models import SessionStatus, TradingMode, TradingState
 from app.store import core
 from app.store.base import (
     CLAIM_BLOCKED,
@@ -152,7 +152,10 @@ class TestPlanCreateOrder:
         assert plan.reject_event is None  # not-approved writes no audit row
 
     def test_reject_blocked_writes_event(self):
-        blocked = SessionRecord(session_date="2026-07-02", kill_switch=True)
+        blocked = SessionRecord(
+            session_date="2026-07-02", kill_switch=True,
+            trading_state=TradingState.HALTED,
+        )
         plan = core.plan_create_order_for_candidate(
             candidate=_candidate(), session=blocked
         )
@@ -341,12 +344,16 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
 
 # --- plan_claim_order_for_submission — §5.2 side/reason-aware gate ---------- #
 def _sess(*, kill=False, paused=False, closed=False) -> SessionRecord:
+    # Derive trading_state the same way the store setters co-write it, so the
+    # fixture mirrors a real store-produced record (no drift). Divergent records
+    # are built explicitly in the trading-state test module.
     return SessionRecord(
         session_date="2026-07-04",
         mode=TradingMode.PAPER,
         status=SessionStatus.CLOSED if closed else SessionStatus.ACTIVE,
         kill_switch=kill,
         buys_paused=paused,
+        trading_state=TradingState.of(kill_switch=kill, buys_paused=paused),
     )
 
 

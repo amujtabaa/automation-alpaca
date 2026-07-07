@@ -744,30 +744,21 @@ class SessionRecord(_Entity):
 
     kill_switch: bool = False
     buys_paused: bool = False
-    # Spine v2 §8 / wave 3d: the 3-state control FSM the two booleans above map
-    # onto (kill -> HALTED, else pause -> REDUCING, else ACTIVE). A co-written
-    # read-model — its durable truth is the TRADING_STATE_CHANGED ExecutionEvent.
-    # Kept consistent with the booleans by the store setters (TradingState.of).
+    # Spine v2 §8 / wave 3d: the 3-state control FSM enforcement decides off. Its
+    # durable truth is the TRADING_STATE_CHANGED ExecutionEvent log; this column is
+    # a co-written read-model. TODAY (wave 3d) the two booleans are its ONLY driver
+    # so it equals TradingState.of(kill, buys_paused); the store setters are the
+    # single mutation seam that co-writes it (see _apply_control_change in both
+    # stores). It is deliberately an INDEPENDENT field, NOT a pure derivation of the
+    # booleans: §8 makes `Reducing` "the default under stream degradation or pending
+    # reconciliation", so Phase 4 will drive it to REDUCING from stream/reconcile
+    # signals WITHOUT touching buys_paused — a validator/@property that forced
+    # trading_state == of(kill, pause) would silently heal that away (an all-stop
+    # bypass). Construct it consistently (the store always does); tests that build a
+    # record directly derive it via TradingState.of the same way the store would.
     trading_state: TradingState = TradingState.ACTIVE
 
     opened_at: datetime = Field(default_factory=utcnow)
     closed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
-
-    @model_validator(mode="after")
-    def _derive_trading_state(self) -> "SessionRecord":
-        """Structurally pin the §8 read-model invariant: ``trading_state`` is
-        ALWAYS ``TradingState.of(kill_switch, buys_paused)`` (wave 3d). It is a
-        pure projection of the two booleans (kill dominates pause), so a
-        directly-constructed or row-mapped record can never drift from them —
-        pass an inconsistent ``trading_state`` and it is healed here rather than
-        persisted. The durable truth remains the ``TRADING_STATE_CHANGED``
-        ExecutionEvent; this only keeps the materialized column self-consistent.
-        (The validator runs at construction; the store setters mutate the
-        booleans and co-write ``trading_state`` together under their lock.)"""
-
-        self.trading_state = TradingState.of(
-            kill_switch=self.kill_switch, buys_paused=self.buys_paused
-        )
-        return self

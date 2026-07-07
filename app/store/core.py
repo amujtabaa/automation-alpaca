@@ -373,13 +373,17 @@ def trading_state_change_event(
     """The ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` for a control change, or
     ``None`` when the DERIVED state is unchanged (a redundant re-engage) — §8.
 
-    The durable truth of the TradingState fact (wave 3d). The payload carries the
-    full resulting control tuple ``(kill_switch, buys_paused)`` alongside
-    ``from``/``to``, so the projector reconstructs the state AND a from-scratch
-    replay can rebuild the boolean read-model columns (Phase-6 demotion path) and
-    independent-release is preserved. A LOCAL/ENGINE control decision, not a broker
-    fact. Not deduped — every real transition is a distinct control action; the
-    ``current_trading_state`` projector folds latest-wins."""
+    The durable truth of the TradingState fact (wave 3d): the derived ``to`` state
+    is what ``current_trading_state`` folds (latest-wins), so the FSM projection is
+    fully event-reconstructable. The payload also stamps the resulting
+    ``(kill_switch, buys_paused)`` tuple as context, but the two booleans remain
+    co-written columns in the ``sessions`` table (legacy read-models), NOT purely
+    event-reconstructable: no event fires when a boolean toggle leaves the derived
+    state unchanged (e.g. pause toggled while already ``HALTED``), so the log alone
+    cannot always rebuild them — runtime correctness (incl. independent-release)
+    comes from the durable columns, not from replaying the tuple. A LOCAL/ENGINE
+    control decision, not a broker fact. Not deduped — every real transition is a
+    distinct control action; the projector folds latest-wins."""
 
     new_state = TradingState.of(kill_switch=kill_switch, buys_paused=buys_paused)
     if new_state is prior:

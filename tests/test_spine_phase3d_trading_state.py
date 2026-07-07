@@ -34,6 +34,11 @@ from app.models import (
     SessionStatus,
     TradingState,
 )
+from app.api.routes_trading import protection_status
+from app.broker.mock import MockBrokerAdapter
+from app.config import Settings
+from app.marketdata.fake import FakeMarketDataFeed
+from app.monitoring import run_monitoring_tick
 from app.policy import (
     kill_switch_block_reason,
     order_intent_block_reason,
@@ -84,8 +89,13 @@ def test_projector_defaults_active_with_no_events():
 
 
 def test_projector_latest_wins():
-    events = [_tsc("s1", "reducing", 1), _tsc("s1", "halted", 2), _tsc("s1", "reducing", 3)]
+    # Distinct first vs last so ONLY a latest-wins fold passes: a first-wins bug
+    # would return HALTED and fail (the prior first==last sequence could not).
+    events = [_tsc("s1", "halted", 1), _tsc("s1", "reducing", 2)]
     assert current_trading_state(events, "s1") is TradingState.REDUCING
+    # ...and a third, distinct terminal value confirms it is genuinely the last.
+    events3 = [_tsc("s1", "reducing", 1), _tsc("s1", "halted", 2), _tsc("s1", "active", 3)]
+    assert current_trading_state(events3, "s1") is TradingState.ACTIVE
 
 
 def test_projector_is_session_scoped():
@@ -214,8 +224,18 @@ async def test_backfill_makes_a_pre_wave3d_killed_session_consistent(tmp_path):
     assert s1.trading_state is TradingState.HALTED
     assert current_trading_state(await store.get_execution_events(), "s1") is TradingState.HALTED
 
-    # Idempotent: reopening does not append a second backfill event.
+    # The RAW read-model column must actually be healed (not just the mapped
+    # value) — assert via direct SQL so the column-write is genuinely exercised
+    # (the guard was previously dead code masked by the heal-on-read validator).
     await store.close()
+    raw = sqlite3.connect(str(path))
+    try:
+        col = raw.execute("SELECT trading_state FROM sessions WHERE id='s1'").fetchone()[0]
+        assert col == "halted"
+    finally:
+        raw.close()
+
+    # Idempotent: reopening does not append a second backfill event.
     reopened = SqliteStateStore(path)
     await reopened.initialize()
     tsc = [
@@ -227,45 +247,42 @@ async def test_backfill_makes_a_pre_wave3d_killed_session_consistent(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# SessionRecord.trading_state — the co-written read-model self-heals (validator)
+# SessionRecord.trading_state is an INDEPENDENT co-written read-model (no validator)
 # --------------------------------------------------------------------------- #
 def _session(*, kill: bool = False, paused: bool = False) -> SessionRecord:
-    return SessionRecord(session_date="2026-07-07", kill_switch=kill, buys_paused=paused)
-
-
-@pytest.mark.parametrize(
-    "kill,paused,expected",
-    [
-        (False, False, TradingState.ACTIVE),
-        (False, True, TradingState.REDUCING),
-        (True, False, TradingState.HALTED),
-        (True, True, TradingState.HALTED),
-    ],
-)
-def test_model_validator_derives_trading_state_from_booleans(kill, paused, expected):
-    # A directly-constructed record can never drift: trading_state is healed to
-    # TradingState.of(kill, paused) by the model validator, regardless of what a
-    # caller passes (here: nothing) — the §8 read-model invariant is structural.
-    assert _session(kill=kill, paused=paused).trading_state is expected
-
-
-def test_model_validator_heals_an_inconsistent_explicit_trading_state():
-    # Passing a trading_state that contradicts the booleans does NOT persist a
-    # drifted record — the validator overrides it with the derived value.
-    s = SessionRecord(
-        session_date="2026-07-07", kill_switch=True, trading_state=TradingState.ACTIVE
+    # Derive trading_state exactly as the store setters co-write it, so a
+    # directly-built fixture mirrors a real store-produced (consistent) record.
+    return SessionRecord(
+        session_date="2026-07-07", kill_switch=kill, buys_paused=paused,
+        trading_state=TradingState.of(kill_switch=kill, buys_paused=paused),
     )
-    assert s.trading_state is TradingState.HALTED
+
+
+def _diverged(state: TradingState, *, kill: bool = False, paused: bool = False) -> SessionRecord:
+    """A record whose ``trading_state`` DELIBERATELY contradicts its booleans.
+
+    Only constructible because ``trading_state`` is an honest independent field
+    (no validator forces it to ``of(kill, pause)``) — this is exactly the Phase-4
+    shape where stream degradation / pending reconciliation drives the FSM to
+    ``REDUCING``/``HALTED`` WITHOUT touching the operator booleans (§8). These
+    records are what make the "enforcement reads the FSM" tests non-tautological:
+    a regression to reading the booleans gives the WRONG answer on them.
+    """
+
+    return SessionRecord(
+        session_date="2026-07-07", kill_switch=kill, buys_paused=paused,
+        trading_state=state,
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Slice 5 — the pre-trade predicates READ the FSM (reason strings preserved)
 # --------------------------------------------------------------------------- #
 class TestEnforcementReadsFsm:
-    """The three Rule 8 predicates now decide off ``session.trading_state`` (the
-    §8 FSM), not the two legacy booleans. Behavior is identical because the
-    validator keeps ``trading_state == TradingState.of(kill, pause)``; these pin
-    the FSM→reason-string mapping so a future change to it is caught."""
+    """The three Rule 8 predicates decide off ``session.trading_state`` (the §8
+    FSM), not the two legacy booleans. On a CONSISTENT record (booleans == FSM)
+    they behave as before; these pin the FSM→reason-string mapping. The
+    divergent-record tests below prove the read genuinely follows the FSM field."""
 
     def test_order_intent_block_reason_maps_each_fsm_state(self):
         assert order_intent_block_reason(_session()) is None  # ACTIVE
@@ -286,6 +303,37 @@ class TestEnforcementReadsFsm:
         assert session_submission_block_reason(_session(kill=True)) == "kill_switch"
         closed = SessionRecord(session_date="2026-07-07", status=SessionStatus.CLOSED)
         assert session_submission_block_reason(closed) == "session_closed"
+
+
+class TestEnforcementFollowsFsmFieldNotBooleans:
+    """The regression lock the review asked for: on a DIVERGENT record the
+    predicates must follow ``trading_state``, NOT the booleans. Reverting any
+    predicate to read ``session.kill_switch``/``session.buys_paused`` flips at
+    least one of these — the only assertions that fail on a boolean regression."""
+
+    def test_halted_fsm_with_kill_boolean_false_still_blocks(self):
+        # Phase-4 shape: stream degradation set HALTED without engaging the kill
+        # boolean. Order intent + the protection gate MUST block anyway.
+        s = _diverged(TradingState.HALTED, kill=False, paused=False)
+        assert order_intent_block_reason(s) == "kill_switch"
+        assert kill_switch_block_reason(s) == "kill_switch"
+        assert session_submission_block_reason(s) == "kill_switch"
+
+    def test_reducing_fsm_with_both_booleans_false_still_blocks_buys(self):
+        # Stream degradation -> REDUCING without buys_paused. New BUY intent blocked;
+        # a reduce-only protection-floor exit stays allowed (kill gate is None).
+        s = _diverged(TradingState.REDUCING, kill=False, paused=False)
+        assert order_intent_block_reason(s) == "buys_paused"
+        assert kill_switch_block_reason(s) is None
+
+    def test_active_fsm_with_kill_boolean_true_does_not_block(self):
+        # The dangerous inverse: booleans say kill, but the authoritative FSM is
+        # ACTIVE. Enforcement follows the FSM -> NOT blocked (a boolean read would
+        # wrongly block). Proves the field, not the boolean, is authoritative.
+        s = _diverged(TradingState.ACTIVE, kill=True, paused=True)
+        assert order_intent_block_reason(s) is None
+        assert kill_switch_block_reason(s) is None
+        assert session_submission_block_reason(s) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -344,3 +392,79 @@ class TestReducingIsReduceOnly:
         )
         assert sell.outcome == CLAIM_BLOCKED
         assert sell.reason == "kill_switch"
+
+    def test_submission_claim_follows_fsm_field_on_a_divergent_session(self):
+        # The submission gate (not just the pure predicates) follows the FSM: a
+        # HALTED FSM with kill_switch=False still blocks a BUY claim. A boolean
+        # read would (wrongly) let it submit.
+        halted_fsm = _diverged(TradingState.HALTED, kill=False, paused=False)
+        plan = core.plan_claim_order_for_submission(
+            order=_buy_order(), own_session=halted_fsm, current_session=halted_fsm
+        )
+        assert plan.outcome == CLAIM_BLOCKED
+        assert plan.reason == "kill_switch"
+
+
+# --------------------------------------------------------------------------- #
+# Monitoring + DTO read the FSM field (divergent-session regression locks)
+# --------------------------------------------------------------------------- #
+async def _hold_position(store, symbol: str, qty: int, *, avg: float = 10.0) -> None:
+    session = await store.get_current_session()
+    cand = await store.create_candidate(symbol, session_id=session.id)
+    buy = await store.create_order_for_test(
+        cand.id, symbol, OrderSide.BUY, qty, session_id=session.id
+    )
+    await store.append_fill(buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id)
+    await store.transition_order(buy.id, OrderStatus.CANCELED)
+
+
+async def test_run_protection_reads_fsm_field_not_kill_boolean():
+    # A HALTED FSM with kill_switch=False (Phase-4 shape) MUST pause autonomous
+    # protection: no protective sell intent is opened for the breaching symbol.
+    # A regression to reading session.kill_switch would (wrongly) fire the exit.
+    store = InMemoryStateStore()
+    await store.initialize()
+    await _hold_position(store, "AAPL", 100, avg=10.0)
+    store._sessions[-1].trading_state = TradingState.HALTED
+    assert store._sessions[-1].kill_switch is False  # booleans stay clean
+
+    md = FakeMarketDataFeed()
+    md.set_snapshot("AAPL", last_price=1.0, bid=1.0, ask=1.0)  # far below floor -> breach
+    await run_monitoring_tick(store, MockBrokerAdapter(), Settings(), market_data=md)
+
+    assert await store.active_sell_intent_for("AAPL") is None  # paused, not fired
+
+
+async def test_run_protection_fires_when_fsm_active_despite_kill_boolean():
+    # The discriminating inverse: booleans say kill, but the authoritative FSM is
+    # ACTIVE -> protection FIRES (opens the exit). Proves monitoring reads the FSM
+    # field, not the kill boolean.
+    store = InMemoryStateStore()
+    await store.initialize()
+    await _hold_position(store, "AAPL", 100, avg=10.0)
+    store._sessions[-1].kill_switch = True
+    store._sessions[-1].trading_state = TradingState.ACTIVE
+
+    md = FakeMarketDataFeed()
+    md.set_snapshot("AAPL", last_price=1.0, bid=1.0, ask=1.0)  # breach
+    await run_monitoring_tick(store, MockBrokerAdapter(), Settings(), market_data=md)
+
+    assert await store.active_sell_intent_for("AAPL") is not None  # fired
+
+
+async def test_protection_dto_paused_by_kill_switch_reads_fsm_field():
+    # The /protection DTO's paused_by_kill_switch reads `trading_state is HALTED`,
+    # not the boolean: a HALTED FSM with kill_switch=False reports paused=True.
+    store = InMemoryStateStore()
+    await store.initialize()
+    await _hold_position(store, "AAPL", 100, avg=10.0)
+    store._sessions[-1].trading_state = TradingState.HALTED
+    assert store._sessions[-1].kill_switch is False
+
+    md = FakeMarketDataFeed()
+    md.set_snapshot("AAPL", last_price=1.0, bid=1.0, ask=1.0)  # breach
+    resp = await protection_status(store=store, settings=Settings(), market_data=md)
+
+    view = next(p for p in resp.positions if p.symbol == "AAPL")
+    assert view.breaching is True
+    assert view.paused_by_kill_switch is True

@@ -14,7 +14,7 @@ import math
 import pytest
 
 from app import features
-from app.models import CandidateStatus, SessionRecord
+from app.models import CandidateStatus, SessionRecord, TradingState
 from app.policy import (
     finite_number_reason,
     market_data_field_reason,
@@ -86,7 +86,10 @@ def test_session_resolution_passes_a_real_session():
     assert order_session_resolution_reason(live) is None
     # A kill-switched but resolvable session resolves here (resolution != control
     # block — the control block is a separate, later predicate).
-    stopped = SessionRecord(session_date="2026-07-03", kill_switch=True)
+    stopped = SessionRecord(
+        session_date="2026-07-03", kill_switch=True,
+        trading_state=TradingState.HALTED,
+    )
     assert order_session_resolution_reason(stopped) is None
 
 

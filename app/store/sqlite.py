@@ -432,7 +432,12 @@ class SqliteStateStore(StateStore):
                     )
                     if event is not None:
                         self._insert_execution_event(cur, event)
-                if session.trading_state is not derived:
+                # Heal the raw read-model column if it disagrees with the derived
+                # state (a pre-wave-3d row defaults to 'active'). Compare the RAW
+                # persisted value, not session.trading_state — the mapper reflects
+                # the column, so this is the same value, but reading row[...] makes
+                # the write's purpose (fix the stored column) unambiguous.
+                if row["trading_state"] != derived.value:
                     cur.execute(
                         "UPDATE sessions SET trading_state=? WHERE id=?",
                         (derived.value, session.id),
