@@ -248,6 +248,17 @@ class SimBrokerAdapter(MockBrokerAdapter):
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+    def _venue_view(self, broker_id: str):  # type: ignore[override]
+        """The venue's current (status, filled_quantity) for the derived open-order
+        mass report (wave 4e-3 E5). Prefers the last script update actually consumed
+        by a ``get_order_status`` call (the sim's richer lifecycle), mirroring
+        ``is_live``'s precedence; falls back to the inherited ``_responses`` view."""
+
+        update = self._script_last.get(broker_id)
+        if update is not None:
+            return update.status, update.filled_quantity
+        return super()._venue_view(broker_id)
+
     def _resolve_broker_id(self, order_id_or_broker_id: str) -> str:
         if order_id_or_broker_id in self._broker_ids:
             return self._broker_ids[order_id_or_broker_id]

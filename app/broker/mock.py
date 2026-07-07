@@ -25,11 +25,18 @@ from app.broker.adapter import (
     BrokerOrderUpdate,
     BrokerPositionReport,
 )
-from app.models import Order, OrderStatus
+from app.models import Order, OrderSide, OrderStatus
 
 
 def _broker_id(order_id: str) -> str:
     return f"broker-{order_id}"
+
+
+# A venue order in one of these statuses is no longer "open at the venue" — a
+# mass order-status report (get_orders(status=OPEN)) would not return it.
+_VENUE_TERMINAL = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
 
 
 class MockBrokerAdapter(BrokerAdapter):
@@ -49,10 +56,16 @@ class MockBrokerAdapter(BrokerAdapter):
         # "the ambiguous submit DID reach the venue" even though submit raised.
         self._venue_by_client_id: dict[str, BrokerOrderUpdate] = {}
 
-        # §7 mass reports (wave 4a). Seeded independently — the venue's current
-        # OPEN orders + positions the reconciler discovers. Recorded-call counters
-        # let tests assert the reconciler polled them.
-        self._open_order_reports: list[BrokerOrderReport] = []
+        # §7 mass reports (wave 4a). Recorded-call counters let tests assert the
+        # reconciler polled them.
+        #
+        # ``_open_order_reports`` is a SENTINEL: ``None`` (default) means "derive the
+        # venue's open orders from this adapter's own known-live submits" (wave 4e-3
+        # E5 fidelity — a self-consistent venue mirror, so a locally-open order the
+        # adapter accepted is never spuriously *absent* from its own mass report). An
+        # explicit ``seed_open_orders`` overrides it with a fixed list (e.g. to inject
+        # an external/unmanaged order, or model an order the venue dropped).
+        self._open_order_reports: Optional[list[BrokerOrderReport]] = None
         self._position_reports: list[BrokerPositionReport] = []
         self.open_order_report_queries: int = 0
         self.position_report_queries: int = 0
@@ -131,12 +144,54 @@ class MockBrokerAdapter(BrokerAdapter):
 
     async def list_open_orders(self) -> list[BrokerOrderReport]:
         # §7 mass order-status report (wave 4a). A failure raises (never an empty
-        # list read as "no open orders").
+        # list read as "no open orders"). Unseeded → DERIVE from known-live submits
+        # (wave 4e-3 E5): the venue mirror is self-consistent with what this adapter
+        # accepted, so a locally-open managed order is reported open (matched, not a
+        # false not-found). An explicit seed overrides the derivation.
         self.open_order_report_queries += 1
         if self._open_orders_error is not None:
             err, self._open_orders_error = self._open_orders_error, None
             raise err
-        return list(self._open_order_reports)
+        if self._open_order_reports is not None:
+            return list(self._open_order_reports)
+        return self._derive_open_order_reports()
+
+    def _derive_open_order_reports(self) -> list[BrokerOrderReport]:
+        """The venue's open orders inferred from this adapter's own submits: every
+        successfully-submitted order (has a minted broker id) whose current venue
+        status is non-terminal. Keyed on the deterministic client_order_id (= our
+        order id), so the reconciler matches it to the local order."""
+
+        submitted_by_id = {o.id: o for o in self.submitted}
+        reports: list[BrokerOrderReport] = []
+        for order_id, broker_id in self._broker_ids.items():
+            status, filled = self._venue_view(broker_id)
+            if status in _VENUE_TERMINAL:
+                continue
+            order = submitted_by_id.get(order_id)
+            if order is None:  # can't build a report without symbol/side
+                continue
+            reports.append(
+                BrokerOrderReport(
+                    broker_order_id=broker_id,
+                    client_order_id=order_id,
+                    symbol=order.symbol,
+                    side=OrderSide(order.side),
+                    status=status,
+                    filled_quantity=filled,
+                )
+            )
+        return reports
+
+    def _venue_view(self, broker_id: str) -> tuple[OrderStatus, int]:
+        """The venue's current (status, filled_quantity) for a broker id — the mock
+        reads its ``_responses`` map (default: SUBMITTED / 0). ``SimBrokerAdapter``
+        overrides this to prefer a consumed script update, mirroring ``is_live``."""
+
+        resp = self._responses.get(broker_id)
+        if resp is None:
+            return OrderStatus.SUBMITTED, 0
+        return resp.status, resp.filled_quantity
 
     async def list_positions(self) -> list[BrokerPositionReport]:
         # §7 position report (wave 4a). A failure raises (never read as flat).
@@ -150,7 +205,9 @@ class MockBrokerAdapter(BrokerAdapter):
     # Test controls
     # ------------------------------------------------------------------ #
     def seed_open_orders(self, reports: list[BrokerOrderReport]) -> None:
-        """Set the venue's current OPEN orders the mass report returns (§7)."""
+        """Override the derived venue mirror with a fixed OPEN-orders list (§7) —
+        e.g. to inject an external/unmanaged order or model an order the venue
+        dropped. Without this, ``list_open_orders`` derives from known-live submits."""
 
         self._open_order_reports = list(reports)
 
