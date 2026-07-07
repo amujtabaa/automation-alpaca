@@ -96,7 +96,7 @@ characterize → implement → adversarial-verify → report → commit.
       (event authoritative, fill table a read-model); `prior_filled`/dedup
       accounting still read the fill-table read-model (accurate, lower-risk —
       not a position-truth concern). **Adversarial review (`wojsqwhiq`) caught a
-      BLOCKER + MEDIUMs, all fixed + regression-tested (`<wave3a-truth-fix>`):**
+      BLOCKER + MEDIUMs, all fixed + regression-tested (`5fdc993`):**
       the initial count/offset backfill was INVERTED (pre-shadow fills are a
       prefix, not a suffix) — replaced with an additive, identity-matched
       backfill that appends each fill's event through the deduped writer (never
