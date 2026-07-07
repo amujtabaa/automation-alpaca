@@ -64,6 +64,22 @@ ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
                                 # (next tick re-runs the full control gate)
         OrderStatus.CANCELED,   # manual cancel raced the submit / terminal
         OrderStatus.REJECTED,   # broker rejected
+        # Ambiguous submit outcome (ADR-002 / wave 3c): timeout/504/transport
+        # after the request may have reached the venue. Driven ONLY by the
+        # evented store path (`transition_order_evented`), which co-writes the
+        # TIMEOUT_QUARANTINE ExecutionEvent atomically. See docs/SPINE_WAVE3C_PLAN.md.
+        OrderStatus.TIMEOUT_QUARANTINE,
+    },
+    OrderStatus.TIMEOUT_QUARANTINE: {
+        # Resolved ONLY by a read-only targeted client_order_id query
+        # (`_resolve_timeout_quarantine`): the venue has it working/filled
+        # (-> SUBMITTED, then the normal reconcile poll ingests fills, preserving
+        # INV-9 "submitted != filled" — conflict C4), definitively never arrived
+        # (-> REJECTED), or an external/late cancel (-> CANCELED). Each resolution
+        # co-writes the matching ExecutionEvent via `transition_order_evented`.
+        OrderStatus.SUBMITTED,
+        OrderStatus.REJECTED,
+        OrderStatus.CANCELED,
     },
     OrderStatus.SUBMITTED: {
         OrderStatus.PARTIALLY_FILLED,

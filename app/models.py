@@ -159,6 +159,19 @@ class OrderStatus(str, Enum):
     FILLED = "filled"
     CANCELED = "canceled"
     REJECTED = "rejected"
+    # Ambiguous submit outcome (ADR-002 / Spine v2 wave 3c): a timeout / HTTP 504
+    # / transport failure after the submit request may have reached Alpaca. The
+    # order may be live, filled, rejected, or never-arrived — we do NOT know and
+    # must NOT blind-resubmit. Non-terminal (it may be live, so it counts toward
+    # CAPI exposure) and carries no broker_order_id (the open-order reconcile
+    # naturally skips it); it is resolved ONLY by a read-only targeted query by
+    # client_order_id (monitoring `_resolve_timeout_quarantine`) into SUBMITTED /
+    # REJECTED / CANCELED. The durable truth is a TIMEOUT_QUARANTINE
+    # ExecutionEvent co-written with this status flip; this column is the
+    # read-model. Both submit sweeps skip this status, so a quarantined order is
+    # structurally unreachable by any resubmit (double-submit-safe). See
+    # docs/SPINE_WAVE3C_PLAN.md.
+    TIMEOUT_QUARANTINE = "timeout_quarantine"
 
 
 class OrderSide(str, Enum):
@@ -215,6 +228,12 @@ class EventType(str, Enum):
     # A stale SUBMITTING order's idempotent re-drive hit a transient broker error
     # and was deferred to the next tick (AIR-003). Counted to bound livelock.
     STALE_SUBMITTING_REDRIVE_DEFERRED = "stale_submitting_redrive_deferred"
+    # Ambiguous submit (timeout/504/transport) quarantined the order (ADR-002,
+    # wave 3c); resolved once a targeted client_order_id query confirms venue
+    # reality. ORDER_TIMEOUT_QUARANTINE_DEFERRED counts bounded query retries.
+    ORDER_TIMEOUT_QUARANTINED = "order_timeout_quarantined"
+    ORDER_TIMEOUT_QUARANTINE_RESOLVED = "order_timeout_quarantine_resolved"
+    ORDER_TIMEOUT_QUARANTINE_DEFERRED = "order_timeout_quarantine_deferred"
     # A broker/local fill divergence (broker filled > locally recorded) escalated
     # to a durable needs_review reconciliation record (AIR-002).
     FILL_RECONCILIATION_NEEDED = "fill_reconciliation_needed"

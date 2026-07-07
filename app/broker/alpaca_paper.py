@@ -382,6 +382,41 @@ class AlpacaPaperAdapter(BrokerAdapter):
                 f"Failed to cancel order broker_order_id={broker_order_id!r}."
             ) from exc
 
+    async def get_order_by_client_order_id(
+        self, client_order_id: str
+    ) -> Optional[BrokerOrderUpdate]:
+        """Read-only targeted query by our ``client_order_id`` (ADR-002 / wave 3c).
+
+        Used to resolve a ``TIMEOUT_QUARANTINE`` order whose ambiguous submit left
+        no ``broker_order_id``. Returns the venue order's state (with its
+        ``broker_order_id`` so the caller can adopt it), ``None`` ONLY on a
+        confirmed 404 (the order never existed), and raises ``BrokerError`` on any
+        query failure — a failed query must never be read as 'absent' (§7). This
+        never mutates a venue order, so it can never double-submit.
+        """
+        try:
+            alpaca_order = await asyncio.to_thread(
+                self._client.get_order_by_client_order_id, client_order_id
+            )
+        except APIError as exc:
+            if getattr(exc, "status_code", None) == 404:
+                return None  # the venue confirms this client_order_id never landed
+            raise BrokerError(
+                f"Targeted query failed for client_order_id={client_order_id!r}."
+            ) from exc
+        except Exception as exc:
+            raise BrokerError(
+                f"Targeted query failed for client_order_id={client_order_id!r}."
+            ) from exc
+        if alpaca_order is None:
+            return None
+        return BrokerOrderUpdate(
+            status=_map_status(alpaca_order.status),
+            filled_quantity=int(float(alpaca_order.filled_qty or 0)),
+            fills=[],
+            broker_order_id=str(alpaca_order.id),
+        )
+
     # ---------------------------------------------------------------------- #
     # Internal helpers
     # ---------------------------------------------------------------------- #

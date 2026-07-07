@@ -46,7 +46,11 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.events.projectors import project_symbol_position, quarantined_symbols
+from app.events.projectors import (
+    project_symbol_position,
+    quarantined_symbols,
+    timeout_quarantined_order_ids,
+)
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -76,12 +80,15 @@ from app.store.core import (
     FLATTEN_SUPERSEDE_AND_CREATE,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
+    OrderEventedTransitionPlan,
     plan_append_fill,
     plan_claim_order_for_submission,
     plan_close_session,
     plan_create_order_for_candidate,
     plan_create_order_for_sell_intent,
     plan_flatten_position,
+    plan_quarantine_timed_out_order,
+    plan_resolve_timeout_quarantine,
     plan_transition_order,
     require_bool,
     require_recovery_status,
@@ -1288,6 +1295,63 @@ class InMemoryStateStore(StateStore):
                     plan.event.event_type, **plan.event.as_kwargs()
                 )
             return plan.order.model_copy(deep=True)
+
+    # ------------------------------------------------------------------ #
+    # Timeout-quarantine (ADR-002 / wave 3c) — evented order transitions
+    # ------------------------------------------------------------------ #
+    def _apply_order_evented_plan_unlocked(
+        self, plan: "OrderEventedTransitionPlan", order: Order
+    ) -> Order:
+        """Apply an :class:`OrderEventedTransitionPlan`: co-write the order-row
+        flip + audit event + ExecutionEvent (durable truth) in ONE atomic block."""
+
+        if plan.outcome == ORDER_TRANSITION_REJECT:
+            raise plan.error
+        if plan.outcome == ORDER_TRANSITION_NOOP:
+            return order.model_copy(deep=True)
+        with self._atomic():
+            self._orders[plan.order.id] = plan.order
+            self._append_event_unlocked(
+                plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+            )
+            self._append_execution_event_unlocked(plan.execution_event)
+        return plan.order.model_copy(deep=True)
+
+    async def quarantine_timed_out_order(
+        self, order_id: str, *, reason: Optional[str] = None
+    ) -> Order:
+        async with self._lock:
+            order = self._orders.get(order_id)
+            if order is None:
+                raise UnknownEntityError(f"order {order_id} not found")
+            plan = plan_quarantine_timed_out_order(order, reason=reason)
+            return self._apply_order_evented_plan_unlocked(plan, order)
+
+    async def resolve_timeout_quarantine(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        broker_order_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Order:
+        async with self._lock:
+            order = self._orders.get(order_id)
+            if order is None:
+                raise UnknownEntityError(f"order {order_id} not found")
+            plan = plan_resolve_timeout_quarantine(
+                order, new_status, broker_order_id=broker_order_id, reason=reason
+            )
+            return self._apply_order_evented_plan_unlocked(plan, order)
+
+    async def list_timeout_quarantined_orders(self) -> list[Order]:
+        async with self._lock:
+            ids = timeout_quarantined_order_ids(self._execution_events)
+            return [
+                self._orders[oid].model_copy(deep=True)
+                for oid in sorted(ids)
+                if oid in self._orders
+            ]
 
     # ------------------------------------------------------------------ #
     # Fills (append-only) — the only mutation of position

@@ -177,6 +177,46 @@ def quarantined_symbols(events: Iterable[ExecutionEvent]) -> set[str]:
     return quarantined
 
 
+# Order-lifecycle ExecutionEvent types that resolve/set a TIMEOUT_QUARANTINE.
+# A FILL is deliberately NOT here: a fill never resolves a quarantine (the
+# quarantine is resolved to SUBMITTED first, then the fill ingests — §C4), so a
+# stray fill leaves the order quarantined (the safe latch).
+_ORDER_LIFECYCLE_EVENT_TYPES = frozenset(
+    {
+        ExecutionEventType.TIMEOUT_QUARANTINE,
+        ExecutionEventType.SUBMITTED,
+        ExecutionEventType.REJECTED,
+        ExecutionEventType.CANCELED,
+        ExecutionEventType.FILLED,
+    }
+)
+
+
+def timeout_quarantined_order_ids(events: Iterable[ExecutionEvent]) -> set[str]:
+    """Order ids currently in ``TIMEOUT_QUARANTINE`` (ADR-002 / wave 3c): those
+    whose LATEST order-lifecycle ``ExecutionEvent`` is ``TIMEOUT_QUARANTINE`` —
+    i.e. quarantined by an ambiguous submit and not yet resolved by a later
+    ``SUBMITTED``/``REJECTED``/``CANCELED`` event.
+
+    Derived purely from the append-only log (events in ascending ``sequence``
+    order, latest wins), so it is replay-stable and event-truth: the order-row
+    ``status`` column is a co-written read-model reconstructable from this set
+    (docs/SPINE_WAVE3C_PLAN.md C5). Only the wave-3c evented transitions emit
+    these order-lifecycle events, so a normally-submitted order (whose
+    ``SUBMITTING → SUBMITTED`` writes no ExecutionEvent) never appears here.
+    """
+
+    latest: dict[str, ExecutionEventType] = {}
+    for event in events:
+        if event.event_type in _ORDER_LIFECYCLE_EVENT_TYPES and event.order_id is not None:
+            latest[event.order_id] = event.event_type
+    return {
+        order_id
+        for order_id, event_type in latest.items()
+        if event_type is ExecutionEventType.TIMEOUT_QUARANTINE
+    }
+
+
 class PositionProjector:
     """Fold ``FILL`` events into per-symbol positions (pure)."""
 

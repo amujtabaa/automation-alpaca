@@ -49,6 +49,25 @@ class TerminalBrokerError(BrokerError):
     """
 
 
+class AmbiguousBrokerError(BrokerError):
+    """A submit whose outcome is genuinely UNKNOWN (ADR-002 / Spine v2 wave 3c).
+
+    A timeout, HTTP 504, transport failure, disconnect, or a response parse
+    failure *after the request may have reached Alpaca* — the order may be live,
+    filled, rejected, or never-arrived, and we cannot tell. This is neither a
+    safe-to-retry transient (plain :class:`BrokerError` — the request provably did
+    not reach the book, e.g. a pre-flight 429 rate-limit) nor a definitive reject
+    (:class:`TerminalBrokerError`). The monitoring loop must move the order to
+    ``TIMEOUT_QUARANTINE`` and reconcile it with a **read-only targeted query by
+    ``client_order_id``** (``get_order_by_client_order_id``) rather than blind-
+    resubmitting — a resubmit could double-fire an order that is already live
+    (oversell/short-flip risk). The adapter classifies (§6): only IT knows whether
+    the HTTP/transport failure happened before or after the request left. Being a
+    ``BrokerError`` subclass, existing ``except BrokerError`` handlers still catch
+    it; callers that must NOT blind-redrive route on the subclass explicitly.
+    """
+
+
 @dataclass(frozen=True)
 class BrokerFill:
     """A single execution report from the broker.
@@ -77,11 +96,18 @@ class BrokerOrderUpdate:
     the loop appends each one and relies on the store's ``source_fill_id`` dedup,
     so an adapter may safely return all known fills every poll rather than
     tracking "new since last poll" itself.
+
+    ``broker_order_id`` is populated ONLY by ``get_order_by_client_order_id``
+    (ADR-002): the whole point of that targeted query is to learn the venue id of
+    an order we submitted under a ``client_order_id`` but whose ack we never got,
+    so the caller can adopt it. ``get_order_status`` leaves it ``None`` — its
+    caller already holds the id it polled by.
     """
 
     status: OrderStatus
     filled_quantity: int
     fills: list[BrokerFill] = field(default_factory=list)
+    broker_order_id: Optional[str] = None
 
 
 class BrokerAdapter(ABC):
@@ -148,4 +174,32 @@ class BrokerAdapter(ABC):
         Idempotent: cancelling an order that is already terminal (filled,
         canceled, gone) is a no-op success, not an error — the order is no longer
         live either way. Raises :class:`BrokerError` only on a genuine failure.
+        """
+
+    @abstractmethod
+    async def get_order_by_client_order_id(
+        self, client_order_id: str
+    ) -> Optional[BrokerOrderUpdate]:
+        """Read-only targeted query by our deterministic ``client_order_id``
+        (ADR-002 / Spine v2 wave 3c).
+
+        After an ambiguous submit (:class:`AmbiguousBrokerError`) the order has
+        NO ``broker_order_id``, so ``get_order_status`` (keyed on the venue id)
+        cannot be used to find out what actually happened. This method asks the
+        venue "do you have the order I submitted under ``client_order_id``?" using
+        the stable ``client_order_id = order.id`` (AIR-003), and is the ONLY way a
+        ``TIMEOUT_QUARANTINE`` order is resolved.
+
+        **Contract:**
+        * returns the mapped :class:`BrokerOrderUpdate` when the venue HAS the
+          order (working/filled/etc.) — the caller adopts it (no resubmit);
+        * returns ``None`` ONLY when the venue *confirms* the order does not exist
+          (a definitive not-found / 404) — the submit never landed;
+        * raises :class:`BrokerError` on a query FAILURE (network/5xx/etc.). A
+          failed query must NEVER be read as "absent" (§7 safeguard: treating an
+          inconclusive query as flat/rejected is an oversell path) — the caller
+          keeps the order quarantined and retries.
+
+        This is strictly read-only: it never creates, cancels, or mutates a venue
+        order, so it can never double-submit.
         """

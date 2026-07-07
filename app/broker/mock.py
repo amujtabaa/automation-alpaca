@@ -15,6 +15,7 @@ It makes no network calls and imports no SDK. Tests drive it explicitly:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Optional
 
 from app.broker.adapter import BrokerAdapter, BrokerFill, BrokerOrderUpdate
@@ -31,15 +32,21 @@ class MockBrokerAdapter(BrokerAdapter):
         self.submitted: list[Order] = []
         self.status_queries: list[str] = []
         self.canceled: list[str] = []
+        self.client_queries: list[str] = []  # get_order_by_client_order_id calls
 
         # broker_order_id -> the update get_order_status will return.
         self._responses: dict[str, BrokerOrderUpdate] = {}
         # our order.id -> broker_order_id, so tests can set responses by order.
         self._broker_ids: dict[str, str] = {}
+        # client_order_id (= order.id) -> the venue state a targeted query returns
+        # (ADR-002). Seeded independently of submit_order so a test can simulate
+        # "the ambiguous submit DID reach the venue" even though submit raised.
+        self._venue_by_client_id: dict[str, BrokerOrderUpdate] = {}
 
-        # When set, the next submit/cancel raises this and then clears.
+        # When set, the next submit/cancel/client-query raises this and clears.
         self._submit_error: Optional[BaseException] = None
         self._cancel_error: Optional[BaseException] = None
+        self._client_query_error: Optional[BaseException] = None
 
     # ------------------------------------------------------------------ #
     # BrokerAdapter
@@ -85,6 +92,27 @@ class MockBrokerAdapter(BrokerAdapter):
             OrderStatus.CANCELED, filled, fills
         )
 
+    async def get_order_by_client_order_id(
+        self, client_order_id: str
+    ) -> Optional[BrokerOrderUpdate]:
+        # Read-only targeted query (ADR-002). Never mutates venue state.
+        self.client_queries.append(client_order_id)
+        if self._client_query_error is not None:
+            err, self._client_query_error = self._client_query_error, None
+            raise err  # a query FAILURE — the caller must NOT read this as absent
+        # An explicitly seeded venue order (e.g. an ambiguous submit that reached
+        # the venue) wins; else a successfully-submitted order is findable by its
+        # client id; else the venue confirms it does not exist (None).
+        if client_order_id in self._venue_by_client_id:
+            return self._venue_by_client_id[client_order_id]
+        broker_id = self._broker_ids.get(client_order_id)
+        if broker_id is not None:
+            update = self._responses.get(
+                broker_id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])
+            )
+            return replace(update, broker_order_id=broker_id)
+        return None
+
     # ------------------------------------------------------------------ #
     # Test controls
     # ------------------------------------------------------------------ #
@@ -117,8 +145,29 @@ class MockBrokerAdapter(BrokerAdapter):
             order_id, BrokerOrderUpdate(status, filled_quantity, fills)
         )
 
+    def seed_venue_order(
+        self, client_order_id: str, update: BrokerOrderUpdate
+    ) -> None:
+        """Simulate that the venue HAS an order under ``client_order_id`` (ADR-002)
+        — e.g. an ambiguous submit that actually reached Alpaca even though
+        ``submit_order`` raised. Independent of the submit path, so a test can set
+        it up after ``fail_next_submit(AmbiguousBrokerError(...))``. If ``update``
+        carries no ``broker_order_id``, the deterministic ``broker-<id>`` is filled
+        in so the caller can adopt a concrete venue id."""
+
+        if update.broker_order_id is None:
+            update = replace(update, broker_order_id=_broker_id(client_order_id))
+        self._venue_by_client_id[client_order_id] = update
+
     def fail_next_submit(self, exc: BaseException) -> None:
         self._submit_error = exc
 
     def fail_next_cancel(self, exc: BaseException) -> None:
         self._cancel_error = exc
+
+    def fail_next_client_query(self, exc: BaseException) -> None:
+        """Make the next ``get_order_by_client_order_id`` raise ``exc`` (a query
+        FAILURE, distinct from a confirmed not-found). The caller must keep the
+        order quarantined, never treat a failed query as 'absent' (§7)."""
+
+        self._client_query_error = exc

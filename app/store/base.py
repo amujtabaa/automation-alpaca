@@ -781,6 +781,48 @@ class StateStore(ABC):
         """Atomically transition an order and write an audit event."""
 
     # ------------------------------------------------------------------ #
+    # Timeout-quarantine (ADR-002 / wave 3c) — evented order transitions
+    # ------------------------------------------------------------------ #
+    @abstractmethod
+    async def quarantine_timed_out_order(
+        self, order_id: str, *, reason: Optional[str] = None
+    ) -> Order:
+        """``SUBMITTING → TIMEOUT_QUARANTINE`` for an ambiguous submit (ADR-002).
+
+        Atomically flips the order-row status (a read-model), writes an
+        ``order_timeout_quarantined`` audit event, AND appends a
+        ``TIMEOUT_QUARANTINE`` ``ExecutionEvent`` — the FIRST durable write and
+        the ``event_truth`` for this fact (idempotent on its
+        ``timeout_quarantine:{order_id}`` dedupe_key). Raises
+        :class:`OrderTransitionError` if the order is not ``SUBMITTING``.
+        """
+
+    @abstractmethod
+    async def resolve_timeout_quarantine(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        broker_order_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Order:
+        """``TIMEOUT_QUARANTINE → {SUBMITTED, REJECTED, CANCELED}`` from a read-only
+        targeted ``client_order_id`` query (ADR-002). Co-writes the matching
+        lifecycle ``ExecutionEvent`` + an ``order_timeout_quarantine_resolved``
+        audit event with the order-row flip. Resolving to ``SUBMITTED`` requires
+        ``broker_order_id`` (AIR-001); the normal reconcile poll then ingests any
+        fills. Raises :class:`OrderTransitionError` if the order is not
+        ``TIMEOUT_QUARANTINE`` or ``new_status`` is not a legal resolution.
+        """
+
+    @abstractmethod
+    async def list_timeout_quarantined_orders(self) -> list[Order]:
+        """Orders currently in ``TIMEOUT_QUARANTINE`` (ADR-002), derived from the
+        event log (an order whose latest lifecycle ``ExecutionEvent`` is
+        ``TIMEOUT_QUARANTINE``), so it is replay-stable and dual-store-consistent.
+        """
+
+    # ------------------------------------------------------------------ #
     # Fills (append-only; the only thing that mutates position)
     # ------------------------------------------------------------------ #
     @abstractmethod

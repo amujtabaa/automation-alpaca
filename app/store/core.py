@@ -1324,6 +1324,161 @@ def plan_transition_order(
     return OrderTransitionPlan(ORDER_TRANSITION_APPLY, order=updated, event=event)
 
 
+# ---- evented order transition (wave 3c: TIMEOUT_QUARANTINE, ADR-002) ------ #
+
+
+@dataclass(frozen=True)
+class OrderEventedTransitionPlan:
+    """Pure outcome of an order status transition whose **first durable write is
+    an ``ExecutionEvent``** (wave 3c / ADR-002), co-written atomically with a
+    specific audit event and the order-row read-model flip.
+
+    Legality + the fully-updated order come from :func:`plan_transition_order`
+    (so the shared ``ORDER_TRANSITIONS`` machine and the AIR-001 broker-id guard
+    still apply); this attaches the ``ExecutionEvent`` that is the durable truth
+    and a caller-chosen audit event. ``outcome`` reuses the ``ORDER_TRANSITION_*``
+    constants: REJECT (illegal — writes nothing, raise ``error``), NOOP (same
+    status — writes nothing), APPLY (persist ``order`` + ``audit_event`` +
+    ``execution_event`` in ONE atomic block).
+    """
+
+    outcome: str
+    error: Optional[Exception] = None
+    order: Optional[Order] = None
+    audit_event: Optional[EventSpec] = None
+    execution_event: Optional[ExecutionEvent] = None
+
+
+def plan_transition_order_evented(
+    *,
+    order: Order,
+    new_status: OrderStatus,
+    execution_event_type: ExecutionEventType,
+    audit_event_type: str,
+    dedupe_key: str,
+    source: EventSource,
+    authority: EventAuthority,
+    broker_order_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    ts_event: Optional[datetime] = None,
+) -> OrderEventedTransitionPlan:
+    """Plan a status transition that records an ``ExecutionEvent`` as its durable
+    truth (the status column becomes a co-written read-model — the honest scope of
+    ``event_truth`` for an order-lifecycle fact; see docs/SPINE_WAVE3C_PLAN.md C5).
+
+    Reuses :func:`plan_transition_order` for legality (the transition must be in
+    ``ORDER_TRANSITIONS``) and the updated order (status/timestamps/broker id +
+    the AIR-001 "SUBMITTED needs a broker id" guard). ``dedupe_key`` makes the
+    append idempotent on replay (INV-5): re-applying the same quarantine/resolution
+    is a no-op at the event-log layer.
+    """
+
+    base = plan_transition_order(
+        order=order,
+        new_status=new_status,
+        filled_quantity=None,
+        broker_order_id=broker_order_id,
+    )
+    if base.outcome == ORDER_TRANSITION_REJECT:
+        return OrderEventedTransitionPlan(ORDER_TRANSITION_REJECT, error=base.error)
+    if base.outcome == ORDER_TRANSITION_NOOP:
+        return OrderEventedTransitionPlan(ORDER_TRANSITION_NOOP)
+
+    execution_event = ExecutionEvent(
+        event_type=execution_event_type,
+        source=source,
+        authority=authority,
+        dedupe_key=dedupe_key,
+        ts_event=ts_event,
+        symbol=order.symbol,
+        side=OrderSide(order.side),
+        order_id=order.id,
+        session_id=order.session_id,
+    )
+    payload: dict[str, Any] = {"from": order.status.value, "to": new_status.value}
+    if reason is not None:
+        payload["reason"] = reason
+    if broker_order_id is not None:
+        payload["broker_order_id"] = broker_order_id
+    audit_event = EventSpec(
+        audit_event_type,
+        message=(
+            f"order {order.symbol} {order.status.value} -> {new_status.value}"
+            + (f" ({reason})" if reason else "")
+        ),
+        symbol=order.symbol,
+        candidate_id=order.candidate_id,
+        order_id=order.id,
+        payload=payload,
+        session_id=order.session_id,
+    )
+    return OrderEventedTransitionPlan(
+        ORDER_TRANSITION_APPLY,
+        order=base.order,
+        audit_event=audit_event,
+        execution_event=execution_event,
+    )
+
+
+def plan_quarantine_timed_out_order(
+    order: Order, *, reason: Optional[str] = None
+) -> OrderEventedTransitionPlan:
+    """``SUBMITTING → TIMEOUT_QUARANTINE`` for an ambiguous submit (ADR-002). The
+    quarantine is OUR local decision (the submit's outcome is unknown), hence
+    ``ENGINE``/``LOCAL`` provenance — it is not a broker-reported fact."""
+
+    return plan_transition_order_evented(
+        order=order,
+        new_status=OrderStatus.TIMEOUT_QUARANTINE,
+        execution_event_type=ExecutionEventType.TIMEOUT_QUARANTINE,
+        audit_event_type="order_timeout_quarantined",
+        dedupe_key=f"timeout_quarantine:{order.id}",
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        reason=reason,
+    )
+
+
+_EXECUTION_EVENT_FOR_RESOLVED_STATUS: dict[OrderStatus, ExecutionEventType] = {
+    OrderStatus.SUBMITTED: ExecutionEventType.SUBMITTED,
+    OrderStatus.REJECTED: ExecutionEventType.REJECTED,
+    OrderStatus.CANCELED: ExecutionEventType.CANCELED,
+}
+
+
+def plan_resolve_timeout_quarantine(
+    order: Order,
+    new_status: OrderStatus,
+    *,
+    broker_order_id: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> OrderEventedTransitionPlan:
+    """``TIMEOUT_QUARANTINE → {SUBMITTED, REJECTED, CANCELED}`` resolved by a
+    read-only targeted ``client_order_id`` query (ADR-002). The venue's answer is
+    a broker-authoritative fact (``BROKER_REST``/``BROKER_AUTHORITATIVE``).
+    Resolving to ``SUBMITTED`` requires the ``broker_order_id`` the query
+    returned (AIR-001); the normal reconcile poll then ingests any fills, so
+    ``FILLED`` is reached via ``SUBMITTED``, never directly (INV-9 — conflict C4)."""
+
+    exec_type = _EXECUTION_EVENT_FOR_RESOLVED_STATUS.get(new_status)
+    if exec_type is None:
+        raise ValueError(
+            f"cannot resolve a timeout quarantine to {new_status.value}; must be "
+            f"one of {sorted(s.value for s in _EXECUTION_EVENT_FOR_RESOLVED_STATUS)}"
+        )
+    return plan_transition_order_evented(
+        order=order,
+        new_status=new_status,
+        execution_event_type=exec_type,
+        audit_event_type="order_timeout_quarantine_resolved",
+        dedupe_key=f"{new_status.value}:{order.id}",
+        source=EventSource.BROKER_REST,
+        authority=EventAuthority.BROKER_AUTHORITATIVE,
+        broker_order_id=broker_order_id,
+        reason=reason,
+    )
+
+
 # ---- close_session -------------------------------------------------------- #
 
 

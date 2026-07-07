@@ -179,12 +179,20 @@ characterize → implement → adversarial-verify → report → commit.
       agent over the submit/recovery/adapter path; Phase-3/Phase-4 boundary set —
       wave 3c does a single-order read-only targeted query, defers the mass
       reconcile engine to Phase 4).
-      - [ ] **Part 1 — inert scaffolding.** `OrderStatus.TIMEOUT_QUARANTINE` +
-        transitions + audit `EventType`s; `AmbiguousBrokerError`; read-only
-        `get_order_by_client_order_id` (interface + 3 adapters + `seed_venue_order`
-        on mock/sim); store `transition_order_evented` (planner + both stores);
-        `timeout_quarantined_order_ids` projector + `list_timeout_quarantined_orders`.
-        Additive/inert — nothing routes to it; full corpus stays green.
+      - [x] **Part 1 — inert scaffolding** (`<pending-commit>`).
+        `OrderStatus.TIMEOUT_QUARANTINE` (+ `SUBMITTING→TQ`, `TQ→{SUBMITTED,
+        REJECTED,CANCELED}` transitions) + audit `EventType`s
+        (`order_timeout_quarantined`/`_resolved`/`_deferred`); `AmbiguousBrokerError`
+        (a `BrokerError` subclass); read-only `get_order_by_client_order_id` on the
+        interface + alpaca/mock/sim (+ `seed_venue_order`/`fail_next_client_query`
+        + `BrokerOrderUpdate.broker_order_id`); shared `plan_transition_order_evented`
+        + `plan_quarantine_timed_out_order`/`plan_resolve_timeout_quarantine` in
+        core.py; store `quarantine_timed_out_order`/`resolve_timeout_quarantine`/
+        `list_timeout_quarantined_orders` (both stores, co-write ExecutionEvent +
+        audit + row flip atomically); `timeout_quarantined_order_ids` projector
+        (latest-lifecycle-event-wins, event-truth). Additive/inert — nothing routes
+        to it; full corpus green (1455) + 27 new tests
+        (`tests/test_spine_phase3c_timeout_quarantine.py`); coverage 95.42%.
       - [ ] **Part 2 — wiring.** Monitoring routes `AmbiguousBrokerError` →
         quarantine (guard BEFORE the generic release); `_resolve_timeout_quarantine`
         step + config bound; adapter classification split; Flow-2 characterization
