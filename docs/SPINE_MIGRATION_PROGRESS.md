@@ -69,20 +69,27 @@ for every phase so far (proceeding was explicitly user-authorized).
 
 **Substeps:**
 
-- [ ] `ExecutionEvent` model + `execution_events` table (SQLite + in-memory)
-- [ ] Store API: `append_execution_event` (monotonic sequence + dedupe),
-      `get_execution_events`, `get_max_execution_sequence`, snapshot save/load
-      — both stores, at parity
-- [ ] `app/events/projectors.py` (PositionProjector reusing fold_fills) +
-      `app/events/replay.py` (replay verifier)
-- [ ] Tests: dual-store parity, sequence monotonicity, dedupe idempotency,
-      schema_version, snapshot+replay==full replay, projector vs live fold
-- [ ] Full suite + harness green; adversarial multi-lens review of the diff
-- [ ] `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md`; update `docs/MIGRATION_MATRIX.md`
-      (Event log row) + this ledger; commit/push; STOP for review
+- [x] `ExecutionEvent` model + `execution_events` table (SQLite + in-memory) — `7ba8dd0`
+- [x] Store API: `append_execution_event` (monotonic sequence + dedupe),
+      `get_execution_events`, `get_max_execution_sequence` — both stores, at
+      parity — `7ba8dd0`. (Persisted snapshot *tables* deferred to Phase 3/4 —
+      the pure snapshot+replay *mechanism* is in `app/events/replay.py`; a DB
+      snapshot table is only needed once recovery consumes it.)
+- [x] `app/events/projectors.py` (PositionProjector reusing `apply_fill`) +
+      `app/events/replay.py` (replay verifier) — `7ba8dd0`
+- [x] Tests: dual-store parity, sequence monotonicity, dedupe idempotency,
+      schema_version, snapshot+replay==full replay, projector vs independent
+      fill-table fold — `7ba8dd0`, coverage to 100% `b0434f3`
+- [~] Full suite + harness green (1390 passed / 95.56% cov); adversarial
+      multi-lens review of the diff — **RUNNING** (workflow task `w32i9qgc8`)
+- [~] `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` (drafted; review section pending);
+      `docs/MIGRATION_MATRIX.md` updated; commit/push; STOP for review
 
-**Resume hint:** nothing committed for Phase 2 yet beyond this ledger. Start at
-the first unchecked box. No production code touched yet.
+**Resume hint:** Phase 2 code is committed and green (`b0434f3`). If resuming:
+check workflow task `w32i9qgc8` results (or re-run the review workflow),
+fill §6 of `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md`, apply any confirmed
+findings, then Phase 2 is closed. Next is Phase 3 (behavior-changing —
+start with broker-authoritative fill ingestion + dedup event-truth flip).
 
 ---
 
