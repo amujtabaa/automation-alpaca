@@ -135,7 +135,7 @@ transitions.
 
 ---
 
-## Sell-intent lifecycle (Phase 7, `docs/IMPLEMENTATION_PROMPT_PHASE_7.md`)
+## Sell-intent lifecycle (Phase 7, `docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_7.md`)
 
 **INV-030 — Exactly one order origin: `candidate_id` XOR `sell_intent_id`,
 never both, never neither.** Enforced by a model validator on `Order`.

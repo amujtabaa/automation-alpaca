@@ -176,7 +176,7 @@ Use when reviewing Codex or Claude Code output.
 - [ ] Premarket/after-hours feed *quality* is documented as an empirically
       unverified known unknown (not something this checklist can confirm without
       live credentials + market hours) — see
-      `docs/IMPLEMENTATION_PROMPT_PHASE_5.md`.
+      `docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_5.md`.
 
 ## Phase-7 readiness gate (capstone — D-021)
 - [ ] All 12 preconditions from the wave runbook's Phase-7 readiness gate are
@@ -319,7 +319,7 @@ Use when reviewing Codex or Claude Code output.
 - [ ] D-017 is recorded in `docs/00_START_HERE.md` as part of the fix.
 
 ## Phase 7 (Sell-Side Protection — always-on safety exits)
-See `docs/IMPLEMENTATION_PROMPT_PHASE_7.md` for the full design + finding→fix
+See `docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_7.md` for the full design + finding→fix
 traceability. The build-round invariants a reviewer should re-verify:
 - [ ] **No short (Rule 7).** A protective/flatten exit's quantity never exceeds
       the live derived position: `protection.exit_quantity` caps at the position,

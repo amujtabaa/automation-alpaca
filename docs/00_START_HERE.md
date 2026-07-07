@@ -1332,14 +1332,14 @@ contract preserves the migration path.
 ## Review Finding Tags
 
 Several external review passes (a Codex QA/red-team review, and the Phase 4
-cleanup round in `docs/IMPLEMENTATION_PROMPT_PHASE_4_CLEANUP.md`) tagged
+cleanup round in `docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_4_CLEANUP.md`) tagged
 individual findings with short ids that are still cited inline in code
 comments and test docstrings (e.g. `(F1)`, `(BACKEND-1)`) as the reason a
 specific guard/behavior exists. The originating review documents for the
 Codex-tagged findings were never checked into this repo, so those ids weren't
 resolvable anywhere in-tree — this index exists so a reader hitting one of
 them in a comment doesn't have to grep the whole codebase to reconstruct what
-it means. `docs/IMPLEMENTATION_PROMPT_PHASE_4_CLEANUP.md`'s own items (D-013,
+it means. `docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_4_CLEANUP.md`'s own items (D-013,
 D-013a, BE-1) are its native tags, already defined there in full — **not**
 duplicated below, and **not** the same tag as the similarly-named `BACKEND-1`.
 

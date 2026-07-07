@@ -8,7 +8,7 @@ websocket connection) to Alpaca's market-data API. Run deliberately with:
 
 Cannot be exercised in this build environment (no live credentials, and
 premarket/after-hours feed *quality* is an explicitly deferred empirical
-unknown — see docs/IMPLEMENTATION_PROMPT_PHASE_5.md's "Known Unknown"
+unknown — see docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_5.md's "Known Unknown"
 section). This file exists so a developer *with* real credentials gets a real
 smoke test rather than having to write one from scratch the first time they
 need to verify the live connection actually works.

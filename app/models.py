@@ -121,7 +121,7 @@ class SellIntentStatus(str, Enum):
     :class:`CandidateStatus` (stops at ``ordered``; broker-execution states live
     on the Order). The sell-side analogue of the candidate lifecycle, so an exit
     decision is a first-class entity and not a sell bolted onto the buy path
-    (``docs/IMPLEMENTATION_PROMPT_PHASE_7.md``).
+    (``docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_7.md``).
     """
 
     PENDING = "pending"
@@ -351,7 +351,7 @@ class SellIntent(_Entity):
     (``pending → approved → ordered``), producing one SELL :class:`Order`. A
     ``manual_flatten`` intent is operator-initiated; a ``protection_floor`` intent
     is an autonomous hard-floor breach. See
-    ``docs/IMPLEMENTATION_PROMPT_PHASE_7.md``.
+    ``docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_7.md``.
     """
 
     id: str = Field(default_factory=new_id)

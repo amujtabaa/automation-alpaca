@@ -100,7 +100,7 @@ All persist across days and are queryable by session/date:
   exit decision with its own lifecycle pending/approved/rejected/expired/ordered,
   a `reason` of `manual_flatten` or `protection_floor`, producing one SELL order.
   Open ones expire at session close, like candidates. See
-  `docs/IMPLEMENTATION_PROMPT_PHASE_7.md` for the full lifecycle and rationale.)
+  `docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_7.md` for the full lifecycle and rationale.)
 - orders (broker-order lifecycle. **Order-origin XOR (Phase 7):** every order has
   exactly one of `candidate_id` (a BUY from the candidate flow) *or*
   `sell_intent_id` (a SELL from the sell-intent flow) — never both, never neither;

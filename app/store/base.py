@@ -406,7 +406,7 @@ class StateStore(ABC):
     # ------------------------------------------------------------------ #
     # Sell intents (Phase 7 — Sell-Side Protection). The sell-side analogue of
     # candidates: a first-class exit decision with its own lifecycle, producing
-    # one SELL order. See docs/IMPLEMENTATION_PROMPT_PHASE_7.md.
+    # one SELL order. See docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_7.md.
     # ------------------------------------------------------------------ #
     @abstractmethod
     async def create_sell_intent(

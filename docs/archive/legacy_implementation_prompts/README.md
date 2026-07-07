@@ -1,16 +1,14 @@
-# Legacy Implementation Prompts
+# Legacy Implementation Prompts Archive
 
-These files are historical implementation prompts from the pre-Spine-v2 Alpaca project phases.
+This directory stores older `IMPLEMENTATION_PROMPT_*.md` files that were used during prior phases of the Alpaca Paper Trading project.
 
-They are preserved for audit and salvage context, but they are no longer active instructions for Claude Code, Codex, or any other coding agent.
+They are retained as historical evidence and provenance, but they are **not binding instructions** for Spine v2 migration work unless a human explicitly reactivates one.
 
-Current binding instructions are:
+For current Spine v2 work, read:
 
-- root `CLAUDE.md`
-- `docs/00_START_HERE_SPINE_UPGRADE.md`
-- `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md`
-- accepted ADRs under `docs/adr/`
-- `docs/MIGRATION_MATRIX.md`
-- `docs/REARCHITECTURE_ROADMAP.md`
-
-Do not use these archived prompts to override the Spine v2 spec or accepted ADRs unless a human explicitly reactivates a specific file.
+- `../../00_START_HERE_SPINE_UPGRADE.md`
+- `../../SPINE_EXECUTION_ARCHITECTURE_v2.md`
+- `../../SPINE_V2_ACCEPTED_DECISIONS_ADDENDUM.md`
+- `../../MIGRATION_MATRIX.md`
+- `../../REARCHITECTURE_ROADMAP.md`
+- `../../adr/`
