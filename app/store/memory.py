@@ -1057,11 +1057,18 @@ class InMemoryStateStore(StateStore):
             if order is not None and order.sell_intent_id is not None:
                 intent = self._sell_intents.get(order.sell_intent_id)
                 sell_reason = intent.reason if intent is not None else None
+            # ADR-001 (wave 3b): hold an autonomous BUY whose symbol is quarantined
+            # by a broker overfill (derived from the event log under this lock).
+            quarantined = (
+                order is not None
+                and order.symbol in quarantined_symbols(self._execution_events)
+            )
             plan = plan_claim_order_for_submission(
                 order=order,
                 own_session=own_session,
                 current_session=current_session,
                 sell_reason=sell_reason,
+                quarantined=quarantined,
             )
             if plan.outcome == CLAIM_CLAIMED:
                 with self._atomic():

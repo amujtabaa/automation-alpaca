@@ -1044,6 +1044,8 @@ def _claim_hold_reason(
     own_session: Optional[SessionRecord],
     current_session: Optional[SessionRecord],
     sell_reason: Optional[SellReason],
+    *,
+    quarantined: bool = False,
 ) -> Optional[str]:
     """Why this ``CREATED`` order must not be claimed for submission, or ``None``.
 
@@ -1062,7 +1064,17 @@ def _claim_hold_reason(
       session — the operator's all-stop halts even autonomous protection, which is
       then wound down separately (a held protective order is expired, not left
       forever).
-    * Anything else (a BUY, or a degenerate SELL) → the unchanged BUY gate.
+    * Anything else (a BUY, or a degenerate SELL) → quarantine gate, then the
+      unchanged BUY gate.
+
+    ``quarantined`` (wave 3b / ADR-001): the order's symbol is quarantined by a
+    broker overfill. An autonomous exposure-increasing BUY must be HELD — "no new
+    autonomous spawn while quarantined" applies to a *pre-existing* CREATED order
+    too, not only to newly-created intent (``create_order_for_candidate`` already
+    blocks the latter). Protective/flatten SELLs above are exempt: an exit reduces
+    risk (and the position guards already stop a sell of a non-positive book), so
+    the operator can always wind risk down. Checked before the buy control gate so
+    the (more actionable) quarantine reason surfaces.
     """
 
     is_protective_sell = (
@@ -1081,6 +1093,8 @@ def _claim_hold_reason(
                 return "current_kill_switch"
             return None
         # An unrecognized future reason falls through to the strict path.
+    if quarantined:
+        return "symbol_quarantined"
     return _buy_claim_hold_reason(own_session, current_session)
 
 
@@ -1090,6 +1104,7 @@ def plan_claim_order_for_submission(
     own_session: Optional[SessionRecord],
     current_session: Optional[SessionRecord],
     sell_reason: Optional[SellReason] = None,
+    quarantined: bool = False,
 ) -> ClaimPlan:
     """Decide whether a ``CREATED`` order may be claimed for submission.
 
@@ -1099,7 +1114,10 @@ def plan_claim_order_for_submission(
     fresh permissive session). ``current_session`` is the live session, checked
     as a process-wide emergency stop. ``sell_reason`` is the owning
     ``SellIntent.reason`` for a SELL order (``None`` for a BUY, or when the intent
-    can't be resolved) — the store fetches it under the same lock. The store calls
+    can't be resolved) — the store fetches it under the same lock. ``quarantined``
+    is whether the order's symbol is quarantined by a broker overfill (ADR-001,
+    wave 3b) — the store derives it from the event log under the same lock; it
+    holds an autonomous BUY but never a protective/flatten exit. The store calls
     this under its lock, so the control state read here cannot change between the
     decision and the ``CREATED → SUBMITTING`` write the store then applies.
     """
@@ -1109,7 +1127,9 @@ def plan_claim_order_for_submission(
         # claimed, or it never existed. Nothing to do.
         return ClaimPlan(CLAIM_SKIPPED)
 
-    hold = _claim_hold_reason(order, own_session, current_session, sell_reason)
+    hold = _claim_hold_reason(
+        order, own_session, current_session, sell_reason, quarantined=quarantined
+    )
     if hold is not None:
         return ClaimPlan(CLAIM_BLOCKED, reason=hold)
 

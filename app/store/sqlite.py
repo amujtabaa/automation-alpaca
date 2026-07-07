@@ -1783,11 +1783,23 @@ class SqliteStateStore(StateStore):
                     (order.sell_intent_id,),
                 )
                 sell_reason = SellReason(si_row["reason"]) if si_row is not None else None
+            # ADR-001 (wave 3b): hold an autonomous BUY whose symbol is quarantined
+            # by a broker overfill (derived from the event log under this lock).
+            quarantined = False
+            if order is not None:
+                fill_event_rows = self._read_all(
+                    "SELECT * FROM execution_events WHERE event_type = 'fill' "
+                    "ORDER BY sequence"
+                )
+                quarantined = order.symbol in quarantined_symbols(
+                    [self._execution_event(r) for r in fill_event_rows]
+                )
             plan = plan_claim_order_for_submission(
                 order=order,
                 own_session=own_session,
                 current_session=current_session,
                 sell_reason=sell_reason,
+                quarantined=quarantined,
             )
             if plan.outcome == CLAIM_CLAIMED:
                 updated = plan.order

@@ -140,8 +140,35 @@ characterize → implement → adversarial-verify → report → commit.
         still-rejected `InvalidFillError` path in `test_spine_phase3_shadow_fills`.
         Replay reproduces the quarantine per-store and across memory+SQLite
         (ADR-001 required test). Full suite green (1441 passed), coverage 95.65%.
-        Fill overfill / negative-position handling is `event_truth`. **Adversarial
-        review: pending.**
+        Fill overfill / negative-position handling is `event_truth`. Commits
+        `fa6e72a` + ledger `1d768b7`.
+      - [x] **Part 2 fix — adversarial-review remediation** (`<pending-commit>`).
+        Review workflow `w0mjp9fx2` (4 lenses + synthesis, mutation-verified)
+        returned **FIX_REQUIRED** with two coupled defects, both fixed +
+        regression-tested:
+        - **HIGH — quarantine was memoryless.** `quarantined_symbols` keyed off
+          the *current* projected sign (`quantity < 0`), so a covering BUY fill
+          (a pre-existing order, a reconciliation cover) that lifted the short
+          back to ≥0 silently un-quarantined the symbol and resumed autonomous
+          trading with no review — an ADR-001 violation ("must not continue
+          autonomous trading from such a state"). Fixed: **latch to the fold
+          history** — a symbol is quarantined once its FILL fold ever crosses
+          negative, durable/replay-stable, cleared only by a future audited
+          reconciliation (Phase 4). Also **gated the submission-claim path**
+          (`plan_claim_order_for_submission` + both stores) so a *pre-existing*
+          CREATED autonomous BUY for a quarantined symbol is HELD
+          (`symbol_quarantined`), not just newly-created intent; protective/
+          flatten SELLs stay exempt (exits allowed).
+        - **MEDIUM — `apply_fill` cost-basis corruption on short recovery.** The
+          BUY branch accumulated `cost_basis` additively over a zeroed short base,
+          so a symbol that crossed through flat and returned long derived a wrong
+          `average_price`/`cost_basis` (inflated CAPI exposure). Fixed: covering a
+          short re-establishes basis from the covering fill alone; behavior-
+          preserving for every normal (non-short) fold.
+        - **LOW — overfill idempotency untested.** Added a replayed-overfill
+          idempotency test (INV-5 on the record path) + short-recovery cost-basis
+          + durable-latch + claim-hold tests. Full suite green (1455 passed),
+          coverage 95.70%. **Re-review: pending.**
 - [ ] **Wave 3c — timeout/504 `TIMEOUT_QUARANTINE`** (ADR-002). Replace blind
       redrive (characterized in `tests/test_spine_v2_characterization.py`
       Flow 2) with quarantine + targeted reconcile-by-`client_order_id`.

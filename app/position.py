@@ -46,7 +46,13 @@ def apply_fill(position: Position, fill: Fill, *, allow_short: bool = False) -> 
     snapshot+replay recovery, Spine v2 §11) — the safety-critical folding math
     lives in exactly one place (Rule 7).
 
-    * BUY:  ``quantity += q``;  ``cost_basis += q * price``
+    * BUY:  ``quantity += q``;  ``cost_basis += q * price`` (normal long
+      accumulation). *Covering a recorded short* (only reachable on the
+      ``allow_short`` path, ADR-001): the short holds no long cost basis, so a
+      buy that crosses back into a long re-establishes basis from the covering
+      fill alone (``cost_basis = new_quantity * price``); a buy that stays short
+      or lands flat keeps ``cost_basis 0.0``. Never accumulate additively onto a
+      short base — that inflates ``average_price`` and CAPI exposure.
     * SELL: ``quantity -= q``;  ``cost_basis *= new_quantity / old_quantity``
       (a sell does not change the average price of the remaining shares)
 
@@ -67,8 +73,25 @@ def apply_fill(position: Position, fill: Fill, *, allow_short: bool = False) -> 
     cost_basis = position.cost_basis
     side = OrderSide(fill.side)
     if side is OrderSide.BUY:
-        quantity += fill.quantity
-        cost_basis += fill.quantity * fill.price
+        old_quantity = quantity
+        new_quantity = quantity + fill.quantity
+        if old_quantity >= 0:
+            # Normal long accumulation (the only reachable branch under the
+            # long-only default — a short is never recorded without allow_short).
+            cost_basis = cost_basis + fill.quantity * fill.price
+        elif new_quantity > 0:
+            # Covering a recorded short (ADR-001 overfill) and crossing back into
+            # a long: the short carried NO long cost basis, so the shares now held
+            # long were all acquired by THIS covering fill at its price. Establish
+            # a fresh basis for exactly the long remainder — never accumulate
+            # additively onto the zeroed short base (that would inflate cost_basis
+            # / average_price and over-count CAPI exposure).
+            cost_basis = new_quantity * fill.price
+        else:
+            # Still short, or exactly flat after covering: a short in a long-only
+            # book carries no long cost basis.
+            cost_basis = 0.0
+        quantity = new_quantity
     else:  # SELL
         old_quantity = quantity
         new_quantity = quantity - fill.quantity
