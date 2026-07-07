@@ -172,9 +172,23 @@ characterize → implement → adversarial-verify → report → commit.
           3 mutations each caught): `FIX_COMPLETE` — D1 + D2 both fully closed,
           0 confirmed findings, no new BLOCKER/HIGH.** Commit `44f4592` + ledger
           `7731f6d`. ✅ Wave 3b is independently reviewed clean.
-- [ ] **Wave 3c — timeout/504 `TIMEOUT_QUARANTINE`** (ADR-002). Replace blind
+- [~] **Wave 3c — timeout/504 `TIMEOUT_QUARANTINE`** (ADR-002). Replace blind
       redrive (characterized in `tests/test_spine_v2_characterization.py`
-      Flow 2) with quarantine + targeted reconcile-by-`client_order_id`.
+      Flow 2) with quarantine + targeted reconcile-by-`client_order_id`. **Design
+      + recorded conflicts (C1–C6): `docs/SPINE_WAVE3C_PLAN.md`** (mapped by a Plan
+      agent over the submit/recovery/adapter path; Phase-3/Phase-4 boundary set —
+      wave 3c does a single-order read-only targeted query, defers the mass
+      reconcile engine to Phase 4).
+      - [ ] **Part 1 — inert scaffolding.** `OrderStatus.TIMEOUT_QUARANTINE` +
+        transitions + audit `EventType`s; `AmbiguousBrokerError`; read-only
+        `get_order_by_client_order_id` (interface + 3 adapters + `seed_venue_order`
+        on mock/sim); store `transition_order_evented` (planner + both stores);
+        `timeout_quarantined_order_ids` projector + `list_timeout_quarantined_orders`.
+        Additive/inert — nothing routes to it; full corpus stays green.
+      - [ ] **Part 2 — wiring.** Monitoring routes `AmbiguousBrokerError` →
+        quarantine (guard BEFORE the generic release); `_resolve_timeout_quarantine`
+        step + config bound; adapter classification split; Flow-2 characterization
+        migration; cockpit bucket; docs (matrix → `event_truth`). Adversarial review.
 - [ ] **Wave 3d — kill/TradingState FSM** (§8): `Active`/`Reducing`/`Halted`
       replacing the binary flags (Flow 5).
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
