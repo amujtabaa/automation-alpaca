@@ -152,6 +152,41 @@ class FillPlan:
     execution_event: Optional[ExecutionEvent] = None
 
 
+def execution_event_for_fill(fill: Fill) -> ExecutionEvent:
+    """The broker-authoritative ``FILL`` ExecutionEvent that mirrors a fill row.
+
+    Single-sourced so the wave-3a shadow write (``plan_append_fill``) and the
+    event-truth backfill (``StateStore`` init) build the SAME event for the same
+    fill — a deterministic, replay-stable record. A fill in this system is always
+    a broker-reported fact (submitted orders fill and are observed via polling),
+    so authority=BROKER_AUTHORITATIVE. The dedupe_key mirrors the fill table's
+    per-(order_id, source_fill_id) dedup exactly — NOT the bare source_fill_id,
+    since two different orders may legitimately share a venue fill id (F1) while
+    the event log's dedupe_key is global; a fill with no source_fill_id gets a
+    ``None`` key (never deduped), matching the fill table. ``ts_event`` is the
+    fill time so the projected ``Position.updated_at`` matches the fold. Source
+    is a shadow default; a later wave can thread the real ingestion path.
+    """
+
+    return ExecutionEvent(
+        event_type=ExecutionEventType.FILL,
+        source=EventSource.BROKER_REST,
+        authority=EventAuthority.BROKER_AUTHORITATIVE,
+        dedupe_key=(
+            f"fill:{fill.order_id}:{fill.source_fill_id}"
+            if fill.source_fill_id is not None
+            else None
+        ),
+        ts_event=fill.filled_at,
+        symbol=fill.symbol,
+        side=fill.side,
+        quantity=fill.quantity,
+        price=fill.price,
+        order_id=fill.order_id,
+        session_id=fill.session_id,
+    )
+
+
 def plan_append_fill(
     *,
     order_id: str,
@@ -290,31 +325,7 @@ def plan_append_fill(
         session_id=session_id,
         filled_at=filled_at or utcnow(),
     )
-    # Shadow ExecutionEvent (wave 3a). A fill in this system is always a
-    # broker-reported fact (submitted orders fill and are observed via polling),
-    # so authority=BROKER_AUTHORITATIVE. The dedupe_key mirrors the fill table's
-    # per-(order_id, source_fill_id) dedup exactly — NOT the bare source_fill_id,
-    # since two different orders may legitimately share a venue fill id (F1), and
-    # the event log's dedupe_key is global. A fill with no source_fill_id gets a
-    # None key (never deduped), matching the fill table. Provenance (source) is a
-    # shadow default; the event-truth flip can thread the real ingestion path.
-    execution_event = ExecutionEvent(
-        event_type=ExecutionEventType.FILL,
-        source=EventSource.BROKER_REST,
-        authority=EventAuthority.BROKER_AUTHORITATIVE,
-        dedupe_key=(
-            f"fill:{order_id}:{source_fill_id}"
-            if source_fill_id is not None
-            else None
-        ),
-        ts_event=fill.filled_at,
-        symbol=symbol,
-        side=side,
-        quantity=quantity,
-        price=price,
-        order_id=order_id,
-        session_id=session_id,
-    )
+    execution_event = execution_event_for_fill(fill)
     return FillPlan(
         FILL_APPEND,
         EventSpec(

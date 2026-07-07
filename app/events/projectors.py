@@ -107,6 +107,25 @@ def _fill_from_event(event: ExecutionEvent) -> Fill:
     )
 
 
+def project_symbol_position(events: Iterable[ExecutionEvent], symbol: str) -> Position:
+    """Fold one symbol's ``FILL`` events into its :class:`Position` — the
+    event-truth position read path (wave 3a-truth).
+
+    The store's ``get_position``/``list_positions`` derive position from the
+    append-only event log via this function instead of the legacy fill table,
+    making the event log the Rule-7 source of truth (the fill table is a
+    compatibility read-model). Events must be in ascending sequence order (the
+    store guarantees it); non-FILL and other-symbol events are skipped.
+    """
+
+    position = Position(symbol=symbol)
+    for event in events:
+        if event.event_type is not ExecutionEventType.FILL or event.symbol != symbol:
+            continue
+        position = apply_fill(position, _fill_from_event(event))
+    return position
+
+
 class PositionProjector:
     """Fold ``FILL`` events into per-symbol positions (pure)."""
 

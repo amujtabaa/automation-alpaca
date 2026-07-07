@@ -82,22 +82,24 @@ characterize → implement → adversarial-verify → report → commit.
       applied (fault-injection atomicity guard [mutation-tested live],
       multi-symbol/fold-to-flat parity, SELL-event price assertion), 1 future
       backfill note recorded above.** Commits `bf60d74` + `e7c423c`.
-- [ ] **Wave 3a-truth — flip fill ingestion to `event_truth`.** Make the
-      first durable write the `ExecutionEvent`; derive position from the event
-      log (via `PositionProjector`); demote the fill table to a read-model
-      projection. Gated on the 6 matrix "Migration rule" conditions. Two
-      prerequisites surfaced by the wave 3a review (both blockers for the flip,
-      NOT for the shadow step):
-      - **Backfill (matrix rule 2):** the shadow parity holds only for fills
-        appended *after* wave 3a. Before the flip, emit a `FILL` ExecutionEvent
-        (deterministic `fill:{order_id}:{source_fill_id}` key) for every
-        pre-existing fill row, and add a parity assertion over a store seeded
-        with pre-wave-3a fills. Until then `project_store_event_log` understates
-        a migrated DB's position (harmless now — no production reader).
-      - **ADR-001 oversell tolerance:** the projector's `apply_fill` reject-by
-        -raise (comment at `app/events/projectors.py`) must become
-        quarantine-tolerant once broker-authoritative overfills can be recorded
-        (wave 3b), else a recorded oversell aborts the whole replay.
+- [x] **Wave 3a-truth — flip fill ingestion to `event_truth`.** Position is now
+      derived from the event log (`project_symbol_position` folds the symbol's
+      `FILL` events) in BOTH stores; the fill table is a compatibility
+      read-model. Backfill at `initialize()` emits a `FILL` event per
+      pre-wave-3a fill row (idempotent, 1:1 in append order). Behavior-preserving
+      (whole position/fill/monitoring/routes/Hypothesis corpus green =
+      characterization, matrix rule 4); truth proven to have moved
+      (`tests/test_spine_phase3_fill_event_truth.py`: a FILL event with no fill
+      row moves position; backfill covers orphan fills). Matrix rules 2/3
+      satisfied (backfill + dual-store parity). Fill ingestion + dedup are
+      `event_truth`. **Note:** fill + event are written in one atomic block
+      (event authoritative, fill table a read-model); `prior_filled`/dedup
+      accounting still read the fill-table read-model (accurate, lower-risk —
+      not a position-truth concern).
+      - **Still open for wave 3b — ADR-001 oversell tolerance:** the projector's
+        `apply_fill` reject-by-raise (comment at `app/events/projectors.py`)
+        must become quarantine-tolerant once broker-authoritative overfills can
+        be recorded, else a recorded oversell aborts the whole replay.
 - [ ] **Wave 3b — overfill / negative-position quarantine** (ADR-001). Record
       broker reality, mark primary `QUARANTINED`, block autonomous spawns.
       Requires the projector oversell-tolerance change flagged above.

@@ -11,8 +11,8 @@ Status values:
 
 | Area | Current status | Target status | Notes |
 |---|---:|---:|---|
-| Broker-authoritative fill ingestion | `shadow_evented` (P3 wave 3a) | `event_truth` | Decision 1. **Phase 3 wave 3a:** `append_fill` now also appends a broker-authoritative `FILL` `ExecutionEvent` atomically with the fill row; the replay projection is proven equal to the fill-table position (`tests/test_spine_phase3_shadow_fills.py`). Fill table still authoritative — `event_truth` flip is a later wave. Split malformed local input from broker reality. |
-| Fill deduplication | `shadow_evented` (P3 wave 3a) | `event_truth` | Decision 1 / INV-5. Shadow `FILL` events carry a composite `fill:{order_id}:{source_fill_id}` dedupe_key mirroring the fill table's per-order dedup exactly. Enforce through event replay at the truth flip. |
+| Broker-authoritative fill ingestion | `event_truth` (P3 wave 3a-truth) | `event_truth` | ✅ Decision 1. **Wave 3a-shadow** emits a broker-authoritative `FILL` `ExecutionEvent` atomically with each fill; **wave 3a-truth** flipped position derivation to fold that event log (`project_symbol_position`) — the fill table is now a compatibility read-model, backfilled at init for pre-wave-3a rows. Truth proven: a FILL event with no fill row moves position (`tests/test_spine_phase3_fill_event_truth.py`); whole position/fill corpus green (characterization). |
+| Fill deduplication | `event_truth` (P3 wave 3a) | `event_truth` | ✅ Decision 1 / INV-5. `FILL` events carry a composite `fill:{order_id}:{source_fill_id}` dedupe_key mirroring the fill table's per-order dedup exactly; the event log now backs position, so dedup is enforced through the event log. |
 | Overfill/negative-position handling | `legacy_truth` | `event_truth` | Record + quarantine broker facts; reject malformed local input. |
 | Timeout/504 submit ambiguity | `legacy_truth` | `event_truth` | Decision 2. Replace blind redrive with `TIMEOUT_QUARANTINE`. |
 | Atomic submit claim | `legacy_truth` | `event_truth` | Salvage prior claim semantics inside single-writer engine. |

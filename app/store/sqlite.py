@@ -13,9 +13,13 @@ satisfy ``docs/02_DATA_AND_PERSISTENCE.md``:
   index ``idx_fills_order_source`` on ``(order_id, source_fill_id)`` WHERE
   ``source_fill_id IS NOT NULL`` (Item 5 / F1) — per-order, so two different
   orders may legitimately report the same ``source_fill_id``; NULLs are exempt.
-* **Position is derived** — there is no positions table; positions are folded
-  from the fill rows via the shared :func:`app.position.fold_fills`, the exact
-  same code path the in-memory store uses (Rule 7).
+* **Position is derived from the event log** (Spine v2 wave 3a-truth,
+  ``event_truth``) — there is no positions table; positions are folded from the
+  append-only ``execution_events`` ``FILL`` rows via
+  :func:`app.events.projectors.project_symbol_position`, the exact same code
+  path the in-memory store uses (Rule 7). The ``fills`` table is a compatibility
+  read-model kept in lockstep; a store opened on pre-wave-3a fills backfills a
+  ``FILL`` event per fill at init.
 
 The ``sqlite3`` driver is synchronous; calls are made under an ``asyncio.Lock``
 that serializes them, so a single shared connection is safe and each
@@ -57,7 +61,7 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.position import fold_fills
+from app.events.projectors import project_symbol_position
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -81,6 +85,7 @@ from app.store.core import (
     CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
+    execution_event_for_fill,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_SUPERSEDE_AND_CREATE,
@@ -375,7 +380,35 @@ class SqliteStateStore(StateStore):
                 "ON fills(order_id, source_fill_id) "
                 "WHERE source_fill_id IS NOT NULL"
             )
+            self._backfill_fill_events_locked()
             self._ensure_current_session_locked()
+
+    def _backfill_fill_events_locked(self) -> None:
+        """Emit a `FILL` ExecutionEvent for every fill row not yet mirrored in
+        the event log (wave 3a-truth). Position now derives from the event log,
+        so a DB opened on pre-wave-3a fills (fill rows, no events) must have them
+        backfilled or it would read a wrong (understated) position.
+
+        Fills and FILL events are 1:1 in append (rowid / sequence) order, so the
+        first N fills already have events where N = current FILL-event count;
+        only ``fills[N:]`` need backfilling. Idempotent and correct for the
+        partial pre+post-wave-3a case. A fresh DB (0 fills) is a no-op.
+        """
+
+        conn = self._connect()
+        already = conn.execute(
+            "SELECT COUNT(*) AS c FROM execution_events WHERE event_type = 'fill'"
+        ).fetchone()["c"]
+        rows = conn.execute(
+            "SELECT * FROM fills ORDER BY rowid LIMIT -1 OFFSET ?", (already,)
+        ).fetchall()
+        if not rows:
+            return
+        with self._tx() as cur:
+            for row in rows:
+                self._insert_execution_event(
+                    cur, execution_event_for_fill(self._fill(row))
+                )
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
         """Lightweight, idempotent migrations for databases created before a
@@ -2217,10 +2250,18 @@ class SqliteStateStore(StateStore):
     # Positions (derived)
     # ------------------------------------------------------------------ #
     def _position_locked(self, symbol: str) -> Position:
+        # Event-truth (wave 3a-truth): fold the symbol's FILL events from the
+        # append-only execution-event log, not the fill table (now a
+        # compatibility read-model). Backfill (see initialize) guarantees a FILL
+        # event for every fill row, so this reproduces the legacy fold exactly.
         rows = self._read_all(
-            "SELECT * FROM fills WHERE symbol = ? ORDER BY rowid", (symbol,)
+            "SELECT * FROM execution_events "
+            "WHERE symbol = ? AND event_type = 'fill' ORDER BY sequence",
+            (symbol,),
         )
-        return fold_fills(symbol, [self._fill(r) for r in rows])
+        return project_symbol_position(
+            [self._execution_event(r) for r in rows], symbol
+        )
 
     async def get_position(self, symbol: str) -> Position:
         key = normalize_symbol(symbol)
@@ -2230,7 +2271,8 @@ class SqliteStateStore(StateStore):
     async def list_positions(self) -> list[Position]:
         async with self._lock:
             rows = self._read_all(
-                "SELECT DISTINCT symbol FROM fills ORDER BY symbol"
+                "SELECT DISTINCT symbol FROM execution_events "
+                "WHERE event_type = 'fill' ORDER BY symbol"
             )
             return [self._position_locked(r["symbol"]) for r in rows]
 

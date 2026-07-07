@@ -28,6 +28,7 @@ from app.models import (
     CandidateStatus,
     Event,
     ExecutionEvent,
+    ExecutionEventType,
     Fill,
     Order,
     OrderSide,
@@ -45,7 +46,7 @@ from app.models import (
     WatchlistSymbol,
     utcnow,
 )
-from app.position import fold_fills
+from app.events.projectors import project_symbol_position
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -69,6 +70,7 @@ from app.store.core import (
     CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
+    execution_event_for_fill,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_SUPERSEDE_AND_CREATE,
@@ -130,7 +132,30 @@ class InMemoryStateStore(StateStore):
     async def initialize(self) -> None:
         async with self._lock:
             with self._atomic():
+                self._backfill_fill_events_unlocked()
                 self._ensure_current_session_unlocked()
+
+    def _backfill_fill_events_unlocked(self) -> None:
+        """Emit a `FILL` ExecutionEvent for every fill row not yet mirrored in
+        the event log (wave 3a-truth). Since position now derives from the event
+        log, a store opened on pre-wave-3a fills (fill rows, no events) must have
+        those fills backfilled or it would read a wrong (understated) position.
+
+        Fills and FILL events are 1:1 in append order (the shadow write emits one
+        per appended fill), so the first N fills already have events where N =
+        current FILL-event count; only ``fills[N:]`` need backfilling. Idempotent
+        (after running, counts match) and correct for the partial pre+post-wave-3a
+        case. An in-memory store is always empty here, so this is a no-op for
+        tests; it matters for a persisted SQLite DB predating wave 3a.
+        """
+
+        already = sum(
+            1
+            for e in self._execution_events
+            if e.event_type is ExecutionEventType.FILL
+        )
+        for fill in self._fills[already:]:
+            self._append_execution_event_unlocked(execution_event_for_fill(fill))
 
     # ------------------------------------------------------------------ #
     # Internal helpers (assume the lock is held)
@@ -273,11 +298,23 @@ class InMemoryStateStore(StateStore):
         return [f for f in self._fills if f.symbol == symbol]
 
     def _position_unlocked(self, symbol: str) -> Position:
-        return fold_fills(symbol, self._fills_for_symbol_unlocked(symbol))
+        # Event-truth (wave 3a-truth): position is derived from the append-only
+        # execution-event log, not the fill table (a compatibility read-model).
+        # Rule 7's "only fill events change position" now holds structurally over
+        # the event log. Backfill (see initialize) guarantees a FILL event exists
+        # for every fill row, so this reproduces the legacy fold exactly.
+        return project_symbol_position(self._execution_events, symbol)
+
+    def _fill_event_symbols_unlocked(self) -> set[str]:
+        return {
+            e.symbol
+            for e in self._execution_events
+            if e.event_type is ExecutionEventType.FILL and e.symbol is not None
+        }
 
     def _current_exposure_unlocked(self) -> float:
         positions = [
-            self._position_unlocked(s) for s in sorted({f.symbol for f in self._fills})
+            self._position_unlocked(s) for s in sorted(self._fill_event_symbols_unlocked())
         ]
         open_orders = [
             o for o in self._orders.values() if o.status in NON_TERMINAL_ORDER_STATUSES
@@ -1350,7 +1387,7 @@ class InMemoryStateStore(StateStore):
 
     async def list_positions(self) -> list[Position]:
         async with self._lock:
-            symbols = sorted({f.symbol for f in self._fills})
+            symbols = sorted(self._fill_event_symbols_unlocked())
             return [self._position_unlocked(s) for s in symbols]
 
     # ------------------------------------------------------------------ #
