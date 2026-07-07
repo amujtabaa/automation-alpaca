@@ -209,7 +209,7 @@ characterize → implement → adversarial-verify → report → commit.
         (`TestCharacterizeStaleSubmittingRetry`: ambiguous→quarantine+targeted
         resolve; a plain transient still redrives). Matrix row → `event_truth`.
         Commit `e148876`.
-      - [x] **Part 2 fix — adversarial-review remediation** (`<pending-commit>`).
+      - [x] **Part 2 fix — adversarial-review remediation** (`b493dcb`).
         Review `w698efqy1` (4 lenses + synthesis, mutation-verified) returned
         **SAFE_TO_FINALIZE** — the core no-double-submit/oversell property was
         proven structurally sound + live (3 mutations each broke a shipped test).
