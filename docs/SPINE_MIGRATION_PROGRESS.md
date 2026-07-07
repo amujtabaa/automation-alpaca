@@ -142,7 +142,7 @@ characterize → implement → adversarial-verify → report → commit.
         (ADR-001 required test). Full suite green (1441 passed), coverage 95.65%.
         Fill overfill / negative-position handling is `event_truth`. Commits
         `fa6e72a` + ledger `1d768b7`.
-      - [x] **Part 2 fix — adversarial-review remediation** (`<pending-commit>`).
+      - [x] **Part 2 fix — adversarial-review remediation** (`44f4592`).
         Review workflow `w0mjp9fx2` (4 lenses + synthesis, mutation-verified)
         returned **FIX_REQUIRED** with two coupled defects, both fixed +
         regression-tested:
