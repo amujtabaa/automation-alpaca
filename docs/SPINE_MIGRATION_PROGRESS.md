@@ -335,11 +335,21 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
   `BrokerAdapter` ABC; Mock (+ seed/fail controls + counters), Sim (inherited), real
   AlpacaPaperAdapter (env-gated, wraps `get_orders(status=OPEN)`/`get_all_positions()`). §7
   safeguard pinned: a FAILED report RAISES, never read as "no open orders"/"flat". 1596 passed.
-- [ ] **Wave 4b — pure `app/reconciliation.py` engine** (deterministic, §7 table [R4], recent-order
-  protection, position tolerance, synthetic-fill ids [R8]) + property tests. Not wired.
+- [x] **Wave 4b — pure `app/reconciliation.py` engine** (`02dde31`, deterministic, unwired).
+  `plan_reconciliation` → `ReconciliationPlan` (resolutions / inferred_fills / needs_targeted_query /
+  external_orders / position_mismatches / skipped_recent). §7 safeguards property-tested (300 ex):
+  absence → targeted-query request never a bare reject; position divergence surfaced never overwritten;
+  no fabricated $0 fill; only cancel/reject resolved by status-flip (FILLED flows through a fill);
+  deterministic synthetic `recon:{id}:{cum}` ids [R8] colliding with the real-fill scheme (INV-5).
+- **R3 RULED (user): reconcile-failure → `Reducing`** (never auto-Halted; a held position stays
+  exitable). R1 (sim-seam + defer stream) + R2 (`max(boolean, reconcile)` composition) adopted as
+  recorded spec-derived decisions. **All Phase-4 decision gaps resolved.**
 - [ ] **Wave 4c** — store synthetic-fill append (RECONCILIATION/SYNTHETIC) + `external_orders`
-  projector + dual-store parity + replay. **4d** shadow. **4e** runtime truth flip. **4f/4g**
-  startup gate + reconnect→Reducing (gated on R1/R2/R3). **4h** external-order surfacing + review.
+  projector + dual-store parity + replay. **4d** shadow. **4e** runtime truth flip (+§7 config defaults,
+  query throttle, position-query-failure→skip). **4f** startup mass reconcile + "not enabled until
+  reconcile" gate → `Reducing` (R2/R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order
+  surfacing route/DTO + docs + **the Phase-4 adversarial review** (the truth-flip waves 4e/4f are where
+  it concentrates).
 
 **Resume hint:** **Phase 3's safety-critical flows are all migrated + reviewed** (waves
 3a/3b/3c/3d/3e). Next is **Phase 4 — Reconciliation engine** (`docs/REARCHITECTURE_ROADMAP.md`
