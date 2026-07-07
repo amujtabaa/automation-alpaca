@@ -76,14 +76,28 @@ characterize → implement → adversarial-verify → report → commit.
       projection is proven == the fill-table position, dual-store parity holds,
       dupe/reject paths emit nothing. Additive — full suite green, no behavior
       change to position derivation. `tests/test_spine_phase3_shadow_fills.py`.
-      Fill ingestion is `shadow_evented` in the matrix.
+      Fill ingestion is `shadow_evented` in the matrix. **Adversarial review
+      (workflow `wub26fmm1`, 4 lenses + synthesis, fault-injection verified):
+      safe to finalize — 0 correctness defects; 3 test-hardening findings
+      applied (fault-injection atomicity guard [mutation-tested live],
+      multi-symbol/fold-to-flat parity, SELL-event price assertion), 1 future
+      backfill note recorded above.** Commits `bf60d74` + `<wave3a-review>`.
 - [ ] **Wave 3a-truth — flip fill ingestion to `event_truth`.** Make the
       first durable write the `ExecutionEvent`; derive position from the event
       log (via `PositionProjector`); demote the fill table to a read-model
-      projection. Gated on the 6 matrix "Migration rule" conditions. Note the
-      ADR-001 forward-coupling comment at `app/events/projectors.py` — the
-      projector must tolerate a recorded oversell (quarantine) rather than
-      reject once broker-authoritative overfills can be recorded (wave 3b).
+      projection. Gated on the 6 matrix "Migration rule" conditions. Two
+      prerequisites surfaced by the wave 3a review (both blockers for the flip,
+      NOT for the shadow step):
+      - **Backfill (matrix rule 2):** the shadow parity holds only for fills
+        appended *after* wave 3a. Before the flip, emit a `FILL` ExecutionEvent
+        (deterministic `fill:{order_id}:{source_fill_id}` key) for every
+        pre-existing fill row, and add a parity assertion over a store seeded
+        with pre-wave-3a fills. Until then `project_store_event_log` understates
+        a migrated DB's position (harmless now — no production reader).
+      - **ADR-001 oversell tolerance:** the projector's `apply_fill` reject-by
+        -raise (comment at `app/events/projectors.py`) must become
+        quarantine-tolerant once broker-authoritative overfills can be recorded
+        (wave 3b), else a recorded oversell aborts the whole replay.
 - [ ] **Wave 3b — overfill / negative-position quarantine** (ADR-001). Record
       broker reality, mark primary `QUARANTINED`, block autonomous spawns.
       Requires the projector oversell-tolerance change flagged above.

@@ -82,6 +82,63 @@ async def test_shadow_fill_log_dual_store_parity(tmp_path):
         sqlite._conn = None
 
 
+async def test_shadow_parity_holds_across_symbols_and_a_fold_to_flat(any_store):
+    """The single-symbol script never folds a symbol to quantity 0 — exactly
+    where a projection could diverge from the fill-table fold (flat cost_basis
+    reset, average_price None, and whether a flat symbol appears in the map).
+    Sell AAPL fully down to flat and interleave MSFT, then compare the shadow
+    projection to the store's own list_positions field-for-field."""
+    await any_store.initialize()
+    sess = await any_store.get_current_session()
+    a = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
+    await any_store.append_fill(a.id, "AAPL", OrderSide.BUY, 100, 4.0, source_fill_id="a1", filled_at=_TS, session_id=sess.id)
+    m = await _order(any_store, "MSFT", OrderSide.BUY, 20, sess.id)
+    await any_store.append_fill(m.id, "MSFT", OrderSide.BUY, 20, 5.0, source_fill_id="m1", filled_at=_TS, session_id=sess.id)
+    asell = await _order(any_store, "AAPL", OrderSide.SELL, 100, sess.id)
+    await any_store.append_fill(asell.id, "AAPL", OrderSide.SELL, 100, 9.0, source_fill_id="a2", filled_at=_TS, session_id=sess.id)
+
+    projection = await project_store_event_log(any_store)
+    live = {p.symbol: p for p in await any_store.list_positions()}
+    assert set(projection.positions) == set(live)  # flat AAPL present in both
+    assert live["AAPL"].quantity == 0 and live["AAPL"].average_price is None
+    for symbol, position in live.items():
+        assert projection.positions[symbol] == position
+
+
+@pytest.mark.parametrize("helper", ["_append_execution_event_unlocked", "_insert_execution_event"])
+async def test_shadow_write_failure_rolls_back_the_fill(any_store, monkeypatch, helper):
+    """Regression guard for the atomicity coupling: the shadow-event write lives
+    INSIDE the fill's atomic block, so if it fails the fill row must roll back
+    too. Without this, a future edit moving the shadow write outside the
+    _atomic/_tx block would silently break shadow parity while the suite stayed
+    green. Fault-inject the store's shadow-write helper and assert the fill AND
+    the event log are both left empty."""
+    if not hasattr(any_store, helper):
+        pytest.skip(f"{type(any_store).__name__} has no {helper}")
+
+    await any_store.initialize()
+    sess = await any_store.get_current_session()
+    buy = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("injected shadow-write failure")
+
+    monkeypatch.setattr(any_store, helper, _boom)
+    with pytest.raises(RuntimeError):
+        await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="t1", filled_at=_TS, session_id=sess.id)
+    # The fill row rolled back with the failed shadow event — neither persisted.
+    assert await any_store.list_fills() == []
+    assert await any_store.get_execution_events() == []
+
+    # And the dedup state wasn't poisoned: undo the injection and confirm the
+    # same fill now appends cleanly (one fill, one shadow event).
+    monkeypatch.undo()
+    result = await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="t1", filled_at=_TS, session_id=sess.id)
+    assert result.status == "appended"
+    assert len(await any_store.list_fills()) == 1
+    assert len(await any_store.get_execution_events()) == 1
+
+
 # --------------------------------------------------------------------------- #
 # Emission: one broker-authoritative FILL event per appended fill
 # --------------------------------------------------------------------------- #
@@ -93,10 +150,17 @@ async def test_append_fill_emits_one_broker_authoritative_fill_event(any_store):
     assert first.event_type is ExecutionEventType.FILL
     assert first.authority is EventAuthority.BROKER_AUTHORITATIVE
     assert first.source is EventSource.BROKER_REST
-    assert (first.symbol, first.side, first.quantity, first.price) == (
-        "AAPL", OrderSide.BUY, 100, 1.0,
+    assert (first.symbol, first.side, first.quantity, first.price, first.ts_event) == (
+        "AAPL", OrderSide.BUY, 100, 1.0, _TS,
     )
-    assert first.ts_event == _TS
+    # Assert the SELL event's full tuple too — the parity test CANNOT catch a
+    # wrong SELL price (apply_fill's proportional cost-basis reduction never
+    # reads fill.price on a sell), so a SELL-price regression would only surface
+    # at a later PnL/TCA consumer without this direct assertion.
+    sell = events[2]
+    assert (sell.symbol, sell.side, sell.quantity, sell.price, sell.ts_event) == (
+        "AAPL", OrderSide.SELL, 50, 9.0, _TS,
+    )
 
 
 async def test_fill_execution_event_dedupe_key_mirrors_fill_table_per_order(any_store):
