@@ -226,8 +226,18 @@ characterize → implement → adversarial-verify → report → commit.
         re-added the dropped `list_submit_recoveries()==[]` assertion. Full suite
         1505 passed; coverage 95.33%; M2 mutation-verified. **Re-review: not run
         (all fixes ≤ MEDIUM, individually mutation-/reason-verified).**
-- [ ] **Wave 3d — kill/TradingState FSM** (§8): `Active`/`Reducing`/`Halted`
-      replacing the binary flags (Flow 5).
+- [~] **Wave 3d — kill/TradingState FSM** (§8): `Active`/`Reducing`/`Halted`
+      replacing the binary flags (Flow 5). **Design + conflicts (D1–D6):
+      `docs/SPINE_WAVE3D_PLAN.md`** (mapped by a Plan agent). Behavior-PRESERVING
+      `event_truth` refactor (the shape of 3a-truth): the 3-state FSM only *names*
+      behavior the two booleans already encode. First-write a `TRADING_STATE_CHANGED`
+      `ExecutionEvent` carrying the full `(kill, pause)` control tuple (so columns
+      are reconstructable + independent-release preserved); `kill_switch`/
+      `buys_paused` stay as co-written read-models. `MANUAL_FLATTEN`-under-Halted
+      denial + emergency-reduce is wave 3e (D3); stream→Reducing trigger is Phase 4
+      (D4). 7 slices: enum+field+migration → projector → planner+store → rewire
+      legacy setters → enforcement over the FSM → backfill → Flow-5 migration +
+      review.
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
       on the TradingState FSM (3d).
 
