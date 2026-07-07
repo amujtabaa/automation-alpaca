@@ -168,7 +168,10 @@ characterize → implement → adversarial-verify → report → commit.
         - **LOW — overfill idempotency untested.** Added a replayed-overfill
           idempotency test (INV-5 on the record path) + short-recovery cost-basis
           + durable-latch + claim-hold tests. Full suite green (1455 passed),
-          coverage 95.70%. **Re-review: pending.**
+          coverage 95.70%. **Re-review (`w587o6zou`, 3 lenses + synthesis,
+          3 mutations each caught): `FIX_COMPLETE` — D1 + D2 both fully closed,
+          0 confirmed findings, no new BLOCKER/HIGH.** Commit `44f4592` + ledger
+          `7731f6d`. ✅ Wave 3b is independently reviewed clean.
 - [ ] **Wave 3c — timeout/504 `TIMEOUT_QUARANTINE`** (ADR-002). Replace blind
       redrive (characterized in `tests/test_spine_v2_characterization.py`
       Flow 2) with quarantine + targeted reconcile-by-`client_order_id`.
