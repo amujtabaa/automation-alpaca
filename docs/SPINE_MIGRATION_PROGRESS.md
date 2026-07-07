@@ -401,7 +401,10 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     New pure `ReconcileQueryBudget` (`reconciliation.py`): a deterministic per-minute token bucket with an
     INJECTED clock (§12/§9) — starts full, refills only on forward time, `try_consume(now,n)` skips-not-flat
     when empty; token-conservation property-tested. Nothing consumes it yet (wired in 4e-4).
-    `tests/test_spine_phase4_reconcile_budget.py` (11 tests).
+    `tests/test_spine_phase4_reconcile_budget.py` (11 tests). Suite 1651 passed, cov 95.20%, ruff clean.
+    **Reviewed clean** (cheap Haiku, per the goal's token-efficiency rule): refill math sound, the
+    monotonic-clock guard can't over-credit/rewind, denied consumes take zero tokens, config fail-fast on
+    retries/budget < 1 is the safe choice (0 retries = oversell path; 0 budget = silent disable). No defects.
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).
