@@ -2159,7 +2159,9 @@ class SqliteStateStore(StateStore):
                     )
                 return FillAppendResult(status="duplicate", fill=None, event=event)
 
-            # FILL_APPEND — one transaction: INSERT the fill row + its audit event.
+            # FILL_APPEND — one transaction: INSERT the fill row + its audit event
+            # + the shadow ExecutionEvent (wave 3a), so the fill and its mirror in
+            # the event log commit or roll back together (shadow parity).
             fill = plan.fill
             with self._tx() as cur:
                 cur.execute(
@@ -2183,6 +2185,8 @@ class SqliteStateStore(StateStore):
                 event = self._insert_event(
                     cur, plan.event.event_type, **plan.event.as_kwargs()
                 )
+                if plan.execution_event is not None:
+                    self._insert_execution_event(cur, plan.execution_event)
             return FillAppendResult(status="appended", fill=fill, event=event)
 
     async def list_fills(
@@ -2292,53 +2296,64 @@ class SqliteStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution-event log (Spine v2 — Phase 2)
     # ------------------------------------------------------------------ #
+    def _insert_execution_event(
+        self, cur: sqlite3.Cursor, event: ExecutionEvent
+    ) -> ExecutionEvent:
+        """Assign a sequence + INSERT (dedupe-aware) on an open cursor inside a
+        ``_tx``. Shared by the public :meth:`append_execution_event` and the
+        shadow write inside :meth:`append_fill` (which already holds a ``_tx``),
+        so the fill row and its shadow event commit in the same transaction
+        (wave 3a)."""
+
+        dedupe_key = event.dedupe_key
+        if dedupe_key is not None:
+            existing = cur.execute(
+                "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+            if existing is not None:
+                # INV-5: idempotent — no row written, no sequence consumed.
+                return self._execution_event(existing)
+        max_row = cur.execute(
+            "SELECT MAX(sequence) AS m FROM execution_events"
+        ).fetchone()
+        next_sequence = (max_row["m"] or 0) + 1
+        stored = event.model_copy(update={"sequence": next_sequence})
+        cur.execute(
+            """INSERT INTO execution_events
+               (id, sequence, schema_version, event_type, source,
+                authority, dedupe_key, ts_event, ts_init, symbol, side,
+                quantity, price, order_id, primary_id, spawn_id,
+                session_id, correlation_id, payload)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                stored.id,
+                stored.sequence,
+                stored.schema_version,
+                stored.event_type.value,
+                stored.source.value,
+                stored.authority.value,
+                stored.dedupe_key,
+                _dt(stored.ts_event),
+                _dt(stored.ts_init),
+                stored.symbol,
+                stored.side.value if stored.side is not None else None,
+                stored.quantity,
+                stored.price,
+                stored.order_id,
+                stored.primary_id,
+                stored.spawn_id,
+                stored.session_id,
+                stored.correlation_id,
+                json.dumps(stored.payload),
+            ),
+        )
+        return stored
+
     async def append_execution_event(self, event: ExecutionEvent) -> ExecutionEvent:
         async with self._lock:
             with self._tx() as cur:
-                dedupe_key = event.dedupe_key
-                if dedupe_key is not None:
-                    existing = cur.execute(
-                        "SELECT * FROM execution_events WHERE dedupe_key = ?",
-                        (dedupe_key,),
-                    ).fetchone()
-                    if existing is not None:
-                        # INV-5: idempotent — no row written, no sequence consumed.
-                        return self._execution_event(existing)
-                max_row = cur.execute(
-                    "SELECT MAX(sequence) AS m FROM execution_events"
-                ).fetchone()
-                next_sequence = (max_row["m"] or 0) + 1
-                stored = event.model_copy(update={"sequence": next_sequence})
-                cur.execute(
-                    """INSERT INTO execution_events
-                       (id, sequence, schema_version, event_type, source,
-                        authority, dedupe_key, ts_event, ts_init, symbol, side,
-                        quantity, price, order_id, primary_id, spawn_id,
-                        session_id, correlation_id, payload)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        stored.id,
-                        stored.sequence,
-                        stored.schema_version,
-                        stored.event_type.value,
-                        stored.source.value,
-                        stored.authority.value,
-                        stored.dedupe_key,
-                        _dt(stored.ts_event),
-                        _dt(stored.ts_init),
-                        stored.symbol,
-                        stored.side.value if stored.side is not None else None,
-                        stored.quantity,
-                        stored.price,
-                        stored.order_id,
-                        stored.primary_id,
-                        stored.spawn_id,
-                        stored.session_id,
-                        stored.correlation_id,
-                        json.dumps(stored.payload),
-                    ),
-                )
-                return stored
+                return self._insert_execution_event(cur, event)
 
     async def get_execution_events(
         self, *, after_sequence: int = 0, limit: Optional[int] = None

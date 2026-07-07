@@ -32,6 +32,10 @@ from typing import Any, Optional
 from app.models import (
     Candidate,
     CandidateStatus,
+    EventAuthority,
+    EventSource,
+    ExecutionEvent,
+    ExecutionEventType,
     Fill,
     Order,
     OrderSide,
@@ -140,6 +144,12 @@ class FillPlan:
     event: EventSpec
     error: Optional[Exception] = None
     fill: Optional[Fill] = None
+    # Spine v2 Phase 3 wave 3a (shadow_evented): the broker-authoritative
+    # ExecutionEvent to append to the event log *atomically with* the fill row
+    # (append path only). SHADOW — the fill table stays authoritative for
+    # position; this mirrors the fill into the event log so replay parity can be
+    # verified before the event-truth flip. See docs/MIGRATION_MATRIX.md.
+    execution_event: Optional[ExecutionEvent] = None
 
 
 def plan_append_fill(
@@ -280,6 +290,31 @@ def plan_append_fill(
         session_id=session_id,
         filled_at=filled_at or utcnow(),
     )
+    # Shadow ExecutionEvent (wave 3a). A fill in this system is always a
+    # broker-reported fact (submitted orders fill and are observed via polling),
+    # so authority=BROKER_AUTHORITATIVE. The dedupe_key mirrors the fill table's
+    # per-(order_id, source_fill_id) dedup exactly — NOT the bare source_fill_id,
+    # since two different orders may legitimately share a venue fill id (F1), and
+    # the event log's dedupe_key is global. A fill with no source_fill_id gets a
+    # None key (never deduped), matching the fill table. Provenance (source) is a
+    # shadow default; the event-truth flip can thread the real ingestion path.
+    execution_event = ExecutionEvent(
+        event_type=ExecutionEventType.FILL,
+        source=EventSource.BROKER_REST,
+        authority=EventAuthority.BROKER_AUTHORITATIVE,
+        dedupe_key=(
+            f"fill:{order_id}:{source_fill_id}"
+            if source_fill_id is not None
+            else None
+        ),
+        ts_event=fill.filled_at,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+        order_id=order_id,
+        session_id=session_id,
+    )
     return FillPlan(
         FILL_APPEND,
         EventSpec(
@@ -293,6 +328,7 @@ def plan_append_fill(
             session_id=session_id,
         ),
         fill=fill,
+        execution_event=execution_event,
     )
 
 

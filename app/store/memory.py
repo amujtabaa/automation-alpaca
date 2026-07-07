@@ -1302,9 +1302,10 @@ class InMemoryStateStore(StateStore):
                 )
                 return FillAppendResult(status="duplicate", fill=None, event=event)
 
-            # FILL_APPEND — atomically append the fill + dedup key + audit event,
-            # so a failed audit write can't leave a position-changing fill with no
-            # fill_appended row AND a poisoned dedup set (Item 4).
+            # FILL_APPEND — atomically append the fill + dedup key + audit event
+            # + the shadow ExecutionEvent (wave 3a), so a failed write can't leave
+            # a position-changing fill with no fill_appended row, a poisoned dedup
+            # set, or a fill/event-log divergence (Item 4 + shadow parity).
             fill = plan.fill
             with self._atomic():
                 self._fills.append(fill)
@@ -1313,6 +1314,8 @@ class InMemoryStateStore(StateStore):
                 event = self._append_event_unlocked(
                     plan.event.event_type, **plan.event.as_kwargs()
                 )
+                if plan.execution_event is not None:
+                    self._append_execution_event_unlocked(plan.execution_event)
             return FillAppendResult(
                 status="appended", fill=fill.model_copy(deep=True), event=event
             )
@@ -1402,25 +1405,32 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution-event log (Spine v2 — Phase 2)
     # ------------------------------------------------------------------ #
+    def _append_execution_event_unlocked(self, event: ExecutionEvent) -> ExecutionEvent:
+        """Assign a sequence + append (dedupe-aware), assuming the lock is held
+        and an ``_atomic()`` block is active. Shared by the public
+        :meth:`append_execution_event` and the shadow write inside
+        :meth:`append_fill` (which already holds the lock + atomic block), so the
+        fill row and its shadow event commit together (wave 3a)."""
+
+        dedupe_key = event.dedupe_key
+        if dedupe_key is not None:
+            existing = self._execution_event_dedupe.get(dedupe_key)
+            if existing is not None:
+                # INV-5: same dedupe_key is a no-op; no sequence consumed.
+                return existing.model_copy(deep=True)
+        next_sequence = (
+            self._execution_events[-1].sequence if self._execution_events else 0
+        ) + 1
+        stored = event.model_copy(deep=True, update={"sequence": next_sequence})
+        self._execution_events.append(stored)
+        if dedupe_key is not None:
+            self._execution_event_dedupe[dedupe_key] = stored
+        return stored.model_copy(deep=True)
+
     async def append_execution_event(self, event: ExecutionEvent) -> ExecutionEvent:
         async with self._lock:
             with self._atomic():
-                dedupe_key = event.dedupe_key
-                if dedupe_key is not None:
-                    existing = self._execution_event_dedupe.get(dedupe_key)
-                    if existing is not None:
-                        # INV-5: same dedupe_key is a no-op; no sequence consumed.
-                        return existing.model_copy(deep=True)
-                next_sequence = (
-                    self._execution_events[-1].sequence
-                    if self._execution_events
-                    else 0
-                ) + 1
-                stored = event.model_copy(deep=True, update={"sequence": next_sequence})
-                self._execution_events.append(stored)
-                if dedupe_key is not None:
-                    self._execution_event_dedupe[dedupe_key] = stored
-                return stored.model_copy(deep=True)
+                return self._append_execution_event_unlocked(event)
 
     async def get_execution_events(
         self, *, after_sequence: int = 0, limit: Optional[int] = None

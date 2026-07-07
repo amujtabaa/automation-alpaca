@@ -69,12 +69,21 @@ characterize → implement → adversarial-verify → report → commit.
 
 **Planned sub-wave order (lowest-risk first):**
 
-- [ ] **Wave 3a — broker-authoritative fill ingestion + dedup → `event_truth`**
-      (Decision 1 / INV-5). Lowest risk: the Phase 2 `PositionProjector` +
-      replay verifier already validate fill→position derivation. First flow
-      where "the first durable write is an `ExecutionEvent`". Note the ADR-001
-      forward-coupling comment at `app/events/projectors.py` — the projector
-      must tolerate a recorded oversell (quarantine) rather than reject.
+- [x] **Wave 3a-shadow — broker-authoritative fill ingestion + dedup →
+      `shadow_evented`** (Decision 1 / INV-5). `append_fill` now also appends a
+      broker-authoritative `FILL` `ExecutionEvent` atomically with the fill row
+      (both stores, via extracted unlocked/cursor helpers); the replay
+      projection is proven == the fill-table position, dual-store parity holds,
+      dupe/reject paths emit nothing. Additive — full suite green, no behavior
+      change to position derivation. `tests/test_spine_phase3_shadow_fills.py`.
+      Fill ingestion is `shadow_evented` in the matrix.
+- [ ] **Wave 3a-truth — flip fill ingestion to `event_truth`.** Make the
+      first durable write the `ExecutionEvent`; derive position from the event
+      log (via `PositionProjector`); demote the fill table to a read-model
+      projection. Gated on the 6 matrix "Migration rule" conditions. Note the
+      ADR-001 forward-coupling comment at `app/events/projectors.py` — the
+      projector must tolerate a recorded oversell (quarantine) rather than
+      reject once broker-authoritative overfills can be recorded (wave 3b).
 - [ ] **Wave 3b — overfill / negative-position quarantine** (ADR-001). Record
       broker reality, mark primary `QUARANTINED`, block autonomous spawns.
       Requires the projector oversell-tolerance change flagged above.
