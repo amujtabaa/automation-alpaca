@@ -1,7 +1,10 @@
-"""Typed query facade — Spine v2 Phase 0 skeleton (ADR-005 / Spine v2 §10).
+"""Typed query facade — Spine v2 (ADR-005 / Spine v2 §10).
 
-Same Phase 0 caveats as ``app.facade.commands.ExecutionCommandFacade``:
-unimplemented, unwired, unenforced. See that module's docstring.
+Same status as ``app.facade.commands.ExecutionCommandFacade``: one method
+(``list_positions``) is real as of Phase 1, wired into
+``GET /api/positions``; everything else still raises
+``NotYetImplementedError`` and every other route still bypasses this
+facade. See that module's docstring for the full explanation.
 """
 
 from __future__ import annotations
@@ -16,7 +19,9 @@ class ExecutionQueryFacade(Protocol):
     """Typed read surface for FastAPI routes."""
 
     async def list_positions(self) -> Any:
-        """Analogue of today's ``GET /api/positions``."""
+        """Real as of Phase 1 — see
+        ``app.facade.store_backed.StoreBackedQueryFacade.list_positions``,
+        wired into ``GET /api/positions``."""
         ...
 
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:

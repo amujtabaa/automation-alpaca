@@ -1,24 +1,27 @@
-"""Typed command facade — Spine v2 Phase 0 skeleton (ADR-005 / Spine v2 §10).
+"""Typed command facade — Spine v2 (ADR-005 / Spine v2 §10).
 
-**Phase 0 scope note (do not remove until Phase 1 lands a concrete
-implementation):** ``ExecutionCommandFacade`` is a ``Protocol`` defining the
-intended *shape* of the command surface FastAPI routes will eventually depend
-on. It is:
+``ExecutionCommandFacade`` is a ``Protocol`` defining the command surface
+FastAPI routes depend on. As of Phase 1:
 
-* **unimplemented** — every method body is ``...``; no concrete class
-  satisfies this protocol yet;
-* **unwired** — no route imports or calls this. Every current command route
-  (``POST /api/candidates/{id}/approve``, ``POST /api/positions/{symbol}/
-  flatten``, ``POST /api/controls/kill-switch``, etc.) still calls
+* **``pause_buys``/``resume_buys`` are real** — implemented by
+  ``app.facade.store_backed.StoreBackedCommandFacade`` and wired into
+  ``POST /api/controls/{pause,resume}-buys`` (see
+  ``docs/SPINE_PHASE1_FACADE_REPORT.md``).
+* **Every other method still raises ``NotYetImplementedError``** — either
+  because it has no current-codebase analogue (``primary``/``spawn``/
+  ``TradingState`` don't exist yet), or because migrating it now would
+  freeze an ADR-conflicted behavior (manual flatten, kill-switch) as the
+  facade's contract before Phase 3 makes a deliberate decision — see
+  ``docs/SPINE_PHASE0_INVENTORY.md`` §3.1/§3.4.
+* **Every other route still bypasses this facade entirely**, calling
   ``app.store``/``app.broker``/``app.monitoring`` directly — see
-  ``docs/SPINE_PHASE0_INVENTORY.md``'s dependency map;
-* **unenforced** — nothing blocks a route from bypassing this.
+  ``docs/SPINE_PHASE0_INVENTORY.md``'s dependency map. Nothing enforces the
+  boundary yet (Phase 5).
 
 Method names/signatures are provisional and use the Spine v2 target
 vocabulary (``primary``/``spawn``/``TradingState``), which does not exist in
-the current codebase (``docs/MIGRATION_MATRIX.md``). Do not treat this as a
-stable contract before Phase 1 forces the real shape against a concrete
-implementation.
+the current codebase (``docs/MIGRATION_MATRIX.md``) — don't treat this as a
+stable contract for the still-unimplemented methods.
 """
 
 from __future__ import annotations
@@ -62,11 +65,15 @@ class ExecutionCommandFacade(Protocol):
         ...
 
     async def pause_buys(self, *, actor: str) -> Any:
-        """Analogue of today's ``POST /api/controls/pause-buys``."""
+        """Real as of Phase 1 — see
+        ``app.facade.store_backed.StoreBackedCommandFacade.pause_buys``,
+        wired into ``POST /api/controls/pause-buys``."""
         ...
 
     async def resume_buys(self, *, actor: str) -> Any:
-        """Analogue of today's ``POST /api/controls/resume-buys``."""
+        """Real as of Phase 1 — see
+        ``app.facade.store_backed.StoreBackedCommandFacade.resume_buys``,
+        wired into ``POST /api/controls/resume-buys``."""
         ...
 
     async def set_kill_switch(self, *, engaged: bool, actor: str) -> Any:

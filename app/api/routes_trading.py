@@ -15,9 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.api.deps import (
     get_broker_adapter,
     get_market_data_service,
+    get_query_facade,
     get_settings,
     get_store,
 )
+from app.facade.errors import FacadeError
+from app.facade.http_mapping import facade_error_to_http
+from app.facade.queries import ExecutionQueryFacade
 from app.api.schemas import (
     FlattenResponse,
     OperatorOrdersResponse,
@@ -67,9 +71,22 @@ _TERMINAL_ORDER_STATUSES = frozenset(
 
 @router.get("/positions", response_model=list[Position])
 async def list_positions(
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> list[Position]:
-    return await store.list_positions()
+    """Phase 1 facade migration (ADR-005): calls ``ExecutionQueryFacade.
+    list_positions`` instead of the store directly. The concrete
+    implementation (``app.facade.store_backed.StoreBackedQueryFacade``)
+    forwards unchanged to ``StateStore.list_positions`` — see
+    ``docs/SPINE_PHASE1_FACADE_REPORT.md`` for the behavior-equivalence
+    proof. ``except FacadeError`` is defensive/future-proofing: this
+    specific method never raises one today, but the mapping exists so a
+    later facade change surfaces as a clean HTTP response rather than an
+    unhandled exception.
+    """
+    try:
+        return await query_facade.list_positions()
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
 
 
 @router.get("/positions/{symbol}", response_model=Position)
