@@ -37,7 +37,7 @@ for every phase so far (proceeding was explicitly user-authorized).
 | 0 | Docs, inventory, migration seams | ✅ done (`7a25649`) — report: `docs/SPINE_PHASE0_INVENTORY.md`, `docs/SPINE_PHASE0_MIGRATION_PLAN.md` |
 | 1 | Facade shell + characterization | ✅ done (`d146e0e`, `afe8543`) — report: `docs/SPINE_PHASE1_FACADE_REPORT.md` |
 | 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`60d38a0`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
-| 3 | Safety-critical event-first migration | 🚧 next (largest; resolves ADR-001/002/003 conflicts) |
+| 3 | Safety-critical event-first migration | 🚧 in progress — wave 3a-shadow done (`bf60d74`,`e7c423c`); waves 3a-truth/3b/3c/3d/3e remain |
 | 4 | Reconciliation engine | ⬜ not started |
 | 5 | Import-boundary enforcement | ⬜ not started |
 | 6 | Legacy table demotion/removal | ⬜ not started |
