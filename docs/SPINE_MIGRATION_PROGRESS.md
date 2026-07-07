@@ -253,9 +253,9 @@ characterize → implement → adversarial-verify → report → commit.
         the same predicates). `monitoring._run_protection_tick` kill-pauses-protection
         and the `/protection` status DTO's `paused_by_kill_switch` both read
         `trading_state is HALTED`. Behavior-identical since booleans == derived FSM.
-        **Drift-proofing:** a `SessionRecord` model validator self-heals
-        `trading_state` to `TradingState.of(kill, pause)` so no directly-constructed
-        or row-mapped record can drift (structural §8 read-model invariant).
+        (Slice 5 originally added a `SessionRecord` validator forcing
+        `trading_state == of(kill, pause)`; **removed in review remediation** — see
+        below.)
       - [x] **Slice 7 — Flow-5 full migration** (`e4851d7`). Characterization
         Flow-5 migrated: `set_kill_switch → HALTED` (blocks a PROTECTION_FLOOR exit
         end-to-end via monitoring tick, ADR-003) + `set_buys_paused → REDUCING`, both
@@ -265,18 +265,46 @@ characterize → implement → adversarial-verify → report → commit.
         BUY, and HALTED denies both. Migration matrix row flipped to `event_truth`.
         Also cleaned pre-existing ruff debt from earlier 3d slices (F821 forward-refs
         to `TradingState` in `projectors.py`/`base.py`; F401 unused import in `core.py`).
-        1537 passed, coverage 95.26%, ruff clean, harness green. **Adversarial review: pending.**
+      - [x] **Adversarial review + remediation** (`12a8c4a`). Review workflow
+        `wdv4jbze4` (4 lenses + synthesis, mutation-tested): **SAFE_TO_FINALIZE**, 0
+        blockers/highs, 5 non-blocking findings — all remediated. (MEDIUM + footgun-LOW)
+        **removed the slice-5 `_derive_trading_state` validator**: forcing
+        `trading_state == of(kill, pause)` made every enforcement test tautological
+        AND was a Phase-4 footgun (§8 Reducing is driven by stream-degradation/reconcile
+        *without* the booleans; the validator would heal that away = kill-switch bypass).
+        `trading_state` is now an honest INDEPENDENT field co-written only by the setters;
+        added `TestEnforcementFollowsFsmFieldNotBooleans` + divergent claim/monitoring/DTO
+        tests (record whose FSM contradicts its booleans) — mutation-verified green→red→green
+        against reverting each site to boolean-reading. (LOW) SQLite backfill column-heal
+        was dead code (validator masked it) → un-deadened + guard compares the RAW row +
+        test asserts via direct SQL. (LOW) downgraded the false "booleans reconstructable
+        from the log" claim (core.py/projectors.py/matrix): only the derived TradingState
+        is event-reconstructable; the booleans stay co-written `sessions` columns. (LOW)
+        fixed `test_projector_latest_wins` false guardian (distinct first/last).
+        1539 passed, coverage 95.29%, ruff clean, harness green. **Wave 3d CLOSED.**
       `MANUAL_FLATTEN`-under-Halted denial + emergency-reduce is wave 3e (D3);
       stream→Reducing trigger is Phase 4 (D4).
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
-      on the TradingState FSM (3d).
+      on the TradingState FSM (3d, now closed). **Plan ready** (agent-scoped, mirrors
+      3c/3d): manual flatten `legacy_truth → event_truth`, emergency-reduce override
+      `blocked → event_truth`. **Conflicts E1–E8 recorded; E1 is a DECISION GAP for the
+      human** — ADR-003 denies ordinary manual flatten under `Halted` (needs an audited
+      emergency-reduce override), which REVERSES legacy Rule 8 / D-P2 ("flatten always
+      works even kill-switched"). E3: "scoped Reducing" is unrepresentable as a global
+      state flip (kill dominates) → the override must be a **separate scoped grant**
+      (`EMERGENCY_REDUCE_OVERRIDE` event) consulted alongside `trading_state`, global
+      state stays `Halted`. Slices 1–2 (inert scaffolding + facade migration) are
+      behavior-preserving and NOT gated on E1; slices 3–4 (the denial + override) ARE.
+      **Blocked pending the E1 ruling** (AskUserQuestion errored once; re-ask before 3–4).
 
-**Resume hint:** Waves 3a + 3b are done and green. Start **Wave 3c
-(timeout/504 `TIMEOUT_QUARANTINE`, ADR-002)**. Re-read `docs/adr/ADR-002`,
-`tests/test_spine_v2_characterization.py` Flow 2 (the pinned blind-redrive
-current behavior), and the submission/claim path
-(`app/store/core.py:plan_claim_order_for_submission`, the broker-submit recovery
-ledger D-017, `app/monitoring.py` submit flow). Phase 3 flips a flow to
+**Resume hint:** Wave 3d is CLOSED (reviewed clean, remediated, `12a8c4a`). Next is
+**Wave 3e (manual flatten + emergency reduce, ADR-003)** — but slices 3–4 are BLOCKED
+on the E1 human decision (manual-flatten-under-Halted: adopt ADR-003 vs keep D-P2 vs
+audited-but-automatic). Wave-3e design + conflicts E1–E8 are captured in this session's
+plan; write them to `docs/SPINE_WAVE3E_PLAN.md` when starting. Slices 1–2 (new
+`EMERGENCY_REDUCE_OVERRIDE` event type + projector + store method, inert; then facade
+migration of the flatten route, behavior-preserving) can proceed without the ruling.
+Phase 3 flips a flow to
 `event_truth` only when the 6 conditions in `docs/MIGRATION_MATRIX.md`
 "Migration rule" hold.
 
