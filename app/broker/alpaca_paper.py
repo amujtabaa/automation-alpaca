@@ -24,15 +24,21 @@ from typing import Optional
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
-from alpaca.trading.enums import TimeInForce
-from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
+from alpaca.trading.enums import QueryOrderStatus, TimeInForce
+from alpaca.trading.requests import (
+    GetOrdersRequest,
+    LimitOrderRequest,
+    MarketOrderRequest,
+)
 
 from app.broker.adapter import (
     AmbiguousBrokerError,
     BrokerAdapter,
     BrokerError,
     BrokerFill,
+    BrokerOrderReport,
     BrokerOrderUpdate,
+    BrokerPositionReport,
     TerminalBrokerError,
 )
 from app.features import session_type_for
@@ -432,6 +438,61 @@ class AlpacaPaperAdapter(BrokerAdapter):
             fills=[],
             broker_order_id=str(alpaca_order.id),
         )
+
+    async def list_open_orders(self) -> list[BrokerOrderReport]:
+        """The venue's current OPEN orders — the §7 mass order-status report.
+
+        Wraps ``get_orders(status=OPEN)``. Read-only. Raises ``BrokerError`` on
+        failure (the caller must NOT read a failed report as "no open orders").
+        Fills are left empty here — the reconciler infers missing executions from
+        the ``filled_quantity`` delta with a deterministic synthetic id (§3).
+        """
+        try:
+            alpaca_orders = await asyncio.to_thread(
+                self._client.get_orders,
+                GetOrdersRequest(status=QueryOrderStatus.OPEN),
+            )
+        except Exception as exc:
+            raise BrokerError("Failed to fetch the open-orders report.") from exc
+        return [
+            BrokerOrderReport(
+                broker_order_id=str(o.id),
+                client_order_id=(str(o.client_order_id) if o.client_order_id else None),
+                symbol=str(o.symbol),
+                side=(
+                    OrderSide.BUY
+                    if o.side == AlpacaOrderSide.BUY
+                    else OrderSide.SELL
+                ),
+                status=_map_status(o.status),
+                filled_quantity=int(float(o.filled_qty or 0)),
+                fills=[],
+            )
+            for o in (alpaca_orders or [])
+        ]
+
+    async def list_positions(self) -> list[BrokerPositionReport]:
+        """The venue's current positions — the §7 position report.
+
+        Wraps ``get_all_positions()``. Read-only. Raises ``BrokerError`` on failure
+        (the caller must NOT read a failed query as flat). ``quantity`` is whole
+        shares (beta is long-only, whole-share).
+        """
+        try:
+            positions = await asyncio.to_thread(self._client.get_all_positions)
+        except Exception as exc:
+            raise BrokerError("Failed to fetch the position report.") from exc
+        reports: list[BrokerPositionReport] = []
+        for p in positions or []:
+            avg = p.avg_entry_price
+            reports.append(
+                BrokerPositionReport(
+                    symbol=str(p.symbol),
+                    quantity=int(float(p.qty or 0)),
+                    average_price=(float(avg) if avg is not None else None),
+                )
+            )
+        return reports
 
     # ---------------------------------------------------------------------- #
     # Internal helpers

@@ -18,7 +18,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Optional
 
-from app.broker.adapter import BrokerAdapter, BrokerFill, BrokerOrderUpdate
+from app.broker.adapter import (
+    BrokerAdapter,
+    BrokerFill,
+    BrokerOrderReport,
+    BrokerOrderUpdate,
+    BrokerPositionReport,
+)
 from app.models import Order, OrderStatus
 
 
@@ -43,10 +49,20 @@ class MockBrokerAdapter(BrokerAdapter):
         # "the ambiguous submit DID reach the venue" even though submit raised.
         self._venue_by_client_id: dict[str, BrokerOrderUpdate] = {}
 
-        # When set, the next submit/cancel/client-query raises this and clears.
+        # §7 mass reports (wave 4a). Seeded independently — the venue's current
+        # OPEN orders + positions the reconciler discovers. Recorded-call counters
+        # let tests assert the reconciler polled them.
+        self._open_order_reports: list[BrokerOrderReport] = []
+        self._position_reports: list[BrokerPositionReport] = []
+        self.open_order_report_queries: int = 0
+        self.position_report_queries: int = 0
+
+        # When set, the next submit/cancel/client-query/report raises this and clears.
         self._submit_error: Optional[BaseException] = None
         self._cancel_error: Optional[BaseException] = None
         self._client_query_error: Optional[BaseException] = None
+        self._open_orders_error: Optional[BaseException] = None
+        self._positions_error: Optional[BaseException] = None
 
     # ------------------------------------------------------------------ #
     # BrokerAdapter
@@ -113,9 +129,48 @@ class MockBrokerAdapter(BrokerAdapter):
             return replace(update, broker_order_id=broker_id)
         return None
 
+    async def list_open_orders(self) -> list[BrokerOrderReport]:
+        # §7 mass order-status report (wave 4a). A failure raises (never an empty
+        # list read as "no open orders").
+        self.open_order_report_queries += 1
+        if self._open_orders_error is not None:
+            err, self._open_orders_error = self._open_orders_error, None
+            raise err
+        return list(self._open_order_reports)
+
+    async def list_positions(self) -> list[BrokerPositionReport]:
+        # §7 position report (wave 4a). A failure raises (never read as flat).
+        self.position_report_queries += 1
+        if self._positions_error is not None:
+            err, self._positions_error = self._positions_error, None
+            raise err
+        return list(self._position_reports)
+
     # ------------------------------------------------------------------ #
     # Test controls
     # ------------------------------------------------------------------ #
+    def seed_open_orders(self, reports: list[BrokerOrderReport]) -> None:
+        """Set the venue's current OPEN orders the mass report returns (§7)."""
+
+        self._open_order_reports = list(reports)
+
+    def seed_positions(self, reports: list[BrokerPositionReport]) -> None:
+        """Set the venue's current positions the position report returns (§7)."""
+
+        self._position_reports = list(reports)
+
+    def fail_next_open_orders(self, exc: BaseException) -> None:
+        """Make the next ``list_open_orders`` raise (a report FAILURE — the caller
+        must skip the cycle, never read it as 'no open orders')."""
+
+        self._open_orders_error = exc
+
+    def fail_next_positions(self, exc: BaseException) -> None:
+        """Make the next ``list_positions`` raise (a query FAILURE — the caller must
+        skip the cycle, never read it as flat)."""
+
+        self._positions_error = exc
+
     def broker_id_for(self, order_id: str) -> str:
         """The broker id assigned to a submitted order."""
 

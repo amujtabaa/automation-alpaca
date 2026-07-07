@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from app.models import Order, OrderStatus
+from app.models import Order, OrderSide, OrderStatus
 
 
 class BrokerError(Exception):
@@ -108,6 +108,45 @@ class BrokerOrderUpdate:
     filled_quantity: int
     fills: list[BrokerFill] = field(default_factory=list)
     broker_order_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class BrokerOrderReport:
+    """One row of the broker's **mass** order-status report (§7 reconciliation).
+
+    Unlike :meth:`BrokerAdapter.get_order_status` (keyed on a venue id we already
+    hold), the mass report is how reconciliation DISCOVERS the venue's order set —
+    including an order the backend does not know about (external/unmanaged, surfaced
+    never silently absorbed) — and confirms/denies the presence of cached ones. It
+    carries BOTH ids so the reconciler can match a report row to a local order by
+    ``client_order_id`` (our deterministic ``order.id``) or ``broker_order_id``.
+    ``status`` is already mapped to our :class:`OrderStatus`; ``fills`` lets the
+    reconciler infer missing executions (deterministic synthetic ids, §3).
+    """
+
+    broker_order_id: str
+    client_order_id: Optional[str]
+    symbol: str
+    side: OrderSide
+    status: OrderStatus
+    filled_quantity: int
+    fills: list[BrokerFill] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BrokerPositionReport:
+    """One row of the broker's position report (§7 position parity).
+
+    ``quantity`` is whole shares (beta is long-only, whole-share). ``average_price``
+    is the venue's average entry price (``None`` if the venue reports none). The
+    reconciler compares this against the locally-derived position within tolerance
+    (qty exact, avg-px 0.01%) and surfaces a mismatch for review — it never silently
+    overwrites the local fill-derived position.
+    """
+
+    symbol: str
+    quantity: int
+    average_price: Optional[float] = None
 
 
 class BrokerAdapter(ABC):
@@ -202,4 +241,29 @@ class BrokerAdapter(ABC):
 
         This is strictly read-only: it never creates, cancels, or mutates a venue
         order, so it can never double-submit.
+        """
+
+    @abstractmethod
+    async def list_open_orders(self) -> list["BrokerOrderReport"]:
+        """The venue's current OPEN orders — the mass order-status report (§7).
+
+        Read-only. Reconciliation uses this (not the per-order ``get_order_status``,
+        which needs a venue id we already hold) to DISCOVER the full venue open-order
+        set: to confirm/deny the presence of cached orders and to surface an order the
+        venue has that the backend does not (external/unmanaged — never silently
+        absorbed). Raises :class:`BrokerError` on failure. **A failed report must NEVER
+        be read as "no open orders"** (§7 safeguard: treating an inconclusive query as
+        empty is a not-found→reject / oversell path) — the caller skips the cycle and
+        retries, it does not resolve absences from a failed report.
+        """
+
+    @abstractmethod
+    async def list_positions(self) -> list["BrokerPositionReport"]:
+        """The venue's current positions — the position report (§7 position parity).
+
+        Read-only. The reconciler compares each row against the locally fill-derived
+        position within tolerance (qty exact, avg-px 0.01%). Raises
+        :class:`BrokerError` on failure. **A failed position query must NEVER be read
+        as flat** (§7 safeguard) — the caller skips this cycle, never inferring a
+        flatten/close from a missing report.
         """
