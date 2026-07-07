@@ -386,6 +386,13 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
   overclaiming event_truth, throttle-deferred-to-4e defensible). No remediation. Suite 1640 passed,
   coverage 95.12%, ruff clean, harness green.
 - [ ] **4e** runtime truth flip (+§7 config defaults, query throttle, position-query-failure→skip).
+  **Plan: `docs/SPINE_WAVE4E_PLAN.md`** (conflicts E1–E9; slices 4e-1…4e-5). THE big Phase-4 truth flip:
+  turns the 4d shadow into an ACTING mass-report reconcile. Load-bearing safeguard **E2/R5**:
+  a mass-report *absence* NEVER rejects — it triggers the read-only targeted query (reusing wave-3c
+  machinery) before any not-found→REJECTED/CANCELED. Critical pre-coding gate **E5**: the mock/sim
+  `list_open_orders` must default to the adapter's known-live orders, else the acting reconcile (on by
+  default) would drive every existing open-order test to a spurious not-found→reject. Heavier Opus
+  adversarial review at slice 4e-5 (oversell/short-flip focus).
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).
