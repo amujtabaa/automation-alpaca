@@ -111,11 +111,18 @@ event_truth`) and drives the wave-3d/§8 `Reducing` hook.
   (`source=RECONCILIATION`, `authority=SYNTHETIC`, deterministic `dedupe_key`) via the atomic co-write
   planner pattern (mirror `plan_append_fill` / `plan_transition_order_evented`). Pure `external_orders(events)`
   projector + store query. Dual-store parity + replay-verifier extension.
-- **Wave 4d — Shadow the runtime reconcile (characterize → shadow).** Characterize today's
-  `_reconcile_open_orders`/`_apply_update` in a pinning module. Compute the `ReconciliationPlan` from
-  the new reports each cycle and **emit shadow audit events** (planned transitions, would-be synthetic
-  fills, external orders, parity deltas) **without flipping truth**; run alongside the legacy poll and
-  assert agreement.
+- **Wave 4d — Shadow the runtime reconcile (characterize → shadow). ✅ DONE.** `_shadow_reconcile`
+  runs LAST in `run_monitoring_tick` (after the legacy poll + recovery, so a surfaced divergence is one
+  the per-order poll structurally can't capture), computes the `ReconciliationPlan` from the mass reports,
+  and emits a single `reconcile_shadow_divergence` audit event — deduped by a content fingerprint
+  (`_shadow_fingerprint`, `skipped_recent` excluded) so a persistent divergence logs once, not per tick.
+  **Never flips truth** (no transition/fill/position mutation), **failure-isolated** (a raised mass report
+  is caught → the cycle is skipped, never read as flat; the legacy reconcile is untouched), and **off by
+  default** (`reconciliation_shadow_enabled`, `RECONCILIATION_SHADOW_ENABLED` env) so the whole existing
+  corpus + any real deployment stay unperturbed until 4e adds the throttle. Pinned in
+  `tests/test_spine_phase4_reconcile_shadow.py` (19 tests: inert-when-off, shadow-on-doesn't-change-legacy-
+  outcome, external-order + position-mismatch surfacing without overwrite, dedup + re-log-on-change,
+  both report failures skip-not-crash, pure fingerprint over all 5 categories, full payload schema).
 - **Wave 4e — Runtime open-order + position reconcile → event_truth (truth flip).** Apply the plan:
   flip order status via evented transitions, append synthetic fills, surface external orders, record
   parity mismatches. Generalize targeted-query-before-not-found→REJECTED (respect

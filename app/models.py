@@ -268,6 +268,13 @@ class EventType(str, Enum):
     ORDER_TIMEOUT_QUARANTINED = "order_timeout_quarantined"
     ORDER_TIMEOUT_QUARANTINE_RESOLVED = "order_timeout_quarantine_resolved"
     ORDER_TIMEOUT_QUARANTINE_DEFERRED = "order_timeout_quarantine_deferred"
+
+    # Phase 4 wave 4d (shadow reconcile): the §7 mass-report reconciliation plan
+    # diverged from managed state (an external venue order, a position drift, or a
+    # locally-open order the mass report can't confirm). Observability ONLY — the
+    # shadow never flips truth. Deduped by a content fingerprint so a persistent,
+    # unchanged divergence logs once, not once per tick.
+    RECONCILE_SHADOW_DIVERGENCE = "reconcile_shadow_divergence"
     # A broker/local fill divergence (broker filled > locally recorded) escalated
     # to a durable needs_review reconciliation record (AIR-002).
     FILL_RECONCILIATION_NEEDED = "fill_reconciliation_needed"

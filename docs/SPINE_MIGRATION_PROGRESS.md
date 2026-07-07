@@ -364,8 +364,28 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
   identity fix is correct ("better than proposed"). Only **1 LOW advisory** (Alpaca error-message
   type-specificity in the adapter) — deferred to wave 4e monitoring/config. No remediation needed;
   foundation is clean. 1620 passed.
-- [ ] **4d** shadow the runtime reconcile (compute the plan each tick, emit shadow events, don't flip
-  truth). **4e** runtime truth flip (+§7 config defaults, query throttle, position-query-failure→skip).
+- [x] **Wave 4d — shadow the runtime reconcile** (characterize → shadow; additive/inert, no truth flip).
+  `_shadow_reconcile` runs LAST in `run_monitoring_tick` (after the legacy per-order poll + recovery, so a
+  surfaced divergence is one the per-order poll structurally CAN'T capture), computes the mass-report
+  `plan_reconciliation`, and emits a single `reconcile_shadow_divergence` audit event on divergence
+  (external/unmanaged venue order, broker-vs-local position drift), **deduped by a content fingerprint**
+  (`_shadow_fingerprint`; `skipped_recent` excluded) so a persistent divergence logs once, not per tick.
+  **Never flips truth** (no transition/fill/position mutation — the returned plan is observability/test
+  only); **failure-isolated** (a raised mass report is caught → cycle skipped, never read as flat; the
+  legacy reconcile is untouched); **off by default** (`reconciliation_shadow_enabled` /
+  `RECONCILIATION_SHADOW_ENABLED`) so the whole existing corpus + any real deployment stay unperturbed
+  until wave 4e adds the 200/min throttle (R6). Matrix "Reconciliation" row → `partial legacy (P4 wave 4d
+  shadow)`. 19 tests (`tests/test_spine_phase4_reconcile_shadow.py`): off-by-default makes zero report
+  calls + no event; shadow-on doesn't change the legacy fill→position/status outcome; external-order +
+  position-mismatch surfaced without overwriting position truth; dedup + re-log-on-change; both report
+  failures skip-not-crash; pure `_shadow_fingerprint` over all 5 categories + full payload schema.
+  **Review protocol ran** (per the goal, cheap models for a low-risk additive/inert wave): two Haiku
+  agents — correctness/safety returned "NO CORRECTNESS DEFECTS FOUND, no nits" (verified never-flips-truth,
+  failure-isolated, inert-when-off, dedup, run-last ordering); alignment returned "ALIGNED" (§7 read-only
+  shadow discipline, audit-log-not-ExecutionEvent choice correct, matrix/plan/ledger accurate + not
+  overclaiming event_truth, throttle-deferred-to-4e defensible). No remediation. Suite 1640 passed,
+  coverage 95.12%, ruff clean, harness green.
+- [ ] **4e** runtime truth flip (+§7 config defaults, query throttle, position-query-failure→skip).
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).

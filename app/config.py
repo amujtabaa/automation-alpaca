@@ -40,6 +40,8 @@ TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS_ENV = "TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMP
 #   "alpaca" -> AlpacaPaperAdapter always (requires paper keys)
 BROKER_ENV = "BROKER_ADAPTER"
 ENABLE_MONITORING_ENV = "ENABLE_MONITORING"
+# Phase 4 wave 4d — shadow reconciliation (off by default; see the setting docstring).
+RECONCILIATION_SHADOW_ENV = "RECONCILIATION_SHADOW_ENABLED"
 
 # Phase 5 — Market Data Service + Strategy Engine. Same paper-only Alpaca
 # credentials as Phase 4 (the data subscription is independent of paper vs.
@@ -151,6 +153,18 @@ class Settings:
     )
     # Whether the background monitoring loop starts at app startup.
     enable_monitoring: bool = True
+    # Phase 4 wave 4d (shadow): when on, every monitoring tick ALSO computes the
+    # §7 mass-report reconciliation plan (``app/reconciliation.py``) alongside the
+    # legacy per-order poll and emits an observability audit event when it diverges
+    # from managed state (an external venue order, a position drift, an order the
+    # mass report can't confirm) — WITHOUT flipping any truth. Default OFF: the
+    # shadow adds two REST calls per tick (``list_open_orders`` + ``list_positions``)
+    # that the 200/min query throttle (wave 4e, R6) does not yet bound, so it stays
+    # opt-in scaffolding until wave 4e enables it by default together with the
+    # throttle + §7 config defaults. Mirrors the Phase-2 "ship the shadow inert,
+    # enable at the truth flip" discipline — keeps the whole existing corpus and any
+    # real-Alpaca deployment unperturbed by 4d.
+    reconciliation_shadow_enabled: bool = False
 
     # --- Phase 5: market data + strategy loop ----------------------------- #
     # "auto" | "mock" | "alpaca" — see MARKET_DATA_FEED_ENV above.
@@ -306,6 +320,11 @@ def load_settings() -> Settings:
     enable_monitoring = (
         os.environ.get(ENABLE_MONITORING_ENV, "true").strip().lower() not in _FALSEY
     )
+    # Off by default (opt-in shadow scaffolding until wave 4e; see the setting).
+    reconciliation_shadow_enabled = (
+        os.environ.get(RECONCILIATION_SHADOW_ENV, "false").strip().lower()
+        not in _FALSEY
+    )
 
     market_data_feed = os.environ.get(MARKET_DATA_FEED_ENV, "auto").strip().lower()
     if market_data_feed not in {"auto", "mock", "alpaca"}:
@@ -427,6 +446,7 @@ def load_settings() -> Settings:
         stale_submitting_max_redrive_attempts=stale_submitting_max_redrive_attempts,
         timeout_quarantine_max_query_attempts=timeout_quarantine_max_query_attempts,
         enable_monitoring=enable_monitoring,
+        reconciliation_shadow_enabled=reconciliation_shadow_enabled,
         market_data_feed=market_data_feed,
         market_data_stale_minutes=market_data_stale_minutes,
         enable_strategy_engine=enable_strategy_engine,
