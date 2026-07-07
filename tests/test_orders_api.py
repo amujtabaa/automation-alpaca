@@ -185,6 +185,25 @@ async def test_cancel_unknown_order_returns_404():
     assert resp.status_code == 404
 
 
+async def test_cancel_timeout_quarantined_order_returns_409_not_local_cancel():
+    # ADR-002 (wave 3c): a TIMEOUT_QUARANTINE order has no broker_order_id, so the
+    # "never-submitted -> cancel locally" branch would WRONGLY mark a possibly-live
+    # order canceled (an oversell path). The route must refuse it (409); it is
+    # resolved only by targeted reconciliation.
+    app, store, adapter = await _app_store_adapter()
+    order = await _created_order(store, qty=10, limit=2.0)
+    await store.claim_order_for_submission(order.id)  # -> SUBMITTING
+    await store.quarantine_timed_out_order(order.id, reason="ambiguous_submit")
+    assert (await store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+
+    async with _client(app) as client:
+        resp = await client.post(f"/api/orders/{order.id}/cancel")
+    assert resp.status_code == 409
+    # It was NOT locally canceled and the broker was never asked to cancel.
+    assert (await store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    assert adapter.canceled == []
+
+
 async def test_cancel_broker_error_surfaces_as_502_order_unchanged():
     """A genuine broker failure on cancel is not swallowed and not reported as
     success: it surfaces as 502 (upstream broker failed) and the order is left

@@ -33,6 +33,7 @@ ALPACA_SECRET_ENV = "ALPACA_PAPER_API_SECRET"
 POLL_CADENCE_ENV = "ALPACA_POLL_CADENCE_SECONDS"
 UNFILLED_TIMEOUT_ENV = "ALPACA_UNFILLED_TIMEOUT_MINUTES"
 STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS_ENV = "STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS"
+TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS_ENV = "TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS"
 # Which BrokerAdapter the running app uses:
 #   "auto"   -> AlpacaPaperAdapter when both paper keys are present, else mock
 #   "mock"   -> MockBrokerAdapter always (no network; default-safe for dev/CI)
@@ -80,6 +81,10 @@ DEFAULT_UNFILLED_TIMEOUT_MINUTES = 60.0
 # recovery record — a bound so a permanent broker rejection *misclassified* as
 # transient can never livelock (retry every tick, inflating exposure forever).
 DEFAULT_STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS = 10
+# ADR-002: targeted-query attempts a TIMEOUT_QUARANTINE order tolerates before a
+# CONFIRMED-absent order is resolved to REJECTED (§7: a single not-found could be
+# venue lag) / a persistently-inconclusive query is surfaced for manual review.
+DEFAULT_TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS = 3
 DEFAULT_MARKET_DATA_STALE_MINUTES = 5.0
 DEFAULT_STRATEGY_DECISION_CADENCE_SECONDS = 5.0
 DEFAULT_STRATEGY_MOMENTUM_THRESHOLD_PCT = 3.0
@@ -138,6 +143,11 @@ class Settings:
     # SUBMITTING order tolerates before escalation to a needs_review record.
     stale_submitting_max_redrive_attempts: int = (
         DEFAULT_STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS
+    )
+    # ADR-002: targeted-query attempts before a confirmed-absent TIMEOUT_QUARANTINE
+    # order is resolved to REJECTED / a stuck one is surfaced for manual review.
+    timeout_quarantine_max_query_attempts: int = (
+        DEFAULT_TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS
     )
     # Whether the background monitoring loop starts at app startup.
     enable_monitoring: bool = True
@@ -287,6 +297,12 @@ def load_settings() -> Settings:
         DEFAULT_STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS,
         minimum=1,
     )
+    # At least 1 targeted query before resolving a confirmed-absent quarantine.
+    timeout_quarantine_max_query_attempts = _env_int(
+        TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS_ENV,
+        DEFAULT_TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS,
+        minimum=1,
+    )
     enable_monitoring = (
         os.environ.get(ENABLE_MONITORING_ENV, "true").strip().lower() not in _FALSEY
     )
@@ -409,6 +425,7 @@ def load_settings() -> Settings:
         poll_cadence_seconds=poll_cadence,
         unfilled_timeout_minutes=unfilled_timeout,
         stale_submitting_max_redrive_attempts=stale_submitting_max_redrive_attempts,
+        timeout_quarantine_max_query_attempts=timeout_quarantine_max_query_attempts,
         enable_monitoring=enable_monitoring,
         market_data_feed=market_data_feed,
         market_data_stale_minutes=market_data_stale_minutes,

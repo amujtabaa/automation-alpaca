@@ -118,55 +118,68 @@ class TestCharacterizeManualFlatten:
 # Flow 2 — stale SUBMITTING retry vs. ADR-002 (timeout/504 ambiguity)
 # --------------------------------------------------------------------------- #
 class TestCharacterizeStaleSubmittingRetry:
-    """CURRENT: a stale ``SUBMITTING`` order (submit's outcome is unknown — the
-    exact ambiguity ADR-002 is about) is re-driven by calling
-    ``adapter.submit_order`` again with the SAME ``client_order_id``, relying
-    on Alpaca's own duplicate-client-order-id dedup to recover an
-    already-accepted order rather than double-submitting. A transient
-    ``BrokerError`` (which the adapter raises uniformly for network errors,
-    429, AND 5xx/504 — see ``app/broker/alpaca_paper.py``'s ``submit_order``,
-    which does not distinguish "definitely still in flight" from "definitely
-    never reached the venue") just leaves the order ``SUBMITTING`` to retry
-    next tick.
+    """MIGRATED (Spine v2 wave 3c — ADR-002 resolved). The adapter now
+    CLASSIFIES a submit failure (``app/broker/alpaca_paper.py``): a genuinely-safe
+    transient (a pre-flight 429 rate-limit that provably never reached the book)
+    stays a plain ``BrokerError`` and is still re-driven idempotently, but an
+    AMBIGUOUS outcome (timeout / 504 / transport after the request may have
+    reached Alpaca) is an :class:`AmbiguousBrokerError`. An ambiguous outcome is
+    no longer blind-redriven — it moves the order to ``TIMEOUT_QUARANTINE`` and is
+    resolved by a READ-ONLY targeted ``client_order_id`` query
+    (``_resolve_timeout_quarantine``), never a resubmit-and-hope that could
+    double-fire a live order.
 
-    ADR-002 CONFLICT (recorded, not resolved here): ADR-002's own Context
-    section names this exact pattern as insufficient — "stable
-    ``client_order_id`` and redrive logic... is valuable, but blind redrive
-    is too permissive for ambiguous broker outcomes." The target model routes
-    a timeout/504/ambiguous submit to a distinct ``TIMEOUT_QUARANTINE``
-    spawn status and blocks a replacement spawn until a TARGETED
-    reconciliation query (not just a resubmit-and-hope) confirms venue
-    reality. No ``TIMEOUT_QUARANTINE`` status, and no pre-resubmit targeted
-    query, exists in this repo. This test pins the current
-    redrive-until-attempts-exhausted shape so that migrating it is a
-    conscious Phase 3 decision.
+    The first test pins the still-safe residual (a plain transient re-drives — not
+    every failure quarantines); the second pins the migrated ambiguous path.
     """
 
-    async def test_transient_submit_failure_leaves_submitting_for_blind_redrive(
-        self, any_store
-    ):
+    async def test_plain_transient_failure_still_blind_redrives(self, any_store):
+        # A genuinely-safe transient (plain BrokerError, e.g. a pre-flight
+        # 429) is NOT ambiguous — the request never reached the book — so the
+        # idempotent re-drive is preserved. This documents that not every failure
+        # quarantines; only an ambiguous outcome does.
         await any_store.initialize()
         order = await _submitting_order(any_store)
         adapter = MockBrokerAdapter()
-        adapter.fail_next_submit(BrokerError("simulated network timeout"))
+        adapter.fail_next_submit(BrokerError("simulated rate limit"))
 
         await run_monitoring_tick(any_store, adapter, Settings())
-
         fresh = await any_store.get_order(order.id)
-        # No TIMEOUT_QUARANTINE status exists; the order just stays SUBMITTING
-        # (indistinguishable from "claimed, about to submit for the first
-        # time") for an ordinary blind retry next tick.
-        assert fresh.status is OrderStatus.SUBMITTING
+        assert fresh.status is OrderStatus.SUBMITTING  # deferred, not quarantined
         assert fresh.broker_order_id is None
-        assert await any_store.list_submit_recoveries() == []
 
-        # The blind redrive succeeds by re-submitting the SAME client_order_id
-        # (order.id) — no targeted "does this already exist at the venue?"
-        # query happens first.
         await run_monitoring_tick(any_store, adapter, Settings())
         redriven = await any_store.get_order(order.id)
         assert redriven.status is OrderStatus.SUBMITTED
         assert order.id in [o.id for o in adapter.submitted]
+
+    async def test_ambiguous_submit_quarantines_and_resolves_by_targeted_query(
+        self, any_store
+    ):
+        from app.broker.adapter import AmbiguousBrokerError, BrokerOrderUpdate
+
+        await any_store.initialize()
+        order = await _submitting_order(any_store)
+        adapter = MockBrokerAdapter()
+        adapter.fail_next_submit(AmbiguousBrokerError("simulated 504 timeout"))
+
+        # Tick 1: ambiguous outcome -> TIMEOUT_QUARANTINE (NOT blind-redriven).
+        await run_monitoring_tick(any_store, adapter, Settings())
+        fresh = await any_store.get_order(order.id)
+        assert fresh.status is OrderStatus.TIMEOUT_QUARANTINE
+        assert order.id in [o.id for o in await any_store.list_timeout_quarantined_orders()]
+        submits_after_quarantine = len(adapter.submitted)
+
+        # The ambiguous submit in fact reached the venue and is working there.
+        adapter.seed_venue_order(order.id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, []))
+
+        # Tick 2: a READ-ONLY targeted query adopts it — with NO resubmit.
+        await run_monitoring_tick(any_store, adapter, Settings())
+        resolved = await any_store.get_order(order.id)
+        assert resolved.status is OrderStatus.SUBMITTED
+        assert resolved.broker_order_id is not None
+        assert len(adapter.submitted) == submits_after_quarantine  # never resubmitted
+        assert await any_store.list_timeout_quarantined_orders() == []
 
 
 # --------------------------------------------------------------------------- #

@@ -193,10 +193,23 @@ characterize → implement → adversarial-verify → report → commit.
         (latest-lifecycle-event-wins, event-truth). Additive/inert — nothing routes
         to it; full corpus green (1455) + 27 new tests
         (`tests/test_spine_phase3c_timeout_quarantine.py`); coverage 95.42%.
-      - [ ] **Part 2 — wiring.** Monitoring routes `AmbiguousBrokerError` →
-        quarantine (guard BEFORE the generic release); `_resolve_timeout_quarantine`
-        step + config bound; adapter classification split; Flow-2 characterization
-        migration; cockpit bucket; docs (matrix → `event_truth`). Adversarial review.
+      - [x] **Part 2 — wiring** (`<pending-commit>`). Monitoring routes
+        `AmbiguousBrokerError` → `quarantine_timed_out_order` at BOTH submit choke
+        points (`_submit_pending_orders` guard placed BEFORE the generic release;
+        `_redrive_stale_submitting`); new `_resolve_timeout_quarantine` tick step
+        (after redrive, before reconcile) does the read-only targeted query →
+        SUBMITTED (working/filled, reconcile ingests fills via SUBMITTED — INV-9) /
+        CANCELED / REJECTED (bounded confirmed-absent) / manual-review (persistent
+        inconclusive, `needs_review` deferral). Adapter `submit_order` classifies
+        504/5xx/timeout → `AmbiguousBrokerError`, 429 stays transient (C2). Config
+        `timeout_quarantine_max_query_attempts` (default 3). Operator surfacing:
+        `operational_status_for` → `timeout_quarantine`; the manual-cancel route
+        **refuses** a quarantined order (409 — a local cancel of a possibly-live
+        order is an oversell path). Flow-2 characterization migrated
+        (`TestCharacterizeStaleSubmittingRetry`: ambiguous→quarantine+targeted
+        resolve; a plain transient still redrives). Full suite green (1496→ +
+        part-2 tests); coverage 95.3%. Matrix row → `event_truth`. **Adversarial
+        review: pending.**
 - [ ] **Wave 3d — kill/TradingState FSM** (§8): `Active`/`Reducing`/`Halted`
       replacing the binary flags (Flow 5).
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends

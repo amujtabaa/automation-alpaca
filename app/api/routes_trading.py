@@ -413,6 +413,20 @@ async def cancel_order(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"order {order_id} is already {order.status.value}; cannot cancel",
         )
+    if order.status is OrderStatus.TIMEOUT_QUARANTINE:
+        # ADR-002: a quarantined order's submit outcome is UNKNOWN — it MAY be
+        # live at the venue. A local cancel (it has no broker_order_id) would mark
+        # a possibly-live order canceled, the exact oversell/short-flip risk the
+        # quarantine exists to prevent. It is resolved ONLY by the read-only
+        # targeted reconciliation (_resolve_timeout_quarantine), never a manual
+        # cancel.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"order {order_id} is timeout-quarantined (ambiguous submit); it "
+                f"is resolved by targeted reconciliation, not manual cancel"
+            ),
+        )
     if order.status is OrderStatus.CANCEL_PENDING:
         # Cancel already requested — idempotent no-op (don't re-hit the broker).
         return order

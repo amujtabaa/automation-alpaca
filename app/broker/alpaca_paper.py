@@ -28,6 +28,7 @@ from alpaca.trading.enums import TimeInForce
 from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
 from app.broker.adapter import (
+    AmbiguousBrokerError,
     BrokerAdapter,
     BrokerError,
     BrokerFill,
@@ -288,16 +289,31 @@ class AlpacaPaperAdapter(BrokerAdapter):
                     f"Broker definitively rejected order {order.id!r} "
                     f"({order.symbol} {order.quantity} shares, HTTP {code})."
                 ) from exc
-            raise BrokerError(
-                f"Failed to submit order {order.id!r} ({order.symbol} "
-                f"{order.quantity} shares)."
+            # ADR-002 classification (§6):
+            #  * 429 rate-limit — pre-flight reject, the order provably never
+            #    reached the book, so it is a SAFE transient retry (plain
+            #    BrokerError; conflict C2 keeps it transient vs §6's letter).
+            #  * 5xx (incl. 504) or any other unexpected code — the request
+            #    reached Alpaca's servers which then failed; the order MAY have
+            #    been accepted. Ambiguous -> quarantine + targeted reconcile, never
+            #    blind-resubmit.
+            if code == 429:
+                raise BrokerError(
+                    f"Rate-limited submitting order {order.id!r} ({order.symbol} "
+                    f"{order.quantity} shares, HTTP 429)."
+                ) from exc
+            raise AmbiguousBrokerError(
+                f"Ambiguous submit outcome for order {order.id!r} ({order.symbol} "
+                f"{order.quantity} shares, HTTP {code}) — may be live at the venue."
             ) from exc
         except Exception as exc:
-            # Network/timeout/unknown — a transient failure, surfaced (never
-            # silent). Retryable: a re-drive may succeed on the next tick.
-            raise BrokerError(
-                f"Failed to submit order {order.id!r} ({order.symbol} "
-                f"{order.quantity} shares)."
+            # Network/timeout/transport/parse failure AFTER the request may have
+            # left the process (ADR-002): we cannot tell whether it reached the
+            # venue, so the outcome is AMBIGUOUS. Quarantine + targeted reconcile,
+            # never blind-resubmit (a resubmit could double-fire a live order).
+            raise AmbiguousBrokerError(
+                f"Ambiguous submit outcome for order {order.id!r} ({order.symbol} "
+                f"{order.quantity} shares) — transport/timeout, may be live."
             ) from exc
 
     async def get_order_status(

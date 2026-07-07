@@ -501,6 +501,9 @@ OP_SUBMITTING = "submitting"
 OP_SUBMITTED = "submitted"
 OP_PARTIALLY_FILLED = "partially_filled"
 OP_CANCEL_PENDING = "cancel_pending"
+# ADR-002: an ambiguous submit (timeout/504) quarantined the order; a read-only
+# targeted client_order_id query is resolving its true venue state.
+OP_TIMEOUT_QUARANTINE = "timeout_quarantine"
 
 # Broker-submit recovery-ledger states (D-017 records surfaced in the operator
 # view), sharing the same label space.
@@ -533,6 +536,7 @@ _STATUS_OP_LABELS = {
     OrderStatus.SUBMITTED: OP_SUBMITTED,
     OrderStatus.PARTIALLY_FILLED: OP_PARTIALLY_FILLED,
     OrderStatus.CANCEL_PENDING: OP_CANCEL_PENDING,
+    OrderStatus.TIMEOUT_QUARANTINE: OP_TIMEOUT_QUARANTINE,
 }
 
 # A manual cancel is offerable on any non-terminal order that has not already

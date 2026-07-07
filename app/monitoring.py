@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.broker.adapter import (
+    AmbiguousBrokerError,
     BrokerAdapter,
     BrokerError,
     BrokerOrderUpdate,
@@ -475,6 +476,11 @@ async def run_monitoring_tick(
     await _redrive_stale_submitting(
         store, adapter, settings, market_data=market_data
     )
+    # ADR-002: resolve any TIMEOUT_QUARANTINE order with a read-only targeted query
+    # BEFORE the open-order reconcile — a resolution to SUBMITTED hands the order a
+    # broker_order_id that the reconcile poll then tracks (and ingests fills for)
+    # this same tick.
+    await _resolve_timeout_quarantine(store, adapter, settings)
     await _reconcile_open_orders(
         store, adapter, settings, market_data=market_data
     )
@@ -590,6 +596,34 @@ async def _submit_pending_orders(
                 exc,
             )
             await _escalate_stale_submitting(store, claimed, exc)
+            continue
+        except AmbiguousBrokerError as exc:
+            # ADR-002: the submit's outcome is UNKNOWN (timeout/504/transport after
+            # the request may have reached Alpaca). Do NOT release to CREATED — the
+            # next tick would blind-resubmit an order that may already be live (a
+            # double-fire / oversell path) — and do NOT escalate it as a definitive
+            # failure. Quarantine it (SUBMITTING -> TIMEOUT_QUARANTINE, event-truth)
+            # and let _resolve_timeout_quarantine reconcile it with a READ-ONLY
+            # targeted client_order_id query. The order stays non-terminal (it may
+            # be live, so it keeps counting toward exposure) and is structurally
+            # unreachable by any resubmit sweep while quarantined.
+            _log.warning(
+                "submit of order %s (%s) is AMBIGUOUS (may be live at the venue); "
+                "quarantining for targeted reconciliation, not resubmitting: %s",
+                claimed.id,
+                claimed.symbol,
+                exc,
+            )
+            try:
+                await store.quarantine_timed_out_order(
+                    claimed.id, reason="ambiguous_submit"
+                )
+            except _TRANSITION_ERRORS as q_exc:
+                # The order left SUBMITTING some other way (e.g. a manual cancel
+                # during the broker call) — nothing to quarantine. Safe to skip.
+                _log.warning(
+                    "could not quarantine ambiguous submit %s: %s", claimed.id, q_exc
+                )
             continue
         except Exception as exc:  # noqa: BLE001 - release the claim, retry next tick
             # Releasing SUBMITTING -> CREATED lets the next tick re-run the full
@@ -757,6 +791,26 @@ async def _redrive_stale_submitting(
             )
             await _escalate_stale_submitting(store, order, exc)
             continue
+        except AmbiguousBrokerError as exc:
+            # ADR-002: an ambiguous re-drive outcome is QUARANTINED, not re-deferred
+            # — blind-re-driving an order that may now be live at the venue is the
+            # oversell/double-fire path the ADR exists to close. Same targeted
+            # read-only reconciliation as a first-submit ambiguity resolves it.
+            _log.warning(
+                "re-drive of stale SUBMITTING order %s is AMBIGUOUS; quarantining "
+                "for targeted reconciliation, not re-driving: %s",
+                order.id,
+                exc,
+            )
+            try:
+                await store.quarantine_timed_out_order(
+                    order.id, reason="ambiguous_submit"
+                )
+            except _TRANSITION_ERRORS as q_exc:
+                _log.warning(
+                    "could not quarantine ambiguous re-drive %s: %s", order.id, q_exc
+                )
+            continue
         except BrokerError as exc:
             # Transient — leave it SUBMITTING; the next tick re-drives idempotently.
             # Record the attempt durably so the backstop above can bound it.
@@ -785,6 +839,140 @@ async def _redrive_stale_submitting(
             # we re-drove it — the broker order is live but locally terminal. Same
             # durable path as the primary submit's unpersisted case.
             await _handle_unpersisted_submit(store, adapter, order, broker_order_id, exc)
+
+
+# Venue-terminal statuses a targeted query can resolve a quarantine to directly
+# (no fills to ingest). A working/filled venue order is instead adopted as
+# SUBMITTED so the reconcile poll ingests fills (FILLED via SUBMITTED — INV-9).
+_QUARANTINE_TERMINAL_RESOLUTIONS = frozenset(
+    {OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
+
+
+async def _resolve_timeout_quarantine(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    settings: Optional[Settings] = None,
+) -> None:
+    """Resolve ``TIMEOUT_QUARANTINE`` orders (ADR-002) with a READ-ONLY targeted
+    query — the whole point is to NEVER resubmit an order that may already be live.
+
+    For each quarantined order, ask the venue "do you have the order I submitted
+    under this ``client_order_id``?" (``get_order_by_client_order_id``, keyed on the
+    stable ``order.id``):
+
+    * venue HAS it, working/filled → adopt as ``SUBMITTED`` with its broker id; the
+      open-order reconcile (same tick) then tracks it and ingests fills;
+    * venue HAS it, already canceled/rejected → resolve to that terminal state;
+    * venue CONFIRMS absent (``None``) → the submit never landed, but only after a
+      bounded number of confirmations (§7: a single not-found could be venue lag)
+      resolve to ``REJECTED``; else defer and retry next tick;
+    * query FAILS (``BrokerError``) → inconclusive; leave quarantined and retry —
+      NEVER read a failed query as "absent" (§7 safeguard: that is an oversell
+      path). Past the same bound, surface it for **manual review** (a durable
+      deferral marked ``needs_review``) rather than guessing; the order stays
+      quarantined and operator-visible (full stuck-reconciliation alerting is
+      Phase 4).
+
+    The order-status flip is event-authoritative (a ``SUBMITTED``/``REJECTED``/
+    ``CANCELED`` ``ExecutionEvent`` co-written by ``resolve_timeout_quarantine``).
+    Best-effort per order — a store/broker error on one never stops the loop.
+    """
+
+    max_attempts = (settings or Settings()).timeout_quarantine_max_query_attempts
+    for order in await store.list_timeout_quarantined_orders():
+        try:
+            update = await adapter.get_order_by_client_order_id(order.id)
+        except BrokerError as exc:
+            # Inconclusive — never "absent". Retry, and surface for manual review
+            # once we've failed to get a clean answer too many times.
+            attempts = await _order_event_count(
+                store, order.id, EventType.ORDER_TIMEOUT_QUARANTINE_DEFERRED.value
+            ) + 1
+            await _record_timeout_query_deferral(
+                store, order, attempts, "query_error",
+                needs_review=attempts >= max_attempts, error=str(exc),
+            )
+            continue
+
+        if update is not None:
+            if update.status in _QUARANTINE_TERMINAL_RESOLUTIONS:
+                target, broker_id = update.status, None
+            else:
+                # Working OR filled → adopt SUBMITTED; reconcile ingests fills (INV-9).
+                target, broker_id = OrderStatus.SUBMITTED, update.broker_order_id
+            try:
+                await store.resolve_timeout_quarantine(
+                    order.id, target, broker_order_id=broker_id, reason="targeted_query"
+                )
+                _log.info(
+                    "resolved quarantined order %s via targeted query: venue %s -> %s",
+                    order.id, update.status.value, target.value,
+                )
+            except _TRANSITION_ERRORS as exc:
+                # e.g. resolving to SUBMITTED with no broker id (AIR-001), or the
+                # order left TIMEOUT_QUARANTINE another way — leave it, retry.
+                _log.warning(
+                    "could not resolve quarantined order %s to %s: %s",
+                    order.id, target.value, exc,
+                )
+            continue
+
+        # Confirmed absent at the venue. Bound it before REJECTED (§7).
+        attempts = await _order_event_count(
+            store, order.id, EventType.ORDER_TIMEOUT_QUARANTINE_DEFERRED.value
+        ) + 1
+        if attempts >= max_attempts:
+            _log.info(
+                "quarantined order %s confirmed absent after %s queries; "
+                "resolving to REJECTED (never landed).", order.id, attempts,
+            )
+            try:
+                await store.resolve_timeout_quarantine(
+                    order.id, OrderStatus.REJECTED, reason="not_found_at_venue"
+                )
+            except _TRANSITION_ERRORS as exc:
+                _log.warning("could not reject absent quarantined %s: %s", order.id, exc)
+        else:
+            await _record_timeout_query_deferral(store, order, attempts, "not_found")
+
+
+async def _record_timeout_query_deferral(
+    store: StateStore,
+    order: Order,
+    attempt: int,
+    reason: str,
+    *,
+    needs_review: bool = False,
+    error: Optional[str] = None,
+) -> None:
+    """Durably record one targeted-query deferral so the bound can count them across
+    ticks and restarts (ADR-002). ``needs_review`` marks a persistently-inconclusive
+    order for operator attention. Best-effort (never crashes the tick)."""
+
+    payload: dict[str, object] = {"attempt": attempt, "reason": reason}
+    if needs_review:
+        payload["needs_review"] = True
+    if error is not None:
+        payload["error"] = error
+    try:
+        await store.append_event(
+            EventType.ORDER_TIMEOUT_QUARANTINE_DEFERRED.value,
+            message=(
+                f"timeout-quarantine resolution deferred for {order.symbol} "
+                f"({reason}, attempt {attempt})"
+                + (" — NEEDS REVIEW" if needs_review else "")
+            ),
+            symbol=order.symbol,
+            candidate_id=order.candidate_id,
+            order_id=order.id,
+            payload=payload,
+            session_id=order.session_id,
+        )
+    except Exception:  # noqa: BLE001 - audit is best-effort on a resolution path
+        _log.exception(
+            "could not record timeout-quarantine deferral for order %s", order.id
+        )
 
 
 async def _escalate_stale_submitting(
