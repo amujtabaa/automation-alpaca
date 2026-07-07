@@ -349,6 +349,11 @@ class ExecutionEventType(str, Enum):
     TRADING_STATE_CHANGED = "trading_state_changed"
     # Overfill / negative-position quarantine fact (ADR-001) — Phase 3.
     QUARANTINED = "quarantined"
+    # Audited operator override that scopes a single reduce-only exit while the
+    # session is Halted (ADR-003 / wave 3e). A grant is scoped to {session, symbol}
+    # and consumed on resolution; the global TradingState stays Halted throughout.
+    EMERGENCY_REDUCE_OVERRIDE = "emergency_reduce_override"
+    EMERGENCY_REDUCE_OVERRIDE_RESOLVED = "emergency_reduce_override_resolved"
 
 
 class EventSource(str, Enum):

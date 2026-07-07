@@ -404,6 +404,42 @@ def trading_state_change_event(
     )
 
 
+def emergency_reduce_override_event(
+    session_id: str,
+    symbol: str,
+    *,
+    actor: str,
+    reason: str,
+    resolved: bool = False,
+) -> ExecutionEvent:
+    """The ``EMERGENCY_REDUCE_OVERRIDE`` (grant) or
+    ``EMERGENCY_REDUCE_OVERRIDE_RESOLVED`` (consume) ``ExecutionEvent`` — the
+    durable truth of an audited operator override that scopes ONE reduce-only exit
+    while the session is ``Halted`` (ADR-003 / wave 3e).
+
+    A LOCAL/ENGINE decision (an operator command, not a broker fact), scoped to
+    ``{session_id, symbol}`` and carrying the ``actor`` + ``reason`` for audit. The
+    global ``TradingState`` stays ``Halted`` throughout; the grant is what the
+    claim gate consults (via ``active_emergency_reduce_overrides``) to let the one
+    exit through, and ``resolved=True`` ends the scoped grant on resolution so a
+    later flatten under ``Halted`` is denied again. Not deduped — each grant/resolve
+    is a distinct control action; the projector folds latest-wins per symbol."""
+
+    return ExecutionEvent(
+        event_type=(
+            ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE_RESOLVED
+            if resolved
+            else ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE
+        ),
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        ts_event=utcnow(),
+        session_id=session_id,
+        symbol=symbol,
+        payload={"actor": actor, "reason": reason, "resolved": resolved},
+    )
+
+
 # ---- create_order_for_candidate ------------------------------------------- #
 
 # CreateOrderPlan.outcome values:

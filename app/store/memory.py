@@ -48,6 +48,7 @@ from app.models import (
     utcnow,
 )
 from app.events.projectors import (
+    active_emergency_reduce_overrides,
     current_trading_state,
     project_symbol_position,
     quarantined_symbols,
@@ -93,6 +94,7 @@ from app.store.core import (
     plan_resolve_timeout_quarantine,
     plan_transition_order,
     trading_state_change_event,
+    emergency_reduce_override_event,
     require_bool,
     require_recovery_status,
     require_status_enum,
@@ -1692,6 +1694,48 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             session = self._ensure_current_session_unlocked()
             return current_trading_state(self._execution_events, session.id)
+
+    def _write_emergency_reduce_override_unlocked(
+        self, symbol: str, *, actor: str, reason: str, resolved: bool
+    ) -> None:
+        session = self._ensure_current_session_unlocked()
+        event = emergency_reduce_override_event(
+            session.id, symbol, actor=actor, reason=reason, resolved=resolved,
+        )
+        self._append_execution_event_unlocked(event)
+        self._append_event_unlocked(
+            "emergency_reduce_override_resolved" if resolved
+            else "emergency_reduce_override_granted",
+            message=(
+                f"emergency reduce override {'resolved' if resolved else 'granted'} "
+                f"for {symbol} by {actor}"
+            ),
+            symbol=symbol, session_id=session.id,
+            payload={"actor": actor, "reason": reason},
+        )
+
+    async def grant_emergency_reduce_override(
+        self, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        async with self._lock:
+            with self._atomic():
+                self._write_emergency_reduce_override_unlocked(
+                    normalize_symbol(symbol), actor=actor, reason=reason, resolved=False
+                )
+
+    async def resolve_emergency_reduce_override(
+        self, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        async with self._lock:
+            with self._atomic():
+                self._write_emergency_reduce_override_unlocked(
+                    normalize_symbol(symbol), actor=actor, reason=reason, resolved=True
+                )
+
+    async def list_emergency_reduce_overrides(self) -> set[str]:
+        async with self._lock:
+            session = self._ensure_current_session_unlocked()
+            return active_emergency_reduce_overrides(self._execution_events, session.id)
 
     async def close_session(
         self, session_id: Optional[str] = None

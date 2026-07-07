@@ -249,6 +249,34 @@ def current_trading_state(
     return state
 
 
+def active_emergency_reduce_overrides(
+    events: Iterable[ExecutionEvent], session_id: str
+) -> set[str]:
+    """Symbols in ``session_id`` with an ACTIVE emergency-reduce override grant
+    (ADR-003 / wave 3e): those whose LATEST override event is an
+    ``EMERGENCY_REDUCE_OVERRIDE`` grant, not yet consumed by a matching
+    ``EMERGENCY_REDUCE_OVERRIDE_RESOLVED``.
+
+    The grant is the audited operator authority that lets a SINGLE reduce-only
+    exit through the claim gate while the session is ``Halted`` — the global
+    ``TradingState`` stays ``Halted`` throughout (ADR-003 "scoped Reducing" is
+    NOT a global state flip; §8 kill dominates). Scoped to ``{session, symbol}``;
+    consumed on resolution so a later flatten under ``Halted`` is denied again.
+    Derived purely from the append-only log (ascending ``sequence``, latest wins),
+    so it is replay-stable and event-truth. Session-scoped.
+    """
+
+    active: dict[str, bool] = {}
+    for event in events:
+        if event.session_id != session_id or event.symbol is None:
+            continue
+        if event.event_type is ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE:
+            active[event.symbol] = True
+        elif event.event_type is ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE_RESOLVED:
+            active[event.symbol] = False
+    return {symbol for symbol, is_active in active.items() if is_active}
+
+
 class PositionProjector:
     """Fold ``FILL`` events into per-symbol positions (pure)."""
 

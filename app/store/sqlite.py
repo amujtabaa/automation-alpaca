@@ -63,6 +63,7 @@ from app.models import (
     utcnow,
 )
 from app.events.projectors import (
+    active_emergency_reduce_overrides,
     current_trading_state,
     project_symbol_position,
     quarantined_symbols,
@@ -108,6 +109,7 @@ from app.store.core import (
     plan_resolve_timeout_quarantine,
     plan_transition_order,
     trading_state_change_event,
+    emergency_reduce_override_event,
     require_bool,
     require_recovery_status,
     require_status_enum,
@@ -2719,6 +2721,55 @@ class SqliteStateStore(StateStore):
                 "'trading_state_changed' ORDER BY sequence"
             )
             return current_trading_state(
+                [self._execution_event(r) for r in rows], session.id
+            )
+
+    def _write_emergency_reduce_override_locked(
+        self, symbol: str, *, actor: str, reason: str, resolved: bool
+    ) -> None:
+        session = self._ensure_current_session_locked()
+        event = emergency_reduce_override_event(
+            session.id, symbol, actor=actor, reason=reason, resolved=resolved,
+        )
+        with self._tx() as cur:
+            self._insert_execution_event(cur, event)
+            self._insert_event(
+                cur,
+                "emergency_reduce_override_resolved" if resolved
+                else "emergency_reduce_override_granted",
+                message=(
+                    f"emergency reduce override {'resolved' if resolved else 'granted'} "
+                    f"for {symbol} by {actor}"
+                ),
+                symbol=symbol, session_id=session.id,
+                payload={"actor": actor, "reason": reason},
+            )
+
+    async def grant_emergency_reduce_override(
+        self, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        async with self._lock:
+            self._write_emergency_reduce_override_locked(
+                normalize_symbol(symbol), actor=actor, reason=reason, resolved=False
+            )
+
+    async def resolve_emergency_reduce_override(
+        self, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        async with self._lock:
+            self._write_emergency_reduce_override_locked(
+                normalize_symbol(symbol), actor=actor, reason=reason, resolved=True
+            )
+
+    async def list_emergency_reduce_overrides(self) -> set[str]:
+        async with self._lock:
+            session = self._ensure_current_session_locked()
+            rows = self._read_all(
+                "SELECT * FROM execution_events WHERE event_type IN "
+                "('emergency_reduce_override','emergency_reduce_override_resolved') "
+                "ORDER BY sequence"
+            )
+            return active_emergency_reduce_overrides(
                 [self._execution_event(r) for r in rows], session.id
             )
 

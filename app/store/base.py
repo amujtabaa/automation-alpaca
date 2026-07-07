@@ -1017,6 +1017,32 @@ class StateStore(ABC):
         equals this."""
 
     @abstractmethod
+    async def grant_emergency_reduce_override(
+        self, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        """Record an audited emergency-reduce override grant for ``symbol`` in the
+        active session (ADR-003 / wave 3e). First-writes an
+        ``EMERGENCY_REDUCE_OVERRIDE`` ``ExecutionEvent`` (durable truth) + an audit
+        event, atomically. The grant is what lets ONE reduce-only exit through the
+        claim gate while ``Halted``; the global ``TradingState`` is untouched. This
+        is a raw primitive — the ``Halted``-scoping and INV-3 ambiguity checks live
+        in the facade/command path (wave 3e slice 4)."""
+
+    @abstractmethod
+    async def resolve_emergency_reduce_override(
+        self, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        """Consume an active emergency-reduce override for ``symbol`` (ADR-003 /
+        wave 3e): first-writes an ``EMERGENCY_REDUCE_OVERRIDE_RESOLVED``
+        ``ExecutionEvent`` + audit event atomically, ending the scoped grant so a
+        later flatten under ``Halted`` is denied again."""
+
+    @abstractmethod
+    async def list_emergency_reduce_overrides(self) -> set[str]:
+        """Symbols in the active session with an ACTIVE emergency-reduce override
+        (derived from the event log via ``active_emergency_reduce_overrides``)."""
+
+    @abstractmethod
     async def close_session(
         self, session_id: Optional[str] = None
     ) -> SessionRecord:
