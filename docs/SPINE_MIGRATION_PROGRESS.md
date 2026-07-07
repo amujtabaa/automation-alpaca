@@ -37,7 +37,7 @@ for every phase so far (proceeding was explicitly user-authorized).
 | 0 | Docs, inventory, migration seams | ✅ done (`7a25649`) — report: `docs/SPINE_PHASE0_INVENTORY.md`, `docs/SPINE_PHASE0_MIGRATION_PLAN.md` |
 | 1 | Facade shell + characterization | ✅ done (`d146e0e`, `afe8543`) — report: `docs/SPINE_PHASE1_FACADE_REPORT.md` |
 | 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`60d38a0`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
-| 3 | Safety-critical event-first migration | 🚧 in progress — waves 3a-shadow / 3a-truth / 3b / 3c done (all reviewed); waves 3d/3e remain |
+| 3 | Safety-critical event-first migration | ✅ safety flows done (waves 3a/3b/3c/3d/3e, all reviewed+remediated). Deferred to later phases: flatten facade migration (→ Phase 5/API-routes), reconciliation-driven Reducing (→ Phase 4), spawn/order projectors (→ Phase 4) |
 | 4 | Reconciliation engine | ⬜ not started |
 | 5 | Import-boundary enforcement | ⬜ not started |
 | 6 | Legacy table demotion/removal | ⬜ not started |
@@ -284,7 +284,7 @@ characterize → implement → adversarial-verify → report → commit.
         1539 passed, coverage 95.29%, ruff clean, harness green. **Wave 3d CLOSED.**
       `MANUAL_FLATTEN`-under-Halted denial + emergency-reduce is wave 3e (D3);
       stream→Reducing trigger is Phase 4 (D4).
-- [~] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1).
+- [x] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1) — CLOSED.
       **Plan: `docs/SPINE_WAVE3E_PLAN.md`** (conflicts E1–E8). **E1 RULED: Option B**
       (adopt ADR-003) — user-confirmed. The kill switch is now a true all-stop.
       - [x] **Slice 1 — inert override scaffolding** (`be5c110`). `EMERGENCY_REDUCE_OVERRIDE`/
@@ -306,18 +306,37 @@ characterize → implement → adversarial-verify → report → commit.
         Matrix rows → `event_truth`. Halted-deny mutation-verified. 1577 passed, cov 95.30%.
       - [ ] **Slice 2 — facade migration of flatten (ADR-005 / E6): DEFERRED** to the
         "API routes" matrix row (orthogonal ADR-005 hygiene; the ADR-003 *behavior* is done).
-      - [ ] **Adversarial review of wave 3e** — pending (running).
+      - [x] **Adversarial review + remediation** (`3255d3f`). Review workflow `w7evfd8vh`
+        (4 lenses + synthesis, firsthand repro + mutation): verdict FIX_REQUIRED — 1 MEDIUM
+        + 5 lower, all remediated. **MEDIUM (override leak):** the grant was consumed ONLY on
+        the create branch, so an authorize whose flatten dedup'd to EXISTING/FLAT leaked an
+        active override that later bypassed the Halted-deny (reduce-only, no oversell). Fixed:
+        consume on EVERY authorized outcome (moved before the outcome branches, both stores) +
+        `authorize` refuses if an override is already active (no grant-stacking); consuming
+        before create also makes a crash lose the override rather than leak it (fixes the
+        sqlite crash-window LOW). **LOW accepted+pinned:** a CREATED-in-Active flatten submits
+        under a later Halt (Halted-deny is at issuance; a local CREATED order is an already-
+        commanded exit, outranking autonomous protection — D-P2); fixed the inaccurate
+        docstring + added a characterization test. **LOW documented:** the INV-3
+        authorize→flatten window is unreachable under Halted (no new submits) → Phase-4
+        reconciliation. **Test gaps:** added override-consumed-on-existing (no leak),
+        double-authorize-refused, INV-3 symbol-specificity; rewrote the tautological authority
+        test to exercise the production builder. Leak fix mutation-verified. 1585 passed,
+        cov 95.29%, ruff clean (changed files), harness green. **Wave 3e CLOSED.**
 
-**Resume hint:** Wave 3d is CLOSED (reviewed clean, remediated, `12a8c4a`). Next is
-**Wave 3e (manual flatten + emergency reduce, ADR-003)** — but slices 3–4 are BLOCKED
-on the E1 human decision (manual-flatten-under-Halted: adopt ADR-003 vs keep D-P2 vs
-audited-but-automatic). Wave-3e design + conflicts E1–E8 are captured in this session's
-plan; write them to `docs/SPINE_WAVE3E_PLAN.md` when starting. Slices 1–2 (new
-`EMERGENCY_REDUCE_OVERRIDE` event type + projector + store method, inert; then facade
-migration of the flatten route, behavior-preserving) can proceed without the ruling.
-Phase 3 flips a flow to
-`event_truth` only when the 6 conditions in `docs/MIGRATION_MATRIX.md`
-"Migration rule" hold.
+**Resume hint:** **Phase 3's safety-critical flows are all migrated + reviewed** (waves
+3a/3b/3c/3d/3e). Next is **Phase 4 — Reconciliation engine** (`docs/REARCHITECTURE_ROADMAP.md`
+Phase 4): startup mass-status reconcile, targeted single-order query before any
+not-found→REJECTED, external/unmanaged order surfacing, broker position parity, deterministic
+synthetic fills, and stream-reconnect → `Reducing` + reconcile (the wave-3d/§8 hook Phase 4
+drives WITHOUT touching the booleans). Several wave-3 items were deliberately deferred here:
+the flatten facade migration (ADR-005/E6 → Phase 5 or the API-routes row), spawn/order
+projectors (3c-C5), and continuous quarantine re-verification (3e INV-3 window). Phase 3
+flips a flow to `event_truth` only when the 6 conditions in `docs/MIGRATION_MATRIX.md`
+"Migration rule" hold. Read root `CLAUDE.md` §7 (Nautilus-verified reconciliation defaults in
+`docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §7`) before starting Phase 4; characterize the
+current partial-legacy reconciliation (`app/monitoring.py` redrive/resolve + the wave-3c
+`_resolve_timeout_quarantine`) first.
 
 ---
 
