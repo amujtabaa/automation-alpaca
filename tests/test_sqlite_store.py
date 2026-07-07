@@ -132,6 +132,31 @@ async def test_position_snapshots_survive_restart(tmp_path):
     await reopened.close()
 
 
+async def test_migration_adds_trading_state_to_old_sessions_table(tmp_path):
+    # Simulate a database created before wave 3d (sessions has no trading_state).
+    path = tmp_path / "old_sessions.db"
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        """CREATE TABLE sessions (
+               id TEXT PRIMARY KEY, session_date TEXT NOT NULL, mode TEXT NOT NULL,
+               session_type TEXT, status TEXT NOT NULL,
+               kill_switch INTEGER NOT NULL DEFAULT 0,
+               buys_paused INTEGER NOT NULL DEFAULT 0,
+               opened_at TEXT NOT NULL, closed_at TEXT,
+               created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"""
+    )
+    conn.commit()
+    conn.close()
+
+    store = SqliteStateStore(path)
+    await store.initialize()  # _migrate must ALTER sessions to add trading_state
+    from app.models import TradingState
+
+    session = await store.get_current_session()
+    assert session.trading_state is TradingState.ACTIVE  # additive default
+    await store.close()
+
+
 async def test_migration_adds_fills_session_id_to_old_db(tmp_path):
     # Simulate a database created before D-007 (fills has no session_id column).
     path = tmp_path / "old.db"

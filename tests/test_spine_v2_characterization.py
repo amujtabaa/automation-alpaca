@@ -31,6 +31,7 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionType,
+    TradingState,
 )
 from app.monitoring import run_monitoring_tick
 from app.store.base import CLAIM_CLAIMED
@@ -311,7 +312,11 @@ class TestCharacterizeKillSwitchModel:
         session = await any_store.get_current_session()
         assert isinstance(session.kill_switch, bool)
         assert isinstance(session.buys_paused, bool)
-        assert not hasattr(session, "trading_state")
+        # Wave 3d added the TradingState read-model field; an un-killed, un-paused
+        # session is ACTIVE. The kill -> HALTED / pause -> REDUCING mapping and the
+        # event-truth flip are pinned in tests/test_spine_phase3d_trading_state.py
+        # once the setters are wired over the FSM.
+        assert session.trading_state is TradingState.ACTIVE
 
         intent = await any_store.create_sell_intent(
             symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,

@@ -257,6 +257,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status       TEXT NOT NULL,
     kill_switch  INTEGER NOT NULL DEFAULT 0,
     buys_paused  INTEGER NOT NULL DEFAULT 0,
+    trading_state TEXT NOT NULL DEFAULT 'active',
     opened_at    TEXT NOT NULL,
     closed_at    TEXT,
     created_at   TEXT NOT NULL,
@@ -491,6 +492,18 @@ class SqliteStateStore(StateStore):
                 """
             )
 
+        session_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        if "trading_state" not in session_cols:  # added in Phase 3 wave 3d (§8)
+            # Additive: pre-wave-3d sessions default 'active'; a session whose
+            # booleans say otherwise is corrected + gets a TRADING_STATE_CHANGED
+            # event by the init backfill (_backfill_trading_state_events_locked).
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN trading_state TEXT NOT NULL "
+                "DEFAULT 'active'"
+            )
+
         event_cols = {
             r["name"] for r in conn.execute("PRAGMA table_info(events)").fetchall()
         }
@@ -695,6 +708,7 @@ class SqliteStateStore(StateStore):
             status=row["status"],
             kill_switch=bool(row["kill_switch"]),
             buys_paused=bool(row["buys_paused"]),
+            trading_state=row["trading_state"],
             opened_at=row["opened_at"],
             closed_at=row["closed_at"],
             created_at=row["created_at"],
@@ -807,8 +821,9 @@ class SqliteStateStore(StateStore):
         cur.execute(
             """INSERT INTO sessions
                (id, session_date, mode, session_type, status, kill_switch,
-                buys_paused, opened_at, closed_at, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                buys_paused, trading_state, opened_at, closed_at, created_at,
+                updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 s.id,
                 s.session_date,
@@ -817,6 +832,7 @@ class SqliteStateStore(StateStore):
                 s.status.value,
                 _bit(s.kill_switch),
                 _bit(s.buys_paused),
+                s.trading_state.value,
                 _dt(s.opened_at),
                 _dt(s.closed_at),
                 _dt(s.created_at),

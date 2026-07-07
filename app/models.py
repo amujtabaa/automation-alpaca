@@ -88,6 +88,40 @@ class SessionStatus(str, Enum):
     CLOSED = "closed"
 
 
+class TradingState(str, Enum):
+    """Session control state (Spine v2 §8 / wave 3d) — the 3-state FSM the two
+    legacy booleans (``kill_switch`` / ``buys_paused``) map onto:
+
+    * ``ACTIVE``  — normal (¬kill ∧ ¬pause).
+    * ``REDUCING`` — deny exposure-INCREASING (BUY) intent; ALLOW reducing sells +
+      cancels (¬kill ∧ pause). The default under stream degradation / pending
+      reconciliation once those triggers exist (Phase 4).
+    * ``HALTED`` — no new submissions; cancels still allowed (kill; pause
+      irrelevant to enforcement, but still remembered for independent release).
+
+    ``kill`` dominates ``pause`` (checked first everywhere today), so the four
+    boolean combinations collapse to this total order with no loss of enforced
+    behavior. The FSM's durable truth is the ``TRADING_STATE_CHANGED``
+    ``ExecutionEvent`` (which carries the full ``(kill, pause)`` control tuple);
+    ``SessionRecord.trading_state`` is a co-written read-model. See
+    ``docs/SPINE_WAVE3D_PLAN.md``.
+    """
+
+    ACTIVE = "active"
+    REDUCING = "reducing"
+    HALTED = "halted"
+
+    @classmethod
+    def of(cls, *, kill_switch: bool, buys_paused: bool) -> "TradingState":
+        """Derive the FSM state from the two control booleans (kill dominates)."""
+
+        if kill_switch:
+            return cls.HALTED
+        if buys_paused:
+            return cls.REDUCING
+        return cls.ACTIVE
+
+
 class CandidateStatus(str, Enum):
     """Proposal/review lifecycle only — stops at ``ordered`` (terminal).
 
@@ -710,6 +744,11 @@ class SessionRecord(_Entity):
 
     kill_switch: bool = False
     buys_paused: bool = False
+    # Spine v2 §8 / wave 3d: the 3-state control FSM the two booleans above map
+    # onto (kill -> HALTED, else pause -> REDUCING, else ACTIVE). A co-written
+    # read-model — its durable truth is the TRADING_STATE_CHANGED ExecutionEvent.
+    # Kept consistent with the booleans by the store setters (TradingState.of).
+    trading_state: TradingState = TradingState.ACTIVE
 
     opened_at: datetime = Field(default_factory=utcnow)
     closed_at: Optional[datetime] = None
