@@ -121,7 +121,7 @@ characterize → implement → adversarial-verify → report → commit.
         records an oversell yet (`append_fill` still rejects local negatives), so
         the whole position/fill corpus stays green.
         `tests/test_spine_phase3b_overfill_quarantine.py`.
-      - [x] **Part 2 — record path + block** (`<pending-commit>`). `append_fill`
+      - [x] **Part 2 — record path + block** (`fa6e72a`). `append_fill`
         now RECORDS a *broker-authoritative* overfill (a SELL crossing long-only
         through flat) — `plan_append_fill` step 5+6 appends the fill row + a
         `fill_overfill_quarantined` audit event + the broker-authoritative `FILL`
