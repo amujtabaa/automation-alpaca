@@ -66,12 +66,13 @@ event_truth`) and drives the wave-3d/§8 `Reducing` hook.
   `current_trading_state` folds latest-wins → two uncoordinated drivers race. **Recommend**: effective
   state = `max(boolean_derived, reconcile_driven)` with `Halted > Reducing > Active`, folded from BOTH
   event kinds. Changes the FSM driver model — rule before coding 4f/4g.
-- **R3 — What is "trading not enabled" on reconcile failure? [BLOCKING 4f].** §7: fail → trading not
-  enabled. §8: Reducing is "the default under pending reconciliation" (allows reducing sells + cancels).
-  "Not enabled" could mean `Halted` (blocks even protective exits on a held position — more dangerous).
-  **Recommend**: pending reconcile → `Reducing`; reconcile **failure** → stay `Reducing` + loud operator
-  alert; never auto-`Active` until parity; never auto-`Halted` (protective exits must stay live).
-  Defines the kill switch's meaning at boot — needs a ruling.
+- **R3 — What is "trading not enabled" on reconcile failure? [RULED: `Reducing` — user-confirmed].**
+  §7: fail → trading not enabled. §8: Reducing is "the default under pending reconciliation" (allows
+  reducing sells + cancels). **Ruling (user):** pending reconcile → `Reducing`; reconcile **failure** →
+  stay `Reducing` + loud operator alert; never auto-`Active` until parity; never auto-`Halted` (so a
+  held position stays exitable at boot). R1 (sim-seam + defer real trade-update stream) and R2
+  (`max(boolean, reconcile)` composition, `Halted > Reducing > Active`) are adopted as recorded
+  spec-derived engineering decisions.
 - **R4 — §7 rows vs the repo's OrderStatus set. [record, non-blocking].** Alpaca `accepted`→our
   `SUBMITTED`; no distinct `ACCEPTED`; cancel-requested is `CANCEL_PENDING` (has a broker id, polled),
   not §7 in-flight `PENDING_CANCEL`; no primary FSM (3c-C1/3d-D6). Map: `SUBMITTED`+broker-id + absent
