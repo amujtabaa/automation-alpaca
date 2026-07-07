@@ -490,12 +490,13 @@ async def run_monitoring_tick(
         store, adapter, settings, market_data=market_data
     )
     await _recover_unpersisted_submits(store, adapter)
-    # Phase 4 wave 4d (shadow): observe what the §7 mass-report reconcile WOULD do
-    # this tick, WITHOUT flipping any truth. Runs LAST so it sees the fully-
-    # reconciled post-tick state — a divergence it surfaces is then one the
-    # per-order poll structurally *couldn't* capture (an external venue order,
-    # position drift). Inert + failure-isolated; off by default (opt-in until 4e).
-    await _shadow_reconcile(store, adapter, settings)
+    # Phase 4 wave 4e: the ACTING §7 mass-report reconcile. Runs LAST so it sees the
+    # fully-reconciled post-tick state — a divergence it acts on is then one the
+    # per-order poll structurally *couldn't* capture (an external venue order).
+    # Slice 4e-2 surfaces external/unmanaged orders (non-mutating); later slices add
+    # not-found resolution (4e-3) + synthetic fills/parity/throttle (4e-4).
+    # Failure-isolated; gated by ``reconciliation_enabled`` (default on).
+    await _run_reconciliation(store, adapter, settings)
 
 
 async def _submit_pending_orders(
@@ -1580,38 +1581,34 @@ def _order_age(now: datetime, created_at: datetime):
     return now - created_at
 
 
-async def _shadow_reconcile(
+async def _run_reconciliation(
     store: StateStore, adapter: BrokerAdapter, settings: Settings
 ) -> Optional[ReconciliationPlan]:
-    """Wave 4d SHADOW: compute the §7 mass-report reconciliation plan and surface
-    divergence as an observability event — WITHOUT changing any state.
+    """Wave 4e: the ACTING §7 mass-report reconcile. Computes the reconciliation
+    plan from the venue's mass reports and acts on it — starting (slice 4e-2) with
+    the lowest-risk, NON-MUTATING action: surfacing external/unmanaged venue orders.
 
-    Load-bearing properties (this is a shadow; it must not touch the live path):
+    Load-bearing properties:
 
-    * **Never flips truth.** It only *reads* the mass reports + emits an audit
-      event. No order transition, no fill append, no position mutation happens
-      here — those are the wave-4e truth flip. The returned plan is for tests /
-      observability; the tick ignores it.
-    * **Failure-isolated.** A failed mass report RAISES (§7: a query failure is
-      never read as "flat"/"no open orders"). Caught here, logged, and this cycle
-      is skipped — the legacy per-order reconcile that already ran is untouched.
-    * **Opt-in.** Off by default (``reconciliation_shadow_enabled``): the two extra
-      REST calls are unbounded by the 200/min throttle until wave 4e, so the whole
-      existing corpus and any real deployment stay unperturbed by 4d.
+    * **Only the intended action mutates.** Slice 4e-2 appends an audit record per
+      external order; it performs NO order transition, fill append, or position
+      change. The oversell-critical not-found resolution (4e-3) and synthetic fills
+      + position parity + the query throttle (4e-4) act on the other plan categories
+      in later slices — until then those categories are computed but not acted on.
+    * **Failure-isolated.** A failed mass report RAISES (§7: a query failure is never
+      read as "flat"/"no open orders"). Caught here, logged, and the whole reconcile
+      is skipped this cycle — the legacy per-order reconcile that already ran is
+      untouched, and no partial/failed report is ever treated as authoritative.
+    * **Gated + naturally inert.** ``reconciliation_enabled`` (default on) guards it;
+      external orders come from the broker report, so an empty report (the corpus
+      default) yields none — the acting reconcile runs but surfaces nothing.
 
-    Runs after the legacy poll, so a surfaced divergence is one the per-order poll
-    structurally could not capture: a venue order matching no local order
-    (external/unmanaged) or a broker-vs-local position drift.
+    Returns the plan for observability/tests; the tick ignores the return value.
     """
 
-    if not settings.reconciliation_shadow_enabled:
+    if not settings.reconciliation_enabled:
         return None
 
-    # The ENTIRE shadow is non-fatal to the tick — it is observability only and must
-    # never disturb the live path. Any failure (a mass report that RAISES per §7 —
-    # never read as flat — a store hiccup, anything) skips the shadow this cycle;
-    # the legacy per-order reconcile that already ran is untouched. Runs LAST, so a
-    # skip here loses nothing but this cycle's observation.
     try:
         broker_orders = await adapter.list_open_orders()
         broker_positions = await adapter.list_positions()
@@ -1625,113 +1622,55 @@ async def _shadow_reconcile(
             broker_orders=broker_orders,
             broker_positions=broker_positions,
             now=utcnow(),
+            recent_threshold_ms=settings.reconcile_recent_threshold_ms,
+            avg_price_tolerance=settings.reconcile_avg_price_tolerance,
         )
-        await _emit_shadow_divergence(store, plan)
+        await _surface_external_orders(store, plan)
         return plan
-    except Exception as exc:  # noqa: BLE001 - shadow is inert; a failure never flips truth
-        _log.warning("shadow reconcile skipped this cycle (non-fatal): %s", exc)
+    except Exception as exc:  # noqa: BLE001 - reconcile is non-fatal; a failure never flips truth
+        _log.warning("reconciliation skipped this cycle (non-fatal): %s", exc)
         return None
 
 
-def _shadow_fingerprint(plan: ReconciliationPlan) -> Optional[str]:
-    """A stable identity for the plan's *divergences*. ``skipped_recent`` is an
-    order still settling within the recent-order window — not a divergence, so it
-    is excluded. Returns ``None`` when there is nothing to surface (the mass-report
-    plan agrees with managed state)."""
-
-    parts: list[str] = []
-    for r in plan.resolutions:
-        parts.append(f"res:{r.order_id}:{r.new_status.value}")
-    for f in plan.inferred_fills:
-        parts.append(f"inf:{f.order_id}:{f.source_fill_id}")
-    for q in plan.needs_targeted_query:
-        parts.append(f"ntq:{q}")
-    for x in plan.external_orders:
-        parts.append(f"ext:{x.broker_order_id}")
-    for m in plan.position_mismatches:
-        parts.append(f"pos:{m.symbol}:{m.kind}")
-    if not parts:
-        return None
-    return "|".join(sorted(parts))
-
-
-async def _emit_shadow_divergence(
+async def _surface_external_orders(
     store: StateStore, plan: ReconciliationPlan
 ) -> None:
-    """Emit one ``reconcile_shadow_divergence`` audit event when the plan diverges
-    from managed state — deduped by a content fingerprint so a persistent,
-    unchanged divergence logs once (not once per tick). No state is mutated."""
+    """Surface each external/unmanaged venue order as a durable, deduped
+    ``reconcile_external_order`` audit record (§7: surfaced, NEVER silently
+    absorbed into managed state or folded into position). Deduped by
+    ``broker_order_id`` — one record per external order, ever (survives restart via
+    the persisted event log). Non-mutating: only an audit record is written."""
 
-    fingerprint = _shadow_fingerprint(plan)
-    if fingerprint is None:
-        return  # plan agrees with managed state — nothing to surface
-
-    # Emit only when the divergence picture CHANGED since the last shadow event.
-    # (Both stores append events in order, so the last match is the most recent.)
-    last_fingerprint: Optional[str] = None
-    for e in await store.list_events(
-        event_type=EventType.RECONCILE_SHADOW_DIVERGENCE.value
-    ):
-        last_fingerprint = (e.payload or {}).get("fingerprint")
-    if last_fingerprint == fingerprint:
+    if not plan.external_orders:
         return
 
-    await store.append_event(
-        EventType.RECONCILE_SHADOW_DIVERGENCE.value,
-        message=(
-            "shadow reconcile diverged from managed state: "
-            f"{len(plan.resolutions)} resolution(s), "
-            f"{len(plan.inferred_fills)} inferred fill(s), "
-            f"{len(plan.needs_targeted_query)} needs-query, "
-            f"{len(plan.external_orders)} external order(s), "
-            f"{len(plan.position_mismatches)} position mismatch(es)"
-        ),
-        payload={
-            "fingerprint": fingerprint,
-            "resolutions": [
-                {
-                    "order_id": r.order_id,
-                    "new_status": r.new_status.value,
-                    "reason": r.reason,
-                }
-                for r in plan.resolutions
-            ],
-            "inferred_fills": [
-                {
-                    "order_id": f.order_id,
-                    "symbol": f.symbol,
-                    "side": f.side.value,
-                    "quantity": f.quantity,
-                    "price": f.price,
-                    "source_fill_id": f.source_fill_id,
-                }
-                for f in plan.inferred_fills
-            ],
-            "needs_targeted_query": list(plan.needs_targeted_query),
-            "external_orders": [
-                {
-                    "broker_order_id": x.broker_order_id,
-                    "client_order_id": x.client_order_id,
-                    "symbol": x.symbol,
-                    "side": x.side.value,
-                    "status": x.status.value,
-                    "filled_quantity": x.filled_quantity,
-                }
-                for x in plan.external_orders
-            ],
-            "position_mismatches": [
-                {
-                    "symbol": m.symbol,
-                    "kind": m.kind,
-                    "local_quantity": m.local_quantity,
-                    "broker_quantity": m.broker_quantity,
-                    "local_avg": m.local_avg,
-                    "broker_avg": m.broker_avg,
-                }
-                for m in plan.position_mismatches
-            ],
-        },
-    )
+    seen = {
+        (e.payload or {}).get("broker_order_id")
+        for e in await store.list_events(
+            event_type=EventType.RECONCILE_EXTERNAL_ORDER.value
+        )
+    }
+    for x in plan.external_orders:
+        if x.broker_order_id in seen:
+            continue
+        await store.append_event(
+            EventType.RECONCILE_EXTERNAL_ORDER.value,
+            message=(
+                f"external/unmanaged venue order {x.broker_order_id} "
+                f"({x.symbol} {x.side.value} {x.status.value}, "
+                f"filled={x.filled_quantity}) — surfaced for review, not absorbed"
+            ),
+            symbol=x.symbol,
+            payload={
+                "broker_order_id": x.broker_order_id,
+                "client_order_id": x.client_order_id,
+                "symbol": x.symbol,
+                "side": x.side.value,
+                "status": x.status.value,
+                "filled_quantity": x.filled_quantity,
+            },
+        )
+        seen.add(x.broker_order_id)
 
 
 async def _orders_with_event(store: StateStore, event_type: str) -> set[str]:

@@ -405,6 +405,20 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     **Reviewed clean** (cheap Haiku, per the goal's token-efficiency rule): refill math sound, the
     monotonic-clock guard can't over-credit/rewind, denied consumes take zero tokens, config fail-fast on
     retries/budget < 1 is the safe choice (0 retries = oversell path; 0 budget = silent disable). No defects.
+  - [x] **Slice 4e-2 — acting reconcile: external/unmanaged order surfacing.** `_run_reconciliation`
+    (gated by `reconciliation_enabled`, default True) SUPERSEDES the 4d shadow: computes the plan each tick
+    and takes its first, **non-mutating** action — surfacing external venue orders (no local match) as
+    durable, deduped-by-`broker_order_id` `reconcile_external_order` audit records (§7 "never absorbed").
+    Retired the 4d shadow (flag `reconciliation_shadow_enabled`, `_shadow_reconcile`/`_emit_shadow_divergence`/
+    `_shadow_fingerprint`, `RECONCILE_SHADOW_DIVERGENCE`). **Naturally inert** against the corpus: external
+    orders come from the broker report, so an empty report (the default mock) yields none — the reconcile
+    runs on every tick but surfaces nothing. Failure-isolated (a raised mass report skips the cycle, never
+    read as flat; the legacy poll is untouched). Never flips truth (audit record only — no order transition/
+    fill/position change). **Scope refinement:** position parity → 4e-4 (needs the position-report fidelity;
+    an empty mock report would false-positive on every local position); E5 open-order fidelity → 4e-3 (where
+    a not-found absence bites). `tests/test_spine_phase4_reconcile_acting.py` (16, replacing the shadow tests):
+    empty-reports-surface-nothing, disabled-makes-no-calls, external-surfaced-without-absorbing, dedup-by-id +
+    new-order-relogs, doesn't-change-legacy-fill-outcome, both report failures skip-not-crash, returns-plan.
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).

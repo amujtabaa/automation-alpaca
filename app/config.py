@@ -40,8 +40,6 @@ TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMPTS_ENV = "TIMEOUT_QUARANTINE_MAX_QUERY_ATTEMP
 #   "alpaca" -> AlpacaPaperAdapter always (requires paper keys)
 BROKER_ENV = "BROKER_ADAPTER"
 ENABLE_MONITORING_ENV = "ENABLE_MONITORING"
-# Phase 4 wave 4d — shadow reconciliation (off by default; see the setting docstring).
-RECONCILIATION_SHADOW_ENV = "RECONCILIATION_SHADOW_ENABLED"
 
 # Phase 5 — Market Data Service + Strategy Engine. Same paper-only Alpaca
 # credentials as Phase 4 (the data subscription is independent of paper vs.
@@ -171,22 +169,14 @@ class Settings:
     )
     # Whether the background monitoring loop starts at app startup.
     enable_monitoring: bool = True
-    # Phase 4 wave 4d (shadow): when on, every monitoring tick ALSO computes the
-    # §7 mass-report reconciliation plan (``app/reconciliation.py``) alongside the
-    # legacy per-order poll and emits an observability audit event when it diverges
-    # from managed state (an external venue order, a position drift, an order the
-    # mass report can't confirm) — WITHOUT flipping any truth. Default OFF: the
-    # shadow adds two REST calls per tick (``list_open_orders`` + ``list_positions``)
-    # that the 200/min query throttle (wave 4e, R6) does not yet bound, so it stays
-    # opt-in scaffolding until wave 4e enables it by default together with the
-    # throttle + §7 config defaults. Mirrors the Phase-2 "ship the shadow inert,
-    # enable at the truth flip" discipline — keeps the whole existing corpus and any
-    # real-Alpaca deployment unperturbed by 4d.
-    reconciliation_shadow_enabled: bool = False
-    # Phase 4 wave 4e — runtime mass-report reconciliation (§7). Default ON, but
-    # additive/inert until slice 4e-2 wires the acting path (targeted-query-before-
-    # not-found, external-order + position-parity surfacing). Slice 4e-1 lands only
-    # the config + the deterministic per-minute query budget (`ReconcileQueryBudget`).
+    # Phase 4 wave 4e — the ACTING runtime mass-report reconciliation (§7). When on
+    # (default), every monitoring tick computes the §7 reconciliation plan
+    # (``app/reconciliation.py``) from ``list_open_orders``/``list_positions``
+    # alongside the legacy per-order poll and acts on it. **Slice 4e-2** surfaces
+    # external/unmanaged venue orders (non-mutating audit records); later slices add
+    # the oversell-critical not-found resolution (4e-3), synthetic fills + position
+    # parity + the query throttle (4e-4). Naturally inert against the existing corpus:
+    # external orders come from the broker report, so an empty report yields none.
     reconciliation_enabled: bool = True
     reconcile_recent_threshold_ms: int = DEFAULT_RECONCILE_RECENT_THRESHOLD_MS
     reconcile_avg_price_tolerance: float = DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE
@@ -350,12 +340,7 @@ def load_settings() -> Settings:
     enable_monitoring = (
         os.environ.get(ENABLE_MONITORING_ENV, "true").strip().lower() not in _FALSEY
     )
-    # Off by default (opt-in shadow scaffolding until wave 4e; see the setting).
-    reconciliation_shadow_enabled = (
-        os.environ.get(RECONCILIATION_SHADOW_ENV, "false").strip().lower()
-        not in _FALSEY
-    )
-    # Phase 4 wave 4e — runtime reconciliation config + §7 defaults.
+    # Phase 4 wave 4e — the acting runtime reconciliation config + §7 defaults.
     reconciliation_enabled = (
         os.environ.get(RECONCILIATION_ENABLED_ENV, "true").strip().lower()
         not in _FALSEY
@@ -506,7 +491,6 @@ def load_settings() -> Settings:
         stale_submitting_max_redrive_attempts=stale_submitting_max_redrive_attempts,
         timeout_quarantine_max_query_attempts=timeout_quarantine_max_query_attempts,
         enable_monitoring=enable_monitoring,
-        reconciliation_shadow_enabled=reconciliation_shadow_enabled,
         reconciliation_enabled=reconciliation_enabled,
         reconcile_recent_threshold_ms=reconcile_recent_threshold_ms,
         reconcile_avg_price_tolerance=reconcile_avg_price_tolerance,

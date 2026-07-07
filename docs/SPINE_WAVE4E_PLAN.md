@@ -118,21 +118,30 @@ characterize → additive → truth. Migrates `docs/MIGRATION_MATRIX.md` **"Reco
   `reconcile_avg_price_tolerance`, `reconcile_open_check_missing_retries`, `reconcile_query_budget_per_min`,
   (record `reconciliation_startup_delay_secs` for 4f). New pure `ReconcileQueryBudget` (injected clock,
   per-minute bucket) with unit + property tests. Nothing wired. Corpus green.
-- **Slice 4e-2 — Adapter mass-report fidelity (E5) + acting reconcile skeleton behind the flag.** Make
-  mock/sim `list_open_orders` default to the adapter's known-live orders (so the corpus is inert), add the
-  4a-style tests. Add `_apply_reconciliation` that computes the plan and, for now, ONLY surfaces external
-  orders + parity mismatches as durable `needs_review` audit records (deduped) — the LEAST-risk actions
-  first (no order-state change yet). Wire it into the tick under `reconciliation_enabled`. Migrate the
-  wave-4d shadow tests (shadow-divergence event → the acting records). Matrix stays partial-legacy.
-- **Slice 4e-3 — Not-found → targeted-query-before-terminal (the oversell-critical flip).** Generalize the
-  wave-3c targeted-query resolution to non-quarantined open orders absent from the mass report (E2/E3),
-  reusing `get_order_by_client_order_id` + the deferral counters + `open_check_missing_retries`. Adopt-as-
-  SUBMITTED when the targeted query still reports fills (INV-9); REJECTED/CANCELED only on confirmed-absent
-  + retries-exhausted. Property-test the no-premature-reject invariant over interleavings.
-- **Slice 4e-4 — Synthetic fills wiring (INV-5/R8) + query throttle wiring (E6/E7).** Wire
+- **Slice 4e-2 — Acting reconcile: external/unmanaged order surfacing (done).** `_run_reconciliation`
+  (gated by `reconciliation_enabled`, default True) supersedes the 4d shadow: it computes the plan each
+  tick and takes its first, lowest-risk, **non-mutating** action — surfacing external/unmanaged venue
+  orders as durable, deduped-by-`broker_order_id` `reconcile_external_order` audit records (§7 "never
+  absorbed"). Naturally inert against the corpus: external orders come from the broker report, so an empty
+  report (the corpus default mock) yields none — no adapter-fidelity fix needed for this slice.
+  Failure-isolated; the shadow flag/event/fingerprint are retired. **Scope refinement vs the original
+  sketch:** position-parity surfacing moved to 4e-4 (it needs the broker *position*-report fidelity, which
+  an empty mock report doesn't give — surfacing it now would false-positive on every local position); the
+  E5 open-order fidelity fix moves to 4e-3 (where a not-found *absence* actually bites). Matrix stays
+  partial-legacy.
+- **Slice 4e-3 — Adapter open-order fidelity (E5) + not-found → targeted-query-before-terminal (the
+  oversell-critical flip).** First the E5 fix: mock/sim `list_open_orders` defaults to the adapter's
+  known-live orders (so a locally-open order isn't spuriously *absent* → no false not-found). Then
+  generalize the wave-3c targeted-query resolution to non-quarantined open orders absent from the mass
+  report (E2/E3), reusing `get_order_by_client_order_id` + the deferral counters +
+  `open_check_missing_retries`. Adopt-as-SUBMITTED when the targeted query still reports fills (INV-9);
+  REJECTED/CANCELED only on confirmed-absent + retries-exhausted. Property-test no-premature-reject.
+- **Slice 4e-4 — Synthetic fills (INV-5/R8) + position parity (E9) + query throttle (E6/E7).** Wire
   `plan.inferred_fills` → `append_fill(SYNTHETIC)` (guard: only when a priced execution covers the delta —
-  never a $0 fill; the real adapter path stays needs_targeted_query). Wire the token bucket around the mass
-  + targeted + position REST; exhaustion/failure → skip-never-flat. Migrate the pinning tests.
+  never a $0 fill; the real adapter path stays needs_targeted_query). Surface `plan.position_mismatches`
+  as deduped `needs_review` records (never overwrite; needs the broker position-report available/authoritative
+  — skip-never-flat when it isn't). Wire the token bucket around the mass + targeted + position REST;
+  exhaustion/failure → skip-never-flat. Migrate the pinning tests.
 - **Slice 4e-5 — Matrix flip + gate + adversarial review.** Flip the "Reconciliation" row to `event_truth`
   once the 6 migration-rule conditions hold. Full gate (suite/coverage/parity/harness/ruff) + the **heavier
   Phase-4 adversarial review** (Opus workflow, concentrated on E2/E3 oversell + E1 double-actor + E5
