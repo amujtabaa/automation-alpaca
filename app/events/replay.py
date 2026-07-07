@@ -51,7 +51,10 @@ def _describe_projection_diff(
                 f"position for {symbol!r} differs: "
                 f"{label_a}={pa!r} {label_b}={pb!r}"
             )
-    return ""
+    # Unreachable from compare_projections (it only calls this when a != b, and
+    # an unequal projection must differ on up_to_sequence or some position);
+    # a defensive fallback for any direct caller passing equal projections.
+    return ""  # pragma: no cover
 
 
 def compare_projections(

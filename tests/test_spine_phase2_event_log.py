@@ -217,6 +217,18 @@ def test_projector_non_fill_events_advance_sequence_but_not_book():
     assert projection.up_to_sequence == 2  # but the boundary advanced past it
 
 
+def test_projector_up_to_sequence_tracks_max_not_last():
+    """The boundary tracker records the *highest* sequence seen, not the last
+    event's — so a defensively out-of-order event cannot make ``up_to_sequence``
+    regress (which would corrupt a subsequent snapshot/resume boundary)."""
+    events = [
+        _fill_event("AAPL", OrderSide.BUY, 10, 1.0, "hi").model_copy(update={"sequence": 5}),
+        _fill_event("AAPL", OrderSide.BUY, 10, 1.0, "lo").model_copy(update={"sequence": 3}),
+    ]
+    projection = PositionProjector.project(events)
+    assert projection.up_to_sequence == 5  # max, not the last event's 3
+
+
 @pytest.mark.parametrize("missing_field", ["quantity", "price", "side", "symbol"])
 def test_projector_rejects_malformed_fill_event(missing_field):
     kwargs = dict(
@@ -256,15 +268,18 @@ def test_resume_does_not_mutate_the_snapshot():
 
 def test_compare_projections_detects_divergence():
     """Negative control: the comparator must actually FAIL on a real mismatch,
-    otherwise the parity checks above are vacuous."""
+    otherwise the parity checks above are vacuous. Tamper MSFT (the *second*
+    symbol in sorted order) so the comparator must scan past an equal symbol
+    (AAPL) before reporting — proving it checks the whole book, not just the
+    first entry."""
     a = PositionProjector.project(_script())
     tampered = PositionProjection(
-        positions={**a.positions, "AAPL": Position(symbol="AAPL", quantity=999)},
+        positions={**a.positions, "MSFT": Position(symbol="MSFT", quantity=999)},
         up_to_sequence=a.up_to_sequence,
     )
     result = compare_projections("a", a, "tampered", tampered)
     assert result.ok is False
-    assert "AAPL" in result.detail
+    assert "MSFT" in result.detail
 
 
 def test_compare_projections_detects_sequence_divergence():
