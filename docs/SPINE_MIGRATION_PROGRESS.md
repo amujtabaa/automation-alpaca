@@ -324,6 +324,23 @@ characterize → implement → adversarial-verify → report → commit.
         test to exercise the production builder. Leak fix mutation-verified. 1585 passed,
         cov 95.29%, ruff clean (changed files), harness green. **Wave 3e CLOSED.**
 
+## Current position: Phase 4 — Reconciliation engine (§7)
+
+**Plan: `docs/SPINE_PHASE4_PLAN.md`** (waves 4a–4h; conflicts R1–R8). **Blocking decision
+gaps R1/R2/R3 gate the FSM/startup waves 4f/4g** (R1 no real trade-update stream; R2
+independent reconcile-driven `Reducing` + a `max(boolean, reconcile)` FSM composition rule;
+R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
+- [x] **Wave 4a — broker adapter reconciliation reports** (`159ddbf`, additive/inert).
+  `BrokerOrderReport`/`BrokerPositionReport` + `list_open_orders()`/`list_positions()` on the
+  `BrokerAdapter` ABC; Mock (+ seed/fail controls + counters), Sim (inherited), real
+  AlpacaPaperAdapter (env-gated, wraps `get_orders(status=OPEN)`/`get_all_positions()`). §7
+  safeguard pinned: a FAILED report RAISES, never read as "no open orders"/"flat". 1596 passed.
+- [ ] **Wave 4b — pure `app/reconciliation.py` engine** (deterministic, §7 table [R4], recent-order
+  protection, position tolerance, synthetic-fill ids [R8]) + property tests. Not wired.
+- [ ] **Wave 4c** — store synthetic-fill append (RECONCILIATION/SYNTHETIC) + `external_orders`
+  projector + dual-store parity + replay. **4d** shadow. **4e** runtime truth flip. **4f/4g**
+  startup gate + reconnect→Reducing (gated on R1/R2/R3). **4h** external-order surfacing + review.
+
 **Resume hint:** **Phase 3's safety-critical flows are all migrated + reviewed** (waves
 3a/3b/3c/3d/3e). Next is **Phase 4 — Reconciliation engine** (`docs/REARCHITECTURE_ROADMAP.md`
 Phase 4): startup mass-status reconcile, targeted single-order query before any
