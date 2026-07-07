@@ -344,12 +344,20 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
 - **R3 RULED (user): reconcile-failure → `Reducing`** (never auto-Halted; a held position stays
   exitable). R1 (sim-seam + defer stream) + R2 (`max(boolean, reconcile)` composition) adopted as
   recorded spec-derived decisions. **All Phase-4 decision gaps resolved.**
-- [ ] **Wave 4c** — store synthetic-fill append (RECONCILIATION/SYNTHETIC) + `external_orders`
-  projector + dual-store parity + replay. **4d** shadow. **4e** runtime truth flip (+§7 config defaults,
-  query throttle, position-query-failure→skip). **4f** startup mass reconcile + "not enabled until
-  reconcile" gate → `Reducing` (R2/R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order
-  surfacing route/DTO + docs + **the Phase-4 adversarial review** (the truth-flip waves 4e/4f are where
-  it concentrates).
+- [x] **Wave 4c — synthetic-fill append + inferred-fill identity fix** (`7e27863`, additive).
+  Found + fixed a wave-4b double-count design flaw: the `recon:`-prefixed synthetic id would NOT
+  collide with the real `{broker_order_id}:{cumulative}` id, so a synthetic fill + the later real
+  observation of the same execution would double-count — `InferredFill` now carries the report
+  execution's OWN `source_fill_id` (same identity a real poll carries) so they dedup (INV-5/R8).
+  `append_fill`/`plan_append_fill`/`execution_event_for_fill` gain `source`/`authority` overrides so a
+  reconciliation-inferred fill is marked `RECONCILIATION`/`SYNTHETIC` (provenance only; defaults preserve
+  behavior). No-double-count property tested both stores (synthetic↔real, both orders). External-order
+  projector moved to wave 4h (where the route consumes it).
+- [ ] **4d** shadow the runtime reconcile (compute the plan each tick, emit shadow events, don't flip
+  truth). **4e** runtime truth flip (+§7 config defaults, query throttle, position-query-failure→skip).
+  **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
+  FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
+  adversarial review** (concentrates on the 4e/4f truth-flips).
 
 **Resume hint:** **Phase 3's safety-critical flows are all migrated + reviewed** (waves
 3a/3b/3c/3d/3e). Next is **Phase 4 — Reconciliation engine** (`docs/REARCHITECTURE_ROADMAP.md`
