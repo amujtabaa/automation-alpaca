@@ -353,6 +353,17 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
   reconciliation-inferred fill is marked `RECONCILIATION`/`SYNTHETIC` (provenance only; defaults preserve
   behavior). No-double-count property tested both stores (synthetic↔real, both orders). External-order
   projector moved to wave 4h (where the route consumes it).
+- [x] **Phase-4-foundation review (waves 4a/4b/4c)** — per the goal directive, ran the review protocol
+  with **cheap models (two Haiku `Explore` agents)** since the foundation is additive/inert (low risk).
+  **Correctness/safety agent:** "No correctness defects found" — verified all 7 §7 safeguards in code
+  (absence→needs_targeted_query never reject; divergence→PositionMismatch never overwrite; no fabricated
+  $0 fill; only CANCELED/REJECTED bare-flip; broker_order_id→client_order_id match; recent-order via
+  injected `now`; pure/deterministic), the synthetic-fill identity (INV-5/R8 no-double-count), and the
+  provenance-override defaults (behavior-preserving). **Alignment agent:** "✅ ALIGNED" with §7, §2
+  module-5 (pure functions), §12 (determinism), §5 INV-1/5/9, and R8 — confirmed the R8 synthetic-fill
+  identity fix is correct ("better than proposed"). Only **1 LOW advisory** (Alpaca error-message
+  type-specificity in the adapter) — deferred to wave 4e monitoring/config. No remediation needed;
+  foundation is clean. 1620 passed.
 - [ ] **4d** shadow the runtime reconcile (compute the plan each tick, emit shadow events, don't flip
   truth). **4e** runtime truth flip (+§7 config defaults, query throttle, position-query-failure→skip).
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
