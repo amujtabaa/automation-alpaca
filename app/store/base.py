@@ -1009,6 +1009,13 @@ class StateStore(ABC):
         """Persist the pause-buys flag on the active session (atomic + audit)."""
 
     @abstractmethod
+    async def current_trading_state(self) -> "TradingState":
+        """The active session's ``TradingState`` (§8 / wave 3d), derived from the
+        event log (latest ``TRADING_STATE_CHANGED``). Event-truth; the
+        ``SessionRecord.trading_state`` column is a co-written read-model that
+        equals this."""
+
+    @abstractmethod
     async def close_session(
         self, session_id: Optional[str] = None
     ) -> SessionRecord:

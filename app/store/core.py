@@ -50,6 +50,7 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    TradingState,
     utcnow,
 )
 from app.position import NegativePositionError, would_go_negative
@@ -356,6 +357,47 @@ def plan_append_fill(
             session_id=session_id,
         )
     return FillPlan(FILL_APPEND, event, fill=fill, execution_event=execution_event_for_fill(fill))
+
+
+# ---- TradingState control (§8 / wave 3d) ---------------------------------- #
+
+
+def trading_state_change_event(
+    session_id: str,
+    *,
+    prior: TradingState,
+    kill_switch: bool,
+    buys_paused: bool,
+    reason: str,
+) -> Optional[ExecutionEvent]:
+    """The ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` for a control change, or
+    ``None`` when the DERIVED state is unchanged (a redundant re-engage) — §8.
+
+    The durable truth of the TradingState fact (wave 3d). The payload carries the
+    full resulting control tuple ``(kill_switch, buys_paused)`` alongside
+    ``from``/``to``, so the projector reconstructs the state AND a from-scratch
+    replay can rebuild the boolean read-model columns (Phase-6 demotion path) and
+    independent-release is preserved. A LOCAL/ENGINE control decision, not a broker
+    fact. Not deduped — every real transition is a distinct control action; the
+    ``current_trading_state`` projector folds latest-wins."""
+
+    new_state = TradingState.of(kill_switch=kill_switch, buys_paused=buys_paused)
+    if new_state is prior:
+        return None
+    return ExecutionEvent(
+        event_type=ExecutionEventType.TRADING_STATE_CHANGED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        ts_event=utcnow(),
+        session_id=session_id,
+        payload={
+            "from": prior.value,
+            "to": new_state.value,
+            "kill_switch": kill_switch,
+            "buys_paused": buys_paused,
+            "reason": reason,
+        },
+    )
 
 
 # ---- create_order_for_candidate ------------------------------------------- #

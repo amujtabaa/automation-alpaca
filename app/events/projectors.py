@@ -217,6 +217,32 @@ def timeout_quarantined_order_ids(events: Iterable[ExecutionEvent]) -> set[str]:
     }
 
 
+def current_trading_state(
+    events: Iterable[ExecutionEvent], session_id: str
+) -> "TradingState":
+    """The session's current ``TradingState`` (§8 / wave 3d): the ``to`` of its
+    LATEST ``TRADING_STATE_CHANGED`` ``ExecutionEvent``, default ``ACTIVE`` if none.
+
+    Derived purely from the append-only log (events in ascending ``sequence``
+    order, latest wins), so it is replay-stable and event-truth — the
+    ``SessionRecord.trading_state`` column is a co-written read-model reconstructable
+    from this fold (each event also carries the full ``(kill_switch, buys_paused)``
+    control tuple in its payload, so the boolean read-models are reconstructable
+    too). Session-scoped (unlike the order-scoped quarantine projectors).
+    """
+
+    from app.models import TradingState  # local import: avoids a models<->events cycle
+
+    state = TradingState.ACTIVE
+    for event in events:
+        if (
+            event.event_type is ExecutionEventType.TRADING_STATE_CHANGED
+            and event.session_id == session_id
+        ):
+            state = TradingState(event.payload["to"])
+    return state
+
+
 class PositionProjector:
     """Fold ``FILL`` events into per-symbol positions (pure)."""
 

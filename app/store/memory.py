@@ -43,10 +43,12 @@ from app.models import (
     SessionStatus,
     SubmitRecoveryRecord,
     TradingMode,
+    TradingState,
     WatchlistSymbol,
     utcnow,
 )
 from app.events.projectors import (
+    current_trading_state,
     project_symbol_position,
     quarantined_symbols,
     timeout_quarantined_order_ids,
@@ -90,6 +92,7 @@ from app.store.core import (
     plan_quarantine_timed_out_order,
     plan_resolve_timeout_quarantine,
     plan_transition_order,
+    trading_state_change_event,
     require_bool,
     require_recovery_status,
     require_status_enum,
@@ -140,7 +143,32 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             with self._atomic():
                 self._backfill_fill_events_unlocked()
+                self._backfill_trading_state_events_unlocked()
                 self._ensure_current_session_unlocked()
+
+    def _backfill_trading_state_events_unlocked(self) -> None:
+        """Ensure each session's derived ``TradingState`` (§8 / wave 3d) is
+        reflected in the event log + the ``trading_state`` column. A pre-wave-3d
+        session has ``trading_state='active'`` (the migration default) even when
+        ``kill_switch``/``buys_paused`` say otherwise; emit a
+        ``TRADING_STATE_CHANGED`` so ``current_trading_state()`` matches the derived
+        state on restart (event-truth parity). Idempotent: a session already
+        consistent (derived == projected) is a no-op. In-memory rarely hits this
+        (sessions are born ACTIVE); it is the mirror of the SQLite backfill below."""
+
+        for session in self._sessions:
+            derived = TradingState.of(
+                kill_switch=session.kill_switch, buys_paused=session.buys_paused
+            )
+            projected = current_trading_state(self._execution_events, session.id)
+            if projected is not derived:
+                event = trading_state_change_event(
+                    session.id, prior=projected, kill_switch=session.kill_switch,
+                    buys_paused=session.buys_paused, reason="backfill",
+                )
+                if event is not None:
+                    self._append_execution_event_unlocked(event)
+            session.trading_state = derived
 
     def _backfill_fill_events_unlocked(self) -> None:
         """Ensure every fill row has a matching `FILL` event (wave 3a-truth).
@@ -1600,18 +1628,50 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             return [s.model_copy(deep=True) for s in self._sessions]
 
+    def _apply_control_change_unlocked(
+        self,
+        session: SessionRecord,
+        *,
+        kill_switch: bool,
+        buys_paused: bool,
+        audit_event_type: str,
+        audit_message: str,
+        audit_payload: dict[str, Any],
+        reason: str,
+    ) -> None:
+        """Apply a control change (§8 / wave 3d): co-write the derived
+        ``trading_state`` + the legacy boolean(s), the legacy audit event
+        (UNCHANGED, for continuity), and — only on a real state transition — the
+        ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` (the durable FSM truth). Called
+        inside ``_atomic()``."""
+
+        exec_event = trading_state_change_event(
+            session.id, prior=session.trading_state, kill_switch=kill_switch,
+            buys_paused=buys_paused, reason=reason,
+        )
+        session.kill_switch = kill_switch
+        session.buys_paused = buys_paused
+        session.trading_state = TradingState.of(
+            kill_switch=kill_switch, buys_paused=buys_paused
+        )
+        session.updated_at = utcnow()
+        self._append_event_unlocked(
+            audit_event_type, message=audit_message, session_id=session.id,
+            payload=audit_payload,
+        )
+        if exec_event is not None:
+            self._append_execution_event_unlocked(exec_event)
+
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
         require_bool(engaged, field="engaged")
         async with self._lock:
             with self._atomic():
                 session = self._ensure_current_session_unlocked()
-                session.kill_switch = engaged
-                session.updated_at = utcnow()
-                self._append_event_unlocked(
-                    "kill_switch_engaged" if engaged else "kill_switch_released",
-                    message=f"kill switch {'engaged' if engaged else 'released'}",
-                    session_id=session.id,
-                    payload={"kill_switch": engaged},
+                self._apply_control_change_unlocked(
+                    session, kill_switch=engaged, buys_paused=session.buys_paused,
+                    audit_event_type="kill_switch_engaged" if engaged else "kill_switch_released",
+                    audit_message=f"kill switch {'engaged' if engaged else 'released'}",
+                    audit_payload={"kill_switch": engaged}, reason="kill_switch",
                 )
             return session.model_copy(deep=True)
 
@@ -1620,15 +1680,18 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             with self._atomic():
                 session = self._ensure_current_session_unlocked()
-                session.buys_paused = paused
-                session.updated_at = utcnow()
-                self._append_event_unlocked(
-                    "buys_paused" if paused else "buys_resumed",
-                    message=f"buys {'paused' if paused else 'resumed'}",
-                    session_id=session.id,
-                    payload={"buys_paused": paused},
+                self._apply_control_change_unlocked(
+                    session, kill_switch=session.kill_switch, buys_paused=paused,
+                    audit_event_type="buys_paused" if paused else "buys_resumed",
+                    audit_message=f"buys {'paused' if paused else 'resumed'}",
+                    audit_payload={"buys_paused": paused}, reason="buys_paused",
                 )
             return session.model_copy(deep=True)
+
+    async def current_trading_state(self) -> TradingState:
+        async with self._lock:
+            session = self._ensure_current_session_unlocked()
+            return current_trading_state(self._execution_events, session.id)
 
     async def close_session(
         self, session_id: Optional[str] = None
