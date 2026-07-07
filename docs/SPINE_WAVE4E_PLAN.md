@@ -136,12 +136,21 @@ characterize → additive → truth. Migrates `docs/MIGRATION_MATRIX.md` **"Reco
   report (E2/E3), reusing `get_order_by_client_order_id` + the deferral counters +
   `open_check_missing_retries`. Adopt-as-SUBMITTED when the targeted query still reports fills (INV-9);
   REJECTED/CANCELED only on confirmed-absent + retries-exhausted. Property-test no-premature-reject.
-- **Slice 4e-4 — Synthetic fills (INV-5/R8) + position parity (E9) + query throttle (E6/E7).** Wire
-  `plan.inferred_fills` → `append_fill(SYNTHETIC)` (guard: only when a priced execution covers the delta —
-  never a $0 fill; the real adapter path stays needs_targeted_query). Surface `plan.position_mismatches`
-  as deduped `needs_review` records (never overwrite; needs the broker position-report available/authoritative
-  — skip-never-flat when it isn't). Wire the token bucket around the mass + targeted + position REST;
-  exhaustion/failure → skip-never-flat. Migrate the pinning tests.
+- **Slice 4e-4 — Synthetic fills (INV-5/R8) + query throttle (E6/E7) (done).** Wired
+  `plan.inferred_fills` → `append_fill(source=RECONCILIATION, authority=SYNTHETIC)` via
+  `_apply_inferred_fills` (the engine only infers from a PRICED execution covering the delta — never a $0
+  fill; `source_fill_id` = the execution's own venue id so a synthetic + the later real observation dedup,
+  INV-5/R8). Naturally inert: a derived mock report carries no fills → no inferred fill. Wired the
+  `ReconcileQueryBudget` (E6): the `monitoring_loop` owns ONE persistent budget (refilling across ticks),
+  threaded through `run_monitoring_tick(reconcile_budget=)` → `_run_reconciliation(budget=)`; the 2
+  mass-report calls are consumed up front and the whole cycle SKIPS if uncovered (never a partial read,
+  never read as flat, E7); each targeted query consumes one token and defers the rest when exhausted.
+  Direct callers pass no budget (unthrottled — tests unaffected).
+  **Position parity (E9) deliberately DEFERRED to a post-4e follow-up:** it is an audit-only surfacing
+  safeguard (a `needs_review` record, never a position overwrite — Rule 7), so it does NOT gate the
+  `event_truth` flip; and faithfully mirroring the venue's avg-price position report in the mock (the
+  fold diverges from a naive fill-sum once sells are involved) is a fidelity rabbit hole better isolated.
+  Tracked in the deferred list. `tests/test_spine_phase4_reconcile_synthetic_throttle.py` (12).
 - **Slice 4e-5 — Matrix flip + gate + adversarial review.** Flip the "Reconciliation" row to `event_truth`
   once the 6 migration-rule conditions hold. Full gate (suite/coverage/parity/harness/ruff) + the **heavier
   Phase-4 adversarial review** (Opus workflow, concentrated on E2/E3 oversell + E1 double-actor + E5
@@ -157,6 +166,10 @@ property/soak over interleavings asserting INV-1…INV-9; hostile reproducers (o
 fill-after-reject, position-drift) with persisted seeds.
 
 ## 5. Deferred (out of 4e)
+**Position parity surfacing (E9)** — an audit-only `needs_review` record on a broker-vs-local position
+divergence (never a position overwrite, Rule 7); deferred because it needs faithful venue position-report
+fidelity (the fold diverges from a naive fill-sum once sells exist) and it does NOT gate the `event_truth`
+flip (it changes no order/position truth). ·
 Startup mass reconcile + not-enabled-until-reconcile gate + `trading_state → REDUCING` (**4f**, R2/R3) ·
 reconnect → Reducing (**4g**, R1) · external-order route/DTO + `list_external_orders` projector/facade
 (**4h**) · autonomous cover/cancel for external orders + parity correction (**R7**) · real trade-update

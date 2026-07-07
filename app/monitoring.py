@@ -51,6 +51,8 @@ from app.models import (
     RECOVERY_OPEN_STATUSES,
     RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
+    EventAuthority,
+    EventSource,
     EventType,
     Order,
     OrderSide,
@@ -72,7 +74,11 @@ from app.protection import (
     floor_breach_reason,
     protective_limit_price,
 )
-from app.reconciliation import ReconciliationPlan, plan_reconciliation
+from app.reconciliation import (
+    ReconciliationPlan,
+    ReconcileQueryBudget,
+    plan_reconciliation,
+)
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -442,11 +448,18 @@ async def monitoring_loop(
         settings.poll_cadence_seconds,
         settings.unfilled_timeout_minutes,
     )
+    # One persistent §7/§9 query budget shared across ALL of this loop's reconcile
+    # REST calls (mass reports + targeted queries), refilling continuously across
+    # ticks (wave 4e-4 / R6). Owned by the loop so it spans ticks; direct
+    # ``run_monitoring_tick`` callers (tests) pass none and are unthrottled.
+    reconcile_budget = ReconcileQueryBudget(settings.reconcile_query_budget_per_min)
     while True:
         try:
             await asyncio.sleep(settings.poll_cadence_seconds)
             await run_monitoring_tick(
-                store, adapter, settings, market_data=market_data
+                store, adapter, settings,
+                market_data=market_data,
+                reconcile_budget=reconcile_budget,
             )
         except asyncio.CancelledError:
             _log.info("monitoring loop cancelled; shutting down")
@@ -461,6 +474,7 @@ async def run_monitoring_tick(
     settings: Settings,
     *,
     market_data: Optional[MarketDataService] = None,
+    reconcile_budget: Optional[ReconcileQueryBudget] = None,
 ) -> None:
     """One monitoring iteration: submit pending orders, then reconcile open ones.
 
@@ -496,7 +510,7 @@ async def run_monitoring_tick(
     # Slice 4e-2 surfaces external/unmanaged orders (non-mutating); later slices add
     # not-found resolution (4e-3) + synthetic fills/parity/throttle (4e-4).
     # Failure-isolated; gated by ``reconciliation_enabled`` (default on).
-    await _run_reconciliation(store, adapter, settings)
+    await _run_reconciliation(store, adapter, settings, budget=reconcile_budget)
 
 
 async def _submit_pending_orders(
@@ -1586,31 +1600,48 @@ def _order_age(now: datetime, created_at: datetime):
 
 
 async def _run_reconciliation(
-    store: StateStore, adapter: BrokerAdapter, settings: Settings
+    store: StateStore,
+    adapter: BrokerAdapter,
+    settings: Settings,
+    *,
+    budget: Optional[ReconcileQueryBudget] = None,
 ) -> Optional[ReconciliationPlan]:
     """Wave 4e: the ACTING §7 mass-report reconcile. Computes the reconciliation
-    plan from the venue's mass reports and acts on it — starting (slice 4e-2) with
-    the lowest-risk, NON-MUTATING action: surfacing external/unmanaged venue orders.
+    plan from the venue's mass reports and acts on it:
+
+    * surface external/unmanaged venue orders (4e-2, non-mutating);
+    * resolve open orders confirmed-absent at the venue → terminal (4e-3, the
+      oversell-critical targeted-query-before-reject path);
+    * apply reconciliation-inferred synthetic fills (4e-4, dedup-safe — INV-5/R8).
+
+    (Position parity surfacing is a deferred post-4e follow-up — an audit-only
+    safeguard that never flips truth.)
 
     Load-bearing properties:
 
-    * **Only the intended action mutates.** Slice 4e-2 appends an audit record per
-      external order; it performs NO order transition, fill append, or position
-      change. The oversell-critical not-found resolution (4e-3) and synthetic fills
-      + position parity + the query throttle (4e-4) act on the other plan categories
-      in later slices — until then those categories are computed but not acted on.
     * **Failure-isolated.** A failed mass report RAISES (§7: a query failure is never
       read as "flat"/"no open orders"). Caught here, logged, and the whole reconcile
       is skipped this cycle — the legacy per-order reconcile that already ran is
       untouched, and no partial/failed report is ever treated as authoritative.
+    * **Query-budgeted (E6/E7).** When a persistent ``budget`` is supplied (the loop
+      owns one), the two mass-report calls are consumed up front; if the budget can't
+      cover them the whole cycle is SKIPPED — never a partial read, and a skipped
+      report is never read as flat. Direct callers pass no budget (unthrottled).
     * **Gated + naturally inert.** ``reconciliation_enabled`` (default on) guards it;
-      external orders come from the broker report, so an empty report (the corpus
-      default) yields none — the acting reconcile runs but surfaces nothing.
+      external orders + inferred fills come from the broker report, so an empty report
+      (the corpus default) yields none — the reconcile runs but changes nothing.
 
     Returns the plan for observability/tests; the tick ignores the return value.
     """
 
     if not settings.reconciliation_enabled:
+        return None
+
+    now = utcnow()
+    # The two mass-report REST calls this cycle. Skip the whole cycle (never a
+    # partial read) if the budget can't cover them — a skipped report is NOT flat.
+    if budget is not None and not budget.try_consume(now, 2):
+        _log.debug("reconciliation skipped this cycle: query budget exhausted")
         return None
 
     try:
@@ -1625,18 +1656,48 @@ async def _run_reconciliation(
             local_positions=local_positions,
             broker_orders=broker_orders,
             broker_positions=broker_positions,
-            now=utcnow(),
+            now=now,
             recent_threshold_ms=settings.reconcile_recent_threshold_ms,
             avg_price_tolerance=settings.reconcile_avg_price_tolerance,
         )
         await _surface_external_orders(store, plan)
         await _resolve_reconcile_not_found(
-            store, adapter, settings, plan.needs_targeted_query
+            store, adapter, settings, plan.needs_targeted_query, budget=budget
         )
+        await _apply_inferred_fills(store, plan)
         return plan
     except Exception as exc:  # noqa: BLE001 - reconcile is non-fatal; a failure never flips truth
         _log.warning("reconciliation skipped this cycle (non-fatal): %s", exc)
         return None
+
+
+async def _apply_inferred_fills(
+    store: StateStore, plan: ReconciliationPlan
+) -> None:
+    """Append each reconciliation-inferred fill as a SYNTHETIC/RECONCILIATION fill
+    (wave 4e-4). The engine only infers a fill from a PRICED execution in the mass
+    report (never a $0 synthetic), and ``source_fill_id`` is the execution's OWN
+    venue id — so a synthetic fill and the eventual real observation of the same
+    execution dedup to ONE (INV-5 / R8), never a double-count. Best-effort: a fill
+    the store rejects is logged, never crashes the tick."""
+
+    for f in plan.inferred_fills:
+        try:
+            await store.append_fill(
+                f.order_id,
+                f.symbol,
+                f.side,
+                f.quantity,
+                f.price,
+                source_fill_id=f.source_fill_id,
+                source=EventSource.RECONCILIATION,
+                authority=EventAuthority.SYNTHETIC,
+            )
+        except _FILL_ERRORS as exc:
+            _log.warning(
+                "reconcile: inferred fill for order %s (%s) rejected: %s",
+                f.order_id, f.symbol, exc,
+            )
 
 
 async def _surface_external_orders(
@@ -1695,6 +1756,8 @@ async def _resolve_reconcile_not_found(
     adapter: BrokerAdapter,
     settings: Settings,
     order_ids: list[str],
+    *,
+    budget: Optional[ReconcileQueryBudget] = None,
 ) -> None:
     """Resolve open orders ABSENT from the venue's mass report — the oversell-critical
     §7 path (wave 4e-3). A mass-report absence is NEVER a reject on its own; each
@@ -1726,6 +1789,12 @@ async def _resolve_reconcile_not_found(
         if order is None or order.status not in _RECONCILE_RESOLVABLE:
             # Left CANCEL_PENDING / already terminal / vanished — nothing to resolve.
             continue
+        # Each targeted query is one REST call against the §7/§9 budget (E6). When
+        # exhausted, STOP querying this cycle and defer the rest to the next tick —
+        # an un-queried order is NEVER resolved (never read as absent, §7).
+        if budget is not None and not budget.try_consume(utcnow()):
+            _log.debug("reconcile: query budget exhausted; deferring remaining not-found")
+            return
         try:
             update = await adapter.get_order_by_client_order_id(order_id)
         except BrokerError as exc:

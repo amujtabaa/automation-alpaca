@@ -438,6 +438,18 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     needs_review, query-errors-don't-erode-not-found-bound, event-authoritative, cancel_pending-untouched,
     managed-order-not-touched (E5), FILLED-refused. **Ran by default without perturbing the corpus** (E5
     fidelity + recent-order protection). 1673 passed, cov 95.08%, ruff clean.
+  - [x] **Slice 4e-4 — synthetic fills (INV-5/R8) + query throttle (E6/E7).** `_apply_inferred_fills`
+    appends each `plan.inferred_fills` as a `source=RECONCILIATION`/`authority=SYNTHETIC` fill; the engine
+    only infers from a PRICED execution covering the delta (never a $0 fill), and `source_fill_id` = the
+    execution's own venue id so a synthetic + the later real observation of the same execution dedup (INV-5)
+    — naturally inert (a derived mock report carries no fills). The `ReconcileQueryBudget` is now WIRED
+    (E6): `monitoring_loop` owns ONE persistent budget (refills across ticks), threaded via
+    `run_monitoring_tick(reconcile_budget=)` → `_run_reconciliation(budget=)`; the 2 mass-report calls are
+    consumed up front and the cycle SKIPS if uncovered (never a partial read / never flat — E7), targeted
+    queries consume one each and defer the rest when exhausted. Direct callers pass no budget (unthrottled).
+    **Position parity (E9) DEFERRED** to a post-4e follow-up (audit-only surfacing, never a truth flip, so
+    it doesn't gate `event_truth`; venue avg-price fidelity is a separate rabbit hole).
+    `tests/test_spine_phase4_reconcile_synthetic_throttle.py` (12).
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).
