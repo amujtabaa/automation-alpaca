@@ -55,6 +55,8 @@ from app.policy import (
 from app.protection import ProtectionConfig, floor_breach_reason, floor_price
 from app.store.base import (
     FLATTEN_FLAT,
+    EmergencyReduceBlockedError,
+    FlattenBlockedError,
     InvalidOrderError,
     OrderTransitionError,
     StateStore,
@@ -112,10 +114,14 @@ async def flatten_position(
     store: StateStore = Depends(get_store),
     adapter: BrokerAdapter = Depends(get_broker_adapter),
 ) -> FlattenResponse:
-    """Manually flatten a position (Phase 7 / D-P2) — an operator-commanded full
-    exit that **always works**: it bypasses the kill switch, buys-paused, and a
-    closed session (§5.2), because a human getting out must never be blocked by a
-    control meant to stop *new* intent.
+    """Manually flatten a position (Phase 7 / D-P2, refined by ADR-003) — an
+    operator-commanded full exit. It bypasses buys-paused and a closed session
+    (§5.2), because a human getting out must never be blocked by a control meant to
+    stop *new* intent. **ADR-003 (wave 3e) refines D-P2 for the kill switch:** an
+    ordinary flatten is now DENIED while ``Halted`` (``409``) — the kill switch is a
+    true all-stop — and the operator exits via the explicit, audited emergency
+    reduce (``POST .../emergency-reduce``). Flatten stays allowed in ``Reducing``
+    (buys-paused).
 
     A THIN caller (X-001): the whole "stand down a non-live autonomous exit,
     then create + approve + dispatch a fresh MANUAL_FLATTEN" decision lives in
@@ -166,7 +172,71 @@ async def flatten_position(
 
     try:
         result = await store.flatten_position(key)
+    except FlattenBlockedError as exc:
+        # ADR-003 (wave 3e): the session is Halted and no emergency-reduce override
+        # is active — an ordinary flatten is denied. The operator must issue an
+        # emergency reduce (POST .../emergency-reduce) to exit while halted.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except InvalidOrderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+
+    if result.outcome == FLATTEN_FLAT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"no open {key} position to flatten",
+        )
+
+    return FlattenResponse(intent=result.intent, order=result.order)
+
+
+@router.post("/positions/{symbol}/emergency-reduce", response_model=FlattenResponse)
+async def emergency_reduce(
+    symbol: str,
+    store: StateStore = Depends(get_store),
+    adapter: BrokerAdapter = Depends(get_broker_adapter),
+) -> FlattenResponse:
+    """Emergency reduce-only exit while the kill switch is engaged (ADR-003 /
+    wave 3e). Under ``Halted`` an ordinary flatten is denied (the kill switch is a
+    true all-stop); this is the explicit, audited operator override to exit risk
+    anyway. It does NOT lift the kill switch: it grants a scoped, single-use
+    ``{session, symbol}`` override so exactly one reduce-only flatten is authorized
+    while the global ``TradingState`` stays ``Halted``.
+
+    Atomic authorization in the store (``authorize_emergency_reduce_override``)
+    enforces the ADR-003 preconditions — the session must be ``Halted``, there must
+    be an open position, and the symbol must have no unresolved
+    ``TIMEOUT_QUARANTINE`` order (INV-3, no exit while a spawn is ambiguous) —
+    raising ``409`` otherwise. On success it stands down open buys (best-effort,
+    §5.3) and runs the normal reduce-only flatten, which sees the grant, creates
+    the exit, and consumes the override in the same lock hold.
+    """
+
+    try:
+        key = normalize_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    try:
+        # Audited grant + ADR-003/INV-3 preconditions, atomic. Actor is a fixed
+        # placeholder until a real auth/actor gate lands (ADR-005; matrix "Auth for
+        # command endpoints").
+        await store.authorize_emergency_reduce_override(key, actor="operator")
+    except EmergencyReduceBlockedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+
+    await cancel_open_buys(store, adapter, key)
+
+    try:
+        result = await store.flatten_position(key)
+    except (FlattenBlockedError, InvalidOrderError) as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc

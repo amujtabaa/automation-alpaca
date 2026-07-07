@@ -854,6 +854,7 @@ def plan_create_order_for_sell_intent(
 FLATTEN_FLAT = "flat"                                   # no open position
 FLATTEN_EXISTING = "existing"                           # return an existing intent as-is
 FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"    # stand down + create fresh
+FLATTEN_DENIED_HALTED = "denied_halted"                  # ADR-003: Halted, no override
 
 
 @dataclass(frozen=True)
@@ -911,6 +912,8 @@ def plan_flatten_position(
     position: Position,
     active_intent: Optional[SellIntent],
     active_order: Optional[Order],
+    trading_state: TradingState = TradingState.ACTIVE,
+    override_active: bool = False,
 ) -> FlattenPlan:
     """Decide the manual-flatten outcome for one symbol.
 
@@ -921,10 +924,24 @@ def plan_flatten_position(
     three are read by the caller under the SAME lock hold this plan is applied
     under — the decision and the eventual write can never straddle a
     concurrent mutation.
+
+    ADR-003 / wave 3e: ``trading_state`` is the current session's §8 FSM and
+    ``override_active`` whether an audited emergency-reduce override is active for
+    this symbol (both read under the same lock). An ordinary manual flatten is
+    **denied in ``Halted``** (``FLATTEN_DENIED_HALTED`` → the store raises
+    :class:`FlattenBlockedError` → 409) unless the override is active; it stays
+    allowed in ``Active``/``Reducing`` (the pre-3e behavior). Gating at *creation*
+    means a ``MANUAL_FLATTEN`` order is never even minted under ``Halted`` without
+    authorization — and since ``flatten_position`` is the only producer of that
+    reason, an existing manual-flatten order (born only when creation was allowed)
+    stays claimable, so the submission gate is untouched.
     """
 
     if position.quantity <= 0:
         return FlattenPlan(FLATTEN_FLAT)
+
+    if trading_state is TradingState.HALTED and not override_active:
+        return FlattenPlan(FLATTEN_DENIED_HALTED)
 
     if active_intent is not None:
         if (
@@ -1138,8 +1155,15 @@ def _claim_hold_reason(
     so a mislabeled or origin-corrupt order can never inherit the bypass; it falls
     through to the strict BUY path instead (fail-safe).
 
-    * ``MANUAL_FLATTEN`` → never held: a human-commanded flatten always exits,
-      even kill-switched / buys-paused / closed / unknown-session (D-P2).
+    * ``MANUAL_FLATTEN`` → never held at *submission*: a manual-flatten order,
+      once it EXISTS, always reaches the broker. ADR-003 (wave 3e) moved the
+      ``Halted``-denial to *creation* (``plan_flatten_position``): a
+      ``MANUAL_FLATTEN`` order is only ever minted when the flatten was authorized
+      (``Active``/``Reducing``, or an emergency-reduce override under ``Halted``),
+      and ``flatten_position`` is its sole producer — so an existing one is, by
+      construction, already authorized and stays claimable here (an in-progress
+      reduce-only exit completes; §8 "in-flight resolves first"). Buys-paused /
+      closed / unknown-session are likewise bypassed at submission (D-P2 spirit).
     * ``PROTECTION_FLOOR`` → bypass ``buys_paused`` / ``session_closed`` /
       ``unknown_session`` (a lingering position must stay exitable after close),
       **but stays blocked by the kill switch** on EITHER the own or the current

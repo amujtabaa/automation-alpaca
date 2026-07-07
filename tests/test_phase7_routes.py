@@ -84,16 +84,31 @@ async def test_flatten_creates_manual_exit():
     assert body["order"]["candidate_id"] is None
 
 
-async def test_flatten_works_under_kill_switch():
+async def test_flatten_denied_under_kill_switch_then_emergency_reduce_works():
+    # ADR-003 (wave 3e): an ordinary flatten is DENIED (409) under the kill switch
+    # (Halted is a true all-stop); the operator exits via the audited emergency
+    # reduce, which does NOT lift the kill switch.
     app, store, _, _ = await _app()
     await _hold(store, "AAPL", 100)
     await store.set_kill_switch(True)
     async with _client(app) as client:
-        r = await client.post("/api/positions/AAPL/flatten")
-    # D-P2: a human flatten is created even under the kill switch (submission is
-    # separately claimable — the claim gate lets MANUAL_FLATTEN through).
-    assert r.status_code == 200
-    assert r.json()["intent"]["reason"] == "manual_flatten"
+        denied = await client.post("/api/positions/AAPL/flatten")
+        assert denied.status_code == 409
+
+        allowed = await client.post("/api/positions/AAPL/emergency-reduce")
+        assert allowed.status_code == 200
+        assert allowed.json()["intent"]["reason"] == "manual_flatten"
+    # The kill switch is still engaged — the override was scoped, not a global lift.
+    assert (await store.get_current_session()).kill_switch is True
+
+
+async def test_emergency_reduce_refused_when_not_halted():
+    # Not Halted -> use an ordinary flatten; the emergency route refuses (409).
+    app, store, _, _ = await _app()
+    await _hold(store, "AAPL", 100)
+    async with _client(app) as client:
+        r = await client.post("/api/positions/AAPL/emergency-reduce")
+    assert r.status_code == 409
 
 
 async def test_flatten_is_idempotent():

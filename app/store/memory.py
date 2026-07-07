@@ -61,7 +61,9 @@ from app.store.base import (
     FLATTEN_EXISTING,
     FLATTEN_FLAT,
     CandidateTransitionError,
+    EmergencyReduceBlockedError,
     FillAppendResult,
+    FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
     RiskLimits,
@@ -80,6 +82,7 @@ from app.store.core import (
     execution_event_for_fill,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
+    FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
@@ -878,12 +881,29 @@ class InMemoryStateStore(StateStore):
                 if active is not None and active.order_id is not None
                 else None
             )
+            # ADR-003 / wave 3e: read the current session's §8 FSM + whether an
+            # emergency-reduce override is active for this symbol, both under this
+            # same lock so the deny decision can't straddle a concurrent control
+            # change or override grant.
+            current_session = self._ensure_current_session_unlocked()
+            trading_state = current_trading_state(
+                self._execution_events, current_session.id
+            )
+            override_active = key in active_emergency_reduce_overrides(
+                self._execution_events, current_session.id
+            )
             plan = plan_flatten_position(
-                position=position, active_intent=active, active_order=active_order
+                position=position, active_intent=active, active_order=active_order,
+                trading_state=trading_state, override_active=override_active,
             )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
                 return FlattenResult(FLATTEN_FLAT)
+            if plan.outcome == FLATTEN_DENIED_HALTED:
+                raise FlattenBlockedError(
+                    f"manual flatten of {key} denied: trading halted "
+                    "(issue an emergency reduce override to exit)"
+                )
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 return FlattenResult(
                     FLATTEN_EXISTING,
@@ -935,6 +955,13 @@ class InMemoryStateStore(StateStore):
                 order = self._dispatch_order_for_sell_intent_unlocked(
                     intent, order_type=OrderType.MARKET, limit_price=None
                 )
+                # ADR-003 / wave 3e: an override that authorized this Halted flatten
+                # is single-use — consume it in the SAME atomic block that created
+                # the exit, so a later flatten under Halted is denied again.
+                if override_active:
+                    self._write_emergency_reduce_override_unlocked(
+                        key, actor="engine", reason="flatten_created", resolved=True,
+                    )
             return FlattenResult(
                 FLATTEN_CREATED,
                 intent=intent.model_copy(deep=True),
@@ -1736,6 +1763,37 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             session = self._ensure_current_session_unlocked()
             return active_emergency_reduce_overrides(self._execution_events, session.id)
+
+    async def authorize_emergency_reduce_override(
+        self, symbol: str, *, actor: str
+    ) -> None:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            session = self._ensure_current_session_unlocked()
+            if current_trading_state(self._execution_events, session.id) is not (
+                TradingState.HALTED
+            ):
+                raise EmergencyReduceBlockedError(
+                    f"emergency reduce of {key} refused: session is not halted "
+                    "(use an ordinary flatten)"
+                )
+            if self._position_unlocked(key).quantity <= 0:
+                raise EmergencyReduceBlockedError(
+                    f"emergency reduce of {key} refused: no open position"
+                )
+            quarantined_ids = timeout_quarantined_order_ids(self._execution_events)
+            if any(
+                oid in self._orders and self._orders[oid].symbol == key
+                for oid in quarantined_ids
+            ):
+                raise EmergencyReduceBlockedError(
+                    f"emergency reduce of {key} refused: an ambiguous "
+                    "TIMEOUT_QUARANTINE order is unresolved (INV-3)"
+                )
+            with self._atomic():
+                self._write_emergency_reduce_override_unlocked(
+                    key, actor=actor, reason="emergency_reduce", resolved=False
+                )
 
     async def close_session(
         self, session_id: Optional[str] = None

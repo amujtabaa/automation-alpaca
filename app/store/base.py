@@ -217,6 +217,23 @@ class SessionClosedError(StoreError):
     """
 
 
+class FlattenBlockedError(StoreError):
+    """A manual flatten was denied because the session is ``Halted`` and no
+    audited emergency-reduce override is active for the symbol (ADR-003 / wave
+    3e). Under ``Halted`` the kill switch is a true all-stop: an ordinary exit
+    must route through the explicit emergency-reduce override instead. Allowed in
+    ``Active``/``Reducing``. The route maps this to HTTP 409.
+    """
+
+
+class EmergencyReduceBlockedError(StoreError):
+    """An emergency-reduce override was refused (ADR-003 / wave 3e): the session
+    is not ``Halted`` (use an ordinary flatten), the symbol has an unresolved
+    ``TIMEOUT_QUARANTINE`` order (INV-3 — no exit while a possibly-live spawn is
+    ambiguous), or there is nothing to flatten. The route maps this to HTTP 409.
+    """
+
+
 @dataclass(frozen=True)
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.
@@ -1041,6 +1058,26 @@ class StateStore(ABC):
     async def list_emergency_reduce_overrides(self) -> set[str]:
         """Symbols in the active session with an ACTIVE emergency-reduce override
         (derived from the event log via ``active_emergency_reduce_overrides``)."""
+
+    @abstractmethod
+    async def authorize_emergency_reduce_override(
+        self, symbol: str, *, actor: str
+    ) -> None:
+        """Authorize an emergency reduce for ``symbol`` while ``Halted`` (ADR-003 /
+        wave 3e). Atomically checks the ADR-003 preconditions and, if they hold,
+        grants the scoped override so the subsequent flatten is permitted:
+
+        * the active session MUST be ``Halted`` (else :class:`EmergencyReduceBlockedError`
+          — an ordinary flatten already works in ``Active``/``Reducing``);
+        * the symbol MUST NOT have an unresolved ``TIMEOUT_QUARANTINE`` order (INV-3
+          — no exit while a possibly-live spawn is ambiguous);
+        * there MUST be an open position (else nothing to reduce).
+
+        On success first-writes the ``EMERGENCY_REDUCE_OVERRIDE`` grant (see
+        :meth:`grant_emergency_reduce_override`). The global ``TradingState`` stays
+        ``Halted``; the caller then runs the normal flatten, which sees the grant,
+        creates the reduce-only exit, and consumes the override in the same lock
+        hold."""
 
     @abstractmethod
     async def close_session(

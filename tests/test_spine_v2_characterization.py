@@ -34,7 +34,7 @@ from app.models import (
     TradingState,
 )
 from app.monitoring import run_monitoring_tick
-from app.store.base import CLAIM_CLAIMED
+from app.store.base import CLAIM_CLAIMED, FlattenBlockedError
 
 pytestmark = pytest.mark.anyio
 
@@ -77,42 +77,61 @@ async def _submitting_order(store, symbol="AAPL", qty=100):
 # Flow 1 — manual flatten vs. ADR-003 (Halted/Reducing policy)
 # --------------------------------------------------------------------------- #
 class TestCharacterizeManualFlatten:
-    """CURRENT: a manual flatten unconditionally bypasses the kill switch —
-    see ``app/store/core.py``'s claim-gate docstring: "MANUAL_FLATTEN -> never
-    held: a human-commanded flatten always exits, even kill-switched
-    /buys-paused/closed/unknown-session (D-P2)."
-
-    ADR-003 CONFLICT (recorded, not resolved here): the target model denies
-    ordinary manual flatten by default when ``TradingState`` is ``Halted``,
-    permitting an exit only via an explicit, audited emergency-reduce
-    override that scopes into ``Reducing``. This repo has no ``TradingState``
-    and no such override — kill-switched today plays the role ``Halted``
-    would, and manual flatten currently exits through it unconditionally.
-    Migrating this is Phase 3 scope (``docs/REARCHITECTURE_ROADMAP.md``);
-    this test exists so that migration has to consciously break this
-    assertion, not silently drift past it.
+    """MIGRATED (wave 3e — ADR-003 resolved, Option B). A manual flatten is now
+    DENIED by default while ``Halted`` (the kill switch is a true all-stop): the
+    operator exits via an explicit, audited emergency-reduce override that scopes a
+    single reduce-only exit while the global ``TradingState`` stays ``Halted``.
+    Flatten stays allowed in ``Reducing`` (buys-paused) and ``Active`` — a human
+    getting out is never blocked by a control meant to stop *new* intent.
+    The full graded matrix + INV-3 gate live in
+    ``tests/test_spine_phase3e_manual_flatten.py``; this pins the end-to-end path.
     """
 
-    async def test_manual_flatten_dispatches_and_submits_under_kill_switch(
+    async def test_manual_flatten_denied_under_kill_switch(self, any_store):
+        await any_store.initialize()
+        await _hold(any_store, "AAPL", 100)
+        await any_store.set_kill_switch(True)  # -> HALTED
+
+        with pytest.raises(FlattenBlockedError):
+            await any_store.flatten_position("AAPL")
+        # No order was minted — the position is untouched, nothing to submit.
+        assert (await any_store.get_position("AAPL")).quantity == 100
+        assert await any_store.active_sell_intent_for("AAPL") is None
+
+    async def test_emergency_reduce_override_exits_while_halted(
         self, any_store, monkeypatch
     ):
         _force_regular_hours(monkeypatch)
         await any_store.initialize()
         await _hold(any_store, "AAPL", 100)
-        await any_store.set_kill_switch(True)
+        await any_store.set_kill_switch(True)  # -> HALTED
 
+        # The audited override authorizes exactly one reduce-only exit; global
+        # state stays HALTED throughout.
+        await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
         result = await any_store.flatten_position("AAPL")
-
         assert result.intent.reason is SellReason.MANUAL_FLATTEN
         assert result.intent.status is SellIntentStatus.ORDERED
-        assert result.order.status is OrderStatus.CREATED
+        assert await any_store.current_trading_state() is TradingState.HALTED
 
-        # The claim gate also lets a CREATED manual_flatten SELL through the
-        # submission claim itself, unmodified by the kill switch.
+        # The created manual_flatten order still submits (an authorized, in-progress
+        # exit completes — §8 in-flight resolves first).
         adapter = MockBrokerAdapter()
         await run_monitoring_tick(any_store, adapter, Settings())
-        submitted = await any_store.get_order(result.order.id)
-        assert submitted.status is OrderStatus.SUBMITTED
+        assert (await any_store.get_order(result.order.id)).status is OrderStatus.SUBMITTED
+
+        # Single-use: the override was consumed, so a SECOND flatten is denied again.
+        with pytest.raises(FlattenBlockedError):
+            await any_store.flatten_position("AAPL")
+
+    async def test_manual_flatten_allowed_under_reducing(self, any_store):
+        # Reducing (buys-paused, not killed) still permits an ordinary flatten.
+        await any_store.initialize()
+        await _hold(any_store, "AAPL", 100)
+        await any_store.set_buys_paused(True)  # -> REDUCING
+        result = await any_store.flatten_position("AAPL")
+        assert result.intent.reason is SellReason.MANUAL_FLATTEN
+        assert result.intent.status is SellIntentStatus.ORDERED
 
 
 # --------------------------------------------------------------------------- #

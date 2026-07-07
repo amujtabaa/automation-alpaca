@@ -41,6 +41,20 @@ blocker-level rule to both places, not just one (D-025).
    sell-intent reason is `manual_flatten` (all controls bypassed) or
    `protection_floor` (buys-paused/closed-session bypassed, but the kill switch
    still holds it), and nowhere else.
+
+   > **SUPERSEDED for migrated Spine v2 flows by ADR-003 (wave 3e, event_truth).**
+   > D-P2's "manual flatten always works even kill-switched" was written pre-FSM,
+   > when the kill switch was the only stop state. The three-state `TradingState`
+   > FSM (§8) refines it: a manual flatten stays allowed in `Reducing`
+   > (buys-paused — D-P2's spirit, a human getting out is never blocked by a
+   > control meant to stop *new* intent), but is **DENIED by default in `Halted`**
+   > (the kill switch is a true all-stop). To exit while halted the operator
+   > issues an explicit, audited **emergency-reduce override** that scopes a single
+   > reduce-only exit while global state stays `Halted`. The `protection_paused`
+   > behavior under `Halted` is unchanged. See `docs/adr/ADR-003-manual-flatten-halted-reducing.md`
+   > and `docs/SPINE_WAVE3E_PLAN.md`. This entry is kept (per CLAUDE.md §9) as the
+   > record of the pre-migration behavior; the ADR is authoritative for the
+   > migrated flow.
 9. Unit tests make no network or live-IO calls.
 10. Integration tests are gated by environment variables.
 11. Do not add Webull, IBKR, TradersPost, Dash, React, or TradingView Advanced

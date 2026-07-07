@@ -76,7 +76,9 @@ from app.store.base import (
     FLATTEN_EXISTING,
     FLATTEN_FLAT,
     CandidateTransitionError,
+    EmergencyReduceBlockedError,
     FillAppendResult,
+    FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
     RiskLimits,
@@ -95,6 +97,7 @@ from app.store.core import (
     execution_event_for_fill,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
+    FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
@@ -1579,12 +1582,25 @@ class SqliteStateStore(StateStore):
                 )
                 active_order = self._order(order_row) if order_row is not None else None
 
+            # ADR-003 / wave 3e: current session's §8 FSM + whether an
+            # emergency-reduce override is active for this symbol, read under the
+            # same continuous lock hold as the decision above.
+            current_session = self._ensure_current_session_locked()
+            trading_state = self._current_trading_state_locked(current_session.id)
+            override_active = key in self._active_overrides_locked(current_session.id)
+
             plan = plan_flatten_position(
-                position=position, active_intent=active, active_order=active_order
+                position=position, active_intent=active, active_order=active_order,
+                trading_state=trading_state, override_active=override_active,
             )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
                 return FlattenResult(FLATTEN_FLAT)
+            if plan.outcome == FLATTEN_DENIED_HALTED:
+                raise FlattenBlockedError(
+                    f"manual flatten of {key} denied: trading halted "
+                    "(issue an emergency reduce override to exit)"
+                )
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 return FlattenResult(
                     FLATTEN_EXISTING,
@@ -1640,6 +1656,13 @@ class SqliteStateStore(StateStore):
             order = self._dispatch_order_for_sell_intent_locked(
                 intent, order_type=OrderType.MARKET, limit_price=None
             )
+            # ADR-003 / wave 3e: a single-use override that authorized this Halted
+            # flatten is consumed now that the exit exists, so a later flatten under
+            # Halted is denied again.
+            if override_active:
+                self._write_emergency_reduce_override_locked(
+                    key, actor="engine", reason="flatten_created", resolved=True
+                )
             return FlattenResult(
                 FLATTEN_CREATED, intent=intent, order=order, superseded=superseded
             )
@@ -2713,16 +2736,29 @@ class SqliteStateStore(StateStore):
                 )
             return session
 
+    def _current_trading_state_locked(self, session_id: str) -> TradingState:
+        rows = self._read_all(
+            "SELECT * FROM execution_events WHERE event_type = "
+            "'trading_state_changed' ORDER BY sequence"
+        )
+        return current_trading_state(
+            [self._execution_event(r) for r in rows], session_id
+        )
+
+    def _active_overrides_locked(self, session_id: str) -> set[str]:
+        rows = self._read_all(
+            "SELECT * FROM execution_events WHERE event_type IN "
+            "('emergency_reduce_override','emergency_reduce_override_resolved') "
+            "ORDER BY sequence"
+        )
+        return active_emergency_reduce_overrides(
+            [self._execution_event(r) for r in rows], session_id
+        )
+
     async def current_trading_state(self) -> TradingState:
         async with self._lock:
             session = self._ensure_current_session_locked()
-            rows = self._read_all(
-                "SELECT * FROM execution_events WHERE event_type = "
-                "'trading_state_changed' ORDER BY sequence"
-            )
-            return current_trading_state(
-                [self._execution_event(r) for r in rows], session.id
-            )
+            return self._current_trading_state_locked(session.id)
 
     def _write_emergency_reduce_override_locked(
         self, symbol: str, *, actor: str, reason: str, resolved: bool
@@ -2764,13 +2800,44 @@ class SqliteStateStore(StateStore):
     async def list_emergency_reduce_overrides(self) -> set[str]:
         async with self._lock:
             session = self._ensure_current_session_locked()
-            rows = self._read_all(
+            return self._active_overrides_locked(session.id)
+
+    async def authorize_emergency_reduce_override(
+        self, symbol: str, *, actor: str
+    ) -> None:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            session = self._ensure_current_session_locked()
+            if self._current_trading_state_locked(session.id) is not TradingState.HALTED:
+                raise EmergencyReduceBlockedError(
+                    f"emergency reduce of {key} refused: session is not halted "
+                    "(use an ordinary flatten)"
+                )
+            if self._position_locked(key).quantity <= 0:
+                raise EmergencyReduceBlockedError(
+                    f"emergency reduce of {key} refused: no open position"
+                )
+            tq_rows = self._read_all(
                 "SELECT * FROM execution_events WHERE event_type IN "
-                "('emergency_reduce_override','emergency_reduce_override_resolved') "
+                "('timeout_quarantine','submitted','rejected','canceled','filled') "
                 "ORDER BY sequence"
             )
-            return active_emergency_reduce_overrides(
-                [self._execution_event(r) for r in rows], session.id
+            tq_ids = timeout_quarantined_order_ids(
+                [self._execution_event(r) for r in tq_rows]
+            )
+            if tq_ids:
+                placeholders = ",".join("?" * len(tq_ids))
+                rows = self._read_all(
+                    f"SELECT symbol FROM orders WHERE id IN ({placeholders})",
+                    tuple(sorted(tq_ids)),
+                )
+                if any(r["symbol"] == key for r in rows):
+                    raise EmergencyReduceBlockedError(
+                        f"emergency reduce of {key} refused: an ambiguous "
+                        "TIMEOUT_QUARANTINE order is unresolved (INV-3)"
+                    )
+            self._write_emergency_reduce_override_locked(
+                key, actor=actor, reason="emergency_reduce", resolved=False
             )
 
     async def close_session(
