@@ -228,16 +228,32 @@ characterize → implement → adversarial-verify → report → commit.
         (all fixes ≤ MEDIUM, individually mutation-/reason-verified).**
 - [~] **Wave 3d — kill/TradingState FSM** (§8): `Active`/`Reducing`/`Halted`
       replacing the binary flags (Flow 5). **Design + conflicts (D1–D6):
-      `docs/SPINE_WAVE3D_PLAN.md`** (mapped by a Plan agent). Behavior-PRESERVING
-      `event_truth` refactor (the shape of 3a-truth): the 3-state FSM only *names*
-      behavior the two booleans already encode. First-write a `TRADING_STATE_CHANGED`
-      `ExecutionEvent` carrying the full `(kill, pause)` control tuple (so columns
-      are reconstructable + independent-release preserved); `kill_switch`/
-      `buys_paused` stay as co-written read-models. `MANUAL_FLATTEN`-under-Halted
-      denial + emergency-reduce is wave 3e (D3); stream→Reducing trigger is Phase 4
-      (D4). 7 slices: enum+field+migration → projector → planner+store → rewire
-      legacy setters → enforcement over the FSM → backfill → Flow-5 migration +
-      review.
+      `docs/SPINE_WAVE3D_PLAN.md`.** Behavior-PRESERVING `event_truth` refactor
+      (the shape of 3a-truth): the 3-state FSM only *names* behavior the two
+      booleans already encode.
+      - [x] **Slice 1 — enum + `SessionRecord.trading_state` field + SQLite
+        migration** (`d42d16c`). `TradingState` + `TradingState.of(kill, pause)`;
+        column + `_migrate` guard + mapper/insert; Flow-5 `not hasattr` assertion
+        migrated to assert the field. Additive/inert.
+      - [x] **Slices 2–4 + 6 — event-truth core** (`701c8df`). `current_trading_state`
+        projector (latest-`TRADING_STATE_CHANGED`-wins, session-scoped);
+        `trading_state_change_event` (durable FSM truth, payload carries the full
+        `(kill, pause)` tuple, `None` on redundant re-engage); both stores'
+        `set_kill_switch`/`set_buys_paused` rewired through a shared
+        `_apply_control_change` co-writing derived `trading_state` + booleans +
+        legacy audit event + the `TRADING_STATE_CHANGED` ExecutionEvent atomically;
+        `current_trading_state()` query; init backfill (pre-wave-3d session →
+        consistent, idempotent). 19 tests; suite 1506+ green; the trading_state
+        FACT is event_truth + dual-store consistent + independent-release preserved.
+      - [ ] **Slice 5 — enforcement reads the FSM.** Thread `trading_state` into the
+        3 policy predicates + `_claim_hold_reason` `PROTECTION_FLOOR` branch +
+        `monitoring` kill-pauses-protection (keep reason strings; behavior-identical
+        since booleans == derived FSM). Then flip the matrix row to `event_truth`.
+      - [ ] **Slice 7 — Flow-5 full migration** (assert `set_kill_switch → HALTED` /
+        `pause → REDUCING` + the `Reducing`-allows-`PROTECTION_FLOOR` counterpart)
+        + INV-7 reduce-only-under-Reducing test + docs + **adversarial review**.
+      `MANUAL_FLATTEN`-under-Halted denial + emergency-reduce is wave 3e (D3);
+      stream→Reducing trigger is Phase 4 (D4).
 - [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
       on the TradingState FSM (3d).
 
