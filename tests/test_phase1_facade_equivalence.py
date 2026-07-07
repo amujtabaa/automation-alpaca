@@ -124,7 +124,15 @@ async def test_resume_buys_route_flips_the_same_store_flag():
     assert response.json() == session_after.model_dump(mode="json")
 
 
-async def test_pause_buys_is_idempotent_like_before():
+async def test_pause_buys_repeated_call_is_stable():
+    """Adversarial-review finding (test-quality lens): the original name of
+    this test claimed it was a "behavior-equivalence" check, but it only
+    diffed the two responses against EACH OTHER, never against a store-truth
+    ground value — so it couldn't have caught a regression that changed BOTH
+    calls identically. Renamed to describe what it actually checks
+    (repeat-call stability), and left narrow on purpose — the store-truth
+    comparison already lives in ``test_pause_buys_route_flips_the_same_
+    store_flag`` above."""
     app, store = await _app()
     async with _client(app) as client:
         first = await client.post("/api/controls/pause-buys")
@@ -135,6 +143,62 @@ async def test_pause_buys_is_idempotent_like_before():
     # unrelated to the facade), so that field is excluded from the compare.
     assert first.json()["id"] == second.json()["id"]
     assert first.json()["buys_paused"] == second.json()["buys_paused"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial-review finding (test-quality lens, empirically confirmed): the
+# behavior-equivalence tests above compare route output to store-truth, but
+# never prove the ROUTE actually went THROUGH the facade to get there — a
+# route silently reverted to call the store directly would produce identical
+# output and pass every test above unnoticed (verified by literally doing
+# that revert and re-running the suite: all tests still passed). These two
+# tests close that gap with a dependency-override spy, so a facade-bypass
+# regression fails loudly instead of silently.
+# --------------------------------------------------------------------------- #
+async def test_list_positions_route_actually_calls_the_query_facade():
+    app, store = await _app()
+    calls: list[str] = []
+
+    class _SpyQueryFacade:
+        async def list_positions(self):
+            calls.append("list_positions")
+            return await store.list_positions()
+
+    app.dependency_overrides[get_query_facade] = lambda: _SpyQueryFacade()
+    try:
+        async with _client(app) as client:
+            response = await client.get("/api/positions")
+        assert response.status_code == 200
+        assert calls == ["list_positions"]
+    finally:
+        app.dependency_overrides.pop(get_query_facade, None)
+
+
+async def test_pause_and_resume_buys_routes_actually_call_the_command_facade():
+    app, store = await _app()
+    calls: list[tuple[str, str]] = []
+
+    class _SpyCommandFacade:
+        async def pause_buys(self, *, actor):
+            calls.append(("pause_buys", actor))
+            return await store.set_buys_paused(True)
+
+        async def resume_buys(self, *, actor):
+            calls.append(("resume_buys", actor))
+            return await store.set_buys_paused(False)
+
+    app.dependency_overrides[get_command_facade] = lambda: _SpyCommandFacade()
+    try:
+        async with _client(app) as client:
+            pause_response = await client.post("/api/controls/pause-buys")
+            resume_response = await client.post("/api/controls/resume-buys")
+        assert pause_response.status_code == resume_response.status_code == 200
+        assert calls == [
+            ("pause_buys", UNAUTHENTICATED_ACTOR),
+            ("resume_buys", UNAUTHENTICATED_ACTOR),
+        ]
+    finally:
+        app.dependency_overrides.pop(get_command_facade, None)
 
 
 async def test_kill_switch_route_is_unmigrated_and_unaffected():
