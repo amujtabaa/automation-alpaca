@@ -1161,9 +1161,16 @@ def _claim_hold_reason(
       ``MANUAL_FLATTEN`` order is only ever minted when the flatten was authorized
       (``Active``/``Reducing``, or an emergency-reduce override under ``Halted``),
       and ``flatten_position`` is its sole producer — so an existing one is, by
-      construction, already authorized and stays claimable here (an in-progress
-      reduce-only exit completes; §8 "in-flight resolves first"). Buys-paused /
-      closed / unknown-session are likewise bypassed at submission (D-P2 spirit).
+      construction, already authorized and stays claimable here. **Deliberate,
+      documented scoping (wave 3e review LOW):** an order created while ``Active``
+      is still submitted if the kill switch engages before the submission sweep
+      claims it — the Halted-deny is at *issuance*, and a locally-``CREATED`` order
+      (not yet at the venue, so not literally "in-flight") is an exit the operator
+      already commanded, not new intent. Asymmetric with autonomous
+      ``PROTECTION_FLOOR`` (still held by the kill switch here) BY DESIGN: a human
+      command outranks autonomous protection (D-P2). Pinned by
+      ``test_manual_flatten_created_in_active_submits_under_later_halt``.
+      Buys-paused / closed / unknown-session are likewise bypassed (D-P2 spirit).
     * ``PROTECTION_FLOOR`` → bypass ``buys_paused`` / ``session_closed`` /
       ``unknown_session`` (a lingering position must stay exitable after close),
       **but stays blocked by the kill switch** on EITHER the own or the current

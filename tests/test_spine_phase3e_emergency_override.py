@@ -69,9 +69,21 @@ def test_projector_is_session_and_symbol_scoped():
     assert active_emergency_reduce_overrides(events, "s3") == set()  # unknown -> empty
 
 
-def test_authority_is_local_not_broker():
-    # An operator command, not a broker fact.
-    assert _ovr("s1", "AAPL", 1).authority is EventAuthority.LOCAL
+def test_production_builder_stamps_local_authority_and_payload():
+    # Exercise the PRODUCTION event builder (not the test helper): an operator
+    # command is LOCAL/ENGINE, carries the actor+reason, and the grant/resolve flag.
+    from app.store.core import emergency_reduce_override_event
+
+    grant = emergency_reduce_override_event("s1", "aapl", actor="op", reason="r")
+    assert grant.event_type is ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE
+    assert grant.authority is EventAuthority.LOCAL
+    assert grant.source is EventSource.ENGINE
+    assert grant.symbol == "aapl"
+    assert grant.payload == {"actor": "op", "reason": "r", "resolved": False}
+
+    resolved = emergency_reduce_override_event("s1", "aapl", actor="op", reason="r", resolved=True)
+    assert resolved.event_type is ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE_RESOLVED
+    assert resolved.payload["resolved"] is True
 
 
 # --------------------------------------------------------------------------- #

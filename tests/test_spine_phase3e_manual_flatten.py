@@ -133,6 +133,82 @@ async def test_override_is_single_use(any_store):
         await any_store.flatten_position("AAPL")
 
 
+async def test_override_consumed_on_existing_outcome_no_leak(any_store):
+    # Review MEDIUM: the override must be spent even when the flatten dedup's to an
+    # EXISTING exit — otherwise the grant leaks and later lets an ordinary flatten
+    # slip past the Halted-deny.
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 200)
+    await any_store.set_kill_switch(True)
+
+    await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
+    await any_store.flatten_position("AAPL")  # creates O1, consumes grant1
+    assert await any_store.list_emergency_reduce_overrides() == set()
+
+    # A fresh authorization whose flatten dedup's to the existing O1 must still be
+    # consumed (FLATTEN_EXISTING), leaving NO active grant.
+    await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
+    result = await any_store.flatten_position("AAPL")
+    assert result.outcome != "created"  # dedup'd to the existing exit
+    assert await any_store.list_emergency_reduce_overrides() == set()  # no leak
+
+    # And an ordinary flatten under Halted is still denied (the grant did not leak).
+    with pytest.raises(FlattenBlockedError):
+        await any_store.flatten_position("AAPL")
+
+
+async def test_double_authorize_without_flatten_refused(any_store):
+    # Never stack a second grant on an active one — one override authorizes one exit.
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    await any_store.set_kill_switch(True)
+    await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
+    with pytest.raises(EmergencyReduceBlockedError):
+        await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
+
+
+async def test_inv3_gate_is_symbol_specific(any_store):
+    # A quarantined order for a DIFFERENT symbol must NOT block an emergency reduce
+    # of this symbol (INV-3 is per-symbol).
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    session = await any_store.get_current_session()
+    cand = await any_store.create_candidate("MSFT", session_id=session.id)
+    other = await any_store.create_order_for_test(
+        cand.id, "MSFT", OrderSide.BUY, 10, session_id=session.id
+    )
+    claim = await any_store.claim_order_for_submission(other.id)
+    await any_store.quarantine_timed_out_order(claim.order.id)  # MSFT quarantined
+
+    await any_store.set_kill_switch(True)
+    # AAPL is unaffected by the MSFT quarantine -> authorize succeeds + flatten runs.
+    await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
+    result = await any_store.flatten_position("AAPL")
+    assert result.intent.reason is SellReason.MANUAL_FLATTEN
+
+
+async def test_manual_flatten_created_in_active_submits_under_later_halt(
+    any_store, monkeypatch
+):
+    # Deliberate, documented scoping (review LOW): the Halted-deny is at ISSUANCE
+    # (creation). A flatten issued while Active — an exit the operator already
+    # commanded — completes even if the kill switch engages before it is submitted;
+    # a locally-CREATED order is not new intent. This is asymmetric with autonomous
+    # PROTECTION_FLOOR (still held by the kill switch at claim) by design: a human
+    # command outranks autonomous protection (D-P2). Pinned so the choice is explicit.
+    _regular(monkeypatch)
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    created = await any_store.flatten_position("AAPL")  # Active -> allowed
+    assert created.order.status is OrderStatus.CREATED
+
+    await any_store.set_kill_switch(True)  # Halt AFTER the exit was issued
+    assert await any_store.list_emergency_reduce_overrides() == set()  # no override
+    adapter = MockBrokerAdapter()
+    await run_monitoring_tick(any_store, adapter, Settings())
+    assert (await any_store.get_order(created.order.id)).status is OrderStatus.SUBMITTED
+
+
 # --------------------------------------------------------------------------- #
 # authorize_emergency_reduce_override preconditions
 # --------------------------------------------------------------------------- #

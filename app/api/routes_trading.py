@@ -225,7 +225,13 @@ async def emergency_reduce(
     try:
         # Audited grant + ADR-003/INV-3 preconditions, atomic. Actor is a fixed
         # placeholder until a real auth/actor gate lands (ADR-005; matrix "Auth for
-        # command endpoints").
+        # command endpoints"). The INV-3 (no unresolved TIMEOUT_QUARANTINE)
+        # precondition is checked here at grant time; between here and the flatten
+        # below the lock is released for the broker cancel, but under Halted no NEW
+        # order submits (order intent is blocked), so a fresh ambiguous-submit
+        # quarantine for this symbol cannot arise in that window — the pre-existing
+        # case is what authorize catches. Continuous venue re-verification is a
+        # Phase-4 reconciliation concern.
         await store.authorize_emergency_reduce_override(key, actor="operator")
     except EmergencyReduceBlockedError as exc:
         raise HTTPException(

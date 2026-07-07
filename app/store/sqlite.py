@@ -1594,13 +1594,23 @@ class SqliteStateStore(StateStore):
                 trading_state=trading_state, override_active=override_active,
             )
 
-            if plan.outcome == _PLAN_FLATTEN_FLAT:
-                return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == FLATTEN_DENIED_HALTED:
                 raise FlattenBlockedError(
                     f"manual flatten of {key} denied: trading halted "
                     "(issue an emergency reduce override to exit)"
                 )
+            # ADR-003 / wave 3e (review MEDIUM fix): the override authorized THIS
+            # flatten call — spend it on ANY authorized outcome (create / existing /
+            # flat). Consuming only on the create branch leaked the grant when the
+            # flatten dedup'd, later letting an ordinary flatten slip past the
+            # Halted-deny.
+            if override_active:
+                self._write_emergency_reduce_override_locked(
+                    key, actor="engine", reason="flatten_authorized", resolved=True
+                )
+
+            if plan.outcome == _PLAN_FLATTEN_FLAT:
+                return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 return FlattenResult(
                     FLATTEN_EXISTING,
@@ -1656,13 +1666,6 @@ class SqliteStateStore(StateStore):
             order = self._dispatch_order_for_sell_intent_locked(
                 intent, order_type=OrderType.MARKET, limit_price=None
             )
-            # ADR-003 / wave 3e: a single-use override that authorized this Halted
-            # flatten is consumed now that the exit exists, so a later flatten under
-            # Halted is denied again.
-            if override_active:
-                self._write_emergency_reduce_override_locked(
-                    key, actor="engine", reason="flatten_created", resolved=True
-                )
             return FlattenResult(
                 FLATTEN_CREATED, intent=intent, order=order, superseded=superseded
             )
@@ -2836,6 +2839,12 @@ class SqliteStateStore(StateStore):
                         f"emergency reduce of {key} refused: an ambiguous "
                         "TIMEOUT_QUARANTINE order is unresolved (INV-3)"
                     )
+            # Defensive (review): never stack a second grant on top of an active
+            # one — an override authorizes exactly one flatten and is consumed by it.
+            if key in self._active_overrides_locked(session.id):
+                raise EmergencyReduceBlockedError(
+                    f"emergency reduce of {key} refused: an override is already active"
+                )
             self._write_emergency_reduce_override_locked(
                 key, actor=actor, reason="emergency_reduce", resolved=False
             )

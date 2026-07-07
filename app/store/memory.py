@@ -897,13 +897,24 @@ class InMemoryStateStore(StateStore):
                 trading_state=trading_state, override_active=override_active,
             )
 
-            if plan.outcome == _PLAN_FLATTEN_FLAT:
-                return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == FLATTEN_DENIED_HALTED:
                 raise FlattenBlockedError(
                     f"manual flatten of {key} denied: trading halted "
                     "(issue an emergency reduce override to exit)"
                 )
+            # ADR-003 / wave 3e (review MEDIUM fix): the override authorized THIS
+            # flatten call, so it is spent by it on ANY authorized outcome —
+            # create, existing, OR flat. Consuming only on the create branch
+            # leaked the grant when the flatten dedup'd to an existing/already-flat
+            # exit, later letting an ordinary flatten slip past the Halted-deny.
+            if override_active:
+                with self._atomic():
+                    self._write_emergency_reduce_override_unlocked(
+                        key, actor="engine", reason="flatten_authorized", resolved=True,
+                    )
+
+            if plan.outcome == _PLAN_FLATTEN_FLAT:
+                return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 return FlattenResult(
                     FLATTEN_EXISTING,
@@ -955,13 +966,6 @@ class InMemoryStateStore(StateStore):
                 order = self._dispatch_order_for_sell_intent_unlocked(
                     intent, order_type=OrderType.MARKET, limit_price=None
                 )
-                # ADR-003 / wave 3e: an override that authorized this Halted flatten
-                # is single-use — consume it in the SAME atomic block that created
-                # the exit, so a later flatten under Halted is denied again.
-                if override_active:
-                    self._write_emergency_reduce_override_unlocked(
-                        key, actor="engine", reason="flatten_created", resolved=True,
-                    )
             return FlattenResult(
                 FLATTEN_CREATED,
                 intent=intent.model_copy(deep=True),
@@ -1789,6 +1793,16 @@ class InMemoryStateStore(StateStore):
                 raise EmergencyReduceBlockedError(
                     f"emergency reduce of {key} refused: an ambiguous "
                     "TIMEOUT_QUARANTINE order is unresolved (INV-3)"
+                )
+            # Defensive (review): never stack a second grant on top of an active
+            # one — an override authorizes exactly one flatten and is consumed by
+            # it. A still-active grant means the prior authorization hasn't been
+            # spent; refuse rather than double-grant.
+            if key in active_emergency_reduce_overrides(
+                self._execution_events, session.id
+            ):
+                raise EmergencyReduceBlockedError(
+                    f"emergency reduce of {key} refused: an override is already active"
                 )
             with self._atomic():
                 self._write_emergency_reduce_override_unlocked(
