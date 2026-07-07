@@ -284,18 +284,29 @@ characterize → implement → adversarial-verify → report → commit.
         1539 passed, coverage 95.29%, ruff clean, harness green. **Wave 3d CLOSED.**
       `MANUAL_FLATTEN`-under-Halted denial + emergency-reduce is wave 3e (D3);
       stream→Reducing trigger is Phase 4 (D4).
-- [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
-      on the TradingState FSM (3d, now closed). **Plan ready** (agent-scoped, mirrors
-      3c/3d): manual flatten `legacy_truth → event_truth`, emergency-reduce override
-      `blocked → event_truth`. **Conflicts E1–E8 recorded; E1 is a DECISION GAP for the
-      human** — ADR-003 denies ordinary manual flatten under `Halted` (needs an audited
-      emergency-reduce override), which REVERSES legacy Rule 8 / D-P2 ("flatten always
-      works even kill-switched"). E3: "scoped Reducing" is unrepresentable as a global
-      state flip (kill dominates) → the override must be a **separate scoped grant**
-      (`EMERGENCY_REDUCE_OVERRIDE` event) consulted alongside `trading_state`, global
-      state stays `Halted`. Slices 1–2 (inert scaffolding + facade migration) are
-      behavior-preserving and NOT gated on E1; slices 3–4 (the denial + override) ARE.
-      **Blocked pending the E1 ruling** (AskUserQuestion errored once; re-ask before 3–4).
+- [~] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1).
+      **Plan: `docs/SPINE_WAVE3E_PLAN.md`** (conflicts E1–E8). **E1 RULED: Option B**
+      (adopt ADR-003) — user-confirmed. The kill switch is now a true all-stop.
+      - [x] **Slice 1 — inert override scaffolding** (`be5c110`). `EMERGENCY_REDUCE_OVERRIDE`/
+        `_RESOLVED` event types; `active_emergency_reduce_overrides` projector (latest-wins
+        per `{session, symbol}`); `emergency_reduce_override_event` core planner; store
+        `grant_`/`resolve_emergency_reduce_override` + `list_emergency_reduce_overrides`
+        (both stores, dual-store parity). Nothing read it yet — corpus stayed green.
+      - [x] **Slices 3–4 — deny under Halted + emergency override** (`b15af3d`). Ordinary
+        flatten denied in `Halted` w/o override (`plan_flatten_position` →
+        `FLATTEN_DENIED_HALTED` → `FlattenBlockedError` → 409); allowed in Active/Reducing.
+        Gated at **creation** (sole `MANUAL_FLATTEN` producer), so the claim gate is
+        untouched. `authorize_emergency_reduce_override` (atomic: Halted + open position +
+        INV-3 no-`TIMEOUT_QUARANTINE`-for-symbol) grants a scoped single-use override;
+        `POST /positions/{symbol}/emergency-reduce` authorizes → cancels buys → flattens
+        (sees grant, creates exit, **consumes** override same lock hold). Global
+        `TradingState` stays `Halted` (E3: scoped grant, not a global flip). Migrated
+        characterization Flow-1 + route pinning tests + D-P2 arch note (annotated).
+        `tests/test_spine_phase3e_manual_flatten.py` maps ADR-003's required tests.
+        Matrix rows → `event_truth`. Halted-deny mutation-verified. 1577 passed, cov 95.30%.
+      - [ ] **Slice 2 — facade migration of flatten (ADR-005 / E6): DEFERRED** to the
+        "API routes" matrix row (orthogonal ADR-005 hygiene; the ADR-003 *behavior* is done).
+      - [ ] **Adversarial review of wave 3e** — pending (running).
 
 **Resume hint:** Wave 3d is CLOSED (reviewed clean, remediated, `12a8c4a`). Next is
 **Wave 3e (manual flatten + emergency reduce, ADR-003)** — but slices 3–4 are BLOCKED
