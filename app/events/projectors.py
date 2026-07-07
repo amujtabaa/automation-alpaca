@@ -26,7 +26,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from app.models import ExecutionEvent, ExecutionEventType, Fill, Position
+from app.models import (
+    ExecutionEvent,
+    ExecutionEventType,
+    Fill,
+    Position,
+    TradingState,
+)
 from app.policy import fill_value_reason
 from app.position import apply_fill
 
@@ -219,7 +225,7 @@ def timeout_quarantined_order_ids(events: Iterable[ExecutionEvent]) -> set[str]:
 
 def current_trading_state(
     events: Iterable[ExecutionEvent], session_id: str
-) -> "TradingState":
+) -> TradingState:
     """The session's current ``TradingState`` (§8 / wave 3d): the ``to`` of its
     LATEST ``TRADING_STATE_CHANGED`` ``ExecutionEvent``, default ``ACTIVE`` if none.
 
@@ -230,8 +236,6 @@ def current_trading_state(
     control tuple in its payload, so the boolean read-models are reconstructable
     too). Session-scoped (unlike the order-scoped quarantine projectors).
     """
-
-    from app.models import TradingState  # local import: avoids a models<->events cycle
 
     state = TradingState.ACTIVE
     for event in events:

@@ -25,8 +25,22 @@ from app.models import (
     EventSource,
     ExecutionEvent,
     ExecutionEventType,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    SellReason,
+    SessionRecord,
+    SessionStatus,
     TradingState,
 )
+from app.policy import (
+    kill_switch_block_reason,
+    order_intent_block_reason,
+    session_submission_block_reason,
+)
+from app.store import core
+from app.store.base import CLAIM_BLOCKED, CLAIM_CLAIMED
 from app.store.memory import InMemoryStateStore
 from app.store.sqlite import SqliteStateStore
 
@@ -210,3 +224,123 @@ async def test_backfill_makes_a_pre_wave3d_killed_session_consistent(tmp_path):
     ]
     assert len(tsc) == 1
     await reopened.close()
+
+
+# --------------------------------------------------------------------------- #
+# SessionRecord.trading_state — the co-written read-model self-heals (validator)
+# --------------------------------------------------------------------------- #
+def _session(*, kill: bool = False, paused: bool = False) -> SessionRecord:
+    return SessionRecord(session_date="2026-07-07", kill_switch=kill, buys_paused=paused)
+
+
+@pytest.mark.parametrize(
+    "kill,paused,expected",
+    [
+        (False, False, TradingState.ACTIVE),
+        (False, True, TradingState.REDUCING),
+        (True, False, TradingState.HALTED),
+        (True, True, TradingState.HALTED),
+    ],
+)
+def test_model_validator_derives_trading_state_from_booleans(kill, paused, expected):
+    # A directly-constructed record can never drift: trading_state is healed to
+    # TradingState.of(kill, paused) by the model validator, regardless of what a
+    # caller passes (here: nothing) — the §8 read-model invariant is structural.
+    assert _session(kill=kill, paused=paused).trading_state is expected
+
+
+def test_model_validator_heals_an_inconsistent_explicit_trading_state():
+    # Passing a trading_state that contradicts the booleans does NOT persist a
+    # drifted record — the validator overrides it with the derived value.
+    s = SessionRecord(
+        session_date="2026-07-07", kill_switch=True, trading_state=TradingState.ACTIVE
+    )
+    assert s.trading_state is TradingState.HALTED
+
+
+# --------------------------------------------------------------------------- #
+# Slice 5 — the pre-trade predicates READ the FSM (reason strings preserved)
+# --------------------------------------------------------------------------- #
+class TestEnforcementReadsFsm:
+    """The three Rule 8 predicates now decide off ``session.trading_state`` (the
+    §8 FSM), not the two legacy booleans. Behavior is identical because the
+    validator keeps ``trading_state == TradingState.of(kill, pause)``; these pin
+    the FSM→reason-string mapping so a future change to it is caught."""
+
+    def test_order_intent_block_reason_maps_each_fsm_state(self):
+        assert order_intent_block_reason(_session()) is None  # ACTIVE
+        assert order_intent_block_reason(_session(paused=True)) == "buys_paused"  # REDUCING
+        assert order_intent_block_reason(_session(kill=True)) == "kill_switch"  # HALTED
+        # kill dominates pause -> HALTED -> kill_switch (not buys_paused)
+        assert order_intent_block_reason(_session(kill=True, paused=True)) == "kill_switch"
+
+    def test_kill_switch_block_reason_holds_only_in_halted(self):
+        # The protection-floor gate: only HALTED (kill) holds a reduce-only exit;
+        # REDUCING (pause) does not.
+        assert kill_switch_block_reason(_session()) is None
+        assert kill_switch_block_reason(_session(paused=True)) is None  # REDUCING
+        assert kill_switch_block_reason(_session(kill=True)) == "kill_switch"  # HALTED
+
+    def test_submission_block_reason_delegates_to_fsm_but_closed_wins(self):
+        assert session_submission_block_reason(_session(paused=True)) == "buys_paused"
+        assert session_submission_block_reason(_session(kill=True)) == "kill_switch"
+        closed = SessionRecord(session_date="2026-07-07", status=SessionStatus.CLOSED)
+        assert session_submission_block_reason(closed) == "session_closed"
+
+
+# --------------------------------------------------------------------------- #
+# INV-7 / §8 / ADR-003 — REDUCING is reduce-only; HALTED denies everything
+# --------------------------------------------------------------------------- #
+def _buy_order() -> Order:
+    return Order(
+        candidate_id="c1", sell_intent_id=None, symbol="AAPL", side=OrderSide.BUY,
+        order_type=OrderType.LIMIT, quantity=10, limit_price=1.0,
+        status=OrderStatus.CREATED,
+    )
+
+
+def _protective_sell() -> Order:
+    return Order(
+        candidate_id=None, sell_intent_id="si1", symbol="AAPL", side=OrderSide.SELL,
+        order_type=OrderType.MARKET, quantity=10, limit_price=None,
+        status=OrderStatus.CREATED,
+    )
+
+
+class TestReducingIsReduceOnly:
+    """The graded semantics the two booleans always encoded but never named
+    (§8 / INV-7 / ADR-003): ``REDUCING`` permits a reduce-only PROTECTION_FLOOR
+    exit while denying an exposure-increasing BUY; ``HALTED`` denies both. The
+    claim planner reads the same FSM-backed predicates as the pure gates above."""
+
+    def test_reducing_allows_reduce_only_sell_but_denies_buy(self):
+        reducing = _session(paused=True)
+        assert reducing.trading_state is TradingState.REDUCING
+
+        buy = core.plan_claim_order_for_submission(
+            order=_buy_order(), own_session=reducing, current_session=reducing
+        )
+        assert buy.outcome == CLAIM_BLOCKED
+        assert buy.reason == "buys_paused"
+
+        sell = core.plan_claim_order_for_submission(
+            order=_protective_sell(), own_session=reducing, current_session=reducing,
+            sell_reason=SellReason.PROTECTION_FLOOR,
+        )
+        assert sell.outcome == CLAIM_CLAIMED  # reduce-only exit is permitted
+
+    def test_halted_denies_both_buy_and_reduce_only_sell(self):
+        halted = _session(kill=True)
+        assert halted.trading_state is TradingState.HALTED
+
+        buy = core.plan_claim_order_for_submission(
+            order=_buy_order(), own_session=halted, current_session=halted
+        )
+        assert buy.outcome == CLAIM_BLOCKED
+
+        sell = core.plan_claim_order_for_submission(
+            order=_protective_sell(), own_session=halted, current_session=halted,
+            sell_reason=SellReason.PROTECTION_FLOOR,
+        )
+        assert sell.outcome == CLAIM_BLOCKED
+        assert sell.reason == "kill_switch"

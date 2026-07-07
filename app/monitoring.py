@@ -61,6 +61,7 @@ from app.models import (
     SellReason,
     SessionStatus,
     SessionType,
+    TradingState,
     utcnow,
 )
 from app.policy import finite_number_reason
@@ -282,7 +283,10 @@ async def _run_protection(
 
     config = _protection_config(settings)
     session = await store.get_current_session()
-    kill_switched = session.kill_switch
+    # Wave 3d (event_truth): read the §8 FSM. Only HALTED (the kill-switch state,
+    # which dominates pause) pauses autonomous protection per D-P2; REDUCING
+    # (buys-paused) does not. Equivalent to the prior ``session.kill_switch`` read.
+    kill_switched = session.trading_state is TradingState.HALTED
     paused_breaching: set[str] = set()
 
     for position in positions:

@@ -42,6 +42,7 @@ from app.models import (
     Position,
     SellIntent,
     SubmitRecoveryRecord,
+    TradingState,
 )
 from app.monitoring import cancel_open_buys
 from app.policy import (
@@ -236,8 +237,12 @@ async def protection_status(
                 observed_price=observed,
                 breaching=breach is not None,
                 # Frozen only when the switch is engaged AND this position would
-                # otherwise be exiting (it is breaching).
-                paused_by_kill_switch=session.kill_switch and breach is not None,
+                # otherwise be exiting (it is breaching). Wave 3d: reads the §8
+                # FSM (HALTED == kill-switched) to stay consistent with the
+                # monitoring loop's enforcement; equivalent to the prior boolean.
+                paused_by_kill_switch=(
+                    session.trading_state is TradingState.HALTED and breach is not None
+                ),
                 stalled=stalled,
                 active_sell_intent=active,
             )

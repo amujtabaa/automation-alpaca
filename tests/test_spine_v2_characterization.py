@@ -287,36 +287,33 @@ class TestCharacterizeFillPositionDerivation:
 # Flow 5 — kill switch / session model vs. ADR-003 / Spine v2 §8
 # --------------------------------------------------------------------------- #
 class TestCharacterizeKillSwitchModel:
-    """CURRENT: session control is two independent booleans
-    (``SessionRecord.kill_switch``, ``.buys_paused``) — there is no
-    ``TradingState`` enum. A ``PROTECTION_FLOOR`` sell IS blocked by the kill
-    switch (unlike ``MANUAL_FLATTEN`` — see
-    ``TestCharacterizeManualFlatten`` above); a plain BUY is blocked by
-    either flag.
+    """MIGRATED (wave 3d, event_truth): session control is now the three-state
+    ``TradingState`` FSM (§8) — ``Active`` / ``Reducing`` / ``Halted`` — the two
+    legacy booleans (``kill_switch`` / ``buys_paused``) are co-written read-models
+    that map onto it (kill → ``Halted``, else pause → ``Reducing``, else
+    ``Active``; kill dominates). ``set_kill_switch`` first-writes a
+    ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` (durable FSM truth); the
+    predicates that gate submission read the FSM.
 
-    ADR-003/Spine v2 §8 CONFLICT (recorded, not resolved here): the target
-    model is a three-state ``TradingState`` (``Active``/``Reducing``/
-    ``Halted``) where ``Reducing`` explicitly ALLOWS reduce-only orders
-    (cancels + reducing sells) while denying exposure-increasing ones — a
-    graded state the current binary ``kill_switch`` flag cannot express.
-    Migrating this is Phase 3 scope; this test pins today's binary-flag
-    behavior for both the exempted (manual flatten) and non-exempted
-    (protection floor) sell paths.
+    A ``PROTECTION_FLOOR`` sell IS blocked in ``Halted`` (unlike
+    ``MANUAL_FLATTEN`` — see ``TestCharacterizeManualFlatten`` above), matching
+    ADR-003. The graded ``Reducing``-allows-reduce-only nuance the binary flag
+    could not express is pinned in
+    ``tests/test_spine_phase3d_trading_state.py`` (``TestReducingIsReduceOnly``);
+    this test pins the end-to-end monitoring path: a kill → ``Halted`` holds an
+    autonomous protection exit.
     """
 
-    async def test_kill_switch_is_a_binary_flag_and_blocks_protection_floor_claim(
+    async def test_kill_switch_maps_to_halted_and_blocks_protection_floor_claim(
         self, any_store
     ):
         await any_store.initialize()
         await _hold(any_store, "AAPL", 100)
         session = await any_store.get_current_session()
-        assert isinstance(session.kill_switch, bool)
-        assert isinstance(session.buys_paused, bool)
-        # Wave 3d added the TradingState read-model field; an un-killed, un-paused
-        # session is ACTIVE. The kill -> HALTED / pause -> REDUCING mapping and the
-        # event-truth flip are pinned in tests/test_spine_phase3d_trading_state.py
-        # once the setters are wired over the FSM.
+        # An un-killed, un-paused session is ACTIVE; the booleans remain as
+        # co-written read-models consistent with the FSM.
         assert session.trading_state is TradingState.ACTIVE
+        assert session.kill_switch is False and session.buys_paused is False
 
         intent = await any_store.create_sell_intent(
             symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
@@ -326,13 +323,23 @@ class TestCharacterizeKillSwitchModel:
         order = await any_store.create_order_for_sell_intent(
             intent.id, order_type=OrderType.MARKET
         )
-        await any_store.set_kill_switch(True)
+        killed = await any_store.set_kill_switch(True)
+        # event_truth: the setter moved the FSM to HALTED (kill dominates), and
+        # the event log agrees with the co-written column.
+        assert killed.trading_state is TradingState.HALTED
+        assert await any_store.current_trading_state() is TradingState.HALTED
 
         adapter = MockBrokerAdapter()
         await run_monitoring_tick(any_store, adapter, Settings())
 
-        # Unlike manual_flatten, a protection_floor SELL IS held by the kill
-        # switch today — there is no "Reducing allows reduce-only" nuance,
-        # just blocked-or-not.
+        # In HALTED, a protection_floor SELL IS held (ADR-003) — the exit stays
+        # CREATED, wound down separately rather than autonomously submitted.
         held = await any_store.get_order(order.id)
         assert held.status is OrderStatus.CREATED
+
+    async def test_pause_buys_maps_to_reducing(self, any_store):
+        # The other FSM edge: buys-paused (no kill) is REDUCING, not HALTED.
+        await any_store.initialize()
+        paused = await any_store.set_buys_paused(True)
+        assert paused.trading_state is TradingState.REDUCING
+        assert await any_store.current_trading_state() is TradingState.REDUCING

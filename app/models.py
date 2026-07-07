@@ -754,3 +754,20 @@ class SessionRecord(_Entity):
     closed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+    @model_validator(mode="after")
+    def _derive_trading_state(self) -> "SessionRecord":
+        """Structurally pin the §8 read-model invariant: ``trading_state`` is
+        ALWAYS ``TradingState.of(kill_switch, buys_paused)`` (wave 3d). It is a
+        pure projection of the two booleans (kill dominates pause), so a
+        directly-constructed or row-mapped record can never drift from them —
+        pass an inconsistent ``trading_state`` and it is healed here rather than
+        persisted. The durable truth remains the ``TRADING_STATE_CHANGED``
+        ExecutionEvent; this only keeps the materialized column self-consistent.
+        (The validator runs at construction; the store setters mutate the
+        booleans and co-write ``trading_state`` together under their lock.)"""
+
+        self.trading_state = TradingState.of(
+            kill_switch=self.kill_switch, buys_paused=self.buys_paused
+        )
+        return self

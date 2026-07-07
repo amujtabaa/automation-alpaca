@@ -53,7 +53,7 @@ from app.models import (
     TradingState,
     utcnow,
 )
-from app.position import NegativePositionError, would_go_negative
+from app.position import would_go_negative
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,

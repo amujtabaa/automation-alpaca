@@ -41,6 +41,7 @@ from app.models import (
     Position,
     SessionRecord,
     SessionStatus,
+    TradingState,
 )
 from app.transitions import ORDER_TRANSITIONS
 
@@ -64,13 +65,20 @@ def order_intent_block_reason(
     paused blocks new BUY intent (beta orders are long-only buys, so it blocks
     them too). Shared by both stores and the monitoring loop so "is trading
     stopped" is decided in exactly one place.
+
+    Wave 3d (event_truth): the decision now reads ``session.trading_state`` — the
+    §8 FSM co-written from the TRADING_STATE_CHANGED event log — rather than the
+    two legacy booleans. This is behavior-identical because ``trading_state ==
+    TradingState.of(kill_switch, buys_paused)`` by construction (kill dominates
+    pause), and the returned reason strings are kept for label continuity: HALTED
+    surfaces as ``"kill_switch"`` (the all-stop) and REDUCING as ``"buys_paused"``.
     """
 
     if session is None:
         return None
-    if session.kill_switch:
+    if session.trading_state is TradingState.HALTED:
         return "kill_switch"
-    if session.buys_paused:
+    if session.trading_state is TradingState.REDUCING:
         return "buys_paused"
     return None
 
@@ -108,11 +116,16 @@ def kill_switch_block_reason(session: Optional[SessionRecord]) -> Optional[str]:
     blocks on ``buys_paused``); keeping it separate means the existing BUY gate
     predicates stay byte-for-byte unchanged (§5.2). ``None`` session ⇒ ``None``
     (no session to stop), matching ``order_intent_block_reason``'s convention.
+
+    Wave 3d (event_truth): reads the §8 FSM — only ``HALTED`` (the kill-switch
+    state, which dominates pause) holds a protection-floor exit; ``REDUCING``
+    (buys-paused) does not. Equivalent to the prior ``session.kill_switch`` read
+    because ``trading_state is HALTED`` iff ``kill_switch`` is set.
     """
 
     if session is None:
         return None
-    if session.kill_switch:
+    if session.trading_state is TradingState.HALTED:
         return "kill_switch"
     return None
 
