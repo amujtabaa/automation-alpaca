@@ -36,60 +36,62 @@ for every phase so far (proceeding was explicitly user-authorized).
 |---|---|---|
 | 0 | Docs, inventory, migration seams | ✅ done (`7a25649`) — report: `docs/SPINE_PHASE0_INVENTORY.md`, `docs/SPINE_PHASE0_MIGRATION_PLAN.md` |
 | 1 | Facade shell + characterization | ✅ done (`d146e0e`, `afe8543`) — report: `docs/SPINE_PHASE1_FACADE_REPORT.md` |
-| 2 | Event schema + replay scaffolding | 🚧 in progress |
-| 3 | Safety-critical event-first migration | ⬜ not started (largest; resolves ADR-001/002/003 conflicts) |
+| 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`<phase2-final>`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
+| 3 | Safety-critical event-first migration | 🚧 next (largest; resolves ADR-001/002/003 conflicts) |
 | 4 | Reconciliation engine | ⬜ not started |
 | 5 | Import-boundary enforcement | ⬜ not started |
 | 6 | Legacy table demotion/removal | ⬜ not started |
 
 ---
 
-## Current position: Phase 2 — Event schema + replay scaffolding
+## Phase 2 — Event schema + replay scaffolding — ✅ CLOSED
 
-**Design decisions locked for this phase (to avoid tech debt / re-litigation):**
+All substeps done; adversarial review (workflow `w32i9qgc8`, 4 lenses +
+synthesis) returned **safe to finalize**; 5 low/nit findings applied (see
+`docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` §6). Commits: `7ba8dd0` (log + projector
++ replay), `b0434f3` (coverage→100%), `b46b83b` (matrix/report/ledger),
+`<phase2-final>` (review remediation). Full suite green, `app/events/` 100%.
 
-- The Spine v2 `ExecutionEvent` log is **distinct** from the existing audit
-  `Event`/`EventType` (`app/models.py`). The audit log is a human-facing
-  incident trail; `ExecutionEvent` is the append-only *event-sourcing truth*
-  with monotonic `sequence`, `schema_version`, `ts_event`/`ts_init`, `source`,
-  `authority`, and a `dedupe_key`. They are not merged.
-- Phase 2 is **additive / shadow only**. It does NOT flip any flow to
-  `event_truth`, does NOT wire the event log into the live fill/order path, and
-  does NOT change production trading behavior. The log exists and is proven
-  correct in isolation; Phase 3 makes it authoritative.
-- The `PositionProjector` **reuses `app/position.py:fold_fills`** — the folding
-  formula is not duplicated. A fill event carries exactly the fields needed to
-  reconstruct a `Fill` and fold it.
-- Projectors for **primary / spawn / TradingState are deliberately deferred to
-  Phase 3**, where those state machines are actually built. Building them now
-  would mean inventing Phase 3 semantics with nothing real to project — a
-  tech-debt trap. This deferral is recorded here per the CLAUDE.md conflict
-  rule (don't silently pick — record the gap). Phase 2 ships the projection
-  *framework* + the one projector with real current semantics (position).
+Locked design decisions (kept, for the record): `ExecutionEvent` is distinct
+from the audit `Event`; Phase 2 is additive/shadow (no `event_truth` flip, no
+production writer); the projector reuses `apply_fill` (formula single-sourced);
+primary/spawn/TradingState projectors deferred to Phase 3 (recorded per the
+CLAUDE.md conflict rule, not silently picked).
 
-**Substeps:**
+---
 
-- [x] `ExecutionEvent` model + `execution_events` table (SQLite + in-memory) — `7ba8dd0`
-- [x] Store API: `append_execution_event` (monotonic sequence + dedupe),
-      `get_execution_events`, `get_max_execution_sequence` — both stores, at
-      parity — `7ba8dd0`. (Persisted snapshot *tables* deferred to Phase 3/4 —
-      the pure snapshot+replay *mechanism* is in `app/events/replay.py`; a DB
-      snapshot table is only needed once recovery consumes it.)
-- [x] `app/events/projectors.py` (PositionProjector reusing `apply_fill`) +
-      `app/events/replay.py` (replay verifier) — `7ba8dd0`
-- [x] Tests: dual-store parity, sequence monotonicity, dedupe idempotency,
-      schema_version, snapshot+replay==full replay, projector vs independent
-      fill-table fold — `7ba8dd0`, coverage to 100% `b0434f3`
-- [~] Full suite + harness green (1390 passed / 95.56% cov); adversarial
-      multi-lens review of the diff — **RUNNING** (workflow task `w32i9qgc8`)
-- [~] `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` (drafted; review section pending);
-      `docs/MIGRATION_MATRIX.md` updated; commit/push; STOP for review
+## Current position: Phase 3 — Safety-critical event-first migration
 
-**Resume hint:** Phase 2 code is committed and green (`b0434f3`). If resuming:
-check workflow task `w32i9qgc8` results (or re-run the review workflow),
-fill §6 of `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md`, apply any confirmed
-findings, then Phase 2 is closed. Next is Phase 3 (behavior-changing —
-start with broker-authoritative fill ingestion + dedup event-truth flip).
+**The largest phase and the first that CHANGES behavior.** It resolves the
+ADR-001/002/003 conflicts characterized in Phase 0 by making the event log
+authoritative for migrated flows. Break into sub-waves; each wave:
+characterize → implement → adversarial-verify → report → commit.
+
+**Planned sub-wave order (lowest-risk first):**
+
+- [ ] **Wave 3a — broker-authoritative fill ingestion + dedup → `event_truth`**
+      (Decision 1 / INV-5). Lowest risk: the Phase 2 `PositionProjector` +
+      replay verifier already validate fill→position derivation. First flow
+      where "the first durable write is an `ExecutionEvent`". Note the ADR-001
+      forward-coupling comment at `app/events/projectors.py` — the projector
+      must tolerate a recorded oversell (quarantine) rather than reject.
+- [ ] **Wave 3b — overfill / negative-position quarantine** (ADR-001). Record
+      broker reality, mark primary `QUARANTINED`, block autonomous spawns.
+      Requires the projector oversell-tolerance change flagged above.
+- [ ] **Wave 3c — timeout/504 `TIMEOUT_QUARANTINE`** (ADR-002). Replace blind
+      redrive (characterized in `tests/test_spine_v2_characterization.py`
+      Flow 2) with quarantine + targeted reconcile-by-`client_order_id`.
+- [ ] **Wave 3d — kill/TradingState FSM** (§8): `Active`/`Reducing`/`Halted`
+      replacing the binary flags (Flow 5).
+- [ ] **Wave 3e — manual flatten + emergency reduce** (ADR-003, Flow 1). Depends
+      on the TradingState FSM (3d).
+
+**Resume hint:** Phase 2 is fully closed and pushed. Start Wave 3a. Re-read
+`docs/adr/ADR-001` and `ADR-004`, `tests/test_spine_v2_characterization.py`
+(the pinned current behavior), and the current fill path
+(`app/store/core.py:plan_append_fill`, `app/store/{memory,sqlite}.py:append_fill`).
+Phase 3 flips a flow to `event_truth` only when the 6 conditions in
+`docs/MIGRATION_MATRIX.md` "Migration rule" hold.
 
 ---
 

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from app.models import ExecutionEvent, ExecutionEventType, Fill, Position
+from app.policy import fill_value_reason
 from app.position import apply_fill
 
 
@@ -63,6 +64,14 @@ def _fill_from_event(event: ExecutionEvent) -> Fill:
     ``quantity``/``price`` are required and their absence is a
     :class:`ProjectionError`. ``filled_at`` prefers the venue event time
     (``ts_event``), falling back to local ingest time (``ts_init``).
+
+    Intrinsic value validity (finite, whole, strictly-positive quantity; finite,
+    strictly-positive price) is enforced via the SAME shared predicate the store
+    uses for ``append_fill`` (``fill_value_reason``) — a NaN/Inf/negative value
+    would fold into a ``NaN``/garbage position and silently corrupt the derived
+    truth, which the fail-fast principle (Spine v2 §1) and this class's contract
+    forbid. Keeping the check on the shared predicate means the event-log path
+    and the legacy fill path reject the same malformed numbers identically.
     """
 
     missing = [
@@ -79,6 +88,12 @@ def _fill_from_event(event: ExecutionEvent) -> Fill:
         raise ProjectionError(
             f"FILL event sequence={event.sequence} missing required "
             f"field(s): {', '.join(missing)}"
+        )
+    value_reason = fill_value_reason(event.quantity, event.price)
+    if value_reason is not None:
+        raise ProjectionError(
+            f"FILL event sequence={event.sequence} has invalid values "
+            f"({value_reason}): quantity={event.quantity!r} price={event.price!r}"
         )
     return Fill(
         order_id=event.order_id or "",
@@ -138,5 +153,13 @@ class PositionProjector:
                 continue
             fill = _fill_from_event(event)
             current = positions.get(fill.symbol) or Position(symbol=fill.symbol)
+            # NOTE (ADR-001 forward-coupling): apply_fill RAISES NegativePosition
+            # Error on a sell that crosses flat into short — correct for Phase 2
+            # parity with the legacy fold. But ADR-001 says a *broker-authoritative*
+            # overfill must be RECORDED and quarantined, not rejected. When Phase 3
+            # wires broker-authoritative fill events, this path must tolerate a
+            # recorded oversell (project the negative qty + mark the primary
+            # QUARANTINED) rather than abort the whole replay here. Do not assume
+            # apply_fill is safe to replay over recorded broker reality.
             positions[fill.symbol] = apply_fill(current, fill)
         return PositionProjection(positions=positions, up_to_sequence=up_to_sequence)

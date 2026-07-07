@@ -910,6 +910,11 @@ class StateStore(ABC):
         log; a snapshot-based recovery passes the snapshot's ``up_to_sequence``
         to replay only the tail. ``limit`` caps the batch size (oldest-first)
         for chunked replay of a large log.
+
+        A negative ``limit`` raises ``ValueError`` in *both* stores — it is
+        nonsensical input, and left unguarded it would diverge (a Python slice
+        ``out[:-1]`` drops the tail while SQL ``LIMIT -1`` means unlimited),
+        violating the strict dual-store parity mandate.
         """
 
     @abstractmethod

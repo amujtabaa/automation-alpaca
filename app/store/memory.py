@@ -1425,6 +1425,11 @@ class InMemoryStateStore(StateStore):
     async def get_execution_events(
         self, *, after_sequence: int = 0, limit: Optional[int] = None
     ) -> list[ExecutionEvent]:
+        # A negative limit must be rejected in BOTH stores identically — a
+        # Python slice out[:-1] would drop the tail while SQL LIMIT -1 means
+        # unlimited (dual-store parity, see base.py).
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
         async with self._lock:
             # Appends assign strictly increasing sequences under the lock, so the
             # list is already in ascending sequence order — no sort needed.

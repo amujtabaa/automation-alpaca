@@ -104,15 +104,16 @@ corpus (217 position/fill tests) staying green, plus a direct
 ```text
 harness/check_claude_imports.py       -> All CLAUDE.md @ imports resolve.
 harness/check_stale_prompt_links.py   -> No stale references found.
-pytest (full suite)                   -> 1390 passed, 3 skipped
-pytest --cov=app --cov-branch         -> 95.56% (floor 93%)
+pytest (full suite)                   -> 1404 passed, 3 skipped
+pytest --cov=app --cov-branch         -> 95.65% (floor 93%)
   app/events/projectors.py            -> 100%
   app/events/replay.py                -> 100%
   app/models.py                       -> 99%
   app/position.py                     -> 96% (refactor)
 ```
 
-The 34 Phase-2 tests cover: dual-store store API (sequence monotonicity,
+The 47 Phase-2 tests (34 + 13 from the review remediation) cover: dual-store
+store API (sequence monotonicity,
 `dedupe_key` idempotency proving the *original* payload is kept, NULL-key
 non-dedup, `after_sequence`/`limit`, sqlite reopen durability); the
 `PositionProjector` against the **documented folding oracle**
@@ -124,8 +125,50 @@ actually fails on a real mismatch (scanning the whole book); and the
 
 ## 6. Adversarial review of this diff (internal — not the required external review)
 
-<!-- PENDING: filled in from workflow task w32i9qgc8 (4 lenses + synthesis
-     re-verification with mutation testing). -->
+Four independent, fresh-context lenses (correctness/invariants, dual-store
+parity, scope discipline, test quality) reviewed the diff, followed by a
+synthesis pass that **independently re-verified every finding against real
+source** (reproducing each claimed failure concretely) and ran a mutation test.
+Synthesis verdict: **safe to finalize** (the diff itself — the external
+process gate is separate). No blocker/high/medium findings. Five low/nit
+findings, all reproduced firsthand; **four applied in this phase**, one is a
+Phase-3 forward-coupling note:
+
+1. **[LOW, fixed] Negative `limit` diverged memory vs SQLite.**
+   `get_execution_events(limit=-1)` returned `[1,2]` from memory (`out[:-1]`
+   drops the tail) but `[1,2,3]` from SQLite (`LIMIT -1` = unlimited) — a real
+   violation of the strict dual-store parity mandate, though unreachable today
+   (the only caller passes no `limit`). **Fix:** both stores now raise
+   `ValueError` on a negative `limit`; parity test added (parametrized over
+   both stores + several negative values).
+2. **[LOW, forward-coupling note — no Phase 2 change] Projector reuses the
+   raising `apply_fill`.** Correct for Phase 2 (parity with the legacy fold),
+   but ADR-001 says a *broker-authoritative* overfill must be recorded +
+   quarantined, not rejected. **Action taken:** added an ADR-001 comment at the
+   `apply_fill` call site so Phase 3 does not treat it as safe to replay over
+   recorded broker reality.
+3. **[LOW, fixed] `_fill_from_event` fail-fast only rejected `None`, not
+   NaN/Inf/negative/zero** price or quantity — contradicting its own docstring
+   and §1 (a NaN would fold into a garbage position). **Fix:** now runs the
+   **same shared `fill_value_reason` predicate the store's `append_fill` uses**
+   (no duplicated validation) and raises `ProjectionError`; parametrized tests
+   for NaN/Inf/negative/zero added.
+4. **[LOW, fixed] No full-envelope SQLite roundtrip test.** The 34 tests only
+   asserted the projected `Position`, so a mapper transposition (e.g.
+   `authority`↔`source`) or a dropped `payload` in the 19-column INSERT would
+   pass unnoticed while corrupting the durable provenance fields Phase 3
+   branches safety on. **Fix:** added a field-for-field roundtrip test pinning
+   the whole envelope (nested payload, all `*_id`, authority/source).
+5. **[NIT, fixed] Gaplessness after a dedupe skip not directly asserted.**
+   **Fix:** the dedupe test now appends a further distinct event and asserts it
+   lands at sequence 2 (gapless), proving a skip consumed no sequence.
+
+Also applied the correctness lens's cleanup note: removed the redundant
+`idx_execution_events_dedupe` index (the `dedupe_key TEXT UNIQUE` constraint
+already creates the implicit lookup index).
+
+Post-remediation: 47 Phase-2 tests, `app/events/` at 100% line+branch, full
+suite green.
 
 ## 7. Recommended next phase
 

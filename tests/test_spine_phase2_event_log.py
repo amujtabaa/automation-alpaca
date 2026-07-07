@@ -116,6 +116,11 @@ async def test_dedupe_key_is_idempotent(any_store):
     assert dup.quantity == 100  # original preserved, not the 999 re-append
     assert await any_store.get_max_execution_sequence() == 1
     assert len(await any_store.get_execution_events()) == 1
+    # A dedupe skip consumes no sequence, so the NEXT distinct append lands at
+    # 2 (gapless continuation), never 3 — proving the skip left no hole.
+    nxt = await any_store.append_execution_event(_fill_event("AAPL", OrderSide.BUY, 5, 1.0, "next"))
+    assert nxt.sequence == 2
+    assert await any_store.get_max_execution_sequence() == 2
 
 
 async def test_null_dedupe_key_is_never_deduped(any_store):
@@ -133,6 +138,18 @@ async def test_get_execution_events_after_sequence_and_limit(any_store):
     head = await any_store.get_execution_events(limit=2)
     assert [e.sequence for e in head] == [1, 2]
     assert [e.sequence for e in await any_store.get_execution_events()] == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize("bad_limit", [-1, -2, -100])
+async def test_get_execution_events_negative_limit_raises_in_both_stores(any_store, bad_limit):
+    """Dual-store parity trap: a Python slice ``out[:-1]`` silently drops the
+    tail while SQL ``LIMIT -1`` means unlimited. Both stores must reject a
+    negative limit identically (ValueError) rather than diverge."""
+    await _seed_events(any_store, _script())
+    with pytest.raises(ValueError):
+        await any_store.get_execution_events(limit=bad_limit)
+    # limit=0 is valid (empty batch) and agrees across stores.
+    assert await any_store.get_execution_events(limit=0) == []
 
 
 async def test_schema_version_stamped_on_every_event(any_store):
@@ -156,6 +173,48 @@ async def test_execution_events_survive_sqlite_reopen(tmp_path):
     assert await reopened.get_max_execution_sequence() == 5
     reopened._conn.close()
     reopened._conn = None
+
+
+async def test_sqlite_roundtrips_the_full_execution_event_envelope(tmp_path):
+    """Every ExecutionEvent field must survive the SQLite INSERT + row mapper —
+    not just the ones the position projection reads. A transposition (e.g.
+    authority<->source) or a dropped ``payload`` in the 19-column INSERT would
+    leave the projection-only tests green while silently corrupting the durable
+    provenance fields Phase 3 branches safety on. Pin the whole envelope."""
+    store = SqliteStateStore(tmp_path / "envelope.db")
+    await store.initialize()
+    original = ExecutionEvent(
+        event_type=ExecutionEventType.QUARANTINED,
+        source=EventSource.RECONCILIATION,
+        authority=EventAuthority.SYNTHETIC,
+        dedupe_key="dk-1",
+        ts_event=_TS,
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        quantity=42,
+        price=1.23,
+        order_id="ord-1",
+        primary_id="prim-1",
+        spawn_id="spawn-1",
+        session_id="sess-1",
+        correlation_id="corr-1",
+        payload={"nested": {"k": [1, 2, 3]}, "flag": True},
+    )
+    appended = await store.append_execution_event(original)
+    fetched = (await store.get_execution_events())[0]
+    # Field-for-field equality (the store assigns sequence; everything else,
+    # including id/authority/source/all *_id fields/nested payload, must match).
+    assert fetched == appended
+    assert fetched.model_dump(mode="json") == appended.model_dump(mode="json")
+    # Spot-check the provenance fields the projection never touches.
+    assert fetched.authority is EventAuthority.SYNTHETIC
+    assert fetched.source is EventSource.RECONCILIATION
+    assert fetched.payload == {"nested": {"k": [1, 2, 3]}, "flag": True}
+    assert (fetched.primary_id, fetched.spawn_id, fetched.correlation_id) == (
+        "prim-1", "spawn-1", "corr-1",
+    )
+    store._conn.close()
+    store._conn = None
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +286,36 @@ def test_projector_up_to_sequence_tracks_max_not_last():
     ]
     projection = PositionProjector.project(events)
     assert projection.up_to_sequence == 5  # max, not the last event's 3
+
+
+@pytest.mark.parametrize(
+    "quantity,price",
+    [
+        (100, float("nan")),   # non-finite price
+        (100, float("inf")),
+        (100, -1.0),           # negative price
+        (100, 0.0),            # zero price
+        (-5, 1.0),             # negative quantity
+        (0, 1.0),              # zero quantity
+    ],
+)
+def test_projector_rejects_non_finite_or_non_positive_values(quantity, price):
+    """A NaN/Inf/negative/zero quantity or price would fold into a NaN/garbage
+    position and silently corrupt derived truth. The projector must fail-fast
+    (Spine v2 §1) using the SAME shared predicate the store's append_fill uses —
+    the model's ResponseSafeFloat only guards JSON *serialization*, not this."""
+    event = ExecutionEvent(
+        sequence=1,
+        event_type=ExecutionEventType.FILL,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        quantity=quantity,
+        price=price,
+    )
+    with pytest.raises(ProjectionError):
+        PositionProjector.project([event])
 
 
 @pytest.mark.parametrize("missing_field", ["quantity", "price", "side", "symbol"])

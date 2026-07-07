@@ -277,8 +277,9 @@ CREATE INDEX IF NOT EXISTS idx_recoveries_status ON submit_recoveries(cleanup_st
 -- truth (§11), distinct from the audit `events` table above. `sequence` is a
 -- monotonic per-store ordering key (UNIQUE enforces no collision/gap at the DB
 -- level); `dedupe_key` UNIQUE enforces INV-5 idempotency (SQLite treats NULLs
--- as distinct, so un-deduped events with NULL keys coexist freely). Phase 2 is
--- shadow: nothing writes here on the production path yet.
+-- as distinct, so un-deduped events with NULL keys coexist freely) AND creates
+-- the implicit lookup index the dedupe SELECT uses — no separate index needed.
+-- Phase 2 is shadow: nothing writes here on the production path yet.
 CREATE TABLE IF NOT EXISTS execution_events (
     id              TEXT PRIMARY KEY,
     sequence        INTEGER NOT NULL UNIQUE,
@@ -300,8 +301,6 @@ CREATE TABLE IF NOT EXISTS execution_events (
     correlation_id  TEXT,
     payload         TEXT NOT NULL DEFAULT '{}'
 );
-CREATE INDEX IF NOT EXISTS idx_execution_events_dedupe
-    ON execution_events(dedupe_key);
 """
 
 
@@ -2344,6 +2343,11 @@ class SqliteStateStore(StateStore):
     async def get_execution_events(
         self, *, after_sequence: int = 0, limit: Optional[int] = None
     ) -> list[ExecutionEvent]:
+        # Reject a negative limit identically to the in-memory store: SQL
+        # LIMIT -1 means unlimited, which would silently diverge from a Python
+        # slice (dual-store parity, see base.py).
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
         sql = (
             "SELECT * FROM execution_events WHERE sequence > ? ORDER BY sequence"
         )
