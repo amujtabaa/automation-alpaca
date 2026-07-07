@@ -75,6 +75,16 @@ PROTECTION_STOP_LOSS_PCT_ENV = "PROTECTION_STOP_LOSS_PCT"
 PROTECTION_LIMIT_BUFFER_PCT_ENV = "PROTECTION_LIMIT_BUFFER_PCT"
 PROTECTION_CADENCE_SECONDS_ENV = "PROTECTION_CADENCE_SECONDS"
 
+# Phase 4 wave 4e — runtime mass-report reconciliation (§7). The acting reconcile
+# (targeted-query-before-not-found, external-order + position-parity surfacing) and
+# its deterministic per-minute query budget. Slice 4e-1 lands config + budget only.
+RECONCILIATION_ENABLED_ENV = "RECONCILIATION_ENABLED"
+RECONCILE_RECENT_THRESHOLD_MS_ENV = "RECONCILE_RECENT_THRESHOLD_MS"
+RECONCILE_AVG_PRICE_TOLERANCE_ENV = "RECONCILE_AVG_PRICE_TOLERANCE"
+RECONCILE_OPEN_CHECK_MISSING_RETRIES_ENV = "RECONCILE_OPEN_CHECK_MISSING_RETRIES"
+RECONCILE_QUERY_BUDGET_PER_MIN_ENV = "RECONCILE_QUERY_BUDGET_PER_MIN"
+RECONCILE_STARTUP_DELAY_SECS_ENV = "RECONCILE_STARTUP_DELAY_SECS"
+
 DEFAULT_DB_PATH = "./data/app.db"
 DEFAULT_POLL_CADENCE_SECONDS = 15.0
 DEFAULT_UNFILLED_TIMEOUT_MINUTES = 60.0
@@ -108,6 +118,14 @@ DEFAULT_CAPI_MAX_TOTAL_EXPOSURE = 25_000.0
 # it crosses the spread and fills in thin liquidity.
 DEFAULT_PROTECTION_STOP_LOSS_PCT = 0.08
 DEFAULT_PROTECTION_LIMIT_BUFFER_PCT = 0.005
+
+# Phase 4 wave 4e — §7 verified reconciliation defaults (Nautilus
+# LiveExecEngineConfig, source-checked in docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §7).
+DEFAULT_RECONCILE_RECENT_THRESHOLD_MS = 5000        # open_check_threshold_ms
+DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE = 0.0001      # 0.01% avg-px parity tolerance
+DEFAULT_RECONCILE_OPEN_CHECK_MISSING_RETRIES = 3    # confirms before not-found -> terminal
+DEFAULT_RECONCILE_QUERY_BUDGET_PER_MIN = 200        # §9 trading/query budget (200/min)
+DEFAULT_RECONCILE_STARTUP_DELAY_SECS = 10.0         # reconciliation_startup_delay_secs (4f)
 
 _FALSEY = {"false", "0", "no", "off"}
 
@@ -165,6 +183,18 @@ class Settings:
     # enable at the truth flip" discipline — keeps the whole existing corpus and any
     # real-Alpaca deployment unperturbed by 4d.
     reconciliation_shadow_enabled: bool = False
+    # Phase 4 wave 4e — runtime mass-report reconciliation (§7). Default ON, but
+    # additive/inert until slice 4e-2 wires the acting path (targeted-query-before-
+    # not-found, external-order + position-parity surfacing). Slice 4e-1 lands only
+    # the config + the deterministic per-minute query budget (`ReconcileQueryBudget`).
+    reconciliation_enabled: bool = True
+    reconcile_recent_threshold_ms: int = DEFAULT_RECONCILE_RECENT_THRESHOLD_MS
+    reconcile_avg_price_tolerance: float = DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE
+    reconcile_open_check_missing_retries: int = (
+        DEFAULT_RECONCILE_OPEN_CHECK_MISSING_RETRIES
+    )
+    reconcile_query_budget_per_min: int = DEFAULT_RECONCILE_QUERY_BUDGET_PER_MIN
+    reconcile_startup_delay_secs: float = DEFAULT_RECONCILE_STARTUP_DELAY_SECS
 
     # --- Phase 5: market data + strategy loop ----------------------------- #
     # "auto" | "mock" | "alpaca" — see MARKET_DATA_FEED_ENV above.
@@ -325,6 +355,36 @@ def load_settings() -> Settings:
         os.environ.get(RECONCILIATION_SHADOW_ENV, "false").strip().lower()
         not in _FALSEY
     )
+    # Phase 4 wave 4e — runtime reconciliation config + §7 defaults.
+    reconciliation_enabled = (
+        os.environ.get(RECONCILIATION_ENABLED_ENV, "true").strip().lower()
+        not in _FALSEY
+    )
+    reconcile_recent_threshold_ms = _env_int(
+        RECONCILE_RECENT_THRESHOLD_MS_ENV,
+        DEFAULT_RECONCILE_RECENT_THRESHOLD_MS,
+        minimum=0,
+    )
+    reconcile_avg_price_tolerance = _env_float(
+        RECONCILE_AVG_PRICE_TOLERANCE_ENV,
+        DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE,
+        minimum=0.0,
+    )
+    reconcile_open_check_missing_retries = _env_int(
+        RECONCILE_OPEN_CHECK_MISSING_RETRIES_ENV,
+        DEFAULT_RECONCILE_OPEN_CHECK_MISSING_RETRIES,
+        minimum=1,
+    )
+    reconcile_query_budget_per_min = _env_int(
+        RECONCILE_QUERY_BUDGET_PER_MIN_ENV,
+        DEFAULT_RECONCILE_QUERY_BUDGET_PER_MIN,
+        minimum=1,
+    )
+    reconcile_startup_delay_secs = _env_float(
+        RECONCILE_STARTUP_DELAY_SECS_ENV,
+        DEFAULT_RECONCILE_STARTUP_DELAY_SECS,
+        minimum=0.0,
+    )
 
     market_data_feed = os.environ.get(MARKET_DATA_FEED_ENV, "auto").strip().lower()
     if market_data_feed not in {"auto", "mock", "alpaca"}:
@@ -447,6 +507,12 @@ def load_settings() -> Settings:
         timeout_quarantine_max_query_attempts=timeout_quarantine_max_query_attempts,
         enable_monitoring=enable_monitoring,
         reconciliation_shadow_enabled=reconciliation_shadow_enabled,
+        reconciliation_enabled=reconciliation_enabled,
+        reconcile_recent_threshold_ms=reconcile_recent_threshold_ms,
+        reconcile_avg_price_tolerance=reconcile_avg_price_tolerance,
+        reconcile_open_check_missing_retries=reconcile_open_check_missing_retries,
+        reconcile_query_budget_per_min=reconcile_query_budget_per_min,
+        reconcile_startup_delay_secs=reconcile_startup_delay_secs,
         market_data_feed=market_data_feed,
         market_data_stale_minutes=market_data_stale_minutes,
         enable_strategy_engine=enable_strategy_engine,

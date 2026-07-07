@@ -60,10 +60,62 @@ _NON_POSITION_TERMINALS = frozenset(
     {OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
 
-# Default parity/threshold values (the §7 verified defaults land in config.py in
+# Default parity/threshold values (the §7 verified defaults also land in config.py in
 # wave 4e; these keep the pure engine usable + testable standalone).
 DEFAULT_RECENT_ORDER_THRESHOLD_MS = 5000  # open_check_threshold_ms (§7)
 DEFAULT_AVG_PRICE_TOLERANCE = 0.0001      # 0.01% (§7)
+
+
+class ReconcileQueryBudget:
+    """Deterministic per-minute query budget for the reconciliation REST calls
+    (§9 "proactive token bucket" for the 200/min budget; §7 "respect the budget").
+
+    A continuous token bucket with an **injected clock** (§12) — no wall-clock, no
+    IO, no RNG — so a throttled cycle is replayable and property-testable exactly
+    like the rest of the reconcile engine. Tokens refill at ``limit_per_min / 60``
+    per second, capped at ``limit_per_min``; the bucket starts full.
+
+    ``try_consume(now, n)`` grants ``n`` tokens iff available. When it returns
+    ``False`` the caller **skips** that reconcile REST call this cycle — and a
+    skipped order/position query is **never** read as "flat"/"absent" (§7 / wave-4e
+    E7): the absence of a fresh report is never turned into a fact. The clock only
+    advances forward (a non-increasing ``now`` neither refills nor rewinds state),
+    so out-of-order calls cannot over-credit the budget.
+
+    Wave 4e-1 lands this inert (nothing consumes from it yet — the acting reconcile
+    wires it in slice 4e-4).
+    """
+
+    def __init__(self, limit_per_min: int) -> None:
+        if limit_per_min < 1:
+            raise ValueError("limit_per_min must be >= 1")
+        self.limit_per_min = limit_per_min
+        self._tokens = float(limit_per_min)
+        self._last: Optional[datetime] = None
+
+    def try_consume(self, now: datetime, n: int = 1) -> bool:
+        if n < 1:
+            raise ValueError("n must be >= 1")
+        if self._last is None:
+            self._last = now
+        else:
+            elapsed = (now - self._last).total_seconds()
+            if elapsed > 0:  # refill only on forward time; never rewind
+                self._tokens = min(
+                    float(self.limit_per_min),
+                    self._tokens + elapsed * (self.limit_per_min / 60.0),
+                )
+                self._last = now
+        if self._tokens >= n:
+            self._tokens -= n
+            return True
+        return False
+
+    @property
+    def available(self) -> float:
+        """Tokens available as of the last ``try_consume`` (no implicit refill)."""
+
+        return self._tokens
 
 
 @dataclass(frozen=True)

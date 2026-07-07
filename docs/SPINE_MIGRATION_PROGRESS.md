@@ -393,6 +393,15 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
   `list_open_orders` must default to the adapter's known-live orders, else the acting reconcile (on by
   default) would drive every existing open-order test to a spurious not-found→reject. Heavier Opus
   adversarial review at slice 4e-5 (oversell/short-flip focus).
+  - [x] **Slice 4e-1 — §7 config defaults + query budget** (additive/inert). `config.py`:
+    `reconciliation_enabled` (default True) + `reconcile_recent_threshold_ms` (5000) +
+    `reconcile_avg_price_tolerance` (0.0001) + `reconcile_open_check_missing_retries` (3, min 1) +
+    `reconcile_query_budget_per_min` (200, min 1) + `reconcile_startup_delay_secs` (10.0, for 4f), all
+    env-overridable (misconfigured retries/budget < 1 fail-fast, matching the timeout-quarantine pattern).
+    New pure `ReconcileQueryBudget` (`reconciliation.py`): a deterministic per-minute token bucket with an
+    INJECTED clock (§12/§9) — starts full, refills only on forward time, `try_consume(now,n)` skips-not-flat
+    when empty; token-conservation property-tested. Nothing consumes it yet (wired in 4e-4).
+    `tests/test_spine_phase4_reconcile_budget.py` (11 tests).
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).
