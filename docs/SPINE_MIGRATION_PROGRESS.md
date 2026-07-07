@@ -112,7 +112,7 @@ characterize → implement → adversarial-verify → report → commit.
         be recorded, else a recorded oversell aborts the whole replay.
 - [~] **Wave 3b — overfill / negative-position quarantine** (ADR-001).
       - [x] **Part 1 — projector oversell-tolerance + quarantine detection**
-        (`<wave3b-p1>`). `apply_fill(..., allow_short=True)` records a crossing
+        (`563ed4d`). `apply_fill(..., allow_short=True)` records a crossing
         sell as a negative position instead of raising (the default still raises
         — the long-only backstop for *local* input is preserved); the
         projector uses it (a recorded broker FILL is a fact to project, not an
