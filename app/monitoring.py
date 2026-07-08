@@ -490,10 +490,40 @@ async def run_startup_reconcile(
 
     No-op when reconciliation is disabled. Best-effort — never raises into startup."""
 
+    _log.info("startup reconcile: entering reduce-only until parity confirmed")
+    await _reconcile_and_gate(store, adapter, settings, reason="startup_pending")
+
+
+async def on_stream_reconnect(
+    store: StateStore, adapter: BrokerAdapter, settings: Settings
+) -> None:
+    """§7 stream-reconnect handler (wave 4g / R1). A trade-update stream reconnect has
+    NO replay, so our locally-cached order/position state may have drifted while the
+    stream was down — enter reduce-only (reconcile driver → ``Reducing``) and trigger a
+    mass-status reconcile; the monitoring loop then maintains ``Reducing`` until parity,
+    then lifts to ``Active`` (§7 "reconcile-after-reconnect ... until parity, Reducing").
+
+    **R1 (sim seam):** the spine is REST-poll (D-011) — there is no real trade-update
+    stream yet. This is the seam a real stream's reconnect callback WILL call; for now
+    it is invoked deterministically from the sim/tests, and real-stream wiring is
+    deferred with real creds (see docs/SPINE_PHASE4_PLAN.md R1). No-op when
+    reconciliation is disabled; best-effort (never raises into a callback)."""
+
+    _log.warning("stream reconnect — entering reduce-only + reconciling (§7 / wave 4g)")
+    await _reconcile_and_gate(store, adapter, settings, reason="stream_reconnect")
+
+
+async def _reconcile_and_gate(
+    store: StateStore, adapter: BrokerAdapter, settings: Settings, *, reason: str
+) -> None:
+    """Shared reduce-only-until-parity gate (wave 4f/4g): drive the reconcile
+    TradingState driver → ``Reducing`` (``reason``), then run one mass-reconcile pass
+    that lifts to ``Active`` on confirmed parity (or holds ``Reducing`` on divergence /
+    failure — R3). No-op when reconciliation is disabled."""
+
     if not settings.reconciliation_enabled:
         return
-    _log.info("startup reconcile: entering reduce-only until parity confirmed")
-    await _safe_set_reconcile_state(store, TradingState.REDUCING, reason="startup_pending")
+    await _safe_set_reconcile_state(store, TradingState.REDUCING, reason=reason)
     budget = ReconcileQueryBudget(settings.reconcile_query_budget_per_min)
     await _run_reconciliation(store, adapter, settings, budget=budget, drive_state=True)
 

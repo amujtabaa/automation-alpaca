@@ -487,6 +487,12 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     (`drive_reconcile_state=False` default). `tests/test_spine_phase4f_startup_gate.py` (12, dual-store):
     clean-parity→Active, divergence→stays-Reducing, failure→Reducing-never-Halted, kill-dominates,
     divergence-then-resolution-lifts, direct-tick-never-drives.
+- [x] **Wave 4g — stream reconnect → Reducing + reconcile (R1 sim-seam).** `on_stream_reconnect` reuses the
+  4f gate (`_reconcile_and_gate`): a trade-update stream reconnect (no replay → possible drift) enters
+  reduce-only (`Reducing`), triggers a mass reconcile, and lifts to `Active` on parity (or holds `Reducing`
+  on divergence/failure — R3; kill still dominates). **R1:** no real trade-update stream exists (REST-poll,
+  D-011), so this is the SIM SEAM a real stream's reconnect callback will call — invoked from sim/tests;
+  real-stream wiring deferred with real creds. `tests/test_spine_phase4g_reconnect.py` (5). Suite 1732 passed.
   ~~**4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition~~
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).
