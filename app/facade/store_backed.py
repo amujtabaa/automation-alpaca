@@ -828,6 +828,15 @@ class StoreBackedCommandFacade:
         to CANCELED immediately; a submitted one requests the broker cancel then
         moves to CANCEL_PENDING (CHAOS-1: a late fill before the venue finalizes is
         still recorded). A broker-call failure leaves the order UNCHANGED → 502."""
+        if self._broker is None:
+            # Parity with create_exit/emergency_reduce_override (and with the old
+            # route, where get_broker_adapter's hard Depends raised → 500 for EVERY
+            # status when the broker was unwired). Without this guard a broker-less
+            # app would 200-succeed a CREATED order's local cancel, or map a
+            # SUBMITTED order's AttributeError to a misleading retryable-502 — both
+            # a config error masquerading as normal/transient. A missing broker is
+            # a wiring fault (500), not a gateway outage.
+            raise RuntimeError("broker adapter not available")
         order = await self._store.get_order(order_id)
         if order is None:
             raise EntityNotFoundError(f"order {order_id} not found")

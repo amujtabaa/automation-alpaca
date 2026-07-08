@@ -186,6 +186,16 @@ async def test_emergency_reduce_flatten_invalid_after_grant_is_409(
 # cancel (manual order cancel) — the transient-race branch only; the 404/409/502
 # paths are covered end-to-end in test_orders_api.py through the HTTP route.
 # --------------------------------------------------------------------------- #
+async def test_cancel_without_broker_raises(any_store):
+    """Parity with the sibling command guards + the old route (get_broker_adapter's
+    hard Depends -> 500 when unwired): a broker-less facade must NOT 200-succeed a
+    local CREATED cancel nor map a submitted cancel to a misleading 502 — a missing
+    broker is a wiring fault (RuntimeError -> 500), checked before any store read."""
+    await any_store.initialize()
+    with pytest.raises(RuntimeError, match="broker adapter not available"):
+        await _facade(any_store, broker=None).cancel(order_id="anything", actor="op")
+
+
 async def test_cancel_unknown_order_is_404(any_store):
     await any_store.initialize()
     facade = _facade(any_store, broker=MockBrokerAdapter())
