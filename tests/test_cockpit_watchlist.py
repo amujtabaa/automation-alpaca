@@ -28,10 +28,9 @@ def _run(monkeypatch, watchlist: list, snapshots: list) -> AppTest:
 def test_no_snapshot_shows_placeholder(monkeypatch):
     at = _run(monkeypatch, watchlist=[WATCHLIST_ENTRY], snapshots=[])
 
-    assert not at.exception
-    texts = [w.value for w in at.get("markdown")] + [w.value for w in at.get("text")]
     # No crash and the row renders — exact widget introspection is fragile
     # across Streamlit versions, so the primary assertion is "no exception."
+    assert not at.exception
 
 
 def test_healthy_snapshot_shows_last_price_and_move(monkeypatch):

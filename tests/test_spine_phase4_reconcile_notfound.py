@@ -24,7 +24,6 @@ from app.config import Settings
 from app.models import (
     CandidateStatus,
     ExecutionEventType,
-    OrderSide,
     OrderStatus,
     utcnow,
 )

@@ -8,7 +8,6 @@ always wins.
 
 from __future__ import annotations
 
-import pytest
 
 from app.config import (
     ALPACA_KEY_ENV,

@@ -15,7 +15,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.broker.adapter import BrokerError, BrokerFill, BrokerOrderUpdate
+from app.broker.adapter import BrokerError, BrokerFill
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.main import create_app

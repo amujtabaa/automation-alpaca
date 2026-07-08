@@ -17,7 +17,6 @@ import asyncio
 import pytest
 
 from app.models import (
-    CandidateStatus,
     OrderSide,
     OrderStatus,
     OrderType,

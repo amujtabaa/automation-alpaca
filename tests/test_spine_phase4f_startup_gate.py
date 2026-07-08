@@ -16,7 +16,7 @@ import pytest
 from app.broker.adapter import BrokerError
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
-from app.models import CandidateStatus, OrderSide, TradingState
+from app.models import CandidateStatus, TradingState
 from app.monitoring import (
     _submit_pending_orders,
     run_monitoring_tick,

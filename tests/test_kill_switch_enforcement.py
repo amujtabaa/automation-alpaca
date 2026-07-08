@@ -12,7 +12,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.broker.mock import MockBrokerAdapter
-from app.config import Settings
 from app.main import create_app
 from app.models import CandidateStatus, OrderStatus
 from app.monitoring import _submit_pending_orders

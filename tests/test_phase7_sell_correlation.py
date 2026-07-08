@@ -19,7 +19,7 @@ from datetime import timedelta
 import pytest
 
 import app.monitoring as monitoring
-from app.broker.adapter import BrokerFill, BrokerOrderUpdate
+from app.broker.adapter import BrokerFill
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.models import (
