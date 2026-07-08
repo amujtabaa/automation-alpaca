@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Event-source the order-status / primary-spawn state machine
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0007
 wave: W2-remediation
 model_tier: strong
