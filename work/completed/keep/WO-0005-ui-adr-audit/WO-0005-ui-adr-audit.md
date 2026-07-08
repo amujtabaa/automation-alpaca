@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: UI layer ADR audit
-status: ready
+status: CLOSED
 work_order_id: WO-0005
 wave: W1-audit
 model_tier: mid
 risk: low
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-07
 ---
@@ -81,5 +81,5 @@ Findings are claims until the independent review seat checks them (feeds WO-0006
 
 ## Completion disposition
 
-- [ ] RESULT_SUMMARY_KEPT
+- [x] RESULT_SUMMARY_KEPT — findings kept; feeds WO-0006
 - [ ] ARCHIVED
