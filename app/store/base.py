@@ -311,6 +311,14 @@ FLATTEN_CREATED = "created"  # a fresh manual_flatten intent was created + order
                              # (superseding a non-live protection_floor exit first,
                              # if one was active)
 
+# P6-C minimal actor-audit: the default ``actor`` stamped on a control-command
+# audit event (kill switch / pause-buys — the sensitive ``/api/controls/*`` surface)
+# when the caller is NOT a facade command threading a real operator identity — i.e.
+# an internal/test call.
+# A facade command passes the resolved ``X-Actor`` (``app.api.deps.DEFAULT_ACTOR``
+# = "operator"). This is an audit LABEL, never authentication (single-user beta).
+COMMAND_ACTOR_SYSTEM = "system"
+
 
 @dataclass(frozen=True)
 class FlattenResult:
@@ -1041,16 +1049,26 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
-    async def set_kill_switch(self, engaged: bool) -> SessionRecord:
+    async def set_kill_switch(
+        self, engaged: bool, *, actor: str = COMMAND_ACTOR_SYSTEM
+    ) -> SessionRecord:
         """Persist the kill-switch flag on the active session (atomic + audit).
 
-        Beta only persists the flag; enforcement on order intent arrives with
-        the order path (out of scope now — see the implementation prompt).
+        ``actor`` (P6-C minimal actor-audit) is the audited operator who issued the
+        command, stamped into the ``kill_switch_engaged``/``_released`` audit event's
+        payload — an audit LABEL, not authentication (beta stays single-user
+        localhost). A facade command passes the resolved ``X-Actor`` (default
+        ``operator``); a non-facade/internal caller (tests) records
+        ``COMMAND_ACTOR_SYSTEM``.
         """
 
     @abstractmethod
-    async def set_buys_paused(self, paused: bool) -> SessionRecord:
-        """Persist the pause-buys flag on the active session (atomic + audit)."""
+    async def set_buys_paused(
+        self, paused: bool, *, actor: str = COMMAND_ACTOR_SYSTEM
+    ) -> SessionRecord:
+        """Persist the pause-buys flag on the active session (atomic + audit).
+        ``actor`` is stamped on the ``buys_paused``/``buys_resumed`` audit event
+        (P6-C actor-audit label; see :meth:`set_kill_switch`)."""
 
     @abstractmethod
     async def set_reconcile_trading_state(

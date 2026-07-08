@@ -62,6 +62,7 @@ from app.events.projectors import (
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
+    COMMAND_ACTOR_SYSTEM,
     FLATTEN_CREATED,
     FLATTEN_EXISTING,
     FLATTEN_FLAT,
@@ -1763,7 +1764,9 @@ class InMemoryStateStore(StateStore):
         )
         self._append_execution_event_unlocked(exec_event)
 
-    async def set_kill_switch(self, engaged: bool) -> SessionRecord:
+    async def set_kill_switch(
+        self, engaged: bool, *, actor: str = COMMAND_ACTOR_SYSTEM
+    ) -> SessionRecord:
         require_bool(engaged, field="engaged")
         async with self._lock:
             with self._atomic():
@@ -1772,11 +1775,13 @@ class InMemoryStateStore(StateStore):
                     session, kill_switch=engaged, buys_paused=session.buys_paused,
                     audit_event_type="kill_switch_engaged" if engaged else "kill_switch_released",
                     audit_message=f"kill switch {'engaged' if engaged else 'released'}",
-                    audit_payload={"kill_switch": engaged}, reason="kill_switch",
+                    audit_payload={"kill_switch": engaged, "actor": actor}, reason="kill_switch",
                 )
             return session.model_copy(deep=True)
 
-    async def set_buys_paused(self, paused: bool) -> SessionRecord:
+    async def set_buys_paused(
+        self, paused: bool, *, actor: str = COMMAND_ACTOR_SYSTEM
+    ) -> SessionRecord:
         require_bool(paused, field="paused")
         async with self._lock:
             with self._atomic():
@@ -1785,7 +1790,7 @@ class InMemoryStateStore(StateStore):
                     session, kill_switch=session.kill_switch, buys_paused=paused,
                     audit_event_type="buys_paused" if paused else "buys_resumed",
                     audit_message=f"buys {'paused' if paused else 'resumed'}",
-                    audit_payload={"buys_paused": paused}, reason="buys_paused",
+                    audit_payload={"buys_paused": paused, "actor": actor}, reason="buys_paused",
                 )
             return session.model_copy(deep=True)
 

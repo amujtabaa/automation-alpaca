@@ -624,15 +624,16 @@ class StoreBackedCommandFacade:
         self._settings = settings
 
     async def pause_buys(self, *, actor: str) -> SessionRecord:
-        """Unchanged wrap of ``StateStore.set_buys_paused(True)`` — the exact
-        call ``POST /api/controls/pause-buys`` made directly before this
-        facade existed. ``actor`` is accepted (Protocol shape) but not yet
-        persisted anywhere — see module docstring."""
-        return await self._store.set_buys_paused(True)
+        """Wrap of ``StateStore.set_buys_paused(True)`` — the exact call
+        ``POST /api/controls/pause-buys`` made directly before this facade existed.
+        P6-C: ``actor`` (the resolved ``X-Actor``) is now persisted on the
+        ``buys_paused`` audit event (a minimal audit label)."""
+        return await self._store.set_buys_paused(True, actor=actor)
 
     async def resume_buys(self, *, actor: str) -> SessionRecord:
-        """Unchanged wrap of ``StateStore.set_buys_paused(False)``."""
-        return await self._store.set_buys_paused(False)
+        """Wrap of ``StateStore.set_buys_paused(False)``; P6-C persists ``actor``
+        on the ``buys_resumed`` audit event."""
+        return await self._store.set_buys_paused(False, actor=actor)
 
     async def upsert_watchlist_symbol(
         self, *, symbol: str, armed: bool, actor: str
@@ -896,9 +897,12 @@ class StoreBackedCommandFacade:
         this event_truth (first-writes a ``TRADING_STATE_CHANGED`` event, folds to
         ``Halted``), so this is a pure boundary move — the Phase-1 deferral (freeze
         binary-flag semantics before the TradingState decision) is resolved. A
-        non-bool (guarded by the route's ``StrictBool`` body) → 422."""
+        non-bool (guarded by the route's ``StrictBool`` body) → 422. P6-C: ``actor``
+        (the resolved ``X-Actor``) is persisted on the ``kill_switch_engaged``/
+        ``_released`` audit event — a minimal audit label for the most sensitive
+        control command."""
         with _translate_store_errors():
-            return await self._store.set_kill_switch(engaged)
+            return await self._store.set_kill_switch(engaged, actor=actor)
 
     async def close_session(self, *, actor: str) -> SessionRecord:
         """``POST /api/session/close`` (P6b): wrap of ``StateStore.close_session``
