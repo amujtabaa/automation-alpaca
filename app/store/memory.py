@@ -1743,6 +1743,14 @@ class InMemoryStateStore(StateStore):
         exec_event = reconcile_trading_state_event(
             session.id, prior_reconcile=prior_reconcile, to=to, reason=reason,
         )
+        if exec_event is None:
+            # Reconcile driver already at `to` — a no-op re-assert. The loop drives
+            # this EVERY steady-parity tick, so appending an audit row + rewriting the
+            # column here would grow the log unbounded (and quadratically slow the
+            # per-tick log folds). Skip it: the composed effective column is already
+            # correct (neither driver changed), matching the repo's "a transition that
+            # doesn't change status writes no new audit row" discipline (docs/02).
+            return
         session.trading_state = compose_trading_state(
             control_trading_state(self._execution_events, session.id), to
         )
@@ -1753,8 +1761,7 @@ class InMemoryStateStore(StateStore):
             session_id=session.id,
             payload={"to": to.value, "reason": reason},
         )
-        if exec_event is not None:
-            self._append_execution_event_unlocked(exec_event)
+        self._append_execution_event_unlocked(exec_event)
 
     async def set_kill_switch(self, engaged: bool) -> SessionRecord:
         require_bool(engaged, field="engaged")

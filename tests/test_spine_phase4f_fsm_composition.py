@@ -117,7 +117,17 @@ async def test_drivers_fold_independently_from_the_log(any_store):
 async def test_redundant_reconcile_set_is_a_noop(any_store):
     await any_store.initialize()
     await any_store.set_reconcile_trading_state(R, reason="pending")
-    before = len(await any_store.get_execution_events())
-    await any_store.set_reconcile_trading_state(R, reason="pending-again")
-    after = len(await any_store.get_execution_events())
-    assert after == before          # no event when the reconcile state is unchanged
+    before_exec = len(await any_store.get_execution_events())
+    # The AUDIT log too — this is the load-bearing assert (the loop re-asserts the
+    # reconcile driver every steady-parity tick; without the no-op guard each tick
+    # appended a `trading_state_reconcile` audit row, growing the log unbounded).
+    before_audit = len(
+        await any_store.list_events(event_type="trading_state_reconcile")
+    )
+    for _ in range(3):
+        await any_store.set_reconcile_trading_state(R, reason="pending-again")
+    assert len(await any_store.get_execution_events()) == before_exec  # no exec event
+    assert (
+        len(await any_store.list_events(event_type="trading_state_reconcile"))
+        == before_audit
+    )  # and no audit row — a redundant set is a true no-op in the store

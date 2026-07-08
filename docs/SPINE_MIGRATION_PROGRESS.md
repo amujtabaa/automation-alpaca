@@ -515,6 +515,30 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     parametrize list). `tests/test_spine_phase4h_reconcile_read.py` (8: facade dual-store + HTTP wiring).
   - Suite **1754 passed** (memory+SQLite), ruff clean.
 
+- [x] **Phase-4 adversarial review + remediation.** Tiered independent review of the 4f/4g/4h diff:
+  a cheap read-surface pass (facade/DTO/route/boundary/payload-key contract — **clean, no defects**) +
+  a safety-critical pass on the reconcile FSM/gating. The safety pass **cleared** kill-dominance, R3
+  (reconcile never drives Halted), never-flat (failed report → Reducing; budget-skip → state unchanged,
+  never lifted to Active), Rule-7 (position never overwritten), direct-tick inertness, and the subtle
+  divergence-stickiness question (`_has_unresolved_divergence` reads the LIVE plan, not the dedup set, so
+  a dedup-suppressed record can't lift a still-diverging state). One actionable **MED** found + fixed:
+  - **RF-1 (log hygiene / perf).** The reconcile driver's no-op re-assert (`_apply_reconcile_state_*`)
+    appended a `trading_state_reconcile` audit row + rewrote the column on EVERY steady-parity tick
+    (the loop drives `drive_reconcile_state=True` each cadence), growing the legacy audit log unbounded
+    (~17k rows/day @ 5s) and quadratically slowing the per-tick log folds. Fixed: guard the audit append
+    + column rewrite on an actual state change (`exec_event is None` → return), mirroring the existing
+    ExecutionEvent gate; the ExecutionEvent log + FSM were already correct (unchanged). Now a redundant
+    set is a true store no-op — dual-store symmetric, so parity holds. Regression pinned in
+    `test_spine_phase4f_fsm_composition.py::test_redundant_reconcile_set_is_a_noop` (now asserts BOTH the
+    exec-event AND the audit-row count stay flat across repeated redundant sets).
+  - **Accepted as-is (planning-seat notes, do NOT gate):** (a) position-mismatch dedup by `(symbol,kind)`
+    is a once-ever flag — a cleared-then-recurred drift with a new magnitude isn't re-surfaced; safety
+    is unaffected (the FSM reads the live plan), audit fidelity only, and a clear/resolution path is a
+    Phase-4-deferred item. (b) A budget-exhausted reconcile leaves the driver at its last-known state
+    (possibly Active) rather than affirmatively Reducing — matches §7 "a skipped report is never treated
+    as flat" (takes no action); a liveness gap, not an oversell, and improbable at paper/beta scale.
+  - Suite green after the fix; ruff clean.
+
 **Phase 4 — CLOSED.** All §7 reconciliation goals are met: startup mass-status reconcile + gate (4f),
 targeted single-order query before any not-found→terminal (4e-3), external/unmanaged order surfacing +
 route (4e-2/4h), broker position parity surfacing (4h), deterministic synthetic fills (4e-4), stream
