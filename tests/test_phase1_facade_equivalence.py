@@ -16,7 +16,7 @@ import httpx
 import pytest
 from fastapi import HTTPException, status
 
-from app.api.deps import get_command_facade, get_query_facade
+from app.api.deps import DEFAULT_ACTOR, get_command_facade, get_query_facade
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.facade.commands import ExecutionCommandFacade
@@ -193,19 +193,21 @@ async def test_pause_and_resume_buys_routes_actually_call_the_command_facade():
             pause_response = await client.post("/api/controls/pause-buys")
             resume_response = await client.post("/api/controls/resume-buys")
         assert pause_response.status_code == resume_response.status_code == 200
+        # P6b: the controls routes now thread the minimal actor-audit header
+        # (get_actor) instead of the UNAUTHENTICATED_ACTOR placeholder; with no
+        # X-Actor header the resolved actor is DEFAULT_ACTOR ("operator").
         assert calls == [
-            ("pause_buys", UNAUTHENTICATED_ACTOR),
-            ("resume_buys", UNAUTHENTICATED_ACTOR),
+            ("pause_buys", DEFAULT_ACTOR),
+            ("resume_buys", DEFAULT_ACTOR),
         ]
     finally:
         app.dependency_overrides.pop(get_command_facade, None)
 
 
-async def test_kill_switch_route_is_unmigrated_and_unaffected():
-    """The kill-switch route deliberately still calls the store directly
-    (docs/SPINE_PHASE0_INVENTORY.md §3.4's live ADR-003 conflict) — confirm
-    it still works exactly as before, proving the facade migration of its
-    sibling routes didn't disturb it."""
+async def test_kill_switch_route_persists_via_the_facade():
+    """P6b migrated the kill-switch route behind ``ExecutionCommandFacade``
+    (wave 3d already made ``set_kill_switch`` event_truth, so the Phase-1 deferral
+    is resolved) — confirm it still engages the switch exactly as before."""
     app, store = await _app()
     async with _client(app) as client:
         response = await client.post("/api/controls/kill-switch", json={"engaged": True})
@@ -264,7 +266,9 @@ async def test_store_backed_command_facade_pause_resume_forward_unchanged():
     [
         lambda f: f.create_exit(symbol="AAPL", reason="manual_flatten", actor="x"),
         lambda f: f.cancel(order_id="o1", actor="x"),
-        lambda f: f.set_kill_switch(engaged=True, actor="x"),
+        # NOTE: set_kill_switch was MIGRATED in P6b (wraps StateStore.set_kill_switch,
+        # already event_truth via wave 3d) — it no longer raises. See
+        # test_kill_switch_route_persists_via_the_facade below.
         lambda f: f.emergency_reduce_override(symbol="AAPL", actor="x"),
     ],
 )

@@ -100,13 +100,15 @@ class ExecutionCommandFacade(Protocol):
         ...
 
     async def set_kill_switch(self, *, engaged: bool, actor: str) -> Any:
-        """Analogue of today's ``POST /api/controls/kill-switch``.
+        """``POST /api/controls/kill-switch`` (real as of P6b). Wraps
+        ``StateStore.set_kill_switch``; the wave-3d TradingState FSM already made
+        it event_truth (folds to ``Halted``), so this is a boundary move, not a
+        behavior change."""
+        ...
 
-        Target model (Spine v2 §8 / ADR-003): a ``TradingState`` transition
-        among ``Active``/``Reducing``/``Halted``, not today's binary
-        ``kill_switch`` flag flip on ``SessionRecord`` (``app/models.py``).
-        No ``TradingState`` type exists in this repo yet.
-        """
+    async def close_session(self, *, actor: str) -> Any:
+        """``POST /api/session/close`` (P6b): close the active session (expire
+        candidates, cancel CREATED orders, snapshot positions)."""
         ...
 
     async def emergency_reduce_override(self, *, symbol: str, actor: str) -> Any:

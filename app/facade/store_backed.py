@@ -25,10 +25,13 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
+from datetime import date as date_cls
+
 from app.facade.dtos import (
     ExternalOrderView,
     MarketSnapshotView,
     PositionMismatchView,
+    ReviewView,
 )
 from app.facade.errors import (
     ConflictError,
@@ -36,7 +39,7 @@ from app.facade.errors import (
     InvalidInputError,
     NotYetImplementedError,
 )
-from app.features import pct_move
+from app.features import pct_move, session_type_for
 from app.models import (
     Candidate,
     EventType,
@@ -44,6 +47,7 @@ from app.models import (
     SessionRecord,
     SessionStatus,
     WatchlistSymbol,
+    utcnow,
 )
 from app.store.base import (
     CandidateTransitionError,
@@ -168,6 +172,62 @@ class StoreBackedQueryFacade:
             )
             for s in snapshots
         ]
+
+    async def get_current_session_view(self) -> SessionRecord:
+        """``GET /api/session`` (P6b): the current session with ``session_type``
+        overlaid live from ``session_type_for(utcnow())`` — the same Feature
+        Engine classification the Strategy Engine uses — rather than the stored
+        value, since a day's session spans all three windows as time passes. Moves
+        the ``app.features`` overlay behind the facade so the route drops it."""
+        record = await self._store.get_current_session()
+        return record.model_copy(update={"session_type": session_type_for(utcnow())})
+
+    async def get_review(self, *, target_date: date_cls) -> ReviewView:
+        """``GET /api/review`` (P6b): the full session review for ``target_date``.
+        Owns the multi-read AND the D-012 closed-vs-active point-in-time branch —
+        a CLOSED session returns the position snapshot captured at close (NOT a
+        live re-fold, which a post-close fill would diverge), an active one the
+        live derived positions. Behavior copied verbatim from the old route."""
+        session = await self._store.get_session_by_date(target_date)
+        if session is None:
+            return ReviewView(
+                date=target_date.isoformat(),
+                session=None,
+                candidates=[],
+                orders=[],
+                fills=[],
+                positions=[],
+                events=[],
+            )
+        candidates = await self._store.list_candidates(session_id=session.id)
+        orders = await self._store.list_orders(session_id=session.id)
+        events = await self._store.list_events(session_id=session.id)
+        fills = await self._store.list_fills(session_id=session.id)
+        sell_intents = await self._store.list_sell_intents(session_id=session.id)
+        if session.status is SessionStatus.CLOSED:
+            snapshots = await self._store.list_position_snapshots(session.id)
+            positions = [
+                Position(
+                    symbol=s.symbol,
+                    quantity=s.quantity,
+                    cost_basis=s.cost_basis,
+                    average_price=s.average_price,
+                    updated_at=s.captured_at,
+                )
+                for s in snapshots
+            ]
+        else:
+            positions = await self._store.list_positions()
+        return ReviewView(
+            date=target_date.isoformat(),
+            session=session,
+            candidates=candidates,
+            orders=orders,
+            fills=fills,
+            positions=positions,
+            events=events,
+            sell_intents=sell_intents,
+        )
 
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         raise NotYetImplementedError(
@@ -341,12 +401,23 @@ class StoreBackedCommandFacade:
             "adapter directly"
         )
 
-    async def set_kill_switch(self, *, engaged: bool, actor: str) -> Any:
-        raise NotYetImplementedError(
-            "set_kill_switch: not migrated behind the facade in Phase 1 — "
-            "see docs/SPINE_PHASE0_INVENTORY.md §3.4 (ADR-003/§8 conflict); "
-            "POST /api/controls/kill-switch still calls the store directly"
-        )
+    async def set_kill_switch(self, *, engaged: bool, actor: str) -> SessionRecord:
+        """``POST /api/controls/kill-switch`` (P6b): wrap of
+        ``StateStore.set_kill_switch``. The wave-3d TradingState FSM already made
+        this event_truth (first-writes a ``TRADING_STATE_CHANGED`` event, folds to
+        ``Halted``), so this is a pure boundary move — the Phase-1 deferral (freeze
+        binary-flag semantics before the TradingState decision) is resolved. A
+        non-bool (guarded by the route's ``StrictBool`` body) → 422."""
+        with _translate_store_errors():
+            return await self._store.set_kill_switch(engaged)
+
+    async def close_session(self, *, actor: str) -> SessionRecord:
+        """``POST /api/session/close`` (P6b): wrap of ``StateStore.close_session``
+        (expire open candidates, cancel CREATED orders, snapshot positions, mark
+        closed). Re-closing an already-closed session → 409
+        (``SessionAlreadyClosedError`` → ``ConflictError``)."""
+        with _translate_store_errors():
+            return await self._store.close_session()
 
     async def emergency_reduce_override(self, *, symbol: str, actor: str) -> Any:
         raise NotYetImplementedError(

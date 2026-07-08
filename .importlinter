@@ -176,10 +176,6 @@ ignore_imports =
     app.api.routes_candidates -> app.store.base
     app.api.routes_candidates -> app.policy
     app.api.routes_candidates -> app.approval.gate
-    app.api.routes_controls -> app.store.base
-    app.api.routes_review -> app.store.base
-    app.api.routes_system -> app.store.base
-    app.api.routes_system -> app.features
     app.api.routes_trading -> app.store.base
     app.api.routes_trading -> app.broker.adapter
     app.api.routes_trading -> app.marketdata.service

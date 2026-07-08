@@ -33,6 +33,16 @@ class ExecutionQueryFacade(Protocol):
         ``MarketSnapshotView`` — ``GET /api/marketdata/snapshots`` (P6a)."""
         ...
 
+    async def get_current_session_view(self) -> Any:
+        """Current session with the live ``session_type`` overlay —
+        ``GET /api/session`` (P6b)."""
+        ...
+
+    async def get_review(self, *, target_date: Any) -> Any:
+        """Full session review for a date (closed-vs-active point-in-time) as a
+        ``ReviewView`` — ``GET /api/review`` (P6b)."""
+        ...
+
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         """The eventual migrated analogue of today's sell-intent + order
         views (``GET /api/sell-intents``, ``GET /api/orders``) once

@@ -17,7 +17,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.models import (
+    Candidate,
+    Event,
+    Fill,
+    Order,
+    Position,
+    SellIntent,
+    SessionRecord,
+)
 
 
 class ExternalOrderView(BaseModel):
@@ -34,6 +44,24 @@ class ExternalOrderView(BaseModel):
     status: Optional[str] = None
     filled_quantity: Optional[int] = None
     surfaced_at: datetime
+
+
+class ReviewView(BaseModel):
+    """Everything needed to review one session (current or a past date) — the
+    facade's return for ``GET /api/review`` (P6b). The facade owns the multi-read
+    + the D-012 closed-vs-active point-in-time branching (snapshot rows for a
+    closed session, the live fold for the active one); the route just maps this to
+    the ``ReviewResponse`` HTTP schema (identical fields). Lives here, not in
+    ``app.api.schemas``, so the facade never imports up into the API layer."""
+
+    date: str
+    session: Optional[SessionRecord]
+    candidates: list[Candidate]
+    orders: list[Order]
+    fills: list[Fill]
+    positions: list[Position]
+    events: list[Event]
+    sell_intents: list[SellIntent] = Field(default_factory=list)
 
 
 class MarketSnapshotView(BaseModel):
