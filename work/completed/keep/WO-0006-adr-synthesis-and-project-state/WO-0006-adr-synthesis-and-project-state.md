@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: ADR synthesis + project-state report
-status: draft   # becomes ready only after WO-0001..0005 complete with in-process validation
+status: CLOSED
 work_order_id: WO-0006
 wave: W1-audit
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [ADR_CREATED, PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer) / independent seat (discretionary, per CLAUDE.md Review policy)
 created: 2026-07-07
 ---

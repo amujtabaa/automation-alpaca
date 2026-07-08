@@ -4,7 +4,7 @@ title: Architecture Map (Spine v2, as-built)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-07
+last_verified: 2026-07-08
 tags: [architecture, boundaries, layers]
 source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md, docs/adr/ADR-005-api-facade-boundaries.md, docs/01_ARCHITECTURE.md]
 supersedes: []
@@ -15,7 +15,7 @@ superseded_by: null
 
 ## Summary
 
-Layered system with strict import seams and a single-writer execution engine. Event log is truth for migrated flows (per ADR-004); legacy tables persist only as read models where noted in the (now-terminal) migration matrix.
+Layered system with strict import seams and a single-writer execution engine. Event log is truth for migrated flows (per ADR-004); legacy tables persist only as read models where noted in the migration matrix. The matrix is substantially complete but **not strictly terminal** (WO-0001, verdict NOT-TERMINAL narrow): one flow — the order-status / primary-spawn state machine ("Atomic submit claim") — is still `legacy_truth` (`orders.status` authoritative). Its ExecutionEvents are now emitted with faithful provenance (WO-0007a + WO-0009); the projector + read-flip that makes the matrix fully terminal is WO-0007b (queued, human-gated). See `pkl/process/migration-history.md`.
 
 ## Rules / facts
 
