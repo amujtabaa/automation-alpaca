@@ -1665,6 +1665,13 @@ async def _run_reconciliation(
             store, adapter, settings, plan.needs_targeted_query, budget=budget
         )
         await _apply_inferred_fills(store, plan)
+        # `plan.resolutions` (a MATCHED order the mass report reports terminal) is
+        # deliberately NOT applied here: a matched order carries a broker_order_id, so
+        # the legacy per-order poll owns its terminal transition + fill ingestion —
+        # acting on it here too would be a redundant double-actor write (E1). Alpaca's
+        # open-only mass report never surfaces a matched terminal anyway; worst case an
+        # order stays open locally one extra cycle if the poll is momentarily down (a
+        # self-healing liveness gap, never an oversell). Observability-only on this path.
         return plan
     except Exception as exc:  # noqa: BLE001 - reconcile is non-fatal; a failure never flips truth
         _log.warning("reconciliation skipped this cycle (non-fatal): %s", exc)
@@ -1707,11 +1714,21 @@ async def _surface_external_orders(
     ``reconcile_external_order`` audit record (§7: surfaced, NEVER silently
     absorbed into managed state or folded into position). Deduped by
     ``broker_order_id`` — one record per external order, ever (survives restart via
-    the persisted event log). Non-mutating: only an audit record is written."""
+    the persisted event log). Non-mutating: only an audit record is written.
+
+    Robustness: the engine already excludes venue rows matching a locally-*open*
+    order; here we ALSO exclude any that match a known local order in ANY state
+    (e.g. a terminal one the venue mirror hasn't caught up on) — an order we know
+    about is never "external/unmanaged", regardless of adapter/venue reporting lag."""
 
     if not plan.external_orders:
         return
 
+    all_orders = await store.list_orders()
+    known_ids = {o.id for o in all_orders}
+    known_broker_ids = {
+        o.broker_order_id for o in all_orders if o.broker_order_id is not None
+    }
     seen = {
         (e.payload or {}).get("broker_order_id")
         for e in await store.list_events(
@@ -1720,6 +1737,12 @@ async def _surface_external_orders(
     }
     for x in plan.external_orders:
         if x.broker_order_id in seen:
+            continue
+        if x.broker_order_id in known_broker_ids or (
+            x.client_order_id is not None and x.client_order_id in known_ids
+        ):
+            # A venue order that ties back to a local order we know (any status) is
+            # managed, not external — never surface it.
             continue
         await store.append_event(
             EventType.RECONCILE_EXTERNAL_ORDER.value,
@@ -1791,64 +1814,124 @@ async def _resolve_reconcile_not_found(
             continue
         # Each targeted query is one REST call against the §7/§9 budget (E6). When
         # exhausted, STOP querying this cycle and defer the rest to the next tick —
-        # an un-queried order is NEVER resolved (never read as absent, §7).
+        # an un-queried order is NEVER resolved (never read as absent, §7). The
+        # resolvable filter above runs first so a filtered-out order costs no token.
         if budget is not None and not budget.try_consume(utcnow()):
             _log.debug("reconcile: query budget exhausted; deferring remaining not-found")
             return
         try:
-            update = await adapter.get_order_by_client_order_id(order_id)
-        except BrokerError as exc:
-            # A query FAILURE is inconclusive — NEVER read as absent (§7). Retry;
-            # surface needs_review once persistently stuck (bounded so a venue outage
-            # doesn't grow the log forever). Counts ONLY query_error, independent of
-            # the not-found bound.
-            errors = await _order_deferral_count(
-                store, order_id, "query_error", event_type=_RECONCILE_DEFERRED_EVENT
+            await _resolve_one_not_found(store, adapter, order, retries)
+        except Exception:  # noqa: BLE001 - one order's failure never stops the loop/tick
+            _log.exception(
+                "reconcile: not-found resolution errored for order %s", order_id
             )
-            if errors < retries:
-                await _record_reconcile_deferral(
-                    store, order, errors + 1, "query_error",
-                    needs_review=errors + 1 >= retries, error=str(exc),
-                )
-            continue
 
-        if update is not None:
-            # The venue HAS the order — it was not absent, only missing from this
-            # mass report. The per-order poll (holds the broker id) owns its status +
-            # fills; do NOT flip it here.
-            continue
 
-        # Confirmed absent. Only a CONFIRMED not-found advances this bound (query
-        # errors use a SEPARATE counter), so the venue-lag tolerance is exactly
-        # ``retries`` confirmations — a run of query errors can never erode it and
-        # prematurely resolve a possibly-live order.
-        attempts = (
-            await _order_deferral_count(
-                store, order_id, "not_found", event_type=_RECONCILE_DEFERRED_EVENT
-            )
-            + 1
+async def _resolve_one_not_found(
+    store: StateStore, adapter: BrokerAdapter, order: Order, retries: int
+) -> None:
+    """Run the READ-ONLY targeted query for one order absent from the mass report
+    and resolve/defer it (see :func:`_resolve_reconcile_not_found`)."""
+
+    order_id = order.id
+    try:
+        update = await adapter.get_order_by_client_order_id(order_id)
+    except BrokerError as exc:
+        # A query FAILURE is inconclusive — NEVER read as absent (§7). Retry;
+        # surface needs_review once persistently stuck (bounded so a venue outage
+        # doesn't grow the log forever). Counts ONLY query_error, independent of
+        # the not-found bound.
+        errors = await _order_deferral_count(
+            store, order_id, "query_error", event_type=_RECONCILE_DEFERRED_EVENT
         )
-        if attempts >= retries:
-            target = (
-                OrderStatus.REJECTED
-                if order.status is OrderStatus.SUBMITTED
-                else OrderStatus.CANCELED  # PARTIALLY_FILLED → CANCELED (fills kept)
+        if errors < retries:
+            await _record_reconcile_deferral(
+                store, order, errors + 1, "query_error",
+                needs_review=errors + 1 >= retries, error=str(exc),
             )
-            try:
-                await store.reconcile_resolve_order(
-                    order_id, target, reason="not_found_at_venue"
-                )
-                _log.info(
-                    "reconcile: order %s confirmed absent after %s queries -> %s",
-                    order_id, attempts, target.value,
-                )
-            except _TRANSITION_ERRORS as exc:
-                _log.warning(
-                    "reconcile: could not resolve absent order %s to %s: %s",
-                    order_id, target.value, exc,
-                )
-        else:
-            await _record_reconcile_deferral(store, order, attempts, "not_found")
+        return
+
+    if update is not None:
+        # The venue HAS the order — it was not absent, only missing from this mass
+        # report. The per-order poll (holds the broker id) owns its status + fills; do
+        # NOT flip it here. RESET the consecutive not-found streak (record a clearing
+        # marker only if one had accrued) so the reject bound needs CONSECUTIVE
+        # confirmed-absents, not a lifetime sum of intermittent ones.
+        if await _reconcile_not_found_streak(store, order_id) > 0:
+            await _record_reconcile_streak_reset(store, order)
+        return
+
+    # Confirmed absent. The bound counts CONSECUTIVE confirmed-not-founds (reset by a
+    # prior 'present' observation) — and query errors use a SEPARATE counter — so
+    # neither a run of query errors nor an intermittently-present venue can erode the
+    # venue-lag tolerance and prematurely resolve a possibly-live order.
+    attempts = await _reconcile_not_found_streak(store, order_id) + 1
+    if attempts >= retries:
+        target = (
+            OrderStatus.REJECTED
+            if order.status is OrderStatus.SUBMITTED
+            else OrderStatus.CANCELED  # PARTIALLY_FILLED → CANCELED (fills kept)
+        )
+        try:
+            await store.reconcile_resolve_order(
+                order_id, target, reason="not_found_at_venue"
+            )
+            _log.info(
+                "reconcile: order %s confirmed absent after %s consecutive queries -> %s",
+                order_id, attempts, target.value,
+            )
+        except _TRANSITION_ERRORS as exc:
+            # A fill that raced the resolve makes the transition illegal (e.g. the
+            # order FILLED first) — refused under the store lock, never a dropped
+            # fill or oversell. Leave it; the next tick re-evaluates.
+            _log.warning(
+                "reconcile: could not resolve absent order %s to %s: %s",
+                order_id, target.value, exc,
+            )
+    else:
+        await _record_reconcile_deferral(store, order, attempts, "not_found")
+
+
+async def _reconcile_not_found_streak(store: StateStore, order_id: str) -> int:
+    """Consecutive confirmed-not-found count for an order — the trailing run of
+    ``not_found`` reconcile deferrals, RESET by any ``cleared_present`` marker (a tick
+    whose targeted query found the order present). Consecutive, not lifetime: an
+    intermittently-present venue can never sum non-consecutive not-founds toward the
+    reject bound (a review-hardening over a plain lifetime count)."""
+
+    streak = 0
+    for e in await store.list_events(event_type=_RECONCILE_DEFERRED_EVENT):
+        if e.order_id != order_id:
+            continue
+        reason = (e.payload or {}).get("reason")
+        if reason == "not_found":
+            streak += 1
+        elif reason == "cleared_present":
+            streak = 0
+    return streak
+
+
+async def _record_reconcile_streak_reset(store: StateStore, order: Order) -> None:
+    """Record a ``cleared_present`` marker (the venue confirmed the order present),
+    resetting the consecutive not-found streak. Best-effort."""
+
+    try:
+        await store.append_event(
+            _RECONCILE_DEFERRED_EVENT,
+            message=(
+                f"reconcile: {order.symbol} found present at venue — "
+                "not-found streak reset"
+            ),
+            symbol=order.symbol,
+            candidate_id=order.candidate_id,
+            order_id=order.id,
+            payload={"reason": "cleared_present"},
+            session_id=order.session_id,
+        )
+    except Exception:  # noqa: BLE001 - audit is best-effort on a resolution path
+        _log.exception(
+            "could not record reconcile streak reset for order %s", order.id
+        )
 
 
 async def _record_reconcile_deferral(

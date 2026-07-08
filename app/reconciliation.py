@@ -259,7 +259,15 @@ def plan_reconciliation(
         # if the report carries one; otherwise ask for a targeted poll (which
         # fetches the price) rather than fabricating a $0 fill.
         if report.filled_quantity > order.filled_quantity:
-            priced = [f for f in report.fills if f.price is not None]
+            # A priced execution is only inferable if it ALSO carries its own
+            # ``source_fill_id`` — that id is the sole INV-5 dedup key against the
+            # eventual real observation of the same shares. A priced fill with a
+            # null/empty id would defeat dedup and double-count into an overstated
+            # long (→ oversell on flatten); route it to the targeted poll instead
+            # (which advances the recorded fill and dedups by its own key).
+            priced = [
+                f for f in report.fills if f.price is not None and f.source_fill_id
+            ]
             covered = sum(f.quantity for f in priced)
             if priced and covered >= (report.filled_quantity - order.filled_quantity):
                 for fill in priced:

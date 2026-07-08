@@ -450,6 +450,22 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     **Position parity (E9) DEFERRED** to a post-4e follow-up (audit-only surfacing, never a truth flip, so
     it doesn't gate `event_truth`; venue avg-price fidelity is a separate rabbit hole).
     `tests/test_spine_phase4_reconcile_synthetic_throttle.py` (12).
+  - [x] **Slice 4e-5 — `event_truth` matrix flip + heavier adversarial review + remediation.** Flipped the
+    matrix "Reconciliation" row to `event_truth` (the not-found REJECTED/CANCELED lifecycle events +
+    synthetic FILL events are the durable truth; order-status column a co-written read-model, order-status
+    projector deferred — mirror of 3c-C5; position replays from the log; dual-store parity).
+    `tests/test_spine_phase4_reconcile_event_truth.py` (4). **Two independent Opus adversarial reviewers**
+    (oversell/safety + inertness/event_truth-honesty): BOTH returned **no BLOCKER/HIGH** — "could NOT break
+    the oversell-critical path with any in-contract interleaving" and "the flip is HONEST, the design is
+    sound." 5 LOW/MEDIUM hardening findings (none truth bugs / none 4e regressions), all remediated:
+    **F1** engine now refuses to infer a priced fill with a null/empty `source_fill_id` (the one input that
+    defeats INV-5 dedup → routes to the targeted poll); **F2** the not-found reject bound is now CONSECUTIVE
+    (reset by a venue-present observation via a `cleared_present` streak marker), not a lifetime sum;
+    **F3** external-order surfacing now excludes any venue row matching a known local order in ANY state
+    (not just open) — robust to adapter/venue mirror lag; **F4** `_resolve_reconcile_not_found` wraps each
+    order so one failure never stops the loop (honors the docstring); **F5** documented that `plan.resolutions`
+    (matched-terminal) is deliberately left to the per-order poll (double-actor safety). +3 remediation tests
+    (F1/F2/F3). **Wave 4e CLOSED** — the runtime open-order reconcile is `event_truth`, reviewed clean.
   **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).

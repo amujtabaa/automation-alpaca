@@ -102,6 +102,24 @@ async def test_synthetic_then_real_same_execution_dedups_no_double_count(any_sto
     assert len(_fill_events(await any_store.get_execution_events())) == 1
 
 
+async def test_priced_fill_without_source_id_is_not_inferred(any_store):
+    # Review hardening: a PRICED execution with a null/empty source_fill_id would
+    # defeat the INV-5 dedup key and double-count. It must NOT be inferred — routed to
+    # the targeted poll (which dedups by its own key) instead. Here the venue still
+    # has the order, so nothing resolves and position is unmoved.
+    order, adapter = await _submitted_buy(any_store)
+    adapter.seed_open_orders([
+        BrokerOrderReport(
+            adapter.broker_id_for(order.id), order.id, "AAPL", OrderSide.BUY,
+            OrderStatus.PARTIALLY_FILLED, 40,
+            fills=[BrokerFill("", 40, 2.0, utcnow())],   # priced, but no source id
+        )
+    ])
+    await _run_reconciliation(any_store, adapter, _NO_RECENT)
+    assert (await any_store.get_position("AAPL")).quantity == 0
+    assert _fill_events(await any_store.get_execution_events()) == []
+
+
 async def test_no_synthetic_fill_from_an_empty_derived_report(any_store):
     # The corpus default: an unseeded mock derives a report with filled_quantity=0
     # and no fills → no inferred fill (the reconcile is inert for synthetic fills).

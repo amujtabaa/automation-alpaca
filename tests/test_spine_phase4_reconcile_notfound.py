@@ -154,6 +154,30 @@ async def test_query_failure_never_rejects_and_surfaces_needs_review(any_store):
     assert errors and any((e.payload or {}).get("needs_review") for e in errors)
 
 
+async def test_not_found_bound_is_consecutive_not_lifetime(any_store):
+    # Review hardening: the reject bound counts CONSECUTIVE confirmed-absents, reset
+    # by any venue-present observation — an intermittently-present venue can't sum
+    # non-consecutive not-founds toward a reject.
+    await any_store.initialize()
+    order = await _absent_submitted(any_store)
+    s = _settings(retries=2)
+
+    await _run_reconciliation(any_store, MockBrokerAdapter(), s)   # not_found streak=1
+    assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
+
+    present = MockBrokerAdapter()
+    present.seed_venue_order(order.id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, []))
+    await _run_reconciliation(any_store, present, s)               # present → streak reset
+    assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
+
+    # Absent again: the streak restarts from 0, so ONE absent is only streak=1 (< 2).
+    await _run_reconciliation(any_store, MockBrokerAdapter(), s)
+    assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
+    # A SECOND consecutive absent reaches the bound → REJECTED.
+    await _run_reconciliation(any_store, MockBrokerAdapter(), s)
+    assert (await any_store.get_order(order.id)).status is OrderStatus.REJECTED
+
+
 async def test_query_errors_do_not_erode_the_not_found_bound(any_store):
     # §7: a run of query FAILURES must not advance the confirmed-not-found bound.
     await any_store.initialize()

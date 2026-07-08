@@ -117,6 +117,25 @@ async def test_external_order_surfaced_without_absorbing(any_store):
     assert {o.id for o in await any_store.list_orders()} == orders_before
 
 
+async def test_venue_order_matching_a_known_terminal_order_is_not_external(any_store):
+    # Review hardening: a venue row that ties back to a local order we KNOW in any
+    # state (here a now-terminal FILLED order the venue mirror hasn't caught up on) is
+    # managed, not external — never surfaced.
+    order, adapter = await _submitted_buy(any_store)
+    adapter.make_fill(
+        order.id, status=OrderStatus.FILLED, filled_quantity=100,
+        fills=[BrokerFill("e-1", 100, 2.0, utcnow())],
+    )
+    await run_monitoring_tick(any_store, adapter, Settings())   # order → FILLED locally
+    # The venue report STILL lists it (a broker id we own).
+    adapter.seed_open_orders([
+        BrokerOrderReport(adapter.broker_id_for(order.id), order.id, "AAPL",
+                          OrderSide.BUY, OrderStatus.SUBMITTED, 0)
+    ])
+    await run_monitoring_tick(any_store, adapter, Settings())
+    assert await _external_events(any_store) == []             # not flagged external
+
+
 async def test_external_order_deduped_by_broker_id_across_ticks(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
