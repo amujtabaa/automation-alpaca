@@ -17,7 +17,14 @@ from __future__ import annotations
 
 from fastapi import HTTPException, status
 
-from app.facade.errors import EngineNotReadyError, FacadeError, NotYetImplementedError
+from app.facade.errors import (
+    ConflictError,
+    EngineNotReadyError,
+    EntityNotFoundError,
+    FacadeError,
+    InvalidInputError,
+    NotYetImplementedError,
+)
 
 
 def facade_error_to_http(exc: FacadeError) -> HTTPException:
@@ -36,6 +43,21 @@ def facade_error_to_http(exc: FacadeError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail=str(exc) or "not yet migrated behind the facade",
+        )
+    # Phase-6 domain-outcome errors — the status a migrated route's store error
+    # used to produce inline, now preserved at the facade boundary.
+    if isinstance(exc, EntityNotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc) or "not found"
+        )
+    if isinstance(exc, ConflictError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc) or "conflict"
+        )
+    if isinstance(exc, InvalidInputError):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc) or "invalid input",
         )
     # Fallback for any other FacadeError subclass — never let a raw facade
     # exception propagate past a route unmapped.

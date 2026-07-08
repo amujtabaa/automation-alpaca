@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, Request
+from fastapi import Depends, Header, Request
 
 from app.approval.gate import ApprovalGate
 from app.broker.adapter import BrokerAdapter
@@ -12,6 +12,15 @@ from app.facade.queries import ExecutionQueryFacade
 from app.facade.store_backed import StoreBackedCommandFacade, StoreBackedQueryFacade
 from app.marketdata.service import MarketDataService
 from app.store.base import StateStore
+
+# Default actor for command endpoints when no ``X-Actor`` header is sent. Beta is
+# single-user localhost with no authentication (docs/01_ARCHITECTURE.md), so
+# there is no login to derive an identity from; ADR-005 still wants a command's
+# actor recorded for audit. The resolution (per the Phase-6 auth decision) is a
+# minimal actor-audit: an optional ``X-Actor`` header, defaulting here, threaded
+# into command facades and stamped on the sensitive command's audit event — NOT a
+# token/auth gate. See docs/MIGRATION_MATRIX.md "Auth for command endpoints".
+DEFAULT_ACTOR = "operator"
 
 
 def get_store(request: Request) -> StateStore:
@@ -57,29 +66,57 @@ def get_market_data_service(request: Request) -> MarketDataService:
     return request.app.state.market_data
 
 
-def get_query_facade(store: StateStore = Depends(get_store)) -> ExecutionQueryFacade:
-    """Phase 1 facade seam (ADR-005 / Spine v2 §10). ``StoreBackedQueryFacade``
-    is a thin, stateless wrapper around ``store`` — constructed fresh per
-    request rather than once at startup, since there is no meaningful
-    construction cost and no state of its own to share across requests. Only
-    ``list_positions`` is implemented for real (Phase 1); every other method
-    raises ``NotYetImplementedError`` — see ``docs/SPINE_PHASE1_FACADE_
-    REPORT.md``. Most routes still depend on ``get_store`` directly; this
-    provider exists for the routes migrated behind the facade so far.
+def get_actor(x_actor: str | None = Header(default=None)) -> str:
+    """The audited actor for a command endpoint (Phase-6 minimal actor-audit).
+
+    Reads an optional ``X-Actor`` request header, falling back to
+    :data:`DEFAULT_ACTOR`. A blank/whitespace-only header falls back too rather
+    than recording an empty actor. This is an audit label, not authentication —
+    beta stays single-user localhost with no auth gate (the accepted Phase-6
+    resolution of the 01_ARCHITECTURE.md vs ADR-005 conflict).
     """
 
-    return StoreBackedQueryFacade(store)
+    if x_actor is None or not x_actor.strip():
+        return DEFAULT_ACTOR
+    return x_actor.strip()
+
+
+def get_query_facade(
+    request: Request, store: StateStore = Depends(get_store)
+) -> ExecutionQueryFacade:
+    """Facade seam (ADR-005 / Spine v2 §10). ``StoreBackedQueryFacade`` is a
+    thin, stateless wrapper constructed fresh per request (no construction cost,
+    no state to share). Phase 6 also injects the process-wide
+    ``MarketDataService`` so read routes computing over the market-data port
+    (snapshot ``pct_move``, protection status) can move that behind the facade.
+
+    Collaborators are read defensively (``getattr(..., None)``): the real app's
+    lifespan always sets them, but a partial-app test fixture that only wires a
+    store still gets a working facade for its store-only methods — a method that
+    actually needs an absent collaborator raises a clear error itself.
+    """
+
+    st = request.app.state
+    return StoreBackedQueryFacade(store, market_data=getattr(st, "market_data", None))
 
 
 def get_command_facade(
-    store: StateStore = Depends(get_store),
+    request: Request, store: StateStore = Depends(get_store)
 ) -> ExecutionCommandFacade:
-    """Phase 1 facade seam — see :func:`get_query_facade`'s docstring for the
-    same construction/scope caveats. Only ``pause_buys``/``resume_buys`` are
-    implemented for real; every other method raises
-    ``NotYetImplementedError`` (deliberately, for ``create_exit``/
-    ``set_kill_switch`` — see ``docs/SPINE_PHASE0_INVENTORY.md`` §3.1/§3.4's
-    live ADR-003 conflicts, not yet migrated behind this facade).
+    """Facade seam — see :func:`get_query_facade`. Phase 6 injects the extra
+    collaborators the command routes need (broker adapter + market-data for the
+    exit/cancel broker calls, approval gate + settings for the candidate
+    approve/reject orchestration) so those routes stop touching them directly.
+    Read defensively so a store-only command (pause/resume/kill) never requires
+    the broker/gate a partial test app may not have wired — see
+    :func:`get_query_facade`.
     """
 
-    return StoreBackedCommandFacade(store)
+    st = request.app.state
+    return StoreBackedCommandFacade(
+        store,
+        broker=getattr(st, "broker_adapter", None),
+        market_data=getattr(st, "market_data", None),
+        approval_gate=getattr(st, "approval_gate", None),
+        settings=getattr(st, "settings", None),
+    )

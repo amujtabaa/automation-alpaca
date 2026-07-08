@@ -49,3 +49,38 @@ class NotYetImplementedError(FacadeError):
     ``EngineNotReadyError``'s 503, since "not implemented" and "not ready"
     are different facts a caller needs to distinguish.
     """
+
+
+# --------------------------------------------------------------------------- #
+# Domain-outcome errors (Spine v2 Phase 6, ADR-005).
+#
+# When a route migrates behind the facade it can no longer import + catch the
+# store's own ``StoreError`` subclasses (``app.store.base`` is a Contract-5
+# forbidden edge). So the facade catches those at its boundary and re-raises one
+# of the three status-carrying facade errors below; ``app.facade.http_mapping``
+# maps them to the exact HTTP status the un-migrated route used, preserving
+# behavior byte-for-byte (the route tests pin the codes). The mapping is by the
+# store error's *semantic kind*, not per-endpoint:
+#   UnknownEntityError                                   -> EntityNotFoundError (404)
+#   transition / blocked / intent / already-closed       -> ConflictError       (409)
+#   bad input (symbol ValueError, non-bool control, ...) -> InvalidInputError   (422)
+# An unmapped store error is deliberately NOT wrapped — it propagates as a raw
+# 500, exactly as today (a genuine bug, not a client mistake).
+# --------------------------------------------------------------------------- #
+class EntityNotFoundError(FacadeError):
+    """A referenced entity (candidate/order/position/watchlist symbol) does not
+    exist. Maps to HTTP 404 — the facade analogue of the store's
+    ``UnknownEntityError`` once a route stops catching it directly."""
+
+
+class ConflictError(FacadeError):
+    """A command was refused because the target's state does not allow it — an
+    illegal lifecycle transition, a safety-control block (kill/pause, Rule 8), a
+    CAPI risk-limit breach, a flatten/emergency-reduce denial (ADR-003), or
+    re-closing an already-closed session. Maps to HTTP 409."""
+
+
+class InvalidInputError(FacadeError):
+    """A command/query was refused for a malformed input the client can fix — an
+    out-of-domain ticker symbol, a non-``bool`` control value, an unpriceable/
+    non-dispatchable order. Maps to HTTP 422."""

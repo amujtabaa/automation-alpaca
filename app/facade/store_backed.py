@@ -22,12 +22,83 @@ contract before Phase 3 makes a deliberate decision.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import contextlib
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from app.facade.dtos import ExternalOrderView, PositionMismatchView
-from app.facade.errors import NotYetImplementedError
+from app.facade.errors import (
+    ConflictError,
+    EntityNotFoundError,
+    InvalidInputError,
+    NotYetImplementedError,
+)
 from app.models import EventType, Position, SessionRecord
-from app.store.base import StateStore
+from app.store.base import (
+    CandidateTransitionError,
+    EmergencyReduceBlockedError,
+    FlattenBlockedError,
+    InvalidControlValueError,
+    InvalidFillError,
+    InvalidOrderError,
+    InvalidStatusError,
+    OrderIntentBlockedError,
+    OrderTransitionError,
+    RecoveryTransitionError,
+    RiskLimitBlockedError,
+    SellIntentTransitionError,
+    SessionAlreadyClosedError,
+    SessionClosedError,
+    StateStore,
+    UnknownEntityError,
+)
+
+if TYPE_CHECKING:  # annotations only — no runtime import edge added until a wave uses them
+    from app.approval.gate import ApprovalGate
+    from app.broker.adapter import BrokerAdapter
+    from app.config import Settings
+    from app.marketdata.service import MarketDataService
+
+# Store errors whose semantic kind maps to HTTP 409 once a route stops catching
+# them directly (Phase 6 / ADR-005). See app.facade.errors for the full policy.
+_CONFLICT_STORE_ERRORS = (
+    CandidateTransitionError,
+    OrderTransitionError,
+    SellIntentTransitionError,
+    RecoveryTransitionError,
+    InvalidOrderError,
+    InvalidFillError,
+    SessionAlreadyClosedError,
+    SessionClosedError,
+    OrderIntentBlockedError,
+    RiskLimitBlockedError,
+    FlattenBlockedError,
+    EmergencyReduceBlockedError,
+)
+# Store errors (and the bare ValueError normalize_symbol raises) that map to 422.
+_INVALID_INPUT_STORE_ERRORS = (InvalidControlValueError, InvalidStatusError)
+
+
+@contextlib.contextmanager
+def _translate_store_errors() -> Iterator[None]:
+    """Re-raise the store's ``StoreError`` subclasses as the status-carrying
+    facade errors, so a migrated route catches only ``FacadeError`` (never
+    ``app.store.base`` — a Contract-5 forbidden import) yet gets the exact HTTP
+    status it produced before. An UNMAPPED store error is left to propagate as a
+    raw 500 (a genuine bug, not a client mistake — matches today's routes).
+
+    ``ValueError`` (from ``normalize_symbol``'s out-of-domain ticker rejection,
+    DATA-2) becomes a 422, mirroring the routes' inline ``except ValueError``."""
+
+    try:
+        yield
+    except UnknownEntityError as exc:
+        raise EntityNotFoundError(str(exc)) from exc
+    except _CONFLICT_STORE_ERRORS as exc:
+        raise ConflictError(str(exc)) from exc
+    except _INVALID_INPUT_STORE_ERRORS as exc:
+        raise InvalidInputError(str(exc)) from exc
+    except ValueError as exc:
+        raise InvalidInputError(str(exc)) from exc
 
 # No auth/actor-tracking system exists yet (docs/MIGRATION_MATRIX.md: "Auth
 # for command endpoints: absent/limited"). The command Protocol's `actor`
@@ -40,10 +111,19 @@ UNAUTHENTICATED_ACTOR = "unauthenticated"
 
 
 class StoreBackedQueryFacade:
-    """``ExecutionQueryFacade`` implementation wrapping an existing store."""
+    """``ExecutionQueryFacade`` implementation wrapping an existing store.
 
-    def __init__(self, store: StateStore) -> None:
+    ``market_data`` is injected (Phase 6) so read routes that today compute over
+    the ``MarketDataService`` port (e.g. snapshot ``pct_move``, protection status)
+    can move that behind the facade. It is optional/keyword so unit tests that
+    only need store-backed reads still construct ``StoreBackedQueryFacade(store)``.
+    """
+
+    def __init__(
+        self, store: StateStore, *, market_data: "MarketDataService | None" = None
+    ) -> None:
         self._store = store
+        self._market_data = market_data
 
     async def list_positions(self) -> list[Position]:
         """Unchanged wrap of ``StateStore.list_positions`` — the exact call
@@ -123,10 +203,29 @@ class StoreBackedQueryFacade:
 
 
 class StoreBackedCommandFacade:
-    """``ExecutionCommandFacade`` implementation wrapping an existing store."""
+    """``ExecutionCommandFacade`` implementation wrapping an existing store.
 
-    def __init__(self, store: StateStore) -> None:
+    Phase 6 injects the extra collaborators the command routes need so the routes
+    stop touching them directly (ADR-005): ``broker`` + ``market_data`` for the
+    exit/cancel broker calls, ``approval_gate`` + ``settings`` for the candidate
+    approve/reject orchestration. All are optional/keyword so a store-only unit
+    test still constructs ``StoreBackedCommandFacade(store)``.
+    """
+
+    def __init__(
+        self,
+        store: StateStore,
+        *,
+        broker: "BrokerAdapter | None" = None,
+        market_data: "MarketDataService | None" = None,
+        approval_gate: "ApprovalGate | None" = None,
+        settings: "Settings | None" = None,
+    ) -> None:
         self._store = store
+        self._broker = broker
+        self._market_data = market_data
+        self._approval_gate = approval_gate
+        self._settings = settings
 
     async def pause_buys(self, *, actor: str) -> SessionRecord:
         """Unchanged wrap of ``StateStore.set_buys_paused(True)`` — the exact

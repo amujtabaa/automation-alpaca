@@ -296,10 +296,20 @@ def test_generic_facade_error_maps_to_500():
 # --------------------------------------------------------------------------- #
 # Unit: DI providers construct the right concrete type
 # --------------------------------------------------------------------------- #
+def _fake_request(**state):
+    """A stand-in Request exposing only ``.app.state`` — the facade providers
+    read collaborators off it defensively (Phase 6). Absent attrs resolve to
+    None via getattr, which is all the store-only providers need."""
+
+    from types import SimpleNamespace
+
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(**state)))
+
+
 async def test_get_query_facade_returns_store_backed_instance():
     store = InMemoryStateStore()
     await store.initialize()
-    facade = get_query_facade(store)
+    facade = get_query_facade(_fake_request(), store)
     assert isinstance(facade, StoreBackedQueryFacade)
     assert isinstance(facade, ExecutionQueryFacade)
 
@@ -307,6 +317,6 @@ async def test_get_query_facade_returns_store_backed_instance():
 async def test_get_command_facade_returns_store_backed_instance():
     store = InMemoryStateStore()
     await store.initialize()
-    facade = get_command_facade(store)
+    facade = get_command_facade(_fake_request(), store)
     assert isinstance(facade, StoreBackedCommandFacade)
     assert isinstance(facade, ExecutionCommandFacade)
