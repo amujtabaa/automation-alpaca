@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Cleanup residuals — projectors docstring + .ai-os scope-checker comment parsing
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0010
 wave: W2-remediation
 model_tier: standard
 risk: low
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-08
 ---
