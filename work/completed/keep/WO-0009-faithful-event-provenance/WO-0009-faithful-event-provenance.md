@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Faithful per-transition provenance for routine order-status ExecutionEvents
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0009
 wave: W2-remediation
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-08
 ---
