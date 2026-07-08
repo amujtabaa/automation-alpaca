@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Refresh stale migration-era doc comments (post-flip / post-WO-0007a)
-status: draft
+status: CLOSED
 work_order_id: WO-0011
 wave: W2-remediation
 model_tier: standard
 risk: low
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-08
 ---
