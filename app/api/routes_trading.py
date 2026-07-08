@@ -12,48 +12,22 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import (
-    get_broker_adapter,
-    get_market_data_service,
-    get_query_facade,
-    get_settings,
-    get_store,
-)
+from app.api.deps import get_broker_adapter, get_query_facade, get_store
+from app.api.schemas import FlattenResponse, ReconciliationStatusResponse
+from app.broker.adapter import BrokerAdapter, BrokerError
+from app.facade.dtos import OperatorOrdersResponse, ProtectionStatusResponse
 from app.facade.errors import FacadeError
 from app.facade.http_mapping import facade_error_to_http
 from app.facade.queries import ExecutionQueryFacade
-from app.api.schemas import (
-    FlattenResponse,
-    OperatorOrdersResponse,
-    OperatorOrderView,
-    OperatorRecoveryView,
-    ProtectionConfigView,
-    ProtectionPositionView,
-    ProtectionStatusResponse,
-    ReconciliationStatusResponse,
-)
-from app.broker.adapter import BrokerAdapter, BrokerError
-from app.config import Settings
-from app.marketdata.service import MarketDataService
 from app.models import (
-    RECOVERY_OPEN_STATUSES,
     Event,
     Order,
     OrderStatus,
     Position,
     SellIntent,
     SubmitRecoveryRecord,
-    TradingState,
 )
 from app.monitoring import cancel_open_buys
-from app.policy import (
-    NON_TERMINAL_ORDER_STATUSES,
-    finite_number_reason,
-    operational_status_for,
-    order_is_cancelable,
-    recovery_operational_status,
-)
-from app.protection import ProtectionConfig, floor_breach_reason, floor_price
 from app.store.base import (
     FLATTEN_FLAT,
     EmergencyReduceBlockedError,
@@ -115,17 +89,15 @@ async def reconciliation_status(
 @router.get("/positions/{symbol}", response_model=Position)
 async def get_position(
     symbol: str,
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> Position:
-    # Derived from fills; a symbol with no fills returns a flat position.
+    """Derived from fills; a symbol with no fills returns a flat position.
+    An out-of-domain ticker (``normalize_symbol``'s ``ValueError``) is surfaced
+    as a clean 422 rather than a leaked 500 (matches the watchlist routes)."""
     try:
-        return await store.get_position(symbol)
-    except ValueError as exc:
-        # normalize_symbol rejects an out-of-domain ticker (DATA-2). Surface it as
-        # a clean 422 rather than a leaked 500 (matches the watchlist routes).
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        return await query_facade.get_position(symbol=symbol)
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
 
 
 @router.post("/positions/{symbol}/flatten", response_model=FlattenResponse)
@@ -278,111 +250,45 @@ async def emergency_reduce(
 
 @router.get("/protection", response_model=ProtectionStatusResponse)
 async def protection_status(
-    store: StateStore = Depends(get_store),
-    settings: Settings = Depends(get_settings),
-    market_data: MarketDataService = Depends(get_market_data_service),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> ProtectionStatusResponse:
     """The live Sell-Side Protection state (Phase 7), classified server-side so the
     cockpit renders it verbatim (D-020). Effective config plus, per open position:
     its hard floor, the observed last price, whether it is breaching, whether an
     autonomous exit is paused by the kill switch, whether a protective order is
-    stalled (unfilled past the timeout), and any active sell intent."""
+    stalled (unfilled past the timeout), and any active sell intent. The full
+    classification lives behind the query facade (P6d) —
+    ``StoreBackedQueryFacade.protection_status``."""
 
-    config = ProtectionConfig(
-        enabled=settings.protection_enabled,
-        stop_loss_pct=settings.protection_stop_loss_pct,
-        limit_buffer_pct=settings.protection_limit_buffer_pct,
-    )
-    session = await store.get_current_session()
-    stale_order_ids = {
-        e.order_id
-        for e in await store.list_events(event_type="order_stale")
-        if e.order_id
-    }
-
-    positions = [p for p in await store.list_positions() if p.quantity > 0]
-    views: list[ProtectionPositionView] = []
-    for position in positions:
-        snapshot = await market_data.get_snapshot(position.symbol)
-        breach = floor_breach_reason(position, snapshot, config)
-        avg = position.average_price
-        floor = (
-            floor_price(avg, config.stop_loss_pct)
-            if avg is not None
-            and finite_number_reason(avg) is None
-            and avg > 0
-            else None
-        )
-        observed = None
-        if snapshot is not None and not snapshot.stale:
-            last = snapshot.last_price
-            if finite_number_reason(last) is None and last > 0:
-                observed = last
-        active = await store.active_sell_intent_for(position.symbol)
-        stalled = (
-            active is not None
-            and active.order_id is not None
-            and active.order_id in stale_order_ids
-        )
-        views.append(
-            ProtectionPositionView(
-                symbol=position.symbol,
-                quantity=position.quantity,
-                average_price=avg,
-                floor_price=floor,
-                observed_price=observed,
-                breaching=breach is not None,
-                # Frozen only when the switch is engaged AND this position would
-                # otherwise be exiting (it is breaching). Wave 3d: reads the §8
-                # FSM (HALTED == kill-switched) to stay consistent with the
-                # monitoring loop's enforcement; equivalent to the prior boolean.
-                paused_by_kill_switch=(
-                    session.trading_state is TradingState.HALTED and breach is not None
-                ),
-                stalled=stalled,
-                active_sell_intent=active,
-            )
-        )
-
-    return ProtectionStatusResponse(
-        config=ProtectionConfigView(
-            enabled=settings.protection_enabled,
-            stop_loss_pct=settings.protection_stop_loss_pct,
-            limit_buffer_pct=settings.protection_limit_buffer_pct,
-            protection_active=settings.protection_enabled and settings.enable_monitoring,
-        ),
-        positions=views,
-    )
+    return await query_facade.protection_status()
 
 
 @router.get("/sell-intents", response_model=list[SellIntent])
 async def list_sell_intents(
     session_id: Optional[str] = Query(default=None),
     symbol: Optional[str] = Query(default=None),
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> list[SellIntent]:
     """Read-only view of the sell-intent lifecycle (Phase 7). Optional
     ``session_id`` / ``symbol`` filters mirror the store method."""
 
     try:
-        return await store.list_sell_intents(session_id=session_id, symbol=symbol)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        return await query_facade.list_sell_intents(session_id=session_id, symbol=symbol)
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
 
 
 @router.get("/orders", response_model=list[Order])
 async def list_orders(
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> list[Order]:
-    return await store.list_orders()
+    return await query_facade.list_orders()
 
 
 @router.get("/order-recoveries", response_model=list[SubmitRecoveryRecord])
 async def list_order_recoveries(
     open_only: bool = Query(default=True),
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> list[SubmitRecoveryRecord]:
     """Read-only view of broker-submit recovery records (D-017 / F-002).
 
@@ -397,13 +303,12 @@ async def list_order_recoveries(
     an ``order_id``.
     """
 
-    statuses = RECOVERY_OPEN_STATUSES if open_only else None
-    return await store.list_submit_recoveries(statuses=statuses)
+    return await query_facade.list_submit_recoveries(open_only=open_only)
 
 
 @router.get("/operator/orders", response_model=OperatorOrdersResponse)
 async def operator_orders(
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> OperatorOrdersResponse:
     """The operator's single source of order-lifecycle truth (D-020).
 
@@ -418,71 +323,23 @@ async def operator_orders(
 
     Terminal orders (filled/canceled/rejected) are excluded via the same
     ``NON_TERMINAL_ORDER_STATUSES`` the CAPI exposure calc uses, so "what still
-    needs an operator's eyes" is defined in exactly one place.
+    needs an operator's eyes" is defined in exactly one place. The full
+    classification lives behind the query facade (P6d) —
+    ``StoreBackedQueryFacade.operator_orders``.
     """
 
-    orders = await store.list_orders()
-    non_terminal = [o for o in orders if o.status in NON_TERMINAL_ORDER_STATUSES]
-
-    # Latest submission-block reason per order (later events overwrite earlier),
-    # exactly what the cockpit used to assemble itself.
-    block_reason_by_order: dict[str, str] = {}
-    for event in await store.list_events(event_type="order_submission_blocked"):
-        reason = (event.payload or {}).get("reason")
-        if event.order_id and reason:
-            block_reason_by_order[event.order_id] = reason
-
-    stale_order_ids = {
-        event.order_id
-        for event in await store.list_events(event_type="order_stale")
-        if event.order_id
-    }
-
-    order_views = [
-        OperatorOrderView(
-            order=order,
-            operational_status=operational_status_for(
-                order.status, block_reason_by_order.get(order.id)
-            ),
-            # The hold reason is only meaningful while the order is still
-            # CREATED (held); once claimed/submitted the status is the truth.
-            reason=(
-                block_reason_by_order.get(order.id)
-                if order.status is OrderStatus.CREATED
-                else None
-            ),
-            cancelable=order_is_cancelable(order.status),
-            stale=order.id in stale_order_ids,
-        )
-        for order in non_terminal
-    ]
-
-    recovery_views = [
-        OperatorRecoveryView(
-            record=record,
-            operational_status=recovery_operational_status(record.cleanup_status),
-            reason=record.failure_reason,
-        )
-        for record in await store.list_submit_recoveries(
-            statuses=RECOVERY_OPEN_STATUSES
-        )
-    ]
-
-    return OperatorOrdersResponse(orders=order_views, recoveries=recovery_views)
+    return await query_facade.operator_orders()
 
 
 @router.get("/orders/{order_id}", response_model=Order)
 async def get_order(
     order_id: str,
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> Order:
-    order = await store.get_order(order_id)
-    if order is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"order {order_id} not found",
-        )
-    return order
+    try:
+        return await query_facade.get_order(order_id=order_id)
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
 
 
 @router.post("/orders/{order_id}/cancel", response_model=Order)
@@ -585,13 +442,13 @@ async def list_events(
     limit: Optional[int] = Query(default=None, ge=1, le=1000),
     event_type: Optional[str] = Query(default=None),
     correlation_id: Optional[str] = Query(default=None),
-    store: StateStore = Depends(get_store),
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> list[Event]:
     """``correlation_id`` (D-020) returns the complete lifecycle of one
     candidate OR one sell intent (X-004) — creation, approval, order creation,
     claim, submission, blocked/recovery, fills, and transitions — in one
     query, for incident reconstruction."""
 
-    return await store.list_events(
+    return await query_facade.list_events(
         limit=limit, event_type=event_type, correlation_id=correlation_id
     )

@@ -30,7 +30,13 @@ from datetime import date as date_cls
 from app.facade.dtos import (
     ExternalOrderView,
     MarketSnapshotView,
+    OperatorOrdersResponse,
+    OperatorOrderView,
+    OperatorRecoveryView,
     PositionMismatchView,
+    ProtectionConfigView,
+    ProtectionPositionView,
+    ProtectionStatusResponse,
     ReviewView,
 )
 from app.facade.errors import (
@@ -41,20 +47,33 @@ from app.facade.errors import (
 )
 from app.features import pct_move, session_type_for
 from app.models import (
+    RECOVERY_OPEN_STATUSES,
     Candidate,
     CandidateStatus,
+    Event,
     EventType,
+    Order,
+    OrderStatus,
     Position,
+    SellIntent,
     SessionRecord,
     SessionStatus,
+    SubmitRecoveryRecord,
+    TradingState,
     WatchlistSymbol,
     utcnow,
 )
 from app.policy import (
+    NON_TERMINAL_ORDER_STATUSES,
+    finite_number_reason,
     limit_price_reason,
+    operational_status_for,
     order_intent_block_reason,
+    order_is_cancelable,
+    recovery_operational_status,
     risk_limit_reason,
 )
+from app.protection import ProtectionConfig, floor_breach_reason, floor_price
 from app.store.base import (
     CandidateTransitionError,
     EmergencyReduceBlockedError,
@@ -163,15 +182,22 @@ class StoreBackedQueryFacade:
 
     ``market_data`` is injected (Phase 6) so read routes that today compute over
     the ``MarketDataService`` port (e.g. snapshot ``pct_move``, protection status)
-    can move that behind the facade. It is optional/keyword so unit tests that
-    only need store-backed reads still construct ``StoreBackedQueryFacade(store)``.
+    can move that behind the facade. ``settings`` is injected (P6d) for the same
+    reason ``protection_status`` needs the effective ``ProtectionConfig``. Both are
+    optional/keyword so unit tests that only need store-backed reads still
+    construct ``StoreBackedQueryFacade(store)``.
     """
 
     def __init__(
-        self, store: StateStore, *, market_data: "MarketDataService | None" = None
+        self,
+        store: StateStore,
+        *,
+        market_data: "MarketDataService | None" = None,
+        settings: "Settings | None" = None,
     ) -> None:
         self._store = store
         self._market_data = market_data
+        self._settings = settings
 
     async def list_positions(self) -> list[Position]:
         """Unchanged wrap of ``StateStore.list_positions`` — the exact call
@@ -274,6 +300,208 @@ class StoreBackedQueryFacade:
         if candidate is None:
             raise EntityNotFoundError(f"candidate {candidate_id} not found")
         return candidate
+
+    async def get_position(self, *, symbol: str) -> Position:
+        """``GET /api/positions/{symbol}`` (P6d): derived from fills; a symbol
+        with no fills returns a flat position. An out-of-domain ticker
+        (``normalize_symbol``'s ``ValueError``) becomes a 422."""
+        with _translate_store_errors():
+            return await self._store.get_position(symbol)
+
+    async def list_sell_intents(
+        self, *, session_id: Optional[str] = None, symbol: Optional[str] = None
+    ) -> list[SellIntent]:
+        """``GET /api/sell-intents`` (P6d): read-only view of the sell-intent
+        lifecycle (Phase 7). Optional ``session_id``/``symbol`` filters mirror
+        the store method; an out-of-domain ticker → 422."""
+        with _translate_store_errors():
+            return await self._store.list_sell_intents(
+                session_id=session_id, symbol=symbol
+            )
+
+    async def list_orders(self) -> list[Order]:
+        """``GET /api/orders`` (P6d): unchanged wrap of ``StateStore.list_orders``."""
+        return await self._store.list_orders()
+
+    async def list_submit_recoveries(
+        self, *, open_only: bool = True
+    ) -> list[SubmitRecoveryRecord]:
+        """``GET /api/order-recoveries`` (P6d): read-only view of broker-submit
+        recovery records (D-017 / F-002). Defaults to the *open* ones — records
+        the recovery loop is actively working (``unresolved``) **and** records
+        it has escalated because the broker order had fills (``needs_review`` —
+        a real untracked position a human must reconcile). ``open_only=False``
+        returns the full history."""
+        statuses = RECOVERY_OPEN_STATUSES if open_only else None
+        return await self._store.list_submit_recoveries(statuses=statuses)
+
+    async def get_order(self, *, order_id: str) -> Order:
+        """``GET /api/orders/{order_id}`` (P6d): a single order; 404 if absent."""
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise EntityNotFoundError(f"order {order_id} not found")
+        return order
+
+    async def list_events(
+        self,
+        *,
+        limit: Optional[int] = None,
+        event_type: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> list[Event]:
+        """``GET /api/events`` (P6d): unchanged wrap of ``StateStore.list_events``.
+        ``correlation_id`` (D-020) returns the complete lifecycle of one
+        candidate OR one sell intent (X-004) in one query, for incident
+        reconstruction."""
+        return await self._store.list_events(
+            limit=limit, event_type=event_type, correlation_id=correlation_id
+        )
+
+    async def operator_orders(self) -> OperatorOrdersResponse:
+        """``GET /api/operator/orders`` (P6d): the operator's single source of
+        order-lifecycle truth (D-020), moved verbatim from the old route.
+
+        Classifies every durable non-terminal order — its ``operational_status``
+        (``app.policy.operational_status_for``), the hold ``reason`` behind a
+        ``created`` order (from that order's latest ``order_submission_blocked``
+        audit event), a ``cancelable`` flag (the same rule the cancel route
+        enforces), and a ``stale`` flag (from ``order_stale`` events) — plus
+        every open broker-submit recovery record. Terminal orders
+        (filled/canceled/rejected) are excluded via the same
+        ``NON_TERMINAL_ORDER_STATUSES`` the CAPI exposure calc uses.
+        """
+        orders = await self._store.list_orders()
+        non_terminal = [o for o in orders if o.status in NON_TERMINAL_ORDER_STATUSES]
+
+        # Latest submission-block reason per order (later events overwrite
+        # earlier), exactly what the cockpit used to assemble itself.
+        block_reason_by_order: dict[str, str] = {}
+        for event in await self._store.list_events(
+            event_type="order_submission_blocked"
+        ):
+            reason = (event.payload or {}).get("reason")
+            if event.order_id and reason:
+                block_reason_by_order[event.order_id] = reason
+
+        stale_order_ids = {
+            event.order_id
+            for event in await self._store.list_events(event_type="order_stale")
+            if event.order_id
+        }
+
+        order_views = [
+            OperatorOrderView(
+                order=order,
+                operational_status=operational_status_for(
+                    order.status, block_reason_by_order.get(order.id)
+                ),
+                # The hold reason is only meaningful while the order is still
+                # CREATED (held); once claimed/submitted the status is the truth.
+                reason=(
+                    block_reason_by_order.get(order.id)
+                    if order.status is OrderStatus.CREATED
+                    else None
+                ),
+                cancelable=order_is_cancelable(order.status),
+                stale=order.id in stale_order_ids,
+            )
+            for order in non_terminal
+        ]
+
+        recovery_views = [
+            OperatorRecoveryView(
+                record=record,
+                operational_status=recovery_operational_status(record.cleanup_status),
+                reason=record.failure_reason,
+            )
+            for record in await self._store.list_submit_recoveries(
+                statuses=RECOVERY_OPEN_STATUSES
+            )
+        ]
+
+        return OperatorOrdersResponse(orders=order_views, recoveries=recovery_views)
+
+    async def protection_status(self) -> ProtectionStatusResponse:
+        """``GET /api/protection`` (P6d): the live Sell-Side Protection state
+        (Phase 7), classified server-side so the cockpit renders it verbatim
+        (D-020), moved verbatim from the old route. Effective config plus, per
+        open position: its hard floor, the observed last price, whether it is
+        breaching, whether an autonomous exit is paused by the kill switch,
+        whether a protective order is stalled (unfilled past the timeout), and
+        any active sell intent."""
+        if self._market_data is None or self._settings is None:
+            raise RuntimeError("market data service / settings not available")
+        market_data = self._market_data
+        settings = self._settings
+
+        config = ProtectionConfig(
+            enabled=settings.protection_enabled,
+            stop_loss_pct=settings.protection_stop_loss_pct,
+            limit_buffer_pct=settings.protection_limit_buffer_pct,
+        )
+        session = await self._store.get_current_session()
+        stale_order_ids = {
+            e.order_id
+            for e in await self._store.list_events(event_type="order_stale")
+            if e.order_id
+        }
+
+        positions = [p for p in await self._store.list_positions() if p.quantity > 0]
+        views: list[ProtectionPositionView] = []
+        for position in positions:
+            snapshot = await market_data.get_snapshot(position.symbol)
+            breach = floor_breach_reason(position, snapshot, config)
+            avg = position.average_price
+            floor = (
+                floor_price(avg, config.stop_loss_pct)
+                if avg is not None
+                and finite_number_reason(avg) is None
+                and avg > 0
+                else None
+            )
+            observed = None
+            if snapshot is not None and not snapshot.stale:
+                last = snapshot.last_price
+                if finite_number_reason(last) is None and last > 0:
+                    observed = last
+            active = await self._store.active_sell_intent_for(position.symbol)
+            stalled = (
+                active is not None
+                and active.order_id is not None
+                and active.order_id in stale_order_ids
+            )
+            views.append(
+                ProtectionPositionView(
+                    symbol=position.symbol,
+                    quantity=position.quantity,
+                    average_price=avg,
+                    floor_price=floor,
+                    observed_price=observed,
+                    breaching=breach is not None,
+                    # Frozen only when the switch is engaged AND this position
+                    # would otherwise be exiting (it is breaching). Wave 3d: reads
+                    # the §8 FSM (HALTED == kill-switched) to stay consistent with
+                    # the monitoring loop's enforcement; equivalent to the prior
+                    # boolean.
+                    paused_by_kill_switch=(
+                        session.trading_state is TradingState.HALTED
+                        and breach is not None
+                    ),
+                    stalled=stalled,
+                    active_sell_intent=active,
+                )
+            )
+
+        return ProtectionStatusResponse(
+            config=ProtectionConfigView(
+                enabled=settings.protection_enabled,
+                stop_loss_pct=settings.protection_stop_loss_pct,
+                limit_buffer_pct=settings.protection_limit_buffer_pct,
+                protection_active=settings.protection_enabled
+                and settings.enable_monitoring,
+            ),
+            positions=views,
+        )
 
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         raise NotYetImplementedError(

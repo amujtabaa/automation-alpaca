@@ -175,7 +175,4 @@ ignore_imports =
     # broken).
     app.api.routes_trading -> app.store.base
     app.api.routes_trading -> app.broker.adapter
-    app.api.routes_trading -> app.marketdata.service
     app.api.routes_trading -> app.monitoring
-    app.api.routes_trading -> app.protection
-    app.api.routes_trading -> app.policy

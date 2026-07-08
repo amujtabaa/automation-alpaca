@@ -51,6 +51,54 @@ class ExecutionQueryFacade(Protocol):
         """One candidate; 404 if absent — ``GET /api/candidates/{id}`` (P6c)."""
         ...
 
+    async def get_position(self, *, symbol: str) -> Any:
+        """One symbol's derived position (flat if no fills); an out-of-domain
+        symbol → 422 — ``GET /api/positions/{symbol}`` (P6d)."""
+        ...
+
+    async def list_sell_intents(
+        self, *, session_id: Optional[str] = None, symbol: Optional[str] = None
+    ) -> Any:
+        """The sell-intent lifecycle, optionally filtered by session/symbol —
+        ``GET /api/sell-intents`` (P6d)."""
+        ...
+
+    async def list_orders(self) -> Any:
+        """Every order — ``GET /api/orders`` (P6d)."""
+        ...
+
+    async def list_submit_recoveries(self, *, open_only: bool = True) -> Any:
+        """Broker-submit recovery records (D-017); ``open_only`` (default)
+        returns unresolved + needs-review — ``GET /api/order-recoveries``
+        (P6d)."""
+        ...
+
+    async def get_order(self, *, order_id: str) -> Any:
+        """One order; 404 if unknown — ``GET /api/orders/{order_id}`` (P6d)."""
+        ...
+
+    async def list_events(
+        self,
+        *,
+        limit: Optional[int] = None,
+        event_type: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> Any:
+        """The append-only audit event log, optionally filtered —
+        ``GET /api/events`` (P6d)."""
+        ...
+
+    async def operator_orders(self) -> Any:
+        """The operator's classified order-lifecycle truth (D-020), returned as
+        ``OperatorOrdersResponse`` — ``GET /api/operator/orders`` (P6d)."""
+        ...
+
+    async def protection_status(self) -> Any:
+        """The live Sell-Side Protection state (Phase 7), classified
+        server-side, returned as ``ProtectionStatusResponse`` —
+        ``GET /api/protection`` (P6d)."""
+        ...
+
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         """The eventual migrated analogue of today's sell-intent + order
         views (``GET /api/sell-intents``, ``GET /api/orders``) once

@@ -25,7 +25,6 @@ from app.models import (
     Position,
     SellIntent,
     SessionRecord,
-    SubmitRecoveryRecord,
 )
 
 
@@ -121,85 +120,13 @@ class FlattenResponse(BaseModel):
     order: Optional[Order] = None
 
 
-class ProtectionConfigView(BaseModel):
-    """The effective protection configuration (``GET /api/protection``)."""
-
-    enabled: bool
-    stop_loss_pct: float
-    limit_buffer_pct: float
-    # enabled AND the monitoring loop is actually running (so a breach would be
-    # acted on) — the cockpit's "protection is live" light.
-    protection_active: bool
-
-
-class ProtectionPositionView(BaseModel):
-    """Per open position, classified server-side (D-020: the cockpit renders,
-    never re-derives). ``floor_price``/``observed_price`` are ``None`` when they
-    can't be computed (no average cost / no trustworthy snapshot)."""
-
-    symbol: str
-    quantity: int
-    average_price: Optional[float] = None
-    floor_price: Optional[float] = None
-    observed_price: Optional[float] = None
-    breaching: bool = False
-    paused_by_kill_switch: bool = False
-    stalled: bool = False
-    active_sell_intent: Optional[SellIntent] = None
-
-
-class ProtectionStatusResponse(BaseModel):
-    """``GET /api/protection`` — effective config + the protection state of every
-    open position, for the cockpit's Position Monitor "protection mode"."""
-
-    config: ProtectionConfigView
-    positions: list[ProtectionPositionView]
-
-
-class OperatorOrderView(BaseModel):
-    """One durable non-terminal order, classified server-side (D-020).
-
-    The cockpit used to interpret ``order.status`` + the latest submission-block
-    audit event into a human operational state and owned the "which statuses are
-    still open" filter. This carries the backend's own classification so the UI
-    renders it verbatim — ``operational_status`` (from
-    ``app.policy.operational_status_for``), the ``reason`` behind a held state
-    (raw block-reason code, ``None`` when not held), whether a manual cancel is
-    offerable, and whether the order is flagged stale — and never re-derives
-    lifecycle. The full ``order`` is included for the display fields (symbol,
-    quantity, price, filled, age).
-    """
-
-    order: Order
-    operational_status: str
-    reason: Optional[str] = None
-    cancelable: bool
-    stale: bool = False
-
-
-class OperatorRecoveryView(BaseModel):
-    """One unresolved broker-submit recovery record, classified (D-017 / D-020).
-
-    A broker order accepted upstream that local order state can't otherwise
-    show. ``operational_status`` is ``broker_submission_failed`` while the
-    recovery loop is still working it or ``recovery_required`` once escalated to
-    ``needs_review`` (a real untracked position a human must reconcile).
-    """
-
-    record: SubmitRecoveryRecord
-    operational_status: str
-    reason: Optional[str] = None
-
-
-class OperatorOrdersResponse(BaseModel):
-    """The operator's single source of order-lifecycle truth (``GET
-    /api/operator/orders``). Every durable non-terminal order and every open
-    recovery record, each already classified — read-only; no mutation lives
-    here (the existing ``/orders`` raw read and the ``/orders/{id}/cancel``
-    action are unchanged)."""
-
-    orders: list[OperatorOrderView]
-    recoveries: list[OperatorRecoveryView]
+# NOTE: ``ProtectionConfigView``/``ProtectionPositionView``/
+# ``ProtectionStatusResponse``/``OperatorOrderView``/``OperatorRecoveryView``/
+# ``OperatorOrdersResponse`` moved to ``app.facade.dtos`` in Phase 6 (P6d) — the
+# protection-status and operator-orders classification logic now lives behind
+# the query facade (ADR-005), and the facade owns its return DTOs (ADR-006
+# api→facade direction). The JSON shapes are unchanged. ``FlattenResponse``
+# stays here — the flatten/emergency-reduce commands are P6e.
 
 
 class ReconciliationStatusResponse(BaseModel):

@@ -34,9 +34,9 @@ from app.models import (
     SessionStatus,
     TradingState,
 )
-from app.api.routes_trading import protection_status
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
+from app.facade.store_backed import StoreBackedQueryFacade
 from app.marketdata.fake import FakeMarketDataFeed
 from app.monitoring import run_monitoring_tick
 from app.policy import (
@@ -464,7 +464,11 @@ async def test_protection_dto_paused_by_kill_switch_reads_fsm_field():
 
     md = FakeMarketDataFeed()
     md.set_snapshot("AAPL", last_price=1.0, bid=1.0, ask=1.0)  # breach
-    resp = await protection_status(store=store, settings=Settings(), market_data=md)
+    # P6d: /protection's classification moved behind the query facade
+    # (ADR-005); this pin now drives it directly rather than the route
+    # function, which no longer takes store/settings/market_data.
+    facade = StoreBackedQueryFacade(store, market_data=md, settings=Settings())
+    resp = await facade.protection_status()
 
     view = next(p for p in resp.positions if p.symbol == "AAPL")
     assert view.breaching is True

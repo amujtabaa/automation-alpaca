@@ -97,6 +97,9 @@ def get_query_facade(
     no state to share). Phase 6 also injects the process-wide
     ``MarketDataService`` so read routes computing over the market-data port
     (snapshot ``pct_move``, protection status) can move that behind the facade.
+    P6d additionally injects ``Settings`` — ``protection_status`` needs the
+    effective ``ProtectionConfig``, the same way the command facade already
+    injects it for the candidate approve flow's CAPI risk limits.
 
     Collaborators are read defensively (``getattr(..., None)``): the real app's
     lifespan always sets them, but a partial-app test fixture that only wires a
@@ -105,7 +108,11 @@ def get_query_facade(
     """
 
     st = request.app.state
-    return StoreBackedQueryFacade(store, market_data=getattr(st, "market_data", None))
+    return StoreBackedQueryFacade(
+        store,
+        market_data=getattr(st, "market_data", None),
+        settings=getattr(st, "settings", None),
+    )
 
 
 def get_command_facade(
