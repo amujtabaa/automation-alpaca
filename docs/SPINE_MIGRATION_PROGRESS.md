@@ -38,9 +38,9 @@ for every phase so far (proceeding was explicitly user-authorized).
 | 1 | Facade shell + characterization | ✅ done (`d146e0e`, `afe8543`) — report: `docs/SPINE_PHASE1_FACADE_REPORT.md` |
 | 2 | Event schema + replay scaffolding | ✅ done (`7ba8dd0`…`60d38a0`) — report: `docs/SPINE_PHASE2_EVENT_LOG_REPORT.md` |
 | 3 | Safety-critical event-first migration | ✅ safety flows done (waves 3a/3b/3c/3d/3e, all reviewed+remediated). Deferred to later phases: flatten facade migration (→ Phase 5/API-routes), reconciliation-driven Reducing (→ Phase 4), spawn/order projectors (→ Phase 4) |
-| 4 | Reconciliation engine | ⬜ not started |
-| 5 | Import-boundary enforcement | ⬜ not started |
-| 6 | Legacy table demotion/removal | ⬜ not started |
+| 4 | Reconciliation engine | ✅ done (waves 4a–4h, `da2260c` incl. review remediation) — all §7 goals met; event_truth |
+| 5 | Import-boundary enforcement | ✅ done — `.importlinter` (5 contracts) + CI `lint-imports` + `tests/test_import_boundaries.py`; ADR-006 |
+| 6 | Legacy table demotion/removal | ⬜ not started (inherits the Contract-5 ratchet punch-list) |
 
 ---
 
@@ -548,7 +548,47 @@ the 4g sim-seam, needs real creds). **Next: the Phase-4 adversarial review** (co
 truth-flip + 4f/4g FSM-composition/startup-gate safety-critical paths), then **STANDBY before Phase 5**
 per the standing request.
 
-**Resume hint:** **Phase 3's safety-critical flows are all migrated + reviewed** (waves
+---
+
+## Current position: Phase 5 — Import-boundary enforcement (import-linter) — ✅ CLOSED
+
+**Goal (roadmap Phase 5 / CLAUDE.md §5):** turn the layered architecture from documented into
+mechanically enforced — "a PR that crosses a protected boundary fails CI".
+
+- [x] **Recon (grimp import-graph audit).** The architecture is already clean: `alpaca` is imported
+  by exactly the two concrete ports (`app.broker.alpaca_paper`, `app.marketdata.alpaca_stream`); the
+  cockpit imports zero `app.*`; `app.models` is a leaf; `app.facade`/`app.store`/`app.broker` have no
+  upward imports; no engine module imports a concrete adapter. The only api→backend edges are the ~12
+  known unmigrated route→store/broker/monitoring imports (the Phase-6 target).
+- [x] **`.importlinter` — 5 forbidden contracts (ADR-006).** Four Tier-1 hard invariants hold with
+  ZERO exceptions (alpaca-SDK-confined-to-adapter, cockpit-thin-client, engine-venue-agnostic,
+  models-is-a-leaf), all `allow_indirect_imports = True` (direct-edge boundaries; the composition root
+  legitimately creates transitive paths). A fifth Tier-2 contract encodes the ADR-005 "routes reach the
+  backend only via the facade" TARGET as a **ratchet**: `ignore_imports` is the exhaustive Phase-6
+  punch-list of the remaining direct route→backend edges, and `unmatched_ignore_imports_alerting =
+  error` makes a migrated route's stale ignore fail the build until deleted — the boundary can only
+  tighten. `app.api.deps` (DI/composition root) + `app.api.schemas` (DTOs) are excluded from the source.
+- [x] **Non-vacuity proven.** Verified both that removing a Contract-5 ignore immediately BREAKS the
+  build and that an unmatched/stale ignore ERRORS — the config genuinely bites and the ratchet fires.
+- [x] **Enforcement wiring.** `import-linter>=2.0` added to `requirements.txt`; a dedicated
+  `lint-imports` CI step (before the suite, for a clear failure signal); and
+  `tests/test_import_boundaries.py` runs all contracts IN the suite (via `configuration.configure()` +
+  `use_cases.lint_imports`) PLUS two INI-independent grimp proofs (alpaca confinement, thin UI) so
+  those safety boundaries survive a config mis-edit. `pytest.importorskip` keeps a dev without the tool
+  from being blocked; CI always has it.
+- [x] **Docs.** ADR-006 written; MIGRATION_MATRIX Import-linter row → `enforced`; INVARIANTS INV-070…074
+  added; this ledger. No `app/` source changed (coverage unaffected).
+- [x] Gate: `lint-imports` green (5 kept / 0 broken); full suite green; ruff clean.
+
+**Phase 5 — CLOSED.** The boundary is now enforced two ways (CI step + suite test). Phase 6 (legacy
+table demotion + route→facade migration) inherits a mechanical, self-tightening checklist: empty the
+Contract-5 `ignore_imports` block one migrated route at a time, and the ratchet forbids the edge from
+returning. **Next: the Phase-5 adversarial review**, then **STANDBY before Phase 6** per the standing
+request.
+
+---
+
+**Resume hint (historical, Phase 4):** **Phase 3's safety-critical flows are all migrated + reviewed** (waves
 3a/3b/3c/3d/3e). Next is **Phase 4 — Reconciliation engine** (`docs/REARCHITECTURE_ROADMAP.md`
 Phase 4): startup mass-status reconcile, targeted single-order query before any
 not-found→REJECTED, external/unmanaged order surfacing, broker position parity, deterministic

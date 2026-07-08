@@ -1,0 +1,172 @@
+# Import-boundary contracts — Spine v2 Phase 5 (CLAUDE.md §5, ADR-005, ADR-006).
+#
+# Enforced by import-linter (`lint-imports`) in CI and in the test suite
+# (tests/test_import_boundaries.py). A PR that crosses a protected boundary
+# fails the build (CLAUDE.md §5: "A PR that crosses a protected boundary fails
+# CI").
+#
+# Design note — what is enforced NOW vs. the migration target:
+#   The four "hard invariant" contracts below (alpaca isolation, thin UI, a
+#   venue-agnostic engine, a leaf model kernel) hold with ZERO exceptions today
+#   and encode non-negotiable project invariants. The fifth contract
+#   (api-routes-reach-backend-only-through-the-facade) encodes the ADR-005
+#   *target*: most routes are not yet migrated behind the facade, so its
+#   `ignore_imports` block is the explicit, exhaustive Phase-6 punch-list of the
+#   remaining direct route->backend edges. `unmatched_ignore_imports_alerting =
+#   error` makes that list a RATCHET: when Phase 6 migrates a route, the stale
+#   ignore entry errors until it is deleted, so the boundary can only tighten,
+#   never silently regress.
+
+[importlinter]
+root_packages =
+    app
+    cockpit
+# Analyze external imports too, so Contract 1 can see (and confine) `alpaca`.
+include_external_packages = True
+
+# --------------------------------------------------------------------------- #
+# Contract 1 — the Alpaca SDK is confined to the two concrete venue ports.
+# Non-negotiable invariant #5 (CLAUDE.md §3 / Spine v2 §0): "The UI never calls
+# Alpaca — only the Broker Adapter does", generalized to "nothing but the
+# concrete adapter/stream imports alpaca-py" (ADR-005). The two ignored edges
+# ARE the sanctioned ports; every other module importing alpaca fails.
+# --------------------------------------------------------------------------- #
+[importlinter:contract:alpaca-sdk-confined-to-adapter]
+name = alpaca-py is imported only by the concrete Alpaca adapter + market-data stream
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    app
+    cockpit
+forbidden_modules =
+    alpaca
+ignore_imports =
+    app.broker.alpaca_paper -> alpaca
+    app.marketdata.alpaca_stream -> alpaca
+
+# --------------------------------------------------------------------------- #
+# Contract 2 — the Streamlit cockpit is a thin client (invariant #4).
+# It may import ONLY its own typed API client (cockpit.api_client) and stdlib /
+# third-party UI libs; it owns no backend logic and never reaches into `app`.
+# --------------------------------------------------------------------------- #
+[importlinter:contract:cockpit-is-a-thin-client]
+name = The Streamlit cockpit imports no backend (app.*) code — only its API client
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    cockpit
+forbidden_modules =
+    app
+
+# --------------------------------------------------------------------------- #
+# Contract 3 — the execution engine is venue-agnostic (ports & adapters).
+# Engine modules may depend on the abstract PORTS (app.broker.adapter,
+# app.marketdata.service) but never on a concrete venue implementation or the
+# Alpaca SDK — so the engine stays testable IO-free and swappable per venue.
+# --------------------------------------------------------------------------- #
+[importlinter:contract:engine-is-venue-agnostic]
+name = The engine never imports a concrete venue adapter or the Alpaca SDK
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    app.monitoring
+    app.reconciliation
+    app.policy
+    app.position
+    app.protection
+    app.strategy
+    app.strategy_loop
+    app.features
+    app.transitions
+    app.events
+    app.approval
+forbidden_modules =
+    app.broker.alpaca_paper
+    app.broker.mock
+    app.broker.sim
+    app.marketdata.alpaca_stream
+    alpaca
+
+# --------------------------------------------------------------------------- #
+# Contract 4 — the shared model kernel is a leaf. app.models is imported by
+# every layer; it must import none of them back, so it can never take a
+# dependency on a higher layer (which would create a cycle and defeat layering).
+# --------------------------------------------------------------------------- #
+[importlinter:contract:models-is-a-leaf]
+name = The shared models kernel depends on no other app layer
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    app.models
+forbidden_modules =
+    app.api
+    app.facade
+    app.store
+    app.events
+    app.broker
+    app.marketdata
+    app.monitoring
+    app.reconciliation
+    app.protection
+    app.position
+    app.policy
+    app.strategy
+    app.approval
+    cockpit
+
+# --------------------------------------------------------------------------- #
+# Contract 5 — API routes reach the backend ONLY through the typed facade
+# (ADR-005). This is the migration TARGET: the `ignore_imports` block is the
+# exhaustive Phase-6 punch-list of routes still calling the store/engine/broker
+# directly. `unmatched_ignore_imports_alerting = error` (default, pinned here)
+# makes it a ratchet — a migrated route's stale ignore errors until deleted.
+#
+# Scope note: `app.api.deps` (the DI/composition root that BUILDS the facade and
+# still provides the legacy store to unmigrated routes) and `app.api.schemas`
+# (HTTP DTOs) are deliberately NOT sources here — only request-handling route
+# modules are. The command/query facades themselves are the sanctioned seam.
+# --------------------------------------------------------------------------- #
+[importlinter:contract:api-routes-reach-backend-only-via-facade]
+name = API route handlers reach the store/engine/broker only through the facade (ADR-005 target)
+type = forbidden
+allow_indirect_imports = True
+unmatched_ignore_imports_alerting = error
+source_modules =
+    app.api.routes_candidates
+    app.api.routes_controls
+    app.api.routes_dev
+    app.api.routes_marketdata
+    app.api.routes_review
+    app.api.routes_system
+    app.api.routes_trading
+    app.api.routes_watchlist
+forbidden_modules =
+    app.store
+    app.broker
+    app.monitoring
+    app.protection
+    app.marketdata
+    app.reconciliation
+    app.position
+    app.transitions
+    app.events
+    app.strategy
+    alpaca
+ignore_imports =
+    # ---- Phase-6 punch-list: remaining direct route->backend edges ----
+    # Each line is one un-migrated route dependency ADR-005 wants gone. Migrating
+    # a route to the facade means DELETING its line(s) here; the ratchet then
+    # forbids the edge from ever returning. When this block is empty, the ADR-005
+    # route boundary is fully enforced and Phase 6's route work is done.
+    app.api.routes_candidates -> app.store.base
+    app.api.routes_controls -> app.store.base
+    app.api.routes_dev -> app.store.base
+    app.api.routes_marketdata -> app.marketdata.service
+    app.api.routes_review -> app.store.base
+    app.api.routes_system -> app.store.base
+    app.api.routes_trading -> app.store.base
+    app.api.routes_trading -> app.broker.adapter
+    app.api.routes_trading -> app.marketdata.service
+    app.api.routes_trading -> app.monitoring
+    app.api.routes_trading -> app.protection
+    app.api.routes_watchlist -> app.store.base

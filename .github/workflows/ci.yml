@@ -29,6 +29,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Check import boundaries
+        # Spine v2 Phase 5 (CLAUDE.md §5/§8, ADR-005/006): a PR that crosses a
+        # protected architectural boundary fails CI here. Runs before the suite so
+        # a boundary break is reported as its own clear step, not buried in pytest
+        # output (the same contracts are ALSO asserted by
+        # tests/test_import_boundaries.py, so the gate holds even if this step is
+        # ever removed).
+        run: lint-imports
       - name: Run tests with coverage
         # --cov-branch + the fail_under floor in pyproject [tool.coverage.report]
         # gate the build; a real coverage regression fails here.

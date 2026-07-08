@@ -338,6 +338,65 @@ kill switch could instead engage it (silently inverted intent).
 
 ---
 
+## Architecture boundaries (Phase 5, `.importlinter`, ADR-005 / ADR-006)
+
+Mechanically enforced by import-linter (CI `lint-imports` step +
+`tests/test_import_boundaries.py`). These are the "a PR that crosses a protected
+boundary fails CI" rules of CLAUDE.md §5, made executable.
+
+**INV-070 — Only the two concrete venue ports import the Alpaca SDK.**
+`app.broker.alpaca_paper` and `app.marketdata.alpaca_stream` are the only
+modules that may `import alpaca`; no UI, API, facade, engine, or store module
+ever does (invariant #5 — "the UI never calls Alpaca, only the adapter does",
+generalized).
+*Why:* a stray SDK import anywhere else is a venue-coupling / live-trading leak
+path that bypasses the adapter's paper-only, quarantine, and rate-limit
+guarantees.
+*Pinned by:* `tests/test_import_boundaries.py::test_alpaca_sdk_is_confined_to_the_two_concrete_ports`
+(direct grimp-graph proof, INI-independent) + the `alpaca-sdk-confined-to-adapter`
+contract in `.importlinter`.
+
+**INV-071 — The Streamlit cockpit imports no backend (`app.*`) code.** The UI is
+a thin client: it reaches the backend only over HTTP through
+`cockpit.api_client` and owns no strategy/risk/order/fill/position logic
+(invariant #4).
+*Why:* any `cockpit → app` import lets business logic or state leak into the
+disposable UI, breaking the "backend owns all truth" boundary and the future
+Dash-swap path.
+*Pinned by:* `tests/test_import_boundaries.py::test_cockpit_imports_no_backend_code`
++ the `cockpit-is-a-thin-client` contract.
+
+**INV-072 — The execution engine is venue-agnostic.** Engine modules
+(`monitoring`, `reconciliation`, `policy`, `position`, `protection`, `strategy`,
+`strategy_loop`, `features`, `transitions`, `events`, `approval`) import the
+abstract ports (`app.broker.adapter`, `app.marketdata.service`) but never a
+concrete adapter (`alpaca_paper`/`mock`/`sim`/`alpaca_stream`) or the SDK.
+*Why:* the single-writer engine must stay IO-free/testable and swappable per
+venue; a concrete-adapter import couples decision logic to one venue.
+*Pinned by:* the `engine-is-venue-agnostic` contract in `.importlinter`
+(`tests/test_import_boundaries.py::test_all_import_contracts_hold`).
+
+**INV-073 — The shared model kernel is a leaf.** `app.models` imports no other
+`app` layer, so the type kernel every layer depends on can never take a
+dependency back on a higher layer.
+*Why:* a back-edge from `models` to any layer creates an import cycle and
+defeats the layering the other contracts rely on.
+*Pinned by:* the `models-is-a-leaf` contract (`test_all_import_contracts_hold`).
+
+**INV-074 — API route handlers reach the store/engine/broker only through the
+typed facade (ADR-005 target; ratchet-enforced).** New route→backend imports are
+forbidden; the current unmigrated edges are an explicit `ignore_imports`
+punch-list that Phase 6 empties one route at a time. `unmatched_ignore_imports_alerting
+= error` means a migrated route's stale ignore fails the build until removed —
+the boundary can only tighten.
+*Why:* direct route→store/broker/monitoring access bypasses the facade's
+quarantine/timeout/TradingState/event-log seams (ADR-005). The ratchet stops the
+partial migration from regressing.
+*Pinned by:* the `api-routes-reach-backend-only-via-facade` contract
+(`test_all_import_contracts_hold`).
+
+---
+
 ## Superseded / historical
 
 None yet. When an invariant is later found to be wrong or is deliberately
