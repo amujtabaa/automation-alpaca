@@ -44,7 +44,15 @@ _ENGINE = (EventSource.ENGINE, EventAuthority.LOCAL)
 # --------------------------------------------------------------------------- #
 # Pure helper — provenance per (old_status, new_status)
 # --------------------------------------------------------------------------- #
-def _order(status: OrderStatus, order_id: str = "o1", filled: int = 0) -> Order:
+def _order(
+    status: OrderStatus,
+    order_id: str = "o1",
+    filled: int = 0,
+    broker_order_id: str | None = None,
+) -> Order:
+    # broker_order_id is assigned only when SUBMITTED is recorded, so a realistic
+    # SUBMITTED/PARTIALLY_FILLED/live order carries one; a CREATED or a
+    # submit-failed SUBMITTING order does not.
     return Order(
         id=order_id,
         candidate_id="c1",
@@ -55,6 +63,7 @@ def _order(status: OrderStatus, order_id: str = "o1", filled: int = 0) -> Order:
         limit_price=1.0,
         status=status,
         filled_quantity=filled,
+        broker_order_id=broker_order_id,
     )
 
 
@@ -102,14 +111,34 @@ def test_helper_canceled_from_created_is_engine_local():
     assert ev is not None and _prov(ev) == _ENGINE
 
 
+def test_helper_canceled_from_submitting_without_broker_id_is_engine_local():
+    # REGRESSION (WO-0009 adversarial-verify finding): the SUBMITTING -> CANCELED
+    # release when a submit failed before the venue returned an id
+    # (app/monitoring.py's no-zombie cancel of a BUY whose session closed
+    # mid-submit) is an ENGINE-LOCAL decision — the broker never saw the order
+    # (broker_order_id is None). The old `old_status is CREATED` proxy wrongly
+    # stamped this BROKER_AUTHORITATIVE (an over-claim in the ADR-001 conflict-
+    # winning direction).
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.SUBMITTING, broker_order_id=None), OrderStatus.CANCELED, 0
+    )
+    assert ev is not None and _prov(ev) == _ENGINE
+
+
 def test_helper_canceled_from_submitted_is_broker():
-    # Broker-confirmed cancel of a live order.
-    ev = execution_event_for_routine_transition(_order(OrderStatus.SUBMITTED), OrderStatus.CANCELED, 0)
+    # Broker-confirmed cancel of a live order — it has a broker id.
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.SUBMITTED, broker_order_id="brk-1"), OrderStatus.CANCELED, 0
+    )
     assert ev is not None and _prov(ev) == _BROKER
 
 
 def test_helper_canceled_from_partially_filled_is_broker():
-    ev = execution_event_for_routine_transition(_order(OrderStatus.PARTIALLY_FILLED, filled=4), OrderStatus.CANCELED, 4)
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.PARTIALLY_FILLED, filled=4, broker_order_id="brk-1"),
+        OrderStatus.CANCELED,
+        4,
+    )
     assert ev is not None and _prov(ev) == _BROKER
 
 
@@ -179,6 +208,23 @@ async def test_store_canceled_from_submitted_is_broker(any_store):
     await any_store.transition_order(order.id, OrderStatus.CANCELED)
     ev = _one(await any_store.get_execution_events(), ExecutionEventType.CANCELED)
     assert _prov(ev) == _BROKER
+
+
+async def test_store_canceled_from_submitting_release_is_engine_local(any_store):
+    # REGRESSION (WO-0009 adversarial-verify finding): claim an order into
+    # SUBMITTING (no broker_order_id yet), then cancel it directly. The emitted
+    # CANCELED event must be ENGINE/LOCAL — the broker never saw the order. This is
+    # the store-level shadow of monitoring.py's SUBMITTING->CANCELED submit-failure
+    # release (no-zombie cancel of a BUY whose session closed mid-submit).
+    _, order = await _created_buy(any_store)
+    claim = await any_store.claim_order_for_submission(order.id)
+    assert claim.outcome == "claimed"
+    canceled = await any_store.transition_order(order.id, OrderStatus.CANCELED)
+    assert canceled.status is OrderStatus.CANCELED
+    assert canceled.broker_order_id is None
+    ev = _one(await any_store.get_execution_events(), ExecutionEventType.CANCELED)
+    assert ev.order_id == order.id
+    assert _prov(ev) == _ENGINE
 
 
 async def test_store_session_close_cancel_is_engine_local(any_store):

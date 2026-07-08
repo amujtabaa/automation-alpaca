@@ -1516,9 +1516,13 @@ def plan_transition_order(
 # the same convention the rest of the log uses (`execution_event_for_fill`,
 # `plan_resolve_timeout_quarantine`, `plan_reconcile_resolve_order`):
 #   * ENGINE/LOCAL for the genuinely engine-local transitions — the claim
-#     (`CREATED -> SUBMITTING`, a pre-broker engine decision) and a `CANCELED`
-#     whose OLD status is `CREATED` (a never-submitted order cancelled locally:
-#     session close, flatten supersede, or a manual never-submitted cancel).
+#     (`CREATED -> SUBMITTING`, a pre-broker engine decision) and a `CANCELED` of
+#     an order the broker never confirmed (no `broker_order_id`): a never-submitted
+#     `CREATED` order cancelled locally (session close, flatten supersede, manual),
+#     OR the `SUBMITTING -> CANCELED` release when a submit failed before the venue
+#     returned an id — the no-zombie cancel of a BUY whose session closed mid-submit
+#     (`app/monitoring.py`). `broker_order_id` is assigned only when `SUBMITTED` is
+#     recorded, so its absence reliably means the broker never saw this order.
 #   * BROKER_REST/BROKER_AUTHORITATIVE for the broker-OBSERVED facts — `SUBMITTED`
 #     (only reached with a broker id, AIR-001), `PARTIALLY_FILLED`/`FILLED` (fills
 #     seen via the reconcile poll), `REJECTED` (broker rejection via poll/TQ), and
@@ -1553,19 +1557,31 @@ _SHARED_FORMAT_KEY_STATUSES = frozenset(
 
 
 def _routine_event_provenance(
-    old_status: OrderStatus, new_status: OrderStatus
+    order: Order, new_status: OrderStatus
 ) -> tuple[EventSource, EventAuthority]:
-    """Faithful ``(source, authority)`` for a routine order-status event, derived
-    from the transition's endpoints (WO-0009). See the PROVENANCE note above.
+    """Faithful ``(source, authority)`` for a routine order-status event (WO-0009).
+    See the PROVENANCE note above.
 
-    Engine-local iff the transition is the pre-broker claim, or a cancel of an
-    order that was never sent to the broker (``CANCELED`` with old status
-    ``CREATED``). Every other routine-emitted status is a broker-observed fact.
+    Engine-local iff the transition is the pre-broker claim, or a ``CANCELED`` of an
+    order the broker never confirmed — one with no ``broker_order_id``. That covers
+    both a never-submitted ``CREATED`` order (session close / flatten supersede /
+    manual never-submitted cancel) AND the ``SUBMITTING -> CANCELED`` release when a
+    submit failed before the venue returned an id (the no-zombie cancel of a BUY
+    whose session closed mid-submit — ``app/monitoring.py``). ``broker_order_id`` is
+    assigned only when ``SUBMITTED`` is recorded, so its absence reliably means the
+    broker never saw this order. Every other routine-emitted status
+    (``SUBMITTED``/``PARTIALLY_FILLED``/``FILLED``/``REJECTED`` and a broker-confirmed
+    ``CANCELED``) is a broker-observed fact.
+
+    (Using ``broker_order_id is None`` rather than ``old_status is CREATED`` fixes a
+    real over-claim the WO-0009 adversarial-verify pass found: the
+    ``SUBMITTING -> CANCELED`` submit-failure release is engine-local but has old
+    status ``SUBMITTING``, so the old proxy stamped it BROKER_AUTHORITATIVE.)
     """
 
     if new_status is OrderStatus.SUBMITTING:
         return EventSource.ENGINE, EventAuthority.LOCAL
-    if new_status is OrderStatus.CANCELED and old_status is OrderStatus.CREATED:
+    if new_status is OrderStatus.CANCELED and order.broker_order_id is None:
         return EventSource.ENGINE, EventAuthority.LOCAL
     return EventSource.BROKER_REST, EventAuthority.BROKER_AUTHORITATIVE
 
@@ -1601,7 +1617,7 @@ def execution_event_for_routine_transition(
     see the PROVENANCE note above.
     """
 
-    source, authority = _routine_event_provenance(order.status, new_status)
+    source, authority = _routine_event_provenance(order, new_status)
 
     if new_status is OrderStatus.SUBMITTING:
         n = occurrence if occurrence is not None else 0

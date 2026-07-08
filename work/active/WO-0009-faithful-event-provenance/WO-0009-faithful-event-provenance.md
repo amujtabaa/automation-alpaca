@@ -47,9 +47,12 @@ created: 2026-07-08
   EventAuthority)` in core.py and use it inside `execution_event_for_routine_transition` for the
   `source`/`authority` of every branch, replacing the hardcoded `ENGINE`/`LOCAL`.
   - claim (`→ SUBMITTING`): `ENGINE`/`LOCAL`
-  - `→ CANCELED` with old status CREATED: `ENGINE`/`LOCAL`
+  - `→ CANCELED` of an order with no `broker_order_id`: `ENGINE`/`LOCAL` (broker never saw it —
+    covers never-submitted CREATED cancels AND the `SUBMITTING → CANCELED` submit-failure release;
+    **corrected from the initial `old_status is CREATED` proxy after the adversarial-verify pass found
+    the SUBMITTING-release over-claim — see fable_fix in the WO-0009 close**)
   - everything else in the routine map (`SUBMITTED`, `PARTIALLY_FILLED` incl. self-loop, `FILLED`,
-    `REJECTED`, and `CANCELED` from a post-CREATED state): `BROKER_REST`/`BROKER_AUTHORITATIVE`
+    `REJECTED`, and a broker-confirmed `CANCELED` with a `broker_order_id`): `BROKER_REST`/`BROKER_AUTHORITATIVE`
   - alternative rejected: threading `source`/`authority` params from the monitoring/facade callers
     (Option A) — more future-proof for a websocket path but touches the highest-risk store method
     signatures + ~6 monitoring call sites for no correctness gain today; deferred to whenever a
