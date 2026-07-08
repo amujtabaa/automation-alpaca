@@ -64,6 +64,12 @@ create transitive paths that are not violations.
    when Phase 6 migrates a route behind the facade, the stale ignore entry errors
    until it is deleted, so the boundary can only tighten and never silently
    regress. When the block is empty, the ADR-005 route boundary is fully enforced.
+   **Status: as of Phase 6 (P6a–P6e) the `ignore_imports` block is EMPTY** — every
+   `app.api.routes_*` module now reaches the backend only through the typed facade,
+   `lint-imports` reports `5 kept, 0 broken`, and the ratchet now forbids ANY direct
+   route→backend edge from returning (a regression fails CI). The Tier-2 contract
+   has thus reached its Tier-1-equivalent end state (fully enforced, zero
+   exceptions), though it remains INI-expressed rather than grimp-reproven.
    `app.api.deps` (the DI/composition root that builds the facade and still hands
    the legacy store to unmigrated routes), `app.api.schemas` (HTTP DTOs), and the
    cross-cutting kernel (`app.config` settings injected via DI, `app.models`
