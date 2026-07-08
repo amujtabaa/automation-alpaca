@@ -56,7 +56,7 @@ Plus spine invariants **INV-1…INV-9** (`docs/SPINE_EXECUTION_ARCHITECTURE_v2.m
 
 - Engine logic: injected clock (no bare `datetime.now()`/`time.time()`), no unseeded randomness, deterministic IDs/queues.
 - State/order/fill/position/reconciliation/kill-switch changes: test **both** in-memory and SQLite paths, expand tests in the same change.
-- Gate: `ruff` + `mypy` + `pytest` (+ import-linter, replay/parity verifier where configured). Formatting authority is **ruff** — never Prettier/Biome on Python.
+- Gate: `ruff` + `pytest` (+ import-linter, replay/parity verifier where configured). Formatting authority is **ruff** — never Prettier/Biome on Python. (A `mypy` typecheck gate is aspirational — not yet wired in CI/config; deferred to `work/queue/WO-0008`, see `pkl/architecture/testing-model.md`.)
 
 ## Review
 
