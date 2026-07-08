@@ -56,7 +56,7 @@ from app.approval.human import HumanApprovalGate
 from app.broker import create_broker_adapter
 from app.config import load_settings
 from app.marketdata import create_market_data_service
-from app.monitoring import monitoring_loop
+from app.monitoring import monitoring_loop, run_startup_reconcile
 from app.store import create_state_store
 from app.store.base import StateStore
 from app.strategy_loop import strategy_loop
@@ -87,6 +87,13 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
 
         monitor_task: Optional[asyncio.Task] = None
         if settings.enable_monitoring:
+            # Wave 4f / §7: gate trading behind a startup mass-status reconcile —
+            # enter reduce-only (Reducing) until a reconcile pass confirms parity,
+            # BEFORE the monitoring loop enables normal trading. Best-effort; the
+            # loop keeps re-checking each tick.
+            await run_startup_reconcile(
+                active_store, app.state.broker_adapter, settings
+            )
             monitor_task = asyncio.create_task(
                 monitoring_loop(
                     active_store,

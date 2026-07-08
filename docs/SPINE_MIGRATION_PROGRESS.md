@@ -466,7 +466,28 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
     order so one failure never stops the loop (honors the docstring); **F5** documented that `plan.resolutions`
     (matched-terminal) is deliberately left to the per-order poll (double-actor safety). +3 remediation tests
     (F1/F2/F3). **Wave 4e CLOSED** — the runtime open-order reconcile is `event_truth`, reviewed clean.
-  **4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition
+- [x] **Wave 4f — startup reconcile gate + R2 FSM composition** (`21b7607` + startup wiring).
+  - **4f-1 (FSM composition, R2):** the §8 TradingState FSM gained a SECOND, independent driver so the
+    reconcile engine can drive `trading_state → Reducing` WITHOUT touching the kill/pause booleans (the
+    wave-3d hook). `compose_trading_state(Halted > Reducing > Active)` folds the control driver
+    (`control_trading_state`) + reconcile driver (`reconcile_trading_state`); `current_trading_state` now
+    returns the composition. New `set_reconcile_trading_state(to, reason)` store method emits a
+    `driver="reconcile"` `TRADING_STATE_CHANGED` event; the control event gained a `driver="control"` stamp
+    (legacy events fold as control). Behavior-preserving (no reconcile events → composition == control;
+    wave-3d suite green). Kill dominates a reconcile Reducing; a kill *release* can't lift a Reducing
+    pending reconciliation still needs. Reconcile driver refuses `Halted` (R3). `tests/test_spine_phase4f_
+    fsm_composition.py` (11, dual-store).
+  - **4f-2 (startup gate, §7 / R3):** `run_startup_reconcile` (called in `main.py` lifespan before the loop)
+    enters reduce-only (`Reducing`), runs one mass-reconcile pass, and lifts to `Active` on confirmed parity;
+    divergence or a reconcile FAILURE stays `Reducing` (R3 — never auto-Halt; a held position stays exitable
+    at boot). The monitoring loop re-checks each tick (`drive_reconcile_state=True` → parity ⇒ Active,
+    divergence/failure ⇒ Reducing) via `_has_unresolved_divergence` (needs_targeted_query / external / position
+    drift — the deferred position-parity computation finally gates something). **Only the loop/startup drive
+    the FSM**; a direct `run_monitoring_tick` (the whole corpus) leaves `trading_state` untouched
+    (`drive_reconcile_state=False` default). `tests/test_spine_phase4f_startup_gate.py` (12, dual-store):
+    clean-parity→Active, divergence→stays-Reducing, failure→Reducing-never-Halted, kill-dominates,
+    divergence-then-resolution-lifts, direct-tick-never-drives.
+  ~~**4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition~~
   FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
   adversarial review** (concentrates on the 4e/4f truth-flips).
 

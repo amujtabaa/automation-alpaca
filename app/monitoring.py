@@ -453,6 +453,10 @@ async def monitoring_loop(
     # ticks (wave 4e-4 / R6). Owned by the loop so it spans ticks; direct
     # ``run_monitoring_tick`` callers (tests) pass none and are unthrottled.
     reconcile_budget = ReconcileQueryBudget(settings.reconcile_query_budget_per_min)
+    # Wave 4f gate: the startup reduce-only gate is owned by ``run_startup_reconcile``
+    # (called in the app lifespan BEFORE this loop, so trading is Reducing-until-parity
+    # before the first tick). This loop then MAINTAINS the reconcile driver each tick
+    # (parity → Active, divergence/failure → Reducing) via ``drive_reconcile_state``.
     while True:
         try:
             await asyncio.sleep(settings.poll_cadence_seconds)
@@ -460,12 +464,38 @@ async def monitoring_loop(
                 store, adapter, settings,
                 market_data=market_data,
                 reconcile_budget=reconcile_budget,
+                drive_reconcile_state=True,
             )
         except asyncio.CancelledError:
             _log.info("monitoring loop cancelled; shutting down")
             raise
         except Exception:  # noqa: BLE001 - a tick failure must not stop the loop
             _log.exception("monitoring tick failed; continuing on next cadence")
+
+
+async def run_startup_reconcile(
+    store: StateStore, adapter: BrokerAdapter, settings: Settings
+) -> None:
+    """§7 startup mass-status reconcile + gate (wave 4f). Run ONCE at app startup
+    (``app/main.py`` lifespan) BEFORE normal trading is enabled:
+
+    * Enter reduce-only (drive the reconcile TradingState driver → ``Reducing``) —
+      "if startup reconciliation fails, trading is not enabled" (§7); ``Reducing`` is
+      the §8 default under pending reconciliation (reduce-only: no new BUY intent,
+      exits allowed).
+    * Run one mass-report reconcile pass. On confirmed parity it lifts the driver to
+      ``Active`` (normal trading enabled); on divergence or FAILURE it stays
+      ``Reducing`` (R3: never auto-``Halted`` — a held position stays exitable at
+      boot) and the monitoring loop keeps re-checking each tick until parity.
+
+    No-op when reconciliation is disabled. Best-effort — never raises into startup."""
+
+    if not settings.reconciliation_enabled:
+        return
+    _log.info("startup reconcile: entering reduce-only until parity confirmed")
+    await _safe_set_reconcile_state(store, TradingState.REDUCING, reason="startup_pending")
+    budget = ReconcileQueryBudget(settings.reconcile_query_budget_per_min)
+    await _run_reconciliation(store, adapter, settings, budget=budget, drive_state=True)
 
 
 async def run_monitoring_tick(
@@ -475,6 +505,7 @@ async def run_monitoring_tick(
     *,
     market_data: Optional[MarketDataService] = None,
     reconcile_budget: Optional[ReconcileQueryBudget] = None,
+    drive_reconcile_state: bool = False,
 ) -> None:
     """One monitoring iteration: submit pending orders, then reconcile open ones.
 
@@ -510,7 +541,13 @@ async def run_monitoring_tick(
     # Slice 4e-2 surfaces external/unmanaged orders (non-mutating); later slices add
     # not-found resolution (4e-3) + synthetic fills/parity/throttle (4e-4).
     # Failure-isolated; gated by ``reconciliation_enabled`` (default on).
-    await _run_reconciliation(store, adapter, settings, budget=reconcile_budget)
+    # ``drive_reconcile_state`` (loop/startup only) lets it drive the §8 reconcile
+    # TradingState driver (Reducing while divergent, Active on parity — wave 4f / R2);
+    # direct tick callers leave it False, so the corpus never flips trading_state.
+    await _run_reconciliation(
+        store, adapter, settings,
+        budget=reconcile_budget, drive_state=drive_reconcile_state,
+    )
 
 
 async def _submit_pending_orders(
@@ -1599,12 +1636,36 @@ def _order_age(now: datetime, created_at: datetime):
     return now - created_at
 
 
+def _has_unresolved_divergence(plan: ReconciliationPlan) -> bool:
+    """True if the reconcile plan still shows the local + venue pictures out of sync
+    (wave 4f gate): an open order absent from the venue (``needs_targeted_query``), an
+    unmanaged venue order, or a broker-vs-local position drift. ``inferred_fills`` /
+    ``resolutions`` are actions the reconcile TOOK this pass, not unresolved gaps."""
+
+    return bool(
+        plan.needs_targeted_query or plan.external_orders or plan.position_mismatches
+    )
+
+
+async def _safe_set_reconcile_state(
+    store: StateStore, to: TradingState, *, reason: str
+) -> None:
+    """Drive the reconcile TradingState driver (wave 4f / R2), best-effort — a store
+    error here must never crash the tick. Redundant sets are no-ops in the store."""
+
+    try:
+        await store.set_reconcile_trading_state(to, reason=reason)
+    except Exception:  # noqa: BLE001 - the FSM drive is non-fatal to the tick
+        _log.exception("reconcile: could not drive trading_state -> %s", to.value)
+
+
 async def _run_reconciliation(
     store: StateStore,
     adapter: BrokerAdapter,
     settings: Settings,
     *,
     budget: Optional[ReconcileQueryBudget] = None,
+    drive_state: bool = False,
 ) -> Optional[ReconciliationPlan]:
     """Wave 4e: the ACTING §7 mass-report reconcile. Computes the reconciliation
     plan from the venue's mass reports and acts on it:
@@ -1672,9 +1733,28 @@ async def _run_reconciliation(
         # open-only mass report never surfaces a matched terminal anyway; worst case an
         # order stays open locally one extra cycle if the poll is momentarily down (a
         # self-healing liveness gap, never an oversell). Observability-only on this path.
+        if drive_state:
+            # Wave 4f / R2 gate: parity → Active (enable normal trading), any
+            # unresolved divergence → Reducing (reduce-only until reconciled). Only
+            # the loop / startup pass drive_state; direct tick callers (tests) don't.
+            await _safe_set_reconcile_state(
+                store,
+                TradingState.REDUCING
+                if _has_unresolved_divergence(plan)
+                else TradingState.ACTIVE,
+                reason="reconcile_parity" if not _has_unresolved_divergence(plan)
+                else "reconcile_divergence",
+            )
         return plan
     except Exception as exc:  # noqa: BLE001 - reconcile is non-fatal; a failure never flips truth
         _log.warning("reconciliation skipped this cycle (non-fatal): %s", exc)
+        if drive_state:
+            # A reconcile FAILURE is not parity — stay reduce-only (R3: never
+            # auto-Halt, a held position stays exitable), loud for the operator.
+            _log.error("reconcile failed — trading_state held at Reducing (reduce-only)")
+            await _safe_set_reconcile_state(
+                store, TradingState.REDUCING, reason="reconcile_failed"
+            )
         return None
 
 
