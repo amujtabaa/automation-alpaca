@@ -12,6 +12,23 @@
   make correct decisions without asking unnecessary questions.
 -->
 
+## Operator working preferences
+
+Durable preference from the repo owner (Ameen) on how to run multi-step work — captured at his request:
+
+- **Drive autonomously; minimize stops.** Prefer running through the task list end-to-end over a
+  start-stop, one-approval-per-step cadence. Don't pause to ask when the request, the code, or a
+  sensible default already answers the question.
+- **Work concurrently where it's safe.** Let read-only synthesis and independent fixes progress in
+  parallel (e.g. background analysis workflows while foreground code changes land), sequencing only
+  what would otherwise cause a harmful file/state conflict.
+- **Isolate ambiguity instead of blocking on it.** When one thread genuinely needs a human decision,
+  set it aside and keep the other threads moving; **batch** the human-only decisions and surface them
+  together rather than halting the whole effort for each one.
+- **Hard limit:** this preference governs *velocity and structure only*. It never overrides the
+  `CLAUDE.md` safety core, the invariants, or the human-gated surfaces — those still stop and wait for
+  explicit human approval, always. Autonomy means fewer needless pauses, not auto-approving gated actions.
+
 ## What This Repo Is
 
 <!-- REPLACE: 1-3 sentences describing what this project does, who it serves, and its primary purpose. -->
