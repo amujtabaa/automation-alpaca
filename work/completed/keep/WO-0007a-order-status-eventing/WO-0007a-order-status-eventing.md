@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Emit routine order-status ExecutionEvents + dual-store parity (no read-flip)
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0007a
 wave: W2-remediation
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-08
 ---
