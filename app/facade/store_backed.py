@@ -42,12 +42,18 @@ from app.facade.errors import (
 from app.features import pct_move, session_type_for
 from app.models import (
     Candidate,
+    CandidateStatus,
     EventType,
     Position,
     SessionRecord,
     SessionStatus,
     WatchlistSymbol,
     utcnow,
+)
+from app.policy import (
+    limit_price_reason,
+    order_intent_block_reason,
+    risk_limit_reason,
 )
 from app.store.base import (
     CandidateTransitionError,
@@ -61,6 +67,7 @@ from app.store.base import (
     OrderTransitionError,
     RecoveryTransitionError,
     RiskLimitBlockedError,
+    RiskLimits,
     SellIntentTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
@@ -93,6 +100,32 @@ _CONFLICT_STORE_ERRORS = (
 # Store errors (and the bare ValueError normalize_symbol raises) that map to 422.
 _INVALID_INPUT_STORE_ERRORS = (InvalidControlValueError, InvalidStatusError)
 
+# The store/gate errors the candidate approve/reject flow translates to HTTP —
+# mirrors the old route's ``_MAPPED_ERRORS`` (anything else is a genuine bug → 500).
+_APPROVE_MAPPED_ERRORS = (
+    UnknownEntityError,
+    CandidateTransitionError,
+    InvalidOrderError,
+    OrderIntentBlockedError,
+    RiskLimitBlockedError,
+)
+
+
+def _facade_error_for(exc: Exception) -> "ConflictError | EntityNotFoundError | InvalidInputError":
+    """Map a known store ``StoreError`` (or ``normalize_symbol``'s ``ValueError``)
+    to its status-carrying facade error, BY SEMANTIC KIND — the single source of
+    truth for the 404/409/422 policy (see ``app.facade.errors``). Callers that
+    must run cleanup (e.g. the approve flow's revert-on-failure) call this
+    directly; the ``_translate_store_errors`` context manager wraps it for the
+    common no-cleanup case."""
+
+    if isinstance(exc, UnknownEntityError):
+        return EntityNotFoundError(str(exc))
+    if isinstance(exc, _CONFLICT_STORE_ERRORS):
+        return ConflictError(str(exc))
+    # InvalidControlValueError / InvalidStatusError / ValueError
+    return InvalidInputError(str(exc))
+
 
 @contextlib.contextmanager
 def _translate_store_errors() -> Iterator[None]:
@@ -107,14 +140,13 @@ def _translate_store_errors() -> Iterator[None]:
 
     try:
         yield
-    except UnknownEntityError as exc:
-        raise EntityNotFoundError(str(exc)) from exc
-    except _CONFLICT_STORE_ERRORS as exc:
-        raise ConflictError(str(exc)) from exc
-    except _INVALID_INPUT_STORE_ERRORS as exc:
-        raise InvalidInputError(str(exc)) from exc
-    except ValueError as exc:
-        raise InvalidInputError(str(exc)) from exc
+    except (
+        UnknownEntityError,
+        *_CONFLICT_STORE_ERRORS,
+        *_INVALID_INPUT_STORE_ERRORS,
+        ValueError,
+    ) as exc:
+        raise _facade_error_for(exc) from exc
 
 # No auth/actor-tracking system exists yet (docs/MIGRATION_MATRIX.md: "Auth
 # for command endpoints: absent/limited"). The command Protocol's `actor`
@@ -228,6 +260,20 @@ class StoreBackedQueryFacade:
             events=events,
             sell_intents=sell_intents,
         )
+
+    async def list_candidates(self) -> list[Candidate]:
+        """``GET /api/candidates`` (P6c): candidates scoped to the active
+        session (the facade owns the get_current_session → list_candidates
+        two-call sequence)."""
+        session = await self._store.get_current_session()
+        return await self._store.list_candidates(session_id=session.id)
+
+    async def get_candidate(self, *, candidate_id: str) -> Candidate:
+        """``GET /api/candidates/{id}`` (P6c): a single candidate; 404 if absent."""
+        candidate = await self._store.get_candidate(candidate_id)
+        if candidate is None:
+            raise EntityNotFoundError(f"candidate {candidate_id} not found")
+        return candidate
 
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         raise NotYetImplementedError(
@@ -385,6 +431,103 @@ class StoreBackedCommandFacade:
                 suggested_quantity=suggested_quantity,
                 suggested_limit_price=suggested_limit_price,
             )
+
+    async def approve_candidate(self, *, candidate_id: str, actor: str) -> Candidate:
+        """``POST /api/candidates/{id}/approve`` (P6c): the BUY dispatch flow —
+        approve the candidate through the gate, then create its order atomically,
+        reverting the approval on ANY post-approval dispatch failure so a
+        candidate is never stranded ``APPROVED`` with no order (F-002 / D-013).
+
+        Behavior copied verbatim from the old route: dispatchability pre-check
+        (422), Rule-8 order-intent pre-check (409), CAPI risk-limit pre-check
+        (409) — all skipped for an already-ORDERED candidate (idempotent
+        re-approve) — then gate.approve + create_order_for_candidate, with
+        revert-on-failure. The store's ``create_order_for_candidate`` remains the
+        AUTHORITATIVE risk check (D-016); the pre-checks are for clean UX.
+        """
+        if self._approval_gate is None or self._settings is None:
+            raise RuntimeError("approval gate / settings not available")
+        gate = self._approval_gate
+        settings = self._settings
+
+        candidate = await self._store.get_candidate(candidate_id)
+        if candidate is None:
+            raise EntityNotFoundError(f"candidate {candidate_id} not found")
+
+        # Dispatchability pre-check — a candidate that can't be sized into a valid
+        # LIMIT order is refused up front (422) and stays PENDING (still
+        # rejectable) rather than approved into a dead end. Uses the SAME
+        # limit_price_reason predicate the store's authoritative check uses (an inf
+        # price passes `inf > 0` but is rejected here — F-005/F-002). Skipped for
+        # an already-ORDERED candidate (re-approve is an idempotent no-op).
+        if candidate.status is not CandidateStatus.ORDERED and (
+            not candidate.suggested_quantity
+            or candidate.suggested_quantity <= 0
+            or limit_price_reason(candidate.suggested_limit_price) is not None
+        ):
+            raise InvalidInputError(
+                f"candidate {candidate_id} cannot be ordered: a positive "
+                f"suggested_quantity and a valid positive suggested_limit_price "
+                f"are required"
+            )
+
+        risk_limits = RiskLimits(
+            max_shares_per_order=settings.capi_max_shares_per_order,
+            max_notional_per_order=settings.capi_max_notional_per_order,
+            max_total_exposure=settings.capi_max_total_exposure,
+            allowlist=settings.capi_trading_allowlist,
+        )
+        if candidate.status is not CandidateStatus.ORDERED:
+            # Rule-8 safety-control pre-check (kill switch / buys paused) — surface
+            # a clean 409 with the candidate left PENDING instead of stranding it.
+            block = order_intent_block_reason(await self._store.get_current_session())
+            if block is not None:
+                raise ConflictError(f"order intent blocked: {block}")
+            # CAPI risk-limit pre-check (D-016) — mirrors the authoritative store
+            # check exactly (same predicate + risk_limits). current_exposure() is
+            # one atomic snapshot, so no torn read between two store calls.
+            risk_block = risk_limit_reason(
+                symbol=candidate.symbol,
+                order_quantity=candidate.suggested_quantity,
+                order_limit_price=candidate.suggested_limit_price,
+                exposure_before_order=await self._store.current_exposure(),
+                max_shares_per_order=risk_limits.max_shares_per_order,
+                max_notional_per_order=risk_limits.max_notional_per_order,
+                max_total_exposure=risk_limits.max_total_exposure,
+                allowlist=risk_limits.allowlist,
+            )
+            if risk_block is not None:
+                raise ConflictError(f"risk limit blocked: {risk_block}")
+
+        try:
+            await gate.approve(candidate_id)
+            await self._store.create_order_for_candidate(
+                candidate_id, risk_limits=risk_limits
+            )
+        except _APPROVE_MAPPED_ERRORS as exc:
+            # ANY post-approval dispatch failure reverts the approval to PENDING
+            # (F-002 / D-013 race): OrderIntentBlocked/RiskLimitBlocked from a
+            # control/limit that changed between the pre-check and the handoff, or
+            # an InvalidOrderError that slipped a pre-check. revert is a guaranteed
+            # no-op unless the candidate is genuinely stranded APPROVED-with-no-order
+            # — so it is also safe when the failure came from gate.approve() itself
+            # (the candidate never reached APPROVED).
+            await self._store.revert_candidate_approval(candidate_id)
+            raise _facade_error_for(exc) from exc
+
+        refreshed = await self._store.get_candidate(candidate_id)
+        assert refreshed is not None  # fetched above; candidates are never deleted
+        return refreshed
+
+    async def reject_candidate(self, *, candidate_id: str, actor: str) -> Candidate:
+        """``POST /api/candidates/{id}/reject`` (P6c): reject through the gate
+        (idempotent; terminal — no order). Maps the gate's store errors (404/409)."""
+        if self._approval_gate is None:
+            raise RuntimeError("approval gate not available")
+        try:
+            return await self._approval_gate.reject(candidate_id)
+        except _APPROVE_MAPPED_ERRORS as exc:
+            raise _facade_error_for(exc) from exc
 
     async def create_exit(self, *, symbol: str, reason: str, actor: str) -> Any:
         raise NotYetImplementedError(

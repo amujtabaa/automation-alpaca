@@ -173,9 +173,6 @@ ignore_imports =
     # boundary is fully enforced and Phase 6's route work is done. This list is
     # EXHAUSTIVE for the current tree — `lint-imports` proves it (no unmatched, no
     # broken).
-    app.api.routes_candidates -> app.store.base
-    app.api.routes_candidates -> app.policy
-    app.api.routes_candidates -> app.approval.gate
     app.api.routes_trading -> app.store.base
     app.api.routes_trading -> app.broker.adapter
     app.api.routes_trading -> app.marketdata.service

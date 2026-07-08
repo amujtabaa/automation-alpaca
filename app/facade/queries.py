@@ -43,6 +43,14 @@ class ExecutionQueryFacade(Protocol):
         ``ReviewView`` — ``GET /api/review`` (P6b)."""
         ...
 
+    async def list_candidates(self) -> Any:
+        """Candidates for the active session — ``GET /api/candidates`` (P6c)."""
+        ...
+
+    async def get_candidate(self, *, candidate_id: str) -> Any:
+        """One candidate; 404 if absent — ``GET /api/candidates/{id}`` (P6c)."""
+        ...
+
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         """The eventual migrated analogue of today's sell-intent + order
         views (``GET /api/sell-intents``, ``GET /api/orders``) once

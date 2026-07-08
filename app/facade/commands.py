@@ -99,6 +99,17 @@ class ExecutionCommandFacade(Protocol):
         """Inject a dev/mock candidate — ``POST /api/dev/candidates`` (P6a)."""
         ...
 
+    async def approve_candidate(self, *, candidate_id: str, actor: str) -> Any:
+        """Approve a candidate + dispatch its order with revert-on-failure —
+        ``POST /api/candidates/{id}/approve`` (P6c). The store's
+        ``create_order_for_candidate`` stays the authoritative risk check."""
+        ...
+
+    async def reject_candidate(self, *, candidate_id: str, actor: str) -> Any:
+        """Reject a candidate (idempotent, terminal) —
+        ``POST /api/candidates/{id}/reject`` (P6c)."""
+        ...
+
     async def set_kill_switch(self, *, engaged: bool, actor: str) -> Any:
         """``POST /api/controls/kill-switch`` (real as of P6b). Wraps
         ``StateStore.set_kill_switch``; the wave-3d TradingState FSM already made

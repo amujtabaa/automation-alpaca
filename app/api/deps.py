@@ -40,10 +40,18 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def get_approval_gate(request: Request) -> ApprovalGate:
-    """The process-wide Approval Gate, constructed at startup (see main.py)."""
+def get_approval_gate(request: Request) -> ApprovalGate | None:
+    """The process-wide Approval Gate, constructed at startup (see main.py).
 
-    return request.app.state.approval_gate
+    Read defensively (``None`` if a partial test app didn't wire one) so a
+    store-only command route never fails for lack of a gate it doesn't use.
+    ``get_command_facade`` resolves the gate THROUGH this provider (not
+    ``app.state`` directly) so a test can still swap the gate implementation via
+    ``dependency_overrides[get_approval_gate]`` — the pluggability seam
+    (ADR: "a different ApprovalGate is honoured with zero route edits").
+    """
+
+    return getattr(request.app.state, "approval_gate", None)
 
 
 def get_broker_adapter(request: Request) -> BrokerAdapter:
@@ -101,15 +109,20 @@ def get_query_facade(
 
 
 def get_command_facade(
-    request: Request, store: StateStore = Depends(get_store)
+    request: Request,
+    store: StateStore = Depends(get_store),
+    approval_gate: ApprovalGate | None = Depends(get_approval_gate),
 ) -> ExecutionCommandFacade:
     """Facade seam — see :func:`get_query_facade`. Phase 6 injects the extra
     collaborators the command routes need (broker adapter + market-data for the
     exit/cancel broker calls, approval gate + settings for the candidate
     approve/reject orchestration) so those routes stop touching them directly.
-    Read defensively so a store-only command (pause/resume/kill) never requires
-    the broker/gate a partial test app may not have wired — see
-    :func:`get_query_facade`.
+
+    The approval gate is resolved through :func:`get_approval_gate` (a ``Depends``,
+    not ``app.state`` directly) so a test can swap it via
+    ``dependency_overrides[get_approval_gate]`` — the ApprovalGate pluggability
+    seam. The rest are read defensively off ``app.state`` so a store-only command
+    (pause/resume/kill) never requires the broker a partial test app may not wire.
     """
 
     st = request.app.state
@@ -117,6 +130,6 @@ def get_command_facade(
         store,
         broker=getattr(st, "broker_adapter", None),
         market_data=getattr(st, "market_data", None),
-        approval_gate=getattr(st, "approval_gate", None),
+        approval_gate=approval_gate,
         settings=getattr(st, "settings", None),
     )
