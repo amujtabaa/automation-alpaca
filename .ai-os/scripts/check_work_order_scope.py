@@ -24,7 +24,7 @@ def extract_list(text: str, key: str) -> list[str]:
     m = pattern.search(text)
     if not m:
         return []
-    return [line.split('-', 1)[1].strip().strip('"\'') for line in m.group(1).splitlines() if '-' in line]
+    return [line.split('-', 1)[1].split('#', 1)[0].strip().strip('"\'') for line in m.group(1).splitlines() if '-' in line]
 
 
 def match_any(path: str, patterns: list[str]) -> bool:

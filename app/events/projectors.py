@@ -207,9 +207,17 @@ def timeout_quarantined_order_ids(events: Iterable[ExecutionEvent]) -> set[str]:
     Derived purely from the append-only log (events in ascending ``sequence``
     order, latest wins), so it is replay-stable and event-truth: the order-row
     ``status`` column is a co-written read-model reconstructable from this set
-    (docs/SPINE_WAVE3C_PLAN.md C5). Only the wave-3c evented transitions emit
-    these order-lifecycle events, so a normally-submitted order (whose
-    ``SUBMITTING → SUBMITTED`` writes no ExecutionEvent) never appears here.
+    (docs/SPINE_WAVE3C_PLAN.md C5). Since WO-0007a the ROUTINE order lifecycle
+    also emits these types (a normal ``SUBMITTING → SUBMITTED`` now writes a
+    ``SUBMITTED`` event, fills write ``FILLED``, etc.), but the "latest wins"
+    fold still yields the correct set: a normally-submitted order's latest
+    lifecycle event is ``SUBMITTED``/``FILLED``/``CANCELED`` (never
+    ``TIMEOUT_QUARANTINE``), so it is excluded; and a quarantined order is never
+    driven back through the routine emitter (``execution_event_for_routine_transition``
+    refuses a shared-format key for a ``TIMEOUT_QUARANTINE`` order, and no
+    routine call site transitions a quarantined order), so its latest stays
+    ``TIMEOUT_QUARANTINE`` until a wave-3c resolve event supersedes it.
+    (Regression coverage: tests/test_wo0007a_quarantine_consumer_unaffected.py.)
     """
 
     latest: dict[str, ExecutionEventType] = {}
