@@ -41,7 +41,8 @@ write_allowed:
 
 ```yaml
 forbidden_paths:
-  - "src/**"
+  - "app/**"                    # backend source (repo uses app/, not src/)
+  - "cockpit/**"                # UI source (Streamlit)
   - "tests/**"
 ```
 
