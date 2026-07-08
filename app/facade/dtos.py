@@ -36,6 +36,27 @@ class ExternalOrderView(BaseModel):
     surfaced_at: datetime
 
 
+class MarketSnapshotView(BaseModel):
+    """One symbol's current market-data snapshot for the cockpit (Phase 5/6).
+
+    The facade's typed read surface for ``GET /api/marketdata/snapshots``: mirrors
+    ``app.marketdata.service.MarketSnapshot`` (working data, never persisted) plus
+    ``pct_move``, which the facade computes with the SAME ``app.features.pct_move``
+    the Strategy Engine decides on — so the route stops importing ``app.features``
+    and the market-data port, and the cockpit never re-derives the number. Field
+    order matches the former ``MarketSnapshotResponse`` so the JSON is unchanged."""
+
+    symbol: str
+    last_price: Optional[float]
+    bid: Optional[float]
+    ask: Optional[float]
+    volume: Optional[int]
+    prev_close: Optional[float]
+    pct_move: Optional[float]
+    updated_at: datetime
+    stale: bool
+
+
 class PositionMismatchView(BaseModel):
     """One broker-vs-local position drift surfaced by reconciliation (§7 / wave
     4h). Qty must match exactly; avg-px within tolerance. **Position truth is

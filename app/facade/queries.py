@@ -24,6 +24,15 @@ class ExecutionQueryFacade(Protocol):
         wired into ``GET /api/positions``."""
         ...
 
+    async def list_watchlist(self) -> Any:
+        """All watchlist symbols — ``GET /api/watchlist`` (P6a)."""
+        ...
+
+    async def list_market_snapshots(self) -> Any:
+        """Current per-symbol market snapshots + ``pct_move`` as
+        ``MarketSnapshotView`` — ``GET /api/marketdata/snapshots`` (P6a)."""
+        ...
+
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         """The eventual migrated analogue of today's sell-intent + order
         views (``GET /api/sell-intents``, ``GET /api/orders``) once

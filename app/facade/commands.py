@@ -76,6 +76,29 @@ class ExecutionCommandFacade(Protocol):
         wired into ``POST /api/controls/resume-buys``."""
         ...
 
+    async def upsert_watchlist_symbol(
+        self, *, symbol: str, armed: bool, actor: str
+    ) -> Any:
+        """Upsert a watchlist symbol — ``POST /api/watchlist`` (P6a)."""
+        ...
+
+    async def remove_watchlist_symbol(self, *, symbol: str, actor: str) -> Any:
+        """Remove a watchlist symbol — ``DELETE /api/watchlist/{symbol}`` (P6a)."""
+        ...
+
+    async def inject_mock_candidate(
+        self,
+        *,
+        symbol: str,
+        strategy: str,
+        reason: str,
+        suggested_quantity: Any,
+        suggested_limit_price: Any,
+        actor: str,
+    ) -> Any:
+        """Inject a dev/mock candidate — ``POST /api/dev/candidates`` (P6a)."""
+        ...
+
     async def set_kill_switch(self, *, engaged: bool, actor: str) -> Any:
         """Analogue of today's ``POST /api/controls/kill-switch``.
 

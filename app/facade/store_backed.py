@@ -25,14 +25,26 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
-from app.facade.dtos import ExternalOrderView, PositionMismatchView
+from app.facade.dtos import (
+    ExternalOrderView,
+    MarketSnapshotView,
+    PositionMismatchView,
+)
 from app.facade.errors import (
     ConflictError,
     EntityNotFoundError,
     InvalidInputError,
     NotYetImplementedError,
 )
-from app.models import EventType, Position, SessionRecord
+from app.features import pct_move
+from app.models import (
+    Candidate,
+    EventType,
+    Position,
+    SessionRecord,
+    SessionStatus,
+    WatchlistSymbol,
+)
 from app.store.base import (
     CandidateTransitionError,
     EmergencyReduceBlockedError,
@@ -129,6 +141,33 @@ class StoreBackedQueryFacade:
         """Unchanged wrap of ``StateStore.list_positions`` — the exact call
         ``GET /api/positions`` made directly before this facade existed."""
         return await self._store.list_positions()
+
+    async def list_watchlist(self) -> list[WatchlistSymbol]:
+        """Wrap of ``StateStore.list_watchlist`` — ``GET /api/watchlist`` (P6a)."""
+        return await self._store.list_watchlist()
+
+    async def list_market_snapshots(self) -> list[MarketSnapshotView]:
+        """``GET /api/marketdata/snapshots`` (P6a): read the current per-symbol
+        snapshots off the injected ``MarketDataService`` port and attach
+        ``pct_move`` (same ``app.features`` function the Strategy Engine uses), so
+        the route no longer imports ``app.features`` or the market-data port."""
+        if self._market_data is None:  # always injected in the real app (lifespan)
+            raise RuntimeError("market data service not available")
+        snapshots = await self._market_data.list_snapshots()
+        return [
+            MarketSnapshotView(
+                symbol=s.symbol,
+                last_price=s.last_price,
+                bid=s.bid,
+                ask=s.ask,
+                volume=s.volume,
+                prev_close=s.prev_close,
+                pct_move=pct_move(s.last_price, s.prev_close),
+                updated_at=s.updated_at,
+                stale=s.stale,
+            )
+            for s in snapshots
+        ]
 
     async def list_primaries(self, *, symbol: Optional[str] = None) -> Any:
         raise NotYetImplementedError(
@@ -237,6 +276,55 @@ class StoreBackedCommandFacade:
     async def resume_buys(self, *, actor: str) -> SessionRecord:
         """Unchanged wrap of ``StateStore.set_buys_paused(False)``."""
         return await self._store.set_buys_paused(False)
+
+    async def upsert_watchlist_symbol(
+        self, *, symbol: str, armed: bool, actor: str
+    ) -> WatchlistSymbol:
+        """``POST /api/watchlist`` upsert (P6a): create the symbol with the
+        requested ``armed`` state, else set ``armed`` to it. Preserves the route's
+        exact read-then-write semantics; an out-of-domain ticker (``ValueError``)
+        becomes an ``InvalidInputError`` (422)."""
+        with _translate_store_errors():
+            existing = await self._store.get_watchlist_symbol(symbol)
+            if existing is None:
+                return await self._store.add_watchlist_symbol(symbol, armed=armed)
+            if existing.armed != armed:
+                return await self._store.set_watchlist_armed(symbol, armed)
+            return existing
+
+    async def remove_watchlist_symbol(self, *, symbol: str, actor: str) -> None:
+        """``DELETE /api/watchlist/{symbol}`` (P6a): remove the symbol. An
+        out-of-domain ticker → 422; a symbol not on the list →
+        ``EntityNotFoundError`` (404), matching the route."""
+        with _translate_store_errors():
+            removed = await self._store.remove_watchlist_symbol(symbol)
+        if not removed:
+            raise EntityNotFoundError(f"symbol {symbol} not on watchlist")
+
+    async def inject_mock_candidate(
+        self,
+        *,
+        symbol: str,
+        strategy: str,
+        reason: str,
+        suggested_quantity: Optional[int],
+        suggested_limit_price: Optional[float],
+        actor: str,
+    ) -> Candidate:
+        """``POST /api/dev/candidates`` (P6a, dev-only): inject a pending
+        candidate into the active session. Refuses a closed session (409, the
+        route's explicit message) and maps a bad symbol ``ValueError`` → 422."""
+        session = await self._store.get_current_session()
+        if session.status is SessionStatus.CLOSED:
+            raise ConflictError("session is closed; cannot inject candidates")
+        with _translate_store_errors():
+            return await self._store.create_candidate(
+                symbol,
+                strategy=strategy,
+                reason=reason,
+                suggested_quantity=suggested_quantity,
+                suggested_limit_price=suggested_limit_price,
+            )
 
     async def create_exit(self, *, symbol: str, reason: str, actor: str) -> Any:
         raise NotYetImplementedError(

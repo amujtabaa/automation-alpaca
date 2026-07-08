@@ -6,30 +6,25 @@ cockpit can display last price / % move next to armed watchlist symbols. No
 mutating endpoint here — subscriptions are driven by the watchlist's armed
 state (see ``app/strategy_loop.py``'s ``_sync_subscriptions``), not by a
 direct API call.
+
+Phase 6 (ADR-005): the market-data read + ``pct_move`` computation move behind
+the query facade (``list_market_snapshots`` → ``MarketSnapshotView``), so this
+route no longer imports the market-data port or ``app.features``.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_market_data_service
-from app.api.schemas import MarketSnapshotResponse
-from app.features import pct_move
-from app.marketdata.service import MarketDataService, MarketSnapshot
+from app.api.deps import get_query_facade
+from app.facade.dtos import MarketSnapshotView
+from app.facade.queries import ExecutionQueryFacade
 
 router = APIRouter(prefix="/api/marketdata", tags=["marketdata"])
 
 
-def _to_response(snapshot: MarketSnapshot) -> MarketSnapshotResponse:
-    return MarketSnapshotResponse(
-        **snapshot.__dict__,
-        pct_move=pct_move(snapshot.last_price, snapshot.prev_close),
-    )
-
-
-@router.get("/snapshots", response_model=list[MarketSnapshotResponse])
+@router.get("/snapshots", response_model=list[MarketSnapshotView])
 async def list_snapshots(
-    market_data: MarketDataService = Depends(get_market_data_service),
-) -> list[MarketSnapshotResponse]:
-    snapshots = await market_data.list_snapshots()
-    return [_to_response(s) for s in snapshots]
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
+) -> list[MarketSnapshotView]:
+    return await query_facade.list_market_snapshots()

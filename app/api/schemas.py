@@ -89,27 +89,10 @@ class MockCandidateCreate(BaseModel):
     )
 
 
-class MarketSnapshotResponse(BaseModel):
-    """One symbol's current market-data snapshot (Phase 5).
-
-    Mirrors ``app.marketdata.service.MarketSnapshot`` as a Pydantic model for
-    the HTTP layer — the dataclass itself is working data (never persisted,
-    ``docs/02_DATA_AND_PERSISTENCE.md``) and stays IO/framework-agnostic.
-    ``pct_move`` is computed by the route via ``app.features.pct_move`` (the
-    same function the Strategy Engine decides on) and included here so the
-    cockpit never has to recompute it — Streamlit stays a pure display client
-    instead of re-deriving a number a decision was actually made from.
-    """
-
-    symbol: str
-    last_price: Optional[float]
-    bid: Optional[float]
-    ask: Optional[float]
-    volume: Optional[int]
-    prev_close: Optional[float]
-    pct_move: Optional[float]
-    updated_at: datetime
-    stale: bool
+# NOTE: the former ``MarketSnapshotResponse`` moved to
+# ``app.facade.dtos.MarketSnapshotView`` in Phase 6 — the market-data read +
+# ``pct_move`` now live behind the query facade (ADR-005), and the facade owns its
+# return DTO (ADR-006 api→facade direction). The JSON shape is unchanged.
 
 
 class ReviewResponse(BaseModel):
