@@ -14,7 +14,7 @@ Read order for engineering work:
 2. Your assigned work order in `work/active/` or `work/queue/` — it defines scope, allowed paths, and done-when.
 3. Only the PKL pages (`pkl/`) and source/test files the work order names.
 
-Execution discipline: **Fable v3** (`.ai-os/core/fable-core-v3.md`; Claude adapter: `.claude/skills/fable`). GATE before building, TDD, fresh pasted evidence for every claim, FIX blocks with root cause, disposition on close. No completion claims without evidence — VERIFIED / UNVERIFIED / BLOCKED / NEEDS-INPUT only.
+Execution discipline: **Fable v3** (`.ai-os/templates/fable-core-v3.md`; Claude adapter: `.claude/skills/fable`). GATE before building, TDD, fresh pasted evidence for every claim, FIX blocks with root cause, disposition on close. No completion claims without evidence — VERIFIED / UNVERIFIED / BLOCKED / NEEDS-INPUT only.
 
 No work order? Ask for one or draft one for approval (`.ai-os/templates/work-order.md`). Don't freelance.
 <!-- AI-PROJECT-OS:END -->
