@@ -5,17 +5,16 @@
 # fails the build (CLAUDE.md §5: "A PR that crosses a protected boundary fails
 # CI").
 #
-# Design note — what is enforced NOW vs. the migration target:
+# Design note — all five contracts are now fully enforced:
 #   The four "hard invariant" contracts below (alpaca isolation, thin UI, a
-#   venue-agnostic engine, a leaf model kernel) hold with ZERO exceptions today
-#   and encode non-negotiable project invariants. The fifth contract
-#   (api-routes-reach-backend-only-through-the-facade) encodes the ADR-005
-#   *target*: most routes are not yet migrated behind the facade, so its
-#   `ignore_imports` block is the explicit, exhaustive Phase-6 punch-list of the
-#   remaining direct route->backend edges. `unmatched_ignore_imports_alerting =
-#   error` makes that list a RATCHET: when Phase 6 migrates a route, the stale
-#   ignore entry errors until it is deleted, so the boundary can only tighten,
-#   never silently regress.
+#   venue-agnostic engine, a leaf model kernel) hold with ZERO exceptions and
+#   encode non-negotiable project invariants. The fifth contract
+#   (api-routes-reach-backend-only-through-the-facade) encoded the ADR-005 target
+#   and is now FULLY ENFORCED: every route reaches the backend only through the
+#   typed facade, so its Phase-6 punch-list (`ignore_imports`) is EMPTY.
+#   `unmatched_ignore_imports_alerting = error` keeps it a RATCHET — any new
+#   direct route->backend edge fails the build, so the boundary can only tighten,
+#   never silently regress. (Verified WO-0004: 5 contracts kept, 0 broken.)
 
 [importlinter]
 root_packages =
@@ -122,10 +121,10 @@ forbidden_modules =
 
 # --------------------------------------------------------------------------- #
 # Contract 5 — API routes reach the backend ONLY through the typed facade
-# (ADR-005). This is the migration TARGET: the `ignore_imports` block is the
-# exhaustive Phase-6 punch-list of routes still calling the store/engine/broker
-# directly. `unmatched_ignore_imports_alerting = error` (default, pinned here)
-# makes it a ratchet — a migrated route's stale ignore errors until deleted.
+# (ADR-005). FULLY ENFORCED: every route is behind the facade, so the Phase-6
+# punch-list (`ignore_imports`) is EMPTY (see the note at the end of this block).
+# `unmatched_ignore_imports_alerting = error` (default, pinned here) keeps it a
+# ratchet — any new direct route->backend edge fails until removed.
 #
 # Scope note: `app.api.deps` (the DI/composition root that BUILDS the facade and
 # still provides the legacy store to unmigrated routes) and `app.api.schemas`

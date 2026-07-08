@@ -145,11 +145,12 @@ class FillPlan:
     event: EventSpec
     error: Optional[Exception] = None
     fill: Optional[Fill] = None
-    # Spine v2 Phase 3 wave 3a (shadow_evented): the broker-authoritative
-    # ExecutionEvent to append to the event log *atomically with* the fill row
-    # (append path only). SHADOW — the fill table stays authoritative for
-    # position; this mirrors the fill into the event log so replay parity can be
-    # verified before the event-truth flip. See docs/MIGRATION_MATRIX.md.
+    # Spine v2: the broker-authoritative FILL ExecutionEvent appended to the event
+    # log *atomically with* the fill row (append path only). Post the wave-3a
+    # event-truth flip (WO-0001: the fill flow is `event_truth`), position derives
+    # from folding these FILL events (app/events/projectors.py); the fill table
+    # persists as a parity-checked read model, kept in lockstep by the permanent
+    # dual-store parity verifier. See pkl/process/migration-history.md.
     execution_event: Optional[ExecutionEvent] = None
 
 

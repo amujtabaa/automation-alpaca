@@ -343,13 +343,16 @@ class ExecutionEventType(str, Enum):
     """Vocabulary for the append-only ``ExecutionEvent`` log (Spine v2 §4/§5).
 
     Declared from the architecture spec so the *schema* is stable across the
-    whole migration. **Phase 2 only projects ``FILL``** (position, via
-    ``app/events/projectors.py``). The order/spawn lifecycle and
-    ``TRADING_STATE_CHANGED``/``QUARANTINED`` types are declared here for schema
-    stability but their projectors (primary/spawn/TradingState) land in Phase 3,
-    where those state machines are actually built — see
-    ``docs/SPINE_MIGRATION_PROGRESS.md``. Declaring vocabulary is not
-    implementing behavior; nothing in Phase 2 *emits* or *projects* these yet.
+    whole migration. Position projection folds only ``FILL`` (INV-1, via
+    ``app/events/projectors.py``). Emission has since caught up to the schema:
+    ``TRADING_STATE_CHANGED``/``QUARANTINED``/``TIMEOUT_QUARANTINE`` are emitted by
+    the wave-3c/3d/3e evented paths, and the routine order-status lifecycle
+    (``SUBMIT_PENDING``/``SUBMITTED``/``PARTIALLY_FILLED``/``FILLED``/``CANCELED``/
+    ``REJECTED``) is emitted by both stores since WO-0007a (with faithful
+    provenance, WO-0009). The order-status/spawn *projector* + read-flip is still
+    open (WO-0007b): these order-status events are recorded and replay-parity-checked
+    but ``orders.status`` remains authoritative until that flip. A few types remain
+    declared-only vocabulary (e.g. ``ACCEPTED``, ``EXPIRED``, ``REPLACED``).
     """
 
     # Position-affecting fact — INV-1: only fill events change quantity.

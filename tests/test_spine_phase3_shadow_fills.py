@@ -1,14 +1,20 @@
-"""Spine v2 Phase 3 wave 3a — shadow-evented broker fill emission.
+"""Spine v2 — broker FILL ExecutionEvent emission + dual-store replay parity.
 
-The fill table stays authoritative for position (`shadow_evented`, NOT yet
-`event_truth`); ``append_fill`` now *also* appends a broker-authoritative
-``FILL`` ExecutionEvent atomically with the fill row, so the event log mirrors
-the fill history and the replay projection can be proven equal to the fill-table
-position before the event-truth flip (``docs/MIGRATION_MATRIX.md``).
+Originally the wave-3a "shadow" step (the fill table was authoritative and the
+event was a mirror). Post the event-truth flip (WO-0001: the fill flow is
+``event_truth``), position derives from folding these ``FILL`` events
+(``app/events/projectors.py``); the fill table persists as a parity-checked read
+model. ``append_fill`` appends a broker-authoritative ``FILL`` ExecutionEvent
+atomically with the fill row. This suite is the PERMANENT guard that the two
+derivation paths (event-log projection vs fill table) agree field-for-field and
+that the atomic coupling holds (a shadow-write failure rolls the fill back).
 
 The load-bearing test is `test_shadow_event_log_projects_the_same_positions_as_
-fill_table`: the whole point of the shadow step is that the two derivation paths
-agree field-for-field.
+fill_table`. `test_shadow_write_failure_rolls_back_the_fill` is parametrized over
+each store's append helper (`_append_execution_event_unlocked` for the in-memory
+store, `_insert_execution_event` for SQLite); the two mismatched (store, helper)
+pairs skip BY DESIGN — those are the two intentional skips this module contributes
+(they are not dead/removed-API skips).
 """
 
 from __future__ import annotations
