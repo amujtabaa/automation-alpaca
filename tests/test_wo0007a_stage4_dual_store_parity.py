@@ -41,6 +41,8 @@ from __future__ import annotations
 import pytest
 
 from app.models import (
+    EventAuthority,
+    EventSource,
     ExecutionEventType,
     OrderSide,
     OrderStatus,
@@ -62,12 +64,23 @@ _ORDER_STATUS_EVENT_TYPES = {
     ExecutionEventType.REJECTED,
 }
 
+# WO-0009 faithful provenance (see tests/test_wo0009_provenance.py): the claim and
+# never-submitted (CREATED) cancels are engine-local; every broker-observed status
+# is broker-authoritative.
+_ENG = (EventSource.ENGINE, EventAuthority.LOCAL)
+_BRK = (EventSource.BROKER_REST, EventAuthority.BROKER_AUTHORITATIVE)
+
 
 def _stream(events, id_to_role: dict[str, str]):
-    """The order-status-event-type-filtered (event_type, normalized dedupe_key)
-    sequence, in append (i.e. store) order. ``id_to_role`` maps each
-    store-local order id present in the script to a stable label so the two
-    independently-minted-id stores can be compared positionally."""
+    """The order-status-event-type-filtered (event_type, normalized dedupe_key,
+    source, authority) sequence, in append (i.e. store) order. ``id_to_role``
+    maps each store-local order id present in the script to a stable label so the
+    two independently-minted-id stores can be compared positionally.
+
+    WO-0009 extends the compared shape to include provenance (``source``,
+    ``authority``): the two storage engines must replay not just the same
+    order-status story in the same order, but with identical faithful provenance
+    on every event."""
 
     out = []
     for e in events:
@@ -81,7 +94,9 @@ def _stream(events, id_to_role: dict[str, str]):
             raise AssertionError(
                 f"event for untracked order_id={e.order_id!r} in stream: {e}"
             )
-        out.append((e.event_type, e.dedupe_key.replace(e.order_id, role)))
+        out.append(
+            (e.event_type, e.dedupe_key.replace(e.order_id, role), e.source, e.authority)
+        )
     return out
 
 
@@ -164,12 +179,12 @@ async def test_dual_store_parity_full_lifecycle_to_filled(tmp_path):
         # regression that changes BOTH stores identically (e.g. a dropped
         # emission site copy-pasted into both) still fails loudly.
         expected = [
-            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<ORDER>:0"),
-            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<ORDER>:1"),
-            (ExecutionEventType.SUBMITTED, "submitted:<ORDER>"),
-            (ExecutionEventType.PARTIALLY_FILLED, "partially_filled:<ORDER>"),
-            (ExecutionEventType.PARTIALLY_FILLED, "order_fill_progress:<ORDER>:15"),
-            (ExecutionEventType.FILLED, "filled:<ORDER>"),
+            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<ORDER>:0", *_ENG),
+            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<ORDER>:1", *_ENG),
+            (ExecutionEventType.SUBMITTED, "submitted:<ORDER>", *_BRK),
+            (ExecutionEventType.PARTIALLY_FILLED, "partially_filled:<ORDER>", *_BRK),
+            (ExecutionEventType.PARTIALLY_FILLED, "order_fill_progress:<ORDER>:15", *_BRK),
+            (ExecutionEventType.FILLED, "filled:<ORDER>", *_BRK),
         ]
         assert _stream(mem_events, {mem_order.id: "<ORDER>"}) == expected
         assert _stream(sql_events, {sql_order.id: "<ORDER>"}) == expected
@@ -219,9 +234,10 @@ async def test_dual_store_parity_transition_order_cancel(tmp_path):
         )
 
         expected = [
-            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<ORDER>:0"),
-            (ExecutionEventType.SUBMITTED, "submitted:<ORDER>"),
-            (ExecutionEventType.CANCELED, "canceled:<ORDER>"),
+            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<ORDER>:0", *_ENG),
+            (ExecutionEventType.SUBMITTED, "submitted:<ORDER>", *_BRK),
+            # CANCELED from a SUBMITTED order = broker-confirmed cancel.
+            (ExecutionEventType.CANCELED, "canceled:<ORDER>", *_BRK),
         ]
         assert _stream(mem_events, {mem_order.id: "<ORDER>"}) == expected
         assert _stream(sql_events, {sql_order.id: "<ORDER>"}) == expected
@@ -265,7 +281,8 @@ async def test_dual_store_parity_session_close_cancel(tmp_path):
             "session_close_cancel",
         )
 
-        expected = [(ExecutionEventType.CANCELED, "canceled:<ORDER>")]
+        # CANCELED of a never-submitted CREATED order (session close) = engine-local.
+        expected = [(ExecutionEventType.CANCELED, "canceled:<ORDER>", *_ENG)]
         assert _stream(mem_events, {mem_order.id: "<ORDER>"}) == expected
         assert _stream(sql_events, {sql_order.id: "<ORDER>"}) == expected
     finally:
@@ -334,10 +351,12 @@ async def test_dual_store_parity_flatten_supersede_cancel(tmp_path):
         _assert_parity(mem_events, sql_events, mem_ids, sql_ids, "flatten_supersede_cancel")
 
         expected = [
-            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<BUY>:0"),
-            (ExecutionEventType.SUBMITTED, "submitted:<BUY>"),
-            (ExecutionEventType.FILLED, "filled:<BUY>"),
-            (ExecutionEventType.CANCELED, "canceled:<PROT>"),
+            (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<BUY>:0", *_ENG),
+            (ExecutionEventType.SUBMITTED, "submitted:<BUY>", *_BRK),
+            (ExecutionEventType.FILLED, "filled:<BUY>", *_BRK),
+            # PROT is a never-submitted CREATED protective order superseded by the
+            # flatten = engine-local cancel.
+            (ExecutionEventType.CANCELED, "canceled:<PROT>", *_ENG),
         ]
         assert _stream(mem_events, mem_ids) == expected
         assert _stream(sql_events, sql_ids) == expected

@@ -86,8 +86,12 @@ async def test_transition_to_submitted_emits_submitted_execution_event(any_store
     assert ev.dedupe_key == f"submitted:{order.id}"
     assert ev.symbol == "AAPL"
     assert ev.side is OrderSide.BUY
-    assert ev.source is EventSource.ENGINE
-    assert ev.authority is EventAuthority.LOCAL
+    # WO-0009: SUBMITTED is a broker-observed fact (broker accepted + returned an
+    # id, AIR-001), so provenance is BROKER_REST/BROKER_AUTHORITATIVE — no longer
+    # WO-0007a's conservative ENGINE/LOCAL. Full provenance matrix:
+    # tests/test_wo0009_provenance.py.
+    assert ev.source is EventSource.BROKER_REST
+    assert ev.authority is EventAuthority.BROKER_AUTHORITATIVE
 
 
 # --------------------------------------------------------------------------- #

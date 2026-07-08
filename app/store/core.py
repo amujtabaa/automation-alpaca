@@ -1510,31 +1510,28 @@ def plan_transition_order(
 # WO-0007b), without making `orders.status` itself event-sourced. See
 # work/active/WO-0007a-order-status-eventing/design-decision.md.
 #
-# PROVENANCE (source/authority): every event this helper builds is stamped
-# `EventSource.ENGINE` / `EventAuthority.LOCAL` — a DELIBERATE, conservative
-# choice, not an oversight. Rationale:
-#   * The single-writer engine is literally the actor appending these events;
-#     they record the engine advancing its own order-status read-model, so
-#     `ENGINE`/`LOCAL` is exactly right for the genuinely engine-local
-#     transitions: the claim (`CREATED -> SUBMITTING`, pre-broker) and the two
-#     CREATED-order cancels (session close, flatten supersede — orders never
-#     sent to the broker).
-#   * For the broker-OBSERVED routine statuses (`SUBMITTED`/`PARTIALLY_FILLED`/
-#     `FILLED`/`REJECTED` reflected in from an Alpaca poll), the codebase's
-#     convention (see `execution_event_for_fill`, `plan_resolve_timeout_quarantine`,
-#     `plan_reconcile_resolve_order`) would label the fact `BROKER_REST`/
-#     `BROKER_AUTHORITATIVE`. `ENGINE`/`LOCAL` therefore UNDER-claims authority
-#     here. That is the SAFE direction: `BROKER_AUTHORITATIVE` is the
-#     conflict-WINNING authority (ADR-001), so under-claiming can never let one
-#     of these engine-echoed status events wrongly override a real broker
-#     reconciliation; over-claiming could. No consumer reads source/authority
-#     off these events today (WO-0007a adds no projector; `orders.status` stays
-#     authoritative), so the under-claim is functionally inert now.
-#   * Faithful per-transition broker provenance would require threading a
-#     source/authority argument down from the monitoring callers — outside this
-#     WO's `app/store/**` scope, and meaningful only once WO-0007b's projector
-#     actually consumes it. Deferred to WO-0007b (recorded in the design doc's
-#     residual notes), NOT silently skipped.
+# PROVENANCE (source/authority): derived per transition from `(old_status,
+# new_status)` by `_routine_event_provenance` below (WO-0009 — faithful
+# provenance, replacing WO-0007a's conservative uniform ENGINE/LOCAL). It follows
+# the same convention the rest of the log uses (`execution_event_for_fill`,
+# `plan_resolve_timeout_quarantine`, `plan_reconcile_resolve_order`):
+#   * ENGINE/LOCAL for the genuinely engine-local transitions — the claim
+#     (`CREATED -> SUBMITTING`, a pre-broker engine decision) and a `CANCELED`
+#     whose OLD status is `CREATED` (a never-submitted order cancelled locally:
+#     session close, flatten supersede, or a manual never-submitted cancel).
+#   * BROKER_REST/BROKER_AUTHORITATIVE for the broker-OBSERVED facts — `SUBMITTED`
+#     (only reached with a broker id, AIR-001), `PARTIALLY_FILLED`/`FILLED` (fills
+#     seen via the reconcile poll), `REJECTED` (broker rejection via poll/TQ), and
+#     a broker-confirmed `CANCELED` (old status past `CREATED`). `authority` is the
+#     ADR-001-critical field (`BROKER_AUTHORITATIVE` wins conflicts); it is correct
+#     in every case here, and the engine paths never over-claim it.
+#   * `source` is `BROKER_REST` because every routine broker observation currently
+#     arrives via REST poll/ack — no `transition_order`/`claim_order_for_submission`
+#     caller is websocket-driven (verified: every caller in app/monitoring.py and
+#     app/facade is REST/local). A future stream-ingestion path would pass
+#     `BROKER_STREAM`; threading that from the callers is deferred until such a
+#     path exists (WO-0009 gate, "alternative rejected"). This is NOT the read-flip
+#     (WO-0007b) — `orders.status` stays authoritative; no projector consumes these.
 
 _EXECUTION_EVENT_FOR_ROUTINE_STATUS: dict[OrderStatus, ExecutionEventType] = {
     OrderStatus.SUBMITTED: ExecutionEventType.SUBMITTED,
@@ -1553,6 +1550,24 @@ _EXECUTION_EVENT_FOR_ROUTINE_STATUS: dict[OrderStatus, ExecutionEventType] = {
 _SHARED_FORMAT_KEY_STATUSES = frozenset(
     {OrderStatus.SUBMITTED, OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
+
+
+def _routine_event_provenance(
+    old_status: OrderStatus, new_status: OrderStatus
+) -> tuple[EventSource, EventAuthority]:
+    """Faithful ``(source, authority)`` for a routine order-status event, derived
+    from the transition's endpoints (WO-0009). See the PROVENANCE note above.
+
+    Engine-local iff the transition is the pre-broker claim, or a cancel of an
+    order that was never sent to the broker (``CANCELED`` with old status
+    ``CREATED``). Every other routine-emitted status is a broker-observed fact.
+    """
+
+    if new_status is OrderStatus.SUBMITTING:
+        return EventSource.ENGINE, EventAuthority.LOCAL
+    if new_status is OrderStatus.CANCELED and old_status is OrderStatus.CREATED:
+        return EventSource.ENGINE, EventAuthority.LOCAL
+    return EventSource.BROKER_REST, EventAuthority.BROKER_AUTHORITATIVE
 
 
 def execution_event_for_routine_transition(
@@ -1581,17 +1596,19 @@ def execution_event_for_routine_transition(
     gets a distinct, gapless dedupe_key (``submit_pending:{order_id}:{n}``).
     ``None``/omitted defaults to ``0`` (a bare first claim).
 
-    STAGE 1 (WO-0007a) implements and tests only the ``CREATED -> SUBMITTING``
-    branch. The other branches are wired per the full design so this helper's
-    shape is final, but they are exercised by later stages.
+    ``source``/``authority`` are derived per transition by
+    ``_routine_event_provenance`` (WO-0009) from ``(order.status, new_status)`` —
+    see the PROVENANCE note above.
     """
+
+    source, authority = _routine_event_provenance(order.status, new_status)
 
     if new_status is OrderStatus.SUBMITTING:
         n = occurrence if occurrence is not None else 0
         return ExecutionEvent(
             event_type=ExecutionEventType.SUBMIT_PENDING,
-            source=EventSource.ENGINE,
-            authority=EventAuthority.LOCAL,
+            source=source,
+            authority=authority,
             dedupe_key=f"submit_pending:{order.id}:{n}",
             symbol=order.symbol,
             side=OrderSide(order.side),
@@ -1605,8 +1622,8 @@ def execution_event_for_routine_transition(
         # distinct per repeat.
         return ExecutionEvent(
             event_type=ExecutionEventType.PARTIALLY_FILLED,
-            source=EventSource.ENGINE,
-            authority=EventAuthority.LOCAL,
+            source=source,
+            authority=authority,
             dedupe_key=f"order_fill_progress:{order.id}:{filled_quantity}",
             symbol=order.symbol,
             side=OrderSide(order.side),
@@ -1636,8 +1653,8 @@ def execution_event_for_routine_transition(
 
     return ExecutionEvent(
         event_type=exec_type,
-        source=EventSource.ENGINE,
-        authority=EventAuthority.LOCAL,
+        source=source,
+        authority=authority,
         dedupe_key=f"{new_status.value}:{order.id}",
         symbol=order.symbol,
         side=OrderSide(order.side),
