@@ -384,28 +384,29 @@ def plan_append_fill(
 def trading_state_change_event(
     session_id: str,
     *,
-    prior: TradingState,
+    prior_control: TradingState,
     kill_switch: bool,
     buys_paused: bool,
     reason: str,
 ) -> Optional[ExecutionEvent]:
-    """The ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` for a control change, or
-    ``None`` when the DERIVED state is unchanged (a redundant re-engage) — §8.
+    """The ``driver="control"`` ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` for a
+    kill/pause control change, or ``None`` when the CONTROL-driver state is unchanged
+    (a redundant re-engage) — §8 / wave 3d.
 
-    The durable truth of the TradingState fact (wave 3d): the derived ``to`` state
-    is what ``current_trading_state`` folds (latest-wins), so the FSM projection is
-    fully event-reconstructable. The payload also stamps the resulting
-    ``(kill_switch, buys_paused)`` tuple as context, but the two booleans remain
-    co-written columns in the ``sessions`` table (legacy read-models), NOT purely
-    event-reconstructable: no event fires when a boolean toggle leaves the derived
+    ``prior_control`` is the previous *control-driver* state (``control_trading_state``
+    over the log), NOT the effective composed state — a control event records the
+    control driver's own ``to`` and the projector composes it with the independent
+    reconcile driver (wave 4f / R2). The durable truth of the control fact: the ``to``
+    is what ``control_trading_state`` folds (latest-wins). The payload also stamps the
+    resulting ``(kill_switch, buys_paused)`` tuple as context, but the two booleans
+    remain co-written ``sessions`` columns (legacy read-models), NOT purely
+    event-reconstructable: no event fires when a boolean toggle leaves the control
     state unchanged (e.g. pause toggled while already ``HALTED``), so the log alone
-    cannot always rebuild them — runtime correctness (incl. independent-release)
-    comes from the durable columns, not from replaying the tuple. A LOCAL/ENGINE
-    control decision, not a broker fact. Not deduped — every real transition is a
-    distinct control action; the projector folds latest-wins."""
+    cannot always rebuild them — runtime correctness (incl. independent-release) comes
+    from the durable columns. A LOCAL/ENGINE control decision, not a broker fact."""
 
     new_state = TradingState.of(kill_switch=kill_switch, buys_paused=buys_paused)
-    if new_state is prior:
+    if new_state is prior_control:
         return None
     return ExecutionEvent(
         event_type=ExecutionEventType.TRADING_STATE_CHANGED,
@@ -414,10 +415,51 @@ def trading_state_change_event(
         ts_event=utcnow(),
         session_id=session_id,
         payload={
-            "from": prior.value,
+            "driver": "control",
+            "from": prior_control.value,
             "to": new_state.value,
             "kill_switch": kill_switch,
             "buys_paused": buys_paused,
+            "reason": reason,
+        },
+    )
+
+
+def reconcile_trading_state_event(
+    session_id: str,
+    *,
+    prior_reconcile: TradingState,
+    to: TradingState,
+    reason: str,
+) -> Optional[ExecutionEvent]:
+    """The ``driver="reconcile"`` ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` (wave
+    4f / R2), or ``None`` when the reconcile-driver state is unchanged.
+
+    A SECOND, independent driver of the §8 FSM: startup mass-reconcile, stream
+    reconnect, and parity signals drive ``trading_state`` to ``Reducing`` (pending
+    reconciliation — the §8 default under degradation) or ``Active`` (parity restored)
+    WITHOUT touching the kill/pause booleans (the wave-3d control driver). The
+    projector composes this with the control driver via ``compose_trading_state``
+    (``Halted > Reducing > Active``), so kill still dominates a reconcile-driven
+    ``Reducing`` (R3: reconcile never auto-Halts — a held position stays exitable) and
+    a kill *release* can't lift a ``Reducing`` that pending reconciliation still
+    requires. ``to`` must be ``Reducing`` or ``Active`` (a reconcile signal never
+    drives ``Halted``)."""
+
+    if to is TradingState.HALTED:
+        raise ValueError("the reconcile driver never drives Halted (R3)")
+    if to is prior_reconcile:
+        return None
+    return ExecutionEvent(
+        event_type=ExecutionEventType.TRADING_STATE_CHANGED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        ts_event=utcnow(),
+        session_id=session_id,
+        payload={
+            "driver": "reconcile",
+            "from": prior_reconcile.value,
+            "to": to.value,
             "reason": reason,
         },
     )

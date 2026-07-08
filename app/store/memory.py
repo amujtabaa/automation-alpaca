@@ -51,9 +51,12 @@ from app.models import (
 )
 from app.events.projectors import (
     active_emergency_reduce_overrides,
+    compose_trading_state,
+    control_trading_state,
     current_trading_state,
     project_symbol_position,
     quarantined_symbols,
+    reconcile_trading_state,
     timeout_quarantined_order_ids,
 )
 from app.store.base import (
@@ -99,6 +102,7 @@ from app.store.core import (
     plan_reconcile_resolve_order,
     plan_resolve_timeout_quarantine,
     plan_transition_order,
+    reconcile_trading_state_event,
     trading_state_change_event,
     emergency_reduce_override_event,
     require_bool,
@@ -165,18 +169,24 @@ class InMemoryStateStore(StateStore):
         (sessions are born ACTIVE); it is the mirror of the SQLite backfill below."""
 
         for session in self._sessions:
-            derived = TradingState.of(
+            new_control = TradingState.of(
                 kill_switch=session.kill_switch, buys_paused=session.buys_paused
             )
-            projected = current_trading_state(self._execution_events, session.id)
-            if projected is not derived:
+            control_prior = control_trading_state(self._execution_events, session.id)
+            if control_prior is not new_control:
                 event = trading_state_change_event(
-                    session.id, prior=projected, kill_switch=session.kill_switch,
+                    session.id, prior_control=control_prior,
+                    kill_switch=session.kill_switch,
                     buys_paused=session.buys_paused, reason="backfill",
                 )
                 if event is not None:
                     self._append_execution_event_unlocked(event)
-            session.trading_state = derived
+            # Effective = control composed with any independent reconcile driver
+            # (wave 4f); for a pre-4f log the reconcile driver is ACTIVE → == control.
+            session.trading_state = compose_trading_state(
+                new_control,
+                reconcile_trading_state(self._execution_events, session.id),
+            )
 
     def _backfill_fill_events_unlocked(self) -> None:
         """Ensure every fill row has a matching `FILL` event (wave 3a-truth).
@@ -1699,19 +1709,49 @@ class InMemoryStateStore(StateStore):
         ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` (the durable FSM truth). Called
         inside ``_atomic()``."""
 
+        prior_control = control_trading_state(self._execution_events, session.id)
         exec_event = trading_state_change_event(
-            session.id, prior=session.trading_state, kill_switch=kill_switch,
+            session.id, prior_control=prior_control, kill_switch=kill_switch,
             buys_paused=buys_paused, reason=reason,
         )
         session.kill_switch = kill_switch
         session.buys_paused = buys_paused
-        session.trading_state = TradingState.of(
-            kill_switch=kill_switch, buys_paused=buys_paused
+        # Effective state composes the new control state with the INDEPENDENT
+        # reconcile driver (wave 4f / R2) — kill still dominates a reconcile Reducing,
+        # and a kill release can't lift a Reducing pending reconciliation still needs.
+        session.trading_state = compose_trading_state(
+            TradingState.of(kill_switch=kill_switch, buys_paused=buys_paused),
+            reconcile_trading_state(self._execution_events, session.id),
         )
         session.updated_at = utcnow()
         self._append_event_unlocked(
             audit_event_type, message=audit_message, session_id=session.id,
             payload=audit_payload,
+        )
+        if exec_event is not None:
+            self._append_execution_event_unlocked(exec_event)
+
+    def _apply_reconcile_state_unlocked(
+        self, session: SessionRecord, *, to: TradingState, reason: str
+    ) -> None:
+        """Apply a RECONCILE-driver TradingState change (wave 4f / R2): co-write the
+        composed effective ``trading_state`` + a ``driver="reconcile"``
+        ``TRADING_STATE_CHANGED`` ``ExecutionEvent`` — WITHOUT touching the kill/pause
+        booleans. Called inside ``_atomic()``."""
+
+        prior_reconcile = reconcile_trading_state(self._execution_events, session.id)
+        exec_event = reconcile_trading_state_event(
+            session.id, prior_reconcile=prior_reconcile, to=to, reason=reason,
+        )
+        session.trading_state = compose_trading_state(
+            control_trading_state(self._execution_events, session.id), to
+        )
+        session.updated_at = utcnow()
+        self._append_event_unlocked(
+            "trading_state_reconcile",
+            message=f"reconcile-driven trading state -> {to.value} ({reason})",
+            session_id=session.id,
+            payload={"to": to.value, "reason": reason},
         )
         if exec_event is not None:
             self._append_execution_event_unlocked(exec_event)
@@ -1740,6 +1780,17 @@ class InMemoryStateStore(StateStore):
                     audit_message=f"buys {'paused' if paused else 'resumed'}",
                     audit_payload={"buys_paused": paused}, reason="buys_paused",
                 )
+            return session.model_copy(deep=True)
+
+    async def set_reconcile_trading_state(
+        self, to: TradingState, *, reason: str
+    ) -> SessionRecord:
+        if to is TradingState.HALTED:
+            raise ValueError("the reconcile driver never drives Halted (R3)")
+        async with self._lock:
+            with self._atomic():
+                session = self._ensure_current_session_unlocked()
+                self._apply_reconcile_state_unlocked(session, to=to, reason=reason)
             return session.model_copy(deep=True)
 
     async def current_trading_state(self) -> TradingState:

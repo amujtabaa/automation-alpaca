@@ -1053,6 +1053,17 @@ class StateStore(ABC):
         """Persist the pause-buys flag on the active session (atomic + audit)."""
 
     @abstractmethod
+    async def set_reconcile_trading_state(
+        self, to: TradingState, *, reason: str
+    ) -> SessionRecord:
+        """Drive the active session's RECONCILE TradingState driver (wave 4f / R2):
+        ``Reducing`` (pending reconciliation — startup / reconnect / parity gap) or
+        ``Active`` (parity restored), WITHOUT touching the kill/pause booleans. The
+        effective ``current_trading_state`` composes this with the control driver via
+        ``Halted > Reducing > Active`` (kill dominates; the reconcile driver never
+        drives ``Halted`` — R3, so a held position stays exitable). Atomic + audit."""
+
+    @abstractmethod
     async def current_trading_state(self) -> TradingState:
         """The active session's ``TradingState`` (§8 / wave 3d), derived from the
         event log (latest ``TRADING_STATE_CHANGED``). Event-truth; the

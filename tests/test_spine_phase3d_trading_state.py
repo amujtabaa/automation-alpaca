@@ -147,6 +147,7 @@ async def test_event_carries_the_full_control_tuple(any_store):
     ]
     assert len(tsc) == 1
     assert tsc[0].payload == {
+        "driver": "control",  # wave 4f: the FSM now has TWO drivers (control + reconcile)
         "from": "active", "to": "halted",
         "kill_switch": True, "buys_paused": False, "reason": "kill_switch",
     }

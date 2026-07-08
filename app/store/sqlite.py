@@ -66,9 +66,12 @@ from app.models import (
 )
 from app.events.projectors import (
     active_emergency_reduce_overrides,
+    compose_trading_state,
+    control_trading_state,
     current_trading_state,
     project_symbol_position,
     quarantined_symbols,
+    reconcile_trading_state,
     timeout_quarantined_order_ids,
 )
 from app.store.base import (
@@ -114,6 +117,7 @@ from app.store.core import (
     plan_reconcile_resolve_order,
     plan_resolve_timeout_quarantine,
     plan_transition_order,
+    reconcile_trading_state_event,
     trading_state_change_event,
     emergency_reduce_override_event,
     require_bool,
@@ -429,26 +433,32 @@ class SqliteStateStore(StateStore):
         with self._tx() as cur:
             for row in session_rows:
                 session = self._session(row)
-                derived = TradingState.of(
+                new_control = TradingState.of(
                     kill_switch=session.kill_switch, buys_paused=session.buys_paused
                 )
-                projected = current_trading_state(tsc_events, session.id)
-                if projected is not derived:
+                control_prior = control_trading_state(tsc_events, session.id)
+                if control_prior is not new_control:
                     event = trading_state_change_event(
-                        session.id, prior=projected, kill_switch=session.kill_switch,
+                        session.id, prior_control=control_prior,
+                        kill_switch=session.kill_switch,
                         buys_paused=session.buys_paused, reason="backfill",
                     )
                     if event is not None:
                         self._insert_execution_event(cur, event)
+                # Effective = control composed with any independent reconcile driver
+                # (wave 4f); a pre-4f log has no reconcile events → == control.
+                effective = compose_trading_state(
+                    new_control, reconcile_trading_state(tsc_events, session.id)
+                )
                 # Heal the raw read-model column if it disagrees with the derived
                 # state (a pre-wave-3d row defaults to 'active'). Compare the RAW
                 # persisted value, not session.trading_state — the mapper reflects
                 # the column, so this is the same value, but reading row[...] makes
                 # the write's purpose (fix the stored column) unambiguous.
-                if row["trading_state"] != derived.value:
+                if row["trading_state"] != effective.value:
                     cur.execute(
                         "UPDATE sessions SET trading_state=? WHERE id=?",
-                        (derived.value, session.id),
+                        (effective.value, session.id),
                     )
 
     def _backfill_fill_events_locked(self) -> None:
@@ -2707,14 +2717,20 @@ class SqliteStateStore(StateStore):
         (on a real transition) the ``TRADING_STATE_CHANGED`` ExecutionEvent, in one
         ``_tx`` (§8 / wave 3d). Mirrors ``InMemoryStateStore``."""
 
+        tsc_events = self._trading_state_events_locked()
+        prior_control = control_trading_state(tsc_events, session.id)
         exec_event = trading_state_change_event(
-            session.id, prior=session.trading_state, kill_switch=kill_switch,
+            session.id, prior_control=prior_control, kill_switch=kill_switch,
             buys_paused=buys_paused, reason=reason,
         )
         session.kill_switch = kill_switch
         session.buys_paused = buys_paused
-        session.trading_state = TradingState.of(
-            kill_switch=kill_switch, buys_paused=buys_paused
+        # Effective composes the new control state with the INDEPENDENT reconcile
+        # driver (wave 4f / R2) — kill dominates a reconcile Reducing; a kill release
+        # can't lift a Reducing pending reconciliation still requires.
+        session.trading_state = compose_trading_state(
+            TradingState.of(kill_switch=kill_switch, buys_paused=buys_paused),
+            reconcile_trading_state(tsc_events, session.id),
         )
         session.updated_at = utcnow()
         cur.execute(
@@ -2731,6 +2747,45 @@ class SqliteStateStore(StateStore):
         self._insert_event(
             cur, audit_event_type, message=audit_message, session_id=session.id,
             payload=audit_payload,
+        )
+        if exec_event is not None:
+            self._insert_execution_event(cur, exec_event)
+
+    def _trading_state_events_locked(self) -> list[ExecutionEvent]:
+        """All ``TRADING_STATE_CHANGED`` events in sequence order (for folding the
+        control + reconcile drivers, wave 4f)."""
+
+        rows = self._read_all(
+            "SELECT * FROM execution_events WHERE event_type = "
+            "'trading_state_changed' ORDER BY sequence"
+        )
+        return [self._execution_event(r) for r in rows]
+
+    def _apply_reconcile_state_locked(
+        self, cur: sqlite3.Cursor, session: SessionRecord, *,
+        to: TradingState, reason: str,
+    ) -> None:
+        """Co-write a RECONCILE-driver TradingState change (wave 4f / R2): the
+        composed effective ``trading_state`` column + a ``driver="reconcile"``
+        ``TRADING_STATE_CHANGED`` ExecutionEvent — WITHOUT touching the booleans."""
+
+        tsc_events = self._trading_state_events_locked()
+        prior_reconcile = reconcile_trading_state(tsc_events, session.id)
+        exec_event = reconcile_trading_state_event(
+            session.id, prior_reconcile=prior_reconcile, to=to, reason=reason,
+        )
+        session.trading_state = compose_trading_state(
+            control_trading_state(tsc_events, session.id), to
+        )
+        session.updated_at = utcnow()
+        cur.execute(
+            "UPDATE sessions SET trading_state=?, updated_at=? WHERE id=?",
+            (session.trading_state.value, _dt(session.updated_at), session.id),
+        )
+        self._insert_event(
+            cur, "trading_state_reconcile",
+            message=f"reconcile-driven trading state -> {to.value} ({reason})",
+            session_id=session.id, payload={"to": to.value, "reason": reason},
         )
         if exec_event is not None:
             self._insert_execution_event(cur, exec_event)
@@ -2758,6 +2813,19 @@ class SqliteStateStore(StateStore):
                     audit_event_type="buys_paused" if paused else "buys_resumed",
                     audit_message=f"buys {'paused' if paused else 'resumed'}",
                     audit_payload={"buys_paused": paused}, reason="buys_paused",
+                )
+            return session
+
+    async def set_reconcile_trading_state(
+        self, to: TradingState, *, reason: str
+    ) -> SessionRecord:
+        if to is TradingState.HALTED:
+            raise ValueError("the reconcile driver never drives Halted (R3)")
+        async with self._lock:
+            session = self._ensure_current_session_locked()
+            with self._tx() as cur:
+                self._apply_reconcile_state_locked(
+                    cur, session, to=to, reason=reason
                 )
             return session
 

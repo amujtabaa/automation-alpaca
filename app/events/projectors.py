@@ -223,21 +223,35 @@ def timeout_quarantined_order_ids(events: Iterable[ExecutionEvent]) -> set[str]:
     }
 
 
-def current_trading_state(
-    events: Iterable[ExecutionEvent], session_id: str
-) -> TradingState:
-    """The session's current ``TradingState`` (§8 / wave 3d): the ``to`` of its
-    LATEST ``TRADING_STATE_CHANGED`` ``ExecutionEvent``, default ``ACTIVE`` if none.
+# §8 severity ordering for composing independent TradingState drivers (wave 4f / R2):
+# the more restrictive state wins. Halted (kill — a true all-stop) dominates Reducing
+# (reduce-only — stream degradation / pending reconciliation), which dominates Active.
+_TRADING_STATE_RANK: dict[TradingState, int] = {
+    TradingState.ACTIVE: 0,
+    TradingState.REDUCING: 1,
+    TradingState.HALTED: 2,
+}
 
-    Derived purely from the append-only log (events in ascending ``sequence``
-    order, latest wins), so it is replay-stable and event-truth — the
-    ``SessionRecord.trading_state`` column is a co-written read-model reconstructable
-    from this fold. Each event also stamps the resulting ``(kill_switch,
-    buys_paused)`` tuple as context, but the two booleans are NOT purely
-    event-reconstructable (no event fires when a boolean toggle leaves the derived
-    state unchanged); they remain co-written ``sessions``-table columns.
-    Session-scoped (unlike the order-scoped quarantine projectors).
-    """
+
+def compose_trading_state(*states: TradingState) -> TradingState:
+    """The effective ``TradingState`` from N independent drivers: the most
+    restrictive (``Halted > Reducing > Active``, §8). This is how the wave-3d
+    control driver (kill/pause booleans) and the wave-4f reconcile driver (startup /
+    reconnect / parity signals) compose WITHOUT either clobbering the other — kill
+    still dominates a reconcile-driven Reducing, and a control change can't lift a
+    Reducing that pending reconciliation still requires (R2)."""
+
+    return max(states, key=lambda s: _TRADING_STATE_RANK[s], default=TradingState.ACTIVE)
+
+
+def _driver_trading_state(
+    events: Iterable[ExecutionEvent], session_id: str, *, reconcile: bool
+) -> TradingState:
+    """Latest ``to`` among a session's ``TRADING_STATE_CHANGED`` events for ONE
+    driver — the ``reconcile`` driver (``payload.driver == "reconcile"``) or the
+    ``control`` driver (any other value, incl. legacy events with no ``driver``
+    stamp, which are all control decisions). Default ``ACTIVE``. Latest-wins per
+    driver, so each driver's own history folds independently before composition."""
 
     state = TradingState.ACTIVE
     for event in events:
@@ -245,8 +259,51 @@ def current_trading_state(
             event.event_type is ExecutionEventType.TRADING_STATE_CHANGED
             and event.session_id == session_id
         ):
-            state = TradingState(event.payload["to"])
+            is_reconcile = (event.payload or {}).get("driver") == "reconcile"
+            if is_reconcile == reconcile:
+                state = TradingState(event.payload["to"])
     return state
+
+
+def control_trading_state(
+    events: Iterable[ExecutionEvent], session_id: str
+) -> TradingState:
+    """The session's CONTROL-driven TradingState (kill/pause booleans, §8 / wave 3d).
+    Legacy ``TRADING_STATE_CHANGED`` events (no ``driver`` stamp) fold here."""
+
+    return _driver_trading_state(events, session_id, reconcile=False)
+
+
+def reconcile_trading_state(
+    events: Iterable[ExecutionEvent], session_id: str
+) -> TradingState:
+    """The session's RECONCILE-driven TradingState (wave 4f / R2): startup /
+    reconnect / parity signals drive this to ``Reducing`` (pending reconciliation)
+    or ``Active`` (parity restored) WITHOUT touching the kill/pause booleans."""
+
+    return _driver_trading_state(events, session_id, reconcile=True)
+
+
+def current_trading_state(
+    events: Iterable[ExecutionEvent], session_id: str
+) -> TradingState:
+    """The session's EFFECTIVE ``TradingState`` (§8): the composition of its two
+    independent drivers — control (kill/pause, wave 3d) and reconcile (wave 4f) —
+    via :func:`compose_trading_state` (``Halted > Reducing > Active``).
+
+    Derived purely from the append-only log (events in ascending ``sequence`` order,
+    latest-wins PER driver), so it is replay-stable and event-truth — the
+    ``SessionRecord.trading_state`` column is a co-written read-model reconstructable
+    from this fold. With no reconcile events (the wave-3d world) the reconcile driver
+    is ``ACTIVE`` and the composition reduces to the control state, so the wave-3d
+    behavior is preserved exactly. The kill/pause booleans remain co-written
+    ``sessions``-table columns (not purely event-reconstructable — no event fires
+    when a boolean toggle leaves the derived state unchanged). Session-scoped."""
+
+    return compose_trading_state(
+        control_trading_state(events, session_id),
+        reconcile_trading_state(events, session_id),
+    )
 
 
 def active_emergency_reduce_overrides(
