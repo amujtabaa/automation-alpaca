@@ -85,6 +85,7 @@ forbidden_modules =
     app.broker.mock
     app.broker.sim
     app.marketdata.alpaca_stream
+    app.marketdata.fake
     alpaca
 
 # --------------------------------------------------------------------------- #
@@ -111,7 +112,12 @@ forbidden_modules =
     app.position
     app.policy
     app.strategy
+    app.strategy_loop
     app.approval
+    app.features
+    app.transitions
+    app.config
+    app.main
     cockpit
 
 # --------------------------------------------------------------------------- #
@@ -151,22 +157,36 @@ forbidden_modules =
     app.transitions
     app.events
     app.strategy
+    app.policy
+    app.approval
+    app.features
     alpaca
+# NOTE: `app.config` (Settings) and `app.models` are deliberately NOT forbidden —
+# they are the cross-cutting kernel (settings injected via DI, shared DTO types),
+# not engine internals; a route annotating a `Settings`/model type is allowed.
 ignore_imports =
     # ---- Phase-6 punch-list: remaining direct route->backend edges ----
-    # Each line is one un-migrated route dependency ADR-005 wants gone. Migrating
-    # a route to the facade means DELETING its line(s) here; the ratchet then
-    # forbids the edge from ever returning. When this block is empty, the ADR-005
-    # route boundary is fully enforced and Phase 6's route work is done.
+    # Each line is one un-migrated route dependency ADR-005 wants gone (store/engine/
+    # broker access AND engine-internal policy/approval/feature logic). Migrating a
+    # route to the facade means DELETING its line(s) here; the ratchet then forbids
+    # the edge from ever returning. When this block is empty, the ADR-005 route
+    # boundary is fully enforced and Phase 6's route work is done. This list is
+    # EXHAUSTIVE for the current tree — `lint-imports` proves it (no unmatched, no
+    # broken).
     app.api.routes_candidates -> app.store.base
+    app.api.routes_candidates -> app.policy
+    app.api.routes_candidates -> app.approval.gate
     app.api.routes_controls -> app.store.base
     app.api.routes_dev -> app.store.base
     app.api.routes_marketdata -> app.marketdata.service
+    app.api.routes_marketdata -> app.features
     app.api.routes_review -> app.store.base
     app.api.routes_system -> app.store.base
+    app.api.routes_system -> app.features
     app.api.routes_trading -> app.store.base
     app.api.routes_trading -> app.broker.adapter
     app.api.routes_trading -> app.marketdata.service
     app.api.routes_trading -> app.monitoring
     app.api.routes_trading -> app.protection
+    app.api.routes_trading -> app.policy
     app.api.routes_watchlist -> app.store.base

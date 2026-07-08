@@ -580,6 +580,30 @@ mechanically enforced — "a PR that crosses a protected boundary fails CI".
   added; this ledger. No `app/` source changed (coverage unaffected).
 - [x] Gate: `lint-imports` green (5 kept / 0 broken); full suite green; ruff clean.
 
+- [x] **Phase-5 adversarial review + remediation.** Independent Opus review of the contracts found no
+  current runtime breach but two HIGH false-safes (enforcement weaker than the docs claimed) + gaps; all
+  fixed:
+  - **RF-1 (HIGH, architectural).** The idiomatic `from app.broker import BrokerAdapter` transitively
+    dragged the concrete adapter + `alpaca` in, because the package `__init__` housed the factory (module-
+    level concrete import + lazy SDK import). Neither Contract 1 (`allow_indirect`) nor Contract 3 (forbids
+    leaf modules, not the bare package) caught it. **Fixed** by moving the factories to `app.broker.factory`
+    / `app.marketdata.factory` (imported only by `app.main`); the `__init__`s now re-export ONLY the abstract
+    port, so the bare packages no longer reach `alpaca` (grimp-verified: the transitive alpaca-reacher set is
+    exactly the 2 ports + 2 factories + `main`).
+  - **RF-2 (HIGH).** Contract 5's punch-list was under-inclusive — routes import `app.policy`/`app.approval`/
+    `app.features` directly *today*, untracked, falsifying the "exhaustive" claim. **Fixed** by adding those
+    engine-internal targets to `forbidden_modules` + the 5 real edges to the ignore punch-list (now 17 edges,
+    `lint-imports`-proven exhaustive). `app.config` (Settings kernel, DI-injected) + `app.models` deliberately
+    stay allowed.
+  - **RF-3 (MED).** Only 2/5 invariants had INI-independent tests. **Fixed** by adding grimp-based proofs for
+    the transitive alpaca-reach, engine-venue-agnosticism, and models-leaf — so all 4 Tier-1 runtime-safety
+    boundaries survive a config mis-edit; only the Contract-5 debt-ratchet is INI-only.
+  - **RF-4/5 (MED/LOW).** Added `app.marketdata.fake` to Contract 3; rounded out Contract 4's forbidden-sibling
+    list. Finding 6 (whole-module skip if import-linter absent) accepted as-is — mitigated by requirements.txt
+    + the hard CI `lint-imports` step.
+  - Gate after remediation: `lint-imports` 5 kept/0 broken; suite **1760 passed** (0 fail, 5 skip);
+    coverage 95.01% (floor 93%); ruff + harness clean.
+
 **Phase 5 — CLOSED.** The boundary is now enforced two ways (CI step + suite test). Phase 6 (legacy
 table demotion + route→facade migration) inherits a mechanical, self-tightening checklist: empty the
 Contract-5 `ignore_imports` block one migrated route at a time, and the ratchet forbids the edge from

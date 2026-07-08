@@ -8,9 +8,12 @@ this is an architecture test, in the spirit of the ``harness/`` boundary scripts
 Two layers of defense:
 
 * ``test_all_import_contracts_hold`` runs the full ``.importlinter`` config.
-* the grimp-based tests re-assert the two load-bearing invariants (alpaca-SDK
-  confinement, a thin UI) DIRECTLY against the import graph — so those safety
-  boundaries stay proven even if the INI is later weakened or mis-edited.
+* the grimp-based tests re-assert the load-bearing invariants DIRECTLY against the
+  import graph — alpaca-SDK confinement (direct AND transitive), a thin UI, a
+  venue-agnostic engine, and a leaf model kernel — so those safety boundaries stay
+  proven even if the INI is later weakened or mis-edited (the review's Finding 3).
+  Only the ADR-005 route→facade *ratchet* (a migration-debt tracker, not a runtime
+  safety boundary) is INI-only.
 """
 
 from __future__ import annotations
@@ -27,12 +30,42 @@ importlinter = pytest.importorskip(
 )
 grimp = pytest.importorskip("grimp")
 
-# The two — and only two — modules sanctioned to import the Alpaca SDK: the
-# concrete broker adapter and the concrete market-data stream (ADR-005).
+# The two — and only two — modules sanctioned to DIRECTLY import the Alpaca SDK:
+# the concrete broker adapter and the concrete market-data stream (ADR-005).
 _SANCTIONED_ALPACA_IMPORTERS = {
     "app.broker.alpaca_paper",
     "app.marketdata.alpaca_stream",
 }
+
+# The full set of modules allowed to TRANSITIVELY reach the SDK: the two direct
+# importers above, the two credential-safe factories that build them, and the
+# composition root that wires everything (ADR-006 Finding 1 — the factories were
+# lifted out of the package __init__ so the bare `app.broker`/`app.marketdata`
+# packages, and thus the abstract port, never reach alpaca).
+_SANCTIONED_ALPACA_REACHERS = _SANCTIONED_ALPACA_IMPORTERS | {
+    "app.broker.factory",
+    "app.marketdata.factory",
+    "app.main",
+}
+
+# Concrete venue implementations the venue-agnostic engine must never reach
+# (directly or transitively) — it depends only on the abstract ports
+# (`app.broker.adapter`, `app.marketdata.service`).
+_CONCRETE_VENUE_MODULES = {
+    "app.broker.alpaca_paper",
+    "app.broker.mock",
+    "app.broker.sim",
+    "app.marketdata.alpaca_stream",
+    "app.marketdata.fake",
+}
+
+# The venue-agnostic engine layer (mirrors the `engine-is-venue-agnostic` contract
+# source list). Kept in sync with `.importlinter`.
+_ENGINE_PACKAGES = [
+    "app.monitoring", "app.reconciliation", "app.policy", "app.position",
+    "app.protection", "app.strategy", "app.strategy_loop", "app.features",
+    "app.transitions", "app.events", "app.approval",
+]
 
 
 def test_all_import_contracts_hold():
@@ -85,4 +118,69 @@ def test_cockpit_imports_no_backend_code():
     assert not leaks, (
         f"cockpit imports backend modules {leaks} — the UI must call the backend only "
         f"over HTTP via cockpit.api_client (invariant #4)."
+    )
+
+
+def test_only_sanctioned_modules_transitively_reach_the_alpaca_sdk():
+    """INI-independent, TRANSITIVE strengthening of INV-070 / ADR-006 Finding 1:
+    the set of modules that reach ``alpaca`` by ANY import chain is exactly the two
+    concrete ports + the two factories + the composition root. This catches an
+    indirect leak (e.g. an engine module importing the bare `app.broker` factory
+    package) that the direct-import contract, with ``allow_indirect_imports``, does
+    not — the exact hole the review found."""
+
+    graph = grimp.build_graph("app", "cockpit", include_external_packages=True)
+    reachers = set(graph.find_downstream_modules("alpaca"))
+    stray = reachers - _SANCTIONED_ALPACA_REACHERS
+    assert not stray, (
+        f"modules that transitively reach the Alpaca SDK outside the sanctioned "
+        f"factory/composition-root set: {sorted(stray)}. Only "
+        f"{sorted(_SANCTIONED_ALPACA_REACHERS)} may reach alpaca (ADR-006)."
+    )
+
+
+def test_engine_never_reaches_a_concrete_venue_implementation():
+    """INI-independent proof of INV-072 (the `engine-is-venue-agnostic` contract):
+    no engine module reaches a concrete broker/feed implementation by ANY chain — it
+    depends only on the abstract ports. Guards the contract against a config
+    mis-edit AND against a NEW engine module importing a concrete adapter."""
+
+    graph = grimp.build_graph("app", "cockpit", include_external_packages=False)
+    engine_mods = {
+        m
+        for pkg in _ENGINE_PACKAGES
+        for m in graph.modules
+        if m == pkg or m.startswith(pkg + ".")
+    }
+    offenders = {}
+    for concrete in _CONCRETE_VENUE_MODULES:
+        reachers = set(graph.find_downstream_modules(concrete)) | {concrete}
+        hit = engine_mods & reachers
+        if hit:
+            offenders[concrete] = sorted(hit)
+    assert not offenders, (
+        f"engine modules reach a concrete venue implementation (must use the abstract "
+        f"port only): {offenders}"
+    )
+
+
+def test_models_kernel_imports_no_app_layer():
+    """INI-independent proof of INV-073 (the `models-is-a-leaf` contract):
+    ``app.models`` imports no other ``app.*`` module, so the shared kernel can never
+    take a dependency back on a higher layer."""
+
+    graph = grimp.build_graph("app", include_external_packages=False)
+    model_mods = [
+        m for m in graph.modules if m == "app.models" or m.startswith("app.models.")
+    ]
+    leaks = sorted(
+        tgt
+        for m in model_mods
+        for tgt in graph.find_modules_directly_imported_by(m)
+        if (tgt == "app" or tgt.startswith("app."))
+        and not (tgt == "app.models" or tgt.startswith("app.models."))
+    )
+    assert not leaks, (
+        f"app.models imports other app layers {leaks} — the model kernel must be a "
+        f"leaf (INV-073)."
     )

@@ -53,9 +53,9 @@ from app.api import (
     routes_watchlist,
 )
 from app.approval.human import HumanApprovalGate
-from app.broker import create_broker_adapter
+from app.broker.factory import create_broker_adapter
 from app.config import load_settings
-from app.marketdata import create_market_data_service
+from app.marketdata.factory import create_market_data_service
 from app.monitoring import monitoring_loop, run_startup_reconcile
 from app.store import create_state_store
 from app.store.base import StateStore

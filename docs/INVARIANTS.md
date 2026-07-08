@@ -353,7 +353,9 @@ generalized).
 path that bypasses the adapter's paper-only, quarantine, and rate-limit
 guarantees.
 *Pinned by:* `tests/test_import_boundaries.py::test_alpaca_sdk_is_confined_to_the_two_concrete_ports`
-(direct grimp-graph proof, INI-independent) + the `alpaca-sdk-confined-to-adapter`
+(direct proof) + `::test_only_sanctioned_modules_transitively_reach_the_alpaca_sdk`
+(TRANSITIVE proof — the two ports + two factories + `app.main` are the only reachers;
+ADR-006 Finding 1), both INI-independent, + the `alpaca-sdk-confined-to-adapter`
 contract in `.importlinter`.
 
 **INV-071 — The Streamlit cockpit imports no backend (`app.*`) code.** The UI is
@@ -373,15 +375,18 @@ abstract ports (`app.broker.adapter`, `app.marketdata.service`) but never a
 concrete adapter (`alpaca_paper`/`mock`/`sim`/`alpaca_stream`) or the SDK.
 *Why:* the single-writer engine must stay IO-free/testable and swappable per
 venue; a concrete-adapter import couples decision logic to one venue.
-*Pinned by:* the `engine-is-venue-agnostic` contract in `.importlinter`
-(`tests/test_import_boundaries.py::test_all_import_contracts_hold`).
+*Pinned by:* `tests/test_import_boundaries.py::test_engine_never_reaches_a_concrete_venue_implementation`
+(INI-independent grimp proof — no engine module reaches a concrete adapter by any
+chain) + the `engine-is-venue-agnostic` contract (`::test_all_import_contracts_hold`).
 
 **INV-073 — The shared model kernel is a leaf.** `app.models` imports no other
 `app` layer, so the type kernel every layer depends on can never take a
 dependency back on a higher layer.
 *Why:* a back-edge from `models` to any layer creates an import cycle and
 defeats the layering the other contracts rely on.
-*Pinned by:* the `models-is-a-leaf` contract (`test_all_import_contracts_hold`).
+*Pinned by:* `tests/test_import_boundaries.py::test_models_kernel_imports_no_app_layer`
+(INI-independent grimp proof) + the `models-is-a-leaf` contract
+(`test_all_import_contracts_hold`).
 
 **INV-074 — API route handlers reach the store/engine/broker only through the
 typed facade (ADR-005 target; ratchet-enforced).** New route→backend imports are
