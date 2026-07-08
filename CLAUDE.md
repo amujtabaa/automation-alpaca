@@ -60,7 +60,7 @@ Plus spine invariants **INV-1…INV-9** (`docs/SPINE_EXECUTION_ARCHITECTURE_v2.m
 
 ## Review
 
-Three-seat model: planning seat accepts decisions → implementer executes bounded work orders → **independent** seat (Codex/other) reviews adversarially. No seat reviews its own work as the only review. ClaudeFast's quality-engineer pass aids the implementer; it is **not** the independent seat. ADR/decision updates ship with the change, not after.
+Three-seat model: planning seat accepts decisions → implementer executes bounded work orders with built-in adversarial checks (Fable evidence, quality-engineer validation, review checklist, CI gates). **Independent cross-model review (Codex/other) runs at the human's discretion**, batched at milestones rather than per wave — except: changes to human-gated safety surfaces and ADR amendments queue for independent review before any beta-relevant milestone relies on them. In-process validation never counts as independent review; no seat's self-review is ever the only review. ADR/decision updates ship with the change, not after.
 
 ## ClaudeFast kit (subordinate tooling)
 
