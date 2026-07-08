@@ -4,7 +4,7 @@ title: Spine v2 Migration — History and Retired Process
 status: active
 authority: medium
 owner: Ameen
-last_verified: 2026-07-07
+last_verified: 2026-07-08
 tags: [migration, history, retired-process]
 source_refs: [docs/MIGRATION_MATRIX.md, docs/REARCHITECTURE_ROADMAP.md, docs/adr/ADR-004-event-log-truth-migration.md]
 supersedes: []
@@ -24,7 +24,7 @@ The salvage → re-architect → phased-migration program that produced Spine v2
   - `legacy_truth` / `shadow_evented` / `event_truth` flow routing via `docs/MIGRATION_MATRIX.md`.
   - Mandatory characterization tests before behavior change (superseded by the standing testing model — see `pkl/architecture/testing-model.md`).
   - The mandated 7-document read order for spine work; work orders now name their own context packets.
-- **Not yet independently verified:** that every flow is `event_truth` and no `shadow_evented` / dual-write scaffolding remains. WO-0001 verifies this with evidence; until then, treat "migration complete" as a high-confidence claim, not a fact.
+- **Independently verified (WO-0001, 2026-07-08 — verdict NOT-TERMINAL, narrow):** all 16 `docs/MIGRATION_MATRIX.md` flows were checked against code with the full suite GREEN (1809 collected / 1804 passed / 5 skipped / 0 failed). Every safety-critical truth-routing flow (fills, dedup, overfill, timeout, manual flatten, emergency reduce, kill/TradingState, reconciliation) is `event_truth` with dual-store parity; all API routes are facade-backed; the Tier-1 import invariants are enforced. **No live `shadow_evented` / `dual_write` scaffolding drives truth** (only a stale comment at `app/store/core.py:148-152`, a superseded shadow test that now skips, and the permanent parity verifier remain). **One flow is still `legacy_truth` by documented deferral:** "Atomic submit claim" — the order-status / primary-spawn state machine is table-authoritative because its projector is deferred (`app/events/replay.py:136-139`, "mirror of 3c-C5"). So the migration is substantially complete but **not strictly terminal**; event-sourcing the order-status/spawn machine is remaining migration work and needs its own work order. Full evidence: `work/active/WO-0001-migration-terminal-verification/findings.md`.
 - Migration docs (`MIGRATION_MATRIX.md`, `REARCHITECTURE_ROADMAP.md`, phase prompts) remain in `docs/` as historical evidence; stale `IMPLEMENTATION_PROMPT_*` files go to `docs/archive/legacy_implementation_prompts/` per the stale-artifact guide. Never delete decision logs, ADRs, tests, or source without explicit human confirmation.
 - What the migration permanently left behind: event-log-as-truth (ADR-004), the layer seams and single-writer rule, dual-store parity testing, and the quarantine decisions (ADR-001/002/003).
 
@@ -39,8 +39,9 @@ Carrying dead process in the always-on file is how important rules get skimmed p
 ## Related pages
 
 - `pkl/project/goals.md`
-- `work/queue/WO-0001` (migration-terminal verification)
+- `work/active/WO-0001-migration-terminal-verification/` (migration-terminal verification + findings)
 
 ## Change log
 
 - 2026-07-07: Created; migration-era process formally retired from CLAUDE.md.
+- 2026-07-08: WO-0001 verified the migration state against code (verdict NOT-TERMINAL, narrow): all safety-critical flows are `event_truth` with parity; the sole residual `legacy_truth` flow is the deferred order-status/spawn state machine ("Atomic submit claim"). last_verified refreshed.
