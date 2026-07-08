@@ -39,7 +39,7 @@ Carrying dead process in the always-on file is how important rules get skimmed p
 ## Related pages
 
 - `pkl/project/goals.md`
-- `work/active/WO-0001-migration-terminal-verification/` (migration-terminal verification + findings)
+- `work/completed/keep/WO-0001-migration-terminal-verification/` (migration-terminal verification + findings)
 
 ## Change log
 

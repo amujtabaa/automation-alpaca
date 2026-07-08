@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Verify Spine v2 migration is terminal
-status: ready
+status: CLOSED
 work_order_id: WO-0001
 wave: W1-audit
 model_tier: mid
 risk: low
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-07
 ---
@@ -81,6 +81,8 @@ Exact test command unknown to the order author — implementer confirms from rep
 
 ## Completion disposition
 
-- [ ] PKL_UPDATED
-- [ ] RESULT_SUMMARY_KEPT
+- [x] PKL_UPDATED — pkl/process/migration-history.md refreshed with the verified NOT-TERMINAL finding
+- [x] RESULT_SUMMARY_KEPT — findings.md kept in work/completed/keep/
 - [ ] ARCHIVED
+
+Verdict: NOT-TERMINAL (narrow). Closed 2026-07-08 at commit 4eccaac; ledger appended. Evidence: ./findings.md.
