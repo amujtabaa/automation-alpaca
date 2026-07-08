@@ -86,6 +86,7 @@ from app.store.core import (
     FILL_DUPLICATE,
     FILL_REJECT,
     execution_event_for_fill,
+    execution_event_for_routine_transition,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_DENIED_HALTED,
@@ -951,6 +952,19 @@ class InMemoryStateStore(StateStore):
             superseded = False
             with self._atomic():
                 if plan.supersede_order_cancel is not None:
+                    # WO-0007a Stage 3: co-write the routine CANCELED
+                    # ExecutionEvent (SAME shared helper + dedupe_key format as
+                    # transition_order's ->CANCELED) in the SAME atomic block
+                    # as the order-row + audit-event write. `active_order` is
+                    # the PRE-transition order (its `.status` is still
+                    # CREATED — `plan.supersede_order_cancel` is a separate
+                    # deep copy already mutated to CANCELED by the planner),
+                    # exactly what the helper needs.
+                    exec_event = execution_event_for_routine_transition(
+                        active_order,
+                        OrderStatus.CANCELED,
+                        active_order.filled_quantity,
+                    )
                     self._orders[plan.supersede_order_cancel.id] = (
                         plan.supersede_order_cancel
                     )
@@ -958,6 +972,8 @@ class InMemoryStateStore(StateStore):
                         plan.supersede_cancel_event.event_type,
                         **plan.supersede_cancel_event.as_kwargs(),
                     )
+                    if exec_event is not None:
+                        self._append_execution_event_unlocked(exec_event)
                     superseded = True
                 if plan.supersede_intent_expire is not None:
                     self._sell_intents[plan.supersede_intent_expire.id] = (
@@ -1153,11 +1169,28 @@ class InMemoryStateStore(StateStore):
                 quarantined=quarantined,
             )
             if plan.outcome == CLAIM_CLAIMED:
+                # WO-0007a Stage 1: co-write a SUBMIT_PENDING ExecutionEvent in
+                # the SAME atomic block as the order-row + audit-event write.
+                # `occurrence` = count of PRIOR SUBMIT_PENDING events for this
+                # order_id, read under the same lock this whole method already
+                # holds (no concurrent claim can interleave), so repeats via
+                # the claim/release cycle get gapless, uniquely-keyed events.
+                occurrence = sum(
+                    1
+                    for e in self._execution_events
+                    if e.order_id == order_id
+                    and e.event_type is ExecutionEventType.SUBMIT_PENDING
+                )
+                exec_event = execution_event_for_routine_transition(
+                    order, OrderStatus.SUBMITTING, None, occurrence=occurrence
+                )
                 with self._atomic():
                     self._orders[order_id] = plan.order
                     self._append_event_unlocked(
                         plan.event.event_type, **plan.event.as_kwargs()
                     )
+                    if exec_event is not None:
+                        self._append_execution_event_unlocked(exec_event)
                 return SubmissionClaim(
                     CLAIM_CLAIMED, order=plan.order.model_copy(deep=True)
                 )
@@ -1362,13 +1395,44 @@ class InMemoryStateStore(StateStore):
                 raise plan.error
             if plan.outcome == ORDER_TRANSITION_NOOP:
                 return order.model_copy(deep=True)
+            # WO-0007a Stage 2: also co-write the routine order-status
+            # ExecutionEvent (if any) in the SAME atomic block, mirroring
+            # Stage 1's claim-path pattern. `order` here is still the
+            # PRE-transition order (fetched above, before plan.order), which is
+            # exactly what `execution_event_for_routine_transition` needs — both
+            # for the TIMEOUT_QUARANTINE defense-in-depth guard and to tell a
+            # first entry into PARTIALLY_FILLED apart from the same-status
+            # fill-progress self-loop.
+            #
+            # `plan.event.event_type` is plan_transition_order's own signal for
+            # which branch it took: "order_transition" (status_changed) vs
+            # "order_fill_progress" (same status, filled_quantity and/or
+            # broker_order_id changed) — using it here keeps this call in exact
+            # lockstep with the planner's branching instead of re-deriving it.
+            exec_event = None
+            if plan.event.event_type == "order_transition":
+                exec_event = execution_event_for_routine_transition(
+                    order, plan.order.status, plan.order.filled_quantity
+                )
+            elif (
+                plan.event.event_type == "order_fill_progress"
+                and order.status is OrderStatus.PARTIALLY_FILLED
+                and plan.order.status is OrderStatus.PARTIALLY_FILLED
+                and plan.order.filled_quantity != order.filled_quantity
+            ):
+                exec_event = execution_event_for_routine_transition(
+                    order, plan.order.status, plan.order.filled_quantity
+                )
             # APPLY — swap in the fully-updated order and write its one audit row
-            # (order_transition or order_fill_progress) atomically.
+            # (order_transition or order_fill_progress), plus the ExecutionEvent
+            # (if any), atomically.
             with self._atomic():
                 self._orders[order_id] = plan.order
                 self._append_event_unlocked(
                     plan.event.event_type, **plan.event.as_kwargs()
                 )
+                if exec_event is not None:
+                    self._append_execution_event_unlocked(exec_event)
             return plan.order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #
@@ -1988,10 +2052,23 @@ class InMemoryStateStore(StateStore):
             candidate.updated_at = now
             self._append_event_unlocked(event.event_type, **event.as_kwargs())
         for order, event in zip(created_orders, plan.order_events):
+            # WO-0007a Stage 3: co-write the routine CANCELED ExecutionEvent
+            # (SAME shared helper + dedupe_key format as transition_order's
+            # ->CANCELED, `f"canceled:{order_id}"`) in the SAME atomic block as
+            # the order-row + audit-event write. Must be computed BEFORE
+            # mutating `order.status` below, since the helper's OLD-status
+            # (CREATED) reasoning — the same argument transition_order relies
+            # on for its TIMEOUT_QUARANTINE defense-in-depth guard — depends on
+            # seeing the pre-transition order.
+            exec_event = execution_event_for_routine_transition(
+                order, OrderStatus.CANCELED, order.filled_quantity
+            )
             order.status = OrderStatus.CANCELED
             order.canceled_at = now
             order.updated_at = now
             self._append_event_unlocked(event.event_type, **event.as_kwargs())
+            if exec_event is not None:
+                self._append_execution_event_unlocked(exec_event)
         for intent, event in zip(open_sell_intents, plan.sell_intent_events):
             intent.status = SellIntentStatus.EXPIRED
             intent.expired_at = now

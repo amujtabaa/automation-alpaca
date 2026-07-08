@@ -187,3 +187,63 @@ had the coverage gap above, now closed by scope extension rather than a key-sche
 4. Adversarial verify pass on the resulting diff: INV-9, dedupe/idempotency, dual-store parity,
    scope (allowed/forbidden paths), test-integrity (nothing weakened).
 5. My own fresh `git diff` review + `ruff check .` + `mypy app/` + full `pytest -q` before any DONE claim.
+
+## Implementation & verification outcome (post-build)
+
+**Fresh evidence (my own run, working tree on `chore/ai-os-install`, base `d52c6d0`):**
+`ruff check .` → all checks passed. `python -m mypy app/` → Success, no issues in 54 files. Full
+`pytest` (JUnit XML, this env suppresses the terminal summary line) → **1857 collected, 1852 passed,
+5 skipped, 0 failed, 0 errors**, 120.8s. Diff confined to `app/store/{core,memory,sqlite}.py` +
+new `tests/test_wo0007a_*.py`; the pure planners `plan_transition_order`/`plan_claim_order_for_submission`
+are untouched.
+
+**Adversarial verify pass (workflow `wf_15570028-93a`, 5 independent skeptics, each tasked to REFUTE
+one safety claim):** INV-9 (position untouched), dedupe/idempotency (no reachable key collision — the
+append primitives silently no-op on a duplicate dedupe_key, so a collision *would* be a silent drop;
+none is reachable), dual-store parity (both stores delegate to the one pure helper; the sqlite
+occurrence COUNT runs after the audit-event insert but that writes the `events` table, not
+`execution_events`, so `n` is identical), scope/test-integrity, and the provenance judgment call — see
+verdicts recorded in the ledger/close notes.
+
+### Finding incorporated post-build (adversarial-verify): TIMEOUT_QUARANTINE consumer
+
+The INV-9 skeptic surfaced that the WO-0007a event types `SUBMITTED`/`CANCELED`/`REJECTED`/`FILLED`
+are members of `projectors.py::_ORDER_LIFECYCLE_EVENT_TYPES`, which `timeout_quarantined_order_ids`
+folds (latest-wins, per `order_id`) to derive the currently-quarantined set — consumed by
+`list_timeout_quarantined_orders` **and the INV-3 emergency-reduce gate** (`memory.py:1936` /
+`sqlite.py:2996`, which refuses an emergency reduce while an ambiguous quarantined order is unresolved).
+So WO-0007a's new routine emissions feed a **safety-relevant, reconciliation-adjacent** derivation.
+
+Correctness is **preserved** (output of `timeout_quarantined_order_ids` unchanged), by a structural
+argument: from `TIMEOUT_QUARANTINE` the only legal transitions are `{SUBMITTED, REJECTED, CANCELED}`
+(`app/transitions.py:73-83`), and those three are exactly the helper's `_SHARED_FORMAT_KEY_STATUSES`,
+which the defense-in-depth guard refuses to event for a TQ order; `FILLED` (the one lifecycle type the
+guard does not cover) is **illegal from TQ**, hence unreachable via the routine path. The two
+CREATED-order cancel writers (session close, flatten supersede) select only `CREATED` orders, never a
+TQ one. Therefore no routine emission can flip a quarantined order out of the set, and per-`order_id`
+latest-wins means other orders' new lifecycle events never leak across. Pinned by a new regression test
+`tests/test_wo0007a_quarantine_consumer_unaffected.py` (both stores).
+
+**Residual doc-staleness (flagged, NOT fixed here — out of `app/store/**` scope):** the docstring of
+`app/events/projectors.py::timeout_quarantined_order_ids` still states "Only the wave-3c evented
+transitions emit these order-lifecycle events." WO-0007a makes that clause false (the routine path now
+emits them too); the function's *output* is unchanged, but the stated *rationale* is stale. Recommend a
+one-line docstring fix in a WO-0007b-era or a tiny follow-up touching `app/events/` — surfaced to the
+human rather than silently expanding this WO's scope.
+
+### Provenance (source/authority) decision — the one substantive judgment call
+
+The design doc above was silent on `source`/`authority`. The implementation stamps every routine
+order-status event `EventSource.ENGINE` / `EventAuthority.LOCAL`. This is a **deliberate conservative
+choice**, documented in code at the helper: correct for the genuinely engine-local transitions (claim,
+and the two CREATED-order cancels); a **safe under-claim** for the broker-observed statuses
+(`SUBMITTED`/`PARTIALLY_FILLED`/`FILLED`/`REJECTED`), which the codebase convention
+(`execution_event_for_fill`, `plan_resolve_timeout_quarantine`, `plan_reconcile_resolve_order`) would
+label `BROKER_REST`/`BROKER_AUTHORITATIVE`. Under-claiming is the safe direction —
+`BROKER_AUTHORITATIVE` is the conflict-WINNING authority (ADR-001), so it can never let an
+engine-echoed status wrongly override a real broker reconciliation; over-claiming could. No consumer
+reads source/authority off these events today (no projector; `orders.status` stays authoritative), so
+the under-claim is functionally inert now. **Faithful per-transition broker provenance is deferred to
+WO-0007b** (it needs a source/authority argument threaded from the monitoring callers — outside this
+WO's `app/store/**` scope — and is only meaningful once WO-0007b's projector consumes it). Flagged to
+the human as the one design judgment that borders event-log-truth semantics.

@@ -46,6 +46,7 @@ from app.models import (
     CandidateStatus,
     Event,
     ExecutionEvent,
+    ExecutionEventType,
     Fill,
     Order,
     OrderSide,
@@ -101,6 +102,7 @@ from app.store.core import (
     FILL_DUPLICATE,
     FILL_REJECT,
     execution_event_for_fill,
+    execution_event_for_routine_transition,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_DENIED_HALTED,
@@ -1654,6 +1656,20 @@ class SqliteStateStore(StateStore):
                         plan.supersede_cancel_event.event_type,
                         **plan.supersede_cancel_event.as_kwargs(),
                     )
+                    # WO-0007a Stage 3: co-write the routine CANCELED
+                    # ExecutionEvent (SAME shared helper + dedupe_key format as
+                    # transition_order's ->CANCELED) in the SAME transaction.
+                    # `active_order` is the PRE-transition order (its `.status`
+                    # is still CREATED — `plan.supersede_order_cancel` is a
+                    # separate deep copy already mutated to CANCELED by the
+                    # planner), exactly what the helper needs.
+                    exec_event = execution_event_for_routine_transition(
+                        active_order,
+                        OrderStatus.CANCELED,
+                        active_order.filled_quantity,
+                    )
+                    if exec_event is not None:
+                        self._insert_execution_event(cur, exec_event)
                 superseded = True
             if plan.supersede_intent_expire is not None:
                 with self._tx() as cur:
@@ -1921,6 +1937,25 @@ class SqliteStateStore(StateStore):
                     self._insert_event(
                         cur, plan.event.event_type, **plan.event.as_kwargs()
                     )
+                    # WO-0007a Stage 1: co-write a SUBMIT_PENDING ExecutionEvent
+                    # in the SAME transaction as the order-row + audit-event
+                    # write. `occurrence` = count of PRIOR SUBMIT_PENDING events
+                    # for this order_id, read inside this same transaction
+                    # (which the store's `self._lock` already serializes
+                    # against any concurrent claim on this order), so repeats
+                    # via the claim/release cycle get gapless, uniquely-keyed
+                    # events.
+                    occurrence_row = cur.execute(
+                        "SELECT COUNT(*) AS n FROM execution_events "
+                        "WHERE order_id = ? AND event_type = ?",
+                        (order_id, ExecutionEventType.SUBMIT_PENDING.value),
+                    ).fetchone()
+                    occurrence = occurrence_row["n"] if occurrence_row else 0
+                    exec_event = execution_event_for_routine_transition(
+                        order, OrderStatus.SUBMITTING, None, occurrence=occurrence
+                    )
+                    if exec_event is not None:
+                        self._insert_execution_event(cur, exec_event)
                 return SubmissionClaim(CLAIM_CLAIMED, order=updated)
             if plan.outcome == CLAIM_BLOCKED:
                 return SubmissionClaim(CLAIM_BLOCKED, reason=plan.reason)
@@ -2238,9 +2273,38 @@ class SqliteStateStore(StateStore):
                 raise plan.error
             if plan.outcome == ORDER_TRANSITION_NOOP:
                 return order
-            # APPLY — persist the fully-updated order + its one audit row
-            # (order_transition or order_fill_progress) in one transaction.
+            # WO-0007a Stage 2: also co-write the routine order-status
+            # ExecutionEvent (if any) in the SAME transaction, mirroring
+            # Stage 1's claim-path pattern. `order` here is still the
+            # PRE-transition order (fetched above, before plan.order), which is
+            # exactly what `execution_event_for_routine_transition` needs — both
+            # for the TIMEOUT_QUARANTINE defense-in-depth guard and to tell a
+            # first entry into PARTIALLY_FILLED apart from the same-status
+            # fill-progress self-loop.
+            #
+            # `plan.event.event_type` is plan_transition_order's own signal for
+            # which branch it took: "order_transition" (status_changed) vs
+            # "order_fill_progress" (same status, filled_quantity and/or
+            # broker_order_id changed) — using it here keeps this call in exact
+            # lockstep with the planner's branching instead of re-deriving it.
             updated = plan.order
+            exec_event = None
+            if plan.event.event_type == "order_transition":
+                exec_event = execution_event_for_routine_transition(
+                    order, updated.status, updated.filled_quantity
+                )
+            elif (
+                plan.event.event_type == "order_fill_progress"
+                and order.status is OrderStatus.PARTIALLY_FILLED
+                and updated.status is OrderStatus.PARTIALLY_FILLED
+                and updated.filled_quantity != order.filled_quantity
+            ):
+                exec_event = execution_event_for_routine_transition(
+                    order, updated.status, updated.filled_quantity
+                )
+            # APPLY — persist the fully-updated order + its one audit row
+            # (order_transition or order_fill_progress), plus the ExecutionEvent
+            # (if any), in one transaction.
             with self._tx() as cur:
                 cur.execute(
                     """UPDATE orders SET status=?, filled_quantity=?,
@@ -2259,6 +2323,8 @@ class SqliteStateStore(StateStore):
                     ),
                 )
                 self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
+                if exec_event is not None:
+                    self._insert_execution_event(cur, exec_event)
             return updated
 
     # ------------------------------------------------------------------ #
@@ -3069,6 +3135,18 @@ class SqliteStateStore(StateStore):
                         ),
                     )
                     self._insert_event(cur, event.event_type, **event.as_kwargs())
+                    # WO-0007a Stage 3: co-write the routine CANCELED
+                    # ExecutionEvent (SAME shared helper + dedupe_key format as
+                    # transition_order's ->CANCELED) in the SAME transaction as
+                    # the order-row + audit-event write. `order` here is still
+                    # the PRE-transition object read above (status CREATED) —
+                    # the UPDATE above only touched the DB row, not this
+                    # in-memory object — exactly what the helper needs.
+                    exec_event = execution_event_for_routine_transition(
+                        order, OrderStatus.CANCELED, order.filled_quantity
+                    )
+                    if exec_event is not None:
+                        self._insert_execution_event(cur, exec_event)
                 for intent, event in zip(open_sell_intents, plan.sell_intent_events):
                     cur.execute(
                         "UPDATE sell_intents SET status=?, expired_at=?, "

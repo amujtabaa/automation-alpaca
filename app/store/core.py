@@ -1498,6 +1498,154 @@ def plan_transition_order(
     return OrderTransitionPlan(ORDER_TRANSITION_APPLY, order=updated, event=event)
 
 
+# ---- routine order-status ExecutionEvent emission (WO-0007a) -------------- #
+#
+# Additive: `plan_transition_order`/`plan_claim_order_for_submission` above are
+# UNTOUCHED (their signatures, legality, and existing test surface stay exactly
+# as they were). The store applies the plan as before, then ALSO calls this
+# helper and appends the resulting ExecutionEvent (if any) in the SAME atomic
+# write as the existing order-row + audit-event write, so the routine
+# claim/ack/fill/cancel/reject lifecycle finally has a corroborating entry in
+# the durable execution_events log (closing the reconstructability gap for
+# WO-0007b), without making `orders.status` itself event-sourced. See
+# work/active/WO-0007a-order-status-eventing/design-decision.md.
+#
+# PROVENANCE (source/authority): every event this helper builds is stamped
+# `EventSource.ENGINE` / `EventAuthority.LOCAL` — a DELIBERATE, conservative
+# choice, not an oversight. Rationale:
+#   * The single-writer engine is literally the actor appending these events;
+#     they record the engine advancing its own order-status read-model, so
+#     `ENGINE`/`LOCAL` is exactly right for the genuinely engine-local
+#     transitions: the claim (`CREATED -> SUBMITTING`, pre-broker) and the two
+#     CREATED-order cancels (session close, flatten supersede — orders never
+#     sent to the broker).
+#   * For the broker-OBSERVED routine statuses (`SUBMITTED`/`PARTIALLY_FILLED`/
+#     `FILLED`/`REJECTED` reflected in from an Alpaca poll), the codebase's
+#     convention (see `execution_event_for_fill`, `plan_resolve_timeout_quarantine`,
+#     `plan_reconcile_resolve_order`) would label the fact `BROKER_REST`/
+#     `BROKER_AUTHORITATIVE`. `ENGINE`/`LOCAL` therefore UNDER-claims authority
+#     here. That is the SAFE direction: `BROKER_AUTHORITATIVE` is the
+#     conflict-WINNING authority (ADR-001), so under-claiming can never let one
+#     of these engine-echoed status events wrongly override a real broker
+#     reconciliation; over-claiming could. No consumer reads source/authority
+#     off these events today (WO-0007a adds no projector; `orders.status` stays
+#     authoritative), so the under-claim is functionally inert now.
+#   * Faithful per-transition broker provenance would require threading a
+#     source/authority argument down from the monitoring callers — outside this
+#     WO's `app/store/**` scope, and meaningful only once WO-0007b's projector
+#     actually consumes it. Deferred to WO-0007b (recorded in the design doc's
+#     residual notes), NOT silently skipped.
+
+_EXECUTION_EVENT_FOR_ROUTINE_STATUS: dict[OrderStatus, ExecutionEventType] = {
+    OrderStatus.SUBMITTED: ExecutionEventType.SUBMITTED,
+    OrderStatus.PARTIALLY_FILLED: ExecutionEventType.PARTIALLY_FILLED,
+    OrderStatus.FILLED: ExecutionEventType.FILLED,
+    OrderStatus.CANCELED: ExecutionEventType.CANCELED,
+    OrderStatus.REJECTED: ExecutionEventType.REJECTED,
+}
+
+# These three share their dedupe_key FORMAT (`f"{status.value}:{order_id}"`)
+# with `plan_resolve_timeout_quarantine` / `plan_reconcile_resolve_order`
+# (`_EXECUTION_EVENT_FOR_RESOLVED_STATUS` / `_RECONCILE_RESOLVE_EXEC` above).
+# Safe today only because at most one writer family ever reaches a given
+# terminal status for a given order (design doc item 5) — enforced below by
+# the TIMEOUT_QUARANTINE guard, not merely argued in a comment.
+_SHARED_FORMAT_KEY_STATUSES = frozenset(
+    {OrderStatus.SUBMITTED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
+
+
+def execution_event_for_routine_transition(
+    order: Order,
+    new_status: OrderStatus,
+    filled_quantity: Optional[int],
+    occurrence: Optional[int] = None,
+) -> Optional[ExecutionEvent]:
+    """The ``ExecutionEvent`` (if any) the ROUTINE order-lifecycle write path —
+    ``claim_order_for_submission``, ``transition_order``, ``plan_close_session``'s
+    CREATED-BUY cancel, and ``plan_flatten_position``'s supersede-cancel — should
+    co-append alongside its existing order-row + audit-event write.
+
+    ``order`` is the order's state BEFORE this transition (i.e. its ``.status``
+    is the OLD status) — needed to (a) detect the ``PARTIALLY_FILLED ->
+    PARTIALLY_FILLED`` same-status fill-progress self-loop versus first entry
+    into ``PARTIALLY_FILLED``, and (b) enforce the TIMEOUT_QUARANTINE
+    defense-in-depth guard below. Returns ``None`` when ``new_status`` isn't one
+    this WO instruments, so a caller can invoke this unconditionally after every
+    successful apply and simply skip appending on ``None``.
+
+    ``occurrence`` is 0-based and only meaningful for ``CREATED -> SUBMITTING``
+    (the claim), the one transition that can repeat (the single cycle in the
+    order-status graph, design doc item 1) — the caller must supply the count of
+    PRIOR ``SUBMIT_PENDING`` execution events for this order_id so each repeat
+    gets a distinct, gapless dedupe_key (``submit_pending:{order_id}:{n}``).
+    ``None``/omitted defaults to ``0`` (a bare first claim).
+
+    STAGE 1 (WO-0007a) implements and tests only the ``CREATED -> SUBMITTING``
+    branch. The other branches are wired per the full design so this helper's
+    shape is final, but they are exercised by later stages.
+    """
+
+    if new_status is OrderStatus.SUBMITTING:
+        n = occurrence if occurrence is not None else 0
+        return ExecutionEvent(
+            event_type=ExecutionEventType.SUBMIT_PENDING,
+            source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL,
+            dedupe_key=f"submit_pending:{order.id}:{n}",
+            symbol=order.symbol,
+            side=OrderSide(order.side),
+            order_id=order.id,
+            session_id=order.session_id,
+        )
+
+    if new_status is OrderStatus.PARTIALLY_FILLED and order.status is OrderStatus.PARTIALLY_FILLED:
+        # Same-status fill-progress self-loop. `filled_quantity` is monotonic
+        # (bound-checked by `plan_transition_order`), so this key is guaranteed
+        # distinct per repeat.
+        return ExecutionEvent(
+            event_type=ExecutionEventType.PARTIALLY_FILLED,
+            source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL,
+            dedupe_key=f"order_fill_progress:{order.id}:{filled_quantity}",
+            symbol=order.symbol,
+            side=OrderSide(order.side),
+            order_id=order.id,
+            session_id=order.session_id,
+        )
+
+    exec_type = _EXECUTION_EVENT_FOR_ROUTINE_STATUS.get(new_status)
+    if exec_type is None:
+        return None
+
+    if new_status in _SHARED_FORMAT_KEY_STATUSES:
+        # Defense-in-depth (design-review Finding D): refuse to build a
+        # shared-format key for an order currently in TIMEOUT_QUARANTINE — that
+        # key format is reserved for `plan_resolve_timeout_quarantine` /
+        # `plan_reconcile_resolve_order`. Cannot happen today (no routine call
+        # site drives a TIMEOUT_QUARANTINE order through this path), but this
+        # enforces the invariant in code rather than leaving it as doc-only
+        # reasoning a future refactor could silently violate.
+        assert order.status is not OrderStatus.TIMEOUT_QUARANTINE, (
+            "execution_event_for_routine_transition: refusing to build a "
+            f"shared-format {new_status.value!r} key for order {order.id} — it "
+            "is currently TIMEOUT_QUARANTINE, and that key format is reserved "
+            "for plan_resolve_timeout_quarantine / plan_reconcile_resolve_order "
+            "(WO-0007a design doc, item 5)"
+        )
+
+    return ExecutionEvent(
+        event_type=exec_type,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=f"{new_status.value}:{order.id}",
+        symbol=order.symbol,
+        side=OrderSide(order.side),
+        order_id=order.id,
+        session_id=order.session_id,
+    )
+
+
 # ---- evented order transition (wave 3c: TIMEOUT_QUARANTINE, ADR-002) ------ #
 
 
