@@ -33,6 +33,10 @@ jobs:
         # CLAUDE.md §8 lint gate. Fails the build on any lint error so the
         # previously-unenforced ruff debt cannot re-accumulate.
         run: ruff check .
+      - name: Typecheck (mypy)
+        # ADR-007 gate. Green today under the pyproject [tool.mypy] baseline-and-
+        # ratchet; fails the build on a NEW type error in any non-grandfathered module.
+        run: mypy app/
       - name: Check import boundaries
         # Spine v2 Phase 5 (CLAUDE.md §5/§8, ADR-005/006): a PR that crosses a
         # protected architectural boundary fails CI here. Runs before the suite so

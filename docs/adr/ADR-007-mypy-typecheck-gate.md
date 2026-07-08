@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed. (Raised by WO-0008; awaiting human acceptance. "New dependency ⇒ ADR first" — CLAUDE.md.)
+Accepted (2026-07-08, by Ameen). Raised by WO-0008; tooling wired in the same change
+(`requirements.txt`, `pyproject.toml [tool.mypy]`, `.github/workflows/ci.yml`, CLAUDE.md, testing-model.md).
 
 ## Context
 

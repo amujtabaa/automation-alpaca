@@ -2,7 +2,7 @@
 work_order: WO-0008
 title: mypy typecheck gate — design, proven ratchet, and the exact diffs to apply on acceptance
 date: 2026-07-08
-status: awaiting ADR-007 acceptance (tooling merge held)
+status: APPLIED — ADR-007 accepted 2026-07-08; Diffs 1-4 merged; ruff+mypy+pytest green
 ---
 
 # WO-0008 — mypy gate: design + evidence (apply on ADR-007 acceptance)
@@ -88,5 +88,5 @@ fable_done:
     drive_by_edits: false
   evidence:
     - "mypy app/ Success (0 issues); injected error in app/main.py caught (exit 1); grandfathered miss shown"
-  status: NEEDS-INPUT   # tooling merge + ADR-007 acceptance is a human gate ("new dependency ⇒ ADR first")
+  status: VERIFIED   # ADR-007 accepted; Diffs 1-4 + ruff exclude applied; ruff/mypy/pytest all green locally
 ```

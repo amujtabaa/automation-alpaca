@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Add a mypy static-typecheck gate (baseline-and-ratchet)
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0008
 wave: W3-quality
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [ADR_CREATED, PKL_UPDATED]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-08
 ---
@@ -97,6 +97,6 @@ false positives, on a codebase where None-flow errors can be money-affecting.
 
 ## Completion disposition
 
-- [ ] PKL_UPDATED
-- [ ] ADR_CREATED
+- [x] PKL_UPDATED — testing-model.md: mypy deferred→wired
+- [x] ADR_CREATED — ADR-007 (Accepted)
 - [ ] RESULT_SUMMARY_KEPT

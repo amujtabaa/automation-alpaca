@@ -20,6 +20,7 @@ hypothesis>=6.100  # property-based tests for CAPI exposure/limit math (Phase 6)
 import-linter>=2.0  # Phase 5 architecture boundaries (.importlinter); enforced in
                     # CI and by tests/test_import_boundaries.py (CLAUDE.md §5/§8)
 ruff>=0.6  # lint gate (CLAUDE.md §8); enforced by the CI `ruff check` step
+mypy>=1.10  # static typecheck gate over app/ (ADR-007); baseline-and-ratchet, enforced in CI
 
 # Alpaca paper adapter/feed (optional at install time).
 # This is the ONLY permitted Alpaca SDK for this project.

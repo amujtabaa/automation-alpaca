@@ -25,8 +25,8 @@ Deterministic, dual-path testing posture inherited from the migration and kept p
 - Property tests cover spine invariants where behavior spans many interleavings; persist or print failing seeds/traces.
 - Replay / parity verifier runs where implemented; event-log replay is regression evidence.
 - Never weaken a test to make code pass; never merge failing or newly-skipped tests. Phase-named tests remain active regression evidence unless replaced and reviewed.
-- CI gate (as wired today): `ruff check`, `pytest` + coverage, import-linter (`lint-imports`) contracts, `pip-audit` where configured. Formatting authority: `ruff format`.
-- Deferred gate — `mypy` static typecheck: named in the always-on contract but NOT yet wired (no dependency, config, or CI step). Baseline 2026-07-08 (`mypy app/`, no-config upper bound): 193 errors across 17 files, ~85% None/Optional-flow (`union-attr` 103, `operator` 30, `arg-type` 32). Adopt via baseline-and-ratchet (grandfather the existing set, gate only new code); tracked as `work/queue/WO-0008`.
+- CI gate (as wired today): `ruff check`, `mypy app/`, `pytest` + coverage, import-linter (`lint-imports`) contracts, `pip-audit` where configured. Formatting authority: `ruff format`.
+- `mypy` static typecheck (ADR-007, wired 2026-07-08): baseline-and-ratchet over `app/` via `pyproject.toml [tool.mypy]` — 16 grandfathered modules (`ignore_errors`); new/clean modules are checked; the punch-list only shrinks (burn down `store/*`, `monitoring`, `policy` first). Baseline was 187 errors/16 files (pydantic plugin + ignore-missing-imports). Known limitation: a new error inside a grandfathered module isn't caught until that module is cleaned.
 
 ## Rationale
 

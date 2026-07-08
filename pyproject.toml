@@ -36,3 +36,32 @@ show_missing = true
 # real regression without flaking on normal churn. It is a RATCHET: raise it as
 # coverage improves; never lower it silently to make a red build pass.
 fail_under = 93
+
+[tool.ruff]
+# The .ai-os/ (AI Project OS package) and .claude/ (ClaudeFast kit) trees are
+# VENDORED tooling with their own upstream style — not this repo's application
+# code — so `ruff check .` must not lint them. app/, tests/, cockpit/, harness/,
+# and conftest.py remain fully linted.
+extend-exclude = [".ai-os", ".claude"]
+
+[tool.mypy]
+# ADR-007: static typecheck gate over app/, introduced by baseline-and-ratchet.
+python_version = "3.11"
+ignore_missing_imports = true      # alpaca-py / streamlit ship no stubs
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = false        # future tightening: flip to true after burn-down
+
+# Grandfather punch-list (ADR-007): the 16 modules carrying pre-existing type
+# debt are ignored so the gate is green today; NEW modules are checked, and this
+# list only SHRINKS — burn down safety-critical stores first. Mirrors the
+# import-linter ignore-list + coverage fail_under ratchets already used here.
+[[tool.mypy.overrides]]
+ignore_errors = true
+module = [
+  "app.store.sqlite", "app.store.memory", "app.store.core",
+  "app.monitoring", "app.features", "app.protection", "app.policy",
+  "app.reconciliation", "app.strategy",
+  "app.broker.alpaca_paper", "app.broker.factory",
+  "app.marketdata.alpaca_stream", "app.marketdata.factory", "app.marketdata.fake",
+  "app.facade.store_backed", "app.api.routes_dev",
+]
