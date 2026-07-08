@@ -1,0 +1,127 @@
+os_version: "0.8.0"
+package_version: "0.8.0"
+release_name: "AI Project OS v0.8.0"
+release_date: "2026-07-07"
+version_source: "VERSION.md"
+canonical_root: ".ai-os"
+pkl_root: "pkl"  # PKL location; scripts and the MCP server read it from here
+model_agnostic_core: true
+
+component_versions:
+  core_docs: "0.8.0"
+  adapter_schema: "0.8.0"
+  rules_schema: "0.8.0"
+  prompt_rules_schema: "0.8.0"
+  scripts_stub_api: "0.8.0"
+  mcp_control_plane: "0.8.0"
+
+install:
+  repo_local_only_by_default: true
+  modify_global_files: false
+  overwrite_existing_files: false
+  use_marker_blocks: true
+  marker_begin: "<!-- AI-PROJECT-OS:BEGIN -->"
+  marker_end: "<!-- AI-PROJECT-OS:END -->"
+  create_dirs:
+    - ".ai-os"
+    - ".ai-os/core"
+    - ".ai-os/templates"
+    - ".ai-os/rules"
+    - ".ai-os/scripts"
+    - ".ai-os/adapters"
+    - "pkl"
+    - "work/queue"
+    - "work/active"
+    - "work/review"
+    - "work/completed/keep"
+    - "work/completed/delete-candidates"
+    - "work/archive"
+
+# File-level source -> installed mapping. This is the single authority for
+# what the installer copies and where. Directory entries end with "/" and map
+# the whole tree, preserving structure. Installers must not improvise layout.
+install_map:
+  # Core operating docs
+  "00_START_HERE.md": ".ai-os/core/00_START_HERE.md"
+  "03_IN_USE_STRUCTURE.md": ".ai-os/core/03_IN_USE_STRUCTURE.md"
+  "04_PROJECT_KNOWLEDGE_LAYER.md": ".ai-os/core/04_PROJECT_KNOWLEDGE_LAYER.md"
+  "05_AGENT_INSTRUCTION_STRATEGY.md": ".ai-os/core/05_AGENT_INSTRUCTION_STRATEGY.md"
+  "06_FABLE_V3_EXECUTION_PROTOCOL.md": ".ai-os/core/06_FABLE_V3_EXECUTION_PROTOCOL.md"
+  "07_HARNESS_RULES_AND_CI.md": ".ai-os/core/07_HARNESS_RULES_AND_CI.md"
+  "08_WORKTREES_AND_MODEL_ORCHESTRATION.md": ".ai-os/core/08_WORKTREES_AND_MODEL_ORCHESTRATION.md"
+  "09_EVALS_AND_CONTINUOUS_IMPROVEMENT.md": ".ai-os/core/09_EVALS_AND_CONTINUOUS_IMPROVEMENT.md"
+  "10_IMPLEMENTATION_CHECKLIST.md": ".ai-os/core/10_IMPLEMENTATION_CHECKLIST.md"
+  "11_PROMPT_ARCHITECTURE.md": ".ai-os/core/11_PROMPT_ARCHITECTURE.md"
+  "12_WORK_ORDER_RETENTION_AND_DISPOSITION.md": ".ai-os/core/12_WORK_ORDER_RETENTION_AND_DISPOSITION.md"
+  "13_SESSION_LENGTH_AND_CONTEXT_HYGIENE.md": ".ai-os/core/13_SESSION_LENGTH_AND_CONTEXT_HYGIENE.md"
+  "14_MCP_CONTROL_PLANE.md": ".ai-os/core/14_MCP_CONTROL_PLANE.md"
+  # Package metadata
+  "VERSION.md": ".ai-os/VERSION.md"
+  "AI_OS_MANIFEST.yaml": ".ai-os/AI_OS_MANIFEST.yaml"
+  # Directory trees
+  "adapters/": ".ai-os/adapters/"
+  "evals/": ".ai-os/evals/"
+  "rules/": ".ai-os/rules/"
+  "scripts/": ".ai-os/scripts/"
+  "templates/": ".ai-os/templates/"
+  # Conditional tree: install only when MCP is requested (see mcp.install_when)
+  "mcp/": ".ai-os/mcp/"
+  # Repo-level seeds: create only if missing; never overwrite existing content
+  "pkl/": "pkl/"
+  "work/": "work/"
+
+# Shipped in the dev package but never copied into a target repository.
+not_installed:
+  - "01_DEEP_RESEARCH_FINDINGS.md"    # research provenance; dev package only
+  - "02_DECISION_REGISTER.md"         # OS-development decisions; dev package only
+  - "CHANGELOG.md"
+  - "sources.json"
+  - "INSTALL_AGENT.md"                # install-session document, not repo content
+  - "INSTALLATION_CHECKLIST.md"       # install-session document, not repo content
+  - "handoff/"                        # release-review scaffolding; never install
+
+adapters:
+  claude:
+    instruction_file: "CLAUDE.md"
+    instruction_stub: "adapters/claude/CLAUDE.md.stub"
+    skills_source: "adapters/claude/skills/"
+    skills_target: ".claude/skills"
+    install_by_default: true
+  codex:
+    instruction_file: "AGENTS.md"
+    instruction_stub: "adapters/codex/AGENTS.md.stub"
+    skills_source: "adapters/codex/skills/"
+    skills_target: ".agents/skills"
+    install_by_default: true
+  generic:
+    session_prompt: "adapters/generic/SESSION_PROMPT.md"
+
+safety:
+  activate_hooks_without_approval: false
+  activate_ci_without_approval: false
+  delete_existing_user_content: false
+  require_human_review_for_instruction_file_changes: true
+  require_human_review_for_deletions: true
+
+
+mcp:
+  included: true
+  status: "read-only-server-mvp"
+  canonical_role: "access_control_plane_not_source_of_truth"
+  recommended_transport_mvp: "stdio"
+  default_mode: "read_only"
+  folder: "mcp"
+  # The mcp/ tree and .ai-os/mcp are installed/created only when the human
+  # explicitly requests MCP; nothing MCP-related is set up unconditionally.
+  install_when: "mcp_requested"
+  create_dir_when_requested: ".ai-os/mcp"
+  spec_files:
+    - "14_MCP_CONTROL_PLANE.md"
+    - "mcp/RESOURCE_SPEC.md"
+    - "mcp/PROMPT_SPEC.md"
+    - "mcp/TOOL_SPEC.md"
+    - "mcp/IMPLEMENTATION_PLAN.md"
+  activation_policy:
+    install_mcp_config_without_approval: false
+    enable_write_tools_by_default: false
+    repo_os_remains_canonical: true

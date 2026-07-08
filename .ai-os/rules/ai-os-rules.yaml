@@ -1,0 +1,81 @@
+version: 0.8.0
+os_version: 0.8.0
+rules:
+  require_work_order: true
+  require_fable_done: true
+  require_evidence_for_verified_status: true
+  block_forbidden_paths: true
+  require_pkl_frontmatter: true
+  require_adr_for_architecture_changes: true
+  require_security_review_for_sensitive_paths: true
+  require_work_order_disposition_on_completion: true
+  delete_low_value_raw_work_orders_after_distillation: true
+  require_context_hygiene_after_compaction: true
+  require_ledger_entry_for_deleted_work_orders: true
+sensitive_paths:
+  - "**/auth/**"
+  - "**/security/**"
+  - "**/payments/**"
+  - "**/migrations/**"
+  - "**/secrets/**"
+  - "**/file_upload*/**"
+  - "**/trading/**"
+forbidden_patterns:
+  - ".env"
+  - "*.pem"
+  - "*.key"
+  - "id_rsa"
+required_pkl_frontmatter:
+  - type
+  - title
+  - status
+  - authority
+  - owner
+  - last_verified
+  - tags
+
+valid_work_order_statuses:
+  - DRAFT
+  - READY
+  - ACTIVE
+  - REVIEW
+  - MERGED
+  - CLOSED
+  - ABANDONED
+  - SUPERSEDED
+  - DISTILLED
+  - DISPOSED
+valid_work_order_dispositions:
+  - PKL_UPDATED
+  - ADR_CREATED
+  - RESULT_SUMMARY_KEPT
+  - ARCHIVED
+  - DELETED
+  - SUPERSEDED
+  - ABANDONED
+pkl_staleness_days: 90  # high-authority PKL pages older than this get a staleness warning
+context_budgets:
+  root_instruction_max_lines: 150
+  nested_instruction_max_lines: 100
+  work_order_max_lines: 220
+  pkl_page_max_lines: 220
+  context_packet_max_items: 9
+retention_defaults:
+  delete_routine_prompts: true
+  delete_placeholder_prompts: true
+  delete_duplicate_prompts: true
+  delete_superseded_raw_prompts_after_linking_successor: true
+  keep_compact_results_for_major_features: true
+  keep_compact_results_for_sensitive_changes: true
+
+mcp_rules:
+  repo_os_remains_canonical: true
+  mcp_default_mode: read_only
+  allow_mcp_write_tools_by_default: false
+  require_human_approval_for_mcp_install_config: true
+  require_dry_run_for_mcp_write_tools: true
+  forbid_mcp_unrestricted_shell: true
+  mcp_write_tools_additive_only: true      # Phase-3 approved_write is additive-only, permanently
+  forbid_mcp_file_deletion: true           # deletion executes only via human / human-approved list
+  max_mvp_tool_count: 12
+  preferred_first_tool: ai_os_get_context_packet

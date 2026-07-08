@@ -1,0 +1,78 @@
+version: 0.8.0
+os_version: 0.8.0
+name: ai-project-os-prompt-rules
+purpose: Rules for selecting and evaluating reusable prompt templates.
+
+runtime_rules:
+  root_agents_md:
+    max_role: "routing and universal rules only"
+    must_not_contain:
+      - long examples
+      - full protocol body
+      - project logs
+      - complete architecture manual
+  prompt_templates:
+    location: templates/prompts
+    must_include:
+      - goal
+      - inputs_or_context
+      - constraints
+      - output_contract
+      - stop_conditions
+  work_orders:
+    must_include:
+      - prompt_type
+      - context_packet
+      - allowed_paths
+      - forbidden_paths
+      - acceptance_criteria
+      - verification_commands
+  evidence:
+    completion_claims_require_fresh_evidence: true
+  routing:
+    ambiguous_task_requires_work_order_first: true
+    debugging_requires_debugger_prompt: true
+    review_requires_reviewer_prompt: true
+    pkl_update_requires_pkl_curator_prompt: true
+
+model_tier_rules:
+  cheap_or_local:
+    prompt_requirements:
+      - exact files
+      - exact command
+      - exact expected output
+      - no architecture judgment
+  medium:
+    prompt_requirements:
+      - explicit work order
+      - acceptance criteria
+      - required tests
+  strong:
+    use_for:
+      - architecture decisions
+      - ambiguous debugging
+      - final branch review
+      - sensitive irreversible decisions
+
+eval_metrics:
+  required:
+    - first_pass_success
+    - iterations_to_verified
+    - tokens_estimate
+    - unexpected_files_changed
+    - missing_evidence
+    - review_findings_count
+    - prompt_revision_needed
+
+retention:
+  prompt_templates_must_have_eval_value: true
+  delete_generated_prompts_after_distillation: true
+  delete_routine_work_orders_after_merge: true
+  link_to_pkl_instead_of_copying_context: true
+  retire_templates_that_increase_corrections: true
+
+mcp_prompt_exposure:
+  expose_prompt_templates_as_mcp_prompts: true
+  embed_full_os_docs_in_prompts: false
+  prompts_should_reference_resources: true
+  mcp_prompt_names_prefix: ai_os_

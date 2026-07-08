@@ -1,0 +1,18 @@
+<!-- AI-PROJECT-OS:BEGIN -->
+# AI Project OS — Codex / Agent Adapter
+
+This repository uses the AI Project OS. The canonical OS lives in `.ai-os/`; this file is only the Codex/agent adapter shim.
+
+For engineering tasks:
+1. Read this shim.
+2. Read the assigned work order under `work/active/`, `work/queue/`, or `work/review/`.
+3. Read only the PKL pages and files linked by the work order, plus any nested instruction file in the directory you are working in.
+4. Follow Fable v3 for GATE, TDD, evidence, FIX, DONE, scope, and handoff.
+5. Stay inside allowed paths unless the work order is updated.
+6. Do not claim completion without fresh evidence.
+7. Architecture rules live in accepted ADRs and `pkl/architecture/` pages; follow them. Architecture changes require ADR approval.
+8. After completion, distill durable knowledge into code, tests, PKL, ADRs, logs, or the ledger, then apply a completion disposition from `rules/ai-os-rules.yaml` (`valid_work_order_dispositions`). Delete routine, duplicate, placeholder, or low-value raw prompts after distillation.
+9. Trust current code/tests/ADRs/PKL over conversation memory; run a hygiene pass after compaction, merge, wave completion, or long-session handoff.
+
+Do not paste or load the entire OS unless explicitly asked. Use the smallest useful context packet.
+<!-- AI-PROJECT-OS:END -->
