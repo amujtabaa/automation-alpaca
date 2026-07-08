@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Add a mypy static-typecheck gate (baseline-and-ratchet)
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0008
 wave: W3-quality
 model_tier: strong
