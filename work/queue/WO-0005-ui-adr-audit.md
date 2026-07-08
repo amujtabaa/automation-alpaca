@@ -24,7 +24,7 @@ Read only these first:
 - `CLAUDE.md`
 - `pkl/architecture/architecture-map.md`
 - Governing ADRs: ADR-005, invariants 4-7
-- The layer's source and tests (src/ui/** and its tests, read-only)
+- The layer's source and tests, read-only: `cockpit/**` (Streamlit UI) and its tests under `tests/`.
 
 ## Allowed paths
 

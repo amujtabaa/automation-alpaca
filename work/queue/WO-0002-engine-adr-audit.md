@@ -24,7 +24,9 @@ Read only these first:
 - `CLAUDE.md`
 - `pkl/architecture/architecture-map.md`
 - Governing ADRs: ADR-001, ADR-002, ADR-003, spine INV-1..9
-- The layer's source and tests (src/engine/** and tests/engine/**, read-only)
+- The engine layer's source and tests, read-only. Engine has no single dir; it spans app/ modules
+  (execution/risk/session-control/reconciliation/position projection/event ingestion) — see
+  `pkl/architecture/architecture-map.md` for the layer definition; and their tests under `tests/`.
 
 ## Allowed paths
 

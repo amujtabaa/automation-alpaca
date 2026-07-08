@@ -24,7 +24,7 @@ Read only these first:
 - `CLAUDE.md`
 - `pkl/architecture/architecture-map.md`
 - Governing ADRs: ADR-005
-- The layer's source and tests (src/facade/**, src/api/**, and their tests, read-only)
+- The layer's source and tests, read-only: `app/facade/**`, `app/api/**`, and their tests under `tests/`.
 
 ## Allowed paths
 

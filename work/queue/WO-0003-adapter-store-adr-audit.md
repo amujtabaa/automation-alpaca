@@ -24,7 +24,8 @@ Read only these first:
 - `CLAUDE.md`
 - `pkl/architecture/architecture-map.md`
 - Governing ADRs: ADR-001, ADR-002, ADR-004
-- The layer's source and tests (src/adapter/**, src/store/**, and their tests, read-only)
+- The layer's source and tests, read-only: adapter = `app/broker/**`, `app/marketdata/**`;
+  store = `app/store/**`, `app/events/**`; plus their tests under `tests/`.
 
 ## Allowed paths
 
