@@ -29,6 +29,7 @@ from datetime import date as date_cls
 
 from app.facade.dtos import (
     ExternalOrderView,
+    FlattenResponse,
     MarketSnapshotView,
     OperatorOrdersResponse,
     OperatorOrderView,
@@ -40,6 +41,7 @@ from app.facade.dtos import (
     ReviewView,
 )
 from app.facade.errors import (
+    BrokerGatewayError,
     ConflictError,
     EntityNotFoundError,
     InvalidInputError,
@@ -73,8 +75,11 @@ from app.policy import (
     recovery_operational_status,
     risk_limit_reason,
 )
+from app.broker.adapter import BrokerError
+from app.monitoring import cancel_open_buys
 from app.protection import ProtectionConfig, floor_breach_reason, floor_price
 from app.store.base import (
+    FLATTEN_FLAT,
     CandidateTransitionError,
     EmergencyReduceBlockedError,
     FlattenBlockedError,
@@ -92,6 +97,13 @@ from app.store.base import (
     SessionClosedError,
     StateStore,
     UnknownEntityError,
+    normalize_symbol,
+)
+
+# Order statuses that can no longer be cancelled — already resolved (was
+# ``routes_trading._TERMINAL_ORDER_STATUSES``; moved with the cancel command).
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
 
 if TYPE_CHECKING:  # annotations only — no runtime import edge added until a wave uses them
@@ -166,6 +178,17 @@ def _translate_store_errors() -> Iterator[None]:
         ValueError,
     ) as exc:
         raise _facade_error_for(exc) from exc
+
+
+def _normalize_or_422(symbol: str) -> str:
+    """``normalize_symbol`` translating its out-of-domain ``ValueError`` (DATA-2)
+    to ``InvalidInputError`` (422) — the flatten/emergency commands validate the
+    ticker up front, exactly as their old routes did before any side effect."""
+
+    try:
+        return normalize_symbol(symbol)
+    except ValueError as exc:
+        raise InvalidInputError(str(exc)) from exc
 
 # No auth/actor-tracking system exists yet (docs/MIGRATION_MATRIX.md: "Auth
 # for command endpoints: absent/limited"). The command Protocol's `actor`
@@ -757,20 +780,106 @@ class StoreBackedCommandFacade:
         except _APPROVE_MAPPED_ERRORS as exc:
             raise _facade_error_for(exc) from exc
 
-    async def create_exit(self, *, symbol: str, reason: str, actor: str) -> Any:
-        raise NotYetImplementedError(
-            "create_exit: manual flatten is not migrated behind the facade "
-            "in Phase 1 — see docs/SPINE_PHASE0_INVENTORY.md §3.1 (ADR-003 "
-            "conflict); routes still call StateStore.flatten_position "
-            "directly"
-        )
+    async def create_exit(self, *, symbol: str, actor: str) -> FlattenResponse:
+        """``POST /api/positions/{symbol}/flatten`` (P6e): an operator-commanded
+        full exit (Phase 7 / D-P2, refined by ADR-003). Moved verbatim from the
+        route; ADR-003 (wave 3e) denies an ordinary flatten while ``Halted`` (409 —
+        use emergency-reduce), allowed in ``Reducing``.
 
-    async def cancel(self, *, order_id: str, actor: str) -> Any:
-        raise NotYetImplementedError(
-            "cancel: not migrated behind the facade in Phase 1; "
-            "POST /api/orders/{id}/cancel still calls the store and broker "
-            "adapter directly"
-        )
+        X-001: the whole "stand down a non-live autonomous exit, then create +
+        approve + dispatch a fresh MANUAL_FLATTEN" decision is ONE atomic,
+        single-lock op in ``StateStore.flatten_position`` — NOT here; this THIN
+        caller only clears open buys first (best-effort broker call, never under
+        the store lock) and surfaces the outcome. ``flatten_position`` re-reads the
+        live position under its own lock, so sizing is never stale.
+        """
+        if self._broker is None:
+            raise RuntimeError("broker adapter not available")
+        key = _normalize_or_422(symbol)
+
+        position = await self._store.get_position(key)
+        if position.quantity <= 0:
+            # Checked before AND after the buy-cancel step, so a flat symbol has
+            # no side effects at all (a stray unrelated pending buy is untouched).
+            raise ConflictError(f"no open {key} position to flatten")
+
+        # §5.3: clear open buys so the exit truly reaches flat. Best-effort/
+        # idempotent; cancel_open_buys logs its own broker failures and never
+        # blocks the flatten below.
+        await cancel_open_buys(self._store, self._broker, key)
+
+        try:
+            result = await self._store.flatten_position(key)
+        except (FlattenBlockedError, InvalidOrderError) as exc:
+            # ADR-003 Halted-deny / an oversell/unpriceable exit → 409. Any OTHER
+            # store error propagates raw (500), exactly as the old route did.
+            raise ConflictError(str(exc)) from exc
+
+        if result.outcome == FLATTEN_FLAT:
+            raise ConflictError(f"no open {key} position to flatten")
+        return FlattenResponse(intent=result.intent, order=result.order)
+
+    async def cancel(self, *, order_id: str, actor: str) -> Order:
+        """``POST /api/orders/{order_id}/cancel`` (P6e): human-triggered manual
+        cancel (D-011). Moved verbatim from the route. 404 if unknown; 409 if
+        already terminal or timeout-quarantined (ADR-002 — a quarantined order MAY
+        be live at the venue, so a local cancel is refused; it is resolved only by
+        targeted reconciliation). A never-submitted (CREATED) order cancels locally
+        to CANCELED immediately; a submitted one requests the broker cancel then
+        moves to CANCEL_PENDING (CHAOS-1: a late fill before the venue finalizes is
+        still recorded). A broker-call failure leaves the order UNCHANGED → 502."""
+        order = await self._store.get_order(order_id)
+        if order is None:
+            raise EntityNotFoundError(f"order {order_id} not found")
+        if order.status in _TERMINAL_ORDER_STATUSES:
+            raise ConflictError(
+                f"order {order_id} is already {order.status.value}; cannot cancel"
+            )
+        if order.status is OrderStatus.TIMEOUT_QUARANTINE:
+            # ADR-002: ambiguous submit outcome — a local cancel of a possibly-live
+            # order is the exact oversell/short-flip risk the quarantine prevents.
+            raise ConflictError(
+                f"order {order_id} is timeout-quarantined (ambiguous submit); it "
+                f"is resolved by targeted reconciliation, not manual cancel"
+            )
+        if order.status is OrderStatus.CANCEL_PENDING:
+            return order  # cancel already requested — idempotent no-op
+
+        if order.broker_order_id is None:
+            # Never submitted: nothing at the broker; cancel locally, terminal now.
+            return await self._cancel_transition(order_id, OrderStatus.CANCELED)
+
+        # Submitted/partially-filled: request the broker cancel FIRST; a genuine
+        # broker failure surfaces as 502 with the order left unchanged (still open),
+        # not an opaque 500. The adapter treats an already-terminal order as an
+        # idempotent no-op, so a raised error here is a real failure.
+        try:
+            await self._broker.cancel_order(order.broker_order_id)
+        except BrokerError as exc:
+            raise BrokerGatewayError(
+                f"broker cancel failed; order unchanged: {exc}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - any adapter failure is upstream
+            raise BrokerGatewayError(
+                "broker cancel failed; order unchanged"
+            ) from exc
+        # Move to cancel_pending; the loop reconciles it to terminal. If this races
+        # a terminal (a fill landed first), the 409 is a transient-window response.
+        return await self._cancel_transition(order_id, OrderStatus.CANCEL_PENDING)
+
+    async def _cancel_transition(
+        self, order_id: str, new_status: OrderStatus
+    ) -> Order:
+        """``transition_order`` with the cancel path's exact error mapping (was the
+        route's ``_transition_cancel``): UnknownEntityError→404 (fetched above, so
+        defensive), OrderTransitionError→409 (fill-landed-first transient window).
+        Any other store error propagates raw (500), as the old route did."""
+        try:
+            return await self._store.transition_order(order_id, new_status)
+        except UnknownEntityError as exc:  # pragma: no cover - fetched above
+            raise EntityNotFoundError(str(exc)) from exc
+        except OrderTransitionError as exc:
+            raise ConflictError(str(exc)) from exc
 
     async def set_kill_switch(self, *, engaged: bool, actor: str) -> SessionRecord:
         """``POST /api/controls/kill-switch`` (P6b): wrap of
@@ -790,8 +899,40 @@ class StoreBackedCommandFacade:
         with _translate_store_errors():
             return await self._store.close_session()
 
-    async def emergency_reduce_override(self, *, symbol: str, actor: str) -> Any:
-        raise NotYetImplementedError(
-            "emergency_reduce_override: has no current-codebase analogue; "
-            "Phase 3 scope (ADR-003)"
-        )
+    async def emergency_reduce_override(
+        self, *, symbol: str, actor: str
+    ) -> FlattenResponse:
+        """``POST /api/positions/{symbol}/emergency-reduce`` (P6e): the explicit,
+        audited operator override to exit risk while ``Halted`` (ADR-003 / wave 3e),
+        moved verbatim from the route. It does NOT lift the kill switch — it grants a
+        scoped, single-use ``{session, symbol}`` override so exactly one reduce-only
+        flatten is authorized while the global ``TradingState`` stays ``Halted``.
+
+        ``authorize_emergency_reduce_override`` atomically enforces the ADR-003
+        preconditions (session ``Halted``, open position, no unresolved
+        ``TIMEOUT_QUARANTINE`` for the symbol — INV-3), stamping ``actor`` on the
+        audit grant (the actor here is the real command actor). On success it stands
+        down open buys (best-effort) and runs the normal reduce-only flatten, which
+        sees the grant, creates the exit, and consumes the override in one lock hold.
+        """
+        if self._broker is None:
+            raise RuntimeError("broker adapter not available")
+        key = _normalize_or_422(symbol)
+
+        try:
+            # EmergencyReduceBlockedError (not Halted / INV-3 quarantine / nothing
+            # to flatten) → 409. Actor is the audited grantor.
+            await self._store.authorize_emergency_reduce_override(key, actor=actor)
+        except EmergencyReduceBlockedError as exc:
+            raise ConflictError(str(exc)) from exc
+
+        await cancel_open_buys(self._store, self._broker, key)
+
+        try:
+            result = await self._store.flatten_position(key)
+        except (FlattenBlockedError, InvalidOrderError) as exc:
+            raise ConflictError(str(exc)) from exc
+
+        if result.outcome == FLATTEN_FLAT:
+            raise ConflictError(f"no open {key} position to flatten")
+        return FlattenResponse(intent=result.intent, order=result.order)

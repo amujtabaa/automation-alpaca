@@ -84,3 +84,13 @@ class InvalidInputError(FacadeError):
     """A command/query was refused for a malformed input the client can fix — an
     out-of-domain ticker symbol, a non-``bool`` control value, an unpriceable/
     non-dispatchable order. Maps to HTTP 422."""
+
+
+class BrokerGatewayError(FacadeError):
+    """A required broker call failed and the local state was left unchanged — an
+    upstream/venue problem, not a client mistake (e.g. ``adapter.cancel_order``
+    raised). Maps to HTTP 502, so the caller sees "the order is unchanged; the
+    broker is the problem" rather than an opaque 500. Only raised where a broker
+    call is load-bearing (the manual cancel path); the best-effort
+    ``cancel_open_buys`` on the flatten/emergency paths swallows its own failures
+    and never surfaces here."""

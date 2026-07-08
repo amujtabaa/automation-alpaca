@@ -261,21 +261,13 @@ async def test_store_backed_command_facade_pause_resume_forward_unchanged():
     assert resumed == await store.get_current_session()
 
 
-@pytest.mark.parametrize(
-    "method_call",
-    [
-        lambda f: f.create_exit(symbol="AAPL", reason="manual_flatten", actor="x"),
-        lambda f: f.cancel(order_id="o1", actor="x"),
-        # NOTE: set_kill_switch was MIGRATED in P6b (wraps StateStore.set_kill_switch,
-        # already event_truth via wave 3d) — it no longer raises. See
-        # test_kill_switch_route_persists_via_the_facade below.
-        lambda f: f.emergency_reduce_override(symbol="AAPL", actor="x"),
-    ],
-)
-async def test_store_backed_command_facade_unmigrated_methods_raise(method_call):
-    facade = StoreBackedCommandFacade(store=None)
-    with pytest.raises(NotYetImplementedError):
-        await method_call(facade)
+# NOTE: there is no longer any "unmigrated command" left to assert on — Phase 6
+# migrated every command surface behind the facade. ``set_kill_switch`` landed in
+# P6b, and P6e migrated the last three (``create_exit``/``cancel``/
+# ``emergency_reduce_override``), all wrapping their existing store/broker path.
+# Their behavior-equivalence is proven in the safety-critical route tests
+# (test_phase7_flatten_atomic.py, test_orders_api.py,
+# test_spine_phase3e_manual_flatten.py), not by a NotYetImplementedError assertion.
 
 
 # --------------------------------------------------------------------------- #

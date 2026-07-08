@@ -103,6 +103,17 @@ class PositionMismatchView(BaseModel):
     surfaced_at: datetime
 
 
+class FlattenResponse(BaseModel):
+    """Result of ``POST /api/positions/{symbol}/flatten`` (and .../emergency-reduce)
+    — the sell intent that now owns the exit and the SELL order it produced
+    (``order`` is ``None`` only in the degenerate case where the intent exists but
+    its order can't be read). The command facade returns this; the route uses it as
+    ``response_model`` (P6e). Moved from ``app.api.schemas`` (ADR-006 direction)."""
+
+    intent: SellIntent
+    order: Optional[Order] = None
+
+
 class ProtectionConfigView(BaseModel):
     """The effective protection configuration (``GET /api/protection``)."""
 

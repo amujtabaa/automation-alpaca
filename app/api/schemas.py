@@ -110,16 +110,9 @@ class ReviewResponse(BaseModel):
     sell_intents: list[SellIntent] = Field(default_factory=list)
 
 
-# --- Phase 7: Sell-Side Protection ---------------------------------------- #
-class FlattenResponse(BaseModel):
-    """Result of ``POST /api/positions/{symbol}/flatten`` — the sell intent that
-    now owns the exit and the SELL order it produced (``order`` is ``None`` only
-    in the degenerate case where the intent exists but its order can't be read)."""
-
-    intent: SellIntent
-    order: Optional[Order] = None
-
-
+# NOTE: ``FlattenResponse`` moved to ``app.facade.dtos`` in Phase 6e (the flatten /
+# emergency-reduce commands are facade-backed; the facade owns its return DTO,
+# ADR-006 api→facade direction). JSON shape unchanged.
 # NOTE: ``ProtectionConfigView``/``ProtectionPositionView``/
 # ``ProtectionStatusResponse``/``OperatorOrderView``/``OperatorRecoveryView``/
 # ``OperatorOrdersResponse`` moved to ``app.facade.dtos`` in Phase 6 (P6d) — the

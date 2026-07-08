@@ -164,15 +164,9 @@ forbidden_modules =
 # NOTE: `app.config` (Settings) and `app.models` are deliberately NOT forbidden —
 # they are the cross-cutting kernel (settings injected via DI, shared DTO types),
 # not engine internals; a route annotating a `Settings`/model type is allowed.
-ignore_imports =
-    # ---- Phase-6 punch-list: remaining direct route->backend edges ----
-    # Each line is one un-migrated route dependency ADR-005 wants gone (store/engine/
-    # broker access AND engine-internal policy/approval/feature logic). Migrating a
-    # route to the facade means DELETING its line(s) here; the ratchet then forbids
-    # the edge from ever returning. When this block is empty, the ADR-005 route
-    # boundary is fully enforced and Phase 6's route work is done. This list is
-    # EXHAUSTIVE for the current tree — `lint-imports` proves it (no unmatched, no
-    # broken).
-    app.api.routes_trading -> app.store.base
-    app.api.routes_trading -> app.broker.adapter
-    app.api.routes_trading -> app.monitoring
+# ---- Phase-6 punch-list: EMPTY — every route now reaches the backend only
+# through the typed facade (ADR-005 route boundary fully enforced; P6e migrated
+# the last three edges: routes_trading -> {store.base, broker.adapter,
+# monitoring}). The ratchet now forbids ANY direct route->backend edge from
+# returning, so a regression fails CI. `ignore_imports` is intentionally omitted
+# (an empty list would itself be flagged by `unmatched_ignore_imports_alerting`).

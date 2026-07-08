@@ -47,21 +47,17 @@ class ExecutionCommandFacade(Protocol):
     exception a route would have to interpret.
     """
 
-    async def create_exit(self, *, symbol: str, reason: str, actor: str) -> Any:
-        """Open (or return the existing) reduce-only exit for ``symbol``.
-
-        The eventual migrated analogue of today's
-        ``StateStore.flatten_position`` (``app/store/core.py``'s
-        ``plan_flatten_position``). ADR-003 targets different behavior under
-        ``Halted``/``Reducing`` than the current implementation — see
-        ``docs/SPINE_PHASE0_INVENTORY.md``'s conflict list before treating
-        this signature as final.
-        """
+    async def create_exit(self, *, symbol: str, actor: str) -> Any:
+        """Operator-commanded full exit (manual flatten) for ``symbol`` — real as
+        of P6e. Wraps ``StateStore.flatten_position`` (X-001 atomic) after clearing
+        open buys; ADR-003 denies it while ``Halted`` (409). ``POST
+        /api/positions/{symbol}/flatten``."""
         ...
 
     async def cancel(self, *, order_id: str, actor: str) -> Any:
-        """Cancel an open order/spawn. Analogue of today's
-        ``POST /api/orders/{order_id}/cancel``."""
+        """Manually cancel an open order (P6e) — ``POST
+        /api/orders/{order_id}/cancel``. 404 unknown / 409 terminal-or-quarantined
+        / 502 broker-failure; CHAOS-1 cancel_pending semantics preserved."""
         ...
 
     async def pause_buys(self, *, actor: str) -> Any:

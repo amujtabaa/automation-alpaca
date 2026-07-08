@@ -18,6 +18,7 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 
 from app.facade.errors import (
+    BrokerGatewayError,
     ConflictError,
     EngineNotReadyError,
     EntityNotFoundError,
@@ -58,6 +59,11 @@ def facade_error_to_http(exc: FacadeError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc) or "invalid input",
+        )
+    if isinstance(exc, BrokerGatewayError):
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc) or "broker gateway error",
         )
     # Fallback for any other FacadeError subclass — never let a raw facade
     # exception propagate past a route unmapped.
