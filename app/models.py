@@ -284,6 +284,11 @@ class EventType(str, Enum):
     # be venue lag (§7), and a query FAILURE is never read as absent. Counts, per
     # reason, toward the retry bound; `needs_review` marks a persistently-stuck one.
     ORDER_RECONCILE_DEFERRED = "order_reconcile_deferred"
+    # Phase 4 wave 4h: the broker position report diverged from the local
+    # fill-derived position beyond tolerance (§7 — qty exact, avg-px 0.01%). Surfaced
+    # as a durable needs_review record; position truth is NEVER overwritten from the
+    # report (Rule 7). Deduped by symbol+kind so a persistent drift logs once.
+    RECONCILE_POSITION_MISMATCH = "reconcile_position_mismatch"
     # A broker/local fill divergence (broker filled > locally recorded) escalated
     # to a durable needs_review reconciliation record (AIR-002).
     FILL_RECONCILIATION_NEEDED = "fill_reconciliation_needed"

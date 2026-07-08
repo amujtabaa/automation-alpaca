@@ -30,6 +30,7 @@ from app.api.schemas import (
     ProtectionConfigView,
     ProtectionPositionView,
     ProtectionStatusResponse,
+    ReconciliationStatusResponse,
 )
 from app.broker.adapter import BrokerAdapter, BrokerError
 from app.config import Settings
@@ -88,6 +89,25 @@ async def list_positions(
     """
     try:
         return await query_facade.list_positions()
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
+
+
+@router.get("/reconciliation", response_model=ReconciliationStatusResponse)
+async def reconciliation_status(
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
+) -> ReconciliationStatusResponse:
+    """Read-only reconciliation surface (ADR-005 facade / Spine v2 §7, wave 4h):
+    the external/unmanaged venue orders and broker-vs-local position drifts the
+    reconciliation engine surfaced but never absorbed. Both come from durable,
+    deduped audit records via the query facade — the route only composes them.
+    An empty response is the healthy steady state; anything here needs operator
+    review and holds trading reduce-only until it clears."""
+    try:
+        return ReconciliationStatusResponse(
+            external_orders=await query_facade.list_external_orders(),
+            position_mismatches=await query_facade.list_position_mismatches(),
+        )
     except FacadeError as exc:
         raise facade_error_to_http(exc) from exc
 

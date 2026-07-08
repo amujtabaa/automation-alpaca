@@ -12,6 +12,11 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, StrictBool
 
+# ExternalOrderView / PositionMismatchView are the reconciliation facade's own
+# typed return DTOs (app.facade.dtos). Imported here so ReconciliationStatusResponse
+# can compose them and routes can reference them; api → facade is the allowed
+# dependency direction (ADR-005 / Phase 5 import boundaries).
+from app.facade.dtos import ExternalOrderView, PositionMismatchView
 from app.models import (
     Candidate,
     Event,
@@ -212,3 +217,19 @@ class OperatorOrdersResponse(BaseModel):
 
     orders: list[OperatorOrderView]
     recoveries: list[OperatorRecoveryView]
+
+
+class ReconciliationStatusResponse(BaseModel):
+    """``GET /api/reconciliation`` — the operator's read-only view of what the
+    reconciliation engine has surfaced but *not* absorbed: external/unmanaged
+    venue orders and broker-vs-local position drifts (Spine v2 §7). Both are
+    durable, deduped audit records; neither mutates managed state or position.
+    An empty response is the healthy steady state.
+
+    The item views (``ExternalOrderView``/``PositionMismatchView``) are the
+    facade's own typed return DTOs — defined in ``app.facade.dtos`` and imported
+    here (api → facade is the allowed dependency direction; ADR-005 / Phase 5
+    import boundaries). The route only composes them into this HTTP response."""
+
+    external_orders: list[ExternalOrderView]
+    position_mismatches: list[PositionMismatchView]

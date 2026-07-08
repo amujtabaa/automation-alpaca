@@ -24,8 +24,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from app.facade.dtos import ExternalOrderView, PositionMismatchView
 from app.facade.errors import NotYetImplementedError
-from app.models import Position, SessionRecord
+from app.models import EventType, Position, SessionRecord
 from app.store.base import StateStore
 
 # No auth/actor-tracking system exists yet (docs/MIGRATION_MATRIX.md: "Auth
@@ -68,11 +69,57 @@ class StoreBackedQueryFacade:
             "docs/SPINE_PHASE0_INVENTORY.md §3.4"
         )
 
-    async def list_external_orders(self) -> Any:
-        raise NotYetImplementedError(
-            "list_external_orders: no reconciliation engine of that shape "
-            "exists yet (Spine v2 §7)"
+    async def list_external_orders(self) -> list[ExternalOrderView]:
+        """External/unmanaged venue orders surfaced by reconciliation (§7 / wave
+        4e). Reads the durable, deduped ``reconcile_external_order`` audit records
+        — the reconcile writer already deduped them by ``broker_order_id`` — and
+        maps each verbatim to an ``ExternalOrderView``. Read-only; this never
+        absorbs or mutates anything. ``created_at`` is the surfacing time."""
+
+        events = await self._store.list_events(
+            event_type=EventType.RECONCILE_EXTERNAL_ORDER.value
         )
+        views: list[ExternalOrderView] = []
+        for e in events:
+            p = e.payload or {}
+            views.append(
+                ExternalOrderView(
+                    broker_order_id=p.get("broker_order_id"),
+                    client_order_id=p.get("client_order_id"),
+                    symbol=p.get("symbol"),
+                    side=p.get("side"),
+                    status=p.get("status"),
+                    filled_quantity=p.get("filled_quantity"),
+                    surfaced_at=e.created_at,
+                )
+            )
+        return views
+
+    async def list_position_mismatches(self) -> list[PositionMismatchView]:
+        """Broker-vs-local position drifts surfaced by reconciliation (§7 / wave
+        4h). Reads the durable, deduped ``reconcile_position_mismatch`` audit
+        records (deduped by ``(symbol, kind)`` at write time) and maps each to a
+        ``PositionMismatchView``. Position truth is never overwritten (Rule 7) —
+        these are needs-review records only."""
+
+        events = await self._store.list_events(
+            event_type=EventType.RECONCILE_POSITION_MISMATCH.value
+        )
+        views: list[PositionMismatchView] = []
+        for e in events:
+            p = e.payload or {}
+            views.append(
+                PositionMismatchView(
+                    symbol=p.get("symbol"),
+                    kind=p.get("kind"),
+                    local_quantity=p.get("local_quantity"),
+                    broker_quantity=p.get("broker_quantity"),
+                    local_avg=p.get("local_avg"),
+                    broker_avg=p.get("broker_avg"),
+                    surfaced_at=e.created_at,
+                )
+            )
+        return views
 
 
 class StoreBackedCommandFacade:

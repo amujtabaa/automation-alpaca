@@ -493,9 +493,36 @@ R3 kill-switch meaning on reconcile failure). Waves 4a–4e + 4h are NOT gated.
   on divergence/failure — R3; kill still dominates). **R1:** no real trade-update stream exists (REST-poll,
   D-011), so this is the SIM SEAM a real stream's reconnect callback will call — invoked from sim/tests;
   real-stream wiring deferred with real creds. `tests/test_spine_phase4g_reconnect.py` (5). Suite 1732 passed.
-  ~~**4f** startup mass reconcile + "not-enabled-until-reconcile" gate → `Reducing` (R2 max-composition~~
-  FSM + R3). **4g** reconnect→Reducing (R1/R2). **4h** external-order route/DTO + docs + **the Phase-4
-  adversarial review** (concentrates on the 4e/4f truth-flips).
+
+- [x] **Wave 4h — position-parity surfacing + reconciliation read route/DTO + Phase-4 consolidation.**
+  Two additions, both `drive_state`-gated / read-only (no truth flip; the row was already `event_truth`
+  at 4e):
+  - **Position parity (§7 / E9, deferred from 4e).** `_surface_position_mismatches` emits a durable,
+    deduped (`(symbol, kind)`) `reconcile_position_mismatch` needs-review record for a broker-vs-local
+    drift (qty exact, avg-px within `reconcile_avg_price_tolerance`). **Position truth is NEVER
+    overwritten (Rule 7)** — the record is audit-only; the drift also holds trading reduce-only via
+    `_has_unresolved_divergence` → the reconcile FSM driver. Gated behind `drive_state` (loop/startup/
+    reconnect) so the direct-tick corpus stays inert (a mock that doesn't mirror positions can't
+    false-fire). `EventType.RECONCILE_POSITION_MISMATCH`. `tests/test_spine_phase4h_position_mismatch.py`
+    (5, dual-store).
+  - **Operator read surface (ADR-005).** `GET /api/reconciliation` → `ReconciliationStatusResponse`
+    {`external_orders`, `position_mismatches`}, facade-backed: `StoreBackedQueryFacade.list_external_orders`
+    (migrated from `NotYetImplementedError`) + new `list_position_mismatches` map the durable audit
+    records to typed view DTOs. **The view DTOs live in `app/facade/dtos.py`, not `app.api.schemas`**, so
+    the dependency direction stays api→facade — keeping the Phase-5 import-linter contract clean (the
+    route/`ReconciliationStatusResponse` import them, the facade never imports up into the API layer). The
+    Phase-1 pinning test consciously re-pinned (`list_external_orders` dropped from the still-unmigrated
+    parametrize list). `tests/test_spine_phase4h_reconcile_read.py` (8: facade dual-store + HTTP wiring).
+  - Suite **1754 passed** (memory+SQLite), ruff clean.
+
+**Phase 4 — CLOSED.** All §7 reconciliation goals are met: startup mass-status reconcile + gate (4f),
+targeted single-order query before any not-found→terminal (4e-3), external/unmanaged order surfacing +
+route (4e-2/4h), broker position parity surfacing (4h), deterministic synthetic fills (4e-4), stream
+reconnect→`Reducing`+reconcile (4g). Remaining follow-ups do NOT belong to Phase 4's scope: the
+order-status/spawn projector (spine §4, mirror of 3c-C5) and real trade-update-stream wiring (replaces
+the 4g sim-seam, needs real creds). **Next: the Phase-4 adversarial review** (concentrate on the 4e
+truth-flip + 4f/4g FSM-composition/startup-gate safety-critical paths), then **STANDBY before Phase 5**
+per the standing request.
 
 **Resume hint:** **Phase 3's safety-critical flows are all migrated + reviewed** (waves
 3a/3b/3c/3d/3e). Next is **Phase 4 — Reconciliation engine** (`docs/REARCHITECTURE_ROADMAP.md`

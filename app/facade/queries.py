@@ -43,9 +43,17 @@ class ExecutionQueryFacade(Protocol):
         ...
 
     async def list_external_orders(self) -> Any:
-        """Unmanaged/external venue orders surfaced by reconciliation (Spine
-        v2 §7). No reconciliation engine of that shape exists yet — today's
-        closest analogue is the submit-recovery ledger
-        (``StateStore.list_submit_recoveries``), which is narrower in scope.
-        """
+        """External/unmanaged venue orders surfaced by reconciliation (Spine v2
+        §7). Real as of wave 4h — reads the durable, deduped
+        ``reconcile_external_order`` audit records and returns typed
+        ``ExternalOrderView`` rows. Never absorbed into managed state or folded
+        into position; an empty list is the healthy steady state."""
+        ...
+
+    async def list_position_mismatches(self) -> Any:
+        """Broker-vs-local position drifts surfaced by reconciliation (Spine v2
+        §7 / wave 4h). Reads the durable, deduped ``reconcile_position_mismatch``
+        audit records and returns typed ``PositionMismatchView`` rows. Position
+        truth is never overwritten (Rule 7) — these are needs-review records that
+        also hold trading reduce-only until cleared. Empty = healthy."""
         ...

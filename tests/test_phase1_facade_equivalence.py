@@ -234,7 +234,9 @@ async def test_store_backed_query_facade_list_positions_forwards_unchanged():
         lambda f: f.list_primaries(),
         lambda f: f.list_spawns(primary_id="x"),
         lambda f: f.kill_state(),
-        lambda f: f.list_external_orders(),
+        # NOTE: list_external_orders + list_position_mismatches were MIGRATED in
+        # wave 4h (reconciliation read surface) — they now read durable audit
+        # records instead of raising. See test_spine_phase4h_reconcile_read.py.
     ],
 )
 async def test_store_backed_query_facade_unmigrated_methods_raise(method_call):

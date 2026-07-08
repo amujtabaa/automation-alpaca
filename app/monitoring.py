@@ -1764,6 +1764,11 @@ async def _run_reconciliation(
         # order stays open locally one extra cycle if the poll is momentarily down (a
         # self-healing liveness gap, never an oversell). Observability-only on this path.
         if drive_state:
+            # Wave 4h: surface broker-vs-local position drift as a durable
+            # needs_review record (§7 — never a position overwrite). Gated by
+            # drive_state (loop/startup) so a direct tick against an adapter that
+            # doesn't mirror positions never false-positives on every local position.
+            await _surface_position_mismatches(store, plan)
             # Wave 4f / R2 gate: parity → Active (enable normal trading), any
             # unresolved divergence → Reducing (reduce-only until reconciled). Only
             # the loop / startup pass drive_state; direct tick callers (tests) don't.
@@ -1872,6 +1877,54 @@ async def _surface_external_orders(
             },
         )
         seen.add(x.broker_order_id)
+
+
+async def _surface_position_mismatches(
+    store: StateStore, plan: ReconciliationPlan
+) -> None:
+    """Surface each broker-vs-local position drift as a durable, deduped
+    ``reconcile_position_mismatch`` needs-review record (§7: qty exact, avg-px within
+    tolerance). **Position truth is NEVER overwritten here (Rule 7 — only fill events
+    change position):** this is an audit-only safeguard that flags the drift for an
+    operator and — via ``_has_unresolved_divergence`` — holds trading reduce-only until
+    it clears. Deduped by ``(symbol, kind)`` so a persistent drift is recorded once, not
+    re-logged every tick; survives restart via the persisted event log.
+
+    Gated behind ``drive_state`` at the call site (loop/startup only): a direct tick
+    against an adapter that doesn't mirror positions must not false-positive a mismatch
+    on every held local position."""
+
+    if not plan.position_mismatches:
+        return
+
+    seen = {
+        ((e.payload or {}).get("symbol"), (e.payload or {}).get("kind"))
+        for e in await store.list_events(
+            event_type=EventType.RECONCILE_POSITION_MISMATCH.value
+        )
+    }
+    for m in plan.position_mismatches:
+        if (m.symbol, m.kind) in seen:
+            continue
+        await store.append_event(
+            EventType.RECONCILE_POSITION_MISMATCH.value,
+            message=(
+                f"position drift {m.symbol} ({m.kind}): "
+                f"local qty={m.local_quantity} avg={m.local_avg} vs "
+                f"broker qty={m.broker_quantity} avg={m.broker_avg} — "
+                f"surfaced for review, position NOT overwritten"
+            ),
+            symbol=m.symbol,
+            payload={
+                "symbol": m.symbol,
+                "kind": m.kind,
+                "local_quantity": m.local_quantity,
+                "broker_quantity": m.broker_quantity,
+                "local_avg": m.local_avg,
+                "broker_avg": m.broker_avg,
+            },
+        )
+        seen.add((m.symbol, m.kind))
 
 
 # An open order the reconcile may resolve to a terminal when the venue confirms it
