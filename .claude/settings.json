@@ -1,4 +1,13 @@
 {
+  "permissions": {
+    "allow": [],
+    "deny": [],
+    "ask": []
+  },
+  "skillListingBudgetFraction": 0.02,
+  "enableAllProjectMcpServers": false,
+  "enabledMcpjsonServers": [],
+  "disabledMcpjsonServers": [],
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +18,55 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/ContextRecoveryHook/conv-backup.mjs\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/LibraryHook/library-sync.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/SkillActivationHook/skill-activation-prompt.mjs\""
+          }
+        ]
+      }
     ]
-  }
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/ContextRecoveryHook/statusline-monitor.mjs\""
+  },
+  "_readme": [
+    "SHARED PROJECT SETTINGS (tracked in git, used on both Mac and Windows)",
+    "",
+    "How it works:",
+    "  settings.json      = shared config (this file, tracked)",
+    "  settings.local.json = platform-specific overrides (gitignored, per-device)",
+    "  Claude Code merges both: local permissions are ADDED to shared permissions.",
+    "",
+    "When you add a new permission:",
+    "  - Works on both platforms? Add it here.",
+    "  - Platform-specific (brew, powershell, etc.)? Add to settings.local.json on that device."
+  ],
+  "enabledPlugins": {}
 }
