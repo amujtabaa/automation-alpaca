@@ -63,14 +63,15 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
   unpinned mypy 2.x follows alpaca-py's numpy/pandas/pyarrow PEP-695 stubs and rejects them under
   `python_version=3.11`. Added `follow_imports=skip` for those third-party libs (proven: mypy logs
   `Skipping .../numpy/__init__.pyi`). See the FINDING doc.
-- **BLOCKER surfaced (not caused by this WO) — `TestSqliteLifecycle` flatten/X-001 contradiction:**
-  in this fresh container (deps unpinned; Hypothesis 6.156 installed) the stateful lifecycle test
-  deterministically finds a manual-flatten sequence that violates **INV-034** — `plan_flatten_position`
-  (`app/store/core.py:1023-1032`) returns the existing `PROTECTION_FLOOR` intent when a protection
-  order is already LIVE at the broker, i.e. a human flatten "silently hands back a different reason,"
-  which INV-034 forbids. Reproduces on the committed baseline WITHOUT this change (verified by stash);
-  unrelated to the mypy work. It is a code-vs-invariant-vs-test conflict on the **human-gated
-  manual-flatten surface** → recorded as a decision gap for the human (see
+- **FLAKY real bug surfaced (not caused by this WO) — `TestSqliteLifecycle` flatten/X-001:** the
+  stateful lifecycle test can find a manual-flatten sequence that violates **INV-034** —
+  `plan_flatten_position` (`app/store/core.py:1021-1032`) returns the existing `PROTECTION_FLOOR` intent
+  when a protection order is already LIVE at the broker, i.e. a human flatten "silently hands back a
+  different reason," which INV-034 forbids. It reproduces on the committed baseline WITHOUT any WO-0012
+  change (verified by stash) and is unrelated to the mypy work. **It is FLAKY** — Hypothesis catches it
+  only when its random search (or a cached `.hypothesis/examples/` entry) reaches the interleaving;
+  CI on `f04d4ee` passed pytest. It is a code-vs-invariant-vs-test conflict on the **human-gated
+  manual-flatten surface** → recorded as a decision gap (see
   `work/review/FINDING-flatten-inv034-live-protection.md`), NOT fixed here and the test NOT weakened.
 - **Measured remaining store counts** (throwaway un-grandfather + `mypy app/`): `app/store/memory.py`
   **52 errors**, `app/store/sqlite.py` **~58 errors** — essentially ALL the same TWO idioms, so the fix

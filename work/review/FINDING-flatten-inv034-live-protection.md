@@ -57,13 +57,23 @@ left returning the protection intent. So there are two irreconcilable positions 
 Either way the resolution is a human decision. Recorded here per the CLAUDE.md conflict rule
 ("if the conflict touches a safety surface, stop and record the decision gap before coding").
 
-## Why it appears "new"
+## Why it appears "new" — and why it is FLAKY, not deterministic
 
 The targeted flatten suites (`test_phase7_flatten_atomic.py`, `test_phase7_routes.py`) do **not** drive
 "protection order becomes LIVE, then flatten," so they pass. Only the stateful machine explores it, and
-only once Hypothesis reaches that interleaving. This container installed **Hypothesis 6.156** (see the
-dependency note below); the prior environment's version/seed never generated the sequence, so the same
-committed code read as green there. The defect was always present.
+only once Hypothesis's random search reaches that interleaving within its example budget.
+
+**Important correction (verified):** the failure is **flaky**, not deterministic. My earlier local runs
+failed reproducibly only because Hypothesis had cached the falsifying example in `.hypothesis/examples/`
+(git-ignored, per-checkout). After `rm -rf .hypothesis`, a fresh `TestSqliteLifecycle` run **passes** —
+the search does not hit the interleaving every time. CI runs with no cache, so **CI passed pytest on
+`f04d4ee`** (`ci.yml` run 28992127521 = success) once the mypy blocker below was fixed. So:
+
+- The mypy dep-drift break (below) was the ACTUAL cause of the long CI-red streak — it fails before
+  pytest even runs. Fixed → CI is green again.
+- The flatten defect is a **real latent bug** that Hypothesis surfaces only intermittently. It is a
+  flaky-red risk on any future CI run AND a genuine INV-034 safety gap — the fix/amend decision below
+  still stands regardless of the flakiness. Do not treat "CI is green" as "the bug is gone."
 
 ## Secondary issue — unpinned dependencies (build non-reproducibility) — CONFIRMED CI-RED
 
@@ -84,10 +94,11 @@ dependency-drift breaks, both from `>=`:
 2. **pytest step (the NEXT CI-red, once mypy passes).** Under Hypothesis 6.156 the flatten/X-001
    contradiction above fails `TestSqliteLifecycle`. This is NOT fixed here — it is the gated decision.
 
-**So CI cannot go fully green autonomously:** the mypy drift is fixed, but the pytest step then surfaces
-the gated flatten conflict. Root-cause fix for the whole class is **pinning dependencies** (lockfile or
-bounded upper pins). **Do NOT pin Hypothesis down merely to hide the flatten finding** — that gap is
-real independent of the version; pin for reproducibility, fix flatten on its own merits.
+**Net:** CI is green again after the mypy fix (the flatten test is flaky and did not trigger that run).
+The remaining exposure is (a) the real INV-034 flatten gap, which can flaky-red CI at any time, and
+(b) build non-reproducibility generally. Root-cause fix for reproducibility is **pinning dependencies**
+(lockfile or bounded upper pins). **Do NOT pin Hypothesis down merely to hide the flatten finding** —
+that gap is real independent of the version; pin for reproducibility, fix flatten on its own merits.
 
 ## What I did / did not do
 
