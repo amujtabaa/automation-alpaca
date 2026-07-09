@@ -30,6 +30,7 @@ from app.models import (
     ExecutionEvent,
     ExecutionEventType,
     Fill,
+    OrderStatus,
     Position,
     TradingState,
 )
@@ -229,6 +230,72 @@ def timeout_quarantined_order_ids(events: Iterable[ExecutionEvent]) -> set[str]:
         for order_id, event_type in latest.items()
         if event_type is ExecutionEventType.TIMEOUT_QUARANTINE
     }
+
+
+# ---- order-status projector (WO-0007b) ----------------------------------- #
+#
+# The read model for the sole remaining legacy_truth flow ("Atomic submit
+# claim"). `status` is a LATEST-lifecycle-event-wins fold (generalizing
+# timeout_quarantined_order_ids above), NOT max-status-reached: the CREATED<->
+# SUBMITTING cycle means a released order must be able to REGRESS to CREATED, and
+# a live CANCEL_PENDING must be representable — both require the events WO-0007b
+# Stage A added (SUBMIT_RELEASED / CANCEL_PENDING). A max fold would strand a
+# released order at SUBMITTING (the claim gate needs CREATED). `filled_quantity`
+# is a separate Σ over the order's FILL events (INV-1), capped at the order's
+# quantity to match the store's overfill-capped column (policy.filled_quantity_reason).
+_LIFECYCLE_EVENT_TO_STATUS: dict[ExecutionEventType, OrderStatus] = {
+    ExecutionEventType.SUBMIT_PENDING: OrderStatus.SUBMITTING,
+    ExecutionEventType.SUBMIT_RELEASED: OrderStatus.CREATED,
+    ExecutionEventType.SUBMITTED: OrderStatus.SUBMITTED,
+    ExecutionEventType.PARTIALLY_FILLED: OrderStatus.PARTIALLY_FILLED,
+    ExecutionEventType.CANCEL_PENDING: OrderStatus.CANCEL_PENDING,
+    ExecutionEventType.FILLED: OrderStatus.FILLED,
+    ExecutionEventType.CANCELED: OrderStatus.CANCELED,
+    ExecutionEventType.REJECTED: OrderStatus.REJECTED,
+    ExecutionEventType.TIMEOUT_QUARANTINE: OrderStatus.TIMEOUT_QUARANTINE,
+}
+
+
+@dataclass(frozen=True)
+class OrderStatusProjection:
+    """The order-status read model derived from the event log for one order."""
+
+    order_id: str
+    status: OrderStatus
+    filled_quantity: int
+
+
+def project_order_status(
+    events: Iterable[ExecutionEvent],
+    order_id: str,
+    quantity: int | None = None,
+) -> OrderStatusProjection:
+    """Fold one order's lifecycle + FILL events into its status + filled_quantity.
+
+    ``status`` = the OrderStatus of the LATEST order-status lifecycle event for
+    ``order_id`` (empty stream -> ``CREATED``, the pre-lifecycle default). A ``FILL``
+    is a position fact, never a status-lifecycle event, so it does not move status.
+
+    ``filled_quantity`` = Σ of this order's ``FILL`` event quantities, capped at
+    ``quantity`` when supplied (the store passes ``order.quantity`` so a
+    broker-overfill fold matches the column, which ``filled_quantity_reason`` caps;
+    ``None`` yields the raw sum). Pure; events must be in ascending sequence order.
+    """
+
+    status = OrderStatus.CREATED
+    filled = 0
+    for event in events:
+        if event.order_id != order_id:
+            continue
+        if event.event_type is ExecutionEventType.FILL:
+            filled += event.quantity or 0
+            continue
+        mapped = _LIFECYCLE_EVENT_TO_STATUS.get(event.event_type)
+        if mapped is not None:
+            status = mapped
+    if quantity is not None:
+        filled = min(filled, quantity)
+    return OrderStatusProjection(order_id=order_id, status=status, filled_quantity=filled)
 
 
 # §8 severity ordering for composing independent TradingState drivers (wave 4f / R2):
