@@ -1411,8 +1411,20 @@ class InMemoryStateStore(StateStore):
             # lockstep with the planner's branching instead of re-deriving it.
             exec_event = None
             if plan.event.event_type == "order_transition":
+                # WO-0007b: the SUBMITTING -> CREATED release is occurrence-keyed
+                # like the claim, so a repeated claim/release cycle stays gapless.
+                # Count prior SUBMIT_RELEASED events under the lock this method
+                # already holds (no concurrent transition can interleave).
+                occurrence = None
+                if plan.order.status is OrderStatus.CREATED:
+                    occurrence = sum(
+                        1
+                        for e in self._execution_events
+                        if e.order_id == order_id
+                        and e.event_type is ExecutionEventType.SUBMIT_RELEASED
+                    )
                 exec_event = execution_event_for_routine_transition(
-                    order, plan.order.status, plan.order.filled_quantity
+                    order, plan.order.status, plan.order.filled_quantity, occurrence=occurrence
                 )
             elif (
                 plan.event.event_type == "order_fill_progress"

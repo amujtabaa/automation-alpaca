@@ -2290,8 +2290,20 @@ class SqliteStateStore(StateStore):
             updated = plan.order
             exec_event = None
             if plan.event.event_type == "order_transition":
+                # WO-0007b: the SUBMITTING -> CREATED release is occurrence-keyed
+                # like the claim, so a repeated claim/release cycle stays gapless.
+                # Read the prior SUBMIT_RELEASED count under self._lock (held here),
+                # before the write tx — no concurrent writer can interleave.
+                occurrence = None
+                if updated.status is OrderStatus.CREATED:
+                    crow = self._read_one(
+                        "SELECT COUNT(*) AS n FROM execution_events "
+                        "WHERE order_id = ? AND event_type = ?",
+                        (order_id, ExecutionEventType.SUBMIT_RELEASED.value),
+                    )
+                    occurrence = crow["n"] if crow else 0
                 exec_event = execution_event_for_routine_transition(
-                    order, updated.status, updated.filled_quantity
+                    order, updated.status, updated.filled_quantity, occurrence=occurrence
                 )
             elif (
                 plan.event.event_type == "order_fill_progress"

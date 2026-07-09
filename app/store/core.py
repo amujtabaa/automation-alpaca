@@ -1580,7 +1580,17 @@ def _routine_event_provenance(
     status ``SUBMITTING``, so the old proxy stamped it BROKER_AUTHORITATIVE.)
     """
 
-    if new_status is OrderStatus.SUBMITTING:
+    # Engine-INITIATED, pre-broker-confirmation statuses: the claim
+    # (CREATED->SUBMITTING), the claim release (SUBMITTING->CREATED, WO-0007b), and
+    # a cancel REQUEST (->CANCEL_PENDING, WO-0007b). None of these is a
+    # broker-authored fact — CANCEL_PENDING especially must not be authoritative, or
+    # it would wrongly win an ADR-001 conflict against a real late broker FILL
+    # (transitions.py: CANCEL_PENDING->FILLED).
+    if new_status in (
+        OrderStatus.SUBMITTING,
+        OrderStatus.CREATED,
+        OrderStatus.CANCEL_PENDING,
+    ):
         return EventSource.ENGINE, EventAuthority.LOCAL
     if new_status is OrderStatus.CANCELED and order.broker_order_id is None:
         return EventSource.ENGINE, EventAuthority.LOCAL
@@ -1627,6 +1637,47 @@ def execution_event_for_routine_transition(
             source=source,
             authority=authority,
             dedupe_key=f"submit_pending:{order.id}:{n}",
+            symbol=order.symbol,
+            side=OrderSide(order.side),
+            order_id=order.id,
+            session_id=order.session_id,
+        )
+
+    if new_status is OrderStatus.CREATED and order.status is OrderStatus.SUBMITTING:
+        # WO-0007b: the SUBMITTING -> CREATED claim release — the only ->CREATED
+        # transition_order edge (transitions.py: CREATED is a target of SUBMITTING
+        # alone). Guarded on old status SUBMITTING so a same-status/other call is
+        # not mistaken for a release. Occurrence-keyed like the claim so repeated
+        # claim/release cycles stay gapless (`release:{order_id}:{n}`, n = prior
+        # SUBMIT_RELEASED count, supplied by the caller). Without this event a
+        # released order projects as SUBMITTING under latest-wins and the claim
+        # gate strands it.
+        n = occurrence if occurrence is not None else 0
+        return ExecutionEvent(
+            event_type=ExecutionEventType.SUBMIT_RELEASED,
+            source=source,
+            authority=authority,
+            dedupe_key=f"release:{order.id}:{n}",
+            symbol=order.symbol,
+            side=OrderSide(order.side),
+            order_id=order.id,
+            session_id=order.session_id,
+        )
+
+    if new_status is OrderStatus.CANCEL_PENDING:
+        # WO-0007b: entry into CANCEL_PENDING (cancel requested at the broker). Emit
+        # ONCE on entry so a live pending-cancel order is representable in the
+        # projection. The self-loop (CANCEL_PENDING -> CANCEL_PENDING, a late fill
+        # progressing) leaves status unchanged and emits nothing — latest-wins
+        # already yields CANCEL_PENDING. CANCEL_PENDING is not re-enterable
+        # (transitions.py), so a bare `cancel_pending:{order_id}` key is unique.
+        if order.status is OrderStatus.CANCEL_PENDING:
+            return None
+        return ExecutionEvent(
+            event_type=ExecutionEventType.CANCEL_PENDING,
+            source=source,
+            authority=authority,
+            dedupe_key=f"cancel_pending:{order.id}",
             symbol=order.symbol,
             side=OrderSide(order.side),
             order_id=order.id,

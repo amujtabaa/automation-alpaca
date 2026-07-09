@@ -262,21 +262,18 @@ async def test_routine_submitted_on_timeout_quarantine_order_raises_not_silently
 # --------------------------------------------------------------------------- #
 # Out of scope, explicitly documented as inert here: CANCEL_PENDING.
 # --------------------------------------------------------------------------- #
-async def test_transition_to_cancel_pending_emits_no_execution_event(any_store):
+async def test_transition_to_cancel_pending_emits_cancel_pending_event(any_store):
+    # WO-0007b brought CANCEL_PENDING entry INTO scope (it was WO-0007a-out-of-scope):
+    # a live pending-cancel order must be representable in the projection, so entry
+    # now co-writes exactly one CANCEL_PENDING event (see tests/test_wo0007b_*).
     order = await _submitted_order(any_store)
-    before = await any_store.get_execution_events()
-    before_keys = {e.dedupe_key for e in before}
+    before_keys = {e.dedupe_key for e in await any_store.get_execution_events()}
 
     updated = await any_store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
     assert updated.status is OrderStatus.CANCEL_PENDING
 
-    after = await any_store.get_execution_events()
-    # Nothing in the routine-status map for CANCEL_PENDING -> helper returns
-    # None -> no NEW execution event appended (design doc: out of scope for
-    # WO-0007a). Compare dedupe_key sets, not raw counts, so this test doesn't
-    # depend on how many events the earlier claim/submit steps happened to emit.
-    after_keys = {e.dedupe_key for e in after}
-    assert after_keys == before_keys
+    after_keys = {e.dedupe_key for e in await any_store.get_execution_events()}
+    assert after_keys - before_keys == {f"cancel_pending:{order.id}"}
 
 
 # --------------------------------------------------------------------------- #

@@ -359,9 +359,20 @@ class ExecutionEventType(str, Enum):
     FILL = "fill"
     # Spawn/order venue lifecycle (§4 state model) — Phase 3 projectors.
     SUBMIT_PENDING = "submit_pending"
+    # WO-0007b: the SUBMITTING -> CREATED release (claim released on a transient
+    # submit failure). Completes the CREATED<->SUBMITTING cycle in the log so the
+    # order-status projector's latest-event-wins fold can regress to CREATED
+    # (without it, a released order projects as SUBMITTING and the claim gate
+    # strands it). Occurrence-keyed like SUBMIT_PENDING.
+    SUBMIT_RELEASED = "submit_released"
     SUBMITTED = "submitted"
     ACCEPTED = "accepted"
     PARTIALLY_FILLED = "partially_filled"
+    # WO-0007b: entry into CANCEL_PENDING (cancel requested at the broker, not yet
+    # confirmed). Emitted once on entry so a LIVE pending-cancel order is
+    # representable in the projection; the self-loop (late fill progress) needs no
+    # status event. Engine-initiated request => ENGINE/LOCAL, not broker-authoritative.
+    CANCEL_PENDING = "cancel_pending"
     FILLED = "filled"
     CANCELED = "canceled"
     REJECTED = "rejected"
