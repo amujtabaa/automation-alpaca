@@ -1,5 +1,12 @@
 # Codex Handoff — Independent Phase 0 Review
 
+> **Superseded (2026-07-09):** this Phase-0 handoff is historical. Cross-model
+> review now runs through **review packets** — see
+> `.ai-os/core/15_CROSS_MODEL_REVIEW.md` and `work/review/REV-*/`. The output path
+> below (`docs/review/CODEX_PHASE0_REVIEW.md`) was never created; reviewer output
+> now goes into a packet's `result.md`, which is tracked and checkable
+> (`check_review_packet.py`). Kept for provenance.
+
 You are an independent review seat. Do not implement changes unless explicitly instructed after review.
 
 ## Review inputs
