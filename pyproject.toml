@@ -74,7 +74,7 @@ follow_imports_for_stubs = true
 [[tool.mypy.overrides]]
 ignore_errors = true
 module = [
-  "app.monitoring", "app.features", "app.protection", "app.policy",
+  "app.features", "app.protection", "app.policy",
   "app.reconciliation", "app.strategy",
   "app.broker.alpaca_paper", "app.broker.factory",
   "app.marketdata.alpaca_stream", "app.marketdata.factory", "app.marketdata.fake",

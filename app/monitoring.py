@@ -196,7 +196,12 @@ async def _snapshot_fill_fallback(
     if snapshot is None or snapshot.stale:
         return None
     last_price = snapshot.last_price
-    if finite_number_reason(last_price) is not None or last_price <= 0:
+    if finite_number_reason(last_price) is not None:
+        return None
+    # finite_number_reason rejects None (and every non-finite value) above, so
+    # last_price is a real, finite float here — the <= 0 guard can't see None.
+    assert last_price is not None
+    if last_price <= 0:
         return None
     return last_price
 
@@ -638,6 +643,8 @@ async def _submit_pending_orders(
             continue
 
         # The order is now SUBMITTING — the backend has committed to sending it.
+        # CLAIM_CLAIMED (checked just above) guarantees a claimed order.
+        assert claim.order is not None
         claimed = claim.order
 
         # §5.4 (Rule 12 / D-015): decide a protective sell's session-conditional
@@ -737,7 +744,7 @@ async def _submit_pending_orders(
             # session closed during the submit await (close is one-shot and would
             # otherwise leave a CREATED buy counting toward exposure forever).
             release_target = OrderStatus.CREATED
-            if OrderSide(claimed.side) is OrderSide.BUY:
+            if OrderSide(claimed.side) is OrderSide.BUY and claimed.session_id is not None:
                 own_session = await store.get_session_by_id(claimed.session_id)
                 if (
                     own_session is not None

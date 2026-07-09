@@ -48,6 +48,21 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
   ruff clean; full suite **1947 / 0 failures / 0 errors / 5 skipped** (same one flatten/X-001 failure
   deselected — see below). Every assert verified against the runtime invariant by running the FULL
   suite (both stores), per this WO's own gate.
+- **DONE — `app/monitoring.py`** (commit pending): 23 raw mypy lines. 22 were the standard None-flow
+  pattern — one `assert claim.order is not None` after the `CLAIM_CLAIMED` guard clears the entire
+  submit-loop cluster (lines ~647-774), plus an `and claimed.session_id is not None` guard on the
+  BUY-in-closed-session branch (`Order.session_id` is `Optional[str]`; a None id already yielded
+  `own_session=None`→CREATED, so the guard is behavior-identical, not an assert that could fire). The
+  1 `[operator]` error (`float | None >= int` at `_snapshot_fill_fallback`) was **triaged as a false
+  positive**: `finite_number_reason(None)` returns `"non_numeric"`, so the `<= 0` guard is never
+  reached with None — split the compound condition + `assert last_price is not None` (verified against
+  `finite_number_reason`'s contract). No test change. Removed from the grandfather list. Evidence:
+  `mypy app/` Success (54); ruff clean; full suite **1947 / 0 / 0 / 5 skipped** (flatten/X-001
+  deselected). Grandfather list now 12 modules.
+- **CI dep-drift fix (in-flight, commit `f04d4ee`):** CI was red on the `mypy app/` step (3.12 job) —
+  unpinned mypy 2.x follows alpaca-py's numpy/pandas/pyarrow PEP-695 stubs and rejects them under
+  `python_version=3.11`. Added `follow_imports=skip` for those third-party libs (proven: mypy logs
+  `Skipping .../numpy/__init__.pyi`). See the FINDING doc.
 - **BLOCKER surfaced (not caused by this WO) — `TestSqliteLifecycle` flatten/X-001 contradiction:**
   in this fresh container (deps unpinned; Hypothesis 6.156 installed) the stateful lifecycle test
   deterministically finds a manual-flatten sequence that violates **INV-034** — `plan_flatten_position`
