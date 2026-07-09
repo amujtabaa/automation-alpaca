@@ -657,6 +657,9 @@ def plan_create_order_for_candidate(
                 f"for a limit order ({bad_price})"
             ),
         )
+    # limit_price_reason rejects None / non-finite / non-positive above, so a
+    # valid finite float remains (narrows Optional for the risk gate below).
+    assert limit_price is not None
 
     # Phase 6 CAPI pre-trade risk gate (D-016): gate-and-reject, never resize.
     # Local-derived exposure only (folded positions + non-terminal orders'
@@ -1453,6 +1456,7 @@ def plan_transition_order(
     previous_filled = order.filled_quantity
     updated = order.model_copy(deep=True)
     if qty_changed:
+        assert filled_quantity is not None  # qty_changed implies filled_quantity set
         updated.filled_quantity = filled_quantity
     if broker_changed:
         updated.broker_order_id = broker_order_id
