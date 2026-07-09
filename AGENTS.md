@@ -52,3 +52,7 @@ P1 (important):
 Each finding: file:line, why it matters, what resolves it.
 End with a verdict — BLOCK / ACCEPT-WITH-CHANGES / ACCEPT — and state
 anything you could not verify.
+
+When handed a review packet (`work/review/REV-*/`), deposit your review as
+`result.md` in that folder per `.ai-os/core/15_CROSS_MODEL_REVIEW.md`; do not edit
+`request.md`.
