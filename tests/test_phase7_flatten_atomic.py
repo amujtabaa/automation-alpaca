@@ -55,6 +55,24 @@ async def _protective_floor_order(store, symbol, qty, *, session_id=None):
     return si, order
 
 
+async def _live_protection_at_status(store, symbol, qty, status, *, session_id=None):
+    """A PROTECTION_FLOOR exit for ``symbol`` driven PAST ``CREATED`` to
+    ``status`` (SUBMITTED / CANCEL_PENDING / TIMEOUT_QUARANTINE) — the in-flight/
+    live-at-broker states a manual flatten must DEFER to (INV-036), never
+    double-exit or blind-cancel."""
+    si, order = await _protective_floor_order(store, symbol, qty, session_id=session_id)
+    claim = await store.claim_order_for_submission(order.id)
+    if status is OrderStatus.TIMEOUT_QUARANTINE:
+        await store.quarantine_timed_out_order(claim.order.id)
+    else:
+        await store.transition_order(
+            claim.order.id, OrderStatus.SUBMITTED, broker_order_id="broker-x"
+        )
+        if status is OrderStatus.CANCEL_PENDING:
+            await store.transition_order(claim.order.id, OrderStatus.CANCEL_PENDING)
+    return si, order
+
+
 # ---- FLAT --------------------------------------------------------------- #
 
 
@@ -227,28 +245,110 @@ async def test_live_protection_floor_order_is_left_alone(any_store):
     assert len(sells) == 1
 
 
-async def test_live_protection_floor_deferral_records_provenance(any_store):
-    # INV-036 leaves a live protection exit alone — but the human's flatten must
-    # still leave an audit trail (closing the "click reads as success with no
-    # record" gap): a manual_flatten_deferred event correlated to the deferred
-    # intent, carrying the order it deferred to and that order's status.
+@pytest.mark.parametrize(
+    "status",
+    [
+        OrderStatus.SUBMITTED,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.TIMEOUT_QUARANTINE,
+    ],
+)
+async def test_live_protection_floor_deferral_records_provenance(any_store, status):
+    # INV-036 leaves a live/in-flight protection exit alone — but the human's
+    # flatten must (a) leave an audit trail (a manual_flatten_deferred event
+    # correlated to the deferred intent, carrying the order it deferred to and
+    # that order's status) AND (b) be reported DISTINCTLY (REV-0002 F-001):
+    # result.deferred is True so the caller knows NO manual order was submitted.
+    # Holds for every non-CREATED status the exit can be sitting in.
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
-    prot_intent, prot_order = await _protective_floor_order(any_store, "AAPL", 100)
-    claim = await any_store.claim_order_for_submission(prot_order.id)
-    await any_store.transition_order(
-        claim.order.id, OrderStatus.SUBMITTED, broker_order_id="broker-x"
+    prot_intent, prot_order = await _live_protection_at_status(
+        any_store, "AAPL", 100, status
     )
 
     result = await any_store.flatten_position("AAPL")
     assert result.outcome == FLATTEN_EXISTING
+    assert result.deferred is True
     assert result.intent.reason is SellReason.PROTECTION_FLOOR
 
     events = await any_store.list_events(correlation_id=prot_intent.id)
     deferrals = [e for e in events if e.event_type == "manual_flatten_deferred"]
     assert len(deferrals) == 1
     assert deferrals[0].order_id == prot_order.id
-    assert deferrals[0].payload.get("order_status") == "submitted"
+    assert deferrals[0].payload.get("order_status") == status.value
+
+    # No new SELL order/intent was created; the position is untouched.
+    sells = [o for o in await any_store.list_orders() if o.side is OrderSide.SELL]
+    assert len(sells) == 1
+    assert (await any_store.get_position("AAPL")).quantity == 100
+
+
+async def test_flatten_not_deferred_on_create_or_idempotent_return(any_store):
+    # The `deferred` flag keys on the deferral event, NOT the FLATTEN_EXISTING
+    # outcome (REV-0002 F-001 pre-mortem): a fresh create and the idempotent
+    # own-manual-flatten re-return (also FLATTEN_EXISTING, but no deferral) must
+    # both read deferred=False.
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    first = await any_store.flatten_position("AAPL")
+    assert first.outcome == FLATTEN_CREATED
+    assert first.deferred is False
+    second = await any_store.flatten_position("AAPL")
+    assert second.outcome == FLATTEN_EXISTING
+    assert second.deferred is False
+
+
+async def test_deferral_records_command_actor(any_store):
+    # REV-0002 F-002: the deferral provenance event records WHO commanded the
+    # flatten (actor threaded in, never resolved inside the pure planner).
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    prot_intent, _ = await _live_protection_at_status(
+        any_store, "AAPL", 100, OrderStatus.SUBMITTED
+    )
+    await any_store.flatten_position("AAPL", actor="alice")
+    events = await any_store.list_events(correlation_id=prot_intent.id)
+    deferrals = [e for e in events if e.event_type == "manual_flatten_deferred"]
+    assert len(deferrals) == 1
+    assert deferrals[0].payload.get("actor") == "alice"
+
+
+async def test_deferral_actor_defaults_to_system(any_store):
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    prot_intent, _ = await _live_protection_at_status(
+        any_store, "AAPL", 100, OrderStatus.SUBMITTED
+    )
+    await any_store.flatten_position("AAPL")  # no actor -> COMMAND_ACTOR_SYSTEM
+    events = await any_store.list_events(correlation_id=prot_intent.id)
+    deferrals = [e for e in events if e.event_type == "manual_flatten_deferred"]
+    assert deferrals[0].payload.get("actor") == "system"
+
+
+async def test_created_manual_flatten_records_command_actor(any_store):
+    # REV-0002 F-002: the created-manual-flatten path stamps the actor on the
+    # fresh intent's sell_intent_created event too.
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    result = await any_store.flatten_position("AAPL", actor="alice")
+    assert result.outcome == FLATTEN_CREATED
+    events = await any_store.list_events(correlation_id=result.intent.id)
+    created = [e for e in events if e.event_type == "sell_intent_created"]
+    assert len(created) == 1
+    assert created[0].payload.get("actor") == "alice"
+
+
+async def test_protection_tick_create_sell_intent_actor_stays_system(any_store):
+    # The shared _insert_sell_intent helper defaults to "system": a protection
+    # tick's create_sell_intent must NOT inherit a real operator actor.
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    si = await any_store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    events = await any_store.list_events(correlation_id=si.id)
+    created = [e for e in events if e.event_type == "sell_intent_created"]
+    assert created[0].payload.get("actor") == "system"
 
 
 # ---- correlation / audit trail --------------------------------------------- #

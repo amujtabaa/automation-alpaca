@@ -205,12 +205,18 @@ safety-correct one, so INV-034 is stated WITH the carve-out. When flatten defers
 it now emits a `manual_flatten_deferred` audit event (correlated to the deferred
 intent, carrying the order's status) so the human's action is recorded even though
 no fresh intent is created — closing the "click reads as success with no trail"
-gap. **Open follow-up:** deferring to a `TIMEOUT_QUARANTINE`/`SUBMITTING` order
-reports "already exiting" when the exit is not *confirmed* live (only in flight);
-tightening that is a design decision (block vs. distinct outcome vs. re-drive), not
-a predicate flip — routing those to the local-cancel supersede path would be the
-blind-cancel hazard ADR-002 forbids. Operator identity (`actor`) is also still
-dropped on all flatten paths — a separate provenance follow-up.
+gap. *Resolved (REV-0002 F-001, WO-0015):* the earlier open follow-up — that
+deferring to a `TIMEOUT_QUARANTINE`/`SUBMITTED`/`CANCEL_PENDING` order reported
+"already exiting" identically to a real submitted exit — is fixed by the **distinct
+outcome** option (never the blind-cancel supersede path ADR-002 forbids):
+`FlattenResult.deferred` / `FlattenResponse.deferred` + `deferred_order_status`
+now make the deferral explicit, and the cockpit renders a distinct "no manual
+order submitted — already exiting … monitoring" message instead of "flatten
+submitted". *Resolved (REV-0002 F-002, WO-0015):* operator identity (`actor`) is
+no longer dropped — the command actor is threaded route→facade→store and recorded
+on the `manual_flatten_deferred` event's payload (deferred path) and the created
+manual-flatten's `sell_intent_created` event payload (create path); it defaults to
+`"system"` for internal/test callers and for protection-tick `create_sell_intent`.
 *Pinned by:* `tests/test_phase7_flatten_atomic.py` (esp. the concurrent race tests,
 `test_live_protection_floor_order_is_left_alone`, and
 `test_live_protection_floor_deferral_records_provenance`),

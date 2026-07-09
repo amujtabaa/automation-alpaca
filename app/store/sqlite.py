@@ -66,6 +66,7 @@ from app.models import (
     utcnow,
 )
 from app.events.projectors import (
+    ORDER_STATUS_EVENT_TYPES,
     active_emergency_reduce_overrides,
     compose_trading_state,
     control_trading_state,
@@ -445,11 +446,17 @@ class SqliteStateStore(StateStore):
         with self._tx() as cur:
             for row in order_rows:
                 order = self._order(row)
-                projected = project_order_status(events, order.id, order.quantity)
-                if (
-                    projected.status is OrderStatus.CREATED
-                    and order.status is not OrderStatus.CREATED
-                ):
+                # WO-0013 (F-002): reconstruct ONLY orders with zero status-lifecycle
+                # events (mirror of the in-memory backfill). A released order projects
+                # CREATED but HAS events, so the old projected==CREATED predicate
+                # wrongly re-backfilled it; a FILL is excluded, so a pre-eventing FILLED
+                # order (fills present, no lifecycle event) is still reconstructed.
+                # Reuses the already-loaded `events` list — no extra per-order query.
+                has_status_events = any(
+                    e.order_id == order.id and e.event_type in ORDER_STATUS_EVENT_TYPES
+                    for e in events
+                )
+                if not has_status_events and order.status is not OrderStatus.CREATED:
                     event = order_status_backfill_event(order)
                     if event is not None:
                         self._insert_execution_event(cur, event)
@@ -1340,6 +1347,7 @@ class SqliteStateStore(StateStore):
         floor_price: Optional[float] = None,
         observed_price: Optional[float] = None,
         session_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> SellIntent:
         """Build + insert a fresh sell intent row + its ``sell_intent_created``
         event (assumes the caller already holds ``self._lock`` and is inside a
@@ -1366,7 +1374,13 @@ class SqliteStateStore(StateStore):
             symbol=symbol,
             session_id=session_id,
             correlation_id=intent.id,
-            payload={"reason": reason.value, "target_quantity": target_quantity},
+            payload={
+                "reason": reason.value,
+                "target_quantity": target_quantity,
+                # Who commanded a created MANUAL_FLATTEN (REV-0002 F-002); the
+                # default keeps a protection-tick create_sell_intent at "system".
+                "actor": actor,
+            },
         )
         return intent
 
@@ -1608,7 +1622,11 @@ class SqliteStateStore(StateStore):
             )
 
     async def flatten_position(
-        self, symbol: str, *, session_id: Optional[str] = None
+        self,
+        symbol: str,
+        *,
+        session_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> FlattenResult:
         key = normalize_symbol(symbol)
         async with self._lock:
@@ -1651,6 +1669,7 @@ class SqliteStateStore(StateStore):
             plan = plan_flatten_position(
                 position=position, active_intent=active, active_order=active_order,
                 trading_state=trading_state, override_active=override_active,
+                actor=actor,
             )
 
             if plan.outcome == FLATTEN_DENIED_HALTED:
@@ -1685,6 +1704,11 @@ class SqliteStateStore(StateStore):
                     FLATTEN_EXISTING,
                     intent=plan.existing_intent,
                     order=plan.existing_order,
+                    # A deferral to a live protection exit (REV-0002 F-001) — key
+                    # on the deferral event, NOT the outcome: the idempotent
+                    # own-manual-flatten re-return is ALSO FLATTEN_EXISTING but has
+                    # no deferral_event, so it correctly reads deferred=False.
+                    deferred=plan.deferral_event is not None,
                 )
 
             assert plan.outcome == FLATTEN_SUPERSEDE_AND_CREATE
@@ -1745,6 +1769,7 @@ class SqliteStateStore(StateStore):
                     reason=SellReason.MANUAL_FLATTEN,
                     target_quantity=plan.target_quantity,
                     session_id=session_id,
+                    actor=actor,
                 )
                 self._transition_sell_intent_locked(
                     cur, intent, SellIntentStatus.APPROVED
@@ -1951,6 +1976,11 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
             order = self._order(row) if row is not None else None
+            if order is not None:
+                # WO-0013 (F-001): gate on event-log truth, not the co-written column
+                # (mirror of the in-memory store; see its claim_order_for_submission).
+                # _project_order_locked runs its own indexed per-order event query.
+                order = self._project_order_locked(order)
             own_session = None
             if order is not None and order.session_id is not None:
                 srow = self._read_one(

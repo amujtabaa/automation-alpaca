@@ -2,10 +2,12 @@
 
 ## Status
 
-**Proposed** (2026-07-08, drafted by WO-0006 from the WO-0007a audit + WO-0009 implementation).
-Awaiting human acceptance and independent cross-model review per the CLAUDE.md Review policy. The
-implementation shipped in WO-0009 (commit on branch `chore/ai-os-install`); this ADR documents the
-decision it embodies. NOT accepted until a human records acceptance here.
+**Proposed** (2026-07-08, drafted by WO-0006 from the WO-0007a audit + WO-0009 implementation;
+amended 2026-07-09 by WO-0013 to cover the `SUBMIT_RELEASED` / `CANCEL_PENDING` edges, per the
+REV-0001 independent review F-003). Awaiting human acceptance and independent cross-model review per
+the CLAUDE.md Review policy. The implementation shipped in WO-0009 (`SUBMIT_RELEASED`/`CANCEL_PENDING`
+provenance in WO-0007b Stage A), on branch `chore/ai-os-install`; this ADR documents the decision it
+embodies. NOT accepted until a human records acceptance here.
 
 ## Context
 
@@ -38,6 +40,8 @@ Derive routine order-status event provenance in-store from the transition's endp
 | Transition | source / authority | Why |
 |---|---|---|
 | claim `CREATED → SUBMITTING` (`SUBMIT_PENDING`) | `ENGINE` / `LOCAL` | pre-broker engine decision |
+| claim release `SUBMITTING → CREATED` (`SUBMIT_RELEASED`) | `ENGINE` / `LOCAL` | an engine decision to return an unclaimed order to the pool; the broker never saw it (WO-0007b Stage A edge) |
+| cancel request `→ CANCEL_PENDING` (`CANCEL_PENDING`) | `ENGINE` / `LOCAL` | a cancel **requested** at the broker but not yet confirmed — an engine-initiated intent, not a broker fact (WO-0007b Stage A edge) |
 | `CANCELED` of an order with **no `broker_order_id`** | `ENGINE` / `LOCAL` | the broker never saw it — a never-submitted `CREATED` order cancelled locally (session close, flatten supersede, manual) OR the `SUBMITTING → CANCELED` release when a submit failed before the venue returned an id (`app/monitoring.py` no-zombie cancel) |
 | `SUBMITTED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` | `BROKER_REST` / `BROKER_AUTHORITATIVE` | broker-observed (SUBMITTED requires a broker id per AIR-001; fills/reject come from the reconcile poll) |
 | `CANCELED` of an order **with a `broker_order_id`** | `BROKER_REST` / `BROKER_AUTHORITATIVE` | broker-confirmed cancel of a live order |
@@ -46,6 +50,13 @@ The `CANCELED` discriminator is `broker_order_id is None` (assigned only at `SUB
 status `== CREATED`: the WO-0009 adversarial-verify pass found a reachable `SUBMITTING → CANCELED`
 engine-local release (submit failed for a BUY whose session closed mid-submit) that the old proxy
 would have stamped `BROKER_AUTHORITATIVE` — the exact over-claim direction this ADR forbids.
+
+**`SUBMIT_RELEASED` and `CANCEL_PENDING`** (the two lifecycle edges WO-0007b Stage A added so the log
+is complete enough for the projector to fold — REV-0001 F-003) are both `ENGINE` / `LOCAL`. This is
+required for ADR-001 consistency: `CANCEL_PENDING` must **not** carry `BROKER_AUTHORITATIVE`, or a
+merely-requested cancel would wrongly win an ADR-001 conflict against a real late broker `FILL`
+(`transitions.py`: `CANCEL_PENDING → FILLED` is a legal edge). The projector's `authority` weighting
+therefore never lets an engine-initiated cancel-request suppress a broker fill fact.
 
 - **In-store derivation (not caller-threaded).** The rejected alternative threaded `source`/`authority`
   params from the monitoring/facade callers — more future-proof but churns the highest-risk store

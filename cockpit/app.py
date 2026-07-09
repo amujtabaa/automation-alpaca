@@ -367,6 +367,21 @@ def _protection_label(prot: dict, protection_active=None) -> str:
     return "🟢 safe"
 
 
+def _flatten_success_message(symbol: str, resp: dict) -> str:
+    """The operator-facing toast for a manual flatten. A DEFERRED response
+    (REV-0002 F-001) means NO manual order was submitted — the symbol is already
+    exiting via a live protection order — so say that explicitly instead of the
+    misleading "flatten submitted"."""
+
+    if isinstance(resp, dict) and resp.get("deferred"):
+        status = resp.get("deferred_order_status")
+        return (
+            f"No manual order submitted — {symbol} already exiting via a live "
+            f"protection order ({status}); monitoring."
+        )
+    return f"{symbol} flatten submitted"
+
+
 def _flatten_button(symbol: str) -> None:
     """A working manual-flatten button (Phase 7 / D-P2) with a confirm step,
     mirroring the order-cancel pattern. The backend always accepts it (it bypasses
@@ -379,7 +394,7 @@ def _flatten_button(symbol: str) -> None:
             st.session_state[confirm_key] = False
             _do(
                 lambda s=symbol: api_client.flatten_position(s),
-                f"{symbol} flatten submitted",
+                lambda resp, s=symbol: _flatten_success_message(s, resp),
             )
     else:
         if st.button("Flatten", key=f"flatten_{symbol}"):
@@ -600,15 +615,21 @@ def screen_review() -> None:
 # --------------------------------------------------------------------------- #
 # Action helper + router
 # --------------------------------------------------------------------------- #
-def _do(action, success_message: str) -> None:
-    """Run a backend mutation, toast the result, and refresh the screen."""
+def _do(action, success_message) -> None:
+    """Run a backend mutation, toast the result, and refresh the screen.
+
+    ``success_message`` is either a fixed string or a callable that maps the
+    action's return value to the toast text — so an action whose outcome varies
+    (e.g. a flatten that safely DEFERS vs. one that submits) can report itself
+    truthfully (REV-0002 F-001)."""
 
     try:
-        action()
+        result = action()
     except BackendError as exc:
         st.error(str(exc))
         return
-    st.toast(success_message)
+    message = success_message(result) if callable(success_message) else success_message
+    st.toast(message)
     st.rerun()
 
 

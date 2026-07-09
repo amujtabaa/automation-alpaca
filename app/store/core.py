@@ -59,6 +59,7 @@ from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
     CLAIM_SKIPPED,
+    COMMAND_ACTOR_SYSTEM,
     CandidateTransitionError,
     InvalidControlValueError,
     InvalidFillError,
@@ -985,6 +986,7 @@ def plan_flatten_position(
     active_order: Optional[Order],
     trading_state: TradingState = TradingState.ACTIVE,
     override_active: bool = False,
+    actor: str = COMMAND_ACTOR_SYSTEM,
 ) -> FlattenPlan:
     """Decide the manual-flatten outcome for one symbol.
 
@@ -1006,6 +1008,11 @@ def plan_flatten_position(
     authorization — and since ``flatten_position`` is the only producer of that
     reason, an existing manual-flatten order (born only when creation was allowed)
     stays claimable, so the submission gate is untouched.
+
+    ``actor`` (REV-0002 F-002) is a pure pass-through: the store resolves the
+    command actor and hands it in, and it is only stamped into the
+    ``manual_flatten_deferred`` event's payload here — this planner never resolves
+    identity itself, keeping it a pure function of its inputs.
     """
 
     if position.quantity <= 0:
@@ -1053,6 +1060,9 @@ def plan_flatten_position(
                     "reason": "deferred_to_live_protection",
                     "order_status": active_order.status.value,
                     "deferred_intent_reason": active_intent.reason.value,
+                    # Who commanded the flatten (REV-0002 F-002) — passed IN by the
+                    # store, never resolved inside this pure planner.
+                    "actor": actor,
                 },
                 session_id=active_order.session_id,
                 correlation_id=active_intent.id,

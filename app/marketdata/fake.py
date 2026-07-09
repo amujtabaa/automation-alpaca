@@ -84,7 +84,7 @@ class FakeMarketDataFeed(MarketDataService):
         last_price: Optional[float] = None,
         bid: Optional[float] = None,
         ask: Optional[float] = None,
-        volume: Optional[int] = None,
+        volume: Optional[float] = None,
         prev_close: Optional[float] = None,
         stale: bool = False,
         updated_at: Optional[datetime] = None,

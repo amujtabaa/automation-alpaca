@@ -118,8 +118,11 @@ def get_protection() -> dict:
 
 def flatten_position(symbol: str) -> dict:
     """Manually flatten a position (Phase 7 / D-P2). Returns
-    ``{"intent": {...}, "order": {...}}``. Always works — bypasses the kill
-    switch / pause / closed session at the backend."""
+    ``{"intent": {...}, "order": {...}, "deferred": bool,
+    "deferred_order_status": str|None}``. ``deferred=True`` means NO manual order
+    was submitted — the flatten was safely deferred to an already in-flight
+    protection exit (REV-0002 F-001). Always works — bypasses the kill switch /
+    pause / closed session at the backend."""
 
     return _request("POST", f"/api/positions/{symbol}/flatten")
 

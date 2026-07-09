@@ -109,7 +109,7 @@ def _trading_day(dt: datetime) -> date:
 
 
 def _seed_from_snapshot(raw) -> tuple[
-    Optional[float], Optional[float], Optional[float], Optional[int], Optional[float]
+    Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]
 ]:
     """Extract ``(last_price, bid, ask, volume, prev_close)`` from an Alpaca
     ``Snapshot``. Any missing sub-object yields ``None`` for its fields — a
@@ -316,7 +316,7 @@ class AlpacaMarketDataStream(MarketDataService):
 
     def _fetch_seed(
         self, symbol: str
-    ) -> tuple[Optional[float], Optional[float], Optional[float], Optional[int], Optional[float]]:
+    ) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
         """REST-seed one symbol's snapshot fields (sync; called via to_thread).
 
         One symbol at a time, not a batched multi-symbol request: a batch
@@ -413,9 +413,11 @@ class AlpacaMarketDataStream(MarketDataService):
                 # trades that occurred during the gap) — adequate for a
                 # threshold gate (Strategy Engine's min-volume check), not for
                 # precise reporting.
-                # volume is a whole-share count (MarketSnapshot.volume is int);
-                # trade.size is typed float by the SDK, so coerce the sum back to int.
-                volume=int((existing.volume or 0) + trade.size),
+                # trade.size is typed float by the SDK (fractional / odd-lot prints
+                # occur), and MarketSnapshot.volume is float, so keep the running sum
+                # as a float — an int() coercion here silently truncated sub-share
+                # sizes before the min-volume gate (REV-0002 F-003).
+                volume=(existing.volume or 0) + trade.size,
                 updated_at=utcnow(),
             )
 

@@ -127,6 +127,10 @@ def _screen_text(at) -> str:
     )
 
 
+def _toast_text(at) -> str:
+    return " ".join(getattr(t, "value", "") or "" for t in at.toast)
+
+
 # --------------------------------------------------------------------------- #
 # Tests
 # --------------------------------------------------------------------------- #
@@ -262,6 +266,63 @@ def test_flatten_button_present_and_functional(monkeypatch):
     at.button(key="confirm_flatten_AAPL").click().run()
     assert not at.exception
     assert ("flatten", "AAPL") in recorder
+
+
+def test_flatten_deferred_renders_distinct_message(monkeypatch):
+    """REV-0002 F-001: a DEFERRED flatten (the symbol is already exiting via a
+    live protection order) must NOT toast the misleading "flatten submitted" — it
+    tells the operator no manual order was submitted and that it is monitoring."""
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=_protection(),
+    )
+
+    def deferred_flatten(symbol: str) -> dict:
+        return {
+            "deferred": True,
+            "deferred_order_status": "timeout_quarantine",
+            "intent": {"id": "si1", "reason": "protection_floor"},
+            "order": {"id": "o9", "status": "timeout_quarantine"},
+        }
+
+    monkeypatch.setattr(api_client, "flatten_position", deferred_flatten)
+    at.button(key="flatten_AAPL").click().run()
+    at.button(key="confirm_flatten_AAPL").click().run()
+    assert not at.exception
+    toast = _toast_text(at)
+    assert "No manual order submitted" in toast
+    assert "timeout_quarantine" in toast
+    assert "monitoring" in toast.lower()
+    assert "flatten submitted" not in toast
+
+
+def test_flatten_not_deferred_renders_submitted_message(monkeypatch):
+    at = _run(
+        monkeypatch,
+        positions=[SAMPLE_POSITION],
+        operator=_operator(),
+        recorder=[],
+        protection=_protection(),
+    )
+
+    def created_flatten(symbol: str) -> dict:
+        return {
+            "deferred": False,
+            "deferred_order_status": None,
+            "intent": {"id": "si1", "reason": "manual_flatten"},
+            "order": {"id": "o9", "status": "created"},
+        }
+
+    monkeypatch.setattr(api_client, "flatten_position", created_flatten)
+    at.button(key="flatten_AAPL").click().run()
+    at.button(key="confirm_flatten_AAPL").click().run()
+    assert not at.exception
+    toast = _toast_text(at)
+    assert "AAPL flatten submitted" in toast
+    assert "No manual order submitted" not in toast
 
 
 def test_open_order_cancel_button_present(monkeypatch):

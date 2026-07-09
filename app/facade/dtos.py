@@ -73,13 +73,17 @@ class MarketSnapshotView(BaseModel):
     ``pct_move``, which the facade computes with the SAME ``app.features.pct_move``
     the Strategy Engine decides on — so the route stops importing ``app.features``
     and the market-data port, and the cockpit never re-derives the number. Field
-    order matches the former ``MarketSnapshotResponse`` so the JSON is unchanged."""
+    order matches the former ``MarketSnapshotResponse``. (``volume`` is a float —
+REV-0002 F-003 — so a whole-share value renders as ``100000.0``; no consumer of
+this endpoint relies on an integer JSON token.)"""
 
     symbol: str
     last_price: Optional[float]
     bid: Optional[float]
     ask: Optional[float]
-    volume: Optional[int]
+    # float, mirroring MarketSnapshot.volume — a fractional session volume must
+    # round-trip without a Pydantic int-coercion ValidationError (REV-0002 F-003).
+    volume: Optional[float]
     prev_close: Optional[float]
     pct_move: Optional[float]
     updated_at: datetime
@@ -112,6 +116,11 @@ class FlattenResponse(BaseModel):
 
     intent: SellIntent
     order: Optional[Order] = None
+    # deferred=True means NO manual order was submitted: the flatten was safely
+    # deferred to an already in-flight protection exit (INV-036 / REV-0002 F-001).
+    # Both fields default so a non-deferral response is byte-identical (additive).
+    deferred: bool = False
+    deferred_order_status: Optional[str] = None
 
 
 class ProtectionConfigView(BaseModel):

@@ -815,7 +815,7 @@ class StoreBackedCommandFacade:
         await cancel_open_buys(self._store, self._broker, key)
 
         try:
-            result = await self._store.flatten_position(key)
+            result = await self._store.flatten_position(key, actor=actor)
         except (FlattenBlockedError, InvalidOrderError) as exc:
             # ADR-003 Halted-deny / an oversell/unpriceable exit → 409. Any OTHER
             # store error propagates raw (500), exactly as the old route did.
@@ -823,7 +823,17 @@ class StoreBackedCommandFacade:
 
         if result.outcome == FLATTEN_FLAT:
             raise ConflictError(f"no open {key} position to flatten")
-        return FlattenResponse(intent=result.intent, order=result.order)
+        # REV-0002 F-001: surface a safe deferral to a live protection exit
+        # explicitly (no manual order was submitted) instead of masquerading it as
+        # a real submitted exit. Defaulted fields keep a normal create identical.
+        return FlattenResponse(
+            intent=result.intent,
+            order=result.order,
+            deferred=result.deferred,
+            deferred_order_status=(
+                result.order.status.value if result.deferred and result.order else None
+            ),
+        )
 
     async def cancel(self, *, order_id: str, actor: str) -> Order:
         """``POST /api/orders/{order_id}/cancel`` (P6e): human-triggered manual
@@ -947,10 +957,19 @@ class StoreBackedCommandFacade:
         await cancel_open_buys(self._store, self._broker, key)
 
         try:
-            result = await self._store.flatten_position(key)
+            result = await self._store.flatten_position(key, actor=actor)
         except (FlattenBlockedError, InvalidOrderError) as exc:
             raise ConflictError(str(exc)) from exc
 
         if result.outcome == FLATTEN_FLAT:
             raise ConflictError(f"no open {key} position to flatten")
-        return FlattenResponse(intent=result.intent, order=result.order)
+        # Same deferral surfacing as create_exit (REV-0002 F-001); shares the
+        # in-flight-protection deferral behavior of the underlying flatten.
+        return FlattenResponse(
+            intent=result.intent,
+            order=result.order,
+            deferred=result.deferred,
+            deferred_order_status=(
+                result.order.status.value if result.deferred and result.order else None
+            ),
+        )

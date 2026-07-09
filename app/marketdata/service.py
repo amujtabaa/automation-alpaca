@@ -40,7 +40,10 @@ class MarketSnapshot:
     last_price: Optional[float]
     bid: Optional[float]
     ask: Optional[float]
-    volume: Optional[int]
+    # Session volume is accumulated from observed trade sizes; the SDK types
+    # Trade.size / Bar.volume as float (fractional / odd-lot prints occur), so
+    # volume is float — an int would truncate sub-share prints (REV-0002 F-003).
+    volume: Optional[float]
     prev_close: Optional[float]
     updated_at: datetime
     stale: bool = False

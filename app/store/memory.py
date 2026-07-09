@@ -50,6 +50,7 @@ from app.models import (
     utcnow,
 )
 from app.events.projectors import (
+    ORDER_STATUS_EVENT_TYPES,
     active_emergency_reduce_overrides,
     compose_trading_state,
     control_trading_state,
@@ -169,18 +170,23 @@ class InMemoryStateStore(StateStore):
         CREATED. Emit one synthetic reconstruction event per such order so the
         projection yields its (pre-flip authoritative) column status. Runs AFTER the
         fill backfill so filled_quantity's FILL events already exist. Only touches
-        orders with NO lifecycle events (projection==CREATED, column!=CREATED) — never
-        overrides an order that already has events — and is idempotent (deterministic
-        dedupe_key). Mirror of the SQLite backfill."""
+        orders with NO status-lifecycle events (they genuinely predate eventing) —
+        never overrides an order that already has lifecycle events — and is idempotent
+        (deterministic dedupe_key). Mirror of the SQLite backfill."""
 
         for order in self._orders.values():
-            projected = project_order_status(
-                self._execution_events, order.id, order.quantity
+            # WO-0013 (F-002): reconstruct ONLY orders with zero status-lifecycle
+            # events. Keying on projected.status == CREATED was wrong: a legitimately
+            # released order (SUBMIT_PENDING -> SUBMIT_RELEASED) also projects CREATED
+            # while holding real lifecycle events, so it was clobbered by a synthetic
+            # event. A FILL is excluded from the set (a position fact, not a status
+            # event), so a pre-eventing FILLED order (fills backfilled, no lifecycle
+            # event) is still correctly reconstructed.
+            has_status_events = any(
+                e.order_id == order.id and e.event_type in ORDER_STATUS_EVENT_TYPES
+                for e in self._execution_events
             )
-            if (
-                projected.status is OrderStatus.CREATED
-                and order.status is not OrderStatus.CREATED
-            ):
+            if not has_status_events and order.status is not OrderStatus.CREATED:
                 event = order_status_backfill_event(order)
                 if event is not None:
                     self._append_execution_event_unlocked(event)
@@ -666,6 +672,7 @@ class InMemoryStateStore(StateStore):
         floor_price: Optional[float] = None,
         observed_price: Optional[float] = None,
         session_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> SellIntent:
         """Build + insert a fresh sell intent row + its ``sell_intent_created``
         event (assumes the lock and an ``_atomic()`` block are already held by
@@ -691,7 +698,13 @@ class InMemoryStateStore(StateStore):
             symbol=symbol,
             session_id=session_id,
             correlation_id=intent.id,
-            payload={"reason": reason.value, "target_quantity": target_quantity},
+            payload={
+                "reason": reason.value,
+                "target_quantity": target_quantity,
+                # Who commanded a created MANUAL_FLATTEN (REV-0002 F-002); the
+                # default keeps a protection-tick create_sell_intent at "system".
+                "actor": actor,
+            },
         )
         return intent
 
@@ -913,7 +926,11 @@ class InMemoryStateStore(StateStore):
             return order.model_copy(deep=True)
 
     async def flatten_position(
-        self, symbol: str, *, session_id: Optional[str] = None
+        self,
+        symbol: str,
+        *,
+        session_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> FlattenResult:
         key = normalize_symbol(symbol)
         async with self._lock:
@@ -942,6 +959,7 @@ class InMemoryStateStore(StateStore):
             plan = plan_flatten_position(
                 position=position, active_intent=active, active_order=active_order,
                 trading_state=trading_state, override_active=override_active,
+                actor=actor,
             )
 
             if plan.outcome == FLATTEN_DENIED_HALTED:
@@ -981,6 +999,11 @@ class InMemoryStateStore(StateStore):
                         if plan.existing_order is not None
                         else None
                     ),
+                    # A deferral to a live protection exit (REV-0002 F-001) — key
+                    # on the deferral event, NOT the outcome: the idempotent
+                    # own-manual-flatten re-return is ALSO FLATTEN_EXISTING but has
+                    # no deferral_event, so it correctly reads deferred=False.
+                    deferred=plan.deferral_event is not None,
                 )
 
             # FLATTEN_SUPERSEDE_AND_CREATE — the whole supersede (if any) +
@@ -1035,6 +1058,7 @@ class InMemoryStateStore(StateStore):
                     reason=SellReason.MANUAL_FLATTEN,
                     target_quantity=plan.target_quantity,
                     session_id=session_id,
+                    actor=actor,
                 )
                 self._transition_sell_intent_unlocked(
                     intent, SellIntentStatus.APPROVED
@@ -1188,6 +1212,15 @@ class InMemoryStateStore(StateStore):
     async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
         async with self._lock:
             order = self._orders.get(order_id)
+            if order is not None:
+                # WO-0013 (F-001): the double-submit gate reads event-log TRUTH, not
+                # the co-written orders.status column. The read-flip (WO-0007b Stage D)
+                # redirected get_order/list_orders; the claim gate must derive status
+                # from the same projection under this lock, else a column drifted to
+                # CREATED would re-claim an already-submitted order and blind-resubmit.
+                # The projected order flows into BOTH the gate and the SUBMIT_PENDING
+                # co-write below, so a claimable order is CREATED per the log there too.
+                order = self._project_order_unlocked(order)
             own_session = (
                 next(
                     (s for s in self._sessions if s.id == order.session_id), None

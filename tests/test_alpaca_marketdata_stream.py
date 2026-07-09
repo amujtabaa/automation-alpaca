@@ -292,6 +292,24 @@ class TestLiveHandlers:
         assert snap.last_price == 102.0
         assert snap.volume == 1_000 + 50 + 25
 
+    async def test_trade_accumulates_fractional_size_without_truncation(self):
+        # REV-0002 F-003: trade.size is float per the SDK (fractional / odd-lot
+        # prints occur); the accumulator must NOT int()-truncate it before the
+        # Strategy Engine's min-volume gate, or sub-share volume silently vanishes.
+        stream = _stream()
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=100, prev_close=99.0)}
+        )
+        stream._stream.subscribe_trades = Mock()
+        stream._stream.subscribe_quotes = Mock()
+        await stream.subscribe(["AAPL"])
+
+        await stream._on_trade(SimpleNamespace(symbol="AAPL", price=101.0, size=0.5))
+        await stream._on_trade(SimpleNamespace(symbol="AAPL", price=101.0, size=0.25))
+
+        snap = await stream.get_snapshot("AAPL")
+        assert snap.volume == 100.75  # preserved, not truncated to 100
+
     async def test_quote_updates_bid_ask(self):
         stream = _stream()
         stream._historical.get_stock_snapshot = Mock(

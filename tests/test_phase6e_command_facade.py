@@ -35,7 +35,14 @@ from app.facade.errors import (
     InvalidInputError,
 )
 from app.facade.store_backed import StoreBackedCommandFacade
-from app.models import OrderSide, OrderStatus, SellReason, SessionType
+from app.models import (
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    SellIntentStatus,
+    SellReason,
+    SessionType,
+)
 import app.monitoring as monitoring
 from app.store.base import (
     FLATTEN_FLAT,
@@ -57,6 +64,21 @@ async def _hold(store, symbol: str, qty: int, *, avg: float = 10.0) -> None:
         buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id
     )
     await store.transition_order(buy.id, OrderStatus.CANCELED)
+
+
+async def _live_protection_floor(store, symbol: str, qty: int) -> tuple:
+    """A LIVE (SUBMITTED-at-broker) PROTECTION_FLOOR exit for ``symbol`` — the
+    in-flight exit a manual flatten must DEFER to (INV-036)."""
+    si = await store.create_sell_intent(
+        symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=qty
+    )
+    await store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
+    order = await store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
+    claim = await store.claim_order_for_submission(order.id)
+    await store.transition_order(
+        claim.order.id, OrderStatus.SUBMITTED, broker_order_id="broker-x"
+    )
+    return si, order
 
 
 def _regular(monkeypatch) -> None:
@@ -112,6 +134,45 @@ async def test_create_exit_success(any_store, monkeypatch):
     assert resp.order is not None
 
 
+async def test_create_exit_deferred_reports_distinctly(any_store, monkeypatch):
+    """REV-0002 F-001: when the flatten SAFELY DEFERS to an in-flight protection
+    exit, the facade response says so explicitly (``deferred``/
+    ``deferred_order_status``) instead of masquerading as a real submitted exit —
+    and no new manual order is created. F-002: the deferral event records the
+    command actor threaded route->facade->store."""
+    _regular(monkeypatch)
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    prot_intent, prot_order = await _live_protection_floor(any_store, "AAPL", 100)
+    facade = _facade(any_store, broker=MockBrokerAdapter())
+
+    resp = await facade.create_exit(symbol="AAPL", actor="op")
+
+    assert resp.deferred is True
+    assert resp.deferred_order_status == OrderStatus.SUBMITTED.value
+    assert resp.intent.reason is SellReason.PROTECTION_FLOOR
+    # No extra SELL order was minted (the live protection exit is left alone).
+    sells = [o for o in await any_store.list_orders() if o.side is OrderSide.SELL]
+    assert len(sells) == 1
+    # Actor threaded all the way onto the deferral provenance event.
+    events = await any_store.list_events(correlation_id=prot_intent.id)
+    deferrals = [e for e in events if e.event_type == "manual_flatten_deferred"]
+    assert len(deferrals) == 1
+    assert deferrals[0].payload.get("actor") == "op"
+
+
+async def test_create_exit_not_deferred_by_default(any_store, monkeypatch):
+    """A normal create is byte-identical to before plus the additive defaults:
+    ``deferred is False``, ``deferred_order_status is None``."""
+    _regular(monkeypatch)
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    facade = _facade(any_store, broker=MockBrokerAdapter())
+    resp = await facade.create_exit(symbol="AAPL", actor="op")
+    assert resp.deferred is False
+    assert resp.deferred_order_status is None
+
+
 async def test_create_exit_race_to_flat_after_buy_cancel_is_409(any_store, monkeypatch):
     """Transient window: the pre-check saw a position, but by the time the atomic
     ``flatten_position`` ran under its own lock the symbol was flat (a concurrent
@@ -121,7 +182,7 @@ async def test_create_exit_race_to_flat_after_buy_cancel_is_409(any_store, monke
     await _hold(any_store, "AAPL", 100)  # pre-check passes (qty > 0)
     facade = _facade(any_store, broker=MockBrokerAdapter())
 
-    async def _flat(_symbol):
+    async def _flat(_symbol, *, actor="system"):
         return SimpleNamespace(outcome=FLATTEN_FLAT, intent=None, order=None)
 
     monkeypatch.setattr(any_store, "flatten_position", _flat)
@@ -174,7 +235,7 @@ async def test_emergency_reduce_flatten_invalid_after_grant_is_409(
     await any_store.set_kill_switch(True)
     facade = _facade(any_store, broker=MockBrokerAdapter())
 
-    async def _boom(_symbol):
+    async def _boom(_symbol, *, actor="system"):
         raise InvalidOrderError("unpriceable exit")
 
     monkeypatch.setattr(any_store, "flatten_position", _boom)

@@ -255,6 +255,16 @@ _LIFECYCLE_EVENT_TO_STATUS: dict[ExecutionEventType, OrderStatus] = {
     ExecutionEventType.TIMEOUT_QUARANTINE: OrderStatus.TIMEOUT_QUARANTINE,
 }
 
+# Public view of the status-lifecycle event types (the keys of the fold map above).
+# An order is "evented for status" iff it carries >=1 event of one of these types.
+# A FILL is deliberately EXCLUDED — it is a position fact, never a status-lifecycle
+# event (see project_order_status). The stores' init backfill uses this to decide
+# whether an order predates eventing (zero lifecycle events) and needs a synthetic
+# reconstruction, keeping that decision single-sourced with the fold's vocabulary.
+ORDER_STATUS_EVENT_TYPES: frozenset[ExecutionEventType] = frozenset(
+    _LIFECYCLE_EVENT_TO_STATUS
+)
+
 
 @dataclass(frozen=True)
 class OrderStatusProjection:

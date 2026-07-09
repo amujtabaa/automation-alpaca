@@ -46,6 +46,20 @@ def test_returns_populated_snapshot(client):
     assert "updated_at" in snap
 
 
+def test_fractional_volume_serializes_through_the_view(client):
+    """REV-0002 F-003: a fractional session volume must round-trip through
+    MarketSnapshotView (the response DTO) without a Pydantic ValidationError —
+    the view's volume field must be float, not int."""
+    feed: FakeMarketDataFeed = client.app.state.market_data
+    feed.set_snapshot("AAPL", last_price=103.0, volume=100_000.5, prev_close=100.0)
+
+    resp = client.get("/api/marketdata/snapshots")
+
+    assert resp.status_code == 200
+    [snap] = resp.json()
+    assert snap["volume"] == 100_000.5
+
+
 def test_subscribed_symbol_with_no_data_yet_serializes_nulls(client):
     feed: FakeMarketDataFeed = client.app.state.market_data
     asyncio.run(feed.subscribe(["MSFT"]))

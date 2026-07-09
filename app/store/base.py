@@ -343,6 +343,12 @@ class FlattenResult:
     intent: Optional[SellIntent] = None
     order: Optional[Order] = None
     superseded: bool = False
+    # True ONLY when ``existing`` is a deferral to a genuinely in-flight/live
+    # PROTECTION_FLOOR exit (a ``manual_flatten_deferred`` provenance event was
+    # written): NO manual order was submitted (REV-0002 F-001). Defaulted, so the
+    # idempotent own-manual-flatten re-return — also ``existing``, but with no
+    # deferral — and every ``created``/``flat`` outcome read ``deferred=False``.
+    deferred: bool = False
 
 
 class StateStore(ABC):
@@ -556,7 +562,11 @@ class StateStore(ABC):
 
     @abstractmethod
     async def flatten_position(
-        self, symbol: str, *, session_id: Optional[str] = None
+        self,
+        symbol: str,
+        *,
+        session_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> FlattenResult:
         """Atomically open (or return the existing) ``manual_flatten`` exit for
         ``symbol`` — the whole "read the live position, stand down any
@@ -592,7 +602,11 @@ class StateStore(ABC):
         racing a partial fill.
 
         Returns :class:`FlattenResult`. ``session_id`` seeds a freshly-created
-        intent only (ignored when returning an existing one).
+        intent only (ignored when returning an existing one). ``actor`` (P6-C
+        audit label, REV-0002 F-002) is stamped on the provenance event of
+        whichever path runs — the created intent's ``sell_intent_created`` or the
+        ``manual_flatten_deferred`` deferral event — recording who commanded the
+        flatten; it defaults to ``COMMAND_ACTOR_SYSTEM`` for internal/test callers.
         """
 
     # ------------------------------------------------------------------ #
