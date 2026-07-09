@@ -1630,6 +1630,22 @@ def execution_event_for_routine_transition(
 
     source, authority = _routine_event_provenance(order, new_status)
 
+    # Defense-in-depth (WO-0007b, adversarial-verify finding): TIMEOUT_QUARANTINE is
+    # a legal ORDER_TRANSITIONS edge from SUBMITTING, but it is set ONLY via the
+    # evented path (plan_transition_order_evented, which co-writes the
+    # TIMEOUT_QUARANTINE ExecutionEvent). A routine transition_order that reached it
+    # would flip orders.status with NO event, silently diverging the order-status
+    # projection (project_order_status would reconstruct the prior status). No call
+    # site does this today; this refuses it loudly rather than leaving a footgun
+    # for the read-flip (Stage D). The order stays un-transitioned (the helper runs
+    # before the store's atomic write).
+    assert new_status is not OrderStatus.TIMEOUT_QUARANTINE, (
+        "execution_event_for_routine_transition: TIMEOUT_QUARANTINE must be set via "
+        "the evented path (plan_transition_order_evented), not routine "
+        f"transition_order (order {order.id}) — the routine path emits no "
+        "TIMEOUT_QUARANTINE event, which would diverge the order-status projection"
+    )
+
     if new_status is OrderStatus.SUBMITTING:
         n = occurrence if occurrence is not None else 0
         return ExecutionEvent(

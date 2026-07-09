@@ -89,6 +89,28 @@ def test_helper_cancel_pending_self_loop_emits_nothing():
     assert ev is None
 
 
+def test_helper_refuses_routine_timeout_quarantine():
+    # Defense-in-depth (adversarial-verify finding): TIMEOUT_QUARANTINE is a legal
+    # SUBMITTING edge but is evented-only; the routine helper must refuse it loudly
+    # rather than emit no event and silently diverge the projection.
+    with pytest.raises(AssertionError):
+        execution_event_for_routine_transition(
+            _order(OrderStatus.SUBMITTING), OrderStatus.TIMEOUT_QUARANTINE, None
+        )
+
+
+async def test_store_routine_transition_to_timeout_quarantine_raises_no_partial_write(any_store):
+    _, order = await _created_buy(any_store)
+    await any_store.claim_order_for_submission(order.id)
+    with pytest.raises(AssertionError):
+        await any_store.transition_order(order.id, OrderStatus.TIMEOUT_QUARANTINE)
+    # No partial write: the order stays SUBMITTING and no TIMEOUT_QUARANTINE event.
+    row = await any_store.get_order(order.id)
+    assert row.status is OrderStatus.SUBMITTING
+    events = await any_store.get_execution_events()
+    assert not [e for e in events if e.event_type is ExecutionEventType.TIMEOUT_QUARANTINE]
+
+
 # ---- store wiring (both stores) ----------------------------------------- #
 async def _created_buy(store):
     await store.initialize()
