@@ -1751,6 +1751,51 @@ def execution_event_for_routine_transition(
     )
 
 
+# ---- order-status backfill (WO-0007b Stage D read-flip migration) --------- #
+#
+# After the read-flip, get_order derives status from project_order_status. An order
+# whose status predates WO-0007a eventing has NO lifecycle events, so it would
+# project CREATED (the default) — a regression. At init the store backfills a
+# single synthetic reconstruction event for each such order so the projection yields
+# its (pre-flip authoritative) column status. Mirrors the FILL backfill
+# (_backfill_fill_events) and the trading-state column heal. Only fires for orders
+# with NO lifecycle events (projection==CREATED) whose column is non-CREATED — it
+# never overrides an order that already has events, so it cannot mis-heal a genuine
+# divergence. Deterministic dedupe_key => idempotent across re-init / replay.
+_STATUS_TO_BACKFILL_EVENT: dict[OrderStatus, ExecutionEventType] = {
+    OrderStatus.SUBMITTING: ExecutionEventType.SUBMIT_PENDING,
+    OrderStatus.SUBMITTED: ExecutionEventType.SUBMITTED,
+    OrderStatus.PARTIALLY_FILLED: ExecutionEventType.PARTIALLY_FILLED,
+    OrderStatus.CANCEL_PENDING: ExecutionEventType.CANCEL_PENDING,
+    OrderStatus.FILLED: ExecutionEventType.FILLED,
+    OrderStatus.CANCELED: ExecutionEventType.CANCELED,
+    OrderStatus.REJECTED: ExecutionEventType.REJECTED,
+    OrderStatus.TIMEOUT_QUARANTINE: ExecutionEventType.TIMEOUT_QUARANTINE,
+}
+
+
+def order_status_backfill_event(order: Order) -> Optional[ExecutionEvent]:
+    """The synthetic reconstruction event that makes ``project_order_status`` yield
+    ``order.status`` for a pre-WO-0007a order that has no lifecycle events. Returns
+    ``None`` for ``CREATED`` (the projector's default — no event needed). Provenance
+    is ``RECONCILIATION``/``SYNTHETIC`` (a deterministic migration-time inference,
+    not a live broker/engine fact)."""
+
+    event_type = _STATUS_TO_BACKFILL_EVENT.get(order.status)
+    if event_type is None:
+        return None
+    return ExecutionEvent(
+        event_type=event_type,
+        source=EventSource.RECONCILIATION,
+        authority=EventAuthority.SYNTHETIC,
+        dedupe_key=f"backfill_status:{order.id}",
+        symbol=order.symbol,
+        side=OrderSide(order.side),
+        order_id=order.id,
+        session_id=order.session_id,
+    )
+
+
 # ---- evented order transition (wave 3c: TIMEOUT_QUARANTINE, ADR-002) ------ #
 
 

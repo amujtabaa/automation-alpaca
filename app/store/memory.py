@@ -88,6 +88,7 @@ from app.store.core import (
     FILL_REJECT,
     execution_event_for_fill,
     execution_event_for_routine_transition,
+    order_status_backfill_event,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_DENIED_HALTED,
@@ -159,7 +160,30 @@ class InMemoryStateStore(StateStore):
             with self._atomic():
                 self._backfill_fill_events_unlocked()
                 self._backfill_trading_state_events_unlocked()
+                self._backfill_order_status_events_unlocked()
                 self._ensure_current_session_unlocked()
+
+    def _backfill_order_status_events_unlocked(self) -> None:
+        """WO-0007b read-flip migration: an order whose status predates WO-0007a
+        eventing has no lifecycle events, so post-flip get_order would project
+        CREATED. Emit one synthetic reconstruction event per such order so the
+        projection yields its (pre-flip authoritative) column status. Runs AFTER the
+        fill backfill so filled_quantity's FILL events already exist. Only touches
+        orders with NO lifecycle events (projection==CREATED, column!=CREATED) — never
+        overrides an order that already has events — and is idempotent (deterministic
+        dedupe_key). Mirror of the SQLite backfill."""
+
+        for order in self._orders.values():
+            projected = project_order_status(
+                self._execution_events, order.id, order.quantity
+            )
+            if (
+                projected.status is OrderStatus.CREATED
+                and order.status is not OrderStatus.CREATED
+            ):
+                event = order_status_backfill_event(order)
+                if event is not None:
+                    self._append_execution_event_unlocked(event)
 
     def _backfill_trading_state_events_unlocked(self) -> None:
         """Ensure each session's derived ``TradingState`` (§8 / wave 3d) is

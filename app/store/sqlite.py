@@ -104,6 +104,7 @@ from app.store.core import (
     FILL_REJECT,
     execution_event_for_fill,
     execution_event_for_routine_transition,
+    order_status_backfill_event,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_DENIED_HALTED,
@@ -414,9 +415,44 @@ class SqliteStateStore(StateStore):
                 "CREATE INDEX IF NOT EXISTS idx_exec_events_symbol_type "
                 "ON execution_events(symbol, event_type)"
             )
+            # WO-0007b read-flip: get_order folds a per-order event query
+            # (WHERE order_id=?); index it so the flipped read stays cheap.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_events_order "
+                "ON execution_events(order_id)"
+            )
             self._backfill_fill_events_locked()
             self._backfill_trading_state_events_locked()
+            self._backfill_order_status_events_locked()
             self._ensure_current_session_locked()
+
+    def _backfill_order_status_events_locked(self) -> None:
+        """WO-0007b read-flip migration (mirror of the in-memory backfill): an order
+        whose status predates WO-0007a eventing has no lifecycle events, so post-flip
+        get_order would project CREATED. Emit one synthetic reconstruction event per
+        such order so the projection yields its (pre-flip authoritative) column
+        status. Runs AFTER the fill backfill. Only touches orders with NO lifecycle
+        events (projection==CREATED, column!=CREATED); idempotent (deterministic
+        dedupe_key + the projection sees prior backfill events on re-init)."""
+
+        order_rows = self._read_all("SELECT * FROM orders")
+        if not order_rows:
+            return
+        event_rows = self._read_all(
+            "SELECT * FROM execution_events ORDER BY sequence"
+        )
+        events = [self._execution_event(r) for r in event_rows]
+        with self._tx() as cur:
+            for row in order_rows:
+                order = self._order(row)
+                projected = project_order_status(events, order.id, order.quantity)
+                if (
+                    projected.status is OrderStatus.CREATED
+                    and order.status is not OrderStatus.CREATED
+                ):
+                    event = order_status_backfill_event(order)
+                    if event is not None:
+                        self._insert_execution_event(cur, event)
 
     def _backfill_trading_state_events_locked(self) -> None:
         """Ensure each session's derived ``TradingState`` (§8 / wave 3d) is
