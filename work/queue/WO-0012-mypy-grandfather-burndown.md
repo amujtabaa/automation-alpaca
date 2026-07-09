@@ -88,11 +88,29 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
   Every assert must be verified against the actual runtime invariant (not assumed) and the FULL SUITE
   run per module — a wrong assert would fire in production on the single-writer store. This is why it
   is paced across sessions per this WO's own model, not rushed.
-- **Not yet measured / remaining:** `app.monitoring` (~24 per ADR-007), `app.policy`,
-  `app.reconciliation`, `app.features`, `app.protection`, `app.strategy`, `app.broker.alpaca_paper`,
-  `app.broker.factory`, `app.marketdata.{alpaca_stream,factory,fake}`, `app.facade.store_backed`,
-  `app.api.routes_dev`. **Stores (core, memory, sqlite) are now DONE** — next is
-  monitoring/policy/reconciliation.
+- **Remaining tail — 12 modules, 64 mypy errors (measured 2026-07-09; full list captured).** UNLIKE
+  the stores/monitoring, this tail is NOT a uniform narrowing sweep — it is **29 `[operator]`, 16
+  `[arg-type]`, 14 `[union-attr]`, 2 `[attr-defined]`, 2 `[assignment]`, 1 `[type-var]`**, several of
+  which need genuine real-bug-vs-false-positive triage (a careless `assert x is not None` on some of
+  these would MASK a crash, not fix a type). Do NOT batch-sweep; triage each. Per-module map:
+  - `features.py` **19** and `protection.py` **16** — mostly `[operator]` (likely the
+    `finite_number_reason(x) is not None or x <= 0` short-circuit idiom, same false-positive class as
+    `monitoring._snapshot_fill_fallback` — fix by splitting the condition + a contract-justified
+    narrowing assert). Verify each against `finite_number_reason`'s contract before asserting.
+  - `policy.py` **7** — `int > object` / `int >= object` at lines 225/249/255/275/299/370/372. Distinct
+    class (numeric compare against an `object`-typed value, probably a payload field). Inspect the source
+    of the `object` — may want a validated numeric coercion, not a blind cast.
+  - `broker/alpaca_paper.py` **18**, `marketdata/alpaca_stream.py` **3** — alpaca-SDK boundary variance
+    (callable-variance to `to_thread`, `object`→typed args). These are adapter/SDK-typing quirks; a
+    targeted `cast(...)` or a narrow local annotation is usually right, NOT a behavior change.
+  - `facade/store_backed.py` **4** — `int < None` (488, triage), and `int|None`/`float|None` passed to
+    `risk_limit_reason` (743-744) — guard/validate the Optionals (risk math must not see None).
+  - `reconciliation.py:243` `None`→`BrokerOrderReport` (needs `Optional[...]` annotation).
+  - `strategy.py:125` `None * float` — **triage as a possible real bug** before touching.
+  - `marketdata/fake.py:106` `object`→`datetime`; `broker/factory.py:58-59`, `marketdata/factory.py:60-61`,
+    `api/routes_dev.py:44-45` — config/env `str|None` passed to `str` params (guard or assert-after-validate).
+  - Full captured list for the next session: rerun the throwaway un-grandfather + `mypy app/`.
+  **Stores (core, memory, sqlite) + monitoring are DONE.** Grandfather list now 12 modules.
 
 ## Notes / constraints
 - Per removed module: fix errors, keep the shrink-only ratchet, full suite + ruff + mypy green, own
