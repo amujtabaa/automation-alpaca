@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Order-status projector + read-flip to event_truth (depends on WO-0007a)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0007b
 wave: W2-remediation
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-08
 ---
