@@ -19,16 +19,19 @@ import asyncio
 import logging
 import math
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional, cast
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import QueryOrderStatus, TimeInForce
+from alpaca.trading.models import Order as AlpacaOrder
+from alpaca.trading.models import Position as AlpacaPosition
 from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    OrderRequest,
 )
 
 from app.broker.adapter import (
@@ -134,7 +137,10 @@ def _resolve_fill_price(
         if candidate is None:
             continue
         try:
-            price = float(candidate)
+            # candidate is deliberately `object` — the SDK hands back str/Decimal/
+            # float shapes; the try/except is the real guard, so cast for the type
+            # checker and let a non-floatable raise into the except below.
+            price = float(cast(Any, candidate))
         except (TypeError, ValueError):
             continue
         if math.isfinite(price) and price > 0:
@@ -231,7 +237,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
                     f"refusing to submit MARKET order {order.id!r} outside regular "
                     f"hours ({current_session}); Rule 12 requires limit-only"
                 )
-            req = MarketOrderRequest(
+            req: OrderRequest = MarketOrderRequest(
                 symbol=order.symbol,
                 qty=order.quantity,
                 side=alpaca_side,
@@ -250,7 +256,10 @@ class AlpacaPaperAdapter(BrokerAdapter):
             )
 
         try:
-            resp = await asyncio.to_thread(self._client.submit_order, req)
+            # The SDK types its returns as `Model | dict[str, Any]` for its
+            # raw_data mode; this client is not raw, so it always returns the typed
+            # model. Cast reflects that (runtime no-op) so attribute access typechecks.
+            resp = cast(AlpacaOrder, await asyncio.to_thread(self._client.submit_order, req))
             return str(resp.id)
         except APIError as exc:
             code = getattr(exc, "status_code", None)
@@ -267,8 +276,11 @@ class AlpacaPaperAdapter(BrokerAdapter):
                     order.id,
                 )
                 try:
-                    existing = await asyncio.to_thread(
-                        self._client.get_order_by_client_order_id, order.id
+                    existing = cast(
+                        AlpacaOrder,
+                        await asyncio.to_thread(
+                            self._client.get_order_by_client_id, order.id
+                        ),
                     )
                     return str(existing.id)
                 except Exception as lookup_exc:
@@ -341,8 +353,9 @@ class AlpacaPaperAdapter(BrokerAdapter):
         see :func:`_resolve_fill_price`.
         """
         try:
-            alpaca_order = await asyncio.to_thread(
-                self._client.get_order_by_id, broker_order_id
+            alpaca_order = cast(
+                AlpacaOrder,
+                await asyncio.to_thread(self._client.get_order_by_id, broker_order_id),
             )
         except Exception as exc:
             raise BrokerError(
@@ -417,8 +430,11 @@ class AlpacaPaperAdapter(BrokerAdapter):
         never mutates a venue order, so it can never double-submit.
         """
         try:
-            alpaca_order = await asyncio.to_thread(
-                self._client.get_order_by_client_order_id, client_order_id
+            alpaca_order = cast(
+                "Optional[AlpacaOrder]",
+                await asyncio.to_thread(
+                    self._client.get_order_by_client_id, client_order_id
+                ),
             )
         except APIError as exc:
             if getattr(exc, "status_code", None) == 404:
@@ -448,9 +464,12 @@ class AlpacaPaperAdapter(BrokerAdapter):
         the ``filled_quantity`` delta with a deterministic synthetic id (§3).
         """
         try:
-            alpaca_orders = await asyncio.to_thread(
-                self._client.get_orders,
-                GetOrdersRequest(status=QueryOrderStatus.OPEN),
+            alpaca_orders = cast(
+                "list[AlpacaOrder]",
+                await asyncio.to_thread(
+                    self._client.get_orders,
+                    GetOrdersRequest(status=QueryOrderStatus.OPEN),
+                ),
             )
         except Exception as exc:
             raise BrokerError("Failed to fetch the open-orders report.") from exc
@@ -479,7 +498,10 @@ class AlpacaPaperAdapter(BrokerAdapter):
         shares (beta is long-only, whole-share).
         """
         try:
-            positions = await asyncio.to_thread(self._client.get_all_positions)
+            positions = cast(
+                "list[AlpacaPosition]",
+                await asyncio.to_thread(self._client.get_all_positions),
+            )
         except Exception as exc:
             raise BrokerError("Failed to fetch the position report.") from exc
         reports: list[BrokerPositionReport] = []

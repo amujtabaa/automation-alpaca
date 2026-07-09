@@ -1,8 +1,11 @@
 # FINDING — broker adapter calls a non-existent alpaca-py method (`get_order_by_client_order_id`)
 
-- **Status:** OPEN — confirmed real bug on the **order-submission / reconciliation adapter** (a
-  human-gated safety surface). Per CLAUDE.md Review policy this change "queues for independent review";
-  NOT fixed autonomously. Exact fix is below, ready to apply under review.
+- **Status:** RESOLVED (human-authorized) — fixed via RED→GREEN: the two adapter tests were first
+  corrected to mock the real SDK method name (`get_order_by_client_id`), which went RED against the
+  buggy code, then the code was fixed and the full alpaca adapter typing cleared. Both SDK adapters are
+  now off the mypy grandfather list. **STILL QUEUES FOR INDEPENDENT REVIEW** per CLAUDE.md Review
+  policy before any beta milestone relies on it (order-submission/reconciliation surface). Diagnosis
+  and fix retained below for that review.
 - **Severity:** HIGH for `BROKER_ADAPTER=alpaca` (the paper-beta broker). No effect on the default
   `MockBrokerAdapter`. Found by the WO-0012 mypy gate (its intended purpose).
 - **Surfaced by:** WO-0012 alpaca-adapter triage, 2026-07-09.

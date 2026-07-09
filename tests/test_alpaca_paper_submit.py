@@ -258,11 +258,16 @@ class TestSubmitErrorClassification:
         adapter._client.submit_order = Mock(
             side_effect=_api_error(409, "duplicate client_order_id")
         )
-        adapter._client.get_order_by_client_order_id = Mock(
+        # The SDK method is get_order_by_client_id (NOT get_order_by_client_order_id,
+        # which does not exist on TradingClient) — mocking the real name is what
+        # makes this test actually exercise the recovery path.
+        adapter._client.get_order_by_client_id = Mock(
             return_value=SimpleNamespace(id="existing-broker-id")
         )
         monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
-        assert await adapter.submit_order(_order()) == "existing-broker-id"
+        order = _order()
+        assert await adapter.submit_order(order) == "existing-broker-id"
+        adapter._client.get_order_by_client_id.assert_called_once_with(order.id)
 
     async def test_duplicate_but_lookup_fails_is_terminal(self, monkeypatch):
         # The broker says duplicate but we cannot confirm the existing order — its
@@ -271,7 +276,7 @@ class TestSubmitErrorClassification:
         adapter._client.submit_order = Mock(
             side_effect=_api_error(422, "duplicate client_order_id")
         )
-        adapter._client.get_order_by_client_order_id = Mock(
+        adapter._client.get_order_by_client_id = Mock(
             side_effect=ConnectionError("lookup failed")
         )
         monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)

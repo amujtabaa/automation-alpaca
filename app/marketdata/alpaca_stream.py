@@ -61,7 +61,7 @@ import dataclasses
 import logging
 import threading
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Any, Optional, cast
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -204,8 +204,15 @@ class AlpacaMarketDataStream(MarketDataService):
         # just records the handler) or after (it dispatches onto the stream's
         # own loop via run_coroutine_threadsafe and blocks briefly for the ack
         # — hence to_thread, so it never blocks our loop).
-        await asyncio.to_thread(self._stream.subscribe_trades, self._on_trade, *new_symbols)
-        await asyncio.to_thread(self._stream.subscribe_quotes, self._on_quote, *new_symbols)
+        # The SDK types its handler param as accepting `Trade | dict` (raw_data
+        # mode); ours is typed for the parsed `Trade`/`Quote` only, which is all
+        # this non-raw stream ever delivers. Cast for the type checker (no-op).
+        await asyncio.to_thread(
+            self._stream.subscribe_trades, cast(Any, self._on_trade), *new_symbols
+        )
+        await asyncio.to_thread(
+            self._stream.subscribe_quotes, cast(Any, self._on_quote), *new_symbols
+        )
 
     async def unsubscribe(self, symbols: list[str]) -> None:
         with self._lock:
@@ -406,7 +413,9 @@ class AlpacaMarketDataStream(MarketDataService):
                 # trades that occurred during the gap) — adequate for a
                 # threshold gate (Strategy Engine's min-volume check), not for
                 # precise reporting.
-                volume=(existing.volume or 0) + trade.size,
+                # volume is a whole-share count (MarketSnapshot.volume is int);
+                # trade.size is typed float by the SDK, so coerce the sum back to int.
+                volume=int((existing.volume or 0) + trade.size),
                 updated_at=utcnow(),
             )
 

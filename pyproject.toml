@@ -67,17 +67,10 @@ module = ["numpy.*", "pandas.*", "pyarrow.*"]
 follow_imports = "skip"
 follow_imports_for_stubs = true
 
-# Grandfather punch-list (ADR-007): the 16 modules carrying pre-existing type
-# debt are ignored so the gate is green today; NEW modules are checked, and this
-# list only SHRINKS — burn down safety-critical stores first. Mirrors the
-# import-linter ignore-list + coverage fail_under ratchets already used here.
-[[tool.mypy.overrides]]
-ignore_errors = true
-module = [
-  # Only the two alpaca-py SDK-boundary adapters remain (SDK-variance typing,
-  # not app-logic debt). Everything else — stores, engine, policy, facade,
-  # features, protection, strategy, reconciliation, factories, dev route — is
-  # now fully typechecked.
-  "app.broker.alpaca_paper",
-  "app.marketdata.alpaca_stream",
-]
+# Grandfather punch-list (ADR-007): FULLY BURNED DOWN (WO-0012). The list started
+# at 16 modules carrying pre-existing type debt and only ever shrank; every module
+# — stores, engine, policy, facade, features, protection, strategy, reconciliation,
+# factories, dev route, and both alpaca-py SDK adapters — is now typechecked with no
+# `ignore_errors` override. The whole `app/` package is under the gate. (Third-party
+# stub handling stays above via the numpy/pandas/pyarrow follow_imports override.)
+# Next ADR-007 step: consider flipping `warn_unused_ignores = true`.

@@ -133,7 +133,21 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
   Evidence: `mypy app/` Success (54); ruff clean; **full suite 1948 / 0 / 0 / 5 skipped** (fresh
   Hypothesis cache; the flaky flatten test passed this run). Grandfather list now **2 modules**:
   only `app.broker.alpaca_paper` + `app.marketdata.alpaca_stream` (alpaca-py SDK-variance typing) remain.
-- **STOPPED at the 2 SDK adapters — a REAL BUG blocks them (needs review), 14/16 modules DONE.**
+- **COMPLETE — 16/16 modules cleared; grandfather list EMPTY (human-authorized SDK-adapter fix).**
+  `app.broker.alpaca_paper` + `app.marketdata.alpaca_stream` cleared. The real bug (wrong SDK method
+  name `get_order_by_client_order_id` → `get_order_by_client_id`, lines 271+421) was fixed RED→GREEN:
+  the two tests in `test_alpaca_paper_submit.py` were first corrected to mock the real method name
+  (RED against the buggy code), then the code fixed (GREEN) + a `.assert_called_once_with` regression
+  guard added. The 19 remaining errors were SDK-union typing noise (`raw_data` mode we don't use):
+  `cast(AlpacaOrder/AlpacaPosition, ...)` at each SDK call, `req: OrderRequest`, `float(cast(Any,...))`,
+  `cast(Any, self._on_trade/_on_quote)`, and `int(...)` on the volume sum — all runtime no-ops. The
+  `[[tool.mypy.overrides]] ignore_errors` block is removed entirely; the whole `app/` package is now
+  under the gate. Evidence: `mypy app/` Success (54); ruff clean; alpaca+timeout-quarantine suites
+  78/0/0; full suite **1948 / 0 / 0 / 5**. NOTE: the method-name fix is a real behavior change on the
+  order-submission/reconciliation surface → still queues for **independent review** per Review policy
+  before beta reliance (see `work/review/FINDING-alpaca-adapter-wrong-sdk-method.md`).
+- **(historical) Earlier plan stopped at the 2 SDK adapters pending the review decision; the human then
+  authorized the fix.** 14/16 → 16/16.
   Triaging `app.broker.alpaca_paper` (18) surfaced a **confirmed real bug**: it calls
   `self._client.get_order_by_client_order_id` (lines 271 + 421) which does not exist in alpaca-py 0.43.5
   — the correct method is `get_order_by_client_id`. Against the real SDK this AttributeErrors on the
