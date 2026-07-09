@@ -133,6 +133,19 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
   Evidence: `mypy app/` Success (54); ruff clean; **full suite 1948 / 0 / 0 / 5 skipped** (fresh
   Hypothesis cache; the flaky flatten test passed this run). Grandfather list now **2 modules**:
   only `app.broker.alpaca_paper` + `app.marketdata.alpaca_stream` (alpaca-py SDK-variance typing) remain.
+- **STOPPED at the 2 SDK adapters — a REAL BUG blocks them (needs review), 14/16 modules DONE.**
+  Triaging `app.broker.alpaca_paper` (18) surfaced a **confirmed real bug**: it calls
+  `self._client.get_order_by_client_order_id` (lines 271 + 421) which does not exist in alpaca-py 0.43.5
+  — the correct method is `get_order_by_client_id`. Against the real SDK this AttributeErrors on the
+  D-017 idempotent duplicate-recovery path and the ADR-002 timeout-quarantine reconciliation query
+  (both fail closed → escalate, but the documented recovery never works). The two tests at
+  `tests/test_alpaca_paper_submit.py:261,274` mock the WRONG name, so they pass over the bug (X-002).
+  This is the **order-submission/reconciliation surface** → CLAUDE.md Review policy says it queues for
+  independent review; NOT fixed autonomously. Full diagnosis + exact ready-to-apply fix:
+  `work/review/FINDING-alpaca-adapter-wrong-sdk-method.md`. The other 16 alpaca_paper + 3 alpaca_stream
+  errors are pure SDK-union typing noise (`raw_data` mode we don't use) — clear them with casts in the
+  SAME reviewed WO to fully un-grandfather the last two modules. Until then they stay grandfathered
+  (16 → 2 is the WO-0012 win).
 
 ## Notes / constraints
 - Per removed module: fix errors, keep the shrink-only ratchet, full suite + ruff + mypy green, own
