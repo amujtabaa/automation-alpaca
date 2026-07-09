@@ -70,6 +70,7 @@ from app.events.projectors import (
     compose_trading_state,
     control_trading_state,
     current_trading_state,
+    project_order_status,
     project_symbol_position,
     quarantined_symbols,
     reconcile_trading_state,
@@ -2240,12 +2241,33 @@ class SqliteStateStore(StateStore):
             rows = self._read_all(
                 f"SELECT * FROM orders{where} ORDER BY rowid", tuple(params)
             )
-            return [self._order(r) for r in rows]
+            return [self._project_order_locked(self._order(r)) for r in rows]
+
+    def _project_order_locked(self, order: Order) -> Order:
+        """Return ``order`` with ``status`` derived from the ExecutionEvent log
+        (WO-0007b read-flip): folds the order's lifecycle events via
+        project_order_status, exactly as ``_position_locked`` folds FILL events for
+        position. The ``orders.status`` column is a co-written read-model (WO-0007a
+        co-write + init heal); a stale column can never surface as an order's status.
+
+        ``filled_quantity`` stays column-sourced (co-written, monotonic-bound-checked);
+        it is not universally the FILL-event sum, so event-sourcing it is a separate
+        follow-up — see the InMemoryStateStore counterpart + design-decision.md."""
+
+        rows = self._read_all(
+            "SELECT * FROM execution_events WHERE order_id = ? ORDER BY sequence",
+            (order.id,),
+        )
+        events = [self._execution_event(r) for r in rows]
+        proj = project_order_status(events, order.id, order.quantity)
+        projected = order.model_copy(deep=True)
+        projected.status = proj.status
+        return projected
 
     async def get_order(self, order_id: str) -> Optional[Order]:
         async with self._lock:
             row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
-            return self._order(row) if row else None
+            return self._project_order_locked(self._order(row)) if row else None
 
     async def transition_order(
         self,
@@ -2435,7 +2457,8 @@ class SqliteStateStore(StateStore):
             order_rows = self._read_all("SELECT * FROM orders WHERE id IN (%s)"
                 % ",".join("?" * len(ids)), tuple(sorted(ids)))
             return sorted(
-                (self._order(r) for r in order_rows), key=lambda o: o.id
+                (self._project_order_locked(self._order(r)) for r in order_rows),
+                key=lambda o: o.id,
             )
 
     # ------------------------------------------------------------------ #

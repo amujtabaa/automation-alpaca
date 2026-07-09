@@ -54,6 +54,7 @@ from app.events.projectors import (
     compose_trading_state,
     control_trading_state,
     current_trading_state,
+    project_order_status,
     project_symbol_position,
     quarantined_symbols,
     reconcile_trading_state,
@@ -1365,13 +1366,33 @@ class InMemoryStateStore(StateStore):
                     continue
                 if candidate_id is not None and o.candidate_id != candidate_id:
                     continue
-                out.append(o.model_copy(deep=True))
+                out.append(self._project_order_unlocked(o))
             return out
+
+    def _project_order_unlocked(self, order: Order) -> Order:
+        """Return ``order`` with ``status`` derived from the ExecutionEvent log
+        (WO-0007b read-flip): the event log is truth for order status
+        (project_order_status folds the lifecycle events), and the ``orders.status``
+        column is a co-written read-model kept in sync (WO-0007a co-write + init
+        heal). Callers get the event-derived status, so a stale/corrupted column can
+        never surface as an order's status.
+
+        ``filled_quantity`` stays column-sourced here (co-written, monotonic-bound-
+        checked by plan_transition_order). It is NOT universally the FILL-event sum
+        — the store lets a caller set it directly without matching fills — so
+        event-sourcing filled_quantity is a separate follow-up (design-decision.md);
+        the projector computes it (proven in Stage C1) but the read-flip does not
+        redirect it yet."""
+
+        proj = project_order_status(self._execution_events, order.id, order.quantity)
+        projected = order.model_copy(deep=True)
+        projected.status = proj.status
+        return projected
 
     async def get_order(self, order_id: str) -> Optional[Order]:
         async with self._lock:
             o = self._orders.get(order_id)
-            return o.model_copy(deep=True) if o else None
+            return self._project_order_unlocked(o) if o else None
 
     async def transition_order(
         self,
@@ -1499,7 +1520,7 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             ids = timeout_quarantined_order_ids(self._execution_events)
             return [
-                self._orders[oid].model_copy(deep=True)
+                self._project_order_unlocked(self._orders[oid])
                 for oid in sorted(ids)
                 if oid in self._orders
             ]
