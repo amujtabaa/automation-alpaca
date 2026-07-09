@@ -51,6 +51,22 @@ ignore_missing_imports = true      # alpaca-py / streamlit ship no stubs
 plugins = ["pydantic.mypy"]
 warn_unused_ignores = false        # future tightening: flip to true after burn-down
 
+# Third-party transitive stubs — `alpaca-py` (imported by the broker adapter and
+# the market-data stream) pulls in pandas / pyarrow / numpy, whose modern wheels
+# ship inline `.pyi` stubs written with PEP 695 `type` statements. Under
+# `python_version = "3.11"` mypy 2.x parses those stubs and hard-errors
+# ("Type statement is only supported in Python 3.12 and greater"), which stops
+# the whole `mypy app/` run before it checks our code — a pure dependency-drift
+# break (unpinned mypy/numpy), not a defect in `app/`. We never typecheck these
+# libraries (already expressed by `ignore_missing_imports` above), so tell mypy
+# not to follow into them. Surgical: `app/` uses none of them directly, so this
+# cannot change how our own code is checked. (Root fix is pinning deps — see
+# work/review/FINDING-flatten-inv034-live-protection.md §"Secondary issue".)
+[[tool.mypy.overrides]]
+module = ["numpy.*", "pandas.*", "pyarrow.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 # Grandfather punch-list (ADR-007): the 16 modules carrying pre-existing type
 # debt are ignored so the gate is green today; NEW modules are checked, and this
 # list only SHRINKS — burn down safety-critical stores first. Mirrors the

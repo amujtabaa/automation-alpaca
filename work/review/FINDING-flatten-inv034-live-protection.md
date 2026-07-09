@@ -65,14 +65,29 @@ only once Hypothesis reaches that interleaving. This container installed **Hypot
 dependency note below); the prior environment's version/seed never generated the sequence, so the same
 committed code read as green there. The defect was always present.
 
-## Secondary issue — unpinned dependencies (build non-reproducibility)
+## Secondary issue — unpinned dependencies (build non-reproducibility) — CONFIRMED CI-RED
 
-`requirements.txt` pins with `>=` only. This fresh container resolved to Hypothesis 6.156, Starlette
-1.3.1 (emitting `HTTP_422_UNPROCESSABLE_ENTITY` deprecation warnings), Streamlit 1.59, pydantic 2.13.
-The suite's pass/fail set is therefore a function of whatever versions resolve at install time — CI on a
-fresh runner is likely to hit this same flatten failure. Options for the human: add a pinned
-constraints file / lockfile, or a bounded upper pin on the test-critical libs (Hypothesis). **Do not
-pin Hypothesis down merely to hide this finding** — the flatten gap is real independent of the version.
+`requirements.txt` pins with `>=` only, so CI resolves whatever is latest at install time. **CI on
+`chore/ai-os-install` has been RED for many commits** (verified via the Actions API: runs for
+`35362a7`, `e072482`, `4537aa2e`, `b2ed3e1`, `64715fe` all `failure`). The failure is **two** distinct
+dependency-drift breaks, both from `>=`:
+
+1. **mypy step (the current CI-red — fails before pytest even runs).** CI installed **mypy 2.2.0 +
+   numpy 2.5.1**; mypy 2.x follows `alpaca-py`'s transitive pandas/numpy/pyarrow stubs, whose modern
+   wheels use PEP 695 `type` statements, which mypy rejects under `python_version = "3.11"`
+   (`numpy/__init__.pyi:737: Type statement is only supported in Python 3.12 and greater` → exit 2).
+   Only the `test (3.12)` matrix job hits it (the 3.11 job resolves an older numpy). **Fixed here**
+   (commit adding this note): a surgical `[[tool.mypy.overrides]] follow_imports = "skip"` for
+   `numpy.*` / `pandas.*` / `pyarrow.*` — mypy now skips those third-party stubs (proven locally:
+   `mypy --verbose` logs `Skipping .../numpy/__init__.pyi`), consistent with the existing
+   `ignore_missing_imports`. `app/` imports none of them directly, so app-code checking is unchanged.
+2. **pytest step (the NEXT CI-red, once mypy passes).** Under Hypothesis 6.156 the flatten/X-001
+   contradiction above fails `TestSqliteLifecycle`. This is NOT fixed here — it is the gated decision.
+
+**So CI cannot go fully green autonomously:** the mypy drift is fixed, but the pytest step then surfaces
+the gated flatten conflict. Root-cause fix for the whole class is **pinning dependencies** (lockfile or
+bounded upper pins). **Do NOT pin Hypothesis down merely to hide the flatten finding** — that gap is
+real independent of the version; pin for reproducibility, fix flatten on its own merits.
 
 ## What I did / did not do
 
