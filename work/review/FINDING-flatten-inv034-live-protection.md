@@ -1,7 +1,25 @@
 # FINDING — manual-flatten can hand back a live PROTECTION_FLOOR intent (INV-034 gap)
 
-- **Status:** OPEN — decision gap on a **human-gated safety surface** (manual flatten). NOT fixed
-  autonomously; the pinning test was NOT weakened. Awaiting human direction.
+- **Status:** ADDRESSED (human-authorized 2026-07-09) — the deep-dive corrected the original framing
+  (INV-036 makes deferral to a live protective order INTENTIONAL; the "cancel + re-mint" option would
+  have violated it and risked a double-sell). Applied the SAFE subset: (a) provenance event on the
+  deferral, (b) INV-034 + stateful-test reconciliation with INV-036. Deliberately did NOT tighten the
+  predicate (see "Predicate" below — it would be a blind-cancel hazard). Two follow-ups remain
+  (TIMEOUT_QUARANTINE messaging + actor threading). Still queues for **independent review** per Review
+  policy (manual-flatten surface). What shipped:
+  - New `manual_flatten_deferred` event (`app/models.py`) emitted by `plan_flatten_position` on the
+    live-protection deferral and written by both stores in the same lock hold — closes the audit gap.
+    Test: `tests/test_phase7_flatten_atomic.py::test_live_protection_floor_deferral_records_provenance`.
+  - INV-034 amended to state the INV-036 carve-out explicitly (`docs/INVARIANTS.md`); the
+    `test_lifecycle_state_machine.py` flatten rule now permits a PROTECTION_FLOOR deferral **only** when
+    the linked order is genuinely in-flight/live (past CREATED) — which also removes the flaky failure.
+  - **Predicate NOT tightened (safety):** the investigation suggested routing TIMEOUT_QUARANTINE to
+    "supersede/self-heal," but that path LOCAL-CANCELS the order, which for an ambiguous/possibly-live
+    order is exactly the blind-cancel ADR-002 forbids. Deferring is the safe action for every
+    non-CREATED status; the real defect there is misleading *messaging*, addressed via the provenance
+    event. Correctly distinguishing confirmed-live from in-flight/ambiguous on flatten (block vs.
+    distinct outcome vs. re-drive) is a design decision left as a follow-up (noted in INV-034).
+  - **Actor threading** (operator identity dropped on all flatten paths) remains a separate follow-up.
 - **Severity:** correctness / safety (audit + guarantee gap). Not a live-trading path (paper-only beta),
   but it violates a stated safety invariant on the flatten surface.
 - **Surfaced by:** WO-0012 memory-store increment validation, 2026-07-09. Pre-existing; unrelated to the

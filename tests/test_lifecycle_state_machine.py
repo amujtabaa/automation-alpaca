@@ -543,13 +543,30 @@ class LifecycleMachine(RuleBasedStateMachine):
         result = self._run(self.store.flatten_position(symbol))
         if result.outcome == FLATTEN_FLAT:
             return
-        assert (
-            result.intent is not None
-            and result.intent.reason is SellReason.MANUAL_FLATTEN
-        ), (
-            f"flatten_position({symbol}) returned a non-flat result without a "
-            f"MANUAL_FLATTEN intent (X-001): {result}"
+        assert result.intent is not None, (
+            f"flatten_position({symbol}) returned a non-flat result with no intent "
+            f"(X-001): {result}"
         )
+        # X-001 / INV-034: a manual flatten returns a MANUAL_FLATTEN intent, with
+        # ONE deliberate exception (INV-036): it may DEFER to an already
+        # in-flight/live PROTECTION_FLOOR exit (an order past CREATED) rather than
+        # double-exit it — never any other silently-substituted reason, and never a
+        # not-yet-live (CREATED / order-less) protection intent.
+        if result.intent.reason is SellReason.PROTECTION_FLOOR:
+            assert (
+                result.order is not None
+                and result.order.status is not OrderStatus.CREATED
+            ), (
+                f"flatten_position({symbol}) deferred to a PROTECTION_FLOOR intent "
+                f"whose order is not genuinely in-flight/live — INV-036 only permits "
+                f"deferral to an order past CREATED: {result}"
+            )
+        else:
+            assert result.intent.reason is SellReason.MANUAL_FLATTEN, (
+                f"flatten_position({symbol}) returned a non-flat result whose intent "
+                f"is neither MANUAL_FLATTEN nor a live PROTECTION_FLOOR deferral "
+                f"(X-001/INV-034): {result}"
+            )
         _COVERAGE["flatten_non_flat"] += 1
 
     @rule(portion=st.floats(min_value=0.1, max_value=1.0))

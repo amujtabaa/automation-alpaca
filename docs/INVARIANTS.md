@@ -179,10 +179,13 @@ ever be created for that symbol again.
 *Pinned by:* `tests/test_phase7_sell_intents.py::test_no_sell_intent_stranded_approved_after_any_rejection`,
 `tests/test_store_core.py::TestPlanCreateOrderForSellIntentSelfHeal`.
 
-**INV-034 — A human-commanded `POST /positions/{symbol}/flatten` always
-returns (or creates) a `MANUAL_FLATTEN` intent — never silently hands back a
-different reason.** The route never has to inspect a returned intent's reason
-after the fact to know whether it "worked"; the store guarantees it.
+**INV-034 — A human-commanded `POST /positions/{symbol}/flatten` returns (or
+creates) a `MANUAL_FLATTEN` intent, with exactly ONE deliberate exception: it
+may DEFER to an already in-flight/live `PROTECTION_FLOOR` exit (INV-036). It
+never silently hands back any OTHER reason, and never a not-yet-live protection
+intent.** The route never has to inspect a returned intent's reason to know
+whether it "worked": either it got a fresh `MANUAL_FLATTEN`, or the position is
+already exiting via a live protective order that flatten deliberately left alone.
 *Why (X-001):* checking `active_sell_intent_for` and later calling
 `create_sell_intent(MANUAL_FLATTEN)` as two *separate* lock holds left a
 window where a concurrent protection tick's own `create_sell_intent` call
@@ -194,9 +197,25 @@ one atomic store operation: read live position, stand down any non-live
 `MANUAL_FLATTEN` — all under one continuous lock hold (mirrors D-017's
 `claim_order_for_submission` pattern). The route is now a thin caller with no
 supersede logic of its own.
-*Pinned by:* `tests/test_phase7_flatten_atomic.py` (all 24, especially the
-three `asyncio.gather` concurrent race tests),
-`tests/test_phase7_routes.py::test_flatten_http_race_with_concurrent_protection_create`.
+*INV-036 carve-out (reconciled 2026-07-09):* the "always MANUAL_FLATTEN" phrasing
+above was in direct tension with INV-036, which deliberately LEAVES a genuinely
+in-flight/live protective order alone (never double-exits, never blind-cancels a
+possibly-live order — ADR-002). Both cannot be literally true, and INV-036 is the
+safety-correct one, so INV-034 is stated WITH the carve-out. When flatten defers,
+it now emits a `manual_flatten_deferred` audit event (correlated to the deferred
+intent, carrying the order's status) so the human's action is recorded even though
+no fresh intent is created — closing the "click reads as success with no trail"
+gap. **Open follow-up:** deferring to a `TIMEOUT_QUARANTINE`/`SUBMITTING` order
+reports "already exiting" when the exit is not *confirmed* live (only in flight);
+tightening that is a design decision (block vs. distinct outcome vs. re-drive), not
+a predicate flip — routing those to the local-cancel supersede path would be the
+blind-cancel hazard ADR-002 forbids. Operator identity (`actor`) is also still
+dropped on all flatten paths — a separate provenance follow-up.
+*Pinned by:* `tests/test_phase7_flatten_atomic.py` (esp. the concurrent race tests,
+`test_live_protection_floor_order_is_left_alone`, and
+`test_live_protection_floor_deferral_records_provenance`),
+`tests/test_phase7_routes.py::test_flatten_http_race_with_concurrent_protection_create`,
+and the `flatten` rule in `tests/test_lifecycle_state_machine.py`.
 
 **INV-038 — A `MANUAL_FLATTEN` intent returned as "existing" must have a REAL
 order** — not just the right `reason` (INV-034), but `status is ORDERED` with

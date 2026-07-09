@@ -34,6 +34,7 @@ from app.models import (
     CandidateStatus,
     EventAuthority,
     EventSource,
+    EventType,
     ExecutionEvent,
     ExecutionEventType,
     Fill,
@@ -965,6 +966,11 @@ class FlattenPlan:
     outcome: str
     existing_intent: Optional[SellIntent] = None
     existing_order: Optional[Order] = None
+    # Provenance for the ``existing`` deferral to a live PROTECTION_FLOOR exit
+    # (INV-036): the audit record that a human flatten was received and deferred,
+    # so the "click reads as success" is truthful and traceable. None on the
+    # idempotent MANUAL_FLATTEN re-return (that intent is already the caller's own).
+    deferral_event: Optional[EventSpec] = None
     supersede_order_cancel: Optional[Order] = None
     supersede_cancel_event: Optional[EventSpec] = None
     supersede_intent_expire: Optional[SellIntent] = None
@@ -1018,17 +1024,44 @@ def plan_flatten_position(
                 existing_intent=active_intent,
                 existing_order=active_order,
             )
-        # A protection_floor exit is active. Genuinely live at the broker (an
-        # order exists and is no longer CREATED) -> already executing, leave it.
+        # A protection_floor exit is active with an order that has left CREATED
+        # (submitted/partially-filled/cancel-pending/timeout-quarantine): it is in
+        # flight or live at the broker (INV-036), so LEAVE IT ALONE — never
+        # double-exit, and never blind-cancel a possibly-live order (ADR-002:
+        # a SUBMITTING / TIMEOUT_QUARANTINE order may already be working at the
+        # venue, so routing it to the local-cancel supersede path below would be
+        # exactly the unsafe blind action the quarantine machinery exists to
+        # avoid). Deferring is the safe action for every non-CREATED status.
+        # Record provenance so the human's flatten is auditable even though we
+        # defer (closing the "click reads as success with no record" gap). The
+        # payload carries the deferred order's status so a reader can tell a
+        # confirmed-live exit from an in-flight/ambiguous one.
         if (
             active_intent.reason is SellReason.PROTECTION_FLOOR
             and active_order is not None
             and active_order.status is not OrderStatus.CREATED
         ):
+            deferral_event = EventSpec(
+                EventType.MANUAL_FLATTEN_DEFERRED.value,
+                message=(
+                    f"manual flatten for {position.symbol} deferred to the in-flight "
+                    f"protection_floor exit (order {active_order.status.value})"
+                ),
+                symbol=position.symbol,
+                order_id=active_order.id,
+                payload={
+                    "reason": "deferred_to_live_protection",
+                    "order_status": active_order.status.value,
+                    "deferred_intent_reason": active_intent.reason.value,
+                },
+                session_id=active_order.session_id,
+                correlation_id=active_intent.id,
+            )
             return FlattenPlan(
                 FLATTEN_EXISTING,
                 existing_intent=active_intent,
                 existing_order=active_order,
+                deferral_event=deferral_event,
             )
         # Not live: supersede. A CREATED order cancels locally; a stranded
         # pending/approved intent with no order at all expires. This also

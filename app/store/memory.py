@@ -964,6 +964,15 @@ class InMemoryStateStore(StateStore):
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 assert plan.existing_intent is not None
+                # Provenance for a deferral to a live PROTECTION_FLOOR exit
+                # (INV-036): record that a human flatten was received and deferred
+                # (no state mutated, one audit row), in the same lock hold.
+                if plan.deferral_event is not None:
+                    with self._atomic():
+                        self._append_event_unlocked(
+                            plan.deferral_event.event_type,
+                            **plan.deferral_event.as_kwargs(),
+                        )
                 return FlattenResult(
                     FLATTEN_EXISTING,
                     intent=plan.existing_intent.model_copy(deep=True),

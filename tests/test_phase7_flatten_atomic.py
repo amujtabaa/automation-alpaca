@@ -227,6 +227,30 @@ async def test_live_protection_floor_order_is_left_alone(any_store):
     assert len(sells) == 1
 
 
+async def test_live_protection_floor_deferral_records_provenance(any_store):
+    # INV-036 leaves a live protection exit alone — but the human's flatten must
+    # still leave an audit trail (closing the "click reads as success with no
+    # record" gap): a manual_flatten_deferred event correlated to the deferred
+    # intent, carrying the order it deferred to and that order's status.
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    prot_intent, prot_order = await _protective_floor_order(any_store, "AAPL", 100)
+    claim = await any_store.claim_order_for_submission(prot_order.id)
+    await any_store.transition_order(
+        claim.order.id, OrderStatus.SUBMITTED, broker_order_id="broker-x"
+    )
+
+    result = await any_store.flatten_position("AAPL")
+    assert result.outcome == FLATTEN_EXISTING
+    assert result.intent.reason is SellReason.PROTECTION_FLOOR
+
+    events = await any_store.list_events(correlation_id=prot_intent.id)
+    deferrals = [e for e in events if e.event_type == "manual_flatten_deferred"]
+    assert len(deferrals) == 1
+    assert deferrals[0].order_id == prot_order.id
+    assert deferrals[0].payload.get("order_status") == "submitted"
+
+
 # ---- correlation / audit trail --------------------------------------------- #
 
 

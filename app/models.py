@@ -321,6 +321,10 @@ class EventType(str, Enum):
     # the candidate lifecycle; protection_* events are the safety engine's own.
     SELL_INTENT_CREATED = "sell_intent_created"
     SELL_INTENT_TRANSITION = "sell_intent_transition"
+    # A human flatten (X-001) deferred to an already in-flight/live PROTECTION_FLOOR
+    # exit rather than duplicating it (INV-036) — the provenance record that closes
+    # the "flatten click reads as success with no audit trail" gap.
+    MANUAL_FLATTEN_DEFERRED = "manual_flatten_deferred"
     PROTECTION_TRIGGERED = "protection_triggered"      # floor breach -> auto exit
     PROTECTION_PAUSED = "protection_paused"            # kill switch froze auto exit
     PROTECTION_RESUMED = "protection_resumed"          # kill switch released

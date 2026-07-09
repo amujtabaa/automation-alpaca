@@ -1671,6 +1671,16 @@ class SqliteStateStore(StateStore):
             if plan.outcome == _PLAN_FLATTEN_FLAT:
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
+                # Provenance for a deferral to a live PROTECTION_FLOOR exit
+                # (INV-036): one audit row recording the human flatten was received
+                # and deferred, no state mutated — in this same lock hold.
+                if plan.deferral_event is not None:
+                    with self._tx() as cur:
+                        self._insert_event(
+                            cur,
+                            plan.deferral_event.event_type,
+                            **plan.deferral_event.as_kwargs(),
+                        )
                 return FlattenResult(
                     FLATTEN_EXISTING,
                     intent=plan.existing_intent,
