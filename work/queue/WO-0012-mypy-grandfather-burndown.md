@@ -111,6 +111,28 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
     `api/routes_dev.py:44-45` — config/env `str|None` passed to `str` params (guard or assert-after-validate).
   - Full captured list for the next session: rerun the throwaway un-grandfather + `mypy app/`.
   **Stores (core, memory, sqlite) + monitoring are DONE.** Grandfather list now 12 modules.
+- **DONE — 10-module tail batch** (commit pending): `features`, `protection`, `policy`, `strategy`,
+  `reconciliation`, `facade.store_backed`, `broker.factory`, `marketdata.factory`, `marketdata.fake`,
+  `api.routes_dev` all cleared. Triaged, not swept:
+  - `features._finite` → annotated **`TypeGuard[float]`** (it returns True iff finite+non-None), which
+    narrowed every `_finite(x)` call site — cleared all of features except `spread_pct`'s midpoint
+    (a `spread()`-returned-non-None ⇒ both operands finite assert).
+  - `protection` / `policy` — the `finite_number_reason(x) is not None or x <= 0` short-circuit idiom
+    (false positives: `finite_number_reason(None)` is `"non_numeric"`, so `<= 0` never sees None) split
+    into two guards + a contract-justified `assert`; `policy`'s `object`-typed validators narrowed with
+    `assert isinstance(x, (int, float))` after each guard.
+  - `strategy` `None*float`, `facade` `int<None` — false positives (comment/guard already justified);
+    assert / `is not None and` prepend.
+  - `facade` risk-gate `int|None`/`float|None` → the same-branch dispatchability pre-check already
+    rejects None quantity/price; added the matching narrowing asserts (mirrors core.py's authoritative path).
+  - `broker.factory` / `marketdata.factory` — `has_alpaca_credentials` guard implies non-None keys; assert.
+  - `reconciliation` — `report: Optional[BrokerOrderReport]` annotation + renamed the small-scope loop var.
+  - `marketdata.fake` — `updated_at: Optional[object]` → `Optional[datetime]` (correct type).
+  - `api.routes_dev` — root cause in `schemas.py`: `strategy`/`reason` were `Optional[str]` with string
+    defaults; made them required `str` (an explicit JSON null now 422s — correct for a dev inject).
+  Evidence: `mypy app/` Success (54); ruff clean; **full suite 1948 / 0 / 0 / 5 skipped** (fresh
+  Hypothesis cache; the flaky flatten test passed this run). Grandfather list now **2 modules**:
+  only `app.broker.alpaca_paper` + `app.marketdata.alpaca_stream` (alpaca-py SDK-variance typing) remain.
 
 ## Notes / constraints
 - Per removed module: fix errors, keep the shrink-only ratchet, full suite + ruff + mypy green, own

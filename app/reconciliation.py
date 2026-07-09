@@ -222,10 +222,10 @@ def plan_reconciliation(
 
     by_broker_id: dict[str, BrokerOrderReport] = {}
     by_client_id: dict[str, BrokerOrderReport] = {}
-    for report in broker_orders:
-        by_broker_id[report.broker_order_id] = report
-        if report.client_order_id is not None:
-            by_client_id[report.client_order_id] = report
+    for br in broker_orders:
+        by_broker_id[br.broker_order_id] = br
+        if br.client_order_id is not None:
+            by_client_id[br.client_order_id] = br
 
     plan = ReconciliationPlan()
     recent_cutoff = now - timedelta(milliseconds=recent_threshold_ms)
@@ -240,7 +240,7 @@ def plan_reconciliation(
             plan.skipped_recent.append(order.id)
             continue
 
-        report = None
+        report: Optional[BrokerOrderReport] = None
         if order.broker_order_id is not None and order.broker_order_id in by_broker_id:
             report = by_broker_id[order.broker_order_id]
         elif order.id in by_client_id:

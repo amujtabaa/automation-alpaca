@@ -12,14 +12,14 @@ symbol right now," never as zero.
 from __future__ import annotations
 
 from datetime import datetime, time
-from typing import Optional
+from typing import Optional, TypeGuard
 from zoneinfo import ZoneInfo
 
 from app.models import SessionType
 from app.policy import market_data_field_reason
 
 
-def _finite(value: Optional[float]) -> bool:
+def _finite(value: Optional[float]) -> TypeGuard[float]:
     """A usable numeric market-data input: present and finite (not
     ``None``/``NaN``/``±Inf``).
 
@@ -76,6 +76,9 @@ def spread_pct(bid: Optional[float], ask: Optional[float]) -> Optional[float]:
     s = spread(bid, ask)
     if s is None:
         return None
+    # spread() returned non-None, so both bid and ask are present, finite, and
+    # uncrossed (it narrows them via _finite) — the midpoint can't see None.
+    assert bid is not None and ask is not None
     mid = (bid + ask) / 2.0
     if mid <= 0:
         return None

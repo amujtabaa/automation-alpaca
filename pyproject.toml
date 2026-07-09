@@ -74,9 +74,10 @@ follow_imports_for_stubs = true
 [[tool.mypy.overrides]]
 ignore_errors = true
 module = [
-  "app.features", "app.protection", "app.policy",
-  "app.reconciliation", "app.strategy",
-  "app.broker.alpaca_paper", "app.broker.factory",
-  "app.marketdata.alpaca_stream", "app.marketdata.factory", "app.marketdata.fake",
-  "app.facade.store_backed", "app.api.routes_dev",
+  # Only the two alpaca-py SDK-boundary adapters remain (SDK-variance typing,
+  # not app-logic debt). Everything else — stores, engine, policy, facade,
+  # features, protection, strategy, reconciliation, factories, dev route — is
+  # now fully typechecked.
+  "app.broker.alpaca_paper",
+  "app.marketdata.alpaca_stream",
 ]

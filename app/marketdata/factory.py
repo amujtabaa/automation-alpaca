@@ -56,6 +56,8 @@ def create_market_data_service(settings: Settings) -> MarketDataService:
     # Lazy import: only here do we require alpaca-py to be installed.
     from app.marketdata.alpaca_stream import AlpacaMarketDataStream
 
+    # has_alpaca_credentials (checked above) is truthy only when both are set.
+    assert settings.alpaca_api_key is not None and settings.alpaca_api_secret is not None
     return AlpacaMarketDataStream(
         api_key=settings.alpaca_api_key,
         api_secret=settings.alpaca_api_secret,

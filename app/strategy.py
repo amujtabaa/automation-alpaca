@@ -122,6 +122,7 @@ def evaluate(
     # last_price is guaranteed real+positive here: pct_move only returns a
     # value when last_price is not None, and move > 0 with a positive
     # prev_close forces last_price > prev_close > 0.
+    assert snapshot.last_price is not None
     limit_price = round(snapshot.last_price * (1 + limit_buffer_pct / 100.0), 2)
 
     reason = (

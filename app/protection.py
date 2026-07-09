@@ -105,14 +105,20 @@ def floor_breach_reason(
     if position is None or position.quantity <= 0:
         return None
     average_price = position.average_price
-    # finite_number_reason rejects None/NaN/Inf/non-numeric/bool BEFORE the <= 0
-    # comparison ever runs against a non-number (short-circuit ordering).
-    if finite_number_reason(average_price) is not None or average_price <= 0:
+    # finite_number_reason rejects None/NaN/Inf/non-numeric/bool; the assert
+    # records that it rules None out so the <= 0 comparison never sees a non-number.
+    if finite_number_reason(average_price) is not None:
+        return None
+    assert average_price is not None
+    if average_price <= 0:
         return None
     if snapshot is None or snapshot.stale:
         return None
     last_price = snapshot.last_price
-    if finite_number_reason(last_price) is not None or last_price <= 0:
+    if finite_number_reason(last_price) is not None:
+        return None
+    assert last_price is not None
+    if last_price <= 0:
         return None
     floor = floor_price(average_price, config.stop_loss_pct)
     if last_price > floor:
@@ -151,11 +157,16 @@ def protective_limit_price(
     if snapshot is None:
         return None
     last_price = snapshot.last_price
-    if finite_number_reason(last_price) is not None or last_price <= 0:
+    if finite_number_reason(last_price) is not None:
+        return None
+    assert last_price is not None
+    if last_price <= 0:
         return None
     bid = snapshot.bid
-    if finite_number_reason(bid) is None and bid > 0:
+    if bid is not None and finite_number_reason(bid) is None and bid > 0:
         # A crossed bid (bid > last) degenerates to last via min — no special case.
+        # (`bid is not None` is redundant with finite_number_reason but narrows the
+        # type; a None bid already fell through to the last_price branch.)
         reference = min(bid, last_price)
     else:
         reference = last_price

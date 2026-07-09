@@ -220,6 +220,9 @@ def whole_count_reason(value: object) -> Optional[str]:
     base = finite_number_reason(value)
     if base is not None:
         return base
+    # finite_number_reason returned None -> value is a finite int/float (not
+    # bool/None/str/NaN/Inf); narrow object for the numeric comparisons below.
+    assert isinstance(value, (int, float))
     if isinstance(value, float) and not value.is_integer():
         return "non_integer"
     if value < 0:
@@ -246,12 +249,14 @@ def fill_value_reason(quantity: object, price: object) -> Optional[str]:
         # sign, unlike its type/finiteness/wholeness, isn't a distinct reason
         # code here (preserves the pre-D-019 reason vocabulary exactly).
         return "non_positive_quantity" if qty_bad == "negative" else f"{qty_bad}_quantity"
+    assert isinstance(quantity, (int, float))  # whole_count_reason ruled out non-numbers
     if quantity <= 0:
         return "non_positive_quantity"
 
     price_bad = finite_number_reason(price)
     if price_bad is not None:
         return f"{price_bad}_price"
+    assert isinstance(price, (int, float))  # finite_number_reason ruled out non-numbers
     if price <= 0:
         return "non_positive_price"
     return None
@@ -272,6 +277,7 @@ def limit_price_reason(limit_price: object) -> Optional[str]:
     bad = finite_number_reason(limit_price)
     if bad is not None:
         return f"{bad}_limit_price"
+    assert isinstance(limit_price, (int, float))  # finite_number_reason ruled out non-numbers
     if limit_price <= 0:
         return "non_positive_limit_price"
     return None
@@ -296,8 +302,10 @@ def candidate_numeric_reason(
 
     if suggested_quantity is not None:
         reason = whole_count_reason(suggested_quantity)
-        if reason is None and suggested_quantity <= 0:
-            reason = "non_positive"
+        if reason is None:
+            assert isinstance(suggested_quantity, (int, float))  # guard ruled out non-numbers
+            if suggested_quantity <= 0:
+                reason = "non_positive"
         if reason is not None:
             return ("suggested_quantity", reason)
     if suggested_limit_price is not None:
@@ -367,6 +375,7 @@ def filled_quantity_reason(order: Order, new_filled_quantity: object) -> Optiona
         # negative) suffix identically to the pre-D-019 checks this replaces —
         # e.g. "negative" + "_filled_quantity" == "negative_filled_quantity".
         return f"{base}_filled_quantity"
+    assert isinstance(new_filled_quantity, (int, float))  # whole_count_reason ruled out non-numbers
     if new_filled_quantity > order.quantity:
         return "filled_quantity_exceeds_order_quantity"
     if new_filled_quantity < order.filled_quantity:

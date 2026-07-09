@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from datetime import datetime
 from typing import Optional
 
 from app.marketdata.service import MarketDataService, MarketSnapshot
@@ -86,7 +87,7 @@ class FakeMarketDataFeed(MarketDataService):
         volume: Optional[int] = None,
         prev_close: Optional[float] = None,
         stale: bool = False,
-        updated_at: Optional[object] = None,
+        updated_at: Optional[datetime] = None,
     ) -> None:
         """Set exact snapshot field values for ``symbol``, auto-subscribing it.
 

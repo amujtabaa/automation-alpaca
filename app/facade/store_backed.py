@@ -485,7 +485,7 @@ class StoreBackedQueryFacade:
             observed = None
             if snapshot is not None and not snapshot.stale:
                 last = snapshot.last_price
-                if finite_number_reason(last) is None and last > 0:
+                if last is not None and finite_number_reason(last) is None and last > 0:
                     observed = last
             active = await self._store.active_sell_intent_for(position.symbol)
             stalled = (
@@ -738,6 +738,11 @@ class StoreBackedCommandFacade:
             # CAPI risk-limit pre-check (D-016) — mirrors the authoritative store
             # check exactly (same predicate + risk_limits). current_exposure() is
             # one atomic snapshot, so no torn read between two store calls.
+            # The dispatchability pre-check above (this same not-ORDERED branch)
+            # already rejected a None/invalid quantity or limit price, so both are
+            # present and valid here.
+            assert candidate.suggested_quantity is not None
+            assert candidate.suggested_limit_price is not None
             risk_block = risk_limit_reason(
                 symbol=candidate.symbol,
                 order_quantity=candidate.suggested_quantity,

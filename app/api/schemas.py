@@ -67,8 +67,11 @@ class MockCandidateCreate(BaseModel):
     """
 
     symbol: str = Field(min_length=1)
-    strategy: Optional[str] = "mock"
-    reason: Optional[str] = "injected mock candidate for manual testing"
+    # Required string with a default (never semantically None) so the dev inject
+    # route passes them straight to the str-typed facade; an explicit JSON null
+    # is a 422, the right answer for a manual-testing inject.
+    strategy: str = "mock"
+    reason: str = "injected mock candidate for manual testing"
     # ``strict=True`` (D-021 / D-023): a lax int/float field silently coerces
     # a JSON ``true``/``"5"`` (bool/numeric-string) to ``1``/``5`` *before* this
     # request even reaches the store — by the time
