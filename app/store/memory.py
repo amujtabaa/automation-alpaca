@@ -899,7 +899,10 @@ class InMemoryStateStore(StateStore):
                     raise InvalidOrderError(
                         f"sell intent {intent_id} is ORDERED but has no linked order"
                     )
-                return existing.model_copy(deep=True)
+                # WO-0007b: project status on this idempotent read-return too, so
+                # EVERY order-returning path derives status from the event log (the
+                # flip's stale-column defense is uniform).
+                return self._project_order_unlocked(existing)
             order = self._dispatch_order_for_sell_intent_unlocked(
                 intent, order_type=order_type, limit_price=limit_price
             )

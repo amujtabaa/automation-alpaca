@@ -1596,7 +1596,9 @@ class SqliteStateStore(StateStore):
                         f"sell intent {intent_id} links to missing order "
                         f"{intent.order_id}"
                     )
-                return self._order(order_row)
+                # WO-0007b: project status on this idempotent read-return too, so
+                # EVERY order-returning path derives status from the event log.
+                return self._project_order_locked(self._order(order_row))
             return self._dispatch_order_for_sell_intent_locked(
                 intent, order_type=order_type, limit_price=limit_price
             )
