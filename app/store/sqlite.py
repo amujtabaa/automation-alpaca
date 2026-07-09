@@ -1072,11 +1072,12 @@ class SqliteStateStore(StateStore):
                 row = self._read_one(
                     "SELECT * FROM sessions WHERE id = ?", (session_id,)
                 )
-                session = self._session(row) if row is not None else None
-                if session is None:
+                found = self._session(row) if row is not None else None
+                if found is None:
                     raise UnknownEntityError(
                         f"session {session_id} does not exist; cannot create candidate"
                     )
+                session = found
             # No new candidates in a closed session (D-009 / F2): the trading day
             # is over, and a post-close candidate would sit outside the captured
             # review snapshot. Guard at the store boundary so every future
@@ -1549,12 +1550,15 @@ class SqliteStateStore(StateStore):
                         )
                     if plan.expire_intent is not None:
                         self._update_sell_intent(cur, plan.expire_intent)
+                        assert plan.expire_event is not None
                         self._insert_event(
                             cur,
                             plan.expire_event.event_type,
                             **plan.expire_event.as_kwargs(),
                         )
+            assert plan.error is not None
             raise plan.error
+        assert plan.order is not None  # non-REJECT dispatch sets the order
         order = plan.order
         now = utcnow()
         intent.status = SellIntentStatus.ORDERED
@@ -1679,6 +1683,9 @@ class SqliteStateStore(StateStore):
 
             superseded = False
             if plan.supersede_order_cancel is not None:
+                # A supersede-cancel implies the stranded active_order exists and
+                # the planner produced its cancel audit event (narrows both).
+                assert active_order is not None and plan.supersede_cancel_event is not None
                 with self._tx() as cur:
                     cur.execute(
                         "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
@@ -1713,6 +1720,7 @@ class SqliteStateStore(StateStore):
             if plan.supersede_intent_expire is not None:
                 with self._tx() as cur:
                     self._update_sell_intent(cur, plan.supersede_intent_expire)
+                    assert plan.supersede_expire_event is not None
                     self._insert_event(
                         cur,
                         plan.supersede_expire_event.event_type,
@@ -1895,11 +1903,13 @@ class SqliteStateStore(StateStore):
                             plan.reject_event.event_type,
                             **plan.reject_event.as_kwargs(),
                         )
+                assert plan.error is not None
                 raise plan.error
 
             # CREATE — one transaction covers the order insert, the candidate
             # ORDERED transition, and both audit events (the atomic "candidate
             # approval + order creation + audit event" group from docs/02).
+            assert plan.order is not None  # APPROVED create path sets it
             order = plan.order
             now = utcnow()
             candidate.status = CandidateStatus.ORDERED
@@ -1967,6 +1977,9 @@ class SqliteStateStore(StateStore):
                 quarantined=quarantined,
             )
             if plan.outcome == CLAIM_CLAIMED:
+                # CLAIM_CLAIMED guarantees a claimable order + its plan artifacts
+                # (narrows the Optionals mypy can't infer from the outcome).
+                assert order is not None and plan.order is not None and plan.event is not None
                 updated = plan.order
                 with self._tx() as cur:
                     cur.execute(
@@ -2330,9 +2343,14 @@ class SqliteStateStore(StateStore):
                 broker_order_id=broker_order_id,
             )
             if plan.outcome == ORDER_TRANSITION_REJECT:
+                assert plan.error is not None
                 raise plan.error
             if plan.outcome == ORDER_TRANSITION_NOOP:
                 return order
+            # APPLY: plan.order + plan.event are set for this outcome (narrows the
+            # Optional plan fields for the rest of the method; mypy can't infer it
+            # from the outcome check).
+            assert plan.order is not None and plan.event is not None
             # WO-0007a Stage 2: also co-write the routine order-status
             # ExecutionEvent (if any) in the SAME transaction, mirroring
             # Stage 1's claim-path pattern. `order` here is still the
@@ -2409,9 +2427,15 @@ class SqliteStateStore(StateStore):
         flip + audit event + ExecutionEvent (durable truth) in ONE transaction."""
 
         if plan.outcome == ORDER_TRANSITION_REJECT:
+            assert plan.error is not None
             raise plan.error
         if plan.outcome == ORDER_TRANSITION_NOOP:
             return order
+        assert (
+            plan.order is not None
+            and plan.audit_event is not None
+            and plan.execution_event is not None
+        )
         updated = plan.order
         with self._tx() as cur:
             cur.execute(
@@ -2564,6 +2588,7 @@ class SqliteStateStore(StateStore):
                     self._insert_event(
                         cur, plan.event.event_type, **plan.event.as_kwargs()
                     )
+                assert plan.error is not None
                 raise plan.error
 
             if plan.outcome == FILL_DUPLICATE:
@@ -2576,6 +2601,7 @@ class SqliteStateStore(StateStore):
             # FILL_APPEND — one transaction: INSERT the fill row + its audit event
             # + the shadow ExecutionEvent (wave 3a), so the fill and its mirror in
             # the event log commit or roll back together (shadow parity).
+            assert plan.fill is not None  # FILL_APPEND builds the fill row
             fill = plan.fill
             with self._tx() as cur:
                 cur.execute(

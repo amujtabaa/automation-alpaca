@@ -32,6 +32,31 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
 - **DONE — `app/store/core.py`** (commit `e3fb487`): 2 errors, both the None-flow class, fixed with
   behavior-preserving narrowing asserts (limit_price validated non-None above; qty_changed implies
   filled_quantity set). Removed from the grandfather list; full suite green.
+- **DONE — `app/store/memory.py`** (commit `5adba14`): the two idioms below, cleared with ~13
+  behavior-preserving narrowing asserts at the APPLY/RAISE sites + one session-lookup restructure
+  (temp `found` var so mypy narrows the not-None branch). No `# type: ignore`, no test change.
+  Removed from the grandfather list. Evidence: `mypy app/` => Success (54 files); full suite
+  **1947 tests / 0 failures / 0 errors / 5 skipped** with ONE pre-existing unrelated failure
+  deselected — see the flatten/X-001 note below. Actual error count was lower than the 52 measured
+  earlier (some clusters cleared by a single assert; the estimate counted raw mypy lines).
+- **DONE — `app/store/sqlite.py`** (commit pending): 70 raw mypy lines, the SAME two idioms, cleared
+  with ~14 narrowing asserts at the APPLY/RAISE sites + one session-lookup restructure (temp `found`
+  var, mirroring memory.py). Sites: session-create, sell-intent dispatch, flatten supersede-cancel +
+  intent-expire, candidate create, claim, `transition_order`, `_apply_order_evented_plan_locked`,
+  `append_fill`. No `# type: ignore`, no test change. Removed from the grandfather list — **both stores
+  are now clean; `app.store` is fully off the ratchet.** Evidence: `mypy app/` => Success (54 files);
+  ruff clean; full suite **1947 / 0 failures / 0 errors / 5 skipped** (same one flatten/X-001 failure
+  deselected — see below). Every assert verified against the runtime invariant by running the FULL
+  suite (both stores), per this WO's own gate.
+- **BLOCKER surfaced (not caused by this WO) — `TestSqliteLifecycle` flatten/X-001 contradiction:**
+  in this fresh container (deps unpinned; Hypothesis 6.156 installed) the stateful lifecycle test
+  deterministically finds a manual-flatten sequence that violates **INV-034** — `plan_flatten_position`
+  (`app/store/core.py:1023-1032`) returns the existing `PROTECTION_FLOOR` intent when a protection
+  order is already LIVE at the broker, i.e. a human flatten "silently hands back a different reason,"
+  which INV-034 forbids. Reproduces on the committed baseline WITHOUT this change (verified by stash);
+  unrelated to the mypy work. It is a code-vs-invariant-vs-test conflict on the **human-gated
+  manual-flatten surface** → recorded as a decision gap for the human (see
+  `work/review/FINDING-flatten-inv034-live-protection.md`), NOT fixed here and the test NOT weakened.
 - **Measured remaining store counts** (throwaway un-grandfather + `mypy app/`): `app/store/memory.py`
   **52 errors**, `app/store/sqlite.py` **~58 errors** — essentially ALL the same TWO idioms, so the fix
   pattern is proven and mechanical (each assert clears a cluster):
@@ -50,7 +75,8 @@ rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/
 - **Not yet measured / remaining:** `app.monitoring` (~24 per ADR-007), `app.policy`,
   `app.reconciliation`, `app.features`, `app.protection`, `app.strategy`, `app.broker.alpaca_paper`,
   `app.broker.factory`, `app.marketdata.{alpaca_stream,factory,fake}`, `app.facade.store_backed`,
-  `app.api.routes_dev`. Do stores (memory, sqlite) next, then monitoring/policy/reconciliation.
+  `app.api.routes_dev`. **Stores (core, memory, sqlite) are now DONE** — next is
+  monitoring/policy/reconciliation.
 
 ## Notes / constraints
 - Per removed module: fix errors, keep the shrink-only ratchet, full suite + ruff + mypy green, own
