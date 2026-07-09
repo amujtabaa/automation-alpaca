@@ -502,13 +502,14 @@ class InMemoryStateStore(StateStore):
                 session = self._ensure_current_session_unlocked()
                 session_id = session.id
             else:
-                session = next(
+                found = next(
                     (s for s in self._sessions if s.id == session_id), None
                 )
-                if session is None:
+                if found is None:
                     raise UnknownEntityError(
                         f"session {session_id} does not exist; cannot create candidate"
                     )
+                session = found
             # No new candidates in a closed session (D-009 / F2): the trading day
             # is over, and a post-close candidate would sit outside the captured
             # review snapshot. Guard at the store boundary so every future
@@ -861,10 +862,13 @@ class InMemoryStateStore(StateStore):
                     )
                 if plan.expire_intent is not None:
                     self._sell_intents[intent.id] = plan.expire_intent
+                    assert plan.expire_event is not None
                     self._append_event_unlocked(
                         plan.expire_event.event_type, **plan.expire_event.as_kwargs()
                     )
+            assert plan.error is not None
             raise plan.error
+        assert plan.order is not None  # non-REJECT dispatch sets the order
         order = plan.order
         now = utcnow()
         with self._atomic():
@@ -959,6 +963,7 @@ class InMemoryStateStore(StateStore):
             if plan.outcome == _PLAN_FLATTEN_FLAT:
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
+                assert plan.existing_intent is not None
                 return FlattenResult(
                     FLATTEN_EXISTING,
                     intent=plan.existing_intent.model_copy(deep=True),
@@ -980,6 +985,9 @@ class InMemoryStateStore(StateStore):
             superseded = False
             with self._atomic():
                 if plan.supersede_order_cancel is not None:
+                    # A supersede-cancel implies the stranded active_order exists
+                    # and the planner produced its cancel audit event (narrows both).
+                    assert active_order is not None and plan.supersede_cancel_event is not None
                     # WO-0007a Stage 3: co-write the routine CANCELED
                     # ExecutionEvent (SAME shared helper + dedupe_key format as
                     # transition_order's ->CANCELED) in the SAME atomic block
@@ -1004,6 +1012,7 @@ class InMemoryStateStore(StateStore):
                         self._append_execution_event_unlocked(exec_event)
                     superseded = True
                 if plan.supersede_intent_expire is not None:
+                    assert plan.supersede_expire_event is not None
                     self._sell_intents[plan.supersede_intent_expire.id] = (
                         plan.supersede_intent_expire
                     )
@@ -1144,6 +1153,7 @@ class InMemoryStateStore(StateStore):
                     self._append_event_unlocked(
                         plan.reject_event.event_type, **plan.reject_event.as_kwargs()
                     )
+                assert plan.error is not None
                 raise plan.error
 
             # CREATE — APPROVED -> ORDERED, linking the order. Wrapped in _atomic
@@ -1151,6 +1161,7 @@ class InMemoryStateStore(StateStore):
             # the order insert + candidate transition + both audit events are
             # all-or-nothing, matching SqliteStateStore's single-transaction
             # guarantee for the "approval + order creation + audit" group (docs/02).
+            assert plan.order is not None  # APPROVED create path sets it
             order = plan.order
             now = utcnow()
             updated = candidate.model_copy(deep=True)
@@ -1197,6 +1208,9 @@ class InMemoryStateStore(StateStore):
                 quarantined=quarantined,
             )
             if plan.outcome == CLAIM_CLAIMED:
+                # CLAIM_CLAIMED guarantees a claimable order + its plan artifacts
+                # (narrows the Optionals mypy can't infer from the outcome).
+                assert order is not None and plan.order is not None and plan.event is not None
                 # WO-0007a Stage 1: co-write a SUBMIT_PENDING ExecutionEvent in
                 # the SAME atomic block as the order-row + audit-event write.
                 # `occurrence` = count of PRIOR SUBMIT_PENDING events for this
@@ -1440,9 +1454,14 @@ class InMemoryStateStore(StateStore):
                 broker_order_id=broker_order_id,
             )
             if plan.outcome == ORDER_TRANSITION_REJECT:
+                assert plan.error is not None
                 raise plan.error
             if plan.outcome == ORDER_TRANSITION_NOOP:
                 return order.model_copy(deep=True)
+            # APPLY: plan.order + plan.event are set for this outcome (narrows the
+            # Optional plan fields for the rest of the method; mypy can't infer it
+            # from the outcome check).
+            assert plan.order is not None and plan.event is not None
             # WO-0007a Stage 2: also co-write the routine order-status
             # ExecutionEvent (if any) in the SAME atomic block, mirroring
             # Stage 1's claim-path pattern. `order` here is still the
@@ -1505,9 +1524,15 @@ class InMemoryStateStore(StateStore):
         flip + audit event + ExecutionEvent (durable truth) in ONE atomic block."""
 
         if plan.outcome == ORDER_TRANSITION_REJECT:
+            assert plan.error is not None
             raise plan.error
         if plan.outcome == ORDER_TRANSITION_NOOP:
             return order.model_copy(deep=True)
+        assert (
+            plan.order is not None
+            and plan.audit_event is not None
+            and plan.execution_event is not None
+        )
         with self._atomic():
             self._orders[plan.order.id] = plan.order
             self._append_event_unlocked(
@@ -1619,6 +1644,7 @@ class InMemoryStateStore(StateStore):
                 # A single rejection event is one row — no atomic wrapper needed;
                 # it must persist even though we then raise.
                 self._append_event_unlocked(plan.event.event_type, **plan.event.as_kwargs())
+                assert plan.error is not None
                 raise plan.error
 
             if plan.outcome == FILL_DUPLICATE:
@@ -1631,6 +1657,7 @@ class InMemoryStateStore(StateStore):
             # + the shadow ExecutionEvent (wave 3a), so a failed write can't leave
             # a position-changing fill with no fill_appended row, a poisoned dedup
             # set, or a fill/event-log divergence (Item 4 + shadow parity).
+            assert plan.fill is not None  # FILL_APPEND builds the fill row
             fill = plan.fill
             with self._atomic():
                 self._fills.append(fill)

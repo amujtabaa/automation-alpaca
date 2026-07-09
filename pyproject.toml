@@ -58,7 +58,7 @@ warn_unused_ignores = false        # future tightening: flip to true after burn-
 [[tool.mypy.overrides]]
 ignore_errors = true
 module = [
-  "app.store.sqlite", "app.store.memory",
+  "app.store.sqlite",
   "app.monitoring", "app.features", "app.protection", "app.policy",
   "app.reconciliation", "app.strategy",
   "app.broker.alpaca_paper", "app.broker.factory",
