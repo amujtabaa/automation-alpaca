@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Fix fractional trade-size truncation in the alpaca market-data stream (REV-0002 F-003)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0014
 wave: W1
 model_tier: mid
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (safety-adjacent: market-data drives the min-volume sizing gate)
 created: 2026-07-09
 ---
@@ -100,14 +100,26 @@ human decision surfaced below.
 - **Safety-adjacent, not on the human-gated list**, but it feeds sizing — treated as
   gated for approval out of caution.
 
-## Completion disposition
+## Fable DONE (2026-07-09, commit `a7b012d`)
 
-_(complete after merge)_
+**Human decision D-1 = Preserve fractional (approved).** `volume` is now `float`
+end-to-end: `MarketSnapshot.volume` (`app/marketdata/service.py`),
+`MarketSnapshotView.volume` (`app/facade/dtos.py` — the hard Pydantic blocker),
+`FakeMarketDataFeed.set_snapshot`, and the `_seed_from_snapshot` / `_fetch_seed`
+return annotations. The truncating `int()` in `_on_trade` is removed. RED→GREEN:
+`tests/test_alpaca_marketdata_stream.py` (0.5 + 0.25 accumulates to 100.75, not 100) and
+`tests/test_marketdata_route.py` (a fractional volume round-trips through the API view,
+previously a Pydantic `int_from_float` error). Verified: no remaining `int()`/`round()`
+of volume/trade.size in `app/`; no consumer requires int (min-volume gate is float<float;
+volume is never persisted → no schema migration); 265 market-data/strategy/facade tests +
+full suite green; `mypy` clean. Adversarial re-verify `wf_eb46fdce-662` (VER-14) PASS.
+
+## Completion disposition
+- [x] RESULT_SUMMARY_KEPT — this DONE block + `work/review/REV-0002/disposition.md` (F-003).
 
 ## Distillation checklist
-
-_(complete after merge)_
+- [x] Ledger updated. Not human-gated (market-data working data); no ADR/PKL change needed.
 
 ## Deletion decision
-
-_(complete after merge)_
+Keep until REV-0002 is fully dispositioned; then archivable (routine bug fix, captured in
+the ledger + disposition).

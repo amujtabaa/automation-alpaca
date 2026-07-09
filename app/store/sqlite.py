@@ -1980,7 +1980,21 @@ class SqliteStateStore(StateStore):
                 # WO-0013 (F-001): gate on event-log truth, not the co-written column
                 # (mirror of the in-memory store; see its claim_order_for_submission).
                 # _project_order_locked runs its own indexed per-order event query.
-                order = self._project_order_locked(order)
+                projected = self._project_order_locked(order)
+                # Defense-in-depth (REV-0002 adversarial-verify): pin the co-write
+                # invariant in code (mirror of the in-memory store). A raw column past
+                # CREATED that still projects CREATED means the log is missing this
+                # order's lifecycle events; claiming it would blind-resubmit a possibly-
+                # live order. Unreachable today; fail loud rather than re-submit.
+                assert not (
+                    order.status is not OrderStatus.CREATED
+                    and projected.status is OrderStatus.CREATED
+                ), (
+                    f"claim_order_for_submission: order {order_id} column status "
+                    f"{order.status.value!r} projects CREATED (no lifecycle events) — "
+                    "co-write invariant violated; refusing to avoid a blind re-submit"
+                )
+                order = projected
             own_session = None
             if order is not None and order.session_id is not None:
                 srow = self._read_one(

@@ -33,7 +33,12 @@ If a result feels weak, the author may run **one** optional critique round.
 
 ## Current packets
 
-- `REV-0001/` — WO-0007b order-status read-flip to event_truth + ADR-008 acceptance.
-- `REV-0002/` — broker-adapter SDK method-name fix + flatten INV-034/INV-036 reconciliation.
-
-Both are `AWAITING_REVIEW` — hand `request.md` to an independent model; it deposits `result.md`.
+- `REV-0001/` — **DISPOSED.** WO-0007b order-status read-flip + ADR-008. Reviewer verdict
+  BLOCK (2 P0s); remediated under WO-0013 — see `REV-0001/disposition.md`.
+- `REV-0002/` — **DISPOSED.** broker-adapter SDK fix + flatten reconciliation. Reviewer
+  verdict ACCEPT-WITH-CHANGES (3 P1s); remediated under WO-0014/WO-0015 — see
+  `REV-0002/disposition.md`.
+- `REV-0003/` — **AWAITING_REVIEW.** Re-review of the REV-0001/REV-0002 remediation, which
+  re-touches human-gated surfaces (event-truth write path + manual flatten), so the gate
+  clears only after a fresh independent review. Hand `REV-0003/request.md` to an independent
+  model; it deposits `result.md`.

@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Complete the event-truth flip on the order-status write path + backfill (REV-0001 P0s)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0013
 wave: W1
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ADR_CREATED]
 owner: Ameen (human-gated: event-log-truth, order-submission)
 created: 2026-07-09
 ---
@@ -124,14 +124,56 @@ correctness hazard.
   a fresh independent review (a new REV packet) before REV-0001's gate can truly clear.
   This WO does not itself clear the gate — it makes the flip correct enough to re-submit.
 
-## Completion disposition
+## Fable DONE (2026-07-09, commit `a7b012d` + disposition-commit hardening)
 
-_(complete after merge)_
+**F-001 (P0) — claim gate reads the projection.** `claim_order_for_submission`
+projects order status under the lock before the gate, both stores. Dual-store RED→GREEN
+(`tests/test_wo0013_event_truth_writepath.py`): a column drifted to CREATED can no longer
+re-claim a log-SUBMITTED order.
+
+**Sibling-audit conclusion (acceptance criterion "fix OR document why safe").** The recon
+found the raw-column read is systemic — `claim`, `transition_order`, `flatten_position`,
+`quarantine/resolve/reconcile`, `close_session`, `_active_sell_intent`, `_current_exposure`
+all gate on the co-written `orders.status` column. **Decision: document-safe, not rewrite**,
+justified by the **co-write invariant**, which was verified writer-by-writer (and
+independently re-verified by REV re-review VER-13a/VER-X): every `orders.status` write
+co-appends its lifecycle `ExecutionEvent` in the SAME atomic/tx block —
+- claim → `SUBMIT_PENDING`; `transition_order` → the routine exec_event; the evented
+  plan → its `execution_event`; flatten supersede-cancel → `CANCELED`; close-session
+  cancel → `CANCELED`; an order is created only at `CREATED` (matches the projector's
+  empty-log default, no event needed); and `TIMEOUT_QUARANTINE` is refused on the routine
+  path and set only via the evented co-writing path (`execution_event_for_routine_transition`
+  asserts, `core.py`).
+- No `orders.status` writer exists outside the two stores (single-writer engine).
+- Therefore column == projection in every reachable state; the siblings reading the column
+  are correct, and the claim-gate flip to the projection is strictly safer (robust to
+  hypothetical drift, never worse). A **defense-in-depth assert** now pins the invariant in
+  code at the claim site (raw past-CREATED that projects CREATED fails loud, never
+  blind-resubmits) — see `tests/test_wo0013_event_truth_writepath.py`.
+- Deferred (documented, not blocking): a full projection-flip of every write path is a
+  possible future WO if the team wants zero raw-column reads anywhere.
+
+**F-002 (P0) — backfill keys on event absence.** `_backfill_order_status_events_*` now
+fires only when an order has zero status-lifecycle events (new
+`projectors.ORDER_STATUS_EVENT_TYPES`, FILL excluded). Released-cycle order no longer
+clobbered; pre-eventing FILLED order still reconstructed; idempotent; dual-store parity.
+
+**F-003 (P1) — ADR-008 amended** for `SUBMIT_RELEASED`/`CANCEL_PENDING` provenance (stays
+`Proposed`).
+
+**Evidence:** full suite green (0 failed), `ruff check` clean, `mypy app/` Success,
+`import-linter` 5/0. Adversarial re-verify `wf_eb46fdce-662` (VER-13a/13b/X) all PASS.
+
+## Completion disposition
+- [x] RESULT_SUMMARY_KEPT — this DONE block + `work/review/REV-0001/disposition.md`.
+- [x] ADR_CREATED — ADR-008 amended (F-003).
 
 ## Distillation checklist
-
-_(complete after merge)_
+- [x] Durable facts captured (co-write invariant + sibling-audit rationale, above).
+- [x] Architecture decision captured in ADR-008.
+- [x] Ledger updated (`work/ledger.jsonl`).
+- [ ] Gate NOT cleared: re-review queued as `work/review/REV-0003/` (event-truth re-touch).
 
 ## Deletion decision
-
-_(complete after merge)_
+Keep — the sibling-audit rationale + co-write-invariant proof have durable value and are
+referenced by REV-0001's disposition and the REV-0003 re-review.

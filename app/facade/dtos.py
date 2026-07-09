@@ -118,7 +118,8 @@ class FlattenResponse(BaseModel):
     order: Optional[Order] = None
     # deferred=True means NO manual order was submitted: the flatten was safely
     # deferred to an already in-flight protection exit (INV-036 / REV-0002 F-001).
-    # Both fields default so a non-deferral response is byte-identical (additive).
+    # Both fields default (a non-deferral response just adds deferred=false /
+    # deferred_order_status=null) — additive and backward-compatible for clients.
     deferred: bool = False
     deferred_order_status: Optional[str] = None
 

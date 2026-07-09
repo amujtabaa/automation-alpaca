@@ -1220,7 +1220,23 @@ class InMemoryStateStore(StateStore):
                 # CREATED would re-claim an already-submitted order and blind-resubmit.
                 # The projected order flows into BOTH the gate and the SUBMIT_PENDING
                 # co-write below, so a claimable order is CREATED per the log there too.
-                order = self._project_order_unlocked(order)
+                projected = self._project_order_unlocked(order)
+                # Defense-in-depth (REV-0002 adversarial-verify): the gate now trusts
+                # the projection absolutely, so pin the co-write invariant in code
+                # (mirrors execution_event_for_routine_transition's asserts). A raw
+                # column past CREATED that still projects CREATED means the log is
+                # missing this order's lifecycle events — claiming it would blind-
+                # resubmit a possibly-live order. Unreachable today (every writer co-
+                # writes; init backfill heals migration); fail loud, never re-submit.
+                assert not (
+                    order.status is not OrderStatus.CREATED
+                    and projected.status is OrderStatus.CREATED
+                ), (
+                    f"claim_order_for_submission: order {order_id} column status "
+                    f"{order.status.value!r} projects CREATED (no lifecycle events) — "
+                    "co-write invariant violated; refusing to avoid a blind re-submit"
+                )
+                order = projected
             own_session = (
                 next(
                     (s for s in self._sessions if s.id == order.session_id), None

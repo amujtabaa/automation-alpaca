@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Make a deferred manual-flatten operator-visible + thread the command actor (REV-0002 F-001/F-002)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0015
 wave: W1
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (human-gated: manual-flatten)
 created: 2026-07-09
 ---
@@ -118,14 +118,38 @@ cockpit; getting the response contract + the "no state change" guarantee right n
 - Additive-provenance discipline: the `manual_flatten_deferred` event and actor threading
   must not alter any order/fill/position state (INV-9 / single-writer).
 
-## Completion disposition
+## Fable DONE (2026-07-09, commit `a7b012d`)
 
-_(complete after merge)_
+**Human decision D-2 = Explicit response field (approved).**
+
+**F-001 — deferral is operator-visible.** `FlattenResult.deferred` /
+`FlattenResponse.deferred` + `deferred_order_status`, set from `plan.deferral_event is not
+None` (NOT the ambiguous `FLATTEN_EXISTING` outcome, so an idempotent own-manual-flatten —
+even one at a live SUBMITTED status — stays `deferred=False`). `create_exit` and
+`emergency_reduce_override` map it; the cockpit renders a distinct "no manual order
+submitted — already exiting; monitoring" toast (`_do` accepts a message callable).
+
+**F-002 — actor recorded.** The command actor threads route→facade→`flatten_position`→
+`plan_flatten_position` (pure pass-through) onto the `manual_flatten_deferred` payload and
+into `_insert_sell_intent_*` onto the created manual-flatten's `sell_intent_created`
+payload; both stores; defaults `COMMAND_ACTOR_SYSTEM`; protection-tick create stays
+`"system"`. `docs/INVARIANTS.md` INV-034/036 follow-ups flipped to Resolved.
+
+**Additive-only (INV-9).** Adversarially confirmed byte-identical flatten decision,
+no-blind-cancel branch, and order/fill/position state vs. pre-remediation (`git show HEAD~1`);
+only defaulted response fields + payload keys + cockpit toast added.
+
+**Evidence:** dual-store + facade + cockpit RED→GREEN parametrized over SUBMITTED /
+CANCEL_PENDING / TIMEOUT_QUARANTINE; full suite green; `ruff`/`mypy`/`import-linter` clean.
+Adversarial re-verify `wf_eb46fdce-662` (VER-15a/15b) all PASS; no test weakened.
+
+## Completion disposition
+- [x] RESULT_SUMMARY_KEPT — this DONE block + `work/review/REV-0002/disposition.md`
+  (F-001/F-002) + the INVARIANTS update.
 
 ## Distillation checklist
-
-_(complete after merge)_
+- [x] Ledger updated. INVARIANTS INV-034/036 follow-ups resolved (no new ADR needed).
+- [ ] Gate NOT cleared: manual-flatten is human-gated → queued in `work/review/REV-0003/`.
 
 ## Deletion decision
-
-_(complete after merge)_
+Keep until REV-0003 dispositions the manual-flatten re-review; then archivable.

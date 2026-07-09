@@ -98,6 +98,18 @@ async def test_claim_still_claims_a_genuinely_created_order(any_store):
     assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTING
 
 
+async def test_claim_fails_loud_on_column_drift_without_lifecycle_events(any_store):
+    """Defense-in-depth: a non-CREATED column with ZERO lifecycle events violates the
+    co-write invariant the projection-gate depends on (unreachable in normal operation
+    — every writer co-appends an event and init backfill heals migration). Rather than
+    silently blind-resubmit, the claim gate fails LOUD."""
+    order = await _created_order(any_store)
+    # Inject the invariant violation directly: column past CREATED, but no events.
+    _corrupt_status_column(any_store, order.id, OrderStatus.SUBMITTED)
+    with pytest.raises(AssertionError):
+        await any_store.claim_order_for_submission(order.id)
+
+
 # --------------------------------------------------------------------------- #
 # F-002 — the backfill must key on status-lifecycle-event ABSENCE, not projected==CREATED.
 # --------------------------------------------------------------------------- #
