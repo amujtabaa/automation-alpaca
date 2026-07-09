@@ -1,6 +1,6 @@
-# AI Project Operating System — v0.8.0
+# AI Project Operating System — v0.9.1
 
-Package release: v0.8.0  
+Package release: v0.9.1  
 Release date: 2026-07-07  
 Canonical version source: `VERSION.md` and `AI_OS_MANIFEST.yaml`
 

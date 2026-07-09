@@ -9,8 +9,8 @@ from pathlib import Path
 from conftest import SCRIPTS, run_script
 
 RULES_YAML = """\
-version: 0.8.0
-os_version: 0.8.0
+version: 0.9.1
+os_version: 0.9.1
 valid_work_order_statuses:
   - DRAFT
   - READY
@@ -43,7 +43,7 @@ def _repo(tmp_path: Path, pkl_root: str = "pkl") -> Path:
     root = tmp_path / "repo"
     (root / "rules").mkdir(parents=True)
     (root / "AI_OS_MANIFEST.yaml").write_text(
-        f'os_version: "0.8.0"\npkl_root: "{pkl_root}"\n', encoding="utf-8")
+        f'os_version: "0.9.1"\npkl_root: "{pkl_root}"\n', encoding="utf-8")
     (root / "rules" / "ai-os-rules.yaml").write_text(RULES_YAML, encoding="utf-8")
     for sub in ("queue", "active", "review", "completed/keep", "completed/delete-candidates", "archive"):
         (root / "work" / sub).mkdir(parents=True)

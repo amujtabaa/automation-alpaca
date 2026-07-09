@@ -6,8 +6,6 @@ status: AWAITING_REVIEW
 targets: [WO-0007b, ADR-008]
 human_gated_surfaces: [event-log-truth, order-status-machine, schema-migration]
 commit_range: 97123d6..64715fe
-reviewer_model: null
-verdict: null
 created: 2026-07-09
 ---
 

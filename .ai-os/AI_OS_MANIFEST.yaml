@@ -1,6 +1,6 @@
-os_version: "0.8.0"
-package_version: "0.8.0"
-release_name: "AI Project OS v0.8.0"
+os_version: "0.9.1"
+package_version: "0.9.1"
+release_name: "AI Project OS v0.9.1"
 release_date: "2026-07-07"
 version_source: "VERSION.md"
 canonical_root: ".ai-os"
@@ -8,12 +8,12 @@ pkl_root: "pkl"  # PKL location; scripts and the MCP server read it from here
 model_agnostic_core: true
 
 component_versions:
-  core_docs: "0.8.0"
-  adapter_schema: "0.8.0"
-  rules_schema: "0.8.0"
-  prompt_rules_schema: "0.8.0"
-  scripts_stub_api: "0.8.0"
-  mcp_control_plane: "0.8.0"
+  core_docs: "0.9.1"
+  adapter_schema: "0.9.1"
+  rules_schema: "0.9.1"
+  prompt_rules_schema: "0.9.1"
+  scripts_stub_api: "0.9.1"
+  mcp_control_plane: "0.9.1"
 
 install:
   repo_local_only_by_default: true
@@ -55,6 +55,8 @@ install_map:
   "12_WORK_ORDER_RETENTION_AND_DISPOSITION.md": ".ai-os/core/12_WORK_ORDER_RETENTION_AND_DISPOSITION.md"
   "13_SESSION_LENGTH_AND_CONTEXT_HYGIENE.md": ".ai-os/core/13_SESSION_LENGTH_AND_CONTEXT_HYGIENE.md"
   "14_MCP_CONTROL_PLANE.md": ".ai-os/core/14_MCP_CONTROL_PLANE.md"
+  # Cross-model review module (core doc + its 3 templates under the templates/ tree
+  # below: review-request.md, review-result.md, disposition.md).
   "15_CROSS_MODEL_REVIEW.md": ".ai-os/core/15_CROSS_MODEL_REVIEW.md"
   # Package metadata
   "VERSION.md": ".ai-os/VERSION.md"

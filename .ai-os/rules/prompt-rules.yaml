@@ -1,5 +1,5 @@
-version: 0.8.0
-os_version: 0.8.0
+version: 0.9.1
+os_version: 0.9.1
 name: ai-project-os-prompt-rules
 purpose: Rules for selecting and evaluating reusable prompt templates.
 

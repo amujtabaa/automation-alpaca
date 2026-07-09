@@ -1,5 +1,5 @@
-version: 0.8.0
-os_version: 0.8.0
+version: 0.9.1
+os_version: 0.9.1
 rules:
   require_work_order: true
   require_fable_done: true
@@ -53,17 +53,6 @@ valid_work_order_dispositions:
   - DELETED
   - SUPERSEDED
   - ABANDONED
-# Cross-model review packets (see .ai-os/core/15_CROSS_MODEL_REVIEW.md +
-# .ai-os/scripts/check_review_packet.py). Verdicts match AGENTS.md.
-valid_review_verdicts:
-  - ACCEPT
-  - ACCEPT-WITH-CHANGES
-  - BLOCK
-valid_review_statuses:
-  - AWAITING_REVIEW
-  - REVIEWED
-  - DISPOSED
-review_staleness_days: 14  # a review packet left AWAITING_REVIEW longer than this warns
 pkl_staleness_days: 90  # high-authority PKL pages older than this get a staleness warning
 context_budgets:
   root_instruction_max_lines: 150

@@ -6,8 +6,6 @@ status: AWAITING_REVIEW
 targets: [FINDING-alpaca-adapter-wrong-sdk-method, FINDING-flatten-inv034-live-protection]
 human_gated_surfaces: [order-submission, manual-flatten]
 commit_range: b619998 3d20e3d
-reviewer_model: null
-verdict: null
 created: 2026-07-09
 ---
 

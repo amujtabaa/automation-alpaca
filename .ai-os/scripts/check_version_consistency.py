@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ai_os_paths import find_root, resolve
 
-EXPECTED = "0.8.0"
+EXPECTED = "0.9.1"
 CHECKS = {
     "VERSION.md": [rf"Package version:\s*\*\*v{EXPECTED}\*\*"],
     "AI_OS_MANIFEST.yaml": [rf'os_version:\s*"{EXPECTED}"', rf'package_version:\s*"{EXPECTED}"'],

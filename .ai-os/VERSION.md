@@ -1,6 +1,6 @@
 # AI Project OS Version
 
-Package version: **v0.8.0**  
+Package version: **v0.9.1**  
 Release date: **2026-07-07**
 
 ## Canonical version rule
@@ -11,13 +11,13 @@ Release date: **2026-07-07**
 
 | Component | Version | Notes |
 |---|---:|---|
-| Core docs | 0.8.0 | Main OS documentation set. |
-| Manifest | 0.8.0 | Installer/source-of-truth metadata. |
-| AI OS rules schema | 0.8.0 | `rules/ai-os-rules.yaml`. |
-| Prompt rules schema | 0.8.0 | `rules/prompt-rules.yaml`. |
-| MCP control-plane spec | 0.8.0 | `14_MCP_CONTROL_PLANE.md` and `mcp/`. |
-| Adapter shims | 0.8.0 | Claude, Codex, and generic adapters. |
-| Scripts | 0.8.0 | Tested harness checks; no stubs remaining. |
+| Core docs | 0.9.1 | Main OS documentation set. |
+| Manifest | 0.9.1 | Installer/source-of-truth metadata. |
+| AI OS rules schema | 0.9.1 | `rules/ai-os-rules.yaml`. |
+| Prompt rules schema | 0.9.1 | `rules/prompt-rules.yaml`. |
+| MCP control-plane spec | 0.9.1 | `14_MCP_CONTROL_PLANE.md` and `mcp/`. |
+| Adapter shims | 0.9.1 | Claude, Codex, and generic adapters. |
+| Scripts | 0.9.1 | Tested harness checks; no stubs remaining. |
 
 ## Versioning policy
 
@@ -26,9 +26,9 @@ Release date: **2026-07-07**
 - If a component intentionally diverges, explain why in this file and `CHANGELOG.md`.
 - The installer should report mismatches between `VERSION.md`, `AI_OS_MANIFEST.yaml`, rule-schema version fields, and MCP target metadata.
 
-## v0.8.0 scope
+## v0.9.1 scope
 
-v0.8.0 completes the mechanical enforcement layer: a formal ledger contract (`mcp/schemas/ledger_entry.schema.json` + `scripts/check_ledger.py`), real disposition and hygiene checks replacing the last stubs, a permanent additive-only MCP write policy (deletion excluded from MCP), the `pkl_root` manifest variable, and the completed 5-tool read-only MCP MVP (`ai_os_hygiene_report`, `ai_os_disposition_review` added). See `CHANGELOG.md`.
+v0.9.1 completes the mechanical enforcement layer: a formal ledger contract (`mcp/schemas/ledger_entry.schema.json` + `scripts/check_ledger.py`), real disposition and hygiene checks replacing the last stubs, a permanent additive-only MCP write policy (deletion excluded from MCP), the `pkl_root` manifest variable, and the completed 5-tool read-only MCP MVP (`ai_os_hygiene_report`, `ai_os_disposition_review` added). See `CHANGELOG.md`.
 
 ## v0.7.0 scope
 
