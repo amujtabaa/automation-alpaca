@@ -1,0 +1,103 @@
+# constraints.txt — pinned dependency lock for reproducible builds.
+#
+# WHY: requirements.txt intentionally stays abstract (`>=`), which let a fresh CI
+# runner silently drift to mypy 2.x + numpy 2.5 (mypy then rejected numpy's PEP-695
+# stubs and the `mypy app/` gate went red before pytest even ran) and to newer
+# Hypothesis. This file pins the FULL resolved dependency closure so CI and local
+# installs are byte-for-byte reproducible and a transitive bump can't break the
+# gate out from under a green PR.
+#
+# HOW IT IS USED: CI (and you, locally) install with
+#     pip install -r requirements.txt -c constraints.txt
+# requirements.txt still declares WHAT we depend on; this file freezes WHICH
+# versions. A constraint only applies to a package that actually gets installed,
+# so this is safe across the 3.11 / 3.12 CI matrix.
+#
+# REGENERATE (after an intentional dependency change):
+#     python -m pip install -r requirements.txt --dry-run --ignore-installed \
+#         --report report.json
+#     # then emit "<name>==<version>" for every entry in report.json["install"]
+# and let the 3.11 + 3.12 CI matrix validate the new pins.
+#
+# NOTE: Hypothesis is pinned for REPRODUCIBILITY, not to suppress the flaky
+# TestSqliteLifecycle failure — that is a real latent INV-034 flatten bug tracked
+# in work/review/FINDING-flatten-inv034-live-protection.md and must be fixed on
+# its own merits, never hidden behind a version pin.
+
+alpaca-py==0.43.5
+altair==6.2.2
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.14.1
+ast_serialize==0.6.0
+attrs==26.1.0
+blinker==1.9.0
+cachetools==7.1.4
+certifi==2026.6.17
+charset-normalizer==3.4.9
+click==8.4.2
+coverage==7.15.0
+fastapi==0.139.0
+gitdb==4.0.12
+GitPython==3.1.50
+grimp==3.15
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+hypothesis==6.156.4
+idna==3.18
+import-linter==2.13
+iniconfig==2.3.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+librt==0.13.0
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+msgpack==1.2.1
+mypy==2.2.0
+mypy_extensions==1.1.0
+narwhals==2.23.0
+numpy==2.4.6
+packaging==26.2
+pandas==3.0.3
+pathspec==1.1.1
+pillow==12.3.0
+pluggy==1.6.0
+protobuf==7.35.1
+pyarrow==24.0.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydeck==0.9.3
+Pygments==2.20.0
+pytest==9.1.1
+pytest-cov==7.1.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+pytz==2026.2
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+rich==15.0.0
+rpds-py==2026.6.3
+ruff==0.15.20
+six==1.17.0
+smmap==5.0.3
+sortedcontainers==2.4.0
+sseclient-py==1.9.0
+starlette==1.3.1
+streamlit==1.59.1
+tenacity==9.1.4
+toml==0.10.2
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.51.0
+uvloop==0.22.1
+watchdog==6.0.0
+watchfiles==1.2.0
+websockets==16.0

@@ -1,6 +1,11 @@
 # Alpaca Clean-Sheet CAPI Option 2.5 — backend + cockpit dependencies.
 # Paper-first beta: paper credentials live in .env (gitignored); no live-
 # trading path exists anywhere in this codebase.
+#
+# This file declares WHAT we depend on (abstract `>=`). For reproducible builds,
+# install WITH the pinned lock: `pip install -r requirements.txt -c constraints.txt`
+# (CI does this). constraints.txt freezes the full resolved closure; regenerate it
+# per the instructions in its header after any intentional dependency change.
 
 # Backend (the durable engine)
 fastapi>=0.110

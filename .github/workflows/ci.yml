@@ -26,9 +26,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
+        # constraints.txt pins the full resolved dependency closure so a fresh
+        # runner can't silently drift (a mypy 2.x + numpy 2.5 drift once turned the
+        # `mypy app/` gate red before pytest even ran). requirements.txt still
+        # declares WHAT we depend on; constraints.txt freezes WHICH versions.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
       - name: Lint (ruff)
         # CLAUDE.md §8 lint gate. Fails the build on any lint error so the
         # previously-unenforced ruff debt cannot re-accumulate.
