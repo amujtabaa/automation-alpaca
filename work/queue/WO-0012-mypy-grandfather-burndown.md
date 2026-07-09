@@ -27,6 +27,31 @@ fixing the real type errors (not silencing them) — **safety-critical first**: 
 rest (`features`, `protection`, `strategy`, `broker/*`, `marketdata/*`, `facade/store_backed`,
 `api/routes_dev`). ADR-007 flagged ~187 baseline errors, ~85% None/Optional-flow.
 
+## Progress (2026-07-08)
+
+- **DONE — `app/store/core.py`** (commit `e3fb487`): 2 errors, both the None-flow class, fixed with
+  behavior-preserving narrowing asserts (limit_price validated non-None above; qty_changed implies
+  filled_quantity set). Removed from the grandfather list; full suite green.
+- **Measured remaining store counts** (throwaway un-grandfather + `mypy app/`): `app/store/memory.py`
+  **52 errors**, `app/store/sqlite.py` **~58 errors** — essentially ALL the same TWO idioms, so the fix
+  pattern is proven and mechanical (each assert clears a cluster):
+  1. **`raise plan.error`** on `Optional[Exception]` (`[misc]` "Exception must be derived from
+     BaseException") — add `assert plan.error is not None` before the raise (the outcome==REJECT branch
+     guarantees it).
+  2. **Optional plan fields** (`plan.order`/`plan.event`/`plan.fill`/`plan.existing_intent`/
+     `plan.supersede_*_event`) accessed after an outcome check mypy can't narrow (`[union-attr]`/
+     `[arg-type]`/`[assignment]`) — add `assert plan.order is not None and plan.event is not None`
+     (etc.) at the top of each APPLY/outcome block. Also the fetched `order`/`active_order` is
+     `X | None` at a couple of call sites (assert non-None where the outcome guarantees it), and
+     `memory.py:480` needs a `session: Optional[SessionRecord]` annotation.
+  Every assert must be verified against the actual runtime invariant (not assumed) and the FULL SUITE
+  run per module — a wrong assert would fire in production on the single-writer store. This is why it
+  is paced across sessions per this WO's own model, not rushed.
+- **Not yet measured / remaining:** `app.monitoring` (~24 per ADR-007), `app.policy`,
+  `app.reconciliation`, `app.features`, `app.protection`, `app.strategy`, `app.broker.alpaca_paper`,
+  `app.broker.factory`, `app.marketdata.{alpaca_stream,factory,fake}`, `app.facade.store_backed`,
+  `app.api.routes_dev`. Do stores (memory, sqlite) next, then monitoring/policy/reconciliation.
+
 ## Notes / constraints
 - Per removed module: fix errors, keep the shrink-only ratchet, full suite + ruff + mypy green, own
   small change with RED->GREEN-style evidence where a fix changes behavior. Triage real bug vs false
