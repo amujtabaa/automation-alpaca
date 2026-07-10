@@ -1517,6 +1517,7 @@ class InMemoryStateStore(StateStore):
         *,
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> Order:
         async with self._lock:
             order = self._orders.get(order_id)
@@ -1527,6 +1528,7 @@ class InMemoryStateStore(StateStore):
                 new_status=new_status,
                 filled_quantity=filled_quantity,
                 broker_order_id=broker_order_id,
+                actor=actor,
             )
             if plan.outcome == ORDER_TRANSITION_REJECT:
                 assert plan.error is not None

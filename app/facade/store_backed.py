@@ -872,7 +872,9 @@ class StoreBackedCommandFacade:
 
         if order.broker_order_id is None:
             # Never submitted: nothing at the broker; cancel locally, terminal now.
-            return await self._cancel_transition(order_id, OrderStatus.CANCELED)
+            return await self._cancel_transition(
+                order_id, OrderStatus.CANCELED, actor=actor
+            )
 
         # Submitted/partially-filled: request the broker cancel FIRST; a genuine
         # broker failure surfaces as 502 with the order left unchanged (still open),
@@ -890,17 +892,23 @@ class StoreBackedCommandFacade:
             ) from exc
         # Move to cancel_pending; the loop reconciles it to terminal. If this races
         # a terminal (a fill landed first), the 409 is a transient-window response.
-        return await self._cancel_transition(order_id, OrderStatus.CANCEL_PENDING)
+        return await self._cancel_transition(
+            order_id, OrderStatus.CANCEL_PENDING, actor=actor
+        )
 
     async def _cancel_transition(
-        self, order_id: str, new_status: OrderStatus
+        self, order_id: str, new_status: OrderStatus, *, actor: str
     ) -> Order:
         """``transition_order`` with the cancel path's exact error mapping (was the
         route's ``_transition_cancel``): UnknownEntityError→404 (fetched above, so
         defensive), OrderTransitionError→409 (fill-landed-first transient window).
-        Any other store error propagates raw (500), as the old route did."""
+        Any other store error propagates raw (500), as the old route did. ``actor``
+        threads the operator onto the cancel's ``order_transition`` audit event
+        (UC-002)."""
         try:
-            return await self._store.transition_order(order_id, new_status)
+            return await self._store.transition_order(
+                order_id, new_status, actor=actor
+            )
         except UnknownEntityError as exc:  # pragma: no cover - fetched above
             raise EntityNotFoundError(str(exc)) from exc
         except OrderTransitionError as exc:

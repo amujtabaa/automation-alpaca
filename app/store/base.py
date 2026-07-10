@@ -831,8 +831,12 @@ class StateStore(ABC):
         *,
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> Order:
-        """Atomically transition an order and write an audit event."""
+        """Atomically transition an order and write an audit event. ``actor``
+        stamps the ``order_transition`` audit event's provenance (UC-002) — a
+        human-triggered cancel passes the operator; routine engine transitions
+        default to ``COMMAND_ACTOR_SYSTEM``."""
 
     # ------------------------------------------------------------------ #
     # Timeout-quarantine (ADR-002 / wave 3c) — evented order transitions

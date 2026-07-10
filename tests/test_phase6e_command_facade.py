@@ -276,7 +276,8 @@ async def test_cancel_race_fill_landed_first_is_409(any_store, monkeypatch):
     )
     assert order.broker_order_id is None  # never-submitted: local-cancel path
 
-    async def _reject(_order_id, _new_status):
+    async def _reject(_order_id, _new_status, **_kwargs):
+        # UC-002: the facade now passes actor=... through to transition_order.
         raise OrderTransitionError("a fill landed first")
 
     monkeypatch.setattr(any_store, "transition_order", _reject)

@@ -2414,6 +2414,7 @@ class SqliteStateStore(StateStore):
         *,
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> Order:
         # No OrderStatus(new_status) coercion (AIR-009): plan_transition_order
         # validates the enum type itself, identically to InMemoryStateStore, so a
@@ -2428,6 +2429,7 @@ class SqliteStateStore(StateStore):
                 new_status=new_status,
                 filled_quantity=filled_quantity,
                 broker_order_id=broker_order_id,
+                actor=actor,
             )
             if plan.outcome == ORDER_TRANSITION_REJECT:
                 assert plan.error is not None
