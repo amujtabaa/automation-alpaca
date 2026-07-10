@@ -24,12 +24,20 @@ ET = ExecutionEventType
 OS = OrderStatus
 
 
-def _ev(event_type, order_id="o1", seq=0, quantity=None, symbol="AAPL"):
+def _ev(
+    event_type,
+    order_id="o1",
+    seq=0,
+    quantity=None,
+    symbol="AAPL",
+    source=EventSource.ENGINE,
+    authority=EventAuthority.LOCAL,
+):
     return ExecutionEvent(
         sequence=seq,
         event_type=event_type,
-        source=EventSource.ENGINE,
-        authority=EventAuthority.LOCAL,
+        source=source,
+        authority=authority,
         dedupe_key=f"{event_type.value}:{order_id}:{seq}",
         symbol=symbol,
         side=OrderSide.BUY,
@@ -125,3 +133,33 @@ def test_fill_event_does_not_set_status():
     # "latest lifecycle event" that determines status.
     events = [_ev(ET.SUBMITTED, seq=1), _ev(ET.FILL, seq=2, quantity=3)]
     assert _p(events, quantity=10).status is OS.SUBMITTED
+
+
+def test_projection_is_authority_independent_latest_wins():
+    # REV-0003 F-001 / ADR-008 truth model: project_order_status folds by SEQUENCE
+    # (+ the legal-transition graph), NEVER by authority. A BROKER_AUTHORITATIVE
+    # FILLED followed by a LOCAL CANCEL_PENDING folds to CANCEL_PENDING (the latest
+    # event wins regardless of authority) — exactly the fold the ADR must NOT claim
+    # authority-weighting for. This out-of-legal-order sequence is unreachable in
+    # production (the transition graph forbids FILLED -> CANCEL_PENDING); the test
+    # pins the fold's contract so the ADR cannot silently drift toward weighting.
+    events = [
+        _ev(ET.FILLED, seq=1, source=EventSource.BROKER_REST,
+            authority=EventAuthority.BROKER_AUTHORITATIVE),
+        _ev(ET.CANCEL_PENDING, seq=2, source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL),
+    ]
+    assert _p(events).status is OS.CANCEL_PENDING
+
+
+def test_projection_broker_fact_wins_by_sequence_not_authority():
+    # The real (in-sequence) path: a late broker FILLED after a LOCAL CANCEL_PENDING
+    # wins by SEQUENCE, so no authority weighting is needed for correctness — a
+    # requested cancel is correctly superseded by the confirmed fill.
+    events = [
+        _ev(ET.CANCEL_PENDING, seq=1, source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL),
+        _ev(ET.FILLED, seq=2, source=EventSource.BROKER_REST,
+            authority=EventAuthority.BROKER_AUTHORITATIVE),
+    ]
+    assert _p(events).status is OS.FILLED

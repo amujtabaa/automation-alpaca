@@ -172,7 +172,7 @@ clobbered; pre-eventing FILLED order still reconstructed; idempotent; dual-store
 - [x] Durable facts captured (co-write invariant + sibling-audit rationale, above).
 - [x] Architecture decision captured in ADR-008.
 - [x] Ledger updated (`work/ledger.jsonl`).
-- [ ] Gate NOT cleared: re-review queued as `work/review/REV-0003/` (event-truth re-touch).
+- [x] Independent review PASSED — **gate CLEARED** (REV-0003, Codex ACCEPT for WO-0013).
 
 ## Deletion decision
 Keep — the sibling-audit rationale + co-write-invariant proof have durable value and are

@@ -57,9 +57,9 @@ re-verified by a 6-agent adversarial pass (all PASS, zero blocking).
   blocking issue; the sibling-audit rationale was independently confirmed defensible.
 
 ## Follow-up
-- **Gate NOT auto-cleared.** WO-0013 re-touches event-log truth (a human-gated surface),
-  so per the CLAUDE.md Review policy the fix itself queues for a fresh independent review
-  before the event-truth gate clears: seeded as **`work/review/REV-0003/`**.
+- **Gate CLEARED by REV-0003.** WO-0013 re-touched event-log truth (a human-gated surface),
+  so the fix queued for a fresh independent review; **REV-0003 (Codex ACCEPT for WO-0013)
+  cleared it** — see `work/review/REV-0003/disposition.md`.
 - **ADR-008** still requires explicit human acceptance (remains `Proposed`).
 - Ledger updated (`work/ledger.jsonl`: WO-0013).
 - Deferred (documented, not blocking): a full projection-flip of every order-status

@@ -149,7 +149,7 @@ Adversarial re-verify `wf_eb46fdce-662` (VER-15a/15b) all PASS; no test weakened
 
 ## Distillation checklist
 - [x] Ledger updated. INVARIANTS INV-034/036 follow-ups resolved (no new ADR needed).
-- [ ] Gate NOT cleared: manual-flatten is human-gated → queued in `work/review/REV-0003/`.
+- [x] Independent review PASSED — **gate CLEARED** (REV-0003, Codex ACCEPT for WO-0015).
 
 ## Deletion decision
 Keep until REV-0003 dispositions the manual-flatten re-review; then archivable.

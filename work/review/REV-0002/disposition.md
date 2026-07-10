@@ -52,8 +52,9 @@ confirmed against the code and remediated under **WO-0014** + **WO-0015** (commi
 - Adversarial re-verification: `wf_eb46fdce-662` (VER-14/15a/15b/X) — all **PASS**.
 
 ## Follow-up
-- **F-001/F-002 touch manual-flatten (human-gated).** Those changes are additive and
-  independently re-verified, but for beta reliance they queue with the event-truth work
-  in the fresh re-review packet **`work/review/REV-0003/`**. F-003 (market-data) is not a
-  human-gated surface (sizing-adjacent working data; no order/fill/position state).
+- **F-001/F-002 touch manual-flatten (human-gated) — gate CLEARED by REV-0003.** Those
+  changes queued with the event-truth work in the re-review packet; **REV-0003 (Codex ACCEPT
+  for WO-0015) cleared the gate** — see `work/review/REV-0003/disposition.md`. F-003
+  (market-data) is not a human-gated surface (sizing-adjacent working data; no
+  order/fill/position state).
 - Ledger updated (`work/ledger.jsonl`: WO-0014, WO-0015).

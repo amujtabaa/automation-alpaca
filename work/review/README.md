@@ -38,7 +38,7 @@ If a result feels weak, the author may run **one** optional critique round.
 - `REV-0002/` — **DISPOSED.** broker-adapter SDK fix + flatten reconciliation. Reviewer
   verdict ACCEPT-WITH-CHANGES (3 P1s); remediated under WO-0014/WO-0015 — see
   `REV-0002/disposition.md`.
-- `REV-0003/` — **AWAITING_REVIEW.** Re-review of the REV-0001/REV-0002 remediation, which
-  re-touches human-gated surfaces (event-truth write path + manual flatten), so the gate
-  clears only after a fresh independent review. Hand `REV-0003/request.md` to an independent
-  model; it deposits `result.md`.
+- `REV-0003/` — **DISPOSED.** Re-review of the REV-0001/REV-0002 remediation (event-truth
+  write path + manual flatten). Reviewer verdict ACCEPT-WITH-CHANGES: **WO-0013 + WO-0015
+  gates CLEARED**; one P1 on ADR-008 (an overclaim of authority-weighting) fixed doc-only —
+  see `REV-0003/disposition.md`. ADR-008 remains `Proposed` pending human acceptance.
