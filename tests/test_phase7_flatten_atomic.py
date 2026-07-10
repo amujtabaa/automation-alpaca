@@ -169,6 +169,47 @@ async def test_stranded_manual_flatten_with_no_order_self_heals(any_store):
     assert third.intent.id == result.intent.id
 
 
+async def test_flatten_dispatch_crash_leaves_no_partial(any_store, monkeypatch):
+    """REV-0006-F-001 (INV-050, single-writer atomicity): a hard crash at the
+    order-dispatch boundary of a create-flatten must leave NO durable partial —
+    no APPROVED ``MANUAL_FLATTEN`` intent with no order, no orphan SELL order.
+    The whole supersede + create + approve + dispatch sequence is ONE
+    all-or-nothing unit. The in-memory store already rolls back atomically; the
+    sqlite store split it across transactions and durably stranded the approved
+    intent (which then also stands the autonomous protection tick down on a
+    non-existent exit). This pins BOTH stores to the atomic behaviour."""
+
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+
+    # Model a hard crash at the dispatch step, AFTER the fresh intent's
+    # insert+approve: the dispatch helper raises. Under one transaction this
+    # rolls the whole flatten back; a split-transaction store strands the
+    # already-committed APPROVED intent.
+    def _crash(*args, **kwargs):
+        raise RuntimeError("injected dispatch crash")
+
+    patched = False
+    for name in (
+        "_dispatch_order_for_sell_intent_locked",     # sqlite
+        "_dispatch_order_for_sell_intent_unlocked",   # memory
+    ):
+        if hasattr(any_store, name):
+            monkeypatch.setattr(any_store, name, _crash)
+            patched = True
+            break
+    assert patched, "no dispatch helper found to inject the crash into"
+
+    with pytest.raises(RuntimeError, match="injected dispatch crash"):
+        await any_store.flatten_position("AAPL")
+
+    # INV-050 all-or-nothing: nothing durable survived the failed flatten.
+    intents = await any_store.list_sell_intents(symbol="AAPL")
+    assert intents == [], f"stranded sell intent(s) after failed flatten: {intents}"
+    sells = [o for o in await any_store.list_orders() if o.side is OrderSide.SELL]
+    assert sells == [], f"stranded SELL order(s) after failed flatten: {sells}"
+
+
 # ---- supersede an unsent PROTECTION_FLOOR exit ---------------------------- #
 
 
