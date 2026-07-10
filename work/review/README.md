@@ -41,4 +41,5 @@ If a result feels weak, the author may run **one** optional critique round.
 - `REV-0003/` — **DISPOSED.** Re-review of the REV-0001/REV-0002 remediation (event-truth
   write path + manual flatten). Reviewer verdict ACCEPT-WITH-CHANGES: **WO-0013 + WO-0015
   gates CLEARED**; one P1 on ADR-008 (an overclaim of authority-weighting) fixed doc-only —
-  see `REV-0003/disposition.md`. ADR-008 remains `Proposed` pending human acceptance.
+  see `REV-0003/disposition.md`. ADR-008 is now **Accepted** (2026-07-09); the deferred
+  authority-aware-resolution work is registered as the `docs/INVARIANTS.md` INV-075 tripwire.

@@ -44,9 +44,11 @@ change to the safety-critical fold).
 - **WO-0013 and WO-0015 independent-review gates are now CLEARED** (Codex ACCEPT for both;
   the ADR-008 P1 did not touch them). The event-log-truth write-path completion and the
   manual-flatten deferral/actor change have passed independent cross-model review.
-- **ADR-008 acceptance remains a HUMAN decision.** The clarification addresses the reviewer's
-  and the operator's stated concern ("would not accept it unchanged"); ADR-008 stays
-  `Proposed` until a human records acceptance in its Status section.
+- **ADR-008 is now ACCEPTED** (2026-07-09, by Ameen). The clarification addressed the reviewer's
+  and the operator's stated concern ("would not accept it unchanged"). The deferred
+  authority-aware-resolution work is registered as a durable tripwire — `docs/INVARIANTS.md`
+  **INV-075** — so a future async/out-of-order order-status ingest path must resolve it before
+  shipping.
 - **Full-suite note:** the reviewer could not verify the full suite (four SQLite
   `ResourceWarning` failures in unrelated candidate/session tests under Python 3.14.5, and
   `ruff`/`mypy` unavailable in that environment). This is a known reviewer-environment

@@ -60,7 +60,7 @@ re-verified by a 6-agent adversarial pass (all PASS, zero blocking).
 - **Gate CLEARED by REV-0003.** WO-0013 re-touched event-log truth (a human-gated surface),
   so the fix queued for a fresh independent review; **REV-0003 (Codex ACCEPT for WO-0013)
   cleared it** — see `work/review/REV-0003/disposition.md`.
-- **ADR-008** still requires explicit human acceptance (remains `Proposed`).
+- **ADR-008** is now **Accepted** (2026-07-09), after the REV-0003 clarification of its truth model.
 - Ledger updated (`work/ledger.jsonl`: WO-0013).
 - Deferred (documented, not blocking): a full projection-flip of every order-status
   write path (vs. the verified co-write invariant) is a possible future WO.

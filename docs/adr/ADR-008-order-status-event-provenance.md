@@ -2,15 +2,19 @@
 
 ## Status
 
-**Proposed** (2026-07-08, drafted by WO-0006 from the WO-0007a audit + WO-0009 implementation;
-amended 2026-07-09 by WO-0013 to cover the `SUBMIT_RELEASED` / `CANCEL_PENDING` edges, per the
-REV-0001 independent review F-003; **re-clarified 2026-07-09 per the REV-0003 independent review
-F-001** to state that the order-status projector folds by append sequence + the legal-transition
-graph and treats `source`/`authority` as provenance-only — it does NOT authority-weight). Awaiting
-human acceptance and independent cross-model review per the CLAUDE.md Review policy. The
-implementation shipped in WO-0009 (`SUBMIT_RELEASED`/`CANCEL_PENDING` provenance in WO-0007b Stage
-A), on branch `chore/ai-os-install`; this ADR documents the decision it embodies. NOT accepted until
-a human records acceptance here.
+**Accepted** (2026-07-09, by Ameen).
+
+History: drafted 2026-07-08 by WO-0006 from the WO-0007a audit + WO-0009 implementation; amended
+2026-07-09 by WO-0013 to cover the `SUBMIT_RELEASED` / `CANCEL_PENDING` edges (per the REV-0001
+independent review F-003); re-clarified 2026-07-09 per the **REV-0003** independent review F-001 to
+state that the order-status projector folds by append sequence + the legal-transition graph and
+treats `source`/`authority` as provenance-only — it does **not** authority-weight.
+
+Independent cross-model review: **REV-0003** (GPT-5/Codex, ACCEPT-WITH-CHANGES). The sole finding —
+the authority-weighting overclaim — was resolved by the clarification above; see
+`work/review/REV-0003/disposition.md`. The deferred authority-aware-resolution work is registered as
+a durable tripwire, `docs/INVARIANTS.md` **INV-075**. The implementation shipped in WO-0009
+(`SUBMIT_RELEASED`/`CANCEL_PENDING` provenance in WO-0007b Stage A), on branch `chore/ai-os-install`.
 
 ## Context
 
@@ -106,6 +110,13 @@ regardless of which model is chosen.
 - **Known limitation (accepted):** `source=BROKER_REST` will be slightly inaccurate if/when a
   websocket ingestion path is added (should be `BROKER_STREAM`); `authority` stays correct regardless.
 - This is **not** the read-flip. `orders.status` remains authoritative until WO-0007b (separately gated).
+- **Tripwire (REV-0003, registered as `docs/INVARIANTS.md` INV-075):** the projection's correctness
+  rests on single-writer, in-sequence, transition-guarded appends. **Any** future asynchronous or
+  out-of-order order-status ingest path (e.g. an Alpaca `trade_updates` websocket, or a conflicting
+  reconciliation) MUST either route through the single-writer transition guard or add authority-aware
+  conflict resolution + conflict tests **before it ships**. The deferred authority-aware-resolution
+  work is recorded as an invariant precisely so a future change trips over it rather than silently
+  relying on an ordering guarantee it would break.
 
 ## Required tests / evidence
 

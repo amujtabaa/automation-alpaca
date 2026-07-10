@@ -133,6 +133,27 @@ side effect.** Applies identically to candidate, order, and sell-intent
 transitions.
 *Pinned by:* `tests/test_store_core.py::TestPlanTransitionOrder`.
 
+**INV-075 — Order status is projected by latest-lifecycle-event-wins over an
+append-ordered, single-writer, transition-guarded log; adding ANY asynchronous or
+out-of-order order-status ingest path MUST first preserve that ordering (route it
+through the single-writer transition guard) OR add authority-aware conflict
+resolution with conflict tests — before it ships.** `project_order_status` folds by
+`sequence` + the `ORDER_TRANSITIONS` graph and does **not** read
+`source`/`authority` (ADR-008 "Truth model (this flow)"). That is correct only while
+every order-status writer is the single-writer engine appending in causal order —
+true today (REST-poll / reconcile / engine only; the one websocket carries
+market-data prices, not order status). A future `trade_updates` websocket, or a
+reconciliation that asserts a conflicting fact, could deliver an earlier real-world
+fact at a later `sequence`, which latest-wins would mis-project.
+*Why:* an out-of-order broker fact overwritten by a stale engine echo would diverge
+the order-status read-model. Position/P&L is firewalled from this (INV-001 / INV-9:
+only fills move quantity), but the status-gated claim/cancel/flatten logic is not.
+This is the tripwire that forces the design decision **at the point** the async path
+is introduced, instead of silently relying on an ordering guarantee that path breaks.
+*Pinned by:* `tests/test_wo0007b_stageb_projector.py` (authority-independent
+latest-wins) + ADR-008 "Truth model (this flow)". *(Forward-looking guard, REV-0003:
+no reachable violation today; it fires the day someone builds async status ingestion.)*
+
 ---
 
 ## Sell-intent lifecycle (Phase 7, `docs/archive/legacy_implementation_prompts/IMPLEMENTATION_PROMPT_PHASE_7.md`)
