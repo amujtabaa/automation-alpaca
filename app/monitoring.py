@@ -85,6 +85,7 @@ from app.store.base import (
     InvalidFillError,
     InvalidOrderError,
     OrderTransitionError,
+    ProtectionHaltedError,
     StateStore,
     UnknownEntityError,
 )
@@ -294,11 +295,6 @@ async def _run_protection(
         _log.exception("protection: subscribe(held=%s) failed", held)
 
     config = _protection_config(settings)
-    session = await store.get_current_session()
-    # Wave 3d (event_truth): read the §8 FSM. Only HALTED (the kill-switch state,
-    # which dominates pause) pauses autonomous protection per D-P2; REDUCING
-    # (buys-paused) does not. Equivalent to the prior ``session.kill_switch`` read.
-    kill_switched = session.trading_state is TradingState.HALTED
     paused_breaching: set[str] = set()
 
     for position in positions:
@@ -307,13 +303,26 @@ async def _run_protection(
             breach = floor_breach_reason(position, snapshot, config)
             if breach is None:
                 continue
-            if kill_switched:
-                # D-P2: the kill switch pauses autonomous protection. Record the
-                # symbol as paused-and-breaching; the paused/resumed transition is
-                # reconciled after the loop. Manual flatten still works (routes).
+            # ENG-001: re-read the §8 FSM FRESH per symbol (not once before the
+            # loop). Only HALTED (the kill-switch state, which dominates pause)
+            # pauses autonomous protection per D-P2; REDUCING (buys-paused) does
+            # not. A kill that landed during an earlier await must pause THIS symbol
+            # here — not be decided on a stale read — and skipping now also avoids a
+            # needless buy-cancel under the kill.
+            session = await store.get_current_session()
+            if session.trading_state is TradingState.HALTED:
+                # D-P2: record the symbol as paused-and-breaching; the
+                # paused/resumed transition is reconciled after the loop. Manual
+                # flatten still works (routes).
                 paused_breaching.add(position.symbol)
                 continue
-            await _open_protective_exit(store, adapter, position, breach, session.id)
+            # Atomic backstop (ENG-001): a kill landing DURING _open_protective_exit's
+            # own awaits makes the store refuse the new PROTECTION_FLOOR intent —
+            # that pauses the symbol too, and nothing spurious is created.
+            if await _open_protective_exit(
+                store, adapter, position, breach, session.id
+            ):
+                paused_breaching.add(position.symbol)
         except Exception:  # noqa: BLE001 - one symbol must not block the others
             _log.exception("protection tick failed for %s", position.symbol)
 
@@ -326,17 +335,22 @@ async def _open_protective_exit(
     position: Position,
     breach: FloorBreach,
     session_id: str,
-) -> None:
+) -> bool:
     """Open one protective exit for a breaching symbol: cancel open buys, create a
     single-flight ``PROTECTION_FLOOR`` intent, auto-approve it, dispatch a MARKET
     order (type re-derived at submission — §5.4), and audit ``protection_triggered``.
-    Idempotent: an already-active sell intent for the symbol short-circuits."""
+    Idempotent: an already-active sell intent for the symbol short-circuits.
+
+    Returns ``True`` iff the kill switch (Halted) engaged during the exit and the
+    store atomically refused the new PROTECTION_FLOOR intent (ENG-001) — the caller
+    then records the symbol as paused. Returns ``False`` otherwise (exit opened, or
+    already in flight, or nothing to size)."""
 
     # Dedup: an exit is already in flight for this symbol (single-flight also
     # enforces this atomically in the store, but skipping here avoids re-cancelling
     # buys and re-auditing every tick while the first exit works).
     if await store.active_sell_intent_for(position.symbol) is not None:
-        return
+        return False
 
     # §5.3: clear open buys FIRST so the exit reaches — and stays — flat.
     await cancel_open_buys(store, adapter, position.symbol)
@@ -345,23 +359,28 @@ async def _open_protective_exit(
     # landed); never size an exit above what is actually held (Rule 7 / no short).
     live = await store.get_position(position.symbol)
     if live.quantity <= 0:
-        return
+        return False
 
-    intent = await store.create_sell_intent(
-        symbol=position.symbol,
-        reason=SellReason.PROTECTION_FLOOR,
-        target_quantity=live.quantity,
-        floor_price=breach.floor_price,
-        observed_price=breach.observed_price,
-        session_id=session_id,
-    )
+    try:
+        intent = await store.create_sell_intent(
+            symbol=position.symbol,
+            reason=SellReason.PROTECTION_FLOOR,
+            target_quantity=live.quantity,
+            floor_price=breach.floor_price,
+            observed_price=breach.observed_price,
+            session_id=session_id,
+        )
+    except ProtectionHaltedError:
+        # ENG-001: a kill landed during the awaits above; the store atomically
+        # refused the new autonomous intent. Nothing was created — pause the symbol.
+        return True
     # create_sell_intent is single-flight: if it returned a pre-existing active
     # intent that is already past PENDING, don't re-drive it.
     if intent.status is SellIntentStatus.PENDING:
         await store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)
     refreshed = await store.get_sell_intent(intent.id)
     if refreshed is None or refreshed.status is not SellIntentStatus.APPROVED:
-        return
+        return False
 
     order = await store.create_order_for_sell_intent(
         intent.id, order_type=OrderType.MARKET
@@ -384,6 +403,7 @@ async def _open_protective_exit(
         session_id=session_id,
         correlation_id=intent.id,
     )
+    return False
 
 
 async def _currently_paused_symbols(store: StateStore) -> set[str]:

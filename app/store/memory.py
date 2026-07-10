@@ -74,6 +74,7 @@ from app.store.base import (
     FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
+    ProtectionHaltedError,
     RiskLimits,
     SellIntentTransitionError,
     SessionAlreadyClosedError,
@@ -777,6 +778,22 @@ class InMemoryStateStore(StateStore):
             active = self._active_sell_intent_unlocked(key)
             if active is not None:
                 return active.model_copy(deep=True)
+            # ENG-001 / INV-060: the kill switch blocks NEW autonomous order intent.
+            # A PROTECTION_FLOOR exit must not be created while Halted — checked here
+            # under the SAME lock as the insert so a kill landing during the
+            # protection tick's own awaits cannot race the create (the tick's
+            # pre-check can go stale). An already-active exit was returned above and
+            # stays idempotent; manual flatten has its own Halted-deny.
+            if reason is SellReason.PROTECTION_FLOOR:
+                session = self._ensure_current_session_unlocked()
+                if (
+                    current_trading_state(self._execution_events, session.id)
+                    is TradingState.HALTED
+                ):
+                    raise ProtectionHaltedError(
+                        f"autonomous protection exit for {key} refused: trading "
+                        "halted (kill switch engaged)"
+                    )
             with self._atomic():
                 intent = self._insert_sell_intent_unlocked(
                     symbol=key,

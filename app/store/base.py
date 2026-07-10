@@ -236,6 +236,18 @@ class EmergencyReduceBlockedError(StoreError):
     """
 
 
+class ProtectionHaltedError(StoreError):
+    """A NEW autonomous ``PROTECTION_FLOOR`` sell intent was refused because the
+    kill switch is engaged (``Halted``) — INV-060 / ENG-001. Checked under the
+    store's single lock in ``create_sell_intent`` so a kill that lands during the
+    protection tick's own awaits cannot race the create (the tick's pre-check can
+    go stale across those awaits). An already-active exit still returns
+    idempotently; only a genuinely new intent is refused. Manual flatten has its
+    own Halted-deny (``FlattenBlockedError`` / ``plan_flatten_position``). The
+    engine treats this as "pause this symbol", not a tick failure.
+    """
+
+
 @dataclass(frozen=True)
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.
