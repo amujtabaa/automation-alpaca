@@ -585,7 +585,9 @@ async def run_monitoring_tick(
     # BEFORE the open-order reconcile — a resolution to SUBMITTED hands the order a
     # broker_order_id that the reconcile poll then tracks (and ingests fills for)
     # this same tick.
-    await _resolve_timeout_quarantine(store, adapter, settings)
+    await _resolve_timeout_quarantine(
+        store, adapter, settings, budget=reconcile_budget
+    )
     await _reconcile_open_orders(
         store, adapter, settings, market_data=market_data
     )
@@ -973,6 +975,8 @@ async def _resolve_timeout_quarantine(
     store: StateStore,
     adapter: BrokerAdapter,
     settings: Optional[Settings] = None,
+    *,
+    budget: Optional[ReconcileQueryBudget] = None,
 ) -> None:
     """Resolve ``TIMEOUT_QUARANTINE`` orders (ADR-002) with a READ-ONLY targeted
     query — the whole point is to NEVER resubmit an order that may already be live.
@@ -1001,6 +1005,13 @@ async def _resolve_timeout_quarantine(
 
     max_attempts = (settings or Settings()).timeout_quarantine_max_query_attempts
     for order in await store.list_timeout_quarantined_orders():
+        # ENG-002: each targeted resolution query is a §7/§9 REST call, so consume
+        # the loop's shared reconcile budget before each one — a large quarantine
+        # burst can no longer exceed the venue rate budget the mass-report and
+        # targeted-reconcile calls already share. Exhausted → defer the remaining
+        # quarantined orders to a later tick (they persist until resolved).
+        if budget is not None and not budget.try_consume(utcnow()):
+            break
         try:
             update = await adapter.get_order_by_client_order_id(order.id)
         except BrokerError as exc:

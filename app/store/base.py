@@ -870,7 +870,11 @@ class StateStore(ABC):
         audit event with the order-row flip. Resolving to ``SUBMITTED`` requires
         ``broker_order_id`` (AIR-001); the normal reconcile poll then ingests any
         fills. Raises :class:`OrderTransitionError` if the order is not
-        ``TIMEOUT_QUARANTINE`` or ``new_status`` is not a legal resolution.
+        ``TIMEOUT_QUARANTINE`` (an illegal state transition). Raises
+        :class:`ValueError` if ``new_status`` is not a supported resolution target
+        — a defensive guard on the internal quarantine-resolution map, unreachable
+        from a client-chosen target (REV-0006-F-002: the raised type is
+        ``ValueError``, not ``OrderTransitionError``).
         """
 
     @abstractmethod
@@ -893,8 +897,11 @@ class StateStore(ABC):
         confirmed ABSENT at the venue, after the ``open_check_missing_retries`` bound
         (§7 / wave 4e-3). Co-writes the matching lifecycle ``ExecutionEvent`` (durable
         truth, ``BROKER_AUTHORITATIVE``) + an ``order_reconcile_resolved`` audit event
-        with the order-row flip, atomically. ``FILLED`` is not a legal target (INV-9).
-        Raises :class:`OrderTransitionError` if the transition is illegal.
+        with the order-row flip, atomically. ``FILLED`` is not a supported target
+        (INV-9): an unsupported ``new_status`` raises :class:`ValueError` — a
+        defensive guard on the internal reconcile-resolution map, unreachable from
+        a client-chosen target (REV-0006-F-002). An illegal *state* transition
+        raises :class:`OrderTransitionError`.
         """
 
     # ------------------------------------------------------------------ #
