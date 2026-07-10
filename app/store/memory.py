@@ -942,6 +942,91 @@ class InMemoryStateStore(StateStore):
             )
             return order.model_copy(deep=True)
 
+    async def open_protection_exit(
+        self,
+        *,
+        symbol: str,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        average_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        key = normalize_symbol(symbol)
+        bad = whole_count_reason(target_quantity)
+        if bad is not None or target_quantity <= 0:
+            raise InvalidOrderError(
+                f"protection exit for {key} needs a positive whole "
+                f"target_quantity (got {target_quantity!r})"
+            )
+        async with self._lock:
+            # Single-flight (atomic dedup): an exit already in flight for this
+            # symbol short-circuits — nothing new is written, mirroring
+            # create_sell_intent's active-check. Checked BEFORE the kill gate so an
+            # exit created while ACTIVE (before the kill) still returns idempotently.
+            active = self._active_sell_intent_unlocked(key)
+            if active is not None:
+                existing = (
+                    self._orders.get(active.order_id)
+                    if active.order_id is not None
+                    else None
+                )
+                return existing.model_copy(deep=True) if existing is not None else None
+            # ENG-001 / INV-060 (REV-0019-F-001): the kill switch blocks NEW
+            # autonomous order intent. The whole create+approve+dispatch+audit
+            # below runs under THIS single lock hold with no await after this
+            # check, so a kill landing during the tick's earlier awaits is caught
+            # here (nothing written) and one landing later cannot interleave — the
+            # decomposed sequence's post-create HALTED window is closed.
+            session = self._ensure_current_session_unlocked()
+            if (
+                current_trading_state(self._execution_events, session.id)
+                is TradingState.HALTED
+            ):
+                raise ProtectionHaltedError(
+                    f"autonomous protection exit for {key} refused: trading "
+                    "halted (kill switch engaged)"
+                )
+            if session_id is None:
+                session_id = session.id
+            with self._atomic():
+                intent = self._insert_sell_intent_unlocked(
+                    symbol=key,
+                    reason=SellReason.PROTECTION_FLOOR,
+                    target_quantity=target_quantity,
+                    floor_price=floor_price,
+                    observed_price=observed_price,
+                    session_id=session_id,
+                )
+                self._transition_sell_intent_unlocked(
+                    intent, SellIntentStatus.APPROVED
+                )
+                order = self._dispatch_order_for_sell_intent_unlocked(
+                    intent, order_type=OrderType.MARKET, limit_price=None
+                )
+                # The trigger audit joins the SAME atomic block: a dispatch reject
+                # (oversell) rolls the intent+approve back with it, so no
+                # protection_triggered event ever describes a non-existent exit.
+                self._append_event_unlocked(
+                    "protection_triggered",
+                    message=(
+                        f"protection floor breached for {key}: last "
+                        f"{observed_price} <= floor {floor_price}; exiting "
+                        f"{target_quantity} shares"
+                    ),
+                    symbol=key,
+                    order_id=order.id,
+                    payload={
+                        "average_price": average_price,
+                        "floor_price": floor_price,
+                        "observed_price": observed_price,
+                        "quantity": target_quantity,
+                    },
+                    session_id=session_id,
+                    correlation_id=intent.id,
+                )
+            return order.model_copy(deep=True)
+
     async def flatten_position(
         self,
         symbol: str,

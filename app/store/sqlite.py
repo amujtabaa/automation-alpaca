@@ -1647,6 +1647,92 @@ class SqliteStateStore(StateStore):
                 intent, order_type=order_type, limit_price=limit_price
             )
 
+    async def open_protection_exit(
+        self,
+        *,
+        symbol: str,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        average_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        key = normalize_symbol(symbol)
+        bad = whole_count_reason(target_quantity)
+        if bad is not None or target_quantity <= 0:
+            raise InvalidOrderError(
+                f"protection exit for {key} needs a positive whole "
+                f"target_quantity (got {target_quantity!r})"
+            )
+        async with self._lock:
+            # Single-flight (atomic dedup): an exit already in flight for this
+            # symbol short-circuits — nothing new is written, mirroring
+            # create_sell_intent's active-check. Checked BEFORE the kill gate so an
+            # exit created while ACTIVE (before the kill) still returns idempotently.
+            active = self._active_sell_intent_locked(key)
+            if active is not None:
+                if active.order_id is None:
+                    return None
+                order_row = self._read_one(
+                    "SELECT * FROM orders WHERE id = ?", (active.order_id,)
+                )
+                if order_row is None:
+                    return None
+                return self._project_order_locked(self._order(order_row))
+            # ENG-001 / INV-060 (REV-0019-F-001): the kill switch blocks NEW
+            # autonomous order intent. The whole create+approve+dispatch+audit
+            # below shares ONE _tx() with no await after this check, so a kill
+            # landing during the tick's earlier awaits is caught here (nothing
+            # written) and one landing later cannot interleave — the decomposed
+            # sequence's post-create HALTED window is closed. A dispatch reject
+            # (oversell) rolls the whole transaction back (matching the in-memory
+            # store), so no protection_triggered event ever describes a
+            # non-existent exit.
+            session = self._ensure_current_session_locked()
+            if self._current_trading_state_locked(session.id) is TradingState.HALTED:
+                raise ProtectionHaltedError(
+                    f"autonomous protection exit for {key} refused: trading "
+                    "halted (kill switch engaged)"
+                )
+            if session_id is None:
+                session_id = session.id
+            with self._tx() as cur:
+                intent = self._insert_sell_intent_locked(
+                    cur,
+                    symbol=key,
+                    reason=SellReason.PROTECTION_FLOOR,
+                    target_quantity=target_quantity,
+                    floor_price=floor_price,
+                    observed_price=observed_price,
+                    session_id=session_id,
+                )
+                self._transition_sell_intent_locked(
+                    cur, intent, SellIntentStatus.APPROVED
+                )
+                order = self._dispatch_order_for_sell_intent_locked(
+                    intent, order_type=OrderType.MARKET, limit_price=None, cur=cur
+                )
+                self._insert_event(
+                    cur,
+                    "protection_triggered",
+                    message=(
+                        f"protection floor breached for {key}: last "
+                        f"{observed_price} <= floor {floor_price}; exiting "
+                        f"{target_quantity} shares"
+                    ),
+                    symbol=key,
+                    order_id=order.id,
+                    payload={
+                        "average_price": average_price,
+                        "floor_price": floor_price,
+                        "observed_price": observed_price,
+                        "quantity": target_quantity,
+                    },
+                    session_id=session_id,
+                    correlation_id=intent.id,
+                )
+            return order
+
     async def flatten_position(
         self,
         symbol: str,
@@ -1659,23 +1745,20 @@ class SqliteStateStore(StateStore):
             # Every read this decision depends on happens under this ONE lock
             # hold, continuously through to the writes below — a concurrent
             # protection tick's own create_sell_intent call cannot interleave
-            # anywhere in between (X-001). Individual steps below each commit
-            # their own small SQL transaction (matching close_session's and
-            # _run_protection's existing multi-step-under-one-lock shape) —
-            # what makes this safe against the CONCURRENCY race is the
-            # continuous lock hold, not a single giant transaction; never a
-            # double-sell (this is verified for real races). A hard CRASH
-            # between the two commits below (insert+approve, then dispatch) is
-            # a separate, narrower concern: it durably strands the fresh
-            # MANUAL_FLATTEN intent APPROVED with no order. That is NOT
-            # silently unrecoverable — plan_flatten_position (app/store/core.py)
-            # treats a MANUAL_FLATTEN intent found here as "existing" only when
-            # it is already ORDERED; a stranded pending/approved one instead
-            # self-heals on the next flatten call, exactly like a stranded
-            # PROTECTION_FLOOR intent (see docs/INVARIANTS.md INV-038 — an
-            # adversarial re-review of this diff found the earlier version of
-            # this comment's "never a silently-blocked symbol" claim was false
-            # before that fix).
+            # anywhere in between (X-001): the continuous lock hold is what makes
+            # this safe against the CONCURRENCY race; never a double-sell (this is
+            # verified for real races). Independently, the SUPERSEDE_AND_CREATE
+            # branch below commits its supersede + create + approve + dispatch
+            # writes as ONE SQL transaction (REV-0006-F-001 / INV-050), so a hard
+            # CRASH — or a dispatch reject — anywhere inside it rolls the whole
+            # thing back rather than durably stranding the fresh MANUAL_FLATTEN
+            # intent APPROVED with no order (matching the in-memory store's single
+            # _atomic() block). The self-heal path in plan_flatten_position
+            # (app/store/core.py) still covers a MANUAL_FLATTEN intent stranded by
+            # any OTHER route — it treats one found here as "existing" only when
+            # already ORDERED, and supersedes a stranded pending/approved one on
+            # the next flatten call, exactly like a stranded PROTECTION_FLOOR
+            # intent (docs/INVARIANTS.md INV-038).
             position = self._position_locked(key)
             active = self._active_sell_intent_locked(key)
             active_order = None

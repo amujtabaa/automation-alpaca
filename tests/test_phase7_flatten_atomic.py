@@ -127,21 +127,22 @@ async def test_idempotent_when_own_manual_flatten_active(any_store):
     assert len(sells) == 1
 
 
-# ---- a stranded MANUAL_FLATTEN (crash between commits) self-heals -------- #
+# ---- a stranded MANUAL_FLATTEN with no order self-heals ------------------ #
 
 
 async def test_stranded_manual_flatten_with_no_order_self_heals(any_store):
-    """Adversarial re-review finding on the X-001 diff: ``SqliteStateStore.
-    flatten_position`` commits the fresh intent's insert+approve in one
-    transaction, then dispatches the order in a SEPARATE transaction. A crash
-    landing between those two commits durably strands a ``MANUAL_FLATTEN``
-    intent at APPROVED with no order at all. Before this fix, a later flatten
-    call trusted ANY MANUAL_FLATTEN active intent as "the existing exit" and
-    returned it as-is — silently no-op'ing forever (HTTP 200, order=None)
-    while permanently poisoning single-flight dedup for the symbol. Simulates
-    the stranded state directly (bypassing the atomic dispatch, exactly as a
-    crash would leave it) rather than trying to interrupt a real transaction
-    mid-flight."""
+    """Defense-in-depth self-heal for a ``MANUAL_FLATTEN`` intent left APPROVED
+    with no order. ``flatten_position`` itself no longer strands one — its whole
+    supersede+create+approve+dispatch sequence is a single transaction
+    (REV-0006-F-001), so a crash or dispatch reject inside it rolls back cleanly.
+    But a stranded APPROVED-no-order intent can still arise from ANOTHER route
+    (e.g. a direct create_sell_intent + transition, as simulated here). Before the
+    self-heal, a later flatten call trusted ANY active MANUAL_FLATTEN intent as
+    "the existing exit" and returned it as-is — silently no-op'ing forever (HTTP
+    200, order=None) while permanently poisoning single-flight dedup for the
+    symbol. This pins that a later flatten SUPERSEDES the stranded intent and opens
+    a real exit. Simulates the stranded state directly rather than interrupting a
+    transaction mid-flight."""
 
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)

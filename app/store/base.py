@@ -573,6 +573,44 @@ class StateStore(ABC):
         """
 
     @abstractmethod
+    async def open_protection_exit(
+        self,
+        *,
+        symbol: str,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        average_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        """Open the whole autonomous protective exit for ``symbol`` as ONE
+        store-atomic unit — the sell-side analogue of :meth:`flatten_position` for
+        the ``PROTECTION_FLOOR`` reason (ENG-001 / REV-0019-F-001, kill-switch).
+
+        Under ONE lock hold: single-flight dedup (an already-active exit is
+        returned, nothing written), then **the INV-060 kill-switch gate** (if the
+        current session is ``HALTED`` this raises :class:`ProtectionHaltedError`
+        and writes nothing), then — atomically — create the ``PROTECTION_FLOOR``
+        intent, approve it, dispatch the MARKET :class:`Order` (live-position
+        oversell re-read inside the same hold), and append the
+        ``protection_triggered`` audit event. Because there is **no await between
+        the HALTED check and the writes**, a concurrent kill can only land BEFORE
+        the op (refused, nothing durable) or AFTER it committed (a legitimate exit
+        opened while ACTIVE) — it can never leave a partial ORDERED
+        intent / CREATED order / ``protection_triggered`` event under ``HALTED``,
+        which the decomposed create -> approve -> order -> audit sequence could
+        (REV-0019-F-001). The submission-time claim gate remains the independent
+        backstop before any venue order.
+
+        Returns the dispatched SELL :class:`Order` (or, on an idempotent
+        single-flight dedup, the already-active intent's linked order, which may be
+        ``None`` if it has not dispatched yet). Raises :class:`ProtectionHaltedError`
+        (HALTED), :class:`InvalidOrderError` (bad ``target_quantity`` / oversell).
+        The engine (:func:`app.monitoring._open_protective_exit`) MUST call this
+        rather than the separate public steps, so the window cannot reopen.
+        """
+
+    @abstractmethod
     async def flatten_position(
         self,
         symbol: str,

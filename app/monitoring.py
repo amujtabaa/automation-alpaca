@@ -59,8 +59,6 @@ from app.models import (
     OrderStatus,
     OrderType,
     Position,
-    SellIntentStatus,
-    SellReason,
     SessionStatus,
     SessionType,
     TradingState,
@@ -336,15 +334,19 @@ async def _open_protective_exit(
     breach: FloorBreach,
     session_id: str,
 ) -> bool:
-    """Open one protective exit for a breaching symbol: cancel open buys, create a
-    single-flight ``PROTECTION_FLOOR`` intent, auto-approve it, dispatch a MARKET
-    order (type re-derived at submission — §5.4), and audit ``protection_triggered``.
-    Idempotent: an already-active sell intent for the symbol short-circuits.
+    """Open one protective exit for a breaching symbol: cancel open buys, then open
+    the whole exit — single-flight ``PROTECTION_FLOOR`` intent, auto-approve,
+    dispatch a MARKET order (type re-derived at submission — §5.4), and audit
+    ``protection_triggered`` — via the ONE store-atomic ``open_protection_exit``
+    call (ENG-001 / REV-0019-F-001), never the separate public steps. Idempotent:
+    an already-active exit for the symbol short-circuits inside the store.
 
-    Returns ``True`` iff the kill switch (Halted) engaged during the exit and the
-    store atomically refused the new PROTECTION_FLOOR intent (ENG-001) — the caller
-    then records the symbol as paused. Returns ``False`` otherwise (exit opened, or
-    already in flight, or nothing to size)."""
+    Returns ``True`` iff the kill switch (Halted) engaged before the atomic
+    exit-open and the store refused the new PROTECTION_FLOOR exit (ENG-001) — the
+    caller then records the symbol as paused. Because the create+approve+dispatch+
+    audit is one atomic unit with no await after the HALTED check, a concurrent
+    kill can never leave a partial exit under Halted. Returns ``False`` otherwise
+    (exit opened, or already in flight, or nothing to size)."""
 
     # Dedup: an exit is already in flight for this symbol (single-flight also
     # enforces this atomically in the store, but skipping here avoids re-cancelling
@@ -362,47 +364,24 @@ async def _open_protective_exit(
         return False
 
     try:
-        intent = await store.create_sell_intent(
+        # ONE store-atomic operation: create + approve + dispatch + audit under a
+        # single lock hold with the HALTED check (ENG-001 / REV-0019-F-001). The
+        # decomposed public sequence used here before left a post-create window in
+        # which a concurrent kill could strand an ORDERED intent + CREATED order +
+        # protection_triggered event under Halted; folding it removes every await
+        # between the check and the writes.
+        await store.open_protection_exit(
             symbol=position.symbol,
-            reason=SellReason.PROTECTION_FLOOR,
             target_quantity=live.quantity,
             floor_price=breach.floor_price,
             observed_price=breach.observed_price,
+            average_price=breach.average_price,
             session_id=session_id,
         )
     except ProtectionHaltedError:
-        # ENG-001: a kill landed during the awaits above; the store atomically
-        # refused the new autonomous intent. Nothing was created — pause the symbol.
+        # A kill landed before the atomic exit-open ran; the store refused it under
+        # the single lock — nothing was created. Pause the symbol.
         return True
-    # create_sell_intent is single-flight: if it returned a pre-existing active
-    # intent that is already past PENDING, don't re-drive it.
-    if intent.status is SellIntentStatus.PENDING:
-        await store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)
-    refreshed = await store.get_sell_intent(intent.id)
-    if refreshed is None or refreshed.status is not SellIntentStatus.APPROVED:
-        return False
-
-    order = await store.create_order_for_sell_intent(
-        intent.id, order_type=OrderType.MARKET
-    )
-    await store.append_event(
-        EventType.PROTECTION_TRIGGERED.value,
-        message=(
-            f"protection floor breached for {position.symbol}: last "
-            f"{breach.observed_price} <= floor {breach.floor_price}; exiting "
-            f"{live.quantity} shares"
-        ),
-        symbol=position.symbol,
-        order_id=order.id,
-        payload={
-            "average_price": breach.average_price,
-            "floor_price": breach.floor_price,
-            "observed_price": breach.observed_price,
-            "quantity": live.quantity,
-        },
-        session_id=session_id,
-        correlation_id=intent.id,
-    )
     return False
 
 
