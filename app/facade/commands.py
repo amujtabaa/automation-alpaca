@@ -1,22 +1,20 @@
 """Typed command facade — Spine v2 (ADR-005 / Spine v2 §10).
 
 ``ExecutionCommandFacade`` is a ``Protocol`` defining the command surface
-FastAPI routes depend on. As of Phase 1:
+FastAPI routes depend on. As of Phase 6 (ARCH-002 doc refresh):
 
-* **``pause_buys``/``resume_buys`` are real** — implemented by
-  ``app.facade.store_backed.StoreBackedCommandFacade`` and wired into
-  ``POST /api/controls/{pause,resume}-buys`` (see
-  ``docs/SPINE_PHASE1_FACADE_REPORT.md``).
-* **Every other method still raises ``NotYetImplementedError``** — either
-  because it has no current-codebase analogue (``primary``/``spawn``/
-  ``TradingState`` don't exist yet), or because migrating it now would
-  freeze an ADR-conflicted behavior (manual flatten, kill-switch) as the
-  facade's contract before Phase 3 makes a deliberate decision — see
-  ``docs/SPINE_PHASE0_INVENTORY.md`` §3.1/§3.4.
-* **Every other route still bypasses this facade entirely**, calling
-  ``app.store``/``app.broker``/``app.monitoring`` directly — see
-  ``docs/SPINE_PHASE0_INVENTORY.md``'s dependency map. Nothing enforces the
-  boundary yet (Phase 5).
+* **Every command method is real** — implemented by
+  ``app.facade.store_backed.StoreBackedCommandFacade`` and wired into its
+  route (order approval/reject, manual flatten, emergency-reduce, cancel,
+  kill switch, pause/resume buys, close session, dev inject). None of the
+  command methods raise ``NotYetImplementedError`` anymore.
+* **The route→facade boundary is enforced** by import-linter Contract 5
+  (`.importlinter`; ADR-005 / ADR-006) — routes reach the store/engine/broker
+  only through this facade, no longer directly.
+* **Provisional vocabulary only:** the ``primary``/``spawn``/``TradingState``
+  Spine v2 target names have no current-codebase analogue, so the *query*-side
+  ``list_primaries``/``list_spawns``/``kill_state`` are the only facade methods
+  that still raise ``NotYetImplementedError`` (see ``app.facade.queries``).
 
 Method names/signatures are provisional and use the Spine v2 target
 vocabulary (``primary``/``spawn``/``TradingState``), which does not exist in

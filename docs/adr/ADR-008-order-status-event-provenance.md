@@ -8,7 +8,10 @@ History: drafted 2026-07-08 by WO-0006 from the WO-0007a audit + WO-0009 impleme
 2026-07-09 by WO-0013 to cover the `SUBMIT_RELEASED` / `CANCEL_PENDING` edges (per the REV-0001
 independent review F-003); re-clarified 2026-07-09 per the **REV-0003** independent review F-001 to
 state that the order-status projector folds by append sequence + the legal-transition graph and
-treats `source`/`authority` as provenance-only — it does **not** authority-weight.
+treats `source`/`authority` as provenance-only — it does **not** authority-weight; re-clarified
+2026-07-10 per the **REV-0007** F-002 wording review to state that the transition-graph bound is
+enforced at the *write path* (`plan_transition_order`), not by the projector fold itself, which is a
+pure latest-wins over an already-legal log.
 
 Independent cross-model review: **REV-0003** (GPT-5/Codex, ACCEPT-WITH-CHANGES). The sole finding —
 the authority-weighting overclaim — was resolved by the clarification above; see
@@ -83,10 +86,14 @@ log honest for a *future* authority-aware resolver; it does not change today's f
   is correct in every case and the engine paths never over-claim it, so a future authority-aware
   resolver — if one is ever added — would start from honest data.
 
-**Truth model for this flow (REV-0003 F-001 clarification).** Order-status projection
-(`app/events/projectors.py::project_order_status`) is deterministic **latest-lifecycle-event-wins by
-append sequence**, bounded by the legal-transition graph (`ORDER_TRANSITIONS`, `app/transitions.py`).
-It reads only `event_type` + `order_id`; it does **not** read `source`/`authority`. Today no flow in
+**Truth model for this flow (REV-0003 F-001 clarification; REV-0007-F002 wording precision).**
+Order-status projection (`app/events/projectors.py::project_order_status`) is a deterministic **pure
+latest-lifecycle-event-wins fold by append sequence**. The legal-transition graph (`ORDER_TRANSITIONS`,
+`app/transitions.py`) is **not** consulted by the projector itself; transition legality is enforced
+upstream at the *write path* (`plan_transition_order` rejects any illegal edge, and terminal states
+have no outgoing edges), so the log the projector folds already contains only legal transitions. The
+fold thus *relies on* the transition-guarded write path rather than re-checking legality. It reads only
+`event_type` + `order_id`; it does **not** read `source`/`authority`. Today no flow in
 the codebase consumes `authority` as a resolution input — it is recorded and serialized only (a raw
 fold of a `BROKER_AUTHORITATIVE` `FILLED` followed by a `LOCAL` `CANCEL_PENDING` yields
 `cancel_pending`; the normal transition graph makes that particular out-of-order sequence
@@ -101,8 +108,9 @@ regardless of which model is chosen.
 ## Consequences
 
 - The `execution_events` log is a faithful provenance substrate — broker facts and engine decisions
-  are distinguishable. The WO-0007b order-status projector folds by **append sequence
-  (latest-lifecycle-event-wins) + legal-transition enforcement** and does **not** read
+  are distinguishable. The WO-0007b order-status projector is a **pure append-sequence
+  (latest-lifecycle-event-wins) fold**; transition legality is enforced upstream at the write path
+  (`plan_transition_order`), not re-checked by the fold, and it does **not** read
   `source`/`authority`; the provenance stamps are recorded for audit and for a possible future
   authority-aware consumer, not weighted by the current fold (REV-0003 F-001).
 - Historical events emitted between WO-0007a and WO-0009 keep their recorded `ENGINE`/`LOCAL`
@@ -123,8 +131,9 @@ regardless of which model is chosen.
 - Provenance matrix (helper + both stores) + dual-store provenance parity — `tests/test_wo0009_provenance.py`.
 - Stage-4 dual-store parity extended to include `(source, authority)` — `tests/test_wo0007a_stage4_dual_store_parity.py`.
 - INV-9 unaffected (provenance never touches folding); full suite green (1887 passed) — WO-0009.
-- **Truth model (REV-0003 F-001):** `project_order_status` folds by sequence + transition-graph and
-  is authority-independent — pinned by `tests/test_wo0007b_stageb_projector.py` (a
+- **Truth model (REV-0003 F-001; REV-0007-F002):** `project_order_status` is a pure sequence-ordered
+  fold (transition legality enforced upstream at the write path, not re-checked by the fold) and is
+  authority-independent — pinned by `tests/test_wo0007b_stageb_projector.py` (a
   `BROKER_AUTHORITATIVE` `FILLED` then a `LOCAL` `CANCEL_PENDING` folds to `cancel_pending`; normal
   order folds to `filled`), so the ADR's stated contract cannot silently drift toward
   authority-weighting.

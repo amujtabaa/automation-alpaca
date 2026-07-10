@@ -136,8 +136,12 @@ async def verify_dual_store_parity(
 # NOT covered here: a full order-status / spawn state-machine projection. That
 # projector is a deliberate, documented deferral to the Spine §4 primary/spawn
 # phase (docs/MIGRATION_MATRIX.md: "order-status/spawn projector deferred, mirror
-# of 3c-C5") — the order-row ``status`` column stays a co-written read-model whose
-# safety-critical *derived quantity*, position, IS projected and parity-checked.
+# of 3c-C5"). Since the WO-0007b read-flip, ``orders.status`` IS event-truth —
+# projected by ``project_order_status`` (not a raw column) — so adding an
+# order-status projection to this runtime parity verifier is a legitimate
+# follow-up (REV-0007-F001). Today its safety-critical *derived quantity*,
+# position, IS projected and parity-checked here, and scripted dual-store parity
+# (tests/test_wo0007a_stage4_dual_store_parity.py) already covers the status log.
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class ReadModelProjection:
