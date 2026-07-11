@@ -1,7 +1,7 @@
 # W3 Codex Review Prompt — Execution Envelope wave (ADR-009, WO-0016..0021)
 
 Paste to Codex with repo access on the authoritative env (Python 3.12.13), pinned to the W3
-integration branch tip commit `<PIN COMMIT SHA>` on a clean, single-commit checkout. Do not share
+integration branch tip commit `f092ca7` (`feat/execution-envelope`) on a clean, single-commit checkout. Do not share
 Phase A results before the verdict.
 
 ---
