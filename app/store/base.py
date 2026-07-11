@@ -236,6 +236,18 @@ class EmergencyReduceBlockedError(StoreError):
     """
 
 
+class ProtectionHaltedError(StoreError):
+    """A NEW autonomous ``PROTECTION_FLOOR`` sell intent was refused because the
+    kill switch is engaged (``Halted``) — INV-060 / ENG-001. Checked under the
+    store's single lock in ``create_sell_intent`` so a kill that lands during the
+    protection tick's own awaits cannot race the create (the tick's pre-check can
+    go stale across those awaits). An already-active exit still returns
+    idempotently; only a genuinely new intent is refused. Manual flatten has its
+    own Halted-deny (``FlattenBlockedError`` / ``plan_flatten_position``). The
+    engine treats this as "pause this symbol", not a tick failure.
+    """
+
+
 @dataclass(frozen=True)
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.
@@ -409,7 +421,19 @@ class StateStore(ABC):
         suggested_limit_price: Optional[float] = None,
         session_id: Optional[str] = None,
     ) -> Candidate:
-        ...
+        """Create a buy-proposal candidate (validated + audited), atomically.
+
+        **Single-flight (atomic dedup) — W2-CAND.** The active-candidate check and
+        the insert happen under ONE lock hold: if an *active* (PENDING or APPROVED)
+        candidate already exists for the same ``symbol`` **and** ``session_id``, the
+        existing candidate is returned and nothing is written — so at most one
+        active proposal per symbol/session is a **store invariant**, not a
+        caller-side convention (the sell-side analogue is
+        :meth:`create_sell_intent`). An ORDERED/rejected/expired candidate is no
+        longer active and does not block a fresh proposal (a re-buy). Validates a
+        present ``suggested_quantity``/``suggested_limit_price`` and the session
+        (must exist and be open) **before** the dedup, so an invalid duplicate
+        still raises rather than returning the existing candidate."""
 
     @abstractmethod
     async def list_candidates(
@@ -558,6 +582,44 @@ class StateStore(ABC):
         Raises :class:`UnknownEntityError` (unknown intent),
         :class:`SellIntentTransitionError` (not ``approved``), or
         :class:`InvalidOrderError` (oversell / bad limit-vs-market).
+        """
+
+    @abstractmethod
+    async def open_protection_exit(
+        self,
+        *,
+        symbol: str,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        average_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        """Open the whole autonomous protective exit for ``symbol`` as ONE
+        store-atomic unit — the sell-side analogue of :meth:`flatten_position` for
+        the ``PROTECTION_FLOOR`` reason (ENG-001 / REV-0019-F-001, kill-switch).
+
+        Under ONE lock hold: single-flight dedup (an already-active exit is
+        returned, nothing written), then **the INV-060 kill-switch gate** (if the
+        current session is ``HALTED`` this raises :class:`ProtectionHaltedError`
+        and writes nothing), then — atomically — create the ``PROTECTION_FLOOR``
+        intent, approve it, dispatch the MARKET :class:`Order` (live-position
+        oversell re-read inside the same hold), and append the
+        ``protection_triggered`` audit event. Because there is **no await between
+        the HALTED check and the writes**, a concurrent kill can only land BEFORE
+        the op (refused, nothing durable) or AFTER it committed (a legitimate exit
+        opened while ACTIVE) — it can never leave a partial ORDERED
+        intent / CREATED order / ``protection_triggered`` event under ``HALTED``,
+        which the decomposed create -> approve -> order -> audit sequence could
+        (REV-0019-F-001). The submission-time claim gate remains the independent
+        backstop before any venue order.
+
+        Returns the dispatched SELL :class:`Order` (or, on an idempotent
+        single-flight dedup, the already-active intent's linked order, which may be
+        ``None`` if it has not dispatched yet). Raises :class:`ProtectionHaltedError`
+        (HALTED), :class:`InvalidOrderError` (bad ``target_quantity`` / oversell).
+        The engine (:func:`app.monitoring._open_protective_exit`) MUST call this
+        rather than the separate public steps, so the window cannot reopen.
         """
 
     @abstractmethod
@@ -819,8 +881,12 @@ class StateStore(ABC):
         *,
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> Order:
-        """Atomically transition an order and write an audit event."""
+        """Atomically transition an order and write an audit event. ``actor``
+        stamps the ``order_transition`` audit event's provenance (UC-002) — a
+        human-triggered cancel passes the operator; routine engine transitions
+        default to ``COMMAND_ACTOR_SYSTEM``."""
 
     # ------------------------------------------------------------------ #
     # Timeout-quarantine (ADR-002 / wave 3c) — evented order transitions
@@ -854,7 +920,11 @@ class StateStore(ABC):
         audit event with the order-row flip. Resolving to ``SUBMITTED`` requires
         ``broker_order_id`` (AIR-001); the normal reconcile poll then ingests any
         fills. Raises :class:`OrderTransitionError` if the order is not
-        ``TIMEOUT_QUARANTINE`` or ``new_status`` is not a legal resolution.
+        ``TIMEOUT_QUARANTINE`` (an illegal state transition). Raises
+        :class:`ValueError` if ``new_status`` is not a supported resolution target
+        — a defensive guard on the internal quarantine-resolution map, unreachable
+        from a client-chosen target (REV-0006-F-002: the raised type is
+        ``ValueError``, not ``OrderTransitionError``).
         """
 
     @abstractmethod
@@ -877,8 +947,11 @@ class StateStore(ABC):
         confirmed ABSENT at the venue, after the ``open_check_missing_retries`` bound
         (§7 / wave 4e-3). Co-writes the matching lifecycle ``ExecutionEvent`` (durable
         truth, ``BROKER_AUTHORITATIVE``) + an ``order_reconcile_resolved`` audit event
-        with the order-row flip, atomically. ``FILLED`` is not a legal target (INV-9).
-        Raises :class:`OrderTransitionError` if the transition is illegal.
+        with the order-row flip, atomically. ``FILLED`` is not a supported target
+        (INV-9): an unsupported ``new_status`` raises :class:`ValueError` — a
+        defensive guard on the internal reconcile-resolution map, unreachable from
+        a client-chosen target (REV-0006-F-002). An illegal *state* transition
+        raises :class:`OrderTransitionError`.
         """
 
     # ------------------------------------------------------------------ #
@@ -1150,7 +1223,10 @@ class StateStore(ABC):
 
     @abstractmethod
     async def close_session(
-        self, session_id: Optional[str] = None
+        self,
+        session_id: Optional[str] = None,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> SessionRecord:
         """Close a session (default: the active one). Atomically:
 
@@ -1171,6 +1247,11 @@ class StateStore(ABC):
         closed, and :class:`UnknownEntityError` if ``session_id`` is unknown.
         Automatic, window-driven close is out of scope here (needs a monitoring
         loop) — this is the manual trigger only.
+
+        ``actor`` (W2-SESS) is stamped into the ``session_closed`` audit event so
+        the log attributes *who* closed the session (default ``"system"`` for an
+        engine/automatic close); mirrors the kill-switch / buys-paused / cancel
+        (UC-002) actor stamping.
         """
 
     @abstractmethod

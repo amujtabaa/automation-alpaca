@@ -137,9 +137,11 @@ transitions.
 append-ordered, single-writer, transition-guarded log; adding ANY asynchronous or
 out-of-order order-status ingest path MUST first preserve that ordering (route it
 through the single-writer transition guard) OR add authority-aware conflict
-resolution with conflict tests — before it ships.** `project_order_status` folds by
-`sequence` + the `ORDER_TRANSITIONS` graph and does **not** read
-`source`/`authority` (ADR-008 "Truth model (this flow)"). That is correct only while
+resolution with conflict tests — before it ships.** `project_order_status` is a **pure
+`sequence`-ordered latest-wins fold**: the `ORDER_TRANSITIONS` legality it assumes is
+enforced upstream at the write path (`plan_transition_order`), not re-checked by the
+fold, and it does **not** read `source`/`authority` (ADR-008 "Truth model (this flow)").
+That is correct only while
 every order-status writer is the single-writer engine appending in causal order —
 true today (REST-poll / reconcile / engine only; the one websocket carries
 market-data prices, not order status). A future `trade_updates` websocket, or a

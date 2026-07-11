@@ -1431,6 +1431,7 @@ def plan_transition_order(
     new_status: OrderStatus,
     filled_quantity: Optional[int],
     broker_order_id: Optional[str],
+    actor: str = COMMAND_ACTOR_SYSTEM,
 ) -> OrderTransitionPlan:
     """Decide an order transition — the shared logic (legality, monotonic
     filled-quantity, the true-no-op rule, and the D-008 ``order_transition`` vs
@@ -1517,7 +1518,10 @@ def plan_transition_order(
             symbol=updated.symbol,
             candidate_id=updated.candidate_id,
             order_id=updated.id,
-            payload={"from": current.value, "to": new_status.value},
+            # UC-002 (REV-0002 F-002 class): stamp the command actor so a manual
+            # cancel's audit event records who did it; routine engine transitions
+            # default to COMMAND_ACTOR_SYSTEM.
+            payload={"from": current.value, "to": new_status.value, "actor": actor},
             session_id=updated.session_id,
         )
     else:
@@ -2070,6 +2074,7 @@ def plan_close_session(
     open_sell_intents: list[SellIntent],
     nonzero_positions: list[Position],
     now: datetime,
+    actor: str = COMMAND_ACTOR_SYSTEM,
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
@@ -2149,6 +2154,11 @@ def plan_close_session(
             "canceled_orders": len(created_orders),
             "expired_sell_intents": len(open_sell_intents),
             "position_snapshots": len(snapshots),
+            # W2-SESS (REV-0013): who closed the session — so the audit can
+            # attribute a manual close to the operator (default "system" for an
+            # engine/automatic close). Mirrors the kill-switch / buys-paused /
+            # cancel (UC-002) actor stamping.
+            "actor": actor,
         },
     )
     return SessionClosePlan(

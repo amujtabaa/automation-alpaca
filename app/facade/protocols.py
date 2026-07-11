@@ -6,12 +6,12 @@ as the single place to import both from, matching
 ``prompts/CLAUDE_CODE_PHASE_0_HANDOFF.md``'s expected file list
 (``app/facade/protocols.py``, ``commands.py``, ``queries.py``, ``errors.py``).
 
-As of Phase 1, two methods across both protocols have a real concrete
-implementation (``app.facade.store_backed``), wired into two routes
-(``GET /api/positions``, ``POST /api/controls/{pause,resume}-buys``) — see
-``docs/SPINE_PHASE1_FACADE_REPORT.md``. Every other method still raises
-:class:`~app.facade.errors.NotYetImplementedError`; see each protocol
-module's docstring for which and why.
+As of Phase 6 (ARCH-002 doc refresh), the command surface is fully
+implemented and nearly all query methods are, by ``app.facade.store_backed``;
+only ``list_primaries``/``list_spawns``/``kill_state`` (the not-yet-existent
+``primary``/``spawn``/``TradingState`` vocabulary) still raise
+:class:`~app.facade.errors.NotYetImplementedError`. See each protocol
+module's docstring for specifics.
 """
 
 from __future__ import annotations

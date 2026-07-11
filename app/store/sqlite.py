@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
@@ -90,6 +90,7 @@ from app.store.base import (
     FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
+    ProtectionHaltedError,
     RiskLimits,
     SellIntentTransitionError,
     SessionAlreadyClosedError,
@@ -1112,6 +1113,17 @@ class SqliteStateStore(StateStore):
                 raise InvalidOrderError(
                     f"candidate {key} has an invalid {field} ({why}: {value!r})"
                 )
+            # W2-CAND (REV-0013/0014 / single-flight): refuse a SECOND active
+            # (PENDING/APPROVED) candidate for the same symbol+session — return the
+            # existing one idempotently, under the SAME lock as the insert, mirroring
+            # create_sell_intent. Closes the strategy-loop TOCTOU / dev-inject /
+            # retry double-candidate -> double-BUY-intent gap: buy-side single-flight
+            # is now a store invariant, not a caller-side convention. "Active" =
+            # PENDING/APPROVED (strategy_loop._OPEN_CANDIDATE_STATUSES); an ORDERED/
+            # rejected/expired candidate no longer blocks a fresh proposal (re-buy).
+            existing = self._active_candidate_locked(key, session_id)
+            if existing is not None:
+                return existing
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -1132,6 +1144,25 @@ class SqliteStateStore(StateStore):
                     session_id=session_id,
                 )
             return candidate
+
+    def _active_candidate_locked(
+        self, symbol: str, session_id: str
+    ) -> Optional[Candidate]:
+        """The current active (PENDING/APPROVED) candidate for symbol+session, or
+        None — the single-flight predicate for create_candidate (W2-CAND), the
+        buy-side analogue of _active_sell_intent_locked. Newest-first so a legacy
+        pre-invariant duplicate resolves deterministically to the latest."""
+        row = self._read_one(
+            "SELECT * FROM candidates WHERE symbol = ? AND session_id = ? "
+            "AND status IN (?, ?) ORDER BY rowid DESC LIMIT 1",
+            (
+                symbol,
+                session_id,
+                CandidateStatus.PENDING.value,
+                CandidateStatus.APPROVED.value,
+            ),
+        )
+        return self._candidate(row) if row is not None else None
 
     def _insert_candidate(self, cur: sqlite3.Cursor, c: Candidate) -> None:
         cur.execute(
@@ -1455,6 +1486,22 @@ class SqliteStateStore(StateStore):
             active = self._active_sell_intent_locked(key)
             if active is not None:
                 return active
+            # ENG-001 / INV-060: the kill switch blocks NEW autonomous order intent.
+            # A PROTECTION_FLOOR exit must not be created while Halted — checked here
+            # under the SAME lock as the insert so a kill landing during the
+            # protection tick's own awaits cannot race the create (the tick's
+            # pre-check can go stale). An already-active exit was returned above and
+            # stays idempotent; manual flatten has its own Halted-deny.
+            if reason is SellReason.PROTECTION_FLOOR:
+                session = self._ensure_current_session_locked()
+                if (
+                    self._current_trading_state_locked(session.id)
+                    is TradingState.HALTED
+                ):
+                    raise ProtectionHaltedError(
+                        f"autonomous protection exit for {key} refused: trading "
+                        "halted (kill switch engaged)"
+                    )
             with self._tx() as cur:
                 intent = self._insert_sell_intent_locked(
                     cur,
@@ -1531,12 +1578,21 @@ class SqliteStateStore(StateStore):
         *,
         order_type: OrderType,
         limit_price: Optional[float],
+        cur: Optional[sqlite3.Cursor] = None,
     ) -> Order:
         """The plan+apply body of the APPROVED->ORDERED handoff (assumes the
         caller already holds ``self._lock`` — either the public
         ``create_order_for_sell_intent`` or ``flatten_position``, X-001, which
         needs this same dispatch inlined into its own single lock hold rather
         than calling the public method and re-acquiring the lock).
+
+        When ``cur`` is given (the ``flatten_position`` path) every write joins
+        the caller's open transaction, so the whole supersede+create+approve+
+        dispatch sequence commits — or rolls back — as ONE unit
+        (REV-0006-F-001 / INV-050): a dispatch reject then rolls the caller's
+        fresh intent insert+approve back too, never stranding it APPROVED with
+        no order (matching the in-memory store). When ``cur`` is ``None`` (the
+        ``create_order_for_sell_intent`` path) each write opens its own tx.
 
         Re-reads the LIVE position so a race that reduced it cannot oversell.
         On reject, atomically applies the X-002 self-heal (``expire_intent``/
@@ -1555,18 +1611,18 @@ class SqliteStateStore(StateStore):
         )
         if plan.outcome == CREATE_ORDER_REJECT:
             if plan.reject_event is not None or plan.expire_intent is not None:
-                with self._tx() as cur:
+                with (nullcontext(cur) if cur is not None else self._tx()) as c:
                     if plan.reject_event is not None:
                         self._insert_event(
-                            cur,
+                            c,
                             plan.reject_event.event_type,
                             **plan.reject_event.as_kwargs(),
                         )
                     if plan.expire_intent is not None:
-                        self._update_sell_intent(cur, plan.expire_intent)
+                        self._update_sell_intent(c, plan.expire_intent)
                         assert plan.expire_event is not None
                         self._insert_event(
-                            cur,
+                            c,
                             plan.expire_event.event_type,
                             **plan.expire_event.as_kwargs(),
                         )
@@ -1579,11 +1635,11 @@ class SqliteStateStore(StateStore):
         intent.order_id = order.id
         intent.ordered_at = now
         intent.updated_at = now
-        with self._tx() as cur:
-            self._insert_order(cur, order)
-            self._update_sell_intent(cur, intent)
+        with (nullcontext(cur) if cur is not None else self._tx()) as c:
+            self._insert_order(c, order)
+            self._update_sell_intent(c, intent)
             for event in plan.events:
-                self._insert_event(cur, event.event_type, **event.as_kwargs())
+                self._insert_event(c, event.event_type, **event.as_kwargs())
         return order
 
     async def create_order_for_sell_intent(
@@ -1621,6 +1677,92 @@ class SqliteStateStore(StateStore):
                 intent, order_type=order_type, limit_price=limit_price
             )
 
+    async def open_protection_exit(
+        self,
+        *,
+        symbol: str,
+        target_quantity: int,
+        floor_price: Optional[float] = None,
+        observed_price: Optional[float] = None,
+        average_price: Optional[float] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        key = normalize_symbol(symbol)
+        bad = whole_count_reason(target_quantity)
+        if bad is not None or target_quantity <= 0:
+            raise InvalidOrderError(
+                f"protection exit for {key} needs a positive whole "
+                f"target_quantity (got {target_quantity!r})"
+            )
+        async with self._lock:
+            # Single-flight (atomic dedup): an exit already in flight for this
+            # symbol short-circuits — nothing new is written, mirroring
+            # create_sell_intent's active-check. Checked BEFORE the kill gate so an
+            # exit created while ACTIVE (before the kill) still returns idempotently.
+            active = self._active_sell_intent_locked(key)
+            if active is not None:
+                if active.order_id is None:
+                    return None
+                order_row = self._read_one(
+                    "SELECT * FROM orders WHERE id = ?", (active.order_id,)
+                )
+                if order_row is None:
+                    return None
+                return self._project_order_locked(self._order(order_row))
+            # ENG-001 / INV-060 (REV-0019-F-001): the kill switch blocks NEW
+            # autonomous order intent. The whole create+approve+dispatch+audit
+            # below shares ONE _tx() with no await after this check, so a kill
+            # landing during the tick's earlier awaits is caught here (nothing
+            # written) and one landing later cannot interleave — the decomposed
+            # sequence's post-create HALTED window is closed. A dispatch reject
+            # (oversell) rolls the whole transaction back (matching the in-memory
+            # store), so no protection_triggered event ever describes a
+            # non-existent exit.
+            session = self._ensure_current_session_locked()
+            if self._current_trading_state_locked(session.id) is TradingState.HALTED:
+                raise ProtectionHaltedError(
+                    f"autonomous protection exit for {key} refused: trading "
+                    "halted (kill switch engaged)"
+                )
+            if session_id is None:
+                session_id = session.id
+            with self._tx() as cur:
+                intent = self._insert_sell_intent_locked(
+                    cur,
+                    symbol=key,
+                    reason=SellReason.PROTECTION_FLOOR,
+                    target_quantity=target_quantity,
+                    floor_price=floor_price,
+                    observed_price=observed_price,
+                    session_id=session_id,
+                )
+                self._transition_sell_intent_locked(
+                    cur, intent, SellIntentStatus.APPROVED
+                )
+                order = self._dispatch_order_for_sell_intent_locked(
+                    intent, order_type=OrderType.MARKET, limit_price=None, cur=cur
+                )
+                self._insert_event(
+                    cur,
+                    "protection_triggered",
+                    message=(
+                        f"protection floor breached for {key}: last "
+                        f"{observed_price} <= floor {floor_price}; exiting "
+                        f"{target_quantity} shares"
+                    ),
+                    symbol=key,
+                    order_id=order.id,
+                    payload={
+                        "average_price": average_price,
+                        "floor_price": floor_price,
+                        "observed_price": observed_price,
+                        "quantity": target_quantity,
+                    },
+                    session_id=session_id,
+                    correlation_id=intent.id,
+                )
+            return order
+
     async def flatten_position(
         self,
         symbol: str,
@@ -1633,23 +1775,20 @@ class SqliteStateStore(StateStore):
             # Every read this decision depends on happens under this ONE lock
             # hold, continuously through to the writes below — a concurrent
             # protection tick's own create_sell_intent call cannot interleave
-            # anywhere in between (X-001). Individual steps below each commit
-            # their own small SQL transaction (matching close_session's and
-            # _run_protection's existing multi-step-under-one-lock shape) —
-            # what makes this safe against the CONCURRENCY race is the
-            # continuous lock hold, not a single giant transaction; never a
-            # double-sell (this is verified for real races). A hard CRASH
-            # between the two commits below (insert+approve, then dispatch) is
-            # a separate, narrower concern: it durably strands the fresh
-            # MANUAL_FLATTEN intent APPROVED with no order. That is NOT
-            # silently unrecoverable — plan_flatten_position (app/store/core.py)
-            # treats a MANUAL_FLATTEN intent found here as "existing" only when
-            # it is already ORDERED; a stranded pending/approved one instead
-            # self-heals on the next flatten call, exactly like a stranded
-            # PROTECTION_FLOOR intent (see docs/INVARIANTS.md INV-038 — an
-            # adversarial re-review of this diff found the earlier version of
-            # this comment's "never a silently-blocked symbol" claim was false
-            # before that fix).
+            # anywhere in between (X-001): the continuous lock hold is what makes
+            # this safe against the CONCURRENCY race; never a double-sell (this is
+            # verified for real races). Independently, the SUPERSEDE_AND_CREATE
+            # branch below commits its supersede + create + approve + dispatch
+            # writes as ONE SQL transaction (REV-0006-F-001 / INV-050), so a hard
+            # CRASH — or a dispatch reject — anywhere inside it rolls the whole
+            # thing back rather than durably stranding the fresh MANUAL_FLATTEN
+            # intent APPROVED with no order (matching the in-memory store's single
+            # _atomic() block). The self-heal path in plan_flatten_position
+            # (app/store/core.py) still covers a MANUAL_FLATTEN intent stranded by
+            # any OTHER route — it treats one found here as "existing" only when
+            # already ORDERED, and supersedes a stranded pending/approved one on
+            # the next flatten call, exactly like a stranded PROTECTION_FLOOR
+            # intent (docs/INVARIANTS.md INV-038).
             position = self._position_locked(key)
             active = self._active_sell_intent_locked(key)
             active_order = None
@@ -1715,12 +1854,20 @@ class SqliteStateStore(StateStore):
             if session_id is None:
                 session_id = self._ensure_current_session_locked().id
 
+            # REV-0006-F-001 / INV-050: the whole supersede + create + approve +
+            # dispatch sequence commits as ONE transaction. A hard crash — or a
+            # dispatch reject — anywhere inside it rolls the entire thing back,
+            # so a MANUAL_FLATTEN intent is never durably stranded APPROVED with
+            # no order (which previously also stood the autonomous protection
+            # tick down on a non-existent exit). This matches the in-memory
+            # store's single ``_atomic()`` block; the continuous lock hold
+            # (X-001) still provides the concurrency guarantee independently.
             superseded = False
-            if plan.supersede_order_cancel is not None:
-                # A supersede-cancel implies the stranded active_order exists and
-                # the planner produced its cancel audit event (narrows both).
-                assert active_order is not None and plan.supersede_cancel_event is not None
-                with self._tx() as cur:
+            with self._tx() as cur:
+                if plan.supersede_order_cancel is not None:
+                    # A supersede-cancel implies the stranded active_order exists
+                    # and the planner produced its cancel audit event (narrows both).
+                    assert active_order is not None and plan.supersede_cancel_event is not None
                     cur.execute(
                         "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
                         "WHERE id=?",
@@ -1750,9 +1897,8 @@ class SqliteStateStore(StateStore):
                     )
                     if exec_event is not None:
                         self._insert_execution_event(cur, exec_event)
-                superseded = True
-            if plan.supersede_intent_expire is not None:
-                with self._tx() as cur:
+                    superseded = True
+                if plan.supersede_intent_expire is not None:
                     self._update_sell_intent(cur, plan.supersede_intent_expire)
                     assert plan.supersede_expire_event is not None
                     self._insert_event(
@@ -1760,9 +1906,8 @@ class SqliteStateStore(StateStore):
                         plan.supersede_expire_event.event_type,
                         **plan.supersede_expire_event.as_kwargs(),
                     )
-                superseded = True
+                    superseded = True
 
-            with self._tx() as cur:
                 intent = self._insert_sell_intent_locked(
                     cur,
                     symbol=key,
@@ -1774,10 +1919,11 @@ class SqliteStateStore(StateStore):
                 self._transition_sell_intent_locked(
                     cur, intent, SellIntentStatus.APPROVED
                 )
-
-            order = self._dispatch_order_for_sell_intent_locked(
-                intent, order_type=OrderType.MARKET, limit_price=None
-            )
+                # Dispatch joins THIS transaction (cur=cur) so a reject rolls the
+                # fresh intent's insert+approve back too — no stranded partial.
+                order = self._dispatch_order_for_sell_intent_locked(
+                    intent, order_type=OrderType.MARKET, limit_price=None, cur=cur
+                )
             return FlattenResult(
                 FLATTEN_CREATED, intent=intent, order=order, superseded=superseded
             )
@@ -2381,6 +2527,7 @@ class SqliteStateStore(StateStore):
         *,
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> Order:
         # No OrderStatus(new_status) coercion (AIR-009): plan_transition_order
         # validates the enum type itself, identically to InMemoryStateStore, so a
@@ -2395,6 +2542,7 @@ class SqliteStateStore(StateStore):
                 new_status=new_status,
                 filled_quantity=filled_quantity,
                 broker_order_id=broker_order_id,
+                actor=actor,
             )
             if plan.outcome == ORDER_TRANSITION_REJECT:
                 assert plan.error is not None
@@ -3171,7 +3319,10 @@ class SqliteStateStore(StateStore):
             )
 
     async def close_session(
-        self, session_id: Optional[str] = None
+        self,
+        session_id: Optional[str] = None,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> SessionRecord:
         async with self._lock:
             if session_id is None:
@@ -3260,6 +3411,7 @@ class SqliteStateStore(StateStore):
                 open_sell_intents=open_sell_intents,
                 nonzero_positions=nonzero_positions,
                 now=now,
+                actor=actor,
             )
 
             # Apply (read-then-write form): all UPDATEs/INSERTs commit together.

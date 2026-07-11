@@ -489,6 +489,19 @@ def risk_limit_reason(
 
     if allowlist and symbol not in allowlist:
         return "not_on_allowlist"
+    # W2-RISK (REV-0010, defense-in-depth): this gate is the last check before a
+    # BUY order intent. Every numeric ingress is finite-gated upstream today
+    # (fills, limit price, config limits), but if a NaN/±Inf ever slipped through a
+    # future ungated path, each `> cap` comparison below would be False — silently
+    # APPROVING under the cap rather than halting, the exact inverse of the safety
+    # core ("invalid market data must halt/quarantine, never drive sizing or
+    # submission"). Fail CLOSED on a non-finite exposure or price so a single-layer
+    # gap can never approve on garbage.
+    nonfinite = finite_number_reason(exposure_before_order) or finite_number_reason(
+        order_limit_price
+    )
+    if nonfinite is not None:
+        return f"nonfinite_risk_input_{nonfinite}"
     if max_shares_per_order is not None and order_quantity > max_shares_per_order:
         return "exceeds_max_shares_per_order"
     order_notional = order_quantity * order_limit_price

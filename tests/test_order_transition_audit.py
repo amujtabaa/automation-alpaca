@@ -80,4 +80,10 @@ async def test_genuine_transition_still_writes_one_transition_event(any_store):
     new_events = (await any_store.list_events())[n_before:]
     transitions = [e for e in new_events if e.event_type == "order_transition"]
     assert len(transitions) == 1
-    assert transitions[0].payload == {"from": "submitting", "to": "submitted"}
+    # UC-002: the order_transition payload now also carries the command actor
+    # (COMMAND_ACTOR_SYSTEM for a routine engine transition like this one).
+    assert transitions[0].payload == {
+        "from": "submitting",
+        "to": "submitted",
+        "actor": "system",
+    }

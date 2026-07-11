@@ -59,8 +59,6 @@ from app.models import (
     OrderStatus,
     OrderType,
     Position,
-    SellIntentStatus,
-    SellReason,
     SessionStatus,
     SessionType,
     TradingState,
@@ -75,6 +73,7 @@ from app.protection import (
     protective_limit_price,
 )
 from app.reconciliation import (
+    ReconcileFairnessCursor,
     ReconciliationPlan,
     ReconcileQueryBudget,
     plan_reconciliation,
@@ -85,6 +84,7 @@ from app.store.base import (
     InvalidFillError,
     InvalidOrderError,
     OrderTransitionError,
+    ProtectionHaltedError,
     StateStore,
     UnknownEntityError,
 )
@@ -294,11 +294,6 @@ async def _run_protection(
         _log.exception("protection: subscribe(held=%s) failed", held)
 
     config = _protection_config(settings)
-    session = await store.get_current_session()
-    # Wave 3d (event_truth): read the §8 FSM. Only HALTED (the kill-switch state,
-    # which dominates pause) pauses autonomous protection per D-P2; REDUCING
-    # (buys-paused) does not. Equivalent to the prior ``session.kill_switch`` read.
-    kill_switched = session.trading_state is TradingState.HALTED
     paused_breaching: set[str] = set()
 
     for position in positions:
@@ -307,13 +302,26 @@ async def _run_protection(
             breach = floor_breach_reason(position, snapshot, config)
             if breach is None:
                 continue
-            if kill_switched:
-                # D-P2: the kill switch pauses autonomous protection. Record the
-                # symbol as paused-and-breaching; the paused/resumed transition is
-                # reconciled after the loop. Manual flatten still works (routes).
+            # ENG-001: re-read the §8 FSM FRESH per symbol (not once before the
+            # loop). Only HALTED (the kill-switch state, which dominates pause)
+            # pauses autonomous protection per D-P2; REDUCING (buys-paused) does
+            # not. A kill that landed during an earlier await must pause THIS symbol
+            # here — not be decided on a stale read — and skipping now also avoids a
+            # needless buy-cancel under the kill.
+            session = await store.get_current_session()
+            if session.trading_state is TradingState.HALTED:
+                # D-P2: record the symbol as paused-and-breaching; the
+                # paused/resumed transition is reconciled after the loop. Manual
+                # flatten still works (routes).
                 paused_breaching.add(position.symbol)
                 continue
-            await _open_protective_exit(store, adapter, position, breach, session.id)
+            # Atomic backstop (ENG-001): a kill landing DURING _open_protective_exit's
+            # own awaits makes the store refuse the new PROTECTION_FLOOR intent —
+            # that pauses the symbol too, and nothing spurious is created.
+            if await _open_protective_exit(
+                store, adapter, position, breach, session.id
+            ):
+                paused_breaching.add(position.symbol)
         except Exception:  # noqa: BLE001 - one symbol must not block the others
             _log.exception("protection tick failed for %s", position.symbol)
 
@@ -326,17 +334,26 @@ async def _open_protective_exit(
     position: Position,
     breach: FloorBreach,
     session_id: str,
-) -> None:
-    """Open one protective exit for a breaching symbol: cancel open buys, create a
-    single-flight ``PROTECTION_FLOOR`` intent, auto-approve it, dispatch a MARKET
-    order (type re-derived at submission — §5.4), and audit ``protection_triggered``.
-    Idempotent: an already-active sell intent for the symbol short-circuits."""
+) -> bool:
+    """Open one protective exit for a breaching symbol: cancel open buys, then open
+    the whole exit — single-flight ``PROTECTION_FLOOR`` intent, auto-approve,
+    dispatch a MARKET order (type re-derived at submission — §5.4), and audit
+    ``protection_triggered`` — via the ONE store-atomic ``open_protection_exit``
+    call (ENG-001 / REV-0019-F-001), never the separate public steps. Idempotent:
+    an already-active exit for the symbol short-circuits inside the store.
+
+    Returns ``True`` iff the kill switch (Halted) engaged before the atomic
+    exit-open and the store refused the new PROTECTION_FLOOR exit (ENG-001) — the
+    caller then records the symbol as paused. Because the create+approve+dispatch+
+    audit is one atomic unit with no await after the HALTED check, a concurrent
+    kill can never leave a partial exit under Halted. Returns ``False`` otherwise
+    (exit opened, or already in flight, or nothing to size)."""
 
     # Dedup: an exit is already in flight for this symbol (single-flight also
     # enforces this atomically in the store, but skipping here avoids re-cancelling
     # buys and re-auditing every tick while the first exit works).
     if await store.active_sell_intent_for(position.symbol) is not None:
-        return
+        return False
 
     # §5.3: clear open buys FIRST so the exit reaches — and stays — flat.
     await cancel_open_buys(store, adapter, position.symbol)
@@ -345,45 +362,28 @@ async def _open_protective_exit(
     # landed); never size an exit above what is actually held (Rule 7 / no short).
     live = await store.get_position(position.symbol)
     if live.quantity <= 0:
-        return
+        return False
 
-    intent = await store.create_sell_intent(
-        symbol=position.symbol,
-        reason=SellReason.PROTECTION_FLOOR,
-        target_quantity=live.quantity,
-        floor_price=breach.floor_price,
-        observed_price=breach.observed_price,
-        session_id=session_id,
-    )
-    # create_sell_intent is single-flight: if it returned a pre-existing active
-    # intent that is already past PENDING, don't re-drive it.
-    if intent.status is SellIntentStatus.PENDING:
-        await store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)
-    refreshed = await store.get_sell_intent(intent.id)
-    if refreshed is None or refreshed.status is not SellIntentStatus.APPROVED:
-        return
-
-    order = await store.create_order_for_sell_intent(
-        intent.id, order_type=OrderType.MARKET
-    )
-    await store.append_event(
-        EventType.PROTECTION_TRIGGERED.value,
-        message=(
-            f"protection floor breached for {position.symbol}: last "
-            f"{breach.observed_price} <= floor {breach.floor_price}; exiting "
-            f"{live.quantity} shares"
-        ),
-        symbol=position.symbol,
-        order_id=order.id,
-        payload={
-            "average_price": breach.average_price,
-            "floor_price": breach.floor_price,
-            "observed_price": breach.observed_price,
-            "quantity": live.quantity,
-        },
-        session_id=session_id,
-        correlation_id=intent.id,
-    )
+    try:
+        # ONE store-atomic operation: create + approve + dispatch + audit under a
+        # single lock hold with the HALTED check (ENG-001 / REV-0019-F-001). The
+        # decomposed public sequence used here before left a post-create window in
+        # which a concurrent kill could strand an ORDERED intent + CREATED order +
+        # protection_triggered event under Halted; folding it removes every await
+        # between the check and the writes.
+        await store.open_protection_exit(
+            symbol=position.symbol,
+            target_quantity=live.quantity,
+            floor_price=breach.floor_price,
+            observed_price=breach.observed_price,
+            average_price=breach.average_price,
+            session_id=session_id,
+        )
+    except ProtectionHaltedError:
+        # A kill landed before the atomic exit-open ran; the store refused it under
+        # the single lock — nothing was created. Pause the symbol.
+        return True
+    return False
 
 
 async def _currently_paused_symbols(store: StateStore) -> set[str]:
@@ -458,6 +458,10 @@ async def monitoring_loop(
     # ticks (wave 4e-4 / R6). Owned by the loop so it spans ticks; direct
     # ``run_monitoring_tick`` callers (tests) pass none and are unthrottled.
     reconcile_budget = ReconcileQueryBudget(settings.reconcile_query_budget_per_min)
+    # PR #4 review (P2): loop-owned round-robin cursor so the shared budget can't let
+    # the earliest TIMEOUT_QUARANTINE orders starve later ones — spans ticks like the
+    # budget; direct run_monitoring_tick callers (tests) pass none.
+    reconcile_fairness = ReconcileFairnessCursor()
     # Wave 4f gate: the startup reduce-only gate is owned by ``run_startup_reconcile``
     # (called in the app lifespan BEFORE this loop, so trading is Reducing-until-parity
     # before the first tick). This loop then MAINTAINS the reconcile driver each tick
@@ -469,6 +473,7 @@ async def monitoring_loop(
                 store, adapter, settings,
                 market_data=market_data,
                 reconcile_budget=reconcile_budget,
+                reconcile_fairness=reconcile_fairness,
                 drive_reconcile_state=True,
             )
         except asyncio.CancelledError:
@@ -540,6 +545,7 @@ async def run_monitoring_tick(
     *,
     market_data: Optional[MarketDataService] = None,
     reconcile_budget: Optional[ReconcileQueryBudget] = None,
+    reconcile_fairness: Optional[ReconcileFairnessCursor] = None,
     drive_reconcile_state: bool = False,
 ) -> None:
     """One monitoring iteration: submit pending orders, then reconcile open ones.
@@ -565,7 +571,10 @@ async def run_monitoring_tick(
     # BEFORE the open-order reconcile — a resolution to SUBMITTED hands the order a
     # broker_order_id that the reconcile poll then tracks (and ingests fills for)
     # this same tick.
-    await _resolve_timeout_quarantine(store, adapter, settings)
+    await _resolve_timeout_quarantine(
+        store, adapter, settings,
+        budget=reconcile_budget, fairness=reconcile_fairness,
+    )
     await _reconcile_open_orders(
         store, adapter, settings, market_data=market_data
     )
@@ -953,6 +962,9 @@ async def _resolve_timeout_quarantine(
     store: StateStore,
     adapter: BrokerAdapter,
     settings: Optional[Settings] = None,
+    *,
+    budget: Optional[ReconcileQueryBudget] = None,
+    fairness: Optional[ReconcileFairnessCursor] = None,
 ) -> None:
     """Resolve ``TIMEOUT_QUARANTINE`` orders (ADR-002) with a READ-ONLY targeted
     query — the whole point is to NEVER resubmit an order that may already be live.
@@ -980,7 +992,25 @@ async def _resolve_timeout_quarantine(
     """
 
     max_attempts = (settings or Settings()).timeout_quarantine_max_query_attempts
-    for order in await store.list_timeout_quarantined_orders():
+    quarantined = await store.list_timeout_quarantined_orders()
+    # PR #4 review (P2): round-robin the deterministic list so a limited budget
+    # cannot let the earliest orders (persistently failing / escalated) starve the
+    # later ones — resume just after the last order that consumed a token last tick.
+    if fairness is not None:
+        quarantined = fairness.rotate(quarantined)
+    for order in quarantined:
+        # ENG-002: each targeted resolution query is a §7/§9 REST call, so consume
+        # the loop's shared reconcile budget before each one — a large quarantine
+        # burst can no longer exceed the venue rate budget the mass-report and
+        # targeted-reconcile calls already share. Exhausted → defer the remaining
+        # quarantined orders to a later tick (they persist until resolved).
+        if budget is not None and not budget.try_consume(utcnow()):
+            break
+        # This order got a token this tick — record it so the NEXT tick resumes
+        # after it (fair rotation), before the query so a mid-loop error/return
+        # still advances the cursor.
+        if fairness is not None:
+            fairness.record(order.id)
         try:
             update = await adapter.get_order_by_client_order_id(order.id)
         except BrokerError as exc:

@@ -1,10 +1,10 @@
 """Typed query facade — Spine v2 (ADR-005 / Spine v2 §10).
 
-Same status as ``app.facade.commands.ExecutionCommandFacade``: one method
-(``list_positions``) is real as of Phase 1, wired into
-``GET /api/positions``; everything else still raises
-``NotYetImplementedError`` and every other route still bypasses this
-facade. See that module's docstring for the full explanation.
+As of Phase 6 (ARCH-002 doc refresh): every query method is real and wired
+to its route EXCEPT ``list_primaries``/``list_spawns``/``kill_state`` — the
+Spine v2 ``primary``/``spawn``/``TradingState`` target vocabulary that has no
+current-codebase analogue yet — which still raise ``NotYetImplementedError``.
+See ``app.facade.commands`` for the shared route→facade boundary/enforcement note.
 """
 
 from __future__ import annotations
