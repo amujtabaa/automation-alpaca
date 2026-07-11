@@ -545,6 +545,17 @@ class InMemoryStateStore(StateStore):
                 raise InvalidOrderError(
                     f"candidate {key} has an invalid {field} ({why}: {value!r})"
                 )
+            # W2-CAND (REV-0013/0014 / single-flight): refuse a SECOND active
+            # (PENDING/APPROVED) candidate for the same symbol+session — return the
+            # existing one idempotently, under the SAME lock as the insert, mirroring
+            # create_sell_intent. Closes the strategy-loop TOCTOU / dev-inject /
+            # retry double-candidate -> double-BUY-intent gap: buy-side single-flight
+            # is now a store invariant, not a caller-side convention. "Active" =
+            # PENDING/APPROVED (strategy_loop._OPEN_CANDIDATE_STATUSES); an ORDERED/
+            # rejected/expired candidate no longer blocks a fresh proposal (re-buy).
+            active = self._active_candidate_unlocked(key, session_id)
+            if active is not None:
+                return active.model_copy(deep=True)
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -649,6 +660,23 @@ class InMemoryStateStore(StateStore):
             r.local_order_id == order_id and r.cleanup_status == RECOVERY_NEEDS_REVIEW
             for r in self._submit_recoveries
         )
+
+    def _active_candidate_unlocked(
+        self, symbol: str, session_id: str
+    ) -> Optional[Candidate]:
+        """The current active (PENDING/APPROVED) candidate for symbol+session, or
+        None — the single-flight predicate for create_candidate (W2-CAND), the
+        buy-side analogue of _active_sell_intent_unlocked. Newest-first so a legacy
+        pre-invariant duplicate resolves deterministically to the latest."""
+        for candidate in reversed(list(self._candidates.values())):
+            if (
+                candidate.symbol == symbol
+                and candidate.session_id == session_id
+                and candidate.status
+                in (CandidateStatus.PENDING, CandidateStatus.APPROVED)
+            ):
+                return candidate
+        return None
 
     def _active_sell_intent_unlocked(self, symbol: str) -> Optional[SellIntent]:
         for si in self._sell_intents.values():
@@ -2207,7 +2235,10 @@ class InMemoryStateStore(StateStore):
                 )
 
     async def close_session(
-        self, session_id: Optional[str] = None
+        self,
+        session_id: Optional[str] = None,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> SessionRecord:
         async with self._lock:
             if session_id is None:
@@ -2237,9 +2268,11 @@ class InMemoryStateStore(StateStore):
             # The whole close (expire candidates + cancel CREATED orders +
             # snapshot positions + mark closed + audit) is one atomic group.
             with self._atomic():
-                return self._close_session_unlocked(session)
+                return self._close_session_unlocked(session, actor=actor)
 
-    def _close_session_unlocked(self, session: SessionRecord) -> SessionRecord:
+    def _close_session_unlocked(
+        self, session: SessionRecord, *, actor: str = COMMAND_ACTOR_SYSTEM
+    ) -> SessionRecord:
         """The close mutations (assumes the lock is held and ``session`` is the
         validated, still-open session). Wrapped by ``_atomic`` so the whole close
         is all-or-nothing."""
@@ -2289,6 +2322,7 @@ class InMemoryStateStore(StateStore):
             open_sell_intents=open_sell_intents,
             nonzero_positions=nonzero_positions,
             now=now,
+            actor=actor,
         )
 
         # Apply (in-place mutation form). D-013a: expire open candidates, cancel

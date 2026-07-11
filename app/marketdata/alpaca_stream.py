@@ -152,9 +152,13 @@ class AlpacaMarketDataStream(MarketDataService):
         # forever.
         self._seeded_on: dict[str, date] = {}
         # Feed-wide "is the connection alive" clock: updated by ANY trade/quote
-        # handler firing for ANY symbol. Deliberately not per-symbol — an
-        # illiquid symbol legitimately not trading for minutes is not the same
-        # thing as the websocket connection itself being down.
+        # handler firing for ANY symbol. Deliberately kept feed-wide — an illiquid
+        # symbol legitimately not trading for minutes is not the same thing as the
+        # websocket connection itself being down. It is only the CONNECTION-liveness
+        # term of staleness; per-symbol price-freshness is judged separately from
+        # each snapshot's own updated_at (see _snapshot_stale_locked, W2-STALE), so
+        # a quiet symbol is still gated as stale even while another keeps this clock
+        # fresh.
         self._last_message_at: Optional[datetime] = None
         self._run_started_at: Optional[datetime] = None
 
@@ -231,12 +235,17 @@ class AlpacaMarketDataStream(MarketDataService):
             snap = self._snapshots.get(symbol)
             if snap is None:
                 return None
-            return dataclasses.replace(snap, stale=self._is_stale_locked())
+            return dataclasses.replace(
+                snap, stale=self._snapshot_stale_locked(snap, utcnow())
+            )
 
     async def list_snapshots(self) -> list[MarketSnapshot]:
         with self._lock:
-            stale = self._is_stale_locked()
-            return [dataclasses.replace(s, stale=stale) for s in self._snapshots.values()]
+            now = utcnow()
+            return [
+                dataclasses.replace(s, stale=self._snapshot_stale_locked(s, now))
+                for s in self._snapshots.values()
+            ]
 
     async def run(self) -> None:
         with self._lock:
@@ -308,11 +317,25 @@ class AlpacaMarketDataStream(MarketDataService):
     # ------------------------------------------------------------------ #
     # Internal
     # ------------------------------------------------------------------ #
-    def _is_stale_locked(self) -> bool:
-        """Assumes ``self._lock`` is held."""
+    def _snapshot_stale_locked(self, snap: MarketSnapshot, now: datetime) -> bool:
+        """Whether ``snap`` is stale (assumes ``self._lock`` is held). Stale if
+        EITHER the feed is stale (connection-liveness — no message from ANY symbol
+        within the window, the feed-wide ``_last_message_at`` clock) OR this
+        SYMBOL's own last update is older than the window (per-symbol
+        price-freshness — W2-STALE).
+
+        The feed-wide term alone let one actively-ticking symbol keep the whole
+        feed "fresh" while a quiet/halted held symbol's price went stale — masking
+        a real floor breach on the quiet symbol, or letting its stale price drive a
+        spurious protective exit (REV-0012). The per-symbol term (``snap.updated_at``,
+        stamped per-symbol on every trade/quote and at REST-seed) closes that; the
+        feed-wide term still catches a total connection outage (every symbol stale
+        at once, even one that just happened to tick before the drop)."""
 
         reference = self._last_message_at or self._run_started_at
-        return _is_feed_stale(reference, utcnow(), self._stale_after)
+        return _is_feed_stale(reference, now, self._stale_after) or _is_feed_stale(
+            snap.updated_at, now, self._stale_after
+        )
 
     def _fetch_seed(
         self, symbol: str

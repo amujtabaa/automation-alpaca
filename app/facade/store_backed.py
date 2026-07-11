@@ -931,9 +931,13 @@ class StoreBackedCommandFacade:
         """``POST /api/session/close`` (P6b): wrap of ``StateStore.close_session``
         (expire open candidates, cancel CREATED orders, snapshot positions, mark
         closed). Re-closing an already-closed session → 409
-        (``SessionAlreadyClosedError`` → ``ConflictError``)."""
+        (``SessionAlreadyClosedError`` → ``ConflictError``).
+
+        W2-SESS (REV-0013): thread the resolved operator ``actor`` to the store so
+        the ``session_closed`` audit event attributes who closed it (was dropped
+        here before, the UC-002 pattern)."""
         with _translate_store_errors():
-            return await self._store.close_session()
+            return await self._store.close_session(actor=actor)
 
     async def emergency_reduce_override(
         self, *, symbol: str, actor: str

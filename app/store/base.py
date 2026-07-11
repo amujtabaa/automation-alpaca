@@ -421,7 +421,19 @@ class StateStore(ABC):
         suggested_limit_price: Optional[float] = None,
         session_id: Optional[str] = None,
     ) -> Candidate:
-        ...
+        """Create a buy-proposal candidate (validated + audited), atomically.
+
+        **Single-flight (atomic dedup) — W2-CAND.** The active-candidate check and
+        the insert happen under ONE lock hold: if an *active* (PENDING or APPROVED)
+        candidate already exists for the same ``symbol`` **and** ``session_id``, the
+        existing candidate is returned and nothing is written — so at most one
+        active proposal per symbol/session is a **store invariant**, not a
+        caller-side convention (the sell-side analogue is
+        :meth:`create_sell_intent`). An ORDERED/rejected/expired candidate is no
+        longer active and does not block a fresh proposal (a re-buy). Validates a
+        present ``suggested_quantity``/``suggested_limit_price`` and the session
+        (must exist and be open) **before** the dedup, so an invalid duplicate
+        still raises rather than returning the existing candidate."""
 
     @abstractmethod
     async def list_candidates(
@@ -1211,7 +1223,10 @@ class StateStore(ABC):
 
     @abstractmethod
     async def close_session(
-        self, session_id: Optional[str] = None
+        self,
+        session_id: Optional[str] = None,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> SessionRecord:
         """Close a session (default: the active one). Atomically:
 
@@ -1232,6 +1247,11 @@ class StateStore(ABC):
         closed, and :class:`UnknownEntityError` if ``session_id`` is unknown.
         Automatic, window-driven close is out of scope here (needs a monitoring
         loop) — this is the manual trigger only.
+
+        ``actor`` (W2-SESS) is stamped into the ``session_closed`` audit event so
+        the log attributes *who* closed the session (default ``"system"`` for an
+        engine/automatic close); mirrors the kill-switch / buys-paused / cancel
+        (UC-002) actor stamping.
         """
 
     @abstractmethod

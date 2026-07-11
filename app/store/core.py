@@ -2074,6 +2074,7 @@ def plan_close_session(
     open_sell_intents: list[SellIntent],
     nonzero_positions: list[Position],
     now: datetime,
+    actor: str = COMMAND_ACTOR_SYSTEM,
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
@@ -2153,6 +2154,11 @@ def plan_close_session(
             "canceled_orders": len(created_orders),
             "expired_sell_intents": len(open_sell_intents),
             "position_snapshots": len(snapshots),
+            # W2-SESS (REV-0013): who closed the session — so the audit can
+            # attribute a manual close to the operator (default "system" for an
+            # engine/automatic close). Mirrors the kill-switch / buys-paused /
+            # cancel (UC-002) actor stamping.
+            "actor": actor,
         },
     )
     return SessionClosePlan(

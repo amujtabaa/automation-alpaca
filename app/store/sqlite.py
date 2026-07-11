@@ -1113,6 +1113,17 @@ class SqliteStateStore(StateStore):
                 raise InvalidOrderError(
                     f"candidate {key} has an invalid {field} ({why}: {value!r})"
                 )
+            # W2-CAND (REV-0013/0014 / single-flight): refuse a SECOND active
+            # (PENDING/APPROVED) candidate for the same symbol+session — return the
+            # existing one idempotently, under the SAME lock as the insert, mirroring
+            # create_sell_intent. Closes the strategy-loop TOCTOU / dev-inject /
+            # retry double-candidate -> double-BUY-intent gap: buy-side single-flight
+            # is now a store invariant, not a caller-side convention. "Active" =
+            # PENDING/APPROVED (strategy_loop._OPEN_CANDIDATE_STATUSES); an ORDERED/
+            # rejected/expired candidate no longer blocks a fresh proposal (re-buy).
+            existing = self._active_candidate_locked(key, session_id)
+            if existing is not None:
+                return existing
             candidate = Candidate(
                 symbol=key,
                 strategy=strategy,
@@ -1133,6 +1144,25 @@ class SqliteStateStore(StateStore):
                     session_id=session_id,
                 )
             return candidate
+
+    def _active_candidate_locked(
+        self, symbol: str, session_id: str
+    ) -> Optional[Candidate]:
+        """The current active (PENDING/APPROVED) candidate for symbol+session, or
+        None — the single-flight predicate for create_candidate (W2-CAND), the
+        buy-side analogue of _active_sell_intent_locked. Newest-first so a legacy
+        pre-invariant duplicate resolves deterministically to the latest."""
+        row = self._read_one(
+            "SELECT * FROM candidates WHERE symbol = ? AND session_id = ? "
+            "AND status IN (?, ?) ORDER BY rowid DESC LIMIT 1",
+            (
+                symbol,
+                session_id,
+                CandidateStatus.PENDING.value,
+                CandidateStatus.APPROVED.value,
+            ),
+        )
+        return self._candidate(row) if row is not None else None
 
     def _insert_candidate(self, cur: sqlite3.Cursor, c: Candidate) -> None:
         cur.execute(
@@ -3289,7 +3319,10 @@ class SqliteStateStore(StateStore):
             )
 
     async def close_session(
-        self, session_id: Optional[str] = None
+        self,
+        session_id: Optional[str] = None,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> SessionRecord:
         async with self._lock:
             if session_id is None:
@@ -3378,6 +3411,7 @@ class SqliteStateStore(StateStore):
                 open_sell_intents=open_sell_intents,
                 nonzero_positions=nonzero_positions,
                 now=now,
+                actor=actor,
             )
 
             # Apply (read-then-write form): all UPDATEs/INSERTs commit together.

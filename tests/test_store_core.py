@@ -339,7 +339,20 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         "canceled_orders": 1,
         "expired_sell_intents": 1,
         "position_snapshots": 1,
+        # W2-SESS: the close is attributed; default "system" when no actor is passed.
+        "actor": "system",
     }
+    # An explicit operator actor is stamped into the summary (W2-SESS).
+    operator_plan = core.plan_close_session(
+        session=session,
+        open_candidates=open_candidates,
+        created_orders=created_orders,
+        open_sell_intents=open_sell_intents,
+        nonzero_positions=nonzero_positions,
+        now=now,
+        actor="operator-x",
+    )
+    assert operator_plan.close_event.payload["actor"] == "operator-x"
 
 
 # --- plan_claim_order_for_submission — §5.2 side/reason-aware gate ---------- #
