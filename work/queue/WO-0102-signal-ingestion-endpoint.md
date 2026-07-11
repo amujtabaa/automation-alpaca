@@ -1,0 +1,127 @@
+---
+type: Work Order
+title: Signal ingestion endpoint + event-log provenance
+status: draft
+work_order_id: WO-0102
+wave: W4-signal-seat
+model_tier: strong
+risk: medium
+disposition: []
+owner: Ameen (planning) / Claude (implementer)
+created: 2026-07-11
+---
+
+# Work Order: Signal ingestion endpoint + event-log provenance
+
+> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **and** WO-0101's spec is complete (this WO must be implementable from that spec alone).
+> Sequencing: 0101 → 0102 → {0103, 0104 in parallel}.
+
+## Goal
+
+Implement `POST /signals` (auth: per-producer API key), Pydantic validation, dedupe on `signal_id`, and append-only `SIGNAL_RECEIVED`/`SIGNAL_QUARANTINED` events. Feature-flagged, **default off**.
+
+## Context packet
+
+Read only these first:
+
+- `CLAUDE.md`
+- `docs/adr/ADR-009-signal-seat-boundary.md`
+- `docs/spec/signal-seat/**` (WO-0101 output — the implementation contract)
+- `app/api/deps.py`, `app/api/schemas.py` (route conventions)
+- `app/events/`, `app/store/base.py` (event-type + store conventions)
+- `app/features.py`, `app/config.py` (feature-flag conventions)
+
+## Allowed paths
+
+```yaml
+allowed_paths:
+  - app/api/routes_signals.py        # new signal routes only
+  - app/api/schemas.py               # signal DTOs
+  - app/api/deps.py                  # wiring only
+  - app/models.py                    # signal event types
+  - app/events/**                    # event-type additions + projection
+  - app/store/**                     # signal store, both paths
+  - app/features.py                  # feature flag (default off)
+  - app/config.py
+  - tests/**                         # new signal tests only
+```
+
+## Forbidden paths
+
+```yaml
+forbidden_paths:
+  - app/broker/**                    # broker adapter
+  - app/facade/commands.py           # order submission path
+  - app/protection.py                # kill switch
+  - app/transitions.py
+  - cockpit/**                       # UI
+```
+
+## Required behavior
+
+- [ ] TDD per Fable: failing tests first for accept / dedupe / malformed→quarantine / auth-reject; both in-memory and SQLite paths.
+- [ ] Event-log truth: signals reconstructable purely from events (replay test).
+- [ ] Flag off ⇒ endpoint absent/404; proven by test.
+
+## Required tests
+
+- [ ] Unit + integration: accept, dedupe on `signal_id`, malformed→`SIGNAL_QUARANTINED`, auth-reject — dual-store.
+- [ ] Replay: signal state reconstructable purely from events.
+- [ ] Flag-off: endpoint absent/404.
+
+## Required commands
+
+```bash
+pytest
+ruff check .
+mypy app/
+lint-imports
+```
+
+## Acceptance criteria
+
+- [ ] All required behavior implemented; tests prove behavior; evidence pasted.
+- [ ] `ruff` + `mypy` + `pytest` + import-linter green.
+- [ ] Scope limited to allowed paths; no forbidden paths touched.
+- [ ] Fable DONE block includes evidence.
+- [ ] PKL update completed or explicitly not required.
+
+## Model-tier rationale
+
+Strong: new API surface writing first-class event types into the event log, dual-store. **Never LITE** (planning-seat directive).
+
+## Notes
+
+- **Escalation rule (planning seat, verbatim intent):** this touches event-log event *additions*, not mutations of existing truth — if the implementer judges this crosses the "event-log truth changes" human-gated surface, **escalate; do not self-decide.**
+- `allowed_paths` corrected on install from the draft's `src/api/**`/`src/engine/**` to the as-built tree; finalize file-level scope against WO-0101's spec at activation.
+- Disposition intent from planning seat: RESULT_SUMMARY_KEPT + ledger entry.
+
+## Completion disposition
+
+Complete this section after merge, closure, abandonment, or supersession.
+
+Choose all that apply:
+
+- [ ] PKL_UPDATED
+- [ ] ADR_CREATED
+- [ ] RESULT_SUMMARY_KEPT
+- [ ] ARCHIVED
+- [ ] DELETED
+- [ ] SUPERSEDED
+- [ ] ABANDONED
+
+## Distillation checklist
+
+- [ ] Durable product facts captured in PKL or not needed.
+- [ ] Architecture decisions captured in ADR or not needed.
+- [ ] Failure lessons captured in drift/error log or not needed.
+- [ ] Compact work result created if future retrieval value exists.
+- [ ] Ledger updated.
+- [ ] Raw work order marked for archive or deletion.
+
+## Deletion decision
+
+Deletion reason:
+
+<pending completion>
