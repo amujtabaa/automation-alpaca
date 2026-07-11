@@ -35,7 +35,7 @@ Emit the structured blocks from v3, not v1 prose forms, so all seats (Claude, Co
 - **Delegation:** sub-agents dispatched via `/build` or Task calls inherit Fable. A sub-agent's report is an unverified claim until the dispatching context inspects diff + output (Law 2 applies across agents). Verification mode is DELEGATED when the human must run commands.
 - **ClaudeFast interplay:** skill-activation suggestions never override the gate; `/team-plan` output feeds the gate, not replaces it; quality-engineer validation is in-process adversarial checking; it supplements pasted evidence and never counts as the independent cross-model review, which runs at the human's discretion per the CLAUDE.md Review policy.
 - **Repo safety core:** the invariants and human-gated surfaces in `CLAUDE.md` bind inside every Fable task. Gated surfaces are never LITE.
-- **On close:** assign work-order disposition (PKL_UPDATED | ADR_CREATED | RESULT_SUMMARY_KEPT | ARCHIVED | DELETED | SUPERSEDED | ABANDONED) and distill durable knowledge into PKL/ADRs per `.ai-os/` §12.
+- **On close:** assign work-order disposition (PKL_UPDATED | ADR_CREATED | RESULT_SUMMARY_KEPT | ARCHIVED | DELETED | SUPERSEDED | ABANDONED) and distill durable knowledge into PKL/ADRs per `.ai-os/` §12. **Close-out ships with the work (CLAUDE.md repo rule):** status flip + disposition + ledger entry + file move out of live folders + refresh of any doc/PKL/ADR claim the work invalidates land in the SAME commit/PR as the work itself — a DONE block over undispositioned work is incomplete. CI fails a completed order parked in `work/queue|active|review`.
 
 ## Triage
 

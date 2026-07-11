@@ -19,6 +19,8 @@ Execution discipline: **Fable v3** (`.ai-os/templates/fable-core-v3.md`; Claude 
 No work order? Ask for one or draft one for approval (`.ai-os/templates/work-order.md`). Don't freelance.
 <!-- AI-PROJECT-OS:END -->
 
+**Close-out ships with the work** (repo rule, adopted 2026-07-11). The commit/PR that finishes a work order also flips its status, records its disposition and ledger entry, moves the file out of `work/queue|active|review`, and refreshes any doc/PKL/ADR claim the work invalidates. "Done but not dispositioned" is not done — four stale open-items accumulated this way in three days. CI enforces the mechanical part: the AI-OS hygiene checks run on every push, and a completed work order parked in a live folder fails the build.
+
 ## Safety core — always in force, never overridden
 
 **Invariants (acceptance criteria):**
