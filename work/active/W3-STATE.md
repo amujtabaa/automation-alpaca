@@ -1,6 +1,10 @@
-# W3 state — updated 2026-07-12T01:30Z, tip ce40f90 (feat/execution-envelope)
+# W3 state — updated 2026-07-12T03:05Z, tip 278aabd (feat/execution-envelope)
 approved-agreement: W3 kickoff prompt (work/queue/W3-KICKOFF-PROMPT.md, FINAL drop version), pasted 2026-07-11
 completed:
+  - "WO-0019a: 124426d (merge 278aabd), VERIFIED, RESULT_SUMMARY_KEPT, T3a approved in-chat;
+     BrokerAdapter.replace_order on ABC + alpaca (real SDK name pinned)/mock/sim (chaos);
+     ADR-002 taxonomy + deterministic client_order_id duplicate-recovery. Unblocks WO-0019.
+     fable-done in work/completed/keep/WO-0019a-*/"
   - "WO-0017: bce10f0 (merge ce40f90), VERIFIED, RESULT_SUMMARY_KEPT, T2 approved in-chat;
      approval surface (ENG-001 shape, zero-artifact HALTED block mutation-checked) + kill-freeze
      + flatten preemption (deferral leaves live exit's envelope); INV-080/081; facade/route
@@ -11,13 +15,14 @@ completed:
   - "WO-0018: def2501 (merge 7eaa262), VERIFIED, RESULT_SUMMARY_KEPT, non-gated; regime-adaptive
      spec per FINAL planning drop (d0b1728); divergences amended into the WO (missing LASE docs;
      .importlinter vs pyproject). fable-done in work/completed/keep/WO-0018-*/"
-in-flight: WO-0019 — BLOCKED at the tripwire: NO adapter replace/edit seam exists (ABC +
-  all 3 concretes checked; SDK has replace_order_by_id). NEEDS-INPUT posted in-chat with
-  work/queue/WO-0019a-broker-adapter-replace-seam.md drafted for approval (option a,
-  recommended) vs cancel+resubmit descope (option b). 0020/0021 wait behind 0019 per
-  W3-README sequencing.
-awaiting: T3a — human decision on the WO-0019 tripwire (approve WO-0019a / choose descope /
-  other)
+in-flight: WO-0019 — tripwire CLEARED by WO-0019a; T3 gate block POSTED in-chat, awaiting
+  approval. Seam design: store-atomic claim (write-time validate_action call site, D-3) +
+  venue leg in reconciliation.py; envelope->orders linkage derived from ENVELOPE_ACTION
+  events (no Order schema change proposed). 0020/0021 follow.
+awaiting: T3 (WO-0019 gate approval — order submission / cancel-replace engine seam). ALSO
+  pending (non-blocking): design of the cross-model collaboration lane (GPT-5.6 Sol) for
+  LASE/chaos work — proposal posted in-chat 2026-07-12; W4 replay harness is the intended
+  empirical arbiter; awaiting Ameen's shape-of-collaboration decision.
 anchor-divergences:
   - W3-README branch naming `feat/execution-envelope/wo-00XX` impossible in git (ref namespace);
     using `feat/execution-envelope-wo-00XX`.
@@ -38,7 +43,7 @@ deferred log (out-of-scope observations):
 open decisions: []
 
 ## W3 sequencing status
-0016 ✅ → 0018 ✅ → 0017 ✅ → **0019 [BLOCKED: tripwire NEEDS-INPUT → T3a decision]** → 0020 → 0021 →
+0016 ✅ → 0018 ✅ → 0017 ✅ → 0019a ✅ → **0019 [awaiting T3]** → 0020 → 0021 →
 0022 Phase A critics (inline H1-H11 verbatim, fresh contexts, pinned SHA) → Phase B Codex (STOP)
 → T5 ADR-009 Accepted + merge (human only).
 
