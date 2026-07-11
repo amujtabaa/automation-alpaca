@@ -32,6 +32,7 @@ from alpaca.trading.requests import (
     LimitOrderRequest,
     MarketOrderRequest,
     OrderRequest,
+    ReplaceOrderRequest,
 )
 
 from app.broker.adapter import (
@@ -415,6 +416,97 @@ class AlpacaPaperAdapter(BrokerAdapter):
             # Network/timeout/unknown — a real failure. NEVER treated as a no-op.
             raise BrokerError(
                 f"Failed to cancel order broker_order_id={broker_order_id!r}."
+            ) from exc
+
+    async def replace_order(
+        self,
+        broker_order_id: str,
+        *,
+        client_order_id: str,
+        limit_price: Optional[float] = None,
+        quantity: Optional[int] = None,
+    ) -> str:
+        """Venue-side atomic cancel/replace via the SDK's
+        ``replace_order_by_id`` (the REAL method name — see
+        work/review/FINDING-alpaca-adapter-wrong-sdk-method.md for why the
+        tests pin it). Returns the REPLACEMENT order's Alpaca UUID.
+
+        ``client_order_id`` is the replacement's idempotency key: a duplicate
+        rejection (a crash-then-retry of the same replace) recovers the
+        already-created replacement by client id instead of erroring or
+        minting a second order — the same D-017 discipline as submit. The
+        error taxonomy mirrors ``submit_order`` exactly (ADR-002): definitive
+        4xx → Terminal; 429 pre-flight → transient; 5xx/timeout/transport →
+        Ambiguous (the replacement MAY be live — quarantine + reconcile by
+        client id, never blind-re-replace).
+        """
+
+        req = ReplaceOrderRequest(
+            qty=quantity,
+            limit_price=limit_price,
+            client_order_id=client_order_id,
+        )
+        try:
+            resp = cast(
+                AlpacaOrder,
+                await asyncio.to_thread(
+                    self._client.replace_order_by_id, broker_order_id, req
+                ),
+            )
+            new_id = str(resp.id)
+            if not new_id.strip():
+                raise BrokerError(
+                    f"Broker returned an empty id replacing "
+                    f"{broker_order_id!r} (AIR-001)."
+                )
+            return new_id
+        except APIError as exc:
+            code = getattr(exc, "status_code", None)
+            exc_msg = str(exc).lower()
+            if code in (409, 422) and (
+                "duplicate" in exc_msg or "client_order_id" in exc_msg
+            ):
+                _log.info(
+                    "Duplicate client_order_id for replacement %s; recovering "
+                    "existing Alpaca order.",
+                    client_order_id,
+                )
+                try:
+                    existing = cast(
+                        AlpacaOrder,
+                        await asyncio.to_thread(
+                            self._client.get_order_by_client_id, client_order_id
+                        ),
+                    )
+                    return str(existing.id)
+                except Exception as lookup_exc:
+                    raise TerminalBrokerError(
+                        f"Duplicate replace for {client_order_id!r}: original "
+                        f"replace rejected but lookup of the existing "
+                        f"replacement also failed."
+                    ) from lookup_exc
+            if code in (400, 401, 403, 404, 422):
+                raise TerminalBrokerError(
+                    f"Broker definitively rejected replace of "
+                    f"{broker_order_id!r} (HTTP {code})."
+                ) from exc
+            if code == 429:
+                raise BrokerError(
+                    f"Rate-limited replacing {broker_order_id!r} (HTTP 429)."
+                ) from exc
+            raise AmbiguousBrokerError(
+                f"Ambiguous replace outcome for {broker_order_id!r} "
+                f"(HTTP {code}) — the replacement may be live at the venue."
+            ) from exc
+        except BrokerError:
+            raise
+        except Exception as exc:
+            # Network/timeout/transport/parse failure AFTER the request may
+            # have reached Alpaca — the replacement may exist. Ambiguous:
+            # quarantine + reconcile by client_order_id, never blind-retry.
+            raise AmbiguousBrokerError(
+                f"Ambiguous replace outcome for {broker_order_id!r} "
+                f"(transport failure) — the replacement may be live."
             ) from exc
 
     async def get_order_by_client_order_id(

@@ -47,6 +47,7 @@ OnSubmitHook = Callable[[Order, str], Awaitable[None]]
 # BrokerError.
 SubmitPredicate = Callable[[Order, int], object]
 CancelPredicate = Callable[[str, int], object]
+ReplacePredicate = Callable[[str, int], object]
 
 
 class SimBrokerAdapter(MockBrokerAdapter):
@@ -60,8 +61,10 @@ class SimBrokerAdapter(MockBrokerAdapter):
         # inherited one-shot fail_next_submit/fail_next_cancel).
         self._submit_predicates: list[SubmitPredicate] = []
         self._cancel_predicates: list[CancelPredicate] = []
+        self._replace_predicates: list[ReplacePredicate] = []
         self._submit_calls = 0
         self._cancel_calls = 0
+        self._replace_calls = 0
 
         # Deliverable 3: scripted lifecycles, keyed by broker id (an order id
         # not yet submitted is stored under its deterministic would-be broker
@@ -184,6 +187,43 @@ class SimBrokerAdapter(MockBrokerAdapter):
         inherited ``fail_next_submit``."""
 
         self._submit_predicates.append(predicate)
+
+    async def replace_order(
+        self,
+        broker_order_id: str,
+        *,
+        client_order_id: str,
+        limit_price: Optional[float] = None,
+        quantity: Optional[int] = None,
+    ) -> str:
+        # WO-0019a chaos seam: fail-at-a-point predicates over the inherited
+        # deterministic replace, mirroring submit/cancel.
+        call_index = self._replace_calls
+        self._replace_calls += 1
+        for predicate in self._replace_predicates:
+            result = predicate(broker_order_id, call_index)
+            if result:
+                self.replaced.append(
+                    (broker_order_id, client_order_id, limit_price, quantity)
+                )
+                raise self._as_failure(
+                    result, f"scripted replace failure for {broker_order_id!r}"
+                )
+        return await super().replace_order(
+            broker_order_id,
+            client_order_id=client_order_id,
+            limit_price=limit_price,
+            quantity=quantity,
+        )
+
+    def fail_replace_when(self, predicate: ReplacePredicate) -> None:
+        """Register ``predicate(broker_order_id, call_index)`` (0-based),
+        checked on every ``replace_order`` call. Same truthy-return contract
+        as ``fail_submit_when`` (a BaseException raises as-is; other truthy
+        values raise a generic BrokerError). Composes with the inherited
+        ``fail_next_replace``."""
+
+        self._replace_predicates.append(predicate)
 
     def fail_cancel_when(self, predicate: CancelPredicate) -> None:
         """Register ``predicate(broker_order_id, call_index)`` (0-based),

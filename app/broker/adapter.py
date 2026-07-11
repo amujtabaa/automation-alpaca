@@ -216,6 +216,45 @@ class BrokerAdapter(ABC):
         """
 
     @abstractmethod
+    async def replace_order(
+        self,
+        broker_order_id: str,
+        *,
+        client_order_id: str,
+        limit_price: Optional[float] = None,
+        quantity: Optional[int] = None,
+    ) -> str:
+        """Venue-side atomic cancel/replace of a live order (WO-0019a, the
+        envelope executor's reprice seam — ADR-009 §1).
+
+        One venue round-trip: the working order is replaced without a window
+        in which zero orders (lost queue position, unprotected book) or two
+        orders (double exposure) rest. Returns the broker id of the
+        **replacement** order (Alpaca's replace creates a new order); the old
+        ``broker_order_id`` becomes terminal at the venue.
+
+        **Contract (mirrors ``submit_order``):**
+
+        * MUST return a non-empty ``str`` id for the replacement, never
+          ``None``/empty (AIR-001 — the returned id becomes the only poll/
+          cancel key for the working order).
+        * ``client_order_id`` is REQUIRED and must be deterministic per
+          replace attempt: it is the replacement's idempotency key, so a
+          crash-then-retry of the SAME replace adopts the already-created
+          replacement (duplicate-id recovery) instead of minting a second
+          one, and an ambiguous outcome is resolvable by the existing
+          read-only ``get_order_by_client_order_id`` query (ADR-002) — the
+          caller must NEVER blind-re-replace.
+        * Error taxonomy is identical to submit: plain :class:`BrokerError`
+          for a provably-pre-flight transient (e.g. 429), a
+          :class:`TerminalBrokerError` for a definitive rejection, and
+          :class:`AmbiguousBrokerError` when the request may have reached the
+          venue (timeout/5xx/transport) — the caller quarantines and
+          reconciles by ``client_order_id``, exactly like an ambiguous
+          submit.
+        """
+
+    @abstractmethod
     async def get_order_by_client_order_id(
         self, client_order_id: str
     ) -> Optional[BrokerOrderUpdate]:
