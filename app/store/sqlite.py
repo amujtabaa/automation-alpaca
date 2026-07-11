@@ -92,6 +92,7 @@ from app.store.base import (
     FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
+    OrderIntentBlockedError,
     ProtectionHaltedError,
     RiskLimits,
     SellIntentTransitionError,
@@ -147,6 +148,7 @@ from app.store.core import (
     sell_intent_is_active,
 )
 from app.transitions import (
+    ENVELOPE_TRANSITIONS,
     CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS,
     SELL_INTENT_TIMESTAMP,
@@ -1903,6 +1905,19 @@ class SqliteStateStore(StateStore):
                 if plan.outcome == ENVELOPE_TRANSITION_NOOP:
                     return env
                 if new_status is EnvelopeStatus.ACTIVE:
+                    # ADR-009 §4 / INV-060: activation OR resume is new
+                    # standing order intent — refused while HALTED, checked
+                    # inside the SAME transaction as the write (resume after
+                    # release is explicit human action, never automatic).
+                    session = self._ensure_current_session_locked()
+                    if (
+                        self._current_trading_state_locked(session.id)
+                        is TradingState.HALTED
+                    ):
+                        raise OrderIntentBlockedError(
+                            f"envelope {env.id} cannot enter ACTIVE: trading "
+                            "halted (kill switch engaged)"
+                        )
                     clash = self._other_active_envelope_locked(
                         cur, env.sell_intent_id, excluding=env.id
                     )
@@ -2042,6 +2057,117 @@ class SqliteStateStore(StateStore):
                         cur, plan.transition
                     )
                 return stored
+
+    async def approve_envelope_activation(
+        self,
+        draft: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        """The WO-0017 approval surface: dedup/idempotency → HALTED check →
+        create → approve → activate → events, ONE lock hold + ONE transaction
+        (ENG-001 shape; mirrors InMemoryStateStore). A kill that lands first
+        blocks the op with ZERO artifacts (the transaction never opens a
+        write); re-approving an ACTIVE envelope is an idempotent no-op."""
+
+        async with self._lock:
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (draft.id,),
+                ).fetchone()
+                stored = self._envelope(row) if row is not None else None
+                if stored is not None:
+                    if stored.status is EnvelopeStatus.ACTIVE:
+                        return stored  # idempotent re-approve
+                    if stored.status not in (
+                        EnvelopeStatus.PENDING,
+                        EnvelopeStatus.APPROVED,
+                    ):
+                        raise EnvelopeTransitionError(
+                            f"cannot approve envelope {draft.id}: it is "
+                            f"{stored.status.value}"
+                        )
+                else:
+                    bad = envelope_draft_reason(draft)
+                    if bad is not None:
+                        raise InvalidOrderError(bad)
+                # INV-060: the kill switch blocks NEW standing order intent —
+                # checked inside the SAME transaction as every write below.
+                session = self._ensure_current_session_locked()
+                if (
+                    self._current_trading_state_locked(session.id)
+                    is TradingState.HALTED
+                ):
+                    raise OrderIntentBlockedError(
+                        "envelope activation refused: trading halted "
+                        "(kill switch engaged)"
+                    )
+                intent_id = (stored or draft).sell_intent_id
+                clash = self._other_active_envelope_locked(
+                    cur, intent_id, excluding=draft.id
+                )
+                if clash is not None:
+                    raise EnvelopeTransitionError(
+                        f"envelope {clash} is already ACTIVE for intent "
+                        f"{intent_id} (single-ACTIVE invariant)"
+                    )
+                if stored is None:
+                    key = normalize_symbol(draft.symbol)
+                    stored = draft.model_copy(update={"symbol": key})
+                    self._insert_envelope(cur, stored)
+                    self._insert_execution_event(
+                        cur, envelope_created_event(stored, actor=actor)
+                    )
+                    self._insert_event(
+                        cur,
+                        "envelope_created",
+                        message=(f"execution envelope created for {stored.symbol}"),
+                        symbol=stored.symbol,
+                        session_id=stored.session_id,
+                        correlation_id=stored.sell_intent_id,
+                        payload={"actor": actor, "envelope_id": stored.id},
+                    )
+                current = stored
+                if current.status is EnvelopeStatus.PENDING:
+                    plan = plan_envelope_transition(
+                        current, EnvelopeStatus.APPROVED, actor=actor
+                    )
+                    assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                    current = self._apply_envelope_transition_locked(cur, plan)
+                plan = plan_envelope_transition(
+                    current, EnvelopeStatus.ACTIVE, actor=actor
+                )
+                assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                return self._apply_envelope_transition_locked(cur, plan)
+
+    def _cancel_symbol_envelopes_locked(
+        self, cur: sqlite3.Cursor, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        """ADR-009 §4 / D-2: cancel every non-terminal envelope for ``symbol``
+        through legal edges (ACTIVE via FROZEN) on an open ``_tx`` cursor —
+        the manual-flatten preemption, committing in the SAME transaction as
+        the flatten's own writes (mirrors InMemoryStateStore)."""
+
+        rows = cur.execute(
+            "SELECT * FROM execution_envelopes WHERE symbol = ?", (symbol,)
+        ).fetchall()
+        for row in rows:
+            env = self._envelope(row)
+            if not ENVELOPE_TRANSITIONS.get(env.status):
+                continue  # terminal — nothing to preempt
+            current = env
+            if current.status is EnvelopeStatus.ACTIVE:
+                plan = plan_envelope_transition(
+                    current, EnvelopeStatus.FROZEN, actor=actor, reason=reason
+                )
+                assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                current = self._apply_envelope_transition_locked(cur, plan)
+            plan = plan_envelope_transition(
+                current, EnvelopeStatus.CANCELLED, actor=actor, reason=reason
+            )
+            assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+            self._apply_envelope_transition_locked(cur, plan)
 
     def _dispatch_order_for_sell_intent_locked(
         self,
@@ -2301,6 +2427,12 @@ class SqliteStateStore(StateStore):
                 )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
+                # ADR-009 §4 / D-2: even with nothing to exit, a stale envelope
+                # must never outlive the human's direct backstop.
+                with self._tx() as cur:
+                    self._cancel_symbol_envelopes_locked(
+                        cur, key, actor=actor, reason="manual_flatten_preemption"
+                    )
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 # Provenance for a deferral to a live PROTECTION_FLOOR exit
@@ -2338,6 +2470,12 @@ class SqliteStateStore(StateStore):
             # (X-001) still provides the concurrency guarantee independently.
             superseded = False
             with self._tx() as cur:
+                # ADR-009 §4: envelope preemption FIRST, same transaction —
+                # the preemption events sequence before the flatten's own
+                # supersede/create writes (asserted by WO-0017 tests).
+                self._cancel_symbol_envelopes_locked(
+                    cur, key, actor=actor, reason="manual_flatten_preemption"
+                )
                 if plan.supersede_order_cancel is not None:
                     # A supersede-cancel implies the stranded active_order exists
                     # and the planner produced its cancel audit event (narrows both).
@@ -3676,6 +3814,24 @@ class SqliteStateStore(StateStore):
                     audit_payload={"kill_switch": engaged, "actor": actor},
                     reason="kill_switch",
                 )
+                if engaged:
+                    # ADR-009 §4: the kill freezes every ACTIVE envelope in
+                    # the SAME transaction as the control change. Release
+                    # never auto-resumes (FROZEN -> ACTIVE is an explicit
+                    # human action, itself refused while HALTED).
+                    rows = cur.execute(
+                        "SELECT * FROM execution_envelopes WHERE status = ?",
+                        (EnvelopeStatus.ACTIVE.value,),
+                    ).fetchall()
+                    for row in rows:
+                        plan = plan_envelope_transition(
+                            self._envelope(row),
+                            EnvelopeStatus.FROZEN,
+                            actor=actor,
+                            reason="kill_switch",
+                        )
+                        assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                        self._apply_envelope_transition_locked(cur, plan)
             return session
 
     async def set_buys_paused(

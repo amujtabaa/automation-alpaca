@@ -76,6 +76,7 @@ from app.store.base import (
     FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
+    OrderIntentBlockedError,
     ProtectionHaltedError,
     RiskLimits,
     SellIntentTransitionError,
@@ -131,6 +132,7 @@ from app.store.core import (
     sell_intent_is_active,
 )
 from app.transitions import (
+    ENVELOPE_TRANSITIONS,
     CANDIDATE_TIMESTAMP as _CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS as _CANDIDATE_TRANSITIONS,
     SELL_INTENT_TIMESTAMP as _SELL_INTENT_TIMESTAMP,
@@ -1004,6 +1006,19 @@ class InMemoryStateStore(StateStore):
             if plan.outcome == ENVELOPE_TRANSITION_NOOP:
                 return env.model_copy(deep=True)
             if new_status is EnvelopeStatus.ACTIVE:
+                # ADR-009 §4 / INV-060: activation OR resume is new standing
+                # order intent — refused while HALTED, checked under the SAME
+                # lock hold as the write (resume after release is an explicit
+                # human action; it is never automatic).
+                session = self._ensure_current_session_unlocked()
+                if (
+                    current_trading_state(self._execution_events, session.id)
+                    is TradingState.HALTED
+                ):
+                    raise OrderIntentBlockedError(
+                        f"envelope {env.id} cannot enter ACTIVE: trading "
+                        "halted (kill switch engaged)"
+                    )
                 clash = self._other_active_envelope_unlocked(
                     env.sell_intent_id, excluding=env.id
                 )
@@ -1126,6 +1141,110 @@ class InMemoryStateStore(StateStore):
                     assert plan.transition.outcome == ENVELOPE_TRANSITION_APPLY
                     stored = self._apply_envelope_transition_unlocked(plan.transition)
             return stored.model_copy(deep=True)
+
+    async def approve_envelope_activation(
+        self,
+        draft: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        """The WO-0017 approval surface: dedup/idempotency → HALTED check →
+        create → approve → activate → events, ONE lock hold + ONE atomic block
+        (ENG-001 shape). A kill that lands first blocks the op with ZERO
+        artifacts; re-approving an ACTIVE envelope is an idempotent no-op."""
+
+        async with self._lock:
+            stored = self._envelopes.get(draft.id)
+            if stored is not None:
+                if stored.status is EnvelopeStatus.ACTIVE:
+                    return stored.model_copy(deep=True)  # idempotent re-approve
+                if stored.status not in (
+                    EnvelopeStatus.PENDING,
+                    EnvelopeStatus.APPROVED,
+                ):
+                    raise EnvelopeTransitionError(
+                        f"cannot approve envelope {draft.id}: it is "
+                        f"{stored.status.value}"
+                    )
+            else:
+                bad = envelope_draft_reason(draft)
+                if bad is not None:
+                    raise InvalidOrderError(bad)
+            # INV-060: the kill switch blocks NEW standing order intent — the
+            # check shares this lock hold with every write below (no await
+            # window), so a kill either lands before (zero artifacts) or after
+            # (the kill hook freezes the activated envelope).
+            session = self._ensure_current_session_unlocked()
+            if (
+                current_trading_state(self._execution_events, session.id)
+                is TradingState.HALTED
+            ):
+                raise OrderIntentBlockedError(
+                    "envelope activation refused: trading halted (kill switch engaged)"
+                )
+            intent_id = (stored or draft).sell_intent_id
+            clash = self._other_active_envelope_unlocked(intent_id, excluding=draft.id)
+            if clash is not None:
+                raise EnvelopeTransitionError(
+                    f"envelope {clash.id} is already ACTIVE for intent "
+                    f"{intent_id} (single-ACTIVE invariant)"
+                )
+            with self._atomic():
+                if stored is None:
+                    key = normalize_symbol(draft.symbol)
+                    stored = draft.model_copy(deep=True, update={"symbol": key})
+                    self._envelopes[stored.id] = stored
+                    self._append_execution_event_unlocked(
+                        envelope_created_event(stored, actor=actor)
+                    )
+                    self._append_event_unlocked(
+                        "envelope_created",
+                        message=f"execution envelope created for {stored.symbol}",
+                        symbol=stored.symbol,
+                        session_id=stored.session_id,
+                        correlation_id=stored.sell_intent_id,
+                        payload={"actor": actor, "envelope_id": stored.id},
+                    )
+                current = stored
+                if current.status is EnvelopeStatus.PENDING:
+                    plan = plan_envelope_transition(
+                        current, EnvelopeStatus.APPROVED, actor=actor
+                    )
+                    assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                    current = self._apply_envelope_transition_unlocked(plan)
+                plan = plan_envelope_transition(
+                    current, EnvelopeStatus.ACTIVE, actor=actor
+                )
+                assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                current = self._apply_envelope_transition_unlocked(plan)
+            return current.model_copy(deep=True)
+
+    def _cancel_symbol_envelopes_unlocked(
+        self, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        """ADR-009 §4 / D-2: cancel every non-terminal envelope for ``symbol``
+        through legal edges (ACTIVE goes via FROZEN) — the manual-flatten
+        preemption. Assumes the lock and an ``_atomic()`` block are held, so
+        the preemption commits in the SAME atomic unit as the flatten's own
+        writes and its events sequence BEFORE them."""
+
+        for env in list(self._envelopes.values()):
+            if env.symbol != symbol:
+                continue
+            if not ENVELOPE_TRANSITIONS.get(env.status):
+                continue  # terminal — nothing to preempt
+            current = env
+            if current.status is EnvelopeStatus.ACTIVE:
+                plan = plan_envelope_transition(
+                    current, EnvelopeStatus.FROZEN, actor=actor, reason=reason
+                )
+                assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                current = self._apply_envelope_transition_unlocked(plan)
+            plan = plan_envelope_transition(
+                current, EnvelopeStatus.CANCELLED, actor=actor, reason=reason
+            )
+            assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+            self._apply_envelope_transition_unlocked(plan)
 
     def _dispatch_order_for_sell_intent_unlocked(
         self,
@@ -1356,6 +1475,12 @@ class InMemoryStateStore(StateStore):
                     )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
+                # ADR-009 §4 / D-2: even with nothing to exit, a stale envelope
+                # must never outlive the human's direct backstop.
+                with self._atomic():
+                    self._cancel_symbol_envelopes_unlocked(
+                        key, actor=actor, reason="manual_flatten_preemption"
+                    )
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 assert plan.existing_intent is not None
@@ -1393,6 +1518,12 @@ class InMemoryStateStore(StateStore):
                 session_id = self._ensure_current_session_unlocked().id
             superseded = False
             with self._atomic():
+                # ADR-009 §4: envelope preemption FIRST, same atomic unit —
+                # the preemption events sequence before the flatten's own
+                # supersede/create writes (asserted by WO-0017 tests).
+                self._cancel_symbol_envelopes_unlocked(
+                    key, actor=actor, reason="manual_flatten_preemption"
+                )
                 if plan.supersede_order_cancel is not None:
                     # A supersede-cancel implies the stranded active_order exists
                     # and the planner produced its cancel audit event (narrows both).
@@ -2385,6 +2516,21 @@ class InMemoryStateStore(StateStore):
                     audit_payload={"kill_switch": engaged, "actor": actor},
                     reason="kill_switch",
                 )
+                if engaged:
+                    # ADR-009 §4: the kill freezes every ACTIVE envelope in
+                    # the SAME atomic unit as the control change. Release
+                    # never auto-resumes (FROZEN -> ACTIVE is an explicit
+                    # human action, itself refused while HALTED).
+                    for env in list(self._envelopes.values()):
+                        if env.status is EnvelopeStatus.ACTIVE:
+                            plan = plan_envelope_transition(
+                                env,
+                                EnvelopeStatus.FROZEN,
+                                actor=actor,
+                                reason="kill_switch",
+                            )
+                            assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                            self._apply_envelope_transition_unlocked(plan)
             return session.model_copy(deep=True)
 
     async def set_buys_paused(

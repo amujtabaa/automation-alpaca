@@ -501,6 +501,43 @@ rows empty) + `tests/test_wo0016_envelope_fills.py`
 (`test_fill_while_frozen_decrements_but_never_unfreezes`,
 `test_overfill_of_the_hard_ceiling_breaches`).
 
+**INV-080 — Envelope activation is one atomic unit, and the kill switch both
+blocks and preempts it.** `approve_envelope_activation` (both stores) runs
+dedup → HALTED check → create → approve → activate → events under ONE lock/
+transaction hold with no await between the control check and the durable
+writes: a kill landing first blocks the op with ZERO artifacts; landing after
+leaves an ACTIVE envelope that the kill hook freezes in the SAME atomic unit
+as the control change. Any `→ ACTIVE` transition (first activation OR resume)
+is refused while HALTED; releasing the kill NEVER auto-resumes a frozen
+envelope — resume is an explicit human action.
+*Why:* invariant 10 (kill blocks new order intent) — an ACTIVE envelope IS
+standing, pre-approved order intent; any window or auto-resume would let
+autonomous submissions restart without the human who stopped them.
+*Pinned by:* `tests/test_wo0017_envelope_approval.py`
+(`test_halted_blocks_approval_with_zero_artifacts`,
+`test_kill_race_never_ends_with_an_active_envelope_under_halted`) +
+`tests/test_wo0017_precedence.py` (`test_kill_freezes_every_active_envelope_atomically`,
+`test_release_never_auto_resumes`, `test_resume_and_activation_are_refused_while_halted`).
+
+**INV-081 — Manual flatten preempts envelopes; the ADR-003 deferral leaves the
+live exit's envelope managing it.** When a flatten takes over the exit path
+(create, or already-flat), every non-terminal envelope for the symbol is
+CANCELLED through legal edges inside the SAME lock/transaction, sequenced
+BEFORE the flatten's own writes — an envelope never races, blocks, or
+outlives the human's direct backstop (ADR-009 §4, D-2). When the flatten
+DEFERS to an in-flight PROTECTION_FLOOR exit (ADR-003/WO-0015 semantics,
+unchanged), that exit's envelope is deliberately left alone: it is the live
+order's manager, and cancelling it would strand the very exit the flatten
+defers to.
+*Why:* the backstop must dominate its dependents without destroying the
+mechanism executing the exit the human already has in flight.
+*Pinned by:* `tests/test_wo0017_precedence.py`
+(`test_flatten_cancels_the_symbols_envelopes_before_proceeding`,
+`test_flatten_on_a_flat_position_still_cancels_stale_envelopes`,
+`test_flatten_cancels_frozen_and_preactivation_envelopes_too`,
+`test_deferral_to_a_live_protection_exit_leaves_its_envelope_alone`) +
+`tests/test_phase7_flatten_atomic.py` (kept green, unmodified).
+
 ---
 
 ## Superseded / historical
