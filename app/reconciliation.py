@@ -37,8 +37,22 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-from app.broker.adapter import BrokerOrderReport, BrokerPositionReport
-from app.models import Order, OrderSide, OrderStatus, Position
+import hashlib
+from typing import Protocol
+
+from app.broker.adapter import (
+    AmbiguousBrokerError,
+    BrokerAdapter,
+    BrokerError,
+    BrokerOrderReport,
+    BrokerPositionReport,
+    TerminalBrokerError,
+)
+from app.marketdata.service import MarketSnapshot
+from app.models import ExecutionEvent, Order, OrderSide, OrderStatus, Position
+from app.sellside.types import ActionKind, PlannedAction
+from app.store.base import CLAIM_CLAIMED, SubmissionClaim
+from app.store.core import STAGE_DIVERGENCE, EnvelopeActionStageResult
 
 # Local order statuses that are "open at the venue" and therefore reconcilable
 # against the mass report (mirrors monitoring._OPEN_STATUSES). CANCEL_PENDING is
@@ -401,3 +415,238 @@ def plan_reconciliation(
             )
 
     return plan
+
+
+# --------------------------------------------------------------------------- #
+# Envelope executor — the venue leg of the engine seam (WO-0019, ADR-009 §1/§5)
+# --------------------------------------------------------------------------- #
+#
+# The DECISION half (write-time validation, order minting, budget accounting,
+# the ENVELOPE_PLAN_DIVERGENCE tripwire) lives in the stores'
+# ``stage_envelope_action`` — one lock/transaction, no await between the
+# control check and the durable writes. This module owns only the VENUE leg:
+# claim the staged order through the EXISTING submission claim (INV-021: the
+# claim stays the sole entry into SUBMITTING — the envelope path adds no back
+# door), call the abstract adapter (submit or the WO-0019a atomic replace),
+# and map the outcome through the same ADR-002 discipline as every other
+# submit: ambiguous → TIMEOUT_QUARANTINE (deterministic client_order_id = the
+# order id), transient → release for redrive, terminal → REJECTED.
+
+
+class _EnvelopeSeamStore(Protocol):
+    """The store surface the envelope executor drives. The abstract
+    ``StateStore`` does not declare the envelope API yet (``app/store/base.py``
+    has stayed outside every W3 WO's scope — the ABC lift is deferred-logged
+    for its own small WO); a structural Protocol keeps the seam honestly
+    typed against BOTH concrete stores meanwhile."""
+
+    async def stage_envelope_action(
+        self,
+        envelope_id: str,
+        action: PlannedAction,
+        *,
+        snapshot_fingerprint: str,
+        actor: str = ...,
+        session_id: Optional[str] = ...,
+        now: Optional[datetime] = ...,
+    ) -> EnvelopeActionStageResult: ...
+
+    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim: ...
+
+    async def quarantine_timed_out_order(
+        self, order_id: str, *, reason: Optional[str] = ...
+    ) -> Order: ...
+
+    async def transition_order(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        filled_quantity: Optional[int] = ...,
+        broker_order_id: Optional[str] = ...,
+    ) -> Order: ...
+
+    async def get_order(self, order_id: str) -> Optional[Order]: ...
+
+    async def get_execution_events(
+        self, *, after_sequence: int = ..., limit: Optional[int] = ...
+    ) -> list[ExecutionEvent]: ...
+
+
+ENVELOPE_EXEC_SUBMITTED = "submitted"
+ENVELOPE_EXEC_REPRICED = "repriced"
+ENVELOPE_EXEC_DIVERGENCE = "divergence"  # frozen + event; zero venue calls
+ENVELOPE_EXEC_BLOCKED = "blocked"  # claim control gate held it; order stays CREATED
+ENVELOPE_EXEC_QUARANTINED = "quarantined"  # ambiguous venue outcome (ADR-002)
+ENVELOPE_EXEC_RELEASED = "released"  # transient failure; order back to CREATED
+ENVELOPE_EXEC_REJECTED = "rejected"  # definitive venue rejection
+
+
+@dataclass(frozen=True)
+class EnvelopeExecutionResult:
+    outcome: str
+    order_id: Optional[str] = None
+    broker_order_id: Optional[str] = None
+    detail: str = ""
+
+
+def market_snapshot_fingerprint(snapshot: MarketSnapshot) -> str:
+    """Deterministic fingerprint of the snapshot a decision was made against —
+    stamped into every ENVELOPE_ACTION event (ADR-009 §6) so an action is
+    auditable against the exact market state that justified it."""
+
+    raw = "|".join(
+        str(part)
+        for part in (
+            snapshot.symbol,
+            snapshot.last_price,
+            snapshot.bid,
+            snapshot.ask,
+            snapshot.volume,
+            snapshot.prev_close,
+            snapshot.updated_at.isoformat(),
+            snapshot.stale,
+        )
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+async def _drive_staged_order(
+    store: _EnvelopeSeamStore,
+    adapter: BrokerAdapter,
+    *,
+    order: Order,
+    kind: ActionKind,
+    working_order: Optional[Order],
+) -> EnvelopeExecutionResult:
+    """The venue leg for one already-staged order (fresh or redriven)."""
+
+    claim = await store.claim_order_for_submission(order.id)
+    if claim.outcome != CLAIM_CLAIMED:
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_BLOCKED,
+            order_id=order.id,
+            detail=claim.reason or claim.outcome,
+        )
+    try:
+        if kind is ActionKind.REPRICE:
+            assert working_order is not None
+            assert working_order.broker_order_id is not None  # staged guarantees
+            new_broker_id = await adapter.replace_order(
+                working_order.broker_order_id,
+                client_order_id=order.id,  # deterministic (ADR-002 recovery key)
+                limit_price=order.limit_price,
+                quantity=order.quantity,
+            )
+        else:
+            assert claim.order is not None  # CLAIM_CLAIMED carries the order
+            new_broker_id = await adapter.submit_order(claim.order)
+    except AmbiguousBrokerError:
+        # The venue MAY have the replacement/submission. Quarantine; the
+        # targeted client_order_id query resolves it; the envelope pauses
+        # (stage refuses) until then — never blind-re-replace.
+        await store.quarantine_timed_out_order(order.id)
+        return EnvelopeExecutionResult(ENVELOPE_EXEC_QUARANTINED, order_id=order.id)
+    except TerminalBrokerError as exc:
+        await store.transition_order(order.id, OrderStatus.REJECTED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_REJECTED, order_id=order.id, detail=str(exc)
+        )
+    except BrokerError as exc:
+        # Provably-pre-flight transient: release the claim; the SAME staged
+        # order (and its already-committed budget accounting) redrives later.
+        await store.transition_order(order.id, OrderStatus.CREATED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_RELEASED, order_id=order.id, detail=str(exc)
+        )
+
+    await store.transition_order(
+        order.id, OrderStatus.SUBMITTED, broker_order_id=new_broker_id
+    )
+    if kind is ActionKind.REPRICE:
+        assert working_order is not None
+        # The venue's replace terminated the old order (broker-confirmed fact;
+        # the old order HAS a broker id, so ADR-008 stamps this
+        # BROKER_REST/BROKER_AUTHORITATIVE).
+        await store.transition_order(working_order.id, OrderStatus.CANCELED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_REPRICED,
+            order_id=order.id,
+            broker_order_id=new_broker_id,
+        )
+    return EnvelopeExecutionResult(
+        ENVELOPE_EXEC_SUBMITTED, order_id=order.id, broker_order_id=new_broker_id
+    )
+
+
+async def execute_envelope_action(
+    store: _EnvelopeSeamStore,
+    adapter: BrokerAdapter,
+    envelope_id: str,
+    action: PlannedAction,
+    *,
+    snapshot_fingerprint: str,
+    actor: str = "engine",
+    now: Optional[datetime] = None,
+) -> EnvelopeExecutionResult:
+    """Stage (write-time D-3 validation, atomic) then drive the venue leg.
+    ``now`` is the injected validation clock (the tick's clock)."""
+
+    staged = await store.stage_envelope_action(
+        envelope_id,
+        action,
+        snapshot_fingerprint=snapshot_fingerprint,
+        actor=actor,
+        now=now,
+    )
+    if staged.outcome == STAGE_DIVERGENCE:
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_DIVERGENCE,
+            detail="plan/write validator disagreement — envelope frozen",
+        )
+    assert staged.order is not None
+    return await _drive_staged_order(
+        store,
+        adapter,
+        order=staged.order,
+        kind=action.kind,
+        working_order=staged.working_order,
+    )
+
+
+async def redrive_staged_envelope_action(
+    store: _EnvelopeSeamStore,
+    adapter: BrokerAdapter,
+    envelope_id: str,
+) -> Optional[EnvelopeExecutionResult]:
+    """Resume a staged-but-not-executed action (transient release / crash
+    between staging and the venue call) WITHOUT re-staging — the budget
+    accounting committed with the original staging and must not be spent
+    twice. Returns None when there is nothing to redrive."""
+
+    events = await store.get_execution_events()
+    staged_events = [
+        e
+        for e in events
+        if e.envelope_id == envelope_id
+        and e.event_type.value == "envelope_action"
+        and e.order_id is not None
+    ]
+    if not staged_events:
+        return None
+    last = staged_events[-1]
+    assert last.order_id is not None
+    order = await store.get_order(last.order_id)
+    if order is None or order.status is not OrderStatus.CREATED:
+        return None  # nothing pending — executed, quarantined, or cancelled
+    kind = (
+        ActionKind.REPRICE
+        if last.payload.get("action") == "reprice"
+        else ActionKind.SUBMIT
+    )
+    working_order: Optional[Order] = None
+    if kind is ActionKind.REPRICE and order.replaces_order_id is not None:
+        working_order = await store.get_order(order.replaces_order_id)
+    return await _drive_staged_order(
+        store, adapter, order=order, kind=kind, working_order=working_order
+    )
