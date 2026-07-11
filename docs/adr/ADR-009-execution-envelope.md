@@ -1,0 +1,111 @@
+# ADR-009 — Pre-approved Execution Envelope for autonomous sell-side execution
+
+## Status
+
+**Proposed** (drafted 2026-07-11, planning seat, from the LASE integration design session; decisions
+D-1..D-4 taken by Ameen 2026-07-11). Amends human-gated-surface semantics → **queues for
+independent cross-model review** before any beta-relevant milestone relies on it, per CLAUDE.md
+review policy. Not accepted until Ameen marks it Accepted.
+
+## Context
+
+The liquidity-aware sell executor (LASE v1 package) is a high-speed autonomous reprice loop:
+dynamic limit sells with trailing, participation-aware sizing, and cancel/replace repricing on a
+sub-second cooldown, targeting thin pre-market/after-hours liquidity. Order submission and
+cancel/replace are **human-gated surfaces** (CLAUDE.md safety core); a human cannot approve every
+reprice. Separately, the deferred Reprice Controller (stuck protective LIMIT fix) was flagged as
+dangerously coupled with ADR-003's narrowing of the unconditional manual-flatten backstop. LASE
+*is* the sell-side reprice controller, so both problems must be resolved by one decision.
+
+## Decision
+
+### 1. The unit of human approval becomes the **Execution Envelope**
+
+The gated surfaces do not change. What changes is the granularity of the approved thing: the human
+approves an **execution mandate** — a bounded, immutable box of allowed venue behavior for one
+`SellIntent` — rather than one order. Every autonomous submit/cancel/replace is legal because it is
+a mechanical consequence of an approval whose bounds were fixed, durable, and audited at approval
+time. The executor is a **pure policy function** of `(envelope, MarketSnapshot, injected clock, own
+event history)`; the single-writer Execution Engine remains the only writer and **re-validates
+every planned action against the envelope at the execution seam** (bounds checked twice: plan-time
+and write-time).
+
+### 2. Envelope fields — every field is a *hard rail* or a *soft bound*
+
+Hard rail = violation attempt → `BREACHED` (freeze + quarantine-style stop, human required).
+Soft bound = policy output clamped into range + logged. Fields:
+
+| Group | Field | Class |
+|---|---|---|
+| Scope | symbol; owning `sell_intent_id`; qty ceiling (decrements **only on deduped fill events**); side=SELL; reduce-only | hard |
+| Price | absolute floor price (worst tolerated print); submission below floor = breach, never clamp | hard |
+| Price | trail-distance range `[min,max]`; participation-rate cap; aggressiveness set | soft |
+| Rate | cooldown floor (min ms between reprices) | hard |
+| Rate | lifetime cancel/replace budget; exhaustion → `EXHAUSTED` (terminal-pending-human) | hard |
+| Rate | max outstanding child orders (v1: 1) | hard |
+| Time | TTL; allowed session phases (pre/regular/after) | hard |
+| Time | **expiry disposition** (approval-time mandatory choice): `CANCEL_AND_RETURN` \| `REST_AT_FLOOR` | hard |
+| Data | **stale-data disposition** (approval-time mandatory choice): `LEAVE_RESTING` \| `CANCEL` — on stale/NaN/out-of-range snapshot the policy stops repricing (fail-closed per safety rails) and applies this disposition | hard |
+
+**D-1 (decided):** there is **one envelope kind**. No protective-vs-profit-taking subtype; all
+dispositions are explicit approval-time fields. The approval surface carries the burden of
+purpose-appropriate defaults; the code has one path.
+
+### 3. State machine
+
+`PENDING → APPROVED → ACTIVE → { COMPLETED | EXPIRED | EXHAUSTED | BREACHED | SUPERSEDED }`,
+plus `ACTIVE ↔ FROZEN` (kill switch / `Halted`) and `FROZEN → CANCELLED`. `BREACHED` and
+`EXHAUSTED` are terminal-pending-human, quarantine-flavored (recorded, never hidden, never
+auto-resumed). **Amendment is by supersession only**: bounds never mutate in place; a change is a
+new envelope through the approval gate, the old one → `SUPERSEDED` (idempotent, mirroring the
+candidate approval pattern).
+
+### 4. Precedence and TradingState interactions
+
+- **Kill switch** blocks new order intent (invariant 10); a replace **is** new order intent. Kill
+  switch ⇒ all envelopes freeze immediately. Per-action HALTED/kill checks are atomic with durable
+  writes (no `await` between check and write), per the ENG-001 exit-open pattern.
+- **`Reducing`**: envelopes keep running (reduce-only by construction). **`Halted`**: frozen.
+- **Manual flatten preempts envelopes, always.** Flatten atomically cancels/freezes all envelopes
+  for the symbol *before* proceeding; an envelope can never race, block, or outlive the human's
+  direct backstop. This ordering rule is the resolution of the ADR-003 × reprice-controller
+  coupling. **D-2 (decided):** flatten does **not** become an "emergency envelope"; it remains the
+  separate, dumber, direct path through session control. The backstop does not share machinery
+  with the thing it backstops.
+
+### 5. Engine-seam divergence is a defect signal
+
+**D-3 (decided):** if the engine's write-time validation rejects an action the pure policy planned,
+that means the plan-time and write-time validators disagree — a software defect, not merely a
+breach. Response: freeze the envelope **and** emit a distinct `ENVELOPE_PLAN_DIVERGENCE`
+ExecutionEvent (P1 tripwire; surfaced to the operator, registered in `docs/INVARIANTS.md`).
+
+### 6. Eventing and provenance
+
+New ExecutionEvents, provenance per ADR-008: `envelope_created` / `envelope_approved`
+(operator-\* actor), `envelope_action` (system/executor actor, carries `envelope_id`, action =
+submit/reprice/resize/cancel, the clamped params, and the snapshot fingerprint),
+`envelope_breached`, `envelope_exhausted`, `envelope_expired` (+ chosen disposition),
+`envelope_frozen`/`envelope_resumed`, `envelope_superseded`, `envelope_plan_divergence`. Every
+autonomous decision is replayable from the log.
+
+### 7. Disposition of the LASE v1 code
+
+**D-4 (decided): spike — delete and re-derive test-first.** The bundled `sell_side_refined.py`
+and `sell_side_v2.py` diverge by ~754 lines, own their state, and fall back to bare `now()`
+(injected-clock violation). The *designs* are kept (volume profiler, session context,
+time-to-close urgency ramp, reprice cooldown); the code is not ported. Each piece is rebuilt
+red-green with the clock injected from day one, urgency-ramp outputs clamped to envelope bounds,
+and fill-probability estimation failing closed on bad data.
+
+## Consequences
+
+- Human-gated surfaces gain a formally bounded delegation mechanism; every gated action remains
+  traceable to an explicit human approval. Requires independent review before beta reliance.
+- The stuck-protective-limit problem is solved by construction (expiry disposition is mandatory);
+  ADR-003's flatten backstop is strengthened by the preemption ordering rule.
+- New entity + transitions + dual-store persistence + import-linter contract extension for the new
+  `app/sellside/` package (see WO-0016..0021, wave W3).
+- Rejected alternatives: per-action human approval (defeats the feature); silent clamping of hard
+  rails (hides envelope violations); flatten-as-envelope (couples backstop to its dependent);
+  porting the bundled code (tests-after in disguise; Fable Law 1).
