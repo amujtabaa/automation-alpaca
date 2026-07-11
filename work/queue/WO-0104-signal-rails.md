@@ -57,6 +57,8 @@ forbidden_paths:
 - [ ] Injected clock throughout (no bare `datetime.now()` / `time.time()`).
 - [ ] Property-style tests: no ordering of signal events can yield an APPROVED state for an expired/quarantined signal.
 - [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test).
+- [ ] Post-quarantine backpressure (ADR-009 rails; Codex PR #5 P2): ingress from a quarantined producer is boundary-rejected with coalesced audit, no per-request event appends — event log bounded under sustained post-quarantine flood (test).
+- [ ] The release route is **operator-only** (same credential split as WO-0103); a producer API key cannot release its own quarantine (negative test).
 
 ## Required tests
 

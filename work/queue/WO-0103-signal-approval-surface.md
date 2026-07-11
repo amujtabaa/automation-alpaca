@@ -57,6 +57,7 @@ forbidden_paths:
 ## Required behavior
 
 - [ ] UI owns no signal state (code-review criterion + no direct store imports; import-linter contract 2 enforced — cockpit imports no `app.*`).
+- [ ] Approve/reject routes are **operator-only** (ADR-009 §Contract 1 role separation): authenticated by a distinct operator credential, not the `X-Actor` audit label; a producer API key calling approve/reject gets 401/403 (negative test) — a producer must never be able to convert its own signal (Codex PR #5 P1).
 - [ ] Conversion blocked in `Halted` (test), restricted to risk-reducing in `Reducing` (test), blocked by kill switch (test), both storage paths.
 - [ ] **Positive path (human decision, ADR-009 INV-7 row):** a genuine protective sell IS convertible in `Reducing` (test) — the classification must not silently block real exits; a blocked conversion in `Reducing` must be operator-visible, never silent.
 - [ ] Approving twice is idempotent (test). Expired signal unapprovable (test).
