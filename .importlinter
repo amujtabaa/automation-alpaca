@@ -169,3 +169,41 @@ forbidden_modules =
 # monitoring}). The ratchet now forbids ANY direct route->backend edge from
 # returning, so a regression fails CI. `ignore_imports` is intentionally omitted
 # (an empty list would itself be flagged by `unmatched_ignore_imports_alerting`).
+
+# --------------------------------------------------------------------------- #
+# Contract 6 — the sell-side policy is a PURE planning layer (ADR-009 §1,
+# WO-0018). It may import only the shared model kernel (app.models) and the
+# abstract market-data types (app.marketdata.service) — never a store, a
+# route, the facade, the engine loops, a concrete venue implementation, or
+# the Alpaca SDK. Purity here is what makes the envelope executor a
+# deterministic function of (envelope, snapshot tape, clock, event history),
+# which is what WO-0019's write-time re-validation (D-3) relies on.
+# --------------------------------------------------------------------------- #
+[importlinter:contract:sellside-is-a-pure-policy]
+name = The sell-side policy imports only the model kernel and abstract market-data types
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    app.sellside
+forbidden_modules =
+    app.api
+    app.facade
+    app.store
+    app.events
+    app.broker
+    app.marketdata.alpaca_stream
+    app.marketdata.fake
+    app.marketdata.factory
+    app.monitoring
+    app.reconciliation
+    app.protection
+    app.policy
+    app.position
+    app.strategy
+    app.strategy_loop
+    app.approval
+    app.features
+    app.config
+    app.main
+    cockpit
+    alpaca
