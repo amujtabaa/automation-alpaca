@@ -73,6 +73,7 @@ from app.protection import (
     protective_limit_price,
 )
 from app.reconciliation import (
+    ReconcileFairnessCursor,
     ReconciliationPlan,
     ReconcileQueryBudget,
     plan_reconciliation,
@@ -457,6 +458,10 @@ async def monitoring_loop(
     # ticks (wave 4e-4 / R6). Owned by the loop so it spans ticks; direct
     # ``run_monitoring_tick`` callers (tests) pass none and are unthrottled.
     reconcile_budget = ReconcileQueryBudget(settings.reconcile_query_budget_per_min)
+    # PR #4 review (P2): loop-owned round-robin cursor so the shared budget can't let
+    # the earliest TIMEOUT_QUARANTINE orders starve later ones — spans ticks like the
+    # budget; direct run_monitoring_tick callers (tests) pass none.
+    reconcile_fairness = ReconcileFairnessCursor()
     # Wave 4f gate: the startup reduce-only gate is owned by ``run_startup_reconcile``
     # (called in the app lifespan BEFORE this loop, so trading is Reducing-until-parity
     # before the first tick). This loop then MAINTAINS the reconcile driver each tick
@@ -468,6 +473,7 @@ async def monitoring_loop(
                 store, adapter, settings,
                 market_data=market_data,
                 reconcile_budget=reconcile_budget,
+                reconcile_fairness=reconcile_fairness,
                 drive_reconcile_state=True,
             )
         except asyncio.CancelledError:
@@ -539,6 +545,7 @@ async def run_monitoring_tick(
     *,
     market_data: Optional[MarketDataService] = None,
     reconcile_budget: Optional[ReconcileQueryBudget] = None,
+    reconcile_fairness: Optional[ReconcileFairnessCursor] = None,
     drive_reconcile_state: bool = False,
 ) -> None:
     """One monitoring iteration: submit pending orders, then reconcile open ones.
@@ -565,7 +572,8 @@ async def run_monitoring_tick(
     # broker_order_id that the reconcile poll then tracks (and ingests fills for)
     # this same tick.
     await _resolve_timeout_quarantine(
-        store, adapter, settings, budget=reconcile_budget
+        store, adapter, settings,
+        budget=reconcile_budget, fairness=reconcile_fairness,
     )
     await _reconcile_open_orders(
         store, adapter, settings, market_data=market_data
@@ -956,6 +964,7 @@ async def _resolve_timeout_quarantine(
     settings: Optional[Settings] = None,
     *,
     budget: Optional[ReconcileQueryBudget] = None,
+    fairness: Optional[ReconcileFairnessCursor] = None,
 ) -> None:
     """Resolve ``TIMEOUT_QUARANTINE`` orders (ADR-002) with a READ-ONLY targeted
     query — the whole point is to NEVER resubmit an order that may already be live.
@@ -983,7 +992,13 @@ async def _resolve_timeout_quarantine(
     """
 
     max_attempts = (settings or Settings()).timeout_quarantine_max_query_attempts
-    for order in await store.list_timeout_quarantined_orders():
+    quarantined = await store.list_timeout_quarantined_orders()
+    # PR #4 review (P2): round-robin the deterministic list so a limited budget
+    # cannot let the earliest orders (persistently failing / escalated) starve the
+    # later ones — resume just after the last order that consumed a token last tick.
+    if fairness is not None:
+        quarantined = fairness.rotate(quarantined)
+    for order in quarantined:
         # ENG-002: each targeted resolution query is a §7/§9 REST call, so consume
         # the loop's shared reconcile budget before each one — a large quarantine
         # burst can no longer exceed the venue rate budget the mass-report and
@@ -991,6 +1006,11 @@ async def _resolve_timeout_quarantine(
         # quarantined orders to a later tick (they persist until resolved).
         if budget is not None and not budget.try_consume(utcnow()):
             break
+        # This order got a token this tick — record it so the NEXT tick resumes
+        # after it (fair rotation), before the query so a mid-loop error/return
+        # still advances the cursor.
+        if fairness is not None:
+            fairness.record(order.id)
         try:
             update = await adapter.get_order_by_client_order_id(order.id)
         except BrokerError as exc:

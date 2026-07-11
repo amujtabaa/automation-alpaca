@@ -118,6 +118,49 @@ class ReconcileQueryBudget:
         return self._tokens
 
 
+class ReconcileFairnessCursor:
+    """Round-robin cursor so a limited shared query budget cannot let the EARLIEST
+    ``TIMEOUT_QUARANTINE`` orders starve the later ones forever (PR #4 review, P2 —
+    the ENG-002 budget follow-up).
+
+    ``_resolve_timeout_quarantine`` iterates ``list_timeout_quarantined_orders()``
+    in a deterministic order and stops when the budget is exhausted. If the first
+    orders keep failing their targeted query (or sit escalated in ``needs_review``
+    while still ``TIMEOUT_QUARANTINE``) they consume every token every tick, so the
+    later orders never receive their read-only resolution query. This cursor makes
+    the resolver **resume just after the last order that consumed a token** each
+    tick, wrapping around, so over successive ticks every quarantined order is
+    served. Escalated orders are NOT skipped — they still auto-recover if the venue
+    comes back; they merely take their fair turn.
+
+    Pure + deterministic (no clock/IO/RNG) — owned by the monitoring loop so it
+    spans ticks, exactly like :class:`ReconcileQueryBudget`; direct tick callers
+    (tests) pass none and keep the plain deterministic order."""
+
+    def __init__(self) -> None:
+        self.last_served_id: Optional[str] = None
+
+    def rotate(self, orders: list[Order]) -> list[Order]:
+        """Return ``orders`` rotated to resume just after ``last_served_id``,
+        wrapping around. A cold cursor (``None``) or a ``last_served_id`` no longer
+        present (that order resolved/left the quarantine set) leaves the order
+        unchanged — the natural deterministic order."""
+
+        if self.last_served_id is None:
+            return orders
+        ids = [o.id for o in orders]
+        if self.last_served_id not in ids:
+            return orders
+        i = ids.index(self.last_served_id) + 1
+        return orders[i:] + orders[:i]
+
+    def record(self, order_id: str) -> None:
+        """Mark ``order_id`` as the most recent order to consume a token, so the
+        next tick resumes after it."""
+
+        self.last_served_id = order_id
+
+
 @dataclass(frozen=True)
 class InferredFill:
     """A fill the reconciler infers from a priced execution in the broker report
