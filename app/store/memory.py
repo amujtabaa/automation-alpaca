@@ -18,17 +18,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_UNRESOLVED,
     Candidate,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     CandidateStatus,
     Event,
+    ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
     Fill,
@@ -95,9 +97,20 @@ from app.store.core import (
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
+    ENVELOPE_FILL_REJECT,
+    ENVELOPE_TRANSITION_APPLY,
+    ENVELOPE_TRANSITION_NOOP,
+    ENVELOPE_TRANSITION_REJECT,
+    EnvelopeTransitionError,
+    EnvelopeTransitionPlan,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
+    envelope_created_event,
+    envelope_draft_reason,
+    plan_envelope_fill,
+    plan_envelope_transition,
+    plan_supersede_envelope,
     plan_append_fill,
     plan_claim_order_for_submission,
     plan_close_session,
@@ -148,6 +161,7 @@ class InMemoryStateStore(StateStore):
         self._position_snapshots: list[PositionSnapshot] = []
         self._submit_recoveries: list[SubmitRecoveryRecord] = []  # D-017
         self._sell_intents: dict[str, SellIntent] = {}  # Phase 7
+        self._envelopes: dict[str, ExecutionEnvelope] = {}  # ADR-009 / WO-0016
         # Spine v2 execution-event log (Phase 2): append-only, sequence order.
         # `_execution_event_dedupe` maps a non-null dedupe_key to its event for
         # O(1) INV-5 idempotency without scanning the log.
@@ -881,6 +895,237 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             active = self._active_sell_intent_unlocked(key)
             return active.model_copy(deep=True) if active else None
+
+    # ------------------------------------------------------------------ #
+    # Execution envelopes (ADR-009 / WO-0016)
+    # ------------------------------------------------------------------ #
+    def _other_active_envelope_unlocked(
+        self, sell_intent_id: str, *, excluding: str
+    ) -> Optional[ExecutionEnvelope]:
+        """Any OTHER envelope of this intent currently ACTIVE (single-ACTIVE
+        invariant probe; the SQLite twin is a partial unique index)."""
+
+        for env in self._envelopes.values():
+            if (
+                env.id != excluding
+                and env.sell_intent_id == sell_intent_id
+                and env.status is EnvelopeStatus.ACTIVE
+            ):
+                return env
+        return None
+
+    def _apply_envelope_transition_unlocked(
+        self, plan: EnvelopeTransitionPlan
+    ) -> ExecutionEnvelope:
+        """Persist an APPLY-outcome transition plan (assumes lock + _atomic).
+        The caller has already dispatched NOOP/REJECT and run the
+        single-ACTIVE check where the target is ACTIVE."""
+
+        assert plan.envelope is not None
+        assert plan.execution_event is not None and plan.audit_event is not None
+        stored = plan.envelope.model_copy(deep=True)
+        self._envelopes[stored.id] = stored
+        self._append_execution_event_unlocked(plan.execution_event)
+        self._append_event_unlocked(
+            plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+        )
+        return stored
+
+    async def create_envelope(
+        self,
+        envelope: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        bad = envelope_draft_reason(envelope)
+        if bad is not None:
+            raise InvalidOrderError(bad)
+        key = normalize_symbol(envelope.symbol)
+        async with self._lock:
+            if envelope.id in self._envelopes:
+                raise InvalidOrderError(f"envelope {envelope.id} already exists")
+            stored = envelope.model_copy(deep=True, update={"symbol": key})
+            with self._atomic():
+                self._envelopes[stored.id] = stored
+                self._append_execution_event_unlocked(
+                    envelope_created_event(stored, actor=actor)
+                )
+                self._append_event_unlocked(
+                    "envelope_created",
+                    message=f"execution envelope created for {key}",
+                    symbol=key,
+                    session_id=stored.session_id,
+                    correlation_id=stored.sell_intent_id,
+                    payload={"actor": actor, "envelope_id": stored.id},
+                )
+            return stored.model_copy(deep=True)
+
+    async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]:
+        async with self._lock:
+            env = self._envelopes.get(envelope_id)
+            return env.model_copy(deep=True) if env else None
+
+    async def list_envelopes(
+        self,
+        *,
+        sell_intent_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        status: Optional[EnvelopeStatus] = None,
+    ) -> list[ExecutionEnvelope]:
+        if status is not None:
+            require_status_enum(status, EnvelopeStatus, field="status filter")
+        key = normalize_symbol(symbol) if symbol is not None else None
+        async with self._lock:
+            return [
+                env.model_copy(deep=True)
+                for env in self._envelopes.values()
+                if (sell_intent_id is None or env.sell_intent_id == sell_intent_id)
+                and (key is None or env.symbol == key)
+                and (status is None or env.status is status)
+            ]
+
+    async def transition_envelope(
+        self,
+        envelope_id: str,
+        new_status: EnvelopeStatus,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        require_status_enum(new_status, EnvelopeStatus, field="new_status")
+        async with self._lock:
+            env = self._envelopes.get(envelope_id)
+            if env is None:
+                raise UnknownEntityError(f"envelope {envelope_id} not found")
+            plan = plan_envelope_transition(env, new_status, actor=actor, reason=reason)
+            if plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                assert plan.error is not None
+                raise plan.error
+            if plan.outcome == ENVELOPE_TRANSITION_NOOP:
+                return env.model_copy(deep=True)
+            if new_status is EnvelopeStatus.ACTIVE:
+                clash = self._other_active_envelope_unlocked(
+                    env.sell_intent_id, excluding=env.id
+                )
+                if clash is not None:
+                    raise EnvelopeTransitionError(
+                        f"envelope {clash.id} is already ACTIVE for intent "
+                        f"{env.sell_intent_id} (single-ACTIVE invariant)"
+                    )
+            with self._atomic():
+                stored = self._apply_envelope_transition_unlocked(plan)
+                # A freeze is never exited by a fill: an envelope fully filled
+                # while FROZEN completes HERE, on resume, atomically with it.
+                if (
+                    stored.status is EnvelopeStatus.ACTIVE
+                    and (stored.remaining_quantity or 0) == 0
+                ):
+                    chain = plan_envelope_transition(
+                        stored,
+                        EnvelopeStatus.COMPLETED,
+                        actor="engine",
+                        reason="fully filled while frozen; completed on resume",
+                    )
+                    assert chain.outcome == ENVELOPE_TRANSITION_APPLY
+                    stored = self._apply_envelope_transition_unlocked(chain)
+            return stored.model_copy(deep=True)
+
+    async def supersede_envelope(
+        self,
+        old_envelope_id: str,
+        successor: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        async with self._lock:
+            old = self._envelopes.get(old_envelope_id)
+            if old is None:
+                raise UnknownEntityError(f"envelope {old_envelope_id} not found")
+            if successor.id in self._envelopes:
+                raise InvalidOrderError(
+                    f"successor envelope {successor.id} already exists"
+                )
+            normalized = successor.model_copy(
+                update={"symbol": normalize_symbol(successor.symbol)}
+            )
+            plan = plan_supersede_envelope(old, normalized, actor=actor, reason=reason)
+            if plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                assert plan.error is not None
+                raise plan.error
+            assert plan.old_envelope is not None and plan.new_envelope is not None
+            # Belt over the planner's braces: no OTHER envelope of the intent
+            # may be ACTIVE while the successor takes over (the old one is
+            # leaving ACTIVE inside this same atomic unit).
+            clash = self._other_active_envelope_unlocked(
+                old.sell_intent_id, excluding=old.id
+            )
+            if clash is not None:
+                raise EnvelopeTransitionError(
+                    f"envelope {clash.id} is already ACTIVE for intent "
+                    f"{old.sell_intent_id} (single-ACTIVE invariant)"
+                )
+            with self._atomic():
+                self._envelopes[plan.old_envelope.id] = plan.old_envelope.model_copy(
+                    deep=True
+                )
+                self._envelopes[plan.new_envelope.id] = plan.new_envelope.model_copy(
+                    deep=True
+                )
+                for event in plan.execution_events:
+                    self._append_execution_event_unlocked(event)
+                assert plan.audit_event is not None
+                self._append_event_unlocked(
+                    plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+                )
+            return plan.new_envelope.model_copy(deep=True)
+
+    async def record_envelope_fill(
+        self,
+        envelope_id: str,
+        *,
+        quantity: int,
+        dedupe_key: str,
+        price: Optional[float] = None,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        ts_event: Optional[datetime] = None,
+        source: EventSource = EventSource.BROKER_REST,
+        authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    ) -> ExecutionEnvelope:
+        """Apply one deduped fill fact — the ONLY remaining_quantity writer.
+        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
+        that fill was already counted (exactly-once, INV-5)."""
+
+        async with self._lock:
+            env = self._envelopes.get(envelope_id)
+            if env is None:
+                raise UnknownEntityError(f"envelope {envelope_id} not found")
+            plan = plan_envelope_fill(
+                env,
+                quantity=quantity,
+                dedupe_key=dedupe_key,
+                price=price,
+                order_id=order_id,
+                session_id=session_id,
+                ts_event=ts_event,
+                source=source,
+                authority=authority,
+            )
+            if plan.outcome == ENVELOPE_FILL_REJECT:
+                assert plan.error is not None
+                raise plan.error
+            assert plan.envelope is not None and plan.fill_event is not None
+            if self._execution_event_dedupe.get(dedupe_key) is not None:
+                return env.model_copy(deep=True)
+            with self._atomic():
+                self._append_execution_event_unlocked(plan.fill_event)
+                stored = plan.envelope.model_copy(deep=True)
+                self._envelopes[stored.id] = stored
+                if plan.transition is not None:
+                    assert plan.transition.outcome == ENVELOPE_TRANSITION_APPLY
+                    stored = self._apply_envelope_transition_unlocked(plan.transition)
+            return stored.model_copy(deep=True)
 
     def _dispatch_order_for_sell_intent_unlocked(
         self,

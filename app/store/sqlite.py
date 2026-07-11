@@ -41,10 +41,12 @@ from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_UNRESOLVED,
     Candidate,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     CandidateStatus,
     Event,
+    ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
     Fill,
@@ -111,9 +113,20 @@ from app.store.core import (
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
+    ENVELOPE_FILL_REJECT,
+    ENVELOPE_TRANSITION_APPLY,
+    ENVELOPE_TRANSITION_NOOP,
+    ENVELOPE_TRANSITION_REJECT,
+    EnvelopeTransitionError,
+    EnvelopeTransitionPlan,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
+    envelope_created_event,
+    envelope_draft_reason,
+    plan_envelope_fill,
+    plan_envelope_transition,
+    plan_supersede_envelope,
     plan_append_fill,
     plan_claim_order_for_submission,
     plan_close_session,
@@ -330,12 +343,62 @@ CREATE TABLE IF NOT EXISTS execution_events (
     quantity        INTEGER,
     price           REAL,
     order_id        TEXT,
+    envelope_id     TEXT,
     primary_id      TEXT,
     spawn_id        TEXT,
     session_id      TEXT,
     correlation_id  TEXT,
     payload         TEXT NOT NULL DEFAULT '{}'
 );
+
+-- Execution envelopes (ADR-009 / WO-0016): the pre-approved, immutable,
+-- bounded mandate for one sell intent. Bounds NEVER update in place —
+-- amendment is a new row via the atomic supersede operation. Only status,
+-- remaining_quantity (deduped-fill decrements ONLY), replaces_used,
+-- supersession linkage, and timestamps change after insert. The
+-- single-ACTIVE-per-intent partial unique index is created in initialize()
+-- (after _migrate, matching the fills-index pattern).
+CREATE TABLE IF NOT EXISTS execution_envelopes (
+    id                       TEXT PRIMARY KEY,
+    sell_intent_id           TEXT NOT NULL,
+    symbol                   TEXT NOT NULL,
+    side                     TEXT NOT NULL,
+    reduce_only              INTEGER NOT NULL DEFAULT 1,
+    qty_ceiling              INTEGER NOT NULL,
+    remaining_quantity       INTEGER NOT NULL,
+    floor_price              REAL NOT NULL,
+    trail_distance_min       REAL NOT NULL,
+    trail_distance_max       REAL NOT NULL,
+    participation_rate_cap   REAL NOT NULL,
+    aggressiveness           TEXT NOT NULL DEFAULT '[]',
+    cooldown_floor_ms        INTEGER NOT NULL,
+    cancel_replace_budget    INTEGER NOT NULL,
+    replaces_used            INTEGER NOT NULL DEFAULT 0,
+    max_outstanding_children INTEGER NOT NULL DEFAULT 1,
+    expires_at               TEXT NOT NULL,
+    allowed_session_phases   TEXT NOT NULL,
+    expiry_disposition       TEXT NOT NULL,
+    stale_data_disposition   TEXT NOT NULL,
+    status                   TEXT NOT NULL,
+    supersedes_id            TEXT,
+    superseded_by_id         TEXT,
+    session_id               TEXT,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL,
+    approved_at              TEXT,
+    activated_at             TEXT,
+    frozen_at                TEXT,
+    completed_at             TEXT,
+    expired_at               TEXT,
+    exhausted_at             TEXT,
+    breached_at              TEXT,
+    superseded_at            TEXT,
+    cancelled_at             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_envelopes_intent
+    ON execution_envelopes(sell_intent_id);
+CREATE INDEX IF NOT EXISTS idx_envelopes_symbol
+    ON execution_envelopes(symbol);
 """
 
 
@@ -417,6 +480,18 @@ class SqliteStateStore(StateStore):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_exec_events_order "
                 "ON execution_events(order_id)"
+            )
+            # ADR-009 (WO-0016): per-envelope event queries (replay/audit of one
+            # mandate) and the structural single-ACTIVE-per-intent invariant —
+            # the DB-level twin of the in-memory store's under-lock check.
+            # Created here (after _migrate) so they exist on migrated DBs too.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_events_envelope "
+                "ON execution_events(envelope_id)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_envelopes_one_active "
+                "ON execution_envelopes(sell_intent_id) WHERE status = 'active'"
             )
             self._backfill_fill_events_locked()
             self._backfill_trading_state_events_locked()
@@ -618,6 +693,17 @@ class SqliteStateStore(StateStore):
             # (backfill not required). Fresh DBs already get it from SCHEMA.
             conn.execute("ALTER TABLE events ADD COLUMN correlation_id TEXT")
 
+        exec_event_cols = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(execution_events)").fetchall()
+        }
+        if "envelope_id" not in exec_event_cols:  # added in W3 (ADR-009 / WO-0016)
+            # The owning execution envelope. Additive + nullable: pre-envelope
+            # events simply have NULL, replay stays valid within schema_version 1
+            # (no bump — the version marks INCOMPATIBLE shape changes). Fresh DBs
+            # get it from SCHEMA; its index is created in initialize().
+            conn.execute("ALTER TABLE execution_events ADD COLUMN envelope_id TEXT")
+
         # Item 5 / F1: dedup moved from a column-level UNIQUE on source_fill_id to
         # a composite (order_id, source_fill_id) index. SQLite can't ALTER away a
         # column constraint, so a DB created with the old `source_fill_id TEXT
@@ -714,6 +800,46 @@ class SqliteStateStore(StateStore):
         )
 
     @staticmethod
+    def _envelope(row: sqlite3.Row) -> ExecutionEnvelope:
+        return ExecutionEnvelope(
+            id=row["id"],
+            sell_intent_id=row["sell_intent_id"],
+            symbol=row["symbol"],
+            side=row["side"],
+            reduce_only=bool(row["reduce_only"]),
+            qty_ceiling=row["qty_ceiling"],
+            remaining_quantity=row["remaining_quantity"],
+            floor_price=row["floor_price"],
+            trail_distance_min=row["trail_distance_min"],
+            trail_distance_max=row["trail_distance_max"],
+            participation_rate_cap=row["participation_rate_cap"],
+            aggressiveness=json.loads(row["aggressiveness"]),
+            cooldown_floor_ms=row["cooldown_floor_ms"],
+            cancel_replace_budget=row["cancel_replace_budget"],
+            replaces_used=row["replaces_used"],
+            max_outstanding_children=row["max_outstanding_children"],
+            expires_at=row["expires_at"],
+            allowed_session_phases=json.loads(row["allowed_session_phases"]),
+            expiry_disposition=row["expiry_disposition"],
+            stale_data_disposition=row["stale_data_disposition"],
+            status=row["status"],
+            supersedes_id=row["supersedes_id"],
+            superseded_by_id=row["superseded_by_id"],
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            approved_at=row["approved_at"],
+            activated_at=row["activated_at"],
+            frozen_at=row["frozen_at"],
+            completed_at=row["completed_at"],
+            expired_at=row["expired_at"],
+            exhausted_at=row["exhausted_at"],
+            breached_at=row["breached_at"],
+            superseded_at=row["superseded_at"],
+            cancelled_at=row["cancelled_at"],
+        )
+
+    @staticmethod
     def _order(row: sqlite3.Row) -> Order:
         return Order(
             id=row["id"],
@@ -797,6 +923,7 @@ class SqliteStateStore(StateStore):
             quantity=row["quantity"],
             price=row["price"],
             order_id=row["order_id"],
+            envelope_id=row["envelope_id"],
             primary_id=row["primary_id"],
             spawn_id=row["spawn_id"],
             session_id=row["session_id"],
@@ -1327,6 +1454,92 @@ class SqliteStateStore(StateStore):
             ),
         )
 
+    def _insert_envelope(self, cur: sqlite3.Cursor, env: ExecutionEnvelope) -> None:
+        cur.execute(
+            """INSERT INTO execution_envelopes
+               (id, sell_intent_id, symbol, side, reduce_only, qty_ceiling,
+                remaining_quantity, floor_price, trail_distance_min,
+                trail_distance_max, participation_rate_cap, aggressiveness,
+                cooldown_floor_ms, cancel_replace_budget, replaces_used,
+                max_outstanding_children, expires_at, allowed_session_phases,
+                expiry_disposition, stale_data_disposition, status,
+                supersedes_id, superseded_by_id, session_id, created_at,
+                updated_at, approved_at, activated_at, frozen_at, completed_at,
+                expired_at, exhausted_at, breached_at, superseded_at,
+                cancelled_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                       ?,?,?,?,?,?,?,?,?)""",
+            (
+                env.id,
+                env.sell_intent_id,
+                env.symbol,
+                env.side.value,
+                _bit(env.reduce_only),
+                env.qty_ceiling,
+                env.remaining_quantity,
+                env.floor_price,
+                env.trail_distance_min,
+                env.trail_distance_max,
+                env.participation_rate_cap,
+                json.dumps(list(env.aggressiveness)),
+                env.cooldown_floor_ms,
+                env.cancel_replace_budget,
+                env.replaces_used,
+                env.max_outstanding_children,
+                _dt(env.expires_at),
+                json.dumps([p.value for p in env.allowed_session_phases]),
+                env.expiry_disposition.value,
+                env.stale_data_disposition.value,
+                env.status.value,
+                env.supersedes_id,
+                env.superseded_by_id,
+                env.session_id,
+                _dt(env.created_at),
+                _dt(env.updated_at),
+                _dt(env.approved_at),
+                _dt(env.activated_at),
+                _dt(env.frozen_at),
+                _dt(env.completed_at),
+                _dt(env.expired_at),
+                _dt(env.exhausted_at),
+                _dt(env.breached_at),
+                _dt(env.superseded_at),
+                _dt(env.cancelled_at),
+            ),
+        )
+
+    def _update_envelope(self, cur: sqlite3.Cursor, env: ExecutionEnvelope) -> None:
+        """Persist the MUTABLE surface only. Bounds are deliberately absent
+        from this UPDATE — the storage layer structurally cannot amend them
+        (ADR-009: amendment is by supersession, never in place)."""
+
+        cur.execute(
+            """UPDATE execution_envelopes SET status=?, remaining_quantity=?,
+               replaces_used=?, supersedes_id=?, superseded_by_id=?,
+               updated_at=?, approved_at=?, activated_at=?, frozen_at=?,
+               completed_at=?, expired_at=?, exhausted_at=?, breached_at=?,
+               superseded_at=?, cancelled_at=?
+               WHERE id=?""",
+            (
+                env.status.value,
+                env.remaining_quantity,
+                env.replaces_used,
+                env.supersedes_id,
+                env.superseded_by_id,
+                _dt(env.updated_at),
+                _dt(env.approved_at),
+                _dt(env.activated_at),
+                _dt(env.frozen_at),
+                _dt(env.completed_at),
+                _dt(env.expired_at),
+                _dt(env.exhausted_at),
+                _dt(env.breached_at),
+                _dt(env.superseded_at),
+                _dt(env.cancelled_at),
+                env.id,
+            ),
+        )
+
     def _order_needs_review_locked(self, order_id: str) -> bool:
         """X-003: whether ``order_id`` currently carries an OPEN
         ``needs_review`` broker-submit recovery record (D-017). See
@@ -1564,6 +1777,271 @@ class SqliteStateStore(StateStore):
         key = normalize_symbol(symbol)
         async with self._lock:
             return self._active_sell_intent_locked(key)
+
+    # ------------------------------------------------------------------ #
+    # Execution envelopes (ADR-009 / WO-0016)
+    # ------------------------------------------------------------------ #
+    def _other_active_envelope_locked(
+        self, cur: sqlite3.Cursor, sell_intent_id: str, *, excluding: str
+    ) -> Optional[str]:
+        """Id of any OTHER envelope of this intent currently ACTIVE (the
+        explicit twin of the idx_envelopes_one_active partial unique index,
+        checked first for a clean domain error instead of an IntegrityError)."""
+
+        row = cur.execute(
+            "SELECT id FROM execution_envelopes WHERE sell_intent_id = ? "
+            "AND status = ? AND id != ? LIMIT 1",
+            (sell_intent_id, EnvelopeStatus.ACTIVE.value, excluding),
+        ).fetchone()
+        return row["id"] if row is not None else None
+
+    def _apply_envelope_transition_locked(
+        self, cur: sqlite3.Cursor, plan: EnvelopeTransitionPlan
+    ) -> ExecutionEnvelope:
+        """Persist an APPLY-outcome transition plan on an open ``_tx`` cursor.
+        The caller has already dispatched NOOP/REJECT and run the
+        single-ACTIVE check where the target is ACTIVE."""
+
+        assert plan.envelope is not None
+        assert plan.execution_event is not None and plan.audit_event is not None
+        self._update_envelope(cur, plan.envelope)
+        self._insert_execution_event(cur, plan.execution_event)
+        self._insert_event(
+            cur, plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+        )
+        return plan.envelope
+
+    async def create_envelope(
+        self,
+        envelope: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        bad = envelope_draft_reason(envelope)
+        if bad is not None:
+            raise InvalidOrderError(bad)
+        key = normalize_symbol(envelope.symbol)
+        async with self._lock:
+            with self._tx() as cur:
+                existing = cur.execute(
+                    "SELECT 1 FROM execution_envelopes WHERE id = ?",
+                    (envelope.id,),
+                ).fetchone()
+                if existing is not None:
+                    raise InvalidOrderError(f"envelope {envelope.id} already exists")
+                stored = envelope.model_copy(update={"symbol": key})
+                self._insert_envelope(cur, stored)
+                self._insert_execution_event(
+                    cur, envelope_created_event(stored, actor=actor)
+                )
+                self._insert_event(
+                    cur,
+                    "envelope_created",
+                    message=f"execution envelope created for {key}",
+                    symbol=key,
+                    session_id=stored.session_id,
+                    correlation_id=stored.sell_intent_id,
+                    payload={"actor": actor, "envelope_id": stored.id},
+                )
+                return stored
+
+    async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM execution_envelopes WHERE id = ?", (envelope_id,)
+            )
+            return self._envelope(row) if row is not None else None
+
+    async def list_envelopes(
+        self,
+        *,
+        sell_intent_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        status: Optional[EnvelopeStatus] = None,
+    ) -> list[ExecutionEnvelope]:
+        if status is not None:
+            require_status_enum(status, EnvelopeStatus, field="status filter")
+        sql = "SELECT * FROM execution_envelopes WHERE 1=1"
+        params: list[Any] = []
+        if sell_intent_id is not None:
+            sql += " AND sell_intent_id = ?"
+            params.append(sell_intent_id)
+        if symbol is not None:
+            sql += " AND symbol = ?"
+            params.append(normalize_symbol(symbol))
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status.value)
+        async with self._lock:
+            rows = self._read_all(sql, tuple(params))
+            return [self._envelope(r) for r in rows]
+
+    async def transition_envelope(
+        self,
+        envelope_id: str,
+        new_status: EnvelopeStatus,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        require_status_enum(new_status, EnvelopeStatus, field="new_status")
+        async with self._lock:
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {envelope_id} not found")
+                env = self._envelope(row)
+                plan = plan_envelope_transition(
+                    env, new_status, actor=actor, reason=reason
+                )
+                if plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                    assert plan.error is not None
+                    raise plan.error
+                if plan.outcome == ENVELOPE_TRANSITION_NOOP:
+                    return env
+                if new_status is EnvelopeStatus.ACTIVE:
+                    clash = self._other_active_envelope_locked(
+                        cur, env.sell_intent_id, excluding=env.id
+                    )
+                    if clash is not None:
+                        raise EnvelopeTransitionError(
+                            f"envelope {clash} is already ACTIVE for intent "
+                            f"{env.sell_intent_id} (single-ACTIVE invariant)"
+                        )
+                stored = self._apply_envelope_transition_locked(cur, plan)
+                # A freeze is never exited by a fill: an envelope fully filled
+                # while FROZEN completes HERE, on resume, atomically with it.
+                if (
+                    stored.status is EnvelopeStatus.ACTIVE
+                    and (stored.remaining_quantity or 0) == 0
+                ):
+                    chain = plan_envelope_transition(
+                        stored,
+                        EnvelopeStatus.COMPLETED,
+                        actor="engine",
+                        reason="fully filled while frozen; completed on resume",
+                    )
+                    assert chain.outcome == ENVELOPE_TRANSITION_APPLY
+                    stored = self._apply_envelope_transition_locked(cur, chain)
+                return stored
+
+    async def supersede_envelope(
+        self,
+        old_envelope_id: str,
+        successor: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        async with self._lock:
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (old_envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {old_envelope_id} not found")
+                old = self._envelope(row)
+                dup = cur.execute(
+                    "SELECT 1 FROM execution_envelopes WHERE id = ?",
+                    (successor.id,),
+                ).fetchone()
+                if dup is not None:
+                    raise InvalidOrderError(
+                        f"successor envelope {successor.id} already exists"
+                    )
+                normalized = successor.model_copy(
+                    update={"symbol": normalize_symbol(successor.symbol)}
+                )
+                plan = plan_supersede_envelope(
+                    old, normalized, actor=actor, reason=reason
+                )
+                if plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                    assert plan.error is not None
+                    raise plan.error
+                assert plan.old_envelope is not None and plan.new_envelope is not None
+                clash = self._other_active_envelope_locked(
+                    cur, old.sell_intent_id, excluding=old.id
+                )
+                if clash is not None:
+                    raise EnvelopeTransitionError(
+                        f"envelope {clash} is already ACTIVE for intent "
+                        f"{old.sell_intent_id} (single-ACTIVE invariant)"
+                    )
+                # One atomic unit: A leaves ACTIVE and B enters it in the same
+                # transaction — no two-ACTIVE window, and a concurrent second
+                # supersede loses at "old is no longer ACTIVE".
+                self._update_envelope(cur, plan.old_envelope)
+                self._insert_envelope(cur, plan.new_envelope)
+                for event in plan.execution_events:
+                    self._insert_execution_event(cur, event)
+                assert plan.audit_event is not None
+                self._insert_event(
+                    cur,
+                    plan.audit_event.event_type,
+                    **plan.audit_event.as_kwargs(),
+                )
+                return plan.new_envelope
+
+    async def record_envelope_fill(
+        self,
+        envelope_id: str,
+        *,
+        quantity: int,
+        dedupe_key: str,
+        price: Optional[float] = None,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        ts_event: Optional[datetime] = None,
+        source: EventSource = EventSource.BROKER_REST,
+        authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    ) -> ExecutionEnvelope:
+        """Apply one deduped fill fact — the ONLY remaining_quantity writer.
+        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
+        that fill was already counted (exactly-once, INV-5)."""
+
+        async with self._lock:
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {envelope_id} not found")
+                env = self._envelope(row)
+                plan = plan_envelope_fill(
+                    env,
+                    quantity=quantity,
+                    dedupe_key=dedupe_key,
+                    price=price,
+                    order_id=order_id,
+                    session_id=session_id,
+                    ts_event=ts_event,
+                    source=source,
+                    authority=authority,
+                )
+                if plan.outcome == ENVELOPE_FILL_REJECT:
+                    assert plan.error is not None
+                    raise plan.error
+                assert plan.envelope is not None and plan.fill_event is not None
+                already = cur.execute(
+                    "SELECT 1 FROM execution_events WHERE dedupe_key = ?",
+                    (dedupe_key,),
+                ).fetchone()
+                if already is not None:
+                    return env
+                self._insert_execution_event(cur, plan.fill_event)
+                self._update_envelope(cur, plan.envelope)
+                stored = plan.envelope
+                if plan.transition is not None:
+                    assert plan.transition.outcome == ENVELOPE_TRANSITION_APPLY
+                    stored = self._apply_envelope_transition_locked(
+                        cur, plan.transition
+                    )
+                return stored
 
     def _dispatch_order_for_sell_intent_locked(
         self,
@@ -2986,9 +3464,9 @@ class SqliteStateStore(StateStore):
             """INSERT INTO execution_events
                (id, sequence, schema_version, event_type, source,
                 authority, dedupe_key, ts_event, ts_init, symbol, side,
-                quantity, price, order_id, primary_id, spawn_id,
+                quantity, price, order_id, envelope_id, primary_id, spawn_id,
                 session_id, correlation_id, payload)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 stored.id,
                 stored.sequence,
@@ -3004,6 +3482,7 @@ class SqliteStateStore(StateStore):
                 stored.quantity,
                 stored.price,
                 stored.order_id,
+                stored.envelope_id,
                 stored.primary_id,
                 stored.spawn_id,
                 stored.session_id,

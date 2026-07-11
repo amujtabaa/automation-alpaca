@@ -60,6 +60,15 @@ auto-resumed). **Amendment is by supersession only**: bounds never mutate in pla
 new envelope through the approval gate, the old one → `SUPERSEDED` (idempotent, mirroring the
 candidate approval pattern).
 
+**Pre-activation escape edges (amended 2026-07-11 at the WO-0016 gate, decided by Ameen):**
+`PENDING → { CANCELLED | EXPIRED }` and `APPROVED → { CANCELLED | EXPIRED }`. As drafted, a
+never-activated envelope had no exit — an approved-but-unused mandate would sit APPROVED forever
+and a stale proposal could not be withdrawn. Operator withdrawal (`CANCELLED`) and TTL lapse
+(`EXPIRED`) are both real before activation; the edges mirror the candidate/sell-intent
+lifecycle (`PENDING → REJECTED/EXPIRED`, `APPROVED → EXPIRED` self-heal). Pre-activation
+**supersession stays illegal**: amending an envelope that never ran is just cancel + create new —
+no continuity worth linking.
+
 ### 4. Precedence and TradingState interactions
 
 - **Kill switch** blocks new order intent (invariant 10); a replace **is** new order intent. Kill
@@ -88,6 +97,16 @@ submit/reprice/resize/cancel, the clamped params, and the snapshot fingerprint),
 `envelope_breached`, `envelope_exhausted`, `envelope_expired` (+ chosen disposition),
 `envelope_frozen`/`envelope_resumed`, `envelope_superseded`, `envelope_plan_divergence`. Every
 autonomous decision is replayable from the log.
+
+**Amended 2026-07-11 (WO-0016 gate):** `envelope_activated`, `envelope_completed`, and
+`envelope_cancelled` added to the family. As drafted, the §3 machine's `APPROVED → ACTIVE`,
+`→ COMPLETED`, and `→ CANCELLED` transitions had no event — the status machine was not
+reconstructable from the log, contradicting this section's own replayability requirement. All
+lifecycle events are `ENGINE`/`LOCAL` (engine decisions, per ADR-008 convention) with the
+commanding actor stamped in the payload; envelope FILL facts remain broker-authoritative.
+`ExecutionEvent` also gains an additive nullable `envelope_id` correlation column (no
+`EXECUTION_EVENT_SCHEMA_VERSION` bump — the version marks incompatible shape changes; old
+events replay unchanged with `envelope_id = NULL`).
 
 ### 7. Disposition of the LASE v1 code
 

@@ -448,6 +448,59 @@ partial migration from regressing.
 *Pinned by:* the `api-routes-reach-backend-only-via-facade` contract
 (`test_all_import_contracts_hold`).
 
+## Execution envelopes (ADR-009 / WO-0016)
+
+**INV-076 — An envelope's remaining quantity is decremented ONLY by deduped
+fill events.** `ExecutionEnvelope.remaining_quantity` starts at `qty_ceiling`
+and moves only through `record_envelope_fill` (both stores), which appends the
+FILL `ExecutionEvent` through the dedupe-aware writer and applies the decrement
+ONLY when the append actually wrote a new event — a replayed `dedupe_key` is
+counted exactly once. No other store operation touches the field; submitted/
+ack-shaped facts structurally cannot (the sell-side analogue of invariants 8/9).
+*Why:* the qty ceiling is the hard scope rail of the human's mandate (ADR-009
+§2); if anything but a fill fact could move it, the envelope could under- or
+over-report how much of the mandate is spent.
+*Pinned by:* `tests/test_wo0016_envelope_fills.py`
+(`test_duplicate_fill_is_counted_exactly_once`,
+`test_transitions_and_raw_event_appends_cannot_move_remaining`).
+
+**INV-077 — At most ONE envelope per sell intent is ACTIVE, with no observable
+two-ACTIVE window.** Activation checks the intent's other envelopes under the
+same lock/transaction that writes the status (in-memory: under-lock scan;
+SQLite: explicit check + the `idx_envelopes_one_active` partial unique index as
+a structural backstop). Amendment-by-supersession swaps ACTIVE inside one
+atomic unit, and concurrent supersedes of the same envelope yield exactly one
+ACTIVE successor.
+*Why:* two live mandates for one intent means two executors repricing the same
+position — double exposure the human approved once.
+*Pinned by:* `tests/test_wo0016_envelope_supersede.py`
+(`test_concurrent_supersedes_yield_exactly_one_active_successor`,
+`test_second_activation_for_same_intent_is_blocked`).
+
+**INV-078 — Envelope bounds never mutate in place; amendment is by
+supersession only.** The model validates bounds at construction; neither store
+exposes a bound-update operation (the SQLite `UPDATE` lists only status/
+counters/linkage/timestamps — bounds are structurally absent), and the
+supersede operation links predecessor and successor both ways.
+*Why:* the bounds ARE the human approval (ADR-009 §1); mutable bounds would
+let post-approval drift silently widen a mandate.
+*Pinned by:* `tests/test_wo0016_envelope_model.py` (construction rails) +
+`tests/test_wo0016_envelope_supersede.py`
+(`test_supersede_swaps_active_atomically_and_links_both`).
+
+**INV-079 — BREACHED and EXHAUSTED are terminal-pending-human, and a freeze is
+never exited by a fill.** Neither status has an outgoing edge
+(`ENVELOPE_TRANSITIONS`); a breached/exhausted mandate resumes only as a NEW
+envelope through the approval gate. A fill landing on a FROZEN envelope is
+recorded and decremented (facts are never hidden) but the envelope stays
+FROZEN; completion at remaining==0 happens on RESUME, atomically with it.
+*Why:* quarantine posture (ADR-001/ADR-009 §3): an envelope stopped for a
+human, or by the kill switch, must never silently resume through a data event.
+*Pinned by:* `tests/test_wo0016_envelope_transitions.py` (matrix: terminal
+rows empty) + `tests/test_wo0016_envelope_fills.py`
+(`test_fill_while_frozen_decrements_but_never_unfreezes`,
+`test_overfill_of_the_hard_ceiling_breaches`).
+
 ---
 
 ## Superseded / historical

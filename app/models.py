@@ -165,6 +165,46 @@ class SellIntentStatus(str, Enum):
     ORDERED = "ordered"
 
 
+class EnvelopeStatus(str, Enum):
+    """Execution-envelope lifecycle (ADR-009 §3).
+
+    ``BREACHED`` and ``EXHAUSTED`` are terminal-pending-human — quarantine-
+    flavored: recorded, never hidden, never auto-resumed. Amendment is by
+    supersession only (``SUPERSEDED``); bounds never mutate in place. The
+    pre-activation escape edges (``PENDING/APPROVED -> CANCELLED/EXPIRED``)
+    were amended into §3 on 2026-07-11 at the WO-0016 gate.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    ACTIVE = "active"
+    FROZEN = "frozen"  # kill switch / Halted — resumable, not terminal
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+    EXHAUSTED = "exhausted"  # cancel/replace budget spent — terminal-pending-human
+    BREACHED = "breached"  # hard-rail violation attempt — terminal-pending-human
+    SUPERSEDED = "superseded"  # amended: replaced by a successor envelope
+    CANCELLED = "cancelled"
+
+
+class EnvelopeExpiryDisposition(str, Enum):
+    """Mandatory approval-time choice: what happens to the working order when
+    the envelope's TTL lapses (ADR-009 §2 — a hard rail; solves the stuck
+    protective LIMIT by construction)."""
+
+    CANCEL_AND_RETURN = "cancel_and_return"
+    REST_AT_FLOOR = "rest_at_floor"
+
+
+class EnvelopeStaleDataDisposition(str, Enum):
+    """Mandatory approval-time choice: what happens on stale/NaN/out-of-range
+    market data. The policy always stops repricing (fail-closed per the safety
+    rails); this only decides the resting order's fate."""
+
+    LEAVE_RESTING = "leave_resting"
+    CANCEL = "cancel"
+
+
 class OrderStatus(str, Enum):
     """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6).
 
@@ -399,6 +439,28 @@ class ExecutionEventType(str, Enum):
     # and consumed on resolution; the global TradingState stays Halted throughout.
     EMERGENCY_REDUCE_OVERRIDE = "emergency_reduce_override"
     EMERGENCY_REDUCE_OVERRIDE_RESOLVED = "emergency_reduce_override_resolved"
+    # Execution-envelope family (ADR-009 §6, provenance per ADR-008). Lifecycle
+    # events carry `envelope_id` + the owning sell_intent_id as correlation_id;
+    # ENVELOPE_CREATED snapshots the full bound set in `payload` so every
+    # autonomous decision is replayable from the log. ENVELOPE_ACTIVATED /
+    # ENVELOPE_COMPLETED / ENVELOPE_CANCELLED were amended into §6 on 2026-07-11
+    # (WO-0016 gate): without them the status machine is not reconstructable
+    # from events — §6's own replayability requirement.
+    ENVELOPE_CREATED = "envelope_created"
+    ENVELOPE_APPROVED = "envelope_approved"
+    ENVELOPE_ACTIVATED = "envelope_activated"
+    ENVELOPE_ACTION = "envelope_action"  # executor submit/reprice/resize/cancel
+    ENVELOPE_COMPLETED = "envelope_completed"
+    ENVELOPE_BREACHED = "envelope_breached"
+    ENVELOPE_EXHAUSTED = "envelope_exhausted"
+    ENVELOPE_EXPIRED = "envelope_expired"  # payload carries the chosen disposition
+    ENVELOPE_FROZEN = "envelope_frozen"
+    ENVELOPE_RESUMED = "envelope_resumed"
+    ENVELOPE_SUPERSEDED = "envelope_superseded"
+    ENVELOPE_CANCELLED = "envelope_cancelled"
+    # Plan-time vs write-time validator disagreement (ADR-009 §5, D-3): a
+    # software-defect tripwire, distinct from ENVELOPE_BREACHED.
+    ENVELOPE_PLAN_DIVERGENCE = "envelope_plan_divergence"
 
 
 class EventSource(str, Enum):
@@ -566,6 +628,155 @@ class SellIntent(_Entity):
     rejected_at: Optional[datetime] = None
     expired_at: Optional[datetime] = None
     ordered_at: Optional[datetime] = None
+
+
+class ExecutionEnvelope(_Entity):
+    """A pre-approved execution mandate for one :class:`SellIntent` (ADR-009).
+
+    The human approves this bounded, immutable box of allowed venue behavior —
+    not each order. Every field is a *hard rail* (violation attempt →
+    ``BREACHED``) or a *soft bound* (policy output clamped + logged); see the
+    ADR-009 §2 table. Bounds are validated at construction and NEVER mutate —
+    no store exposes a bound-update path; amendment is a new envelope via
+    supersession. Only ``status``, ``remaining_quantity``, ``replaces_used``,
+    supersession linkage, and timestamps change after creation, each through
+    a dedicated audited store operation.
+
+    ``remaining_quantity`` is a read-model counter: it starts at
+    ``qty_ceiling`` and is decremented ONLY by deduped fill events
+    (``record_envelope_fill`` in both stores). Submission/ack paths
+    structurally cannot touch it — there is no API that does.
+    """
+
+    id: str = Field(default_factory=new_id)
+
+    # --- Scope (hard rails) ------------------------------------------------ #
+    sell_intent_id: str
+    symbol: str
+    side: OrderSide = OrderSide.SELL  # locked to SELL by validator
+    reduce_only: bool = True  # locked True by validator
+    qty_ceiling: int
+    remaining_quantity: Optional[int] = None  # defaults to qty_ceiling (validator)
+
+    # --- Price --------------------------------------------------------------#
+    # Hard: worst tolerated print; a submission below this is a breach, never
+    # a clamp.
+    floor_price: ResponseSafeRequiredFloat
+    # Soft: policy outputs are clamped into [min, max] and logged.
+    trail_distance_min: ResponseSafeRequiredFloat
+    trail_distance_max: ResponseSafeRequiredFloat
+    participation_rate_cap: ResponseSafeRequiredFloat  # soft, (0, 1]
+    aggressiveness: list[str]  # soft: allowed aggressiveness set
+
+    # --- Rate (hard rails) -------------------------------------------------- #
+    cooldown_floor_ms: int  # min ms between reprices
+    cancel_replace_budget: int  # lifetime budget; exhaustion → EXHAUSTED
+    replaces_used: int = 0  # read-model counter (engine seam increments)
+    max_outstanding_children: int = 1  # v1: 1
+
+    # --- Time / data (hard rails) -------------------------------------------#
+    expires_at: datetime  # TTL as an absolute deadline (injected-clock compares)
+    allowed_session_phases: list[SessionType]
+    expiry_disposition: EnvelopeExpiryDisposition
+    stale_data_disposition: EnvelopeStaleDataDisposition
+
+    # --- Lifecycle ----------------------------------------------------------#
+    status: EnvelopeStatus = EnvelopeStatus.PENDING
+    # Amendment-by-supersession linkage (both directions, set atomically by
+    # the store's supersede operation).
+    supersedes_id: Optional[str] = None
+    superseded_by_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    approved_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None  # most RECENT activation (resume restamps)
+    frozen_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    exhausted_at: Optional[datetime] = None
+    breached_at: Optional[datetime] = None
+    superseded_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def _hard_rails(self) -> "ExecutionEnvelope":
+        """Reject construction that violates any ADR-009 §2 rail. Soft bounds
+        still validate their *shape* — soft means clamped at runtime, not
+        malformed at rest. Raising here is the fail-closed safety rail: bad
+        data can never become an approved mandate."""
+
+        if not self.sell_intent_id:
+            raise ValueError("envelope requires an owning sell_intent_id")
+        if not self.symbol or not self.symbol.strip():
+            raise ValueError("envelope requires a symbol")
+        if self.side is not OrderSide.SELL:
+            raise ValueError("envelope side is locked to SELL (ADR-009 scope rail)")
+        if self.reduce_only is not True:
+            raise ValueError("envelope is reduce-only by construction (ADR-009)")
+        if self.qty_ceiling <= 0:
+            raise ValueError(f"qty_ceiling must be positive, got {self.qty_ceiling}")
+        if self.remaining_quantity is None:
+            self.remaining_quantity = self.qty_ceiling
+        if not 0 <= self.remaining_quantity <= self.qty_ceiling:
+            raise ValueError(
+                f"remaining_quantity {self.remaining_quantity} outside "
+                f"[0, {self.qty_ceiling}]"
+            )
+        if not math.isfinite(self.floor_price) or self.floor_price <= 0:
+            raise ValueError(
+                f"floor_price must be finite and > 0, got {self.floor_price}"
+            )
+        if (
+            not math.isfinite(self.trail_distance_min)
+            or not math.isfinite(self.trail_distance_max)
+            or self.trail_distance_min <= 0
+            or self.trail_distance_max < self.trail_distance_min
+        ):
+            raise ValueError(
+                "trail distance must be a finite range with "
+                f"0 < min <= max, got [{self.trail_distance_min}, "
+                f"{self.trail_distance_max}]"
+            )
+        if (
+            not math.isfinite(self.participation_rate_cap)
+            or not 0 < self.participation_rate_cap <= 1
+        ):
+            raise ValueError(
+                "participation_rate_cap must be in (0, 1], got "
+                f"{self.participation_rate_cap}"
+            )
+        if not self.aggressiveness or any(
+            not isinstance(a, str) or not a.strip() for a in self.aggressiveness
+        ):
+            raise ValueError("aggressiveness must be a non-empty set of names")
+        if self.cooldown_floor_ms <= 0:
+            raise ValueError(
+                f"cooldown_floor_ms must be positive, got {self.cooldown_floor_ms}"
+            )
+        if self.cancel_replace_budget <= 0:
+            raise ValueError(
+                "cancel_replace_budget must be positive, got "
+                f"{self.cancel_replace_budget}"
+            )
+        if not 0 <= self.replaces_used <= self.cancel_replace_budget:
+            raise ValueError(
+                f"replaces_used {self.replaces_used} outside "
+                f"[0, {self.cancel_replace_budget}]"
+            )
+        if self.max_outstanding_children < 1:
+            raise ValueError(
+                "max_outstanding_children must be >= 1, got "
+                f"{self.max_outstanding_children}"
+            )
+        if not self.allowed_session_phases:
+            raise ValueError("allowed_session_phases must be non-empty")
+        if self.supersedes_id == self.id and self.supersedes_id is not None:
+            raise ValueError("an envelope cannot supersede itself")
+        if self.superseded_by_id == self.id and self.superseded_by_id is not None:
+            raise ValueError("an envelope cannot be superseded by itself")
+        return self
 
 
 class Fill(_Entity):
@@ -762,6 +973,11 @@ class ExecutionEvent(_Entity):
     quantity: Optional[int] = None
     price: ResponseSafeFloat = None
     order_id: Optional[str] = None
+    # The execution envelope this event belongs to (ADR-009 §6). Additive and
+    # nullable — pre-envelope events simply have None, so replay of an existing
+    # log stays valid within EXECUTION_EVENT_SCHEMA_VERSION 1 (no bump: the
+    # version marks INCOMPATIBLE shape changes, models.py:~430).
+    envelope_id: Optional[str] = None
     # primary/spawn ids are the §4 durable-supervisor / venue-attempt handles;
     # unused in Phase 2 (no state machine emits them yet), declared for schema
     # stability so Phase 3 does not churn the envelope.
