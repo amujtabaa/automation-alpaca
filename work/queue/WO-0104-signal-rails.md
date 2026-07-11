@@ -39,6 +39,7 @@ allowed_paths:
   - app/models.py
   - app/store/**
   - app/api/**                       # release route — human-gated action
+  - cockpit/**                       # producer-quarantine RELEASE control only (browser-first: the required human action needs a browser path)
   - .importlinter                    # if the release route is a new module: add it to contract 5
   - tests/**
 ```
@@ -59,6 +60,8 @@ forbidden_paths:
 - [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test).
 - [ ] Post-quarantine backpressure (ADR-009 rails; Codex PR #5 P2): ingress from a quarantined producer is boundary-rejected with coalesced audit, no per-request event appends — event log bounded under sustained post-quarantine flood (test).
 - [ ] The release route is **operator-only** (same credential split as WO-0103); a producer API key cannot release its own quarantine (negative test).
+- [ ] **Release is reachable from the browser** (Codex PR #5 round-6 P2, invariant 11): the cockpit gains a producer-quarantine release control (on WO-0103's signal panel if it exists, else a minimal standalone control) issuing the release intent via the typed API client — the required human action must not be raw-API-only. Thin-client rules apply (no signal state owned client-side; contract 2 stays green).
+- [ ] WO-0102's interim ingest ceiling is replaced by the full rails **in this change** — never removed before them.
 
 ## Required tests
 
