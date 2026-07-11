@@ -29,6 +29,10 @@ Read only these first:
 - `pkl/architecture/sellside-research-notes.md` — the distilled mechanism research (authoritative
   for the classifier/trail design below; do not re-derive from external sources)
 - LASE design docs `00/01/02/05` (intent; the `code/` files are reference-to-delete)
+  — **anchor divergence (2026-07-11, implementation seat):** the LASE package was never
+  placed in this environment; design derived from ADR-009 §1/§2/D-4 + the research notes
+  (which the final drop made authoritative anyway). If the docs later surface and diverge,
+  that is WO-0022 / W4 input, not silent adaptation.
 - `app/marketdata/service.py` — `MarketSnapshot` shape; staleness/finiteness semantics
 - `app/models.py` — envelope model from WO-0016
 - import-linter contracts (new package needs a contract entry — see Notes)
@@ -39,7 +43,8 @@ Read only these first:
 allowed_paths:
   - app/sellside/**        # new package
   - tests/**
-  - pyproject.toml         # import-linter contract addition ONLY
+  - .importlinter          # import-linter contract addition ONLY (divergence note: the
+                           # contracts live in .importlinter, not pyproject.toml as drafted)
 ```
 
 ## Forbidden paths
