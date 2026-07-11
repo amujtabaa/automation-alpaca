@@ -49,6 +49,17 @@ forbidden_paths:
 
 ## Scenario catalog (each becomes ≥1 named test; extend, don't trim)
 
+Regime scenario tapes (synthetic snapshot sequences; each asserts the WO-0018 regime→trail
+mapping end-to-end and grades the exit with the W4 five-metric scorer where available):
+- [ ] Vertical spike then instant crash ⇒ FAST_SPIKE one-bar trail exits near peak.
+- [ ] 5–10 minute grinder with shallow wiggles ⇒ ratchet holds through noise, no shakeout.
+- [ ] Trend-then-pullback (8 min up, pull to VWAP, resume) ⇒ tranche taken into strength;
+      remainder survives the pullback; ratchet monotone throughout.
+- [ ] Fakeout pump (thin-volume spike, expanding-volume fade) ⇒ pullback discrimination +
+      quantile flag tighten immediately; exit above floor.
+- [ ] Stall/fade into session close ⇒ urgency ramp + Recovery tightening, trail-floor respected.
+- [ ] Halt-resume gap (quote gap far below working stop) ⇒ no below-floor submit; disposition path.
+
 Thin-market dynamics:
 - [ ] Spread blows out past soft-bound widening range mid-envelope ⇒ clamped, logged, no breach.
 - [ ] Quote gaps below floor in one tick ⇒ no submit below floor; stale/valid variants.

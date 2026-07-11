@@ -21,8 +21,10 @@ CLAUDE.md's safety core binds inside every task. This prompt is your standing wo
 
 1. `git status && git log --oneline -3` — confirm clean tree; confirm you are on the current dev
    tip (`claude/fable-mode-os-install-1dlyk8` or its merged successor). If dirty or ambiguous: STOP.
-2. Unpack the planning drop: the human has placed `lase-envelope-wave-W3.zip` at repo root (ask if
-   absent). `unzip -o lase-envelope-wave-W3.zip && rm lase-envelope-wave-W3.zip`.
+2. Locate the planning drop: either its files are already at repo root (check for
+   `START_HERE.md` + `docs/adr/ADR-009-execution-envelope.md`) or the human placed
+   `lase-envelope-wave-W3.zip` at repo root (`unzip -o` it, then remove the zip). Neither
+   present: ask the human.
 3. `git checkout -b feat/execution-envelope && git add docs work && git commit -m "W3: ADR-009 (Proposed) + WO-0016..0022 planning drop"`
    — the pinned in-repo spec, first commit on the integration branch.
 4. Baseline gate on this tip: `ruff check . && ruff format --check . && mypy && lint-imports && pytest -q`
@@ -40,7 +42,8 @@ CLAUDE.md's safety core binds inside every task. This prompt is your standing wo
 For each WO in order 0016 → (0017 ∥ 0018) → 0019 → 0020 → 0021:
 
 1. `git checkout -b feat/execution-envelope/wo-00XX feat/execution-envelope`
-2. Read ONLY the WO's context packet. Post the FABLE gate block restating goal/done_when.
+2. Read ONLY the WO's context packet (for WO-0018 this includes
+   `pkl/architecture/sellside-research-notes.md`). Post the FABLE gate block restating goal/done_when.
 3. Gated WO → STOP for approval (see agreement). Non-gated → proceed.
 4. TDD per Fable; respect allowed/forbidden paths as hard scope; out-of-scope observations go to
    the state file's deferred log, never fixed.
