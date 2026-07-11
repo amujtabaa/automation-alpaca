@@ -44,6 +44,7 @@ allowed_paths:
   - app/store/**                     # signal store, both paths
   - app/features.py                  # feature flag (default off)
   - app/config.py
+  - .importlinter                    # REQUIRED: add routes_signals to contract 5 source_modules
   - tests/**                         # new signal tests only
 ```
 
@@ -61,6 +62,8 @@ forbidden_paths:
 ## Required behavior
 
 - [ ] TDD per Fable: failing tests first for accept / dedupe / malformed→quarantine / auth-reject; both in-memory and SQLite paths.
+- [ ] Dedupe keys on **`(producer_id, signal_id)`**, never bare `signal_id` (ADR-009 §Contract 2): the same `signal_id` from two different producers is two distinct signals — cross-producer duplicate-id test required (Codex PR #5 P2).
+- [ ] `app.api.routes_signals` added to `.importlinter` contract 5 `source_modules` in the same change — contract 5 enumerates route modules explicitly, so a new route is NOT gated until listed; `lint-imports` must show the new module covered (Codex PR #5 P1).
 - [ ] Event-log truth: signals reconstructable purely from events (replay test).
 - [ ] Flag off ⇒ endpoint absent/404; proven by test.
 

@@ -43,6 +43,7 @@ allowed_paths:
   - app/approval/**                  # …or here, per spec — one of the two, not both
   - app/events/**                    # SIGNAL_APPROVED/REJECTED events
   - app/store/**
+  - .importlinter                    # if the approval route is a new module: add it to contract 5
   - tests/**
 ```
 

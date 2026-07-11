@@ -39,6 +39,7 @@ allowed_paths:
   - app/models.py
   - app/store/**
   - app/api/**                       # release route — human-gated action
+  - .importlinter                    # if the release route is a new module: add it to contract 5
   - tests/**
 ```
 
