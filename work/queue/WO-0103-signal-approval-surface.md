@@ -58,7 +58,8 @@ forbidden_paths:
 ## Required behavior
 
 - [ ] UI owns no signal state (code-review criterion + no direct store imports; import-linter contract 2 enforced — cockpit imports no `app.*`).
-- [ ] Approve/reject routes are **operator-only** (ADR-009 §Contract 1 role separation): authenticated by a distinct operator credential, not the `X-Actor` audit label; a producer API key calling approve/reject gets 401/403 (negative test) — a producer must never be able to convert its own signal (Codex PR #5 P1).
+- [ ] Approve/reject routes are **operator-only** (ADR-009 §Contract 1 role separation): authenticated by a distinct operator credential, not the `X-Actor` audit label; a producer API key calling approve/reject gets 401/403 (negative test), and so does an unauthenticated request (Codex PR #5 P1 + round-4 P1) — a producer must never be able to convert its own signal, with or without its key.
+- [ ] **Order sizing/pricing comes from the approval payload, never the proposal** (ADR-009, Codex round-4 P1): the dispatched order's quantity and limit price are the operator-confirmed values captured at approval; test proves a producer's `suggested` sizing differs from the operator's values and the order carries the operator's.
 - [ ] Conversion blocked in `Halted` (test), restricted to risk-reducing in `Reducing` (test), blocked by kill switch (test), both storage paths.
 - [ ] **Positive path (human decision, ADR-009 INV-7 row):** a genuine protective sell IS convertible in `Reducing` (test) — the classification must not silently block real exits; a blocked conversion in `Reducing` must be operator-visible, never silent.
 - [ ] **Sell-direction conversion uses the origin WO-0101 specifies** (e.g. `SellReason.SIGNAL` on the `SellIntent` machinery) — never misrouted through the buy path or `manual_flatten` (Codex PR #5 round-3 P1); the `Reducing` protective-sell test exercises this real sell route end-to-end, both stores.
