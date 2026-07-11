@@ -42,6 +42,7 @@ allowed_paths:
   - app/facade/**                    # conversion, per WO-0101 spec…
   - app/approval/**                  # …or here, per spec — one of the two, not both
   - app/events/**                    # SIGNAL_APPROVED/REJECTED events
+  - app/models.py                    # signal sell origin (e.g. SellReason.SIGNAL), per WO-0101 spec
   - app/store/**
   - .importlinter                    # if the approval route is a new module: add it to contract 5
   - tests/**
@@ -60,6 +61,7 @@ forbidden_paths:
 - [ ] Approve/reject routes are **operator-only** (ADR-009 §Contract 1 role separation): authenticated by a distinct operator credential, not the `X-Actor` audit label; a producer API key calling approve/reject gets 401/403 (negative test) — a producer must never be able to convert its own signal (Codex PR #5 P1).
 - [ ] Conversion blocked in `Halted` (test), restricted to risk-reducing in `Reducing` (test), blocked by kill switch (test), both storage paths.
 - [ ] **Positive path (human decision, ADR-009 INV-7 row):** a genuine protective sell IS convertible in `Reducing` (test) — the classification must not silently block real exits; a blocked conversion in `Reducing` must be operator-visible, never silent.
+- [ ] **Sell-direction conversion uses the origin WO-0101 specifies** (e.g. `SellReason.SIGNAL` on the `SellIntent` machinery) — never misrouted through the buy path or `manual_flatten` (Codex PR #5 round-3 P1); the `Reducing` protective-sell test exercises this real sell route end-to-end, both stores.
 - [ ] Approving twice is idempotent (test). Expired signal unapprovable (test).
 
 ## Required tests

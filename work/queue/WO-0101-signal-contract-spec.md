@@ -53,6 +53,7 @@ forbidden_paths:
 ## Required behavior
 
 - [ ] Spec documents exist covering: schema (all fields typed, deterministic `signal_id` dedupe rule), lifecycle state machine (RECEIVED→QUARANTINED|EXPIRED|REJECTED|APPROVED), TTL/staleness rules, rate-limit policy, kill-switch/Halted/Reducing interaction table.
+- [ ] The **conversion path is defined per direction** (Codex PR #5 round-3 P1): buy-direction signals convert through the candidate/approval order origin; sell-direction signals get an explicitly specified origin on the existing `SellIntent` machinery (e.g. a new `SellReason.SIGNAL`), routing through the same session-control/risk/kill-switch gates — the as-built `SellReason` vocabulary is only `manual_flatten`/`protection_floor`, so the spec must define this, not assume it.
 - [ ] The **risk-reducing classification** (which signals are convertible in `Reducing`) is explicitly defined, honoring the recorded human decision in ADR-009's INV-7 row: the false-negative (a genuine protective sell classified not-risk-reducing → exit silently blocked) has no downstream backstop and is the worse error class — spec the classification conservatively toward convertibility, with the quantity-aware risk gate as the binding check.
 - [ ] Every one of the 11 CLAUDE.md invariants + INV-1..9 has an explicit preservation note.
 - [ ] A third party could implement WO-0102 from the spec alone.

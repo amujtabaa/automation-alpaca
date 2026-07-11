@@ -64,6 +64,7 @@ forbidden_paths:
 
 - [ ] TDD per Fable: failing tests first for accept / dedupe / malformed→quarantine / auth-reject; both in-memory and SQLite paths.
 - [ ] Dedupe keys on **`(producer_id, signal_id)`**, never bare `signal_id` (ADR-009 §Contract 2): the same `signal_id` from two different producers is two distinct signals — cross-producer duplicate-id test required (Codex PR #5 P2).
+- [ ] **`producer_id` derived from the authenticated API key, never trusted from the body** (ADR-009 §Contract 1 identity binding); body/credential mismatch rejected at the boundary — mismatch tests for dedupe and rate-limit/quarantine accounting (Codex PR #5 round-3 P1).
 - [ ] `app.api.routes_signals` added to `.importlinter` contract 5 `source_modules` in the same change — contract 5 enumerates route modules explicitly, so a new route is NOT gated until listed; `lint-imports` must show the new module covered (Codex PR #5 P1).
 - [ ] Router mounted in `create_app` (`app/main.py`) behind the feature flag — the flag-off⇒404 test is only meaningful against the real mount path; route-registration test included (Codex PR #5 P1).
 - [ ] Producer API keys are **ingestion-scoped** (ADR-009 §Contract 1 role separation): valid for `POST /signals` only; a producer credential is rejected by every other command route (negative test).
