@@ -46,26 +46,26 @@ def test_budget_refills_continuously_on_forward_time():
     b = ReconcileQueryBudget(60)  # 1 token/sec
     for _ in range(60):
         assert b.try_consume(_at(0)) is True
-    assert b.try_consume(_at(0)) is False       # empty at t=0
-    assert b.try_consume(_at(1)) is True         # ~1 token refilled after 1s
-    assert b.try_consume(_at(1)) is False        # and only one
+    assert b.try_consume(_at(0)) is False  # empty at t=0
+    assert b.try_consume(_at(1)) is True  # ~1 token refilled after 1s
+    assert b.try_consume(_at(1)) is False  # and only one
 
 
 def test_budget_refill_caps_at_limit():
     b = ReconcileQueryBudget(10)
-    b.try_consume(_at(0))                         # 9 left
+    b.try_consume(_at(0))  # 9 left
     # A long gap refills, but never above the cap.
     assert b.try_consume(_at(3600)) is True
-    assert b.available == 9.0                     # capped at 10, then -1
+    assert b.available == 9.0  # capped at 10, then -1
 
 
 def test_budget_non_increasing_clock_never_over_credits():
     b = ReconcileQueryBudget(5)
-    assert b.try_consume(_at(10)) is True         # anchors _last at t=10
+    assert b.try_consume(_at(10)) is True  # anchors _last at t=10
     # A backwards timestamp must not refill or rewind the bucket.
     for _ in range(4):
-        assert b.try_consume(_at(5)) is True      # spends the remaining 4
-    assert b.try_consume(_at(5)) is False         # exhausted; backwards time gave nothing
+        assert b.try_consume(_at(5)) is True  # spends the remaining 4
+    assert b.try_consume(_at(5)) is False  # exhausted; backwards time gave nothing
     assert b.try_consume(_at(0)) is False
 
 
@@ -73,8 +73,8 @@ def test_budget_multi_token_consume():
     b = ReconcileQueryBudget(10)
     assert b.try_consume(_at(0), 4) is True
     assert b.available == 6.0
-    assert b.try_consume(_at(0), 7) is False      # not enough for 7
-    assert b.available == 6.0                      # a denied consume takes nothing
+    assert b.try_consume(_at(0), 7) is False  # not enough for 7
+    assert b.available == 6.0  # a denied consume takes nothing
 
 
 def test_budget_rejects_bad_args():
@@ -96,12 +96,14 @@ def test_budget_grants_bounded_by_tokens_ever_available():
     granted = denied = 0
     t = 0.0
     for step in range(500):
-        t += (step % 7) * 0.5  # non-decreasing, irregular cadence (some zero-gap bursts)
+        t += (
+            step % 7
+        ) * 0.5  # non-decreasing, irregular cadence (some zero-gap bursts)
         ok = b.try_consume(_at(t))
-        assert 0.0 <= b.available <= limit + 1e-9     # bucket bounds always hold
+        assert 0.0 <= b.available <= limit + 1e-9  # bucket bounds always hold
         granted += int(ok)
         denied += int(not ok)
-    max_possible = limit + (limit / 60.0) * t          # initial + total refill
+    max_possible = limit + (limit / 60.0) * t  # initial + total refill
     assert granted <= max_possible + 1e-6
     # The schedule outpaces the 20/min refill, so both branches are exercised.
     assert granted > 0 and denied > 0
@@ -113,8 +115,16 @@ def test_budget_grants_bounded_by_tokens_ever_available():
 def test_reconcile_config_defaults():
     s = cfg.Settings()
     assert s.reconciliation_enabled is True
-    assert s.reconcile_recent_threshold_ms == cfg.DEFAULT_RECONCILE_RECENT_THRESHOLD_MS == 5000
-    assert s.reconcile_avg_price_tolerance == cfg.DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE == 0.0001
+    assert (
+        s.reconcile_recent_threshold_ms
+        == cfg.DEFAULT_RECONCILE_RECENT_THRESHOLD_MS
+        == 5000
+    )
+    assert (
+        s.reconcile_avg_price_tolerance
+        == cfg.DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE
+        == 0.0001
+    )
     assert s.reconcile_open_check_missing_retries == 3
     assert s.reconcile_query_budget_per_min == 200
     assert s.reconcile_startup_delay_secs == 10.0

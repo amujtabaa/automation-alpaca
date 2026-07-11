@@ -92,7 +92,14 @@ async def test_late_fill_after_cancel_pending_wins_chaos_1():
     # Cancel requested (not yet broker-confirmed): order -> cancel_pending.
     await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
     # The broker fills it fully before confirming the cancel.
-    sim.script(bid, [BrokerOrderUpdate(OrderStatus.FILLED, 10, [BrokerFill("late", 10, 2.0, utcnow())])])
+    sim.script(
+        bid,
+        [
+            BrokerOrderUpdate(
+                OrderStatus.FILLED, 10, [BrokerFill("late", 10, 2.0, utcnow())]
+            )
+        ],
+    )
 
     await run_monitoring_tick(store, sim, _S)
 
@@ -108,7 +115,14 @@ async def test_status_disconnect_then_recover_never_crashes_and_applies_fill():
     order = await _submitted_order(store, sim, qty=10, limit=2.0)
     bid = order.broker_order_id
 
-    sim.script(bid, [BrokerOrderUpdate(OrderStatus.FILLED, 10, [BrokerFill("f1", 10, 2.0, utcnow())])])
+    sim.script(
+        bid,
+        [
+            BrokerOrderUpdate(
+                OrderStatus.FILLED, 10, [BrokerFill("f1", 10, 2.0, utcnow())]
+            )
+        ],
+    )
     sim.disconnect_status_for(2)  # next two status polls raise
 
     # Two ticks during the disconnect: the loop logs-and-continues, the order is
@@ -138,7 +152,9 @@ async def test_f001_kill_flip_mid_submit_still_submits():
 
     sim.set_on_submit(flip_kill)
 
-    cand = await store.create_candidate("AAPL", suggested_quantity=10, suggested_limit_price=2.0)
+    cand = await store.create_candidate(
+        "AAPL", suggested_quantity=10, suggested_limit_price=2.0
+    )
     await store.transition_candidate(cand.id, CandidateStatus.APPROVED)
     order = await store.create_order_for_candidate(cand.id)
 
@@ -167,7 +183,9 @@ async def test_f002_cancel_races_submit_records_and_recovers_orphan():
 
     sim.set_on_submit(cancel_mid_submit)
 
-    cand = await store.create_candidate("AAPL", suggested_quantity=10, suggested_limit_price=2.0)
+    cand = await store.create_candidate(
+        "AAPL", suggested_quantity=10, suggested_limit_price=2.0
+    )
     await store.transition_candidate(cand.id, CandidateStatus.APPROVED)
     order = await store.create_order_for_candidate(cand.id)
 
@@ -200,20 +218,31 @@ async def test_f002_orphan_with_partial_fill_flags_needs_review():
         await store.transition_order(order.id, OrderStatus.CANCELED)
 
     sim.set_on_submit(cancel_mid_submit)
-    cand = await store.create_candidate("AAPL", suggested_quantity=10, suggested_limit_price=2.0)
+    cand = await store.create_candidate(
+        "AAPL", suggested_quantity=10, suggested_limit_price=2.0
+    )
     await store.transition_candidate(cand.id, CandidateStatus.APPROVED)
     await store.create_order_for_candidate(cand.id)
 
     await _submit_pending_orders(store, sim)
     bid = (await store.list_submit_recoveries())[0].broker_order_id
     # The stranded broker order partially fills.
-    sim.script(bid, [BrokerOrderUpdate(OrderStatus.PARTIALLY_FILLED, 4, [BrokerFill("p", 4, 2.0, utcnow())])])
+    sim.script(
+        bid,
+        [
+            BrokerOrderUpdate(
+                OrderStatus.PARTIALLY_FILLED, 4, [BrokerFill("p", 4, 2.0, utcnow())]
+            )
+        ],
+    )
 
     await _recover_unpersisted_submits(store, sim)
 
     recs = await store.list_submit_recoveries()
     assert recs[0].cleanup_status == RECOVERY_NEEDS_REVIEW
-    assert len(await store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)) == 1  # still visible
+    assert (
+        len(await store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)) == 1
+    )  # still visible
     assert bid not in sim.canceled  # not cancelled-and-dropped
 
 

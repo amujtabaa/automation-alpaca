@@ -175,7 +175,10 @@ def quarantined_symbols(events: Iterable[ExecutionEvent]) -> set[str]:
     for symbol in symbols:
         position = Position(symbol=symbol)
         for event in events:
-            if event.event_type is not ExecutionEventType.FILL or event.symbol != symbol:
+            if (
+                event.event_type is not ExecutionEventType.FILL
+                or event.symbol != symbol
+            ):
                 continue
             position = apply_fill(position, _fill_from_event(event), allow_short=True)
             if position.quantity < 0:
@@ -223,7 +226,10 @@ def timeout_quarantined_order_ids(events: Iterable[ExecutionEvent]) -> set[str]:
 
     latest: dict[str, ExecutionEventType] = {}
     for event in events:
-        if event.event_type in _ORDER_LIFECYCLE_EVENT_TYPES and event.order_id is not None:
+        if (
+            event.event_type in _ORDER_LIFECYCLE_EVENT_TYPES
+            and event.order_id is not None
+        ):
             latest[event.order_id] = event.event_type
     return {
         order_id
@@ -305,7 +311,9 @@ def project_order_status(
             status = mapped
     if quantity is not None:
         filled = min(filled, quantity)
-    return OrderStatusProjection(order_id=order_id, status=status, filled_quantity=filled)
+    return OrderStatusProjection(
+        order_id=order_id, status=status, filled_quantity=filled
+    )
 
 
 # §8 severity ordering for composing independent TradingState drivers (wave 4f / R2):
@@ -326,7 +334,9 @@ def compose_trading_state(*states: TradingState) -> TradingState:
     still dominates a reconcile-driven Reducing, and a control change can't lift a
     Reducing that pending reconciliation still requires (R2)."""
 
-    return max(states, key=lambda s: _TRADING_STATE_RANK[s], default=TradingState.ACTIVE)
+    return max(
+        states, key=lambda s: _TRADING_STATE_RANK[s], default=TradingState.ACTIVE
+    )
 
 
 def _driver_trading_state(

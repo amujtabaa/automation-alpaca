@@ -103,7 +103,9 @@ class FakeMarketDataFeed(MarketDataService):
             bid=bid,
             ask=ask,
             volume=volume,
-            prev_close=prev_close if prev_close is not None else self._prev_closes.get(symbol),
+            prev_close=prev_close
+            if prev_close is not None
+            else self._prev_closes.get(symbol),
             updated_at=updated_at or utcnow(),
             stale=stale,
         )

@@ -47,7 +47,8 @@ async def test_append_fill_rejects_invalid_values(any_store, quantity, price):
     assert await any_store.list_fills(symbol="AAPL") == []
     assert (await any_store.get_position("AAPL")).quantity == 0
     rejects = [
-        e for e in await any_store.list_events()
+        e
+        for e in await any_store.list_events()
         if e.event_type == "fill_rejected_invalid"
     ]
     assert len(rejects) == 1
@@ -88,7 +89,8 @@ async def test_append_fill_cumulative_over_quantity_raises(any_store):
     assert len(await any_store.list_fills(symbol="AAPL")) == 1
     assert (await any_store.get_position("AAPL")).quantity == 60
     rejects = [
-        e for e in await any_store.list_events()
+        e
+        for e in await any_store.list_events()
         if e.event_type == "fill_rejected_invalid"
     ]
     assert len(rejects) == 1
@@ -112,7 +114,9 @@ async def test_duplicate_and_overfill_paths(any_store):
     assert (await any_store.get_position("AAPL")).quantity == 100
 
     # A broker overfill (SELL crossing flat) is now RECORDED + quarantined.
-    sell = await any_store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
+    sell = await any_store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.SELL, 200
+    )
     result = await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0)
     assert result.status == "appended"
     assert (await any_store.get_position("AAPL")).quantity == -50
@@ -125,7 +129,9 @@ async def test_duplicate_and_overfill_paths(any_store):
 async def test_create_order_unknown_candidate_raises(any_store):
     await any_store.initialize()
     with pytest.raises(UnknownEntityError):
-        await any_store.create_order_for_test("no-such-candidate", "AAPL", OrderSide.BUY, 10)
+        await any_store.create_order_for_test(
+            "no-such-candidate", "AAPL", OrderSide.BUY, 10
+        )
     assert await any_store.list_orders() == []
 
 
@@ -143,7 +149,9 @@ async def test_create_order_valid_candidate_any_status_succeeds(any_store):
     await any_store.initialize()
     candidate = await any_store.create_candidate("AAPL")
     assert candidate.status is CandidateStatus.PENDING
-    order = await any_store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await any_store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 10
+    )
     assert order.candidate_id == candidate.id
     assert order.symbol == "AAPL"
 
@@ -231,7 +239,9 @@ async def test_candidate_order_id_set_only_on_ordered(any_store):
     await any_store.initialize()
     candidate = await any_store.create_candidate("AAPL")
     await any_store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
-    order = await any_store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
+    order = await any_store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 10
+    )
     ordered = await any_store.transition_candidate(
         candidate.id, CandidateStatus.ORDERED, order_id=order.id
     )

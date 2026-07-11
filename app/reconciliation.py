@@ -56,14 +56,12 @@ OPEN_STATUSES = frozenset(
 # releases the reservation. FILLED/PARTIALLY_FILLED are deliberately excluded —
 # those must flow through a fill (with a real price), never a bare status flip.
 # (OrderStatus has no EXPIRED — that is a candidate/sell-intent status.)
-_NON_POSITION_TERMINALS = frozenset(
-    {OrderStatus.CANCELED, OrderStatus.REJECTED}
-)
+_NON_POSITION_TERMINALS = frozenset({OrderStatus.CANCELED, OrderStatus.REJECTED})
 
 # Default parity/threshold values (the §7 verified defaults also land in config.py in
 # wave 4e; these keep the pure engine usable + testable standalone).
 DEFAULT_RECENT_ORDER_THRESHOLD_MS = 5000  # open_check_threshold_ms (§7)
-DEFAULT_AVG_PRICE_TOLERANCE = 0.0001      # 0.01% (§7)
+DEFAULT_AVG_PRICE_TOLERANCE = 0.0001  # 0.01% (§7)
 
 
 class ReconcileQueryBudget:
@@ -236,7 +234,9 @@ class ReconciliationPlan:
     skipped_recent: list[str] = field(default_factory=list)
 
 
-def _price_tolerance_ok(local: Optional[float], broker: Optional[float], tol: float) -> bool:
+def _price_tolerance_ok(
+    local: Optional[float], broker: Optional[float], tol: float
+) -> bool:
     if local is None or broker is None:
         return local is None and broker is None
     if local == 0:
@@ -333,10 +333,7 @@ def plan_reconciliation(
 
         # A non-position-affecting terminal the local order hasn't caught up to
         # (cancel/reject/expire). FILLED is never resolved by a bare status flip.
-        if (
-            report.status in _NON_POSITION_TERMINALS
-            and order.status != report.status
-        ):
+        if report.status in _NON_POSITION_TERMINALS and order.status != report.status:
             plan.resolutions.append(
                 OrderResolution(
                     order_id=order.id,
@@ -383,17 +380,23 @@ def plan_reconciliation(
         if local_qty != broker_qty:
             plan.position_mismatches.append(
                 PositionMismatch(
-                    symbol=symbol, kind="quantity",
-                    local_quantity=local_qty, broker_quantity=broker_qty,
-                    local_avg=local_avg, broker_avg=broker_avg,
+                    symbol=symbol,
+                    kind="quantity",
+                    local_quantity=local_qty,
+                    broker_quantity=broker_qty,
+                    local_avg=local_avg,
+                    broker_avg=broker_avg,
                 )
             )
         elif not _price_tolerance_ok(local_avg, broker_avg, avg_price_tolerance):
             plan.position_mismatches.append(
                 PositionMismatch(
-                    symbol=symbol, kind="avg_price",
-                    local_quantity=local_qty, broker_quantity=broker_qty,
-                    local_avg=local_avg, broker_avg=broker_avg,
+                    symbol=symbol,
+                    kind="avg_price",
+                    local_quantity=local_qty,
+                    broker_quantity=broker_qty,
+                    local_avg=local_avg,
+                    broker_avg=broker_avg,
                 )
             )
 

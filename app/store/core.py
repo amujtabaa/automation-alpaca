@@ -128,9 +128,13 @@ class EventSpec:
 # ---- append_fill ---------------------------------------------------------- #
 
 # FillPlan.outcome values. The store dispatches on these:
-FILL_REJECT = "reject"        # write `event`; raise `error`
-FILL_DUPLICATE = "duplicate"  # write `event`; return a FillAppendResult("duplicate", None, event)
-FILL_APPEND = "append"        # atomically write `fill` (+dedup) and `event`; return "appended"
+FILL_REJECT = "reject"  # write `event`; raise `error`
+FILL_DUPLICATE = (
+    "duplicate"  # write `event`; return a FillAppendResult("duplicate", None, event)
+)
+FILL_APPEND = (
+    "append"  # atomically write `fill` (+dedup) and `event`; return "appended"
+)
 
 
 @dataclass(frozen=True)
@@ -376,8 +380,12 @@ def plan_append_fill(
             session_id=session_id,
         )
     return FillPlan(
-        FILL_APPEND, event, fill=fill,
-        execution_event=execution_event_for_fill(fill, source=source, authority=authority),
+        FILL_APPEND,
+        event,
+        fill=fill,
+        execution_event=execution_event_for_fill(
+            fill, source=source, authority=authority
+        ),
     )
 
 
@@ -508,7 +516,9 @@ def emergency_reduce_override_event(
 
 # CreateOrderPlan.outcome values:
 CREATE_ORDER_REJECT = "reject"  # write `reject_event` (block case only); raise `error`
-CREATE_ORDER_CREATE = "create"  # write `order` + candidate ORDERED transition + `events`
+CREATE_ORDER_CREATE = (
+    "create"  # write `order` + candidate ORDERED transition + `events`
+)
 
 
 @dataclass(frozen=True)
@@ -823,8 +833,7 @@ def plan_create_order_for_sell_intent(
         expire_event = EventSpec(
             "sell_intent_transition",
             message=(
-                f"sell intent approved -> expired (order dispatch rejected: "
-                f"{error})"
+                f"sell intent approved -> expired (order dispatch rejected: {error})"
             ),
             symbol=intent.symbol,
             payload={
@@ -918,10 +927,10 @@ def plan_create_order_for_sell_intent(
 # ---- flatten_position (X-001, atomic manual-flatten) ---------------------- #
 
 # FlattenPlan.outcome values:
-FLATTEN_FLAT = "flat"                                   # no open position
-FLATTEN_EXISTING = "existing"                           # return an existing intent as-is
-FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"    # stand down + create fresh
-FLATTEN_DENIED_HALTED = "denied_halted"                  # ADR-003: Halted, no override
+FLATTEN_FLAT = "flat"  # no open position
+FLATTEN_EXISTING = "existing"  # return an existing intent as-is
+FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"  # stand down + create fresh
+FLATTEN_DENIED_HALTED = "denied_halted"  # ADR-003: Halted, no override
 
 
 @dataclass(frozen=True)
@@ -1150,9 +1159,7 @@ def plan_flatten_position(
             target_quantity=position.quantity,
         )
 
-    return FlattenPlan(
-        FLATTEN_SUPERSEDE_AND_CREATE, target_quantity=position.quantity
-    )
+    return FlattenPlan(FLATTEN_SUPERSEDE_AND_CREATE, target_quantity=position.quantity)
 
 
 # ---- submit-recovery ledger (D-017) --------------------------------------- #
@@ -1171,9 +1178,7 @@ def require_recovery_status(value: str, *, field: str = "cleanup_status") -> Non
         )
 
 
-def recovery_status_event(
-    prev_status: str, new_status: Optional[str]
-) -> Optional[str]:
+def recovery_status_event(prev_status: str, new_status: Optional[str]) -> Optional[str]:
     """Validate a recovery ``cleanup_status`` transition and return the audit
     event type to write, or ``None`` when nothing should change (AIR-004).
 
@@ -1373,8 +1378,8 @@ def plan_claim_order_for_submission(
 
 # OrderTransitionPlan.outcome values:
 ORDER_TRANSITION_REJECT = "reject"  # raise `error`
-ORDER_TRANSITION_NOOP = "noop"      # nothing changed; store returns the order unchanged
-ORDER_TRANSITION_APPLY = "apply"    # persist `order` (fully updated) + write `event`
+ORDER_TRANSITION_NOOP = "noop"  # nothing changed; store returns the order unchanged
+ORDER_TRANSITION_APPLY = "apply"  # persist `order` (fully updated) + write `event`
 
 
 @dataclass(frozen=True)
@@ -1487,7 +1492,9 @@ def plan_transition_order(
                 ),
             )
 
-    qty_changed = filled_quantity is not None and filled_quantity != order.filled_quantity
+    qty_changed = (
+        filled_quantity is not None and filled_quantity != order.filled_quantity
+    )
     broker_changed = (
         broker_order_id is not None and broker_order_id != order.broker_order_id
     )
@@ -1751,7 +1758,10 @@ def execution_event_for_routine_transition(
             session_id=order.session_id,
         )
 
-    if new_status is OrderStatus.PARTIALLY_FILLED and order.status is OrderStatus.PARTIALLY_FILLED:
+    if (
+        new_status is OrderStatus.PARTIALLY_FILLED
+        and order.status is OrderStatus.PARTIALLY_FILLED
+    ):
         # Same-status fill-progress self-loop. `filled_quantity` is monotonic
         # (bound-checked by `plan_transition_order`), so this key is guaranteed
         # distinct per repeat.

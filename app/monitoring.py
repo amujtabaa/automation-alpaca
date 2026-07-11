@@ -105,9 +105,7 @@ _OPEN_STATUSES = frozenset(
 )
 # Open orders eligible for the unfilled-timeout stale flag — NOT cancel_pending
 # (it is already being wound down, not "stuck unfilled").
-_STALEABLE_STATUSES = frozenset(
-    {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
-)
+_STALEABLE_STATUSES = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED})
 
 # Fill-append failures that are recoverable per-order (logged, then skipped).
 _FILL_ERRORS = (InvalidFillError, UnknownEntityError, NegativePositionError)
@@ -470,7 +468,9 @@ async def monitoring_loop(
         try:
             await asyncio.sleep(settings.poll_cadence_seconds)
             await run_monitoring_tick(
-                store, adapter, settings,
+                store,
+                adapter,
+                settings,
                 market_data=market_data,
                 reconcile_budget=reconcile_budget,
                 reconcile_fairness=reconcile_fairness,
@@ -561,23 +561,20 @@ async def run_monitoring_tick(
     # + submitted in the SAME tick (no extra cadence of latency). No-op when there
     # is no market-data handle or protection is disabled.
     await _run_protection(store, adapter, market_data, settings)
-    await _submit_pending_orders(
-        store, adapter, settings, market_data=market_data
-    )
-    await _redrive_stale_submitting(
-        store, adapter, settings, market_data=market_data
-    )
+    await _submit_pending_orders(store, adapter, settings, market_data=market_data)
+    await _redrive_stale_submitting(store, adapter, settings, market_data=market_data)
     # ADR-002: resolve any TIMEOUT_QUARANTINE order with a read-only targeted query
     # BEFORE the open-order reconcile — a resolution to SUBMITTED hands the order a
     # broker_order_id that the reconcile poll then tracks (and ingests fills for)
     # this same tick.
     await _resolve_timeout_quarantine(
-        store, adapter, settings,
-        budget=reconcile_budget, fairness=reconcile_fairness,
+        store,
+        adapter,
+        settings,
+        budget=reconcile_budget,
+        fairness=reconcile_fairness,
     )
-    await _reconcile_open_orders(
-        store, adapter, settings, market_data=market_data
-    )
+    await _reconcile_open_orders(store, adapter, settings, market_data=market_data)
     await _recover_unpersisted_submits(store, adapter)
     # Phase 4 wave 4e: the ACTING §7 mass-report reconcile. Runs LAST so it sees the
     # fully-reconciled post-tick state — a divergence it acts on is then one the
@@ -589,8 +586,11 @@ async def run_monitoring_tick(
     # TradingState driver (Reducing while divergent, Active on parity — wave 4f / R2);
     # direct tick callers leave it False, so the corpus never flips trading_state.
     await _run_reconciliation(
-        store, adapter, settings,
-        budget=reconcile_budget, drive_state=drive_reconcile_state,
+        store,
+        adapter,
+        settings,
+        budget=reconcile_budget,
+        drive_state=drive_reconcile_state,
     )
 
 
@@ -753,7 +753,10 @@ async def _submit_pending_orders(
             # session closed during the submit await (close is one-shot and would
             # otherwise leave a CREATED buy counting toward exposure forever).
             release_target = OrderStatus.CREATED
-            if OrderSide(claimed.side) is OrderSide.BUY and claimed.session_id is not None:
+            if (
+                OrderSide(claimed.side) is OrderSide.BUY
+                and claimed.session_id is not None
+            ):
                 own_session = await store.get_session_by_id(claimed.session_id)
                 if (
                     own_session is not None
@@ -947,7 +950,9 @@ async def _redrive_stale_submitting(
             # The order left SUBMITTING some other way (e.g. a manual cancel) while
             # we re-drove it — the broker order is live but locally terminal. Same
             # durable path as the primary submit's unpersisted case.
-            await _handle_unpersisted_submit(store, adapter, order, broker_order_id, exc)
+            await _handle_unpersisted_submit(
+                store, adapter, order, broker_order_id, exc
+            )
 
 
 # Venue-terminal statuses a targeted query can resolve a quarantine to directly
@@ -1023,8 +1028,12 @@ async def _resolve_timeout_quarantine(
             errors = await _order_deferral_count(store, order.id, "query_error")
             if errors < max_attempts:
                 await _record_timeout_query_deferral(
-                    store, order, errors + 1, "query_error",
-                    needs_review=errors + 1 >= max_attempts, error=str(exc),
+                    store,
+                    order,
+                    errors + 1,
+                    "query_error",
+                    needs_review=errors + 1 >= max_attempts,
+                    error=str(exc),
                 )
             continue
 
@@ -1050,14 +1059,18 @@ async def _resolve_timeout_quarantine(
                 )
                 _log.info(
                     "resolved quarantined order %s via targeted query: venue %s -> %s",
-                    order.id, update.status.value, target.value,
+                    order.id,
+                    update.status.value,
+                    target.value,
                 )
             except _TRANSITION_ERRORS as exc:
                 # e.g. resolving to SUBMITTED with no broker id (AIR-001), or the
                 # order left TIMEOUT_QUARANTINE another way — leave it, retry.
                 _log.warning(
                     "could not resolve quarantined order %s to %s: %s",
-                    order.id, target.value, exc,
+                    order.id,
+                    target.value,
+                    exc,
                 )
             continue
 
@@ -1069,14 +1082,18 @@ async def _resolve_timeout_quarantine(
         if attempts >= max_attempts:
             _log.info(
                 "quarantined order %s confirmed absent after %s queries; "
-                "resolving to REJECTED (never landed).", order.id, attempts,
+                "resolving to REJECTED (never landed).",
+                order.id,
+                attempts,
             )
             try:
                 await store.resolve_timeout_quarantine(
                     order.id, OrderStatus.REJECTED, reason="not_found_at_venue"
                 )
             except _TRANSITION_ERRORS as exc:
-                _log.warning("could not reject absent quarantined %s: %s", order.id, exc)
+                _log.warning(
+                    "could not reject absent quarantined %s: %s", order.id, exc
+                )
         else:
             await _record_timeout_query_deferral(store, order, attempts, "not_found")
 
@@ -1171,14 +1188,10 @@ async def _record_redrive_deferral(
             session_id=order.session_id,
         )
     except Exception:  # noqa: BLE001 - audit is best-effort on a failure path
-        _log.exception(
-            "could not record re-drive deferral for order %s", order.id
-        )
+        _log.exception("could not record re-drive deferral for order %s", order.id)
 
 
-async def _order_event_count(
-    store: StateStore, order_id: str, event_type: str
-) -> int:
+async def _order_event_count(store: StateStore, order_id: str, event_type: str) -> int:
     """How many events of ``event_type`` are recorded for ``order_id`` (durable,
     survives restart). Uses the store-side ``event_type`` filter, then counts the
     order's own rows — the beta-scale event log is small; an indexed query is the
@@ -1275,9 +1288,7 @@ async def _handle_unpersisted_submit(
             await store.transition_order(
                 order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
             )
-            _log.info(
-                "recovered unpersisted submit for order %s on retry", order.id
-            )
+            _log.info("recovered unpersisted submit for order %s on retry", order.id)
             return
         except _TRANSITION_ERRORS as retry_exc:
             _log.error(
@@ -1375,7 +1386,10 @@ async def _recover_unpersisted_submits(
             await store.update_submit_recovery(
                 rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
             )
-            _log.info("recovered stranded broker order %s (terminal at broker)", rec.broker_order_id)
+            _log.info(
+                "recovered stranded broker order %s (terminal at broker)",
+                rec.broker_order_id,
+            )
             continue
 
         # Zero fills and still live → request a cancel and confirm.
@@ -1403,7 +1417,10 @@ async def _recover_unpersisted_submits(
             await store.update_submit_recovery(
                 rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
             )
-            _log.info("recovered stranded broker order %s (cancel confirmed)", rec.broker_order_id)
+            _log.info(
+                "recovered stranded broker order %s (cancel confirmed)",
+                rec.broker_order_id,
+            )
         else:
             # Cancel requested but not yet confirmed terminal — retry next tick.
             await store.update_submit_recovery(rec.id, bump_attempt=True)
@@ -1581,9 +1598,7 @@ async def _apply_update(
             )
         target = _reconciled_status(order, update.status, recorded)
     try:
-        await store.transition_order(
-            order.id, target, filled_quantity=recorded
-        )
+        await store.transition_order(order.id, target, filled_quantity=recorded)
     except _TRANSITION_ERRORS as exc:
         _log.warning(
             "order %s reconcile to %s (recorded filled=%s) rejected: %s",
@@ -1814,7 +1829,8 @@ async def _run_reconciliation(
                 TradingState.REDUCING
                 if _has_unresolved_divergence(plan)
                 else TradingState.ACTIVE,
-                reason="reconcile_parity" if not _has_unresolved_divergence(plan)
+                reason="reconcile_parity"
+                if not _has_unresolved_divergence(plan)
                 else "reconcile_divergence",
             )
         return plan
@@ -1823,16 +1839,16 @@ async def _run_reconciliation(
         if drive_state:
             # A reconcile FAILURE is not parity — stay reduce-only (R3: never
             # auto-Halt, a held position stays exitable), loud for the operator.
-            _log.error("reconcile failed — trading_state held at Reducing (reduce-only)")
+            _log.error(
+                "reconcile failed — trading_state held at Reducing (reduce-only)"
+            )
             await _safe_set_reconcile_state(
                 store, TradingState.REDUCING, reason="reconcile_failed"
             )
         return None
 
 
-async def _apply_inferred_fills(
-    store: StateStore, plan: ReconciliationPlan
-) -> None:
+async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> None:
     """Append each reconciliation-inferred fill as a SYNTHETIC/RECONCILIATION fill
     (wave 4e-4). The engine only infers a fill from a PRICED execution in the mass
     report (never a $0 synthetic), and ``source_fill_id`` is the execution's OWN
@@ -1855,13 +1871,13 @@ async def _apply_inferred_fills(
         except _FILL_ERRORS as exc:
             _log.warning(
                 "reconcile: inferred fill for order %s (%s) rejected: %s",
-                f.order_id, f.symbol, exc,
+                f.order_id,
+                f.symbol,
+                exc,
             )
 
 
-async def _surface_external_orders(
-    store: StateStore, plan: ReconciliationPlan
-) -> None:
+async def _surface_external_orders(store: StateStore, plan: ReconciliationPlan) -> None:
     """Surface each external/unmanaged venue order as a durable, deduped
     ``reconcile_external_order`` audit record (§7: surfaced, NEVER silently
     absorbed into managed state or folded into position). Deduped by
@@ -1968,9 +1984,7 @@ async def _surface_position_mismatches(
 # ABSENT. CANCEL_PENDING is excluded (§7 / R4): it is already being wound down and
 # the per-order poll (which holds its broker id) owns its resolution — the mass
 # report never drives it to a terminal.
-_RECONCILE_RESOLVABLE = frozenset(
-    {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
-)
+_RECONCILE_RESOLVABLE = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED})
 _RECONCILE_DEFERRED_EVENT = EventType.ORDER_RECONCILE_DEFERRED.value
 
 
@@ -2017,7 +2031,9 @@ async def _resolve_reconcile_not_found(
         # an un-queried order is NEVER resolved (never read as absent, §7). The
         # resolvable filter above runs first so a filtered-out order costs no token.
         if budget is not None and not budget.try_consume(utcnow()):
-            _log.debug("reconcile: query budget exhausted; deferring remaining not-found")
+            _log.debug(
+                "reconcile: query budget exhausted; deferring remaining not-found"
+            )
             return
         try:
             await _resolve_one_not_found(store, adapter, order, retries)
@@ -2046,8 +2062,12 @@ async def _resolve_one_not_found(
         )
         if errors < retries:
             await _record_reconcile_deferral(
-                store, order, errors + 1, "query_error",
-                needs_review=errors + 1 >= retries, error=str(exc),
+                store,
+                order,
+                errors + 1,
+                "query_error",
+                needs_review=errors + 1 >= retries,
+                error=str(exc),
             )
         return
 
@@ -2078,7 +2098,9 @@ async def _resolve_one_not_found(
             )
             _log.info(
                 "reconcile: order %s confirmed absent after %s consecutive queries -> %s",
-                order_id, attempts, target.value,
+                order_id,
+                attempts,
+                target.value,
             )
         except _TRANSITION_ERRORS as exc:
             # A fill that raced the resolve makes the transition illegal (e.g. the
@@ -2086,7 +2108,9 @@ async def _resolve_one_not_found(
             # fill or oversell. Leave it; the next tick re-evaluates.
             _log.warning(
                 "reconcile: could not resolve absent order %s to %s: %s",
-                order_id, target.value, exc,
+                order_id,
+                target.value,
+                exc,
             )
     else:
         await _record_reconcile_deferral(store, order, attempts, "not_found")
@@ -2129,9 +2153,7 @@ async def _record_reconcile_streak_reset(store: StateStore, order: Order) -> Non
             session_id=order.session_id,
         )
     except Exception:  # noqa: BLE001 - audit is best-effort on a resolution path
-        _log.exception(
-            "could not record reconcile streak reset for order %s", order.id
-        )
+        _log.exception("could not record reconcile streak reset for order %s", order.id)
 
 
 async def _record_reconcile_deferral(
@@ -2167,9 +2189,7 @@ async def _record_reconcile_deferral(
             session_id=order.session_id,
         )
     except Exception:  # noqa: BLE001 - audit is best-effort on a resolution path
-        _log.exception(
-            "could not record reconcile deferral for order %s", order.id
-        )
+        _log.exception("could not record reconcile deferral for order %s", order.id)
 
 
 async def _orders_with_event(store: StateStore, event_type: str) -> set[str]:

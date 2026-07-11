@@ -83,8 +83,16 @@ async def test_memory_backfill_emits_events_for_preexisting_fills():
     session = await store.get_current_session()
     # Simulate a pre-wave-3a fill: a fill row with no ExecutionEvent.
     store._fills.append(
-        Fill(order_id="o1", symbol="AAPL", side=OrderSide.BUY, quantity=100,
-             price=2.0, source_fill_id="s1", session_id=session.id, filled_at=_TS)
+        Fill(
+            order_id="o1",
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            quantity=100,
+            price=2.0,
+            source_fill_id="s1",
+            session_id=session.id,
+            filled_at=_TS,
+        )
     )
     assert await store.get_execution_events() == []
     assert (await store.get_position("AAPL")).quantity == 0  # no event yet
@@ -119,8 +127,18 @@ async def test_sqlite_backfill_emits_events_for_preexisting_fills(tmp_path):
            (id, order_id, symbol, side, quantity, price, source_fill_id,
             session_id, filled_at, created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (new_id(), "o1", "AAPL", "buy", 100, 2.0, "s1", session.id,
-         _TS.isoformat(), _TS.isoformat()),
+        (
+            new_id(),
+            "o1",
+            "AAPL",
+            "buy",
+            100,
+            2.0,
+            "s1",
+            session.id,
+            _TS.isoformat(),
+            _TS.isoformat(),
+        ),
     )
     conn.commit()
     # Position reads the event log, which has no event for this fill yet.
@@ -159,12 +177,28 @@ async def test_memory_backfill_rebuilds_mixed_prefix_suffix_layout():
     # 2 pre-shadow fills (rows, NO events) then 2 shadow fills (rows + events).
     for oid, sid in [("o1", "s1"), ("o2", "s2")]:
         store._fills.append(
-            Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
-                 price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+            Fill(
+                order_id=oid,
+                symbol="AAPL",
+                side=OrderSide.BUY,
+                quantity=100,
+                price=1.0,
+                source_fill_id=sid,
+                session_id=session.id,
+                filled_at=_TS,
+            )
         )
     for oid, sid in [("o3", "s3"), ("o4", "s4")]:
-        f = Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
-                 price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+        f = Fill(
+            order_id=oid,
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            quantity=100,
+            price=1.0,
+            source_fill_id=sid,
+            session_id=session.id,
+            filled_at=_TS,
+        )
         store._fills.append(f)
         async with store._lock:
             with store._atomic():
@@ -189,27 +223,63 @@ async def test_sqlite_backfill_rebuilds_mixed_prefix_suffix_layout(tmp_path):
             "INSERT INTO fills (id, order_id, symbol, side, quantity, price, "
             "source_fill_id, session_id, filled_at, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (new_id(), oid, "AAPL", "buy", 100, 1.0, sid, session.id,
-             _TS.isoformat(), _TS.isoformat()),
+            (
+                new_id(),
+                oid,
+                "AAPL",
+                "buy",
+                100,
+                1.0,
+                sid,
+                session.id,
+                _TS.isoformat(),
+                _TS.isoformat(),
+            ),
         )
     # 2 shadow fills: rows + matching FILL events (the suffix).
     for oid, sid in [("o3", "s3"), ("o4", "s4")]:
-        f = Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
-                 price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+        f = Fill(
+            order_id=oid,
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            quantity=100,
+            price=1.0,
+            source_fill_id=sid,
+            session_id=session.id,
+            filled_at=_TS,
+        )
         conn.execute(
             "INSERT INTO fills (id, order_id, symbol, side, quantity, price, "
             "source_fill_id, session_id, filled_at, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (f.id, oid, "AAPL", "buy", 100, 1.0, sid, session.id,
-             _TS.isoformat(), _TS.isoformat()),
+            (
+                f.id,
+                oid,
+                "AAPL",
+                "buy",
+                100,
+                1.0,
+                sid,
+                session.id,
+                _TS.isoformat(),
+                _TS.isoformat(),
+            ),
         )
     conn.commit()
     # Emit the 2 suffix events out-of-band so the log holds only the suffix.
     for oid, sid in [("o3", "s3"), ("o4", "s4")]:
         await store.append_execution_event(
             execution_event_for_fill(
-                Fill(order_id=oid, symbol="AAPL", side=OrderSide.BUY, quantity=100,
-                     price=1.0, source_fill_id=sid, session_id=session.id, filled_at=_TS)
+                Fill(
+                    order_id=oid,
+                    symbol="AAPL",
+                    side=OrderSide.BUY,
+                    quantity=100,
+                    price=1.0,
+                    source_fill_id=sid,
+                    session_id=session.id,
+                    filled_at=_TS,
+                )
             )
         )
     store._conn.close()

@@ -259,7 +259,9 @@ class AlpacaPaperAdapter(BrokerAdapter):
             # The SDK types its returns as `Model | dict[str, Any]` for its
             # raw_data mode; this client is not raw, so it always returns the typed
             # model. Cast reflects that (runtime no-op) so attribute access typechecks.
-            resp = cast(AlpacaOrder, await asyncio.to_thread(self._client.submit_order, req))
+            resp = cast(
+                AlpacaOrder, await asyncio.to_thread(self._client.submit_order, req)
+            )
             return str(resp.id)
         except APIError as exc:
             code = getattr(exc, "status_code", None)
@@ -389,9 +391,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
         network or API failure.
         """
         try:
-            await asyncio.to_thread(
-                self._client.cancel_order_by_id, broker_order_id
-            )
+            await asyncio.to_thread(self._client.cancel_order_by_id, broker_order_id)
         except APIError as exc:
             # Decide idempotency by HTTP STATUS, not by sniffing free-text — a
             # false positive here would silently mark a *live* order canceled.
@@ -479,9 +479,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
                 client_order_id=(str(o.client_order_id) if o.client_order_id else None),
                 symbol=str(o.symbol),
                 side=(
-                    OrderSide.BUY
-                    if o.side == AlpacaOrderSide.BUY
-                    else OrderSide.SELL
+                    OrderSide.BUY if o.side == AlpacaOrderSide.BUY else OrderSide.SELL
                 ),
                 status=_map_status(o.status),
                 filled_quantity=int(float(o.filled_qty or 0)),

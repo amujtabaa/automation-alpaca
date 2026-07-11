@@ -37,7 +37,9 @@ class TestNoLimitsConfigured:
         before Phase 6 — this is what keeps ~20 pre-existing test call sites
         unchanged."""
 
-        candidate = await _approved_candidate(any_store, quantity=1_000_000, limit=999.0)
+        candidate = await _approved_candidate(
+            any_store, quantity=1_000_000, limit=999.0
+        )
 
         order = await any_store.create_order_for_candidate(candidate.id)
 
@@ -97,7 +99,9 @@ class TestMaxSharesPerOrder:
 
 class TestMaxNotionalPerOrder:
     async def test_exactly_at_limit_succeeds(self, any_store):
-        candidate = await _approved_candidate(any_store, quantity=100, limit=5.0)  # $500
+        candidate = await _approved_candidate(
+            any_store, quantity=100, limit=5.0
+        )  # $500
 
         order = await any_store.create_order_for_candidate(
             candidate.id, risk_limits=RiskLimits(max_notional_per_order=500.0)
@@ -106,7 +110,9 @@ class TestMaxNotionalPerOrder:
         assert order.quantity == 100
 
     async def test_over_limit_blocks(self, any_store):
-        candidate = await _approved_candidate(any_store, quantity=100, limit=10.0)  # $1000
+        candidate = await _approved_candidate(
+            any_store, quantity=100, limit=10.0
+        )  # $1000
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
@@ -133,7 +139,9 @@ class TestMaxTotalExposure:
         seed_candidate = await any_store.create_candidate(
             "MSFT", suggested_quantity=10, suggested_limit_price=90.0
         )
-        await any_store.transition_candidate(seed_candidate.id, CandidateStatus.APPROVED)
+        await any_store.transition_candidate(
+            seed_candidate.id, CandidateStatus.APPROVED
+        )
         seed_order = await any_store.create_order_for_candidate(seed_candidate.id)
         await submit_created_order(any_store, seed_order.id)
         await any_store.append_fill(seed_order.id, "MSFT", OrderSide.BUY, 10, 90.0)
@@ -143,7 +151,9 @@ class TestMaxTotalExposure:
         assert (await any_store.get_position("MSFT")).cost_basis == 900.0
         assert await any_store.current_exposure() == 900.0
 
-        candidate = await _approved_candidate(any_store, symbol="AAPL", quantity=10, limit=20.0)  # $200
+        candidate = await _approved_candidate(
+            any_store, symbol="AAPL", quantity=10, limit=20.0
+        )  # $200
 
         with pytest.raises(RiskLimitBlockedError):
             # 900 (existing) + 200 (new) = 1100 > 1000 cap
@@ -176,10 +186,14 @@ class TestMaxTotalExposure:
         """A still-open (non-terminal) order's remaining notional is live
         risk too — it must count even though nothing has filled yet."""
 
-        first = await _approved_candidate(any_store, symbol="MSFT", quantity=10, limit=90.0)
+        first = await _approved_candidate(
+            any_store, symbol="MSFT", quantity=10, limit=90.0
+        )
         await any_store.create_order_for_candidate(first.id)  # CREATED, $900, unfilled
 
-        second = await _approved_candidate(any_store, symbol="AAPL", quantity=10, limit=20.0)
+        second = await _approved_candidate(
+            any_store, symbol="AAPL", quantity=10, limit=20.0
+        )
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
@@ -187,7 +201,9 @@ class TestMaxTotalExposure:
             )
 
     async def test_exactly_at_limit_succeeds(self, any_store):
-        candidate = await _approved_candidate(any_store, symbol="AAPL", quantity=100, limit=10.0)  # $1000
+        candidate = await _approved_candidate(
+            any_store, symbol="AAPL", quantity=100, limit=10.0
+        )  # $1000
 
         order = await any_store.create_order_for_candidate(
             candidate.id, risk_limits=RiskLimits(max_total_exposure=1000.0)
@@ -198,11 +214,15 @@ class TestMaxTotalExposure:
     async def test_terminal_order_does_not_count(self, any_store):
         """A CANCELED order's notional must not linger in the exposure total."""
 
-        first = await _approved_candidate(any_store, symbol="MSFT", quantity=10, limit=90.0)
+        first = await _approved_candidate(
+            any_store, symbol="MSFT", quantity=10, limit=90.0
+        )
         first_order = await any_store.create_order_for_candidate(first.id)
         await any_store.transition_order(first_order.id, OrderStatus.CANCELED)
 
-        second = await _approved_candidate(any_store, symbol="AAPL", quantity=10, limit=20.0)
+        second = await _approved_candidate(
+            any_store, symbol="AAPL", quantity=10, limit=20.0
+        )
 
         # 0 (canceled doesn't count) + 200 (new) = 200 <= 1000 cap -> allowed
         order = await any_store.create_order_for_candidate(
@@ -226,7 +246,8 @@ class TestAllowlist:
 
         with pytest.raises(RiskLimitBlockedError):
             await any_store.create_order_for_candidate(
-                candidate.id, risk_limits=RiskLimits(allowlist=frozenset({"AAPL", "MSFT"}))
+                candidate.id,
+                risk_limits=RiskLimits(allowlist=frozenset({"AAPL", "MSFT"})),
             )
 
     async def test_empty_allowlist_means_unrestricted(self, any_store):
@@ -253,7 +274,9 @@ class TestIdempotency:
 
         second = await any_store.create_order_for_candidate(
             candidate.id,
-            risk_limits=RiskLimits(max_shares_per_order=1),  # would block if evaluated fresh
+            risk_limits=RiskLimits(
+                max_shares_per_order=1
+            ),  # would block if evaluated fresh
         )
 
         assert second.id == first.id

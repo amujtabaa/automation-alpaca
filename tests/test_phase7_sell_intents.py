@@ -89,12 +89,16 @@ async def test_create_sell_intent_rejects_bad_reason(any_store):
     await any_store.initialize()
     with pytest.raises(InvalidOrderError):
         await any_store.create_sell_intent(
-            symbol="AAPL", reason="protection_floor", target_quantity=10  # str, not enum
+            symbol="AAPL",
+            reason="protection_floor",
+            target_quantity=10,  # str, not enum
         )
 
 
 @pytest.mark.parametrize("bad_qty", [0, -5, 1.5, True])
-async def test_create_sell_intent_rejects_nonpositive_whole_quantity(any_store, bad_qty):
+async def test_create_sell_intent_rejects_nonpositive_whole_quantity(
+    any_store, bad_qty
+):
     await any_store.initialize()
     with pytest.raises(InvalidOrderError):
         await any_store.create_sell_intent(
@@ -113,11 +117,15 @@ async def test_list_sell_intents_filters(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     a = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=10,
+        symbol="AAPL",
+        reason=SellReason.MANUAL_FLATTEN,
+        target_quantity=10,
         session_id=session.id,
     )
     b = await any_store.create_sell_intent(
-        symbol="MSFT", reason=SellReason.PROTECTION_FLOOR, target_quantity=20,
+        symbol="MSFT",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=20,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(b.id, SellIntentStatus.REJECTED)
@@ -185,9 +193,7 @@ async def test_transition_sell_intent_happy_path(any_store):
     si = await any_store.create_sell_intent(
         symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=10
     )
-    approved = await any_store.transition_sell_intent(
-        si.id, SellIntentStatus.APPROVED
-    )
+    approved = await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
     assert approved.status is SellIntentStatus.APPROVED
     assert approved.approved_at is not None
 
@@ -254,7 +260,9 @@ async def test_create_order_for_sell_intent_market(any_store):
     session = await any_store.get_current_session()
     await _hold(any_store, "AAPL", 100, session_id=session.id)
     si = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
@@ -355,7 +363,9 @@ async def test_no_sell_intent_stranded_approved_after_any_rejection(any_store):
     )
     await any_store.transition_sell_intent(si1.id, SellIntentStatus.APPROVED)
     with pytest.raises(InvalidOrderError):
-        await any_store.create_order_for_sell_intent(si1.id, order_type=OrderType.MARKET)
+        await any_store.create_order_for_sell_intent(
+            si1.id, order_type=OrderType.MARKET
+        )
     assert (await any_store.get_sell_intent(si1.id)).status is SellIntentStatus.EXPIRED
 
     # LIMIT with no price.
@@ -439,14 +449,18 @@ async def test_create_order_for_sell_intent_idempotent(any_store):
         si.id, order_type=OrderType.MARKET
     )
     assert second.id == first.id
-    sell_orders = [o for o in await any_store.list_orders() if o.sell_intent_id == si.id]
+    sell_orders = [
+        o for o in await any_store.list_orders() if o.sell_intent_id == si.id
+    ]
     assert len(sell_orders) == 1
 
 
 async def test_create_order_for_unknown_sell_intent_raises(any_store):
     await any_store.initialize()
     with pytest.raises(UnknownEntityError):
-        await any_store.create_order_for_sell_intent("nope", order_type=OrderType.MARKET)
+        await any_store.create_order_for_sell_intent(
+            "nope", order_type=OrderType.MARKET
+        )
 
 
 # ---- active_sell_intent_for re-eligibility -------------------------------- #
@@ -496,7 +510,9 @@ async def test_needs_review_order_does_not_block_re_protection(any_store):
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
     await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
-    order = await any_store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
+    order = await any_store.create_order_for_sell_intent(
+        si.id, order_type=OrderType.MARKET
+    )
     # The order is still non-terminal (CREATED) — normally still "active".
     assert (await any_store.active_sell_intent_for("AAPL")).id == si.id
 
@@ -539,7 +555,9 @@ async def test_unresolved_recovery_still_counts_as_active(any_store):
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
     await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
-    order = await any_store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
+    order = await any_store.create_order_for_sell_intent(
+        si.id, order_type=OrderType.MARKET
+    )
     await any_store.create_submit_recovery(
         local_order_id=order.id,
         broker_order_id="broker-x2",
@@ -559,16 +577,22 @@ async def test_close_session_expires_open_sell_intents(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     pending = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=10,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=10,
         session_id=session.id,
     )
     approved = await any_store.create_sell_intent(
-        symbol="MSFT", reason=SellReason.MANUAL_FLATTEN, target_quantity=20,
+        symbol="MSFT",
+        reason=SellReason.MANUAL_FLATTEN,
+        target_quantity=20,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(approved.id, SellIntentStatus.APPROVED)
     rejected = await any_store.create_sell_intent(
-        symbol="TSLA", reason=SellReason.PROTECTION_FLOOR, target_quantity=30,
+        symbol="TSLA",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=30,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(rejected.id, SellIntentStatus.REJECTED)
@@ -606,7 +630,9 @@ async def test_close_session_cancels_buy_but_keeps_created_sell(any_store):
     # because protection is always-on and doesn't stop at the bell (§5.2).
     await _hold(any_store, "MSFT", 100, session_id=session.id)
     si = await any_store.create_sell_intent(
-        symbol="MSFT", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="MSFT",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)

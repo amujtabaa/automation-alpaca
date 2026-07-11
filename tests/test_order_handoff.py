@@ -35,7 +35,9 @@ async def _approved_candidate(store, *, symbol="AAPL", quantity=10, limit=1.50):
 
 
 async def test_handoff_creates_order_and_marks_candidate_ordered(any_store):
-    candidate = await _approved_candidate(any_store, symbol="aapl", quantity=25, limit=2.0)
+    candidate = await _approved_candidate(
+        any_store, symbol="aapl", quantity=25, limit=2.0
+    )
 
     order = await any_store.create_order_for_candidate(candidate.id)
 
@@ -129,7 +131,9 @@ async def test_handoff_without_suggested_quantity_raises(any_store):
         await any_store.create_order_for_candidate(candidate.id)
     # Rejected before any state changed: no order, candidate stays APPROVED.
     assert await any_store.list_orders() == []
-    assert (await any_store.get_candidate(candidate.id)).status is CandidateStatus.APPROVED
+    assert (
+        await any_store.get_candidate(candidate.id)
+    ).status is CandidateStatus.APPROVED
 
 
 # AIR-008: a non-positive quantity/price is now rejected at the *candidate*

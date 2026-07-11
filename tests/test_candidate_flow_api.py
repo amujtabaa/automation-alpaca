@@ -95,7 +95,9 @@ def test_approve_happy_path(client):
     No fill or position is created (Rule 6/7: submitted != filled).
     """
 
-    body = _inject(client, symbol="TSLA", suggested_quantity=10, suggested_limit_price=1.00)
+    body = _inject(
+        client, symbol="TSLA", suggested_quantity=10, suggested_limit_price=1.00
+    )
     candidate_id = body["id"]
 
     resp = client.post(f"/api/candidates/{candidate_id}/approve")
@@ -275,7 +277,11 @@ def test_gate_pluggability_approve(client):
     with TestClient(app) as c:
         body = c.post(
             "/api/dev/candidates",
-            json={"symbol": "AAPL", "suggested_quantity": 10, "suggested_limit_price": 1.00},
+            json={
+                "symbol": "AAPL",
+                "suggested_quantity": 10,
+                "suggested_limit_price": 1.00,
+            },
         )
         assert body.status_code == 201
         candidate_id = body.json()["id"]
@@ -301,7 +307,11 @@ def test_gate_pluggability_reject(client):
     with TestClient(app) as c:
         body = c.post(
             "/api/dev/candidates",
-            json={"symbol": "MSFT", "suggested_quantity": 5, "suggested_limit_price": 2.00},
+            json={
+                "symbol": "MSFT",
+                "suggested_quantity": 5,
+                "suggested_limit_price": 2.00,
+            },
         )
         assert body.status_code == 201
         candidate_id = body.json()["id"]

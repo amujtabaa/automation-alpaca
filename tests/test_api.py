@@ -81,11 +81,15 @@ def test_events_endpoint_filters_by_event_type(client):
     client.post("/api/watchlist", json={"symbol": "AAPL", "armed": True})
     client.post("/api/watchlist", json={"symbol": "AAPL", "armed": False})
 
-    armed_only = client.get("/api/events", params={"event_type": "watchlist_armed"}).json()
+    armed_only = client.get(
+        "/api/events", params={"event_type": "watchlist_armed"}
+    ).json()
     assert armed_only
     assert {e["event_type"] for e in armed_only} == {"watchlist_armed"}
 
-    none_of_this_type = client.get("/api/events", params={"event_type": "order_stale"}).json()
+    none_of_this_type = client.get(
+        "/api/events", params={"event_type": "order_stale"}
+    ).json()
     assert none_of_this_type == []
 
 
@@ -106,13 +110,19 @@ def test_readonly_views_are_empty_not_mocked(client):
 
 
 def test_controls_persist_flags(client):
-    assert client.post("/api/controls/kill-switch", json={"engaged": True}).json()[
-        "kill_switch"
-    ] is True
+    assert (
+        client.post("/api/controls/kill-switch", json={"engaged": True}).json()[
+            "kill_switch"
+        ]
+        is True
+    )
     assert client.get("/api/session").json()["kill_switch"] is True
-    assert client.post("/api/controls/kill-switch", json={"engaged": False}).json()[
-        "kill_switch"
-    ] is False
+    assert (
+        client.post("/api/controls/kill-switch", json={"engaged": False}).json()[
+            "kill_switch"
+        ]
+        is False
+    )
 
     assert client.post("/api/controls/pause-buys").json()["buys_paused"] is True
     assert client.get("/api/session").json()["buys_paused"] is True

@@ -23,7 +23,9 @@ from app.models import Candidate
 router = APIRouter(prefix="/api/dev", tags=["dev"])
 
 
-@router.post("/candidates", response_model=Candidate, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/candidates", response_model=Candidate, status_code=status.HTTP_201_CREATED
+)
 async def inject_mock_candidate(
     body: MockCandidateCreate,
     command_facade: ExecutionCommandFacade = Depends(get_command_facade),

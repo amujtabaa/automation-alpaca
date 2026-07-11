@@ -88,7 +88,12 @@ def client():
 
 
 def _inject(client, **kw):
-    payload = {"symbol": "AAPL", "suggested_quantity": 10, "suggested_limit_price": 1.0, **kw}
+    payload = {
+        "symbol": "AAPL",
+        "suggested_quantity": 10,
+        "suggested_limit_price": 1.0,
+        **kw,
+    }
     resp = client.post("/api/dev/candidates", json=payload)
     assert resp.status_code == 201, resp.text
     return resp.json()

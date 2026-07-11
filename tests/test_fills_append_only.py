@@ -22,8 +22,14 @@ def test_interface_has_no_fill_mutators():
         if "fill" in name.lower() and not name.startswith("__")
     }
     assert fill_methods == {"append_fill", "list_fills"}
-    forbidden = {"update_fill", "delete_fill", "remove_fill", "edit_fill",
-                 "set_fill", "mutate_fill"}
+    forbidden = {
+        "update_fill",
+        "delete_fill",
+        "remove_fill",
+        "edit_fill",
+        "set_fill",
+        "mutate_fill",
+    }
     assert forbidden.isdisjoint(set(dir(StateStore)))
 
 

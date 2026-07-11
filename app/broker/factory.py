@@ -55,7 +55,9 @@ def create_broker_adapter(settings: Settings) -> BrokerAdapter:
     from app.broker.alpaca_paper import AlpacaPaperAdapter
 
     # has_alpaca_credentials (checked above) is truthy only when both are set.
-    assert settings.alpaca_api_key is not None and settings.alpaca_api_secret is not None
+    assert (
+        settings.alpaca_api_key is not None and settings.alpaca_api_secret is not None
+    )
     return AlpacaPaperAdapter(
         api_key=settings.alpaca_api_key,
         api_secret=settings.alpaca_api_secret,

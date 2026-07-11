@@ -47,7 +47,9 @@ pytestmark = pytest.mark.anyio
 _TS = datetime(2026, 7, 7, 15, 30, tzinfo=timezone.utc)
 
 
-def _lifecycle_event(order_id: str, event_type: ExecutionEventType, seq: int) -> ExecutionEvent:
+def _lifecycle_event(
+    order_id: str, event_type: ExecutionEventType, seq: int
+) -> ExecutionEvent:
     return ExecutionEvent(
         sequence=seq,
         event_type=event_type,
@@ -63,7 +65,9 @@ def _lifecycle_event(order_id: str, event_type: ExecutionEventType, seq: int) ->
 # --------------------------------------------------------------------------- #
 def test_ambiguous_broker_error_is_a_broker_error_but_not_terminal():
     exc = AmbiguousBrokerError("timeout")
-    assert isinstance(exc, BrokerError)  # existing `except BrokerError` still catches it
+    assert isinstance(
+        exc, BrokerError
+    )  # existing `except BrokerError` still catches it
     assert not isinstance(exc, TerminalBrokerError)  # distinct from a definitive reject
 
 
@@ -86,7 +90,9 @@ def test_projector_clears_on_resolution_to_submitted():
 def test_projector_clears_on_resolution_to_rejected():
     events = [
         _lifecycle_event("o1", ExecutionEventType.TIMEOUT_QUARANTINE, 1),
-        _lifecycle_event("o1", ExecutionEventType.REJECTED, 2),  # resolved -> never arrived
+        _lifecycle_event(
+            "o1", ExecutionEventType.REJECTED, 2
+        ),  # resolved -> never arrived
     ]
     assert timeout_quarantined_order_ids(events) == set()
 
@@ -137,7 +143,9 @@ async def _submitting_order(store):
     await store.initialize()
     sess = await store.get_current_session()
     cand = await store.create_candidate("AAPL", session_id=sess.id)
-    order = await store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 10, session_id=sess.id)
+    order = await store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 10, session_id=sess.id
+    )
     claim = await store.claim_order_for_submission(order.id)
     assert claim.outcome == "claimed"
     return sess, order
@@ -158,7 +166,11 @@ async def test_quarantine_flips_status_records_event_and_lists(any_store):
     assert tq[0].authority is EventAuthority.LOCAL
 
     # An operator-visible audit event too.
-    audit = [e for e in await any_store.list_events() if e.event_type == "order_timeout_quarantined"]
+    audit = [
+        e
+        for e in await any_store.list_events()
+        if e.event_type == "order_timeout_quarantined"
+    ]
     assert len(audit) == 1
 
     # Derived-from-log listing.
@@ -171,7 +183,11 @@ async def test_quarantine_is_idempotent_noop_on_repeat(any_store):
     await any_store.quarantine_timed_out_order(order.id)
     # Already TIMEOUT_QUARANTINE -> same-status NOOP: no second event, still listed.
     await any_store.quarantine_timed_out_order(order.id)
-    tq = [e for e in await any_store.get_execution_events() if e.event_type is ExecutionEventType.TIMEOUT_QUARANTINE]
+    tq = [
+        e
+        for e in await any_store.get_execution_events()
+        if e.event_type is ExecutionEventType.TIMEOUT_QUARANTINE
+    ]
     assert len(tq) == 1
     assert len(await any_store.list_timeout_quarantined_orders()) == 1
 
@@ -182,7 +198,9 @@ async def test_quarantine_rejects_a_non_submitting_order(any_store):
     await any_store.initialize()
     sess = await any_store.get_current_session()
     cand = await any_store.create_candidate("AAPL", session_id=sess.id)
-    order = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 10, session_id=sess.id)
+    order = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 10, session_id=sess.id
+    )
     with pytest.raises(OrderTransitionError):
         await any_store.quarantine_timed_out_order(order.id)
     assert await any_store.get_execution_events() == []
@@ -203,7 +221,11 @@ async def test_resolve_to_submitted_requires_broker_id_then_clears(any_store):
     assert r.status is OrderStatus.SUBMITTED
     assert r.broker_order_id == "brk-1"
     # A SUBMITTED lifecycle ExecutionEvent (broker-authoritative) resolves it.
-    submitted = [e for e in await any_store.get_execution_events() if e.event_type is ExecutionEventType.SUBMITTED]
+    submitted = [
+        e
+        for e in await any_store.get_execution_events()
+        if e.event_type is ExecutionEventType.SUBMITTED
+    ]
     assert len(submitted) == 1
     assert submitted[0].authority is EventAuthority.BROKER_AUTHORITATIVE
     assert await any_store.list_timeout_quarantined_orders() == []
@@ -212,7 +234,9 @@ async def test_resolve_to_submitted_requires_broker_id_then_clears(any_store):
 async def test_resolve_to_rejected_when_never_arrived(any_store):
     _, order = await _submitting_order(any_store)
     await any_store.quarantine_timed_out_order(order.id)
-    r = await any_store.resolve_timeout_quarantine(order.id, OrderStatus.REJECTED, reason="not_found")
+    r = await any_store.resolve_timeout_quarantine(
+        order.id, OrderStatus.REJECTED, reason="not_found"
+    )
     assert r.status is OrderStatus.REJECTED
     assert await any_store.list_timeout_quarantined_orders() == []
 
@@ -263,7 +287,9 @@ async def test_quarantine_survives_sqlite_reopen(tmp_path):
 
     reopened = SqliteStateStore(tmp_path / "reopen.db")
     await reopened.initialize()
-    assert [o.id for o in await reopened.list_timeout_quarantined_orders()] == [order.id]
+    assert [o.id for o in await reopened.list_timeout_quarantined_orders()] == [
+        order.id
+    ]
     assert (await reopened.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
     await reopened.close()
 
@@ -291,8 +317,14 @@ async def test_targeted_query_finds_a_successfully_submitted_order():
     from app.models import Order, OrderType
 
     adapter = MockBrokerAdapter()
-    order = Order(candidate_id="c1", symbol="AAPL", side=OrderSide.BUY,
-                  order_type=OrderType.LIMIT, quantity=10, limit_price=1.0)
+    order = Order(
+        candidate_id="c1",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=10,
+        limit_price=1.0,
+    )
     broker_id = await adapter.submit_order(order)
     found = await adapter.get_order_by_client_order_id(order.id)
     assert found is not None
@@ -319,7 +351,9 @@ async def _quarantined_via_tick(store, adapter, settings, symbol="AAPL", qty=10)
     cand = await store.create_candidate(
         symbol, suggested_quantity=qty, suggested_limit_price=1.0, session_id=sess.id
     )
-    order = await store.create_order_for_test(cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id)
+    order = await store.create_order_for_test(
+        cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id
+    )
     adapter.fail_next_submit(AmbiguousBrokerError("simulated 504 timeout"))
     await run_monitoring_tick(store, adapter, settings)
     assert (await store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
@@ -341,7 +375,9 @@ async def test_ambiguous_submit_is_not_resubmitted_and_blocks_replacement(any_st
     for _ in range(3):
         adapter.fail_next_client_query(BrokerError("venue unreachable"))
         await run_monitoring_tick(any_store, adapter, settings)
-    assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    assert (
+        await any_store.get_order(order.id)
+    ).status is OrderStatus.TIMEOUT_QUARANTINE
     assert len(adapter.submitted) == submits  # read-only resolution, no resubmit
     # No replacement order for the candidate.
     orders = [o for o in await any_store.list_orders() if o.candidate_id == cand.id]
@@ -357,12 +393,13 @@ async def test_resolution_adopts_a_filled_venue_order_via_submitted(any_store):
     _, order = await _quarantined_via_tick(any_store, adapter, settings, qty=10)
     broker_id = f"broker-{order.id}"
     filled = BrokerOrderUpdate(
-        OrderStatus.FILLED, 10,
+        OrderStatus.FILLED,
+        10,
         [BrokerFill(source_fill_id="f1", quantity=10, price=1.0, filled_at=_TS)],
         broker_order_id=broker_id,
     )
-    adapter.seed_venue_order(order.id, filled)   # the targeted query sees FILLED
-    adapter.set_response(broker_id, filled)      # the reconcile poll ingests it
+    adapter.seed_venue_order(order.id, filled)  # the targeted query sees FILLED
+    adapter.set_response(broker_id, filled)  # the reconcile poll ingests it
 
     await run_monitoring_tick(any_store, adapter, settings)
     resolved = await any_store.get_order(order.id)
@@ -391,7 +428,9 @@ async def test_not_found_resolves_to_rejected_after_the_bound(any_store):
     _, order = await _quarantined_via_tick(any_store, adapter, settings)
     for _ in range(settings.timeout_quarantine_max_query_attempts - 1):
         # Before reaching the bound it stays quarantined (deferred), not rejected.
-        assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+        assert (
+            await any_store.get_order(order.id)
+        ).status is OrderStatus.TIMEOUT_QUARANTINE
         await run_monitoring_tick(any_store, adapter, settings)
     # The query that reaches the bound resolves to REJECTED (§7: confirmed absent).
     assert (await any_store.get_order(order.id)).status is OrderStatus.REJECTED
@@ -407,10 +446,13 @@ async def test_query_error_leaves_quarantined_and_flags_needs_review(any_store):
         adapter.fail_next_client_query(BrokerError("venue unreachable"))
         await run_monitoring_tick(any_store, adapter, settings)
     # Still quarantined (never auto-resolved on an inconclusive query).
-    assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    assert (
+        await any_store.get_order(order.id)
+    ).status is OrderStatus.TIMEOUT_QUARANTINE
     # A needs_review deferral was surfaced.
     deferrals = [
-        e for e in await any_store.list_events()
+        e
+        for e in await any_store.list_events()
         if e.event_type == "order_timeout_quarantine_deferred"
         and e.payload.get("needs_review")
     ]
@@ -428,11 +470,15 @@ async def test_query_errors_do_not_erode_the_not_found_reject_bound(any_store):
     for _ in range(settings.timeout_quarantine_max_query_attempts + 2):
         adapter.fail_next_client_query(BrokerError("venue flapping"))
         await run_monitoring_tick(any_store, adapter, settings)
-    assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    assert (
+        await any_store.get_order(order.id)
+    ).status is OrderStatus.TIMEOUT_QUARANTINE
     # Now genuine not-founds reach the bound (the quarantine tick was not_found #1).
     for _ in range(settings.timeout_quarantine_max_query_attempts - 2):
         await run_monitoring_tick(any_store, adapter, settings)
-        assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+        assert (
+            await any_store.get_order(order.id)
+        ).status is OrderStatus.TIMEOUT_QUARANTINE
     await run_monitoring_tick(any_store, adapter, settings)  # reaches max_attempts
     assert (await any_store.get_order(order.id)).status is OrderStatus.REJECTED
 
@@ -447,14 +493,13 @@ async def test_canceled_with_partial_fills_preserves_the_fills(any_store):
     broker_id = f"broker-{order.id}"
     # Venue: canceled, but 4 of 10 shares actually filled (e.g. expired remainder).
     adapter.seed_venue_order(
-        order.id, BrokerOrderUpdate(OrderStatus.CANCELED, 4, [], broker_order_id=broker_id)
+        order.id,
+        BrokerOrderUpdate(OrderStatus.CANCELED, 4, [], broker_order_id=broker_id),
     )
     # The reconcile poll reports the same canceled + the 4-share fill.
     adapter.set_response(
         broker_id,
-        BrokerOrderUpdate(
-            OrderStatus.CANCELED, 4, [BrokerFill("f1", 4, 1.0, _TS)]
-        ),
+        BrokerOrderUpdate(OrderStatus.CANCELED, 4, [BrokerFill("f1", 4, 1.0, _TS)]),
     )
     await run_monitoring_tick(any_store, adapter, settings)
     resolved = await any_store.get_order(order.id)
@@ -473,13 +518,16 @@ async def test_persistent_query_error_deferral_log_is_bounded(any_store):
         adapter.fail_next_client_query(BrokerError("venue down"))
         await run_monitoring_tick(any_store, adapter, settings)
     query_error_deferrals = [
-        e for e in await any_store.list_events()
+        e
+        for e in await any_store.list_events()
         if e.event_type == "order_timeout_quarantine_deferred"
         and (e.payload or {}).get("reason") == "query_error"
     ]
     assert len(query_error_deferrals) == settings.timeout_quarantine_max_query_attempts
     assert any(e.payload.get("needs_review") for e in query_error_deferrals)
-    assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    assert (
+        await any_store.get_order(order.id)
+    ).status is OrderStatus.TIMEOUT_QUARANTINE
 
 
 async def test_ambiguous_redrive_of_stale_submitting_quarantines(any_store):
@@ -490,10 +538,14 @@ async def test_ambiguous_redrive_of_stale_submitting_quarantines(any_store):
     cand = await any_store.create_candidate(
         "AAPL", suggested_quantity=10, suggested_limit_price=1.0, session_id=sess.id
     )
-    order = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 10, session_id=sess.id)
+    order = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 10, session_id=sess.id
+    )
     # Claim it to SUBMITTING with no broker id (the stale-redrive precondition).
     await any_store.claim_order_for_submission(order.id)
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(AmbiguousBrokerError("ambiguous redrive"))
     await run_monitoring_tick(any_store, adapter, Settings())
-    assert (await any_store.get_order(order.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+    assert (
+        await any_store.get_order(order.id)
+    ).status is OrderStatus.TIMEOUT_QUARANTINE

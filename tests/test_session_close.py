@@ -24,10 +24,12 @@ async def _session_with_data(store):
     order = await store.create_order_for_test(
         approved.id, "MSFT", OrderSide.BUY, 200, session_id=session.id
     )
-    await store.append_fill(order.id, "MSFT", OrderSide.BUY, 100, 1.0,
-                            session_id=session.id)
-    await store.append_fill(order.id, "MSFT", OrderSide.BUY, 100, 2.0,
-                            session_id=session.id)
+    await store.append_fill(
+        order.id, "MSFT", OrderSide.BUY, 100, 1.0, session_id=session.id
+    )
+    await store.append_fill(
+        order.id, "MSFT", OrderSide.BUY, 100, 2.0, session_id=session.id
+    )
     return session, {"pending": pending, "approved": approved, "rejected": rejected}
 
 
@@ -83,10 +85,12 @@ async def test_close_excludes_flat_positions(any_store):
     sell_order = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 100, session_id=session.id
     )
-    await any_store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0,
-                                session_id=session.id)
-    await any_store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 100, 2.0,
-                                session_id=session.id)
+    await any_store.append_fill(
+        buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id
+    )
+    await any_store.append_fill(
+        sell_order.id, "AAPL", OrderSide.SELL, 100, 2.0, session_id=session.id
+    )
     await any_store.close_session()
     # Fully exited -> no snapshot row for it.
     assert await any_store.list_position_snapshots(session.id) == []

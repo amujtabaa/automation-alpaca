@@ -38,7 +38,13 @@ def _snapshot(**kw) -> MarketSnapshot:
     return MarketSnapshot(**defaults)
 
 
-def _evaluate(snapshot, session_type=SessionType.PRE_MARKET, *, has_open_candidate=False, **overrides):
+def _evaluate(
+    snapshot,
+    session_type=SessionType.PRE_MARKET,
+    *,
+    has_open_candidate=False,
+    **overrides,
+):
     kwargs = dict(_DEFAULTS)
     kwargs.update(overrides)
     return evaluate(
@@ -46,7 +52,9 @@ def _evaluate(snapshot, session_type=SessionType.PRE_MARKET, *, has_open_candida
     )
 
 
-_HEALTHY = dict(last_price=103.0, prev_close=100.0, bid=102.9, ask=103.1, volume=100_000)
+_HEALTHY = dict(
+    last_price=103.0, prev_close=100.0, bid=102.9, ask=103.1, volume=100_000
+)
 
 
 class TestHappyPath:
@@ -88,23 +96,33 @@ class TestSnapshotGate:
 
 class TestMomentumGate:
     def test_below_threshold(self):
-        s = _snapshot(last_price=101.0, prev_close=100.0, bid=100.9, ask=101.1, volume=100_000)
+        s = _snapshot(
+            last_price=101.0, prev_close=100.0, bid=100.9, ask=101.1, volume=100_000
+        )
         assert _evaluate(s) is None
 
     def test_exactly_at_threshold_proposes(self):
-        s = _snapshot(last_price=103.0, prev_close=100.0, bid=102.9, ask=103.1, volume=100_000)
+        s = _snapshot(
+            last_price=103.0, prev_close=100.0, bid=102.9, ask=103.1, volume=100_000
+        )
         assert _evaluate(s) is not None  # move is exactly 3.0%, threshold 3.0%
 
     def test_negative_move_never_proposes(self):
-        s = _snapshot(last_price=95.0, prev_close=100.0, bid=94.9, ask=95.1, volume=100_000)
+        s = _snapshot(
+            last_price=95.0, prev_close=100.0, bid=94.9, ask=95.1, volume=100_000
+        )
         assert _evaluate(s) is None
 
     def test_zero_move_never_proposes_even_with_zero_threshold(self):
-        s = _snapshot(last_price=100.0, prev_close=100.0, bid=99.9, ask=100.1, volume=100_000)
+        s = _snapshot(
+            last_price=100.0, prev_close=100.0, bid=99.9, ask=100.1, volume=100_000
+        )
         assert _evaluate(s, momentum_threshold_pct=0.0) is None
 
     def test_missing_prev_close_blocks(self):
-        s = _snapshot(last_price=103.0, prev_close=None, bid=102.9, ask=103.1, volume=100_000)
+        s = _snapshot(
+            last_price=103.0, prev_close=None, bid=102.9, ask=103.1, volume=100_000
+        )
         assert _evaluate(s) is None
 
 

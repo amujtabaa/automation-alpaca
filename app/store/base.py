@@ -291,9 +291,9 @@ class RiskLimits:
 
 
 # SubmissionClaim.outcome values (D-017). The monitoring loop dispatches on these:
-CLAIM_CLAIMED = "claimed"   # order transitioned CREATED -> SUBMITTING; submit it
-CLAIM_BLOCKED = "blocked"   # a control blocks submission; no state change, reason set
-CLAIM_SKIPPED = "skipped"   # order was no longer CREATED (already claimed/cancelled)
+CLAIM_CLAIMED = "claimed"  # order transitioned CREATED -> SUBMITTING; submit it
+CLAIM_BLOCKED = "blocked"  # a control blocks submission; no state change, reason set
+CLAIM_SKIPPED = "skipped"  # order was no longer CREATED (already claimed/cancelled)
 
 
 @dataclass(frozen=True)
@@ -315,13 +315,13 @@ class SubmissionClaim:
 
 
 # FlattenResult.outcome values (X-001). The route dispatches on these:
-FLATTEN_FLAT = "flat"        # no open position; route surfaces 409
+FLATTEN_FLAT = "flat"  # no open position; route surfaces 409
 FLATTEN_EXISTING = "existing"  # an existing intent returned as-is (idempotent
-                               # own manual_flatten, or a genuinely-live
-                               # protection_floor exit left untouched)
+# own manual_flatten, or a genuinely-live
+# protection_floor exit left untouched)
 FLATTEN_CREATED = "created"  # a fresh manual_flatten intent was created + ordered
-                             # (superseding a non-live protection_floor exit first,
-                             # if one was active)
+# (superseding a non-live protection_floor exit first,
+# if one was active)
 
 # P6-C minimal actor-audit: the default ``actor`` stamped on a control-command
 # audit event (kill switch / pause-buys — the sensitive ``/api/controls/*`` surface)
@@ -389,17 +389,13 @@ class StateStore(ABC):
         """Add a symbol (idempotent: returns the existing row if present)."""
 
     @abstractmethod
-    async def list_watchlist(self) -> list[WatchlistSymbol]:
-        ...
+    async def list_watchlist(self) -> list[WatchlistSymbol]: ...
 
     @abstractmethod
-    async def get_watchlist_symbol(self, symbol: str) -> Optional[WatchlistSymbol]:
-        ...
+    async def get_watchlist_symbol(self, symbol: str) -> Optional[WatchlistSymbol]: ...
 
     @abstractmethod
-    async def set_watchlist_armed(
-        self, symbol: str, armed: bool
-    ) -> WatchlistSymbol:
+    async def set_watchlist_armed(self, symbol: str, armed: bool) -> WatchlistSymbol:
         """Arm/disarm a symbol. Raises :class:`UnknownEntityError` if absent."""
 
     @abstractmethod
@@ -441,12 +437,10 @@ class StateStore(ABC):
         *,
         session_id: Optional[str] = None,
         status: Optional[CandidateStatus] = None,
-    ) -> list[Candidate]:
-        ...
+    ) -> list[Candidate]: ...
 
     @abstractmethod
-    async def get_candidate(self, candidate_id: str) -> Optional[Candidate]:
-        ...
+    async def get_candidate(self, candidate_id: str) -> Optional[Candidate]: ...
 
     @abstractmethod
     async def transition_candidate(
@@ -513,8 +507,7 @@ class StateStore(ABC):
         ever left stranded ``approved`` with no order."""
 
     @abstractmethod
-    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]:
-        ...
+    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]: ...
 
     @abstractmethod
     async def list_sell_intents(
@@ -523,8 +516,7 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
         status: Optional[SellIntentStatus] = None,
         symbol: Optional[str] = None,
-    ) -> list[SellIntent]:
-        ...
+    ) -> list[SellIntent]: ...
 
     @abstractmethod
     async def active_sell_intent_for(self, symbol: str) -> Optional[SellIntent]:
@@ -866,12 +858,10 @@ class StateStore(ABC):
         *,
         session_id: Optional[str] = None,
         candidate_id: Optional[str] = None,
-    ) -> list[Order]:
-        ...
+    ) -> list[Order]: ...
 
     @abstractmethod
-    async def get_order(self, order_id: str) -> Optional[Order]:
-        ...
+    async def get_order(self, order_id: str) -> Optional[Order]: ...
 
     @abstractmethod
     async def transition_order(
@@ -995,8 +985,7 @@ class StateStore(ABC):
         symbol: Optional[str] = None,
         order_id: Optional[str] = None,
         session_id: Optional[str] = None,
-    ) -> list[Fill]:
-        ...
+    ) -> list[Fill]: ...
 
     # ------------------------------------------------------------------ #
     # Positions (derived, read-only — folded from fills)
@@ -1119,8 +1108,7 @@ class StateStore(ABC):
         """The active session (creating today's if none is active)."""
 
     @abstractmethod
-    async def get_session_by_date(self, day: date) -> Optional[SessionRecord]:
-        ...
+    async def get_session_by_date(self, day: date) -> Optional[SessionRecord]: ...
 
     @abstractmethod
     async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
@@ -1132,8 +1120,7 @@ class StateStore(ABC):
         """
 
     @abstractmethod
-    async def list_sessions(self) -> list[SessionRecord]:
-        ...
+    async def list_sessions(self) -> list[SessionRecord]: ...
 
     @abstractmethod
     async def set_kill_switch(
@@ -1255,7 +1242,5 @@ class StateStore(ABC):
         """
 
     @abstractmethod
-    async def list_position_snapshots(
-        self, session_id: str
-    ) -> list[PositionSnapshot]:
+    async def list_position_snapshots(self, session_id: str) -> list[PositionSnapshot]:
         """The position snapshots captured when ``session_id`` was closed."""

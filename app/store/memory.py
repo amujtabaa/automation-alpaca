@@ -209,9 +209,11 @@ class InMemoryStateStore(StateStore):
             control_prior = control_trading_state(self._execution_events, session.id)
             if control_prior is not new_control:
                 event = trading_state_change_event(
-                    session.id, prior_control=control_prior,
+                    session.id,
+                    prior_control=control_prior,
                     kill_switch=session.kill_switch,
-                    buys_paused=session.buys_paused, reason="backfill",
+                    buys_paused=session.buys_paused,
+                    reason="backfill",
                 )
                 if event is not None:
                     self._append_execution_event_unlocked(event)
@@ -399,7 +401,8 @@ class InMemoryStateStore(StateStore):
 
     def _current_exposure_unlocked(self) -> float:
         positions = [
-            self._position_unlocked(s) for s in sorted(self._fill_event_symbols_unlocked())
+            self._position_unlocked(s)
+            for s in sorted(self._fill_event_symbols_unlocked())
         ]
         open_orders = [
             o for o in self._orders.values() if o.status in NON_TERMINAL_ORDER_STATUSES
@@ -509,9 +512,7 @@ class InMemoryStateStore(StateStore):
                 session = self._ensure_current_session_unlocked()
                 session_id = session.id
             else:
-                found = next(
-                    (s for s in self._sessions if s.id == session_id), None
-                )
+                found = next((s for s in self._sessions if s.id == session_id), None)
                 if found is None:
                     raise UnknownEntityError(
                         f"session {session_id} does not exist; cannot create candidate"
@@ -682,11 +683,9 @@ class InMemoryStateStore(StateStore):
         for si in self._sell_intents.values():
             if si.symbol != symbol:
                 continue
-            order = (
-                self._orders.get(si.order_id) if si.order_id is not None else None
-            )
-            needs_review = (
-                order is not None and self._order_needs_review_unlocked(order.id)
+            order = self._orders.get(si.order_id) if si.order_id is not None else None
+            needs_review = order is not None and self._order_needs_review_unlocked(
+                order.id
             )
             if sell_intent_is_active(si, order, order_needs_review=needs_review):
                 return si
@@ -757,8 +756,7 @@ class InMemoryStateStore(StateStore):
             return False
         if new_status not in _SELL_INTENT_TRANSITIONS.get(current, set()):
             raise SellIntentTransitionError(
-                f"illegal sell intent transition {current.value} -> "
-                f"{new_status.value}"
+                f"illegal sell intent transition {current.value} -> {new_status.value}"
             )
         intent.status = new_status
         intent.updated_at = utcnow()
@@ -1026,9 +1024,7 @@ class InMemoryStateStore(StateStore):
                     observed_price=observed_price,
                     session_id=session_id,
                 )
-                self._transition_sell_intent_unlocked(
-                    intent, SellIntentStatus.APPROVED
-                )
+                self._transition_sell_intent_unlocked(intent, SellIntentStatus.APPROVED)
                 order = self._dispatch_order_for_sell_intent_unlocked(
                     intent, order_type=OrderType.MARKET, limit_price=None
                 )
@@ -1087,8 +1083,11 @@ class InMemoryStateStore(StateStore):
                 self._execution_events, current_session.id
             )
             plan = plan_flatten_position(
-                position=position, active_intent=active, active_order=active_order,
-                trading_state=trading_state, override_active=override_active,
+                position=position,
+                active_intent=active,
+                active_order=active_order,
+                trading_state=trading_state,
+                override_active=override_active,
                 actor=actor,
             )
 
@@ -1105,7 +1104,10 @@ class InMemoryStateStore(StateStore):
             if override_active:
                 with self._atomic():
                     self._write_emergency_reduce_override_unlocked(
-                        key, actor="engine", reason="flatten_authorized", resolved=True,
+                        key,
+                        actor="engine",
+                        reason="flatten_authorized",
+                        resolved=True,
                     )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
@@ -1149,7 +1151,10 @@ class InMemoryStateStore(StateStore):
                 if plan.supersede_order_cancel is not None:
                     # A supersede-cancel implies the stranded active_order exists
                     # and the planner produced its cancel audit event (narrows both).
-                    assert active_order is not None and plan.supersede_cancel_event is not None
+                    assert (
+                        active_order is not None
+                        and plan.supersede_cancel_event is not None
+                    )
                     # WO-0007a Stage 3: co-write the routine CANCELED
                     # ExecutionEvent (SAME shared helper + dedupe_key format as
                     # transition_order's ->CANCELED) in the SAME atomic block
@@ -1190,9 +1195,7 @@ class InMemoryStateStore(StateStore):
                     session_id=session_id,
                     actor=actor,
                 )
-                self._transition_sell_intent_unlocked(
-                    intent, SellIntentStatus.APPROVED
-                )
+                self._transition_sell_intent_unlocked(intent, SellIntentStatus.APPROVED)
                 order = self._dispatch_order_for_sell_intent_unlocked(
                     intent, order_type=OrderType.MARKET, limit_price=None
                 )
@@ -1251,7 +1254,9 @@ class InMemoryStateStore(StateStore):
                 # Inherit the candidate's session when not given, exactly as a
                 # production order does (plan_create_order_for_candidate) — so a
                 # test order can be claimed for submission like a real one.
-                session_id=session_id if session_id is not None else candidate.session_id,
+                session_id=session_id
+                if session_id is not None
+                else candidate.session_id,
             )
             with self._atomic():
                 self._orders[order.id] = order
@@ -1368,9 +1373,7 @@ class InMemoryStateStore(StateStore):
                 )
                 order = projected
             own_session = (
-                next(
-                    (s for s in self._sessions if s.id == order.session_id), None
-                )
+                next((s for s in self._sessions if s.id == order.session_id), None)
                 if order is not None
                 else None
             )
@@ -1384,9 +1387,8 @@ class InMemoryStateStore(StateStore):
                 sell_reason = intent.reason if intent is not None else None
             # ADR-001 (wave 3b): hold an autonomous BUY whose symbol is quarantined
             # by a broker overfill (derived from the event log under this lock).
-            quarantined = (
-                order is not None
-                and order.symbol in quarantined_symbols(self._execution_events)
+            quarantined = order is not None and order.symbol in quarantined_symbols(
+                self._execution_events
             )
             plan = plan_claim_order_for_submission(
                 order=order,
@@ -1398,7 +1400,11 @@ class InMemoryStateStore(StateStore):
             if plan.outcome == CLAIM_CLAIMED:
                 # CLAIM_CLAIMED guarantees a claimable order + its plan artifacts
                 # (narrows the Optionals mypy can't infer from the outcome).
-                assert order is not None and plan.order is not None and plan.event is not None
+                assert (
+                    order is not None
+                    and plan.order is not None
+                    and plan.event is not None
+                )
                 # WO-0007a Stage 1: co-write a SUBMIT_PENDING ExecutionEvent in
                 # the SAME atomic block as the order-row + audit-event write.
                 # `occurrence` = count of PRIOR SUBMIT_PENDING events for this
@@ -1539,7 +1545,9 @@ class InMemoryStateStore(StateStore):
                         ),
                         symbol=updated.symbol,
                         candidate_id=(
-                            local_order.candidate_id if local_order is not None else None
+                            local_order.candidate_id
+                            if local_order is not None
+                            else None
                         ),
                         order_id=updated.local_order_id,
                         payload={
@@ -1681,7 +1689,10 @@ class InMemoryStateStore(StateStore):
                         and e.event_type is ExecutionEventType.SUBMIT_RELEASED
                     )
                 exec_event = execution_event_for_routine_transition(
-                    order, plan.order.status, plan.order.filled_quantity, occurrence=occurrence
+                    order,
+                    plan.order.status,
+                    plan.order.filled_quantity,
+                    occurrence=occurrence,
                 )
             elif (
                 plan.event.event_type == "order_fill_progress"
@@ -1833,7 +1844,9 @@ class InMemoryStateStore(StateStore):
             if plan.outcome == FILL_REJECT:
                 # A single rejection event is one row — no atomic wrapper needed;
                 # it must persist even though we then raise.
-                self._append_event_unlocked(plan.event.event_type, **plan.event.as_kwargs())
+                self._append_event_unlocked(
+                    plan.event.event_type, **plan.event.as_kwargs()
+                )
                 assert plan.error is not None
                 raise plan.error
 
@@ -2000,11 +2013,7 @@ class InMemoryStateStore(StateStore):
 
     async def get_max_execution_sequence(self) -> int:
         async with self._lock:
-            return (
-                self._execution_events[-1].sequence
-                if self._execution_events
-                else 0
-            )
+            return self._execution_events[-1].sequence if self._execution_events else 0
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags
@@ -2053,8 +2062,11 @@ class InMemoryStateStore(StateStore):
 
         prior_control = control_trading_state(self._execution_events, session.id)
         exec_event = trading_state_change_event(
-            session.id, prior_control=prior_control, kill_switch=kill_switch,
-            buys_paused=buys_paused, reason=reason,
+            session.id,
+            prior_control=prior_control,
+            kill_switch=kill_switch,
+            buys_paused=buys_paused,
+            reason=reason,
         )
         session.kill_switch = kill_switch
         session.buys_paused = buys_paused
@@ -2067,7 +2079,9 @@ class InMemoryStateStore(StateStore):
         )
         session.updated_at = utcnow()
         self._append_event_unlocked(
-            audit_event_type, message=audit_message, session_id=session.id,
+            audit_event_type,
+            message=audit_message,
+            session_id=session.id,
             payload=audit_payload,
         )
         if exec_event is not None:
@@ -2083,7 +2097,10 @@ class InMemoryStateStore(StateStore):
 
         prior_reconcile = reconcile_trading_state(self._execution_events, session.id)
         exec_event = reconcile_trading_state_event(
-            session.id, prior_reconcile=prior_reconcile, to=to, reason=reason,
+            session.id,
+            prior_reconcile=prior_reconcile,
+            to=to,
+            reason=reason,
         )
         if exec_event is None:
             # Reconcile driver already at `to` — a no-op re-assert. The loop drives
@@ -2113,10 +2130,15 @@ class InMemoryStateStore(StateStore):
             with self._atomic():
                 session = self._ensure_current_session_unlocked()
                 self._apply_control_change_unlocked(
-                    session, kill_switch=engaged, buys_paused=session.buys_paused,
-                    audit_event_type="kill_switch_engaged" if engaged else "kill_switch_released",
+                    session,
+                    kill_switch=engaged,
+                    buys_paused=session.buys_paused,
+                    audit_event_type="kill_switch_engaged"
+                    if engaged
+                    else "kill_switch_released",
                     audit_message=f"kill switch {'engaged' if engaged else 'released'}",
-                    audit_payload={"kill_switch": engaged, "actor": actor}, reason="kill_switch",
+                    audit_payload={"kill_switch": engaged, "actor": actor},
+                    reason="kill_switch",
                 )
             return session.model_copy(deep=True)
 
@@ -2128,10 +2150,13 @@ class InMemoryStateStore(StateStore):
             with self._atomic():
                 session = self._ensure_current_session_unlocked()
                 self._apply_control_change_unlocked(
-                    session, kill_switch=session.kill_switch, buys_paused=paused,
+                    session,
+                    kill_switch=session.kill_switch,
+                    buys_paused=paused,
                     audit_event_type="buys_paused" if paused else "buys_resumed",
                     audit_message=f"buys {'paused' if paused else 'resumed'}",
-                    audit_payload={"buys_paused": paused, "actor": actor}, reason="buys_paused",
+                    audit_payload={"buys_paused": paused, "actor": actor},
+                    reason="buys_paused",
                 )
             return session.model_copy(deep=True)
 
@@ -2156,17 +2181,23 @@ class InMemoryStateStore(StateStore):
     ) -> None:
         session = self._ensure_current_session_unlocked()
         event = emergency_reduce_override_event(
-            session.id, symbol, actor=actor, reason=reason, resolved=resolved,
+            session.id,
+            symbol,
+            actor=actor,
+            reason=reason,
+            resolved=resolved,
         )
         self._append_execution_event_unlocked(event)
         self._append_event_unlocked(
-            "emergency_reduce_override_resolved" if resolved
+            "emergency_reduce_override_resolved"
+            if resolved
             else "emergency_reduce_override_granted",
             message=(
                 f"emergency reduce override {'resolved' if resolved else 'granted'} "
                 f"for {symbol} by {actor}"
             ),
-            symbol=symbol, session_id=session.id,
+            symbol=symbol,
+            session_id=session.id,
             payload={"actor": actor, "reason": reason},
         )
 
@@ -2255,9 +2286,7 @@ class InMemoryStateStore(StateStore):
                 if session is None:
                     raise SessionAlreadyClosedError("no active session to close")
             else:
-                session = next(
-                    (s for s in self._sessions if s.id == session_id), None
-                )
+                session = next((s for s in self._sessions if s.id == session_id), None)
                 if session is None:
                     raise UnknownEntityError(f"session {session_id} not found")
                 if session.status is SessionStatus.CLOSED:
@@ -2366,9 +2395,7 @@ class InMemoryStateStore(StateStore):
         )
         return session.model_copy(deep=True)
 
-    async def list_position_snapshots(
-        self, session_id: str
-    ) -> list[PositionSnapshot]:
+    async def list_position_snapshots(self, session_id: str) -> list[PositionSnapshot]:
         async with self._lock:
             return [
                 s.model_copy(deep=True)

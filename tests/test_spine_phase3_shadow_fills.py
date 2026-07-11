@@ -51,10 +51,37 @@ async def _fill_script(store):
     await store.initialize()
     sess = await store.get_current_session()
     buy = await _order(store, "AAPL", OrderSide.BUY, 200, sess.id)
-    await store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="t1", filled_at=_TS, session_id=sess.id)
-    await store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 2.0, source_fill_id="t2", filled_at=_TS, session_id=sess.id)
+    await store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="t1",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
+    await store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        2.0,
+        source_fill_id="t2",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     sell = await _order(store, "AAPL", OrderSide.SELL, 50, sess.id)
-    await store.append_fill(sell.id, "AAPL", OrderSide.SELL, 50, 9.0, source_fill_id="t3", filled_at=_TS, session_id=sess.id)
+    await store.append_fill(
+        sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        50,
+        9.0,
+        source_fill_id="t3",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     return sess, buy
 
 
@@ -96,11 +123,38 @@ async def test_shadow_parity_holds_across_symbols_and_a_fold_to_flat(any_store):
     await any_store.initialize()
     sess = await any_store.get_current_session()
     a = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
-    await any_store.append_fill(a.id, "AAPL", OrderSide.BUY, 100, 4.0, source_fill_id="a1", filled_at=_TS, session_id=sess.id)
+    await any_store.append_fill(
+        a.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        4.0,
+        source_fill_id="a1",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     m = await _order(any_store, "MSFT", OrderSide.BUY, 20, sess.id)
-    await any_store.append_fill(m.id, "MSFT", OrderSide.BUY, 20, 5.0, source_fill_id="m1", filled_at=_TS, session_id=sess.id)
+    await any_store.append_fill(
+        m.id,
+        "MSFT",
+        OrderSide.BUY,
+        20,
+        5.0,
+        source_fill_id="m1",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     asell = await _order(any_store, "AAPL", OrderSide.SELL, 100, sess.id)
-    await any_store.append_fill(asell.id, "AAPL", OrderSide.SELL, 100, 9.0, source_fill_id="a2", filled_at=_TS, session_id=sess.id)
+    await any_store.append_fill(
+        asell.id,
+        "AAPL",
+        OrderSide.SELL,
+        100,
+        9.0,
+        source_fill_id="a2",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
 
     projection = await project_store_event_log(any_store)
     live = {p.symbol: p for p in await any_store.list_positions()}
@@ -110,7 +164,9 @@ async def test_shadow_parity_holds_across_symbols_and_a_fold_to_flat(any_store):
         assert projection.positions[symbol] == position
 
 
-@pytest.mark.parametrize("helper", ["_append_execution_event_unlocked", "_insert_execution_event"])
+@pytest.mark.parametrize(
+    "helper", ["_append_execution_event_unlocked", "_insert_execution_event"]
+)
 async def test_shadow_write_failure_rolls_back_the_fill(any_store, monkeypatch, helper):
     """Regression guard for the atomicity coupling: the shadow-event write lives
     INSIDE the fill's atomic block, so if it fails the fill row must roll back
@@ -130,7 +186,16 @@ async def test_shadow_write_failure_rolls_back_the_fill(any_store, monkeypatch, 
 
     monkeypatch.setattr(any_store, helper, _boom)
     with pytest.raises(RuntimeError):
-        await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="t1", filled_at=_TS, session_id=sess.id)
+        await any_store.append_fill(
+            buy.id,
+            "AAPL",
+            OrderSide.BUY,
+            100,
+            1.0,
+            source_fill_id="t1",
+            filled_at=_TS,
+            session_id=sess.id,
+        )
     # The fill row rolled back with the failed shadow event — neither persisted.
     assert await any_store.list_fills() == []
     assert await any_store.get_execution_events() == []
@@ -138,7 +203,16 @@ async def test_shadow_write_failure_rolls_back_the_fill(any_store, monkeypatch, 
     # And the dedup state wasn't poisoned: undo the injection and confirm the
     # same fill now appends cleanly (one fill, one shadow event).
     monkeypatch.undo()
-    result = await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="t1", filled_at=_TS, session_id=sess.id)
+    result = await any_store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="t1",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     assert result.status == "appended"
     assert len(await any_store.list_fills()) == 1
     assert len(await any_store.get_execution_events()) == 1
@@ -156,7 +230,11 @@ async def test_append_fill_emits_one_broker_authoritative_fill_event(any_store):
     assert first.authority is EventAuthority.BROKER_AUTHORITATIVE
     assert first.source is EventSource.BROKER_REST
     assert (first.symbol, first.side, first.quantity, first.price, first.ts_event) == (
-        "AAPL", OrderSide.BUY, 100, 1.0, _TS,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        _TS,
     )
     # Assert the SELL event's full tuple too — the parity test CANNOT catch a
     # wrong SELL price (apply_fill's proportional cost-basis reduction never
@@ -164,7 +242,11 @@ async def test_append_fill_emits_one_broker_authoritative_fill_event(any_store):
     # at a later PnL/TCA consumer without this direct assertion.
     sell = events[2]
     assert (sell.symbol, sell.side, sell.quantity, sell.price, sell.ts_event) == (
-        "AAPL", OrderSide.SELL, 50, 9.0, _TS,
+        "AAPL",
+        OrderSide.SELL,
+        50,
+        9.0,
+        _TS,
     )
 
 
@@ -187,7 +269,9 @@ async def test_fill_without_source_id_emits_a_unique_row_id_dedupe_key(any_store
     await any_store.initialize()
     sess = await any_store.get_current_session()
     buy = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
-    result = await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, filled_at=_TS, session_id=sess.id)
+    result = await any_store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 1.0, filled_at=_TS, session_id=sess.id
+    )
     events = await any_store.get_execution_events()
     assert len(events) == 1
     assert events[0].dedupe_key == f"fill:{buy.id}:@{result.fill.id}"
@@ -201,11 +285,32 @@ async def test_two_orders_sharing_a_source_fill_id_both_emit(any_store):
     sess = await any_store.get_current_session()
     o1 = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
     o2 = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
-    await any_store.append_fill(o1.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="shared", filled_at=_TS, session_id=sess.id)
-    await any_store.append_fill(o2.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="shared", filled_at=_TS, session_id=sess.id)
+    await any_store.append_fill(
+        o1.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="shared",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
+    await any_store.append_fill(
+        o2.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="shared",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     events = await any_store.get_execution_events()
     assert len(events) == 2
-    assert {e.dedupe_key for e in events} == {f"fill:{o1.id}:shared", f"fill:{o2.id}:shared"}
+    assert {e.dedupe_key for e in events} == {
+        f"fill:{o1.id}:shared",
+        f"fill:{o2.id}:shared",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -215,8 +320,26 @@ async def test_duplicate_fill_emits_no_execution_event(any_store):
     await any_store.initialize()
     sess = await any_store.get_current_session()
     buy = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
-    await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="dup", filled_at=_TS, session_id=sess.id)
-    result = await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="dup", filled_at=_TS, session_id=sess.id)
+    await any_store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="dup",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
+    result = await any_store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="dup",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     assert result.status == "duplicate"
     # The duplicate wrote no fill, so it must write no shadow event either.
     assert len(await any_store.get_execution_events()) == 1
@@ -233,5 +356,7 @@ async def test_rejected_invalid_fill_emits_no_execution_event(any_store):
     sess = await any_store.get_current_session()
     buy = await _order(any_store, "AAPL", OrderSide.BUY, 100, sess.id)
     with pytest.raises(InvalidFillError):
-        await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 0.0, filled_at=_TS, session_id=sess.id)
+        await any_store.append_fill(
+            buy.id, "AAPL", OrderSide.BUY, 100, 0.0, filled_at=_TS, session_id=sess.id
+        )
     assert await any_store.get_execution_events() == []

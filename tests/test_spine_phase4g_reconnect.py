@@ -30,7 +30,7 @@ async def _absent_open_order(store):
     )
     await store.transition_candidate(cand.id, CandidateStatus.APPROVED)
     await store.create_order_for_candidate(cand.id)
-    await _submit_pending_orders(store, MockBrokerAdapter())   # throwaway owns the id
+    await _submit_pending_orders(store, MockBrokerAdapter())  # throwaway owns the id
 
 
 async def test_reconnect_on_clean_state_reconciles_to_active(any_store):
@@ -52,14 +52,14 @@ async def test_reconnect_failure_stays_reducing_never_halted(any_store):
     adapter = MockBrokerAdapter()
     adapter.fail_next_positions(BrokerError("stream flap + REST down"))
     await on_stream_reconnect(any_store, adapter, Settings())
-    assert await any_store.current_trading_state() is R       # R3: never auto-Halt
+    assert await any_store.current_trading_state() is R  # R3: never auto-Halt
 
 
 async def test_reconnect_under_kill_switch_stays_halted(any_store):
     await any_store.initialize()
     await any_store.set_kill_switch(True)
     await on_stream_reconnect(any_store, MockBrokerAdapter(), Settings())
-    assert await any_store.current_trading_state() is H       # kill dominates
+    assert await any_store.current_trading_state() is H  # kill dominates
 
 
 async def test_reconnect_is_noop_when_reconciliation_disabled(any_store):
@@ -67,4 +67,4 @@ async def test_reconnect_is_noop_when_reconciliation_disabled(any_store):
     await on_stream_reconnect(
         any_store, MockBrokerAdapter(), Settings(reconciliation_enabled=False)
     )
-    assert await any_store.current_trading_state() is A       # untouched
+    assert await any_store.current_trading_state() is A  # untouched

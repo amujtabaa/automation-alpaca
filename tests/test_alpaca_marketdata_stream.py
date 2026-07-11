@@ -34,9 +34,13 @@ def _stream() -> AlpacaMarketDataStream:
     return AlpacaMarketDataStream("fake-key", "fake-secret", stale_after_minutes=5.0)
 
 
-def _fake_snapshot(*, last_price=None, bid=None, ask=None, volume=None, prev_close=None):
+def _fake_snapshot(
+    *, last_price=None, bid=None, ask=None, volume=None, prev_close=None
+):
     return SimpleNamespace(
-        latest_trade=SimpleNamespace(price=last_price) if last_price is not None else None,
+        latest_trade=SimpleNamespace(price=last_price)
+        if last_price is not None
+        else None,
         latest_quote=(
             SimpleNamespace(bid_price=bid, ask_price=ask) if bid is not None else None
         ),
@@ -54,20 +58,31 @@ class TestIsFeedStale:
 
     def test_within_threshold_not_stale(self):
         now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-        assert _is_feed_stale(now - timedelta(minutes=4), now, timedelta(minutes=5)) is False
+        assert (
+            _is_feed_stale(now - timedelta(minutes=4), now, timedelta(minutes=5))
+            is False
+        )
 
     def test_exactly_at_threshold_not_stale(self):
         now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-        assert _is_feed_stale(now - timedelta(minutes=5), now, timedelta(minutes=5)) is False
+        assert (
+            _is_feed_stale(now - timedelta(minutes=5), now, timedelta(minutes=5))
+            is False
+        )
 
     def test_past_threshold_is_stale(self):
         now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-        assert _is_feed_stale(now - timedelta(minutes=6), now, timedelta(minutes=5)) is True
+        assert (
+            _is_feed_stale(now - timedelta(minutes=6), now, timedelta(minutes=5))
+            is True
+        )
 
 
 class TestSeedFromSnapshot:
     def test_full_snapshot(self):
-        raw = _fake_snapshot(last_price=103.0, bid=102.9, ask=103.1, volume=100_000, prev_close=100.0)
+        raw = _fake_snapshot(
+            last_price=103.0, bid=102.9, ask=103.1, volume=100_000, prev_close=100.0
+        )
         assert _seed_from_snapshot(raw) == (103.0, 102.9, 103.1, 100_000, 100.0)
 
     def test_missing_latest_trade(self):
@@ -85,7 +100,15 @@ class TestSubscribe:
     async def test_seeds_snapshot_and_registers_handlers(self):
         stream = _stream()
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=103.0, bid=102.9, ask=103.1, volume=100_000, prev_close=100.0)}
+            return_value={
+                "AAPL": _fake_snapshot(
+                    last_price=103.0,
+                    bid=102.9,
+                    ask=103.1,
+                    volume=100_000,
+                    prev_close=100.0,
+                )
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
@@ -111,7 +134,11 @@ class TestSubscribe:
         def fake_get_snapshot(request):
             symbol = request.symbol_or_symbols
             prices = {"AAPL": 100.0, "MSFT": 200.0, "GOOG": 300.0}
-            return {symbol: _fake_snapshot(last_price=prices[symbol], prev_close=prices[symbol] - 1)}
+            return {
+                symbol: _fake_snapshot(
+                    last_price=prices[symbol], prev_close=prices[symbol] - 1
+                )
+            }
 
         stream._historical.get_stock_snapshot = Mock(side_effect=fake_get_snapshot)
         stream._stream.subscribe_trades = Mock()
@@ -169,7 +196,9 @@ class TestSubscribe:
 
     async def test_seed_failure_does_not_raise_and_yields_null_fields(self):
         stream = _stream()
-        stream._historical.get_stock_snapshot = Mock(side_effect=RuntimeError("network down"))
+        stream._historical.get_stock_snapshot = Mock(
+            side_effect=RuntimeError("network down")
+        )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
 
@@ -194,7 +223,9 @@ class TestSubscribe:
 class TestUnsubscribe:
     async def test_removes_snapshot_and_calls_sdk(self):
         stream = _stream()
-        stream._historical.get_stock_snapshot = Mock(return_value={"AAPL": _fake_snapshot(last_price=1.0, prev_close=1.0)})
+        stream._historical.get_stock_snapshot = Mock(
+            return_value={"AAPL": _fake_snapshot(last_price=1.0, prev_close=1.0)}
+        )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
         stream._stream.unsubscribe_trades = Mock()
@@ -229,7 +260,11 @@ class TestListSnapshots:
         def fake_get_snapshot(request):
             symbol = request.symbol_or_symbols
             prices = {"AAPL": 100.0, "MSFT": 200.0}
-            return {symbol: _fake_snapshot(last_price=prices[symbol], prev_close=prices[symbol] - 1)}
+            return {
+                symbol: _fake_snapshot(
+                    last_price=prices[symbol], prev_close=prices[symbol] - 1
+                )
+            }
 
         stream._historical.get_stock_snapshot = Mock(side_effect=fake_get_snapshot)
         stream._stream.subscribe_trades = Mock()
@@ -239,13 +274,18 @@ class TestListSnapshots:
         snapshots = await stream.list_snapshots()
 
         assert {s.symbol for s in snapshots} == {"AAPL", "MSFT"}
-        assert {s.symbol: s.last_price for s in snapshots} == {"AAPL": 100.0, "MSFT": 200.0}
+        assert {s.symbol: s.last_price for s in snapshots} == {
+            "AAPL": 100.0,
+            "MSFT": 200.0,
+        }
 
     async def test_stale_flag_applies_uniformly_to_every_snapshot(self):
         stream = _stream()
         stream._historical.get_stock_snapshot = Mock(
             side_effect=lambda request: {
-                request.symbol_or_symbols: _fake_snapshot(last_price=1.0, prev_close=1.0)
+                request.symbol_or_symbols: _fake_snapshot(
+                    last_price=1.0, prev_close=1.0
+                )
             }
         )
         stream._stream.subscribe_trades = Mock()
@@ -279,7 +319,9 @@ class TestLiveHandlers:
     async def test_trade_updates_price_and_accumulates_volume(self):
         stream = _stream()
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
@@ -298,7 +340,9 @@ class TestLiveHandlers:
         # Strategy Engine's min-volume gate, or sub-share volume silently vanishes.
         stream = _stream()
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=100, prev_close=99.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=100.0, volume=100, prev_close=99.0)
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
@@ -319,7 +363,9 @@ class TestLiveHandlers:
         stream._stream.subscribe_quotes = Mock()
         await stream.subscribe(["AAPL"])
 
-        await stream._on_quote(SimpleNamespace(symbol="AAPL", bid_price=101.9, ask_price=102.1))
+        await stream._on_quote(
+            SimpleNamespace(symbol="AAPL", bid_price=101.9, ask_price=102.1)
+        )
 
         snap = await stream.get_snapshot("AAPL")
         assert snap.bid == 101.9
@@ -334,7 +380,9 @@ class TestLiveHandlers:
     async def test_quote_for_unsubscribed_symbol_is_ignored(self):
         stream = _stream()
         # AAPL was never subscribed -> _on_quote must not raise or resurrect it.
-        await stream._on_quote(SimpleNamespace(symbol="AAPL", bid_price=100.0, ask_price=100.1))
+        await stream._on_quote(
+            SimpleNamespace(symbol="AAPL", bid_price=100.0, ask_price=100.1)
+        )
         assert await stream.get_snapshot("AAPL") is None
 
     async def test_reseed_null_prev_close_keeps_existing_value(self, monkeypatch):
@@ -342,7 +390,9 @@ class TestLiveHandlers:
         day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
@@ -391,28 +441,40 @@ class TestDayBoundaryReseed:
         day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)  # 11:00 ET
         monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
         await stream.subscribe(["AAPL"])
 
-        later_same_day = datetime(2026, 6, 1, 19, 0, tzinfo=timezone.utc)  # 15:00 ET, still day1
-        monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: later_same_day)
+        later_same_day = datetime(
+            2026, 6, 1, 19, 0, tzinfo=timezone.utc
+        )  # 15:00 ET, still day1
+        monkeypatch.setattr(
+            "app.marketdata.alpaca_stream.utcnow", lambda: later_same_day
+        )
 
         await stream._on_trade(SimpleNamespace(symbol="AAPL", price=101.0, size=10))
 
-        assert stream._historical.get_stock_snapshot.call_count == 1  # only the initial seed
+        assert (
+            stream._historical.get_stock_snapshot.call_count == 1
+        )  # only the initial seed
         snap = await stream.get_snapshot("AAPL")
         assert snap.prev_close == 99.0
         assert snap.volume == 1_000 + 10
 
-    async def test_next_trading_day_trade_reseeds_prev_close_and_volume_baseline(self, monkeypatch):
+    async def test_next_trading_day_trade_reseeds_prev_close_and_volume_baseline(
+        self, monkeypatch
+    ):
         stream = _stream()
         day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
@@ -421,15 +483,21 @@ class TestDayBoundaryReseed:
         day2 = datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc)  # next ET calendar day
         monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day2)
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=103.0, volume=500, prev_close=102.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=103.0, volume=500, prev_close=102.0)
+            }
         )
 
         await stream._on_trade(SimpleNamespace(symbol="AAPL", price=104.0, size=25))
 
         stream._historical.get_stock_snapshot.assert_called_once()  # the reseed call
         snap = await stream.get_snapshot("AAPL")
-        assert snap.prev_close == 102.0  # refreshed from the day2 baseline, not day1's 99.0
-        assert snap.volume == 500 + 25  # new baseline + this trade, not stacked on day1's 1,000
+        assert (
+            snap.prev_close == 102.0
+        )  # refreshed from the day2 baseline, not day1's 99.0
+        assert (
+            snap.volume == 500 + 25
+        )  # new baseline + this trade, not stacked on day1's 1,000
         assert snap.last_price == 104.0  # the live trade price is still applied
 
     async def test_reseed_null_prev_close_keeps_existing_value(self, monkeypatch):
@@ -437,7 +505,9 @@ class TestDayBoundaryReseed:
         day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
@@ -455,14 +525,18 @@ class TestDayBoundaryReseed:
         snap = await stream.get_snapshot("AAPL")
         assert snap.prev_close == 99.0  # preserved, not clobbered with None
 
-    async def test_unsubscribe_during_reseed_does_not_resurrect_symbol(self, monkeypatch):
+    async def test_unsubscribe_during_reseed_does_not_resurrect_symbol(
+        self, monkeypatch
+    ):
         import time
 
         stream = _stream()
         day1 = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("app.marketdata.alpaca_stream.utcnow", lambda: day1)
         stream._historical.get_stock_snapshot = Mock(
-            return_value={"AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)}
+            return_value={
+                "AAPL": _fake_snapshot(last_price=100.0, volume=1_000, prev_close=99.0)
+            }
         )
         stream._stream.subscribe_trades = Mock()
         stream._stream.subscribe_quotes = Mock()
@@ -475,7 +549,9 @@ class TestDayBoundaryReseed:
 
         def slow_reseed(request):
             time.sleep(0.1)  # runs in a worker thread (asyncio.to_thread)
-            return {"AAPL": _fake_snapshot(last_price=103.0, volume=500, prev_close=102.0)}
+            return {
+                "AAPL": _fake_snapshot(last_price=103.0, volume=500, prev_close=102.0)
+            }
 
         stream._historical.get_stock_snapshot = Mock(side_effect=slow_reseed)
 

@@ -106,7 +106,9 @@ _TERMINAL_ORDER_STATUSES = frozenset(
     {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
 
-if TYPE_CHECKING:  # annotations only — no runtime import edge added until a wave uses them
+if (
+    TYPE_CHECKING
+):  # annotations only — no runtime import edge added until a wave uses them
     from app.approval.gate import ApprovalGate
     from app.broker.adapter import BrokerAdapter
     from app.config import Settings
@@ -142,7 +144,9 @@ _APPROVE_MAPPED_ERRORS = (
 )
 
 
-def _facade_error_for(exc: Exception) -> "ConflictError | EntityNotFoundError | InvalidInputError":
+def _facade_error_for(
+    exc: Exception,
+) -> "ConflictError | EntityNotFoundError | InvalidInputError":
     """Map a known store ``StoreError`` (or ``normalize_symbol``'s ``ValueError``)
     to its status-carrying facade error, BY SEMANTIC KIND — the single source of
     truth for the 404/409/422 policy (see ``app.facade.errors``). Callers that
@@ -189,6 +193,7 @@ def _normalize_or_422(symbol: str) -> str:
         return normalize_symbol(symbol)
     except ValueError as exc:
         raise InvalidInputError(str(exc)) from exc
+
 
 # No auth/actor-tracking system exists yet (docs/MIGRATION_MATRIX.md: "Auth
 # for command endpoints: absent/limited"). The command Protocol's `actor`
@@ -477,9 +482,7 @@ class StoreBackedQueryFacade:
             avg = position.average_price
             floor = (
                 floor_price(avg, config.stop_loss_pct)
-                if avg is not None
-                and finite_number_reason(avg) is None
-                and avg > 0
+                if avg is not None and finite_number_reason(avg) is None and avg > 0
                 else None
             )
             observed = None
@@ -887,9 +890,7 @@ class StoreBackedCommandFacade:
                 f"broker cancel failed; order unchanged: {exc}"
             ) from exc
         except Exception as exc:  # noqa: BLE001 - any adapter failure is upstream
-            raise BrokerGatewayError(
-                "broker cancel failed; order unchanged"
-            ) from exc
+            raise BrokerGatewayError("broker cancel failed; order unchanged") from exc
         # Move to cancel_pending; the loop reconciles it to terminal. If this races
         # a terminal (a fill landed first), the 409 is a transient-window response.
         return await self._cancel_transition(
@@ -906,9 +907,7 @@ class StoreBackedCommandFacade:
         threads the operator onto the cancel's ``order_transition`` audit event
         (UC-002)."""
         try:
-            return await self._store.transition_order(
-                order_id, new_status, actor=actor
-            )
+            return await self._store.transition_order(order_id, new_status, actor=actor)
         except UnknownEntityError as exc:  # pragma: no cover - fetched above
             raise EntityNotFoundError(str(exc)) from exc
         except OrderTransitionError as exc:

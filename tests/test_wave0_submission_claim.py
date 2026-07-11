@@ -79,7 +79,9 @@ class TestClaimMechanics:
 
     async def test_reclaim_of_claimed_order_is_skipped(self, any_store):
         order = await _created_order(any_store)
-        assert (await any_store.claim_order_for_submission(order.id)).outcome == CLAIM_CLAIMED
+        assert (
+            await any_store.claim_order_for_submission(order.id)
+        ).outcome == CLAIM_CLAIMED
         # Already SUBMITTING -> a second claim is a no-op skip (no double submit).
         again = await any_store.claim_order_for_submission(order.id)
         assert again.outcome == CLAIM_SKIPPED
@@ -130,10 +132,16 @@ class TestRecoveryLedger:
     async def test_status_filter(self, any_store):
         rec = await self._record(any_store)
         # Open view (the operator/loop filter) includes unresolved.
-        assert len(await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)) == 1
+        assert (
+            len(await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES))
+            == 1
+        )
         await any_store.update_submit_recovery(rec.id, cleanup_status=RECOVERY_RESOLVED)
         # A cleanly-resolved record drops out of the open view but stays in history.
-        assert await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES) == []
+        assert (
+            await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)
+            == []
+        )
         assert len(await any_store.list_submit_recoveries()) == 1
 
     async def test_needs_review_stays_in_the_open_operator_view(self, any_store):
@@ -142,12 +150,18 @@ class TestRecoveryLedger:
         has to see it until a human reconciles it (F-006/#4)."""
 
         rec = await self._record(any_store)
-        await any_store.update_submit_recovery(rec.id, cleanup_status=RECOVERY_NEEDS_REVIEW)
-        open_records = await any_store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)
+        await any_store.update_submit_recovery(
+            rec.id, cleanup_status=RECOVERY_NEEDS_REVIEW
+        )
+        open_records = await any_store.list_submit_recoveries(
+            statuses=RECOVERY_OPEN_STATUSES
+        )
         assert [r.id for r in open_records] == [rec.id]
         # But the recovery loop's own filter (strictly unresolved) excludes it —
         # it must not keep re-cancelling a needs-review record.
-        assert await any_store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED}) == []
+        assert (
+            await any_store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED}) == []
+        )
         # And it wrote a needs-review event, not a "resolved" one.
         types = {e.event_type for e in await any_store.list_events()}
         assert "submit_recovery_needs_review" in types

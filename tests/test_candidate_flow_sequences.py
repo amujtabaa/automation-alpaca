@@ -49,9 +49,18 @@ def client():
         # ever runs, so the store-level fix alone left this HTTP route open.
         # MockCandidateCreate now declares strict=True on both numeric fields,
         # which rejects bool/string outright as a clean 422 instead of coercing.
-        {"symbol": "AAPL", "suggested_quantity": True},  # bool coerces to 1 under lax mode
-        {"symbol": "AAPL", "suggested_quantity": False},  # bool coerces to 0 under lax mode
-        {"symbol": "AAPL", "suggested_quantity": "5"},  # numeric string coerces under lax mode
+        {
+            "symbol": "AAPL",
+            "suggested_quantity": True,
+        },  # bool coerces to 1 under lax mode
+        {
+            "symbol": "AAPL",
+            "suggested_quantity": False,
+        },  # bool coerces to 0 under lax mode
+        {
+            "symbol": "AAPL",
+            "suggested_quantity": "5",
+        },  # numeric string coerces under lax mode
         {"symbol": "AAPL", "suggested_limit_price": True},
         {"symbol": "AAPL", "suggested_limit_price": "1.5"},
     ],
@@ -70,7 +79,10 @@ def test_dev_inject_rejects_bad_input_without_500(client, payload):
         {"symbol": "AAPL"},  # all defaults
         {"symbol": "AAPL", "suggested_quantity": 10},
         {"symbol": "AAPL", "suggested_limit_price": 1.5},
-        {"symbol": "AAPL", "suggested_limit_price": 5},  # a whole-number int for the float field
+        {
+            "symbol": "AAPL",
+            "suggested_limit_price": 5,
+        },  # a whole-number int for the float field
     ],
 )
 def test_dev_inject_strict_numeric_fields_still_accept_genuine_numbers(client, payload):
@@ -94,7 +106,9 @@ def test_approve_then_close_preserves_ordered_expires_open(client):
     and ``pending``.)
     """
 
-    ordered_id = client.post("/api/dev/candidates", json={"symbol": "NVDA"}).json()["id"]
+    ordered_id = client.post("/api/dev/candidates", json={"symbol": "NVDA"}).json()[
+        "id"
+    ]
     pending_a = client.post("/api/dev/candidates", json={"symbol": "MSFT"}).json()["id"]
     pending_b = client.post("/api/dev/candidates", json={"symbol": "AMD"}).json()["id"]
 

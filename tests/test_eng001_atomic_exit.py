@@ -129,11 +129,17 @@ async def test_open_protection_exit_single_flight_dedups(any_store):
     await _hold(any_store, "AAPL", 100)
 
     await any_store.open_protection_exit(
-        symbol="AAPL", target_quantity=100, floor_price=9.5, observed_price=9.0,
+        symbol="AAPL",
+        target_quantity=100,
+        floor_price=9.5,
+        observed_price=9.0,
         average_price=10.0,
     )
     await any_store.open_protection_exit(
-        symbol="AAPL", target_quantity=100, floor_price=9.5, observed_price=9.0,
+        symbol="AAPL",
+        target_quantity=100,
+        floor_price=9.5,
+        observed_price=9.0,
         average_price=10.0,
     )
 

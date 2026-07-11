@@ -62,7 +62,9 @@ async def _absent_submitted(store, *, symbol="AAPL", qty=100, partial=0):
     await _submit_pending_orders(store, throwaway)  # CREATED→SUBMITTING→SUBMITTED
     if partial:
         throwaway.make_fill(
-            order.id, status=OrderStatus.PARTIALLY_FILLED, filled_quantity=partial,
+            order.id,
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_quantity=partial,
             fills=[BrokerFill("p1", partial, 1.0, utcnow())],
         )
         await _reconcile_open_orders(store, throwaway, _LEGACY)  # ingest the partial
@@ -107,7 +109,7 @@ async def test_absent_partial_resolves_to_canceled_fills_preserved(any_store):
     for _ in range(2):
         await _run_reconciliation(any_store, adapter, s)
     fresh = await any_store.get_order(order.id)
-    assert fresh.status is OrderStatus.CANCELED         # not REJECTED — it had fills
+    assert fresh.status is OrderStatus.CANCELED  # not REJECTED — it had fills
     assert fresh.filled_quantity == 40
     # Fills are preserved: the derived position still reflects the 40 that filled.
     assert (await any_store.get_position("AAPL")).quantity == 40
@@ -128,7 +130,7 @@ async def test_venue_has_the_order_so_it_is_never_resolved(any_store):
     for _ in range(5):
         await _run_reconciliation(any_store, adapter, s)
     assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
-    assert await _deferrals(any_store, order.id) == []   # nothing deferred/rejected
+    assert await _deferrals(any_store, order.id) == []  # nothing deferred/rejected
 
 
 # --------------------------------------------------------------------------- #
@@ -147,7 +149,8 @@ async def test_query_failure_never_rejects_and_surfaces_needs_review(any_store):
         assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
 
     errors = [
-        e for e in await _deferrals(any_store, order.id)
+        e
+        for e in await _deferrals(any_store, order.id)
         if (e.payload or {}).get("reason") == "query_error"
     ]
     assert errors and any((e.payload or {}).get("needs_review") for e in errors)
@@ -161,12 +164,12 @@ async def test_not_found_bound_is_consecutive_not_lifetime(any_store):
     order = await _absent_submitted(any_store)
     s = _settings(retries=2)
 
-    await _run_reconciliation(any_store, MockBrokerAdapter(), s)   # not_found streak=1
+    await _run_reconciliation(any_store, MockBrokerAdapter(), s)  # not_found streak=1
     assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
 
     present = MockBrokerAdapter()
     present.seed_venue_order(order.id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, []))
-    await _run_reconciliation(any_store, present, s)               # present → streak reset
+    await _run_reconciliation(any_store, present, s)  # present → streak reset
     assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
 
     # Absent again: the streak restarts from 0, so ONE absent is only streak=1 (< 2).
@@ -192,9 +195,9 @@ async def test_query_errors_do_not_erode_the_not_found_bound(any_store):
 
     # Now clean confirmed-absent: still needs the FULL not_found bound (2), proving
     # the query errors didn't erode it.
-    await _run_reconciliation(any_store, adapter, s)   # not_found #1 → defer
+    await _run_reconciliation(any_store, adapter, s)  # not_found #1 → defer
     assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
-    await _run_reconciliation(any_store, adapter, s)   # not_found #2 → REJECT
+    await _run_reconciliation(any_store, adapter, s)  # not_found #2 → REJECT
     assert (await any_store.get_order(order.id)).status is OrderStatus.REJECTED
 
 
@@ -207,7 +210,7 @@ async def test_reject_is_event_authoritative(any_store):
     adapter = MockBrokerAdapter()
     s = _settings(retries=1)
 
-    await _run_reconciliation(any_store, adapter, s)   # retries=1 → reject at once
+    await _run_reconciliation(any_store, adapter, s)  # retries=1 → reject at once
     assert (await any_store.get_order(order.id)).status is OrderStatus.REJECTED
     exec_events = [
         e for e in await any_store.get_execution_events() if e.order_id == order.id
@@ -241,7 +244,7 @@ async def test_managed_open_order_reported_by_venue_is_not_touched(any_store):
     await any_store.transition_candidate(cand.id, CandidateStatus.APPROVED)
     order = await any_store.create_order_for_candidate(cand.id)
     adapter = MockBrokerAdapter()
-    await _submit_pending_orders(any_store, adapter)   # real submit → adapter knows it
+    await _submit_pending_orders(any_store, adapter)  # real submit → adapter knows it
     s = _settings(retries=1)
 
     for _ in range(5):

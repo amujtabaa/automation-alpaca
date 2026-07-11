@@ -92,6 +92,7 @@ _SELL_ORDER_TERMINAL_STATUSES = frozenset(
     {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
 
+
 def _event(msg: str) -> None:
     """``hypothesis.event()`` for observability, but a no-op outside a Hypothesis
     test context — the deterministic driver at the bottom of this file invokes the
@@ -207,7 +208,9 @@ class LifecycleMachine(RuleBasedStateMachine):
         try:
             cand = self._run(
                 self.store.create_candidate(
-                    symbol, suggested_quantity=quantity, suggested_limit_price=round(limit, 2)
+                    symbol,
+                    suggested_quantity=quantity,
+                    suggested_limit_price=round(limit, 2),
                 )
             )
         except SessionClosedError:
@@ -225,7 +228,9 @@ class LifecycleMachine(RuleBasedStateMachine):
         self._run(self.store.transition_candidate(candidate, CandidateStatus.APPROVED))
         try:
             order = self._run(
-                self.store.create_order_for_candidate(candidate, risk_limits=RiskLimits())
+                self.store.create_order_for_candidate(
+                    candidate, risk_limits=RiskLimits()
+                )
             )
         except (
             OrderIntentBlockedError,
@@ -452,14 +457,22 @@ class LifecycleMachine(RuleBasedStateMachine):
             return
         delta = max(1, min(remaining, round(remaining * portion)))
         cumulative = o.filled_quantity + delta
-        status = OrderStatus.FILLED if cumulative >= o.quantity else OrderStatus.PARTIALLY_FILLED
+        status = (
+            OrderStatus.FILLED
+            if cumulative >= o.quantity
+            else OrderStatus.PARTIALLY_FILLED
+        )
         self.sim.script(
             o.broker_order_id,
             [
                 BrokerOrderUpdate(
                     status,
                     cumulative,
-                    [BrokerFill(self._next_sfid(), delta, o.limit_price or 1.0, utcnow())],
+                    [
+                        BrokerFill(
+                            self._next_sfid(), delta, o.limit_price or 1.0, utcnow()
+                        )
+                    ],
                 )
             ],
         )
@@ -477,7 +490,9 @@ class LifecycleMachine(RuleBasedStateMachine):
                 self._run(self.store.transition_order(order, OrderStatus.CANCELED))
             else:
                 self._run(self.sim.cancel_order(o.broker_order_id))
-                self._run(self.store.transition_order(order, OrderStatus.CANCEL_PENDING))
+                self._run(
+                    self.store.transition_order(order, OrderStatus.CANCEL_PENDING)
+                )
         except (OrderTransitionError, UnknownEntityError):
             # Raced to a terminal state between the read and the transition.
             pass
@@ -604,7 +619,11 @@ class LifecycleMachine(RuleBasedStateMachine):
                 BrokerOrderUpdate(
                     new_status,
                     cumulative,
-                    [BrokerFill(self._next_sfid(), delta, o.limit_price or 1.0, utcnow())],
+                    [
+                        BrokerFill(
+                            self._next_sfid(), delta, o.limit_price or 1.0, utcnow()
+                        )
+                    ],
                 )
             ],
         )
@@ -768,8 +787,7 @@ class LifecycleMachine(RuleBasedStateMachine):
             _COVERAGE["needs_review_present"] += 1
             _event("needs_review recovery record present")
         if any(
-            o.status is OrderStatus.SUBMITTING and not o.broker_order_id
-            for o in orders
+            o.status is OrderStatus.SUBMITTING and not o.broker_order_id for o in orders
         ):
             _COVERAGE["stale_submitting_present"] += 1
         # Accumulate the peak for teardown's single target() call.

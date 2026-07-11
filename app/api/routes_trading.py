@@ -164,7 +164,9 @@ async def list_sell_intents(
     ``session_id`` / ``symbol`` filters mirror the store method."""
 
     try:
-        return await query_facade.list_sell_intents(session_id=session_id, symbol=symbol)
+        return await query_facade.list_sell_intents(
+            session_id=session_id, symbol=symbol
+        )
     except FacadeError as exc:
         raise facade_error_to_http(exc) from exc
 

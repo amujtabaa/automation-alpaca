@@ -68,14 +68,14 @@ class ReviewView(BaseModel):
 class MarketSnapshotView(BaseModel):
     """One symbol's current market-data snapshot for the cockpit (Phase 5/6).
 
-    The facade's typed read surface for ``GET /api/marketdata/snapshots``: mirrors
-    ``app.marketdata.service.MarketSnapshot`` (working data, never persisted) plus
-    ``pct_move``, which the facade computes with the SAME ``app.features.pct_move``
-    the Strategy Engine decides on — so the route stops importing ``app.features``
-    and the market-data port, and the cockpit never re-derives the number. Field
-    order matches the former ``MarketSnapshotResponse``. (``volume`` is a float —
-REV-0002 F-003 — so a whole-share value renders as ``100000.0``; no consumer of
-this endpoint relies on an integer JSON token.)"""
+        The facade's typed read surface for ``GET /api/marketdata/snapshots``: mirrors
+        ``app.marketdata.service.MarketSnapshot`` (working data, never persisted) plus
+        ``pct_move``, which the facade computes with the SAME ``app.features.pct_move``
+        the Strategy Engine decides on — so the route stops importing ``app.features``
+        and the market-data port, and the cockpit never re-derives the number. Field
+        order matches the former ``MarketSnapshotResponse``. (``volume`` is a float —
+    REV-0002 F-003 — so a whole-share value renders as ``100000.0``; no consumer of
+    this endpoint relies on an integer JSON token.)"""
 
     symbol: str
     last_price: Optional[float]

@@ -89,11 +89,15 @@ async def test_rejected_fill_against_known_order_still_correlates(any_store):
     # It must still correlate under the candidate's key, like every other fill
     # event, so incident reconstruction sees the rejection.
     with pytest.raises(Exception):
-        await store.append_fill(order.id, "AAPL", OrderSide.BUY, 0, 1.0, source_fill_id="bad")
+        await store.append_fill(
+            order.id, "AAPL", OrderSide.BUY, 0, 1.0, source_fill_id="bad"
+        )
 
     corr = await store.list_events(correlation_id=cand.id)
     rejected = [e for e in corr if e.event_type == "fill_rejected_invalid"]
-    assert rejected, "the malformed-fill rejection must appear under the candidate's key"
+    assert rejected, (
+        "the malformed-fill rejection must appear under the candidate's key"
+    )
     assert all(e.correlation_id == cand.id for e in rejected)
 
 
@@ -139,9 +143,7 @@ async def test_non_candidate_events_have_no_correlation_id(any_store):
     store = any_store
     await store.initialize()
     # A market-data-style event names no candidate -> correlation_id stays None.
-    await store.append_event(
-        "market_data_stale", symbol="AAPL", payload={"minutes": 6}
-    )
+    await store.append_event("market_data_stale", symbol="AAPL", payload={"minutes": 6})
     events = await store.list_events(event_type="market_data_stale")
     assert events and all(e.correlation_id is None for e in events)
 

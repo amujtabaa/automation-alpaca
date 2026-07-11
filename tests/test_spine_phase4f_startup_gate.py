@@ -83,17 +83,21 @@ async def test_kill_switch_dominates_startup_parity(any_store):
 async def test_divergence_then_resolution_lifts_to_active(any_store):
     await any_store.initialize()
     await _absent_open_order(any_store)
-    settings = Settings(reconcile_recent_threshold_ms=0, reconcile_open_check_missing_retries=1)
+    settings = Settings(
+        reconcile_recent_threshold_ms=0, reconcile_open_check_missing_retries=1
+    )
     await run_startup_reconcile(any_store, MockBrokerAdapter(), settings)
-    assert await any_store.current_trading_state() is R      # absent order pending
+    assert await any_store.current_trading_state() is R  # absent order pending
 
     # The loop keeps re-checking each tick (drive_reconcile_state=True). One more
     # tick resolves the absent order (retries=1 → REJECTED) → next pass is clean →
     # parity → Active.
-    await run_monitoring_tick(any_store, MockBrokerAdapter(), settings,
-                              drive_reconcile_state=True)
-    await run_monitoring_tick(any_store, MockBrokerAdapter(), settings,
-                              drive_reconcile_state=True)
+    await run_monitoring_tick(
+        any_store, MockBrokerAdapter(), settings, drive_reconcile_state=True
+    )
+    await run_monitoring_tick(
+        any_store, MockBrokerAdapter(), settings, drive_reconcile_state=True
+    )
     assert await any_store.current_trading_state() is A
 
 
@@ -106,4 +110,4 @@ async def test_direct_tick_never_drives_trading_state(any_store):
     # even with a divergent venue picture.
     await _absent_open_order(any_store)
     await run_monitoring_tick(any_store, MockBrokerAdapter(), _NO_RECENT)
-    assert await any_store.current_trading_state() is A       # unchanged (Active)
+    assert await any_store.current_trading_state() is A  # unchanged (Active)

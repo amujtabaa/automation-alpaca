@@ -257,9 +257,7 @@ class MockBrokerAdapter(BrokerAdapter):
             order_id, BrokerOrderUpdate(status, filled_quantity, fills)
         )
 
-    def seed_venue_order(
-        self, client_order_id: str, update: BrokerOrderUpdate
-    ) -> None:
+    def seed_venue_order(self, client_order_id: str, update: BrokerOrderUpdate) -> None:
         """Simulate that the venue HAS an order under ``client_order_id`` (ADR-002)
         — e.g. an ambiguous submit that actually reached Alpaca even though
         ``submit_order`` raised. Independent of the submit path, so a test can set

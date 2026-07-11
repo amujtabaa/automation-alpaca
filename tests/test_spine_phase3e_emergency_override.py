@@ -31,11 +31,14 @@ pytestmark = pytest.mark.anyio
 # --------------------------------------------------------------------------- #
 # Projector — active_emergency_reduce_overrides (latest-wins, {session, symbol})
 # --------------------------------------------------------------------------- #
-def _ovr(session_id: str, symbol: str, seq: int, *, resolved: bool = False) -> ExecutionEvent:
+def _ovr(
+    session_id: str, symbol: str, seq: int, *, resolved: bool = False
+) -> ExecutionEvent:
     return ExecutionEvent(
         sequence=seq,
         event_type=(
-            ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE_RESOLVED if resolved
+            ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE_RESOLVED
+            if resolved
             else ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE
         ),
         source=EventSource.ENGINE,
@@ -81,7 +84,9 @@ def test_production_builder_stamps_local_authority_and_payload():
     assert grant.symbol == "aapl"
     assert grant.payload == {"actor": "op", "reason": "r", "resolved": False}
 
-    resolved = emergency_reduce_override_event("s1", "aapl", actor="op", reason="r", resolved=True)
+    resolved = emergency_reduce_override_event(
+        "s1", "aapl", actor="op", reason="r", resolved=True
+    )
     assert resolved.event_type is ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE_RESOLVED
     assert resolved.payload["resolved"] is True
 
@@ -93,7 +98,9 @@ async def test_store_grant_then_resolve_round_trip(any_store):
     await any_store.initialize()
     assert await any_store.list_emergency_reduce_overrides() == set()
 
-    await any_store.grant_emergency_reduce_override("AAPL", actor="op1", reason="halt exit")
+    await any_store.grant_emergency_reduce_override(
+        "AAPL", actor="op1", reason="halt exit"
+    )
     assert await any_store.list_emergency_reduce_overrides() == {"AAPL"}
     # event_truth: the list == the fold of the event log.
     session = await any_store.get_current_session()
@@ -101,16 +108,21 @@ async def test_store_grant_then_resolve_round_trip(any_store):
         await any_store.get_execution_events(), session.id
     ) == {"AAPL"}
 
-    await any_store.resolve_emergency_reduce_override("AAPL", actor="op1", reason="done")
+    await any_store.resolve_emergency_reduce_override(
+        "AAPL", actor="op1", reason="done"
+    )
     assert await any_store.list_emergency_reduce_overrides() == set()
 
 
 async def test_store_grant_writes_execution_event_and_audit(any_store):
     await any_store.initialize()
-    await any_store.grant_emergency_reduce_override("aapl", actor="op1", reason="halt exit")
+    await any_store.grant_emergency_reduce_override(
+        "aapl", actor="op1", reason="halt exit"
+    )
 
     ov = [
-        e for e in await any_store.get_execution_events()
+        e
+        for e in await any_store.get_execution_events()
         if e.event_type is ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE
     ]
     assert len(ov) == 1
@@ -141,7 +153,9 @@ async def test_dual_store_override_parity(tmp_path):
             await store.initialize()
             await store.grant_emergency_reduce_override("AAPL", actor="op", reason="r")
             await store.grant_emergency_reduce_override("MSFT", actor="op", reason="r")
-            await store.resolve_emergency_reduce_override("MSFT", actor="op", reason="r")
+            await store.resolve_emergency_reduce_override(
+                "MSFT", actor="op", reason="r"
+            )
         assert await memory.list_emergency_reduce_overrides() == {"AAPL"}
         assert await sqlite.list_emergency_reduce_overrides() == {"AAPL"}
     finally:
@@ -160,7 +174,9 @@ async def test_grant_is_inert_does_not_block_or_alter_position(any_store):
     buy = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
     )
-    await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id)
+    await any_store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+    )
     await any_store.transition_order(buy.id, OrderStatus.CANCELED)
 
     await any_store.grant_emergency_reduce_override("AAPL", actor="op", reason="r")

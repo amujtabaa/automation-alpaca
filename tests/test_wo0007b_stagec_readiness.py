@@ -33,7 +33,9 @@ async def _new_order(store, symbol="AAPL", qty=10):
     await store.initialize()
     sess = await store.get_current_session()
     cand = await store.create_candidate(symbol, session_id=sess.id)
-    return await store.create_order_for_test(cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id)
+    return await store.create_order_for_test(
+        cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id
+    )
 
 
 async def _project_status(store, order):
@@ -79,7 +81,9 @@ async def test_projection_matches_column_live_cancel_pending(any_store):
     # The live pending-cancel: SUBMITTED -> CANCEL_PENDING (not yet CANCELED).
     order = await _new_order(any_store)
     await any_store.claim_order_for_submission(order.id)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1")
+    await any_store.transition_order(
+        order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1"
+    )
     await any_store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
     proj, row = await _assert_matches(any_store, order)
     assert proj.status is OrderStatus.CANCEL_PENDING
@@ -88,10 +92,18 @@ async def test_projection_matches_column_live_cancel_pending(any_store):
 async def test_projection_matches_column_filled_with_quantity(any_store):
     order = await _new_order(any_store, qty=10)
     await any_store.claim_order_for_submission(order.id)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1")
-    await any_store.append_fill(order.id, "AAPL", OrderSide.BUY, 4, 10.0, session_id=order.session_id)
-    await any_store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4)
-    await any_store.append_fill(order.id, "AAPL", OrderSide.BUY, 6, 10.0, session_id=order.session_id)
+    await any_store.transition_order(
+        order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1"
+    )
+    await any_store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 4, 10.0, session_id=order.session_id
+    )
+    await any_store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4
+    )
+    await any_store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 6, 10.0, session_id=order.session_id
+    )
     await any_store.transition_order(order.id, OrderStatus.FILLED, filled_quantity=10)
 
     proj, row = await _assert_matches(any_store, order)
@@ -103,7 +115,9 @@ async def test_projection_matches_column_filled_with_quantity(any_store):
 async def test_projection_matches_column_canceled_via_cancel_pending(any_store):
     order = await _new_order(any_store)
     await any_store.claim_order_for_submission(order.id)
-    await any_store.transition_order(order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1")
+    await any_store.transition_order(
+        order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1"
+    )
     await any_store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
     await any_store.transition_order(order.id, OrderStatus.CANCELED)
     proj, row = await _assert_matches(any_store, order)
@@ -120,7 +134,9 @@ async def test_projection_matches_column_rejected(any_store):
 
 async def test_projection_matches_column_never_submitted_cancel(any_store):
     order = await _new_order(any_store)
-    await any_store.transition_order(order.id, OrderStatus.CANCELED)  # CREATED -> CANCELED
+    await any_store.transition_order(
+        order.id, OrderStatus.CANCELED
+    )  # CREATED -> CANCELED
     proj, row = await _assert_matches(any_store, order)
     assert proj.status is OrderStatus.CANCELED
 
@@ -134,9 +150,14 @@ async def test_status_projects_from_log_without_an_orders_row(any_store):
 
     def _ev(et, seq):
         return ExecutionEvent(
-            sequence=seq, event_type=et, source=EventSource.BROKER_REST,
-            authority=EventAuthority.BROKER_AUTHORITATIVE, dedupe_key=f"{et.value}:{oid}",
-            symbol="AAPL", side=OrderSide.BUY, order_id=oid,
+            sequence=seq,
+            event_type=et,
+            source=EventSource.BROKER_REST,
+            authority=EventAuthority.BROKER_AUTHORITATIVE,
+            dedupe_key=f"{et.value}:{oid}",
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            order_id=oid,
         )
 
     # No create_order — only events, appended straight to the log.
@@ -162,9 +183,13 @@ async def test_dual_store_projection_parity(tmp_path):
             await store.claim_order_for_submission(order.id)
             await store.transition_order(order.id, OrderStatus.CREATED)  # release
             await store.claim_order_for_submission(order.id)
-            await store.transition_order(order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1")
+            await store.transition_order(
+                order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1"
+            )
             await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
-            proj = project_order_status(await store.get_execution_events(), order.id, order.quantity)
+            proj = project_order_status(
+                await store.get_execution_events(), order.id, order.quantity
+            )
             results[name] = (proj.status, proj.filled_quantity)
         assert results["memory"] == results["sqlite"] == (OrderStatus.CANCEL_PENDING, 0)
     finally:

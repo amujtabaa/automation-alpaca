@@ -43,7 +43,9 @@ _TS = datetime(2026, 7, 7, 15, 30, tzinfo=timezone.utc)
 
 
 def _fill(symbol, side, qty, price):
-    return Fill(order_id="o", symbol=symbol, side=side, quantity=qty, price=price, filled_at=_TS)
+    return Fill(
+        order_id="o", symbol=symbol, side=side, quantity=qty, price=price, filled_at=_TS
+    )
 
 
 def _fill_event(symbol, side, qty, price, seq, key):
@@ -129,10 +131,18 @@ async def test_broker_overfill_blocks_autonomous_buy_for_the_symbol(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    buy = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id)
-    await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id)
-    sell = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id)
-    await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id)
+    buy = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await any_store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id
+    )
+    sell = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
+    )
+    await any_store.append_fill(
+        sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
+    )
     assert "AAPL" in await any_store.list_quarantined_symbols()
 
     # A new APPROVED AAPL candidate cannot dispatch an autonomous BUY order.
@@ -163,10 +173,32 @@ async def _overfill_script(store):
     await store.initialize()
     sess = await store.get_current_session()
     cand = await store.create_candidate("AAPL", session_id=sess.id)
-    buy = await store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 100, session_id=sess.id)
-    await store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="b1", filled_at=_TS, session_id=sess.id)
-    sell = await store.create_order_for_test(cand.id, "AAPL", OrderSide.SELL, 150, session_id=sess.id)
-    await store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0, source_fill_id="s1", filled_at=_TS, session_id=sess.id)
+    buy = await store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 100, session_id=sess.id
+    )
+    await store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="b1",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
+    sell = await store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.SELL, 150, session_id=sess.id
+    )
+    await store.append_fill(
+        sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        150,
+        1.0,
+        source_fill_id="s1",
+        filled_at=_TS,
+        session_id=sess.id,
+    )
     return sess
 
 
@@ -207,13 +239,18 @@ async def test_overfill_quarantine_dual_store_parity(tmp_path):
 # submission-claim gate never consulted quarantine. These pin the fixes.
 # --------------------------------------------------------------------------- #
 
+
 # --- Fix 2: apply_fill covers a recorded short with a CORRECT cost basis ---- #
 def test_apply_fill_covers_short_with_fresh_cost_basis():
     """A BUY that covers a recorded short and crosses back into a long must
     re-establish cost basis from the covering fill ALONE — never accumulate
     additively onto the zeroed short base (which inflated avg/exposure)."""
     # BUY 100 @ 1 -> long 100 @ 1.
-    p = apply_fill(Position(symbol="AAPL"), _fill("AAPL", OrderSide.BUY, 100, 1.0), allow_short=True)
+    p = apply_fill(
+        Position(symbol="AAPL"),
+        _fill("AAPL", OrderSide.BUY, 100, 1.0),
+        allow_short=True,
+    )
     # SELL 150 @ 10 -> overfill, short -50, no long basis.
     p = apply_fill(p, _fill("AAPL", OrderSide.SELL, 150, 10.0), allow_short=True)
     assert (p.quantity, p.cost_basis, p.average_price) == (-50, 0.0, None)
@@ -232,9 +269,17 @@ def test_apply_fill_cover_crossing_into_long_prices_only_the_remainder():
     """Covering a -50 short with a single BUY 150 @ 4 leaves +100 long, all
     acquired at the covering price 4.00 (the 50 that covered the short carry no
     long basis)."""
-    p = apply_fill(Position(symbol="AAPL"), _fill("AAPL", OrderSide.BUY, 100, 1.0), allow_short=True)
-    p = apply_fill(p, _fill("AAPL", OrderSide.SELL, 150, 9.0), allow_short=True)  # short -50
-    p = apply_fill(p, _fill("AAPL", OrderSide.BUY, 150, 4.0), allow_short=True)  # cover -> +100
+    p = apply_fill(
+        Position(symbol="AAPL"),
+        _fill("AAPL", OrderSide.BUY, 100, 1.0),
+        allow_short=True,
+    )
+    p = apply_fill(
+        p, _fill("AAPL", OrderSide.SELL, 150, 9.0), allow_short=True
+    )  # short -50
+    p = apply_fill(
+        p, _fill("AAPL", OrderSide.BUY, 150, 4.0), allow_short=True
+    )  # cover -> +100
     assert p.quantity == 100
     assert p.cost_basis == 400.0
     assert p.average_price == 4.0
@@ -242,9 +287,15 @@ def test_apply_fill_cover_crossing_into_long_prices_only_the_remainder():
 
 def test_apply_fill_partial_cover_stays_short_no_basis():
     """A BUY that only partially covers (still short) keeps cost_basis 0."""
-    p = apply_fill(Position(symbol="AAPL"), _fill("AAPL", OrderSide.BUY, 100, 1.0), allow_short=True)
+    p = apply_fill(
+        Position(symbol="AAPL"),
+        _fill("AAPL", OrderSide.BUY, 100, 1.0),
+        allow_short=True,
+    )
     p = apply_fill(p, _fill("AAPL", OrderSide.SELL, 150, 9.0), allow_short=True)  # -50
-    p = apply_fill(p, _fill("AAPL", OrderSide.BUY, 30, 8.0), allow_short=True)  # -20, still short
+    p = apply_fill(
+        p, _fill("AAPL", OrderSide.BUY, 30, 8.0), allow_short=True
+    )  # -20, still short
     assert (p.quantity, p.cost_basis, p.average_price) == (-20, 0.0, None)
 
 
@@ -262,7 +313,7 @@ def test_quarantine_is_latched_after_a_covering_buy_projector():
     events = [
         _fill_event("AAPL", OrderSide.BUY, 100, 1.0, 1, "k1"),
         _fill_event("AAPL", OrderSide.SELL, 150, 9.0, 2, "k2"),  # short -50 (crossed)
-        _fill_event("AAPL", OrderSide.BUY, 60, 8.0, 3, "k3"),    # back to +10
+        _fill_event("AAPL", OrderSide.BUY, 60, 8.0, 3, "k3"),  # back to +10
     ]
     # Current projected quantity is +10 (non-negative)...
     assert project_symbol_position(events, "AAPL").quantity == 10
@@ -278,15 +329,27 @@ async def test_covering_buy_does_not_lift_store_quarantine(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    buy = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id)
-    await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id)
-    sell = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id)
-    await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id)
+    buy = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await any_store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id
+    )
+    sell = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
+    )
+    await any_store.append_fill(
+        sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
+    )
     assert "AAPL" in await any_store.list_quarantined_symbols()
 
     # A covering BUY fill on a (pre-existing) order lifts the position to +10.
-    cover = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 60, session_id=session.id)
-    await any_store.append_fill(cover.id, "AAPL", OrderSide.BUY, 60, 8.0, session_id=session.id)
+    cover = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 60, session_id=session.id
+    )
+    await any_store.append_fill(
+        cover.id, "AAPL", OrderSide.BUY, 60, 8.0, session_id=session.id
+    )
     assert (await any_store.get_position("AAPL")).quantity == 10  # non-negative now
 
     # Quarantine is LATCHED — not lifted by the cover.
@@ -308,15 +371,25 @@ async def test_quarantine_holds_pre_existing_autonomous_buy_at_claim(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    buy = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id)
-    await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id)
+    buy = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await any_store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id
+    )
 
     # A pre-existing autonomous BUY, still CREATED (not yet claimed).
-    pre = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 10, session_id=session.id)
+    pre = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 10, session_id=session.id
+    )
 
     # Now a broker overfill quarantines AAPL.
-    sell = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id)
-    await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id)
+    sell = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
+    )
+    await any_store.append_fill(
+        sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
+    )
     assert "AAPL" in await any_store.list_quarantined_symbols()
 
     claim = await any_store.claim_order_for_submission(pre.id)
@@ -324,7 +397,9 @@ async def test_quarantine_holds_pre_existing_autonomous_buy_at_claim(any_store):
     assert claim.reason == "symbol_quarantined"
     # A non-quarantined symbol's autonomous BUY still claims normally.
     mcand = await any_store.create_candidate("MSFT", session_id=session.id)
-    mbuy = await any_store.create_order_for_test(mcand.id, "MSFT", OrderSide.BUY, 10, session_id=session.id)
+    mbuy = await any_store.create_order_for_test(
+        mcand.id, "MSFT", OrderSide.BUY, 10, session_id=session.id
+    )
     mclaim = await any_store.claim_order_for_submission(mbuy.id)
     assert mclaim.outcome != CLAIM_BLOCKED
 
@@ -337,21 +412,50 @@ async def test_replayed_overfill_fill_is_idempotent(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
     cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    buy = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id)
-    await any_store.append_fill(buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="b1", session_id=session.id)
-    sell = await any_store.create_order_for_test(cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id)
+    buy = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await any_store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id="b1",
+        session_id=session.id,
+    )
+    sell = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
+    )
 
-    first = await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0, source_fill_id="s1", session_id=session.id)
+    first = await any_store.append_fill(
+        sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        150,
+        1.0,
+        source_fill_id="s1",
+        session_id=session.id,
+    )
     assert first.status == "appended"
     assert (await any_store.get_position("AAPL")).quantity == -50
 
     # Re-poll: the identical fill must dedupe, not record a second short.
-    dup = await any_store.append_fill(sell.id, "AAPL", OrderSide.SELL, 150, 1.0, source_fill_id="s1", session_id=session.id)
+    dup = await any_store.append_fill(
+        sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        150,
+        1.0,
+        source_fill_id="s1",
+        session_id=session.id,
+    )
     assert dup.status == "duplicate"
     assert (await any_store.get_position("AAPL")).quantity == -50  # still -50, not -200
     assert len(await any_store.list_fills(symbol="AAPL")) == 2  # buy + one sell only
     quarantines = [
-        e for e in await any_store.list_events()
+        e
+        for e in await any_store.list_events()
         if e.event_type == "fill_overfill_quarantined"
     ]
     assert len(quarantines) == 1

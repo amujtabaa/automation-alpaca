@@ -59,10 +59,14 @@ async def test_strategy_engine_disabled_still_starts_and_stops_cleanly(monkeypat
 async def test_strategy_engine_enabled_by_default(monkeypatch):
     monkeypatch.delenv("ENABLE_STRATEGY_ENGINE", raising=False)
     settings = Settings()
-    assert settings.enable_strategy_engine is True  # default-on, matches enable_monitoring
+    assert (
+        settings.enable_strategy_engine is True
+    )  # default-on, matches enable_monitoring
 
 
-async def test_lifespan_completes_with_monitoring_and_strategy_both_disabled(monkeypatch):
+async def test_lifespan_completes_with_monitoring_and_strategy_both_disabled(
+    monkeypatch,
+):
     monkeypatch.setenv("ENABLE_MONITORING", "false")
     monkeypatch.setenv("ENABLE_STRATEGY_ENGINE", "false")
     app = create_app(InMemoryStateStore())

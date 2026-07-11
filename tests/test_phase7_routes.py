@@ -143,7 +143,9 @@ async def test_flatten_supersedes_unsent_protection_order():
     # An autonomous PROTECTION_FLOOR exit whose order is still CREATED (unsent).
     session = await store.get_current_session()
     prot = await store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
         session_id=session.id,
     )
     await store.transition_sell_intent(prot.id, SellIntentStatus.APPROVED)
@@ -166,7 +168,9 @@ async def test_flatten_supersedes_stranded_protection_intent_without_order():
     await _hold(store, "AAPL", 100)
     session = await store.get_current_session()
     stranded = await store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
         session_id=session.id,
     )
     await store.transition_sell_intent(stranded.id, SellIntentStatus.APPROVED)
@@ -191,11 +195,15 @@ async def test_flatten_leaves_live_protection_order_alone():
     await _hold(store, "AAPL", 100)
     session = await store.get_current_session()
     prot = await store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
         session_id=session.id,
     )
     await store.transition_sell_intent(prot.id, SellIntentStatus.APPROVED)
-    order = await store.create_order_for_sell_intent(prot.id, order_type=OrderType.MARKET)
+    order = await store.create_order_for_sell_intent(
+        prot.id, order_type=OrderType.MARKET
+    )
     # Make the order live at the broker.
     claim = await store.claim_order_for_submission(order.id)
     await store.transition_order(
@@ -294,7 +302,9 @@ async def test_list_sell_intents():
     app, store, _, _ = await _app()
     session = await store.get_current_session()
     await store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=10,
+        symbol="AAPL",
+        reason=SellReason.MANUAL_FLATTEN,
+        target_quantity=10,
         session_id=session.id,
     )
     async with _client(app) as client:
@@ -308,7 +318,9 @@ async def test_review_includes_sell_intents():
     app, store, _, _ = await _app()
     session = await store.get_current_session()
     await store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=10,
+        symbol="AAPL",
+        reason=SellReason.MANUAL_FLATTEN,
+        target_quantity=10,
         session_id=session.id,
     )
     async with _client(app) as client:

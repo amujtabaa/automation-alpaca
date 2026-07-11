@@ -60,10 +60,10 @@ ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     },
     OrderStatus.SUBMITTING: {
         OrderStatus.SUBMITTED,  # broker acked the submission
-        OrderStatus.CREATED,    # release the claim on a transient submit failure
-                                # (next tick re-runs the full control gate)
-        OrderStatus.CANCELED,   # manual cancel raced the submit / terminal
-        OrderStatus.REJECTED,   # broker rejected
+        OrderStatus.CREATED,  # release the claim on a transient submit failure
+        # (next tick re-runs the full control gate)
+        OrderStatus.CANCELED,  # manual cancel raced the submit / terminal
+        OrderStatus.REJECTED,  # broker rejected
         # Ambiguous submit outcome (ADR-002 / wave 3c): timeout/504/transport
         # after the request may have reached the venue. Driven ONLY by the
         # evented store path (`transition_order_evented`), which co-writes the

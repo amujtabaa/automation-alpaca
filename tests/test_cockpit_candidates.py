@@ -37,6 +37,7 @@ PENDING_CANDIDATE = {
 # Helper: wire up mocks and navigate to the Candidate Monitor screen
 # --------------------------------------------------------------------------- #
 
+
 def _run(monkeypatch, candidates: list, recorder: list) -> AppTest:
     """Patch api_client, boot AppTest, navigate to Candidate Monitor, return it."""
 
@@ -68,6 +69,7 @@ def _run(monkeypatch, candidates: list, recorder: list) -> AppTest:
 # --------------------------------------------------------------------------- #
 # Tests
 # --------------------------------------------------------------------------- #
+
 
 def test_empty_state_shows_info(monkeypatch):
     """When no candidates exist the screen shows an info message and no exception."""

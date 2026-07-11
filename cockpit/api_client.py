@@ -90,16 +90,21 @@ def reject_candidate(candidate_id: str) -> dict:
     return _request("POST", f"/api/candidates/{candidate_id}/reject")
 
 
-def create_mock_candidate(symbol: str, suggested_quantity: int = 10,
-                          suggested_limit_price: float = 1.0) -> dict:
+def create_mock_candidate(
+    symbol: str, suggested_quantity: int = 10, suggested_limit_price: float = 1.0
+) -> dict:
     """DEV/MOCK scaffolding: hand-inject an exact candidate for manual testing.
     The real Strategy Engine (Phase 5) generates candidates independently;
     this remains useful for testing states it wouldn't naturally produce."""
-    return _request("POST", "/api/dev/candidates", json={
-        "symbol": symbol,
-        "suggested_quantity": suggested_quantity,
-        "suggested_limit_price": suggested_limit_price,
-    })
+    return _request(
+        "POST",
+        "/api/dev/candidates",
+        json={
+            "symbol": symbol,
+            "suggested_quantity": suggested_quantity,
+            "suggested_limit_price": suggested_limit_price,
+        },
+    )
 
 
 # --- Read-only trading views ---------------------------------------------- #
@@ -160,7 +165,9 @@ def list_operator_orders() -> dict:
     return _request("GET", "/api/operator/orders")
 
 
-def list_events(limit: Optional[int] = None, event_type: Optional[str] = None) -> list[dict]:
+def list_events(
+    limit: Optional[int] = None, event_type: Optional[str] = None
+) -> list[dict]:
     params: dict = {}
     if limit:
         params["limit"] = limit

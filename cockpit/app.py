@@ -90,17 +90,16 @@ def screen_session_control() -> None:
     a, b, c = st.columns(3)
     with a:
         if kill_on:
-            if st.button("Release kill switch", width='stretch'):
+            if st.button("Release kill switch", width="stretch"):
                 _do(lambda: api_client.set_kill_switch(False), "Kill switch released")
         else:
-            if st.button("🛑 Engage kill switch", type="primary",
-                         width='stretch'):
+            if st.button("🛑 Engage kill switch", type="primary", width="stretch"):
                 _do(lambda: api_client.set_kill_switch(True), "Kill switch engaged")
     with b:
-        if st.button("Pause buys", disabled=paused, width='stretch'):
+        if st.button("Pause buys", disabled=paused, width="stretch"):
             _do(api_client.pause_buys, "Buys paused")
     with c:
-        if st.button("Resume buys", disabled=not paused, width='stretch'):
+        if st.button("Resume buys", disabled=not paused, width="stretch"):
             _do(api_client.resume_buys, "Buys resumed")
 
     with st.expander("Raw session record"):
@@ -109,8 +108,10 @@ def screen_session_control() -> None:
 
 def screen_watchlist() -> None:
     st.header("Watchlist Input")
-    st.caption("Add or remove symbols and arm/disarm them. Backed by real "
-               "`/api/watchlist` endpoints.")
+    st.caption(
+        "Add or remove symbols and arm/disarm them. Backed by real "
+        "`/api/watchlist` endpoints."
+    )
 
     with st.form("add_symbols", clear_on_submit=True):
         raw = st.text_area(
@@ -170,7 +171,11 @@ def screen_watchlist() -> None:
         sym = entry["symbol"]
         armed = bool(entry["armed"])
         snap = snapshots.get(sym)
-        last_display = f"${snap['last_price']:.2f}" if snap and snap.get("last_price") is not None else "—"
+        last_display = (
+            f"${snap['last_price']:.2f}"
+            if snap and snap.get("last_price") is not None
+            else "—"
+        )
         move_display = "—"
         if snap and snap.get("pct_move") is not None:
             move_display = f"{snap['pct_move']:+.1f}%"
@@ -183,14 +188,18 @@ def screen_watchlist() -> None:
         row[2].write(last_display)
         row[3].write(move_display)
         if armed:
-            if row[4].button("Disarm", key=f"disarm_{sym}", width='stretch'):
-                _do(lambda s=sym: api_client.upsert_watchlist(s, armed=False),
-                    f"{sym} disarmed")
+            if row[4].button("Disarm", key=f"disarm_{sym}", width="stretch"):
+                _do(
+                    lambda s=sym: api_client.upsert_watchlist(s, armed=False),
+                    f"{sym} disarmed",
+                )
         else:
-            if row[4].button("Arm", key=f"arm_{sym}", width='stretch'):
-                _do(lambda s=sym: api_client.upsert_watchlist(s, armed=True),
-                    f"{sym} armed")
-        if row[5].button("Remove", key=f"rm_{sym}", width='stretch'):
+            if row[4].button("Arm", key=f"arm_{sym}", width="stretch"):
+                _do(
+                    lambda s=sym: api_client.upsert_watchlist(s, armed=True),
+                    f"{sym} armed",
+                )
+        if row[5].button("Remove", key=f"rm_{sym}", width="stretch"):
             _do(lambda s=sym: api_client.remove_watchlist(s), f"{sym} removed")
 
 
@@ -211,7 +220,9 @@ def screen_candidates() -> None:
         )
         with st.form("inject_candidate", clear_on_submit=True):
             symbol_input = st.text_input("Symbol", placeholder="AAPL")
-            qty_input = st.number_input("Suggested quantity", min_value=1, value=10, step=1)
+            qty_input = st.number_input(
+                "Suggested quantity", min_value=1, value=10, step=1
+            )
             inject_submitted = st.form_submit_button("Inject candidate")
         if inject_submitted:
             sym = symbol_input.strip().upper()
@@ -219,7 +230,9 @@ def screen_candidates() -> None:
                 st.warning("Symbol is required.")
             else:
                 try:
-                    api_client.create_mock_candidate(sym, suggested_quantity=int(qty_input))
+                    api_client.create_mock_candidate(
+                        sym, suggested_quantity=int(qty_input)
+                    )
                     st.toast(f"Mock candidate injected for {sym}")
                     st.rerun()
                 except BackendError as exc:
@@ -574,8 +587,10 @@ def screen_positions() -> None:
 
 def screen_review() -> None:
     st.header("Daily Review")
-    st.caption("Review the current session or a past one by date. History "
-               "persists across days.")
+    st.caption(
+        "Review the current session or a past one by date. History "
+        "persists across days."
+    )
     chosen = st.date_input("Session date", value=date.today())
     try:
         review = api_client.get_review(date=chosen.isoformat())
@@ -607,7 +622,7 @@ def screen_review() -> None:
     for title, rows in sections:
         st.subheader(title)
         if rows:
-            st.dataframe(rows, width='stretch', hide_index=True)
+            st.dataframe(rows, width="stretch", hide_index=True)
         else:
             st.caption("— none —")
 

@@ -359,9 +359,7 @@ class SqliteStateStore(StateStore):
     def _connect(self) -> sqlite3.Connection:
         if self._conn is None:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(
-                str(self._db_path), check_same_thread=False
-            )
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.isolation_level = None  # autocommit; we manage BEGIN/COMMIT
             self._conn = conn
@@ -391,12 +389,9 @@ class SqliteStateStore(StateStore):
             self._migrate(conn)
             # Created after migration so they work on databases migrated from
             # older schemas (a fills-table rebuild drops the table's indexes).
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol)")
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fills_session "
-                "ON fills(session_id)"
+                "CREATE INDEX IF NOT EXISTS idx_fills_session ON fills(session_id)"
             )
             # Per-(order_id, source_fill_id) dedup (Item 5). Partial index so the
             # uniqueness applies only when source_fill_id is present. This CREATE
@@ -440,9 +435,7 @@ class SqliteStateStore(StateStore):
         order_rows = self._read_all("SELECT * FROM orders")
         if not order_rows:
             return
-        event_rows = self._read_all(
-            "SELECT * FROM execution_events ORDER BY sequence"
-        )
+        event_rows = self._read_all("SELECT * FROM execution_events ORDER BY sequence")
         events = [self._execution_event(r) for r in event_rows]
         with self._tx() as cur:
             for row in order_rows:
@@ -487,9 +480,11 @@ class SqliteStateStore(StateStore):
                 control_prior = control_trading_state(tsc_events, session.id)
                 if control_prior is not new_control:
                     event = trading_state_change_event(
-                        session.id, prior_control=control_prior,
+                        session.id,
+                        prior_control=control_prior,
                         kill_switch=session.kill_switch,
-                        buys_paused=session.buys_paused, reason="backfill",
+                        buys_paused=session.buys_paused,
+                        reason="backfill",
                     )
                     if event is not None:
                         self._insert_execution_event(cur, event)
@@ -911,8 +906,7 @@ class SqliteStateStore(StateStore):
         # ends the trading day until a genuinely new one starts.
         today = utcnow().date().isoformat()
         row = self._read_one(
-            "SELECT * FROM sessions WHERE session_date = ? "
-            "ORDER BY rowid DESC LIMIT 1",
+            "SELECT * FROM sessions WHERE session_date = ? ORDER BY rowid DESC LIMIT 1",
             (today,),
         )
         if row is not None:
@@ -1361,8 +1355,8 @@ class SqliteStateStore(StateStore):
                     "SELECT * FROM orders WHERE id = ?", (si.order_id,)
                 )
                 order = self._order(order_row) if order_row is not None else None
-            needs_review = (
-                order is not None and self._order_needs_review_locked(order.id)
+            needs_review = order is not None and self._order_needs_review_locked(
+                order.id
             )
             if sell_intent_is_active(si, order, order_needs_review=needs_review):
                 return si
@@ -1435,8 +1429,7 @@ class SqliteStateStore(StateStore):
             return False
         if new_status not in SELL_INTENT_TRANSITIONS.get(current, set()):
             raise SellIntentTransitionError(
-                f"illegal sell intent transition {current.value} -> "
-                f"{new_status.value}"
+                f"illegal sell intent transition {current.value} -> {new_status.value}"
             )
         intent.status = new_status
         intent.updated_at = utcnow()
@@ -1611,7 +1604,7 @@ class SqliteStateStore(StateStore):
         )
         if plan.outcome == CREATE_ORDER_REJECT:
             if plan.reject_event is not None or plan.expire_intent is not None:
-                with (nullcontext(cur) if cur is not None else self._tx()) as c:
+                with nullcontext(cur) if cur is not None else self._tx() as c:
                     if plan.reject_event is not None:
                         self._insert_event(
                             c,
@@ -1635,7 +1628,7 @@ class SqliteStateStore(StateStore):
         intent.order_id = order.id
         intent.ordered_at = now
         intent.updated_at = now
-        with (nullcontext(cur) if cur is not None else self._tx()) as c:
+        with nullcontext(cur) if cur is not None else self._tx() as c:
             self._insert_order(c, order)
             self._update_sell_intent(c, intent)
             for event in plan.events:
@@ -1806,8 +1799,11 @@ class SqliteStateStore(StateStore):
             override_active = key in self._active_overrides_locked(current_session.id)
 
             plan = plan_flatten_position(
-                position=position, active_intent=active, active_order=active_order,
-                trading_state=trading_state, override_active=override_active,
+                position=position,
+                active_intent=active,
+                active_order=active_order,
+                trading_state=trading_state,
+                override_active=override_active,
                 actor=actor,
             )
 
@@ -1867,7 +1863,10 @@ class SqliteStateStore(StateStore):
                 if plan.supersede_order_cancel is not None:
                     # A supersede-cancel implies the stranded active_order exists
                     # and the planner produced its cancel audit event (narrows both).
-                    assert active_order is not None and plan.supersede_cancel_event is not None
+                    assert (
+                        active_order is not None
+                        and plan.supersede_cancel_event is not None
+                    )
                     cur.execute(
                         "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
                         "WHERE id=?",
@@ -2014,7 +2013,9 @@ class SqliteStateStore(StateStore):
         # derives each order's actual filled quantity from these directly
         # (see its docstring: Order.filled_quantity can lag a just-appended
         # fill by one transition_order call during reconciliation).
-        fills = [self._fill(r) for r in self._read_all("SELECT * FROM fills ORDER BY rowid")]
+        fills = [
+            self._fill(r) for r in self._read_all("SELECT * FROM fills ORDER BY rowid")
+        ]
         return existing_exposure(positions, open_orders, fills)
 
     async def current_exposure(self) -> float:
@@ -2157,7 +2158,9 @@ class SqliteStateStore(StateStore):
                     "SELECT reason FROM sell_intents WHERE id = ?",
                     (order.sell_intent_id,),
                 )
-                sell_reason = SellReason(si_row["reason"]) if si_row is not None else None
+                sell_reason = (
+                    SellReason(si_row["reason"]) if si_row is not None else None
+                )
             # ADR-001 (wave 3b): hold an autonomous BUY whose symbol is quarantined
             # by a broker overfill (derived from the event log under this lock).
             quarantined = False
@@ -2179,7 +2182,11 @@ class SqliteStateStore(StateStore):
             if plan.outcome == CLAIM_CLAIMED:
                 # CLAIM_CLAIMED guarantees a claimable order + its plan artifacts
                 # (narrows the Optionals mypy can't infer from the outcome).
-                assert order is not None and plan.order is not None and plan.event is not None
+                assert (
+                    order is not None
+                    and plan.order is not None
+                    and plan.event is not None
+                )
                 updated = plan.order
                 with self._tx() as cur:
                     cur.execute(
@@ -2324,9 +2331,7 @@ class SqliteStateStore(StateStore):
         wanted = None if statuses is None else list(statuses)
         async with self._lock:
             if wanted is None:
-                rows = self._read_all(
-                    "SELECT * FROM submit_recoveries ORDER BY rowid"
-                )
+                rows = self._read_all("SELECT * FROM submit_recoveries ORDER BY rowid")
             elif not wanted:
                 return []
             else:
@@ -2350,9 +2355,7 @@ class SqliteStateStore(StateStore):
                 "SELECT * FROM submit_recoveries WHERE id = ?", (recovery_id,)
             )
             if row is None:
-                raise UnknownEntityError(
-                    f"submit recovery {recovery_id} not found"
-                )
+                raise UnknownEntityError(f"submit recovery {recovery_id} not found")
             record = self._submit_recovery(row)
             terminal_event = recovery_status_event(
                 record.cleanup_status, cleanup_status
@@ -2583,7 +2586,10 @@ class SqliteStateStore(StateStore):
                     )
                     occurrence = crow["n"] if crow else 0
                 exec_event = execution_event_for_routine_transition(
-                    order, updated.status, updated.filled_quantity, occurrence=occurrence
+                    order,
+                    updated.status,
+                    updated.filled_quantity,
+                    occurrence=occurrence,
                 )
             elif (
                 plan.event.event_type == "order_fill_progress"
@@ -2718,8 +2724,10 @@ class SqliteStateStore(StateStore):
             )
             if not ids:
                 return []
-            order_rows = self._read_all("SELECT * FROM orders WHERE id IN (%s)"
-                % ",".join("?" * len(ids)), tuple(sorted(ids)))
+            order_rows = self._read_all(
+                "SELECT * FROM orders WHERE id IN (%s)" % ",".join("?" * len(ids)),
+                tuple(sorted(ids)),
+            )
             return sorted(
                 (self._project_order_locked(self._order(r)) for r in order_rows),
                 key=lambda o: o.id,
@@ -2748,9 +2756,7 @@ class SqliteStateStore(StateStore):
             # Fetch the state the shared planner decides over (SQL form), then
             # apply its plan. Decision logic lives once in app/store/core.py; only
             # the fetch + the write primitive are store-specific here.
-            order_row = self._read_one(
-                "SELECT * FROM orders WHERE id = ?", (order_id,)
-            )
+            order_row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
             order = self._order(order_row) if order_row is not None else None
             prior_row = self._read_one(
                 "SELECT COALESCE(SUM(quantity), 0) AS total FROM fills "
@@ -2868,9 +2874,7 @@ class SqliteStateStore(StateStore):
             "WHERE symbol = ? AND event_type = 'fill' ORDER BY sequence",
             (symbol,),
         )
-        return project_symbol_position(
-            [self._execution_event(r) for r in rows], symbol
-        )
+        return project_symbol_position([self._execution_event(r) for r in rows], symbol)
 
     async def get_position(self, symbol: str) -> Position:
         key = normalize_symbol(symbol)
@@ -3022,9 +3026,7 @@ class SqliteStateStore(StateStore):
         # slice (dual-store parity, see base.py).
         if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
-        sql = (
-            "SELECT * FROM execution_events WHERE sequence > ? ORDER BY sequence"
-        )
+        sql = "SELECT * FROM execution_events WHERE sequence > ? ORDER BY sequence"
         params: tuple = (after_sequence,)
         if limit is not None:
             sql += " LIMIT ?"
@@ -3035,9 +3037,7 @@ class SqliteStateStore(StateStore):
 
     async def get_max_execution_sequence(self) -> int:
         async with self._lock:
-            row = self._read_one(
-                "SELECT MAX(sequence) AS m FROM execution_events", ()
-            )
+            row = self._read_one("SELECT MAX(sequence) AS m FROM execution_events", ())
             return (row["m"] if row is not None else 0) or 0
 
     # ------------------------------------------------------------------ #
@@ -3059,9 +3059,7 @@ class SqliteStateStore(StateStore):
 
     async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
         async with self._lock:
-            row = self._read_one(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            )
+            row = self._read_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
             return self._session(row) if row else None
 
     async def list_sessions(self) -> list[SessionRecord]:
@@ -3088,8 +3086,11 @@ class SqliteStateStore(StateStore):
         tsc_events = self._trading_state_events_locked()
         prior_control = control_trading_state(tsc_events, session.id)
         exec_event = trading_state_change_event(
-            session.id, prior_control=prior_control, kill_switch=kill_switch,
-            buys_paused=buys_paused, reason=reason,
+            session.id,
+            prior_control=prior_control,
+            kill_switch=kill_switch,
+            buys_paused=buys_paused,
+            reason=reason,
         )
         session.kill_switch = kill_switch
         session.buys_paused = buys_paused
@@ -3113,7 +3114,10 @@ class SqliteStateStore(StateStore):
             ),
         )
         self._insert_event(
-            cur, audit_event_type, message=audit_message, session_id=session.id,
+            cur,
+            audit_event_type,
+            message=audit_message,
+            session_id=session.id,
             payload=audit_payload,
         )
         if exec_event is not None:
@@ -3130,8 +3134,12 @@ class SqliteStateStore(StateStore):
         return [self._execution_event(r) for r in rows]
 
     def _apply_reconcile_state_locked(
-        self, cur: sqlite3.Cursor, session: SessionRecord, *,
-        to: TradingState, reason: str,
+        self,
+        cur: sqlite3.Cursor,
+        session: SessionRecord,
+        *,
+        to: TradingState,
+        reason: str,
     ) -> None:
         """Co-write a RECONCILE-driver TradingState change (wave 4f / R2): the
         composed effective ``trading_state`` column + a ``driver="reconcile"``
@@ -3140,7 +3148,10 @@ class SqliteStateStore(StateStore):
         tsc_events = self._trading_state_events_locked()
         prior_reconcile = reconcile_trading_state(tsc_events, session.id)
         exec_event = reconcile_trading_state_event(
-            session.id, prior_reconcile=prior_reconcile, to=to, reason=reason,
+            session.id,
+            prior_reconcile=prior_reconcile,
+            to=to,
+            reason=reason,
         )
         if exec_event is None:
             # Reconcile driver already at `to` — a no-op re-assert. The loop drives
@@ -3159,9 +3170,11 @@ class SqliteStateStore(StateStore):
             (session.trading_state.value, _dt(session.updated_at), session.id),
         )
         self._insert_event(
-            cur, "trading_state_reconcile",
+            cur,
+            "trading_state_reconcile",
             message=f"reconcile-driven trading state -> {to.value} ({reason})",
-            session_id=session.id, payload={"to": to.value, "reason": reason},
+            session_id=session.id,
+            payload={"to": to.value, "reason": reason},
         )
         self._insert_execution_event(cur, exec_event)
 
@@ -3173,10 +3186,16 @@ class SqliteStateStore(StateStore):
             session = self._ensure_current_session_locked()
             with self._tx() as cur:
                 self._apply_control_change_locked(
-                    cur, session, kill_switch=engaged, buys_paused=session.buys_paused,
-                    audit_event_type="kill_switch_engaged" if engaged else "kill_switch_released",
+                    cur,
+                    session,
+                    kill_switch=engaged,
+                    buys_paused=session.buys_paused,
+                    audit_event_type="kill_switch_engaged"
+                    if engaged
+                    else "kill_switch_released",
                     audit_message=f"kill switch {'engaged' if engaged else 'released'}",
-                    audit_payload={"kill_switch": engaged, "actor": actor}, reason="kill_switch",
+                    audit_payload={"kill_switch": engaged, "actor": actor},
+                    reason="kill_switch",
                 )
             return session
 
@@ -3188,10 +3207,14 @@ class SqliteStateStore(StateStore):
             session = self._ensure_current_session_locked()
             with self._tx() as cur:
                 self._apply_control_change_locked(
-                    cur, session, kill_switch=session.kill_switch, buys_paused=paused,
+                    cur,
+                    session,
+                    kill_switch=session.kill_switch,
+                    buys_paused=paused,
                     audit_event_type="buys_paused" if paused else "buys_resumed",
                     audit_message=f"buys {'paused' if paused else 'resumed'}",
-                    audit_payload={"buys_paused": paused, "actor": actor}, reason="buys_paused",
+                    audit_payload={"buys_paused": paused, "actor": actor},
+                    reason="buys_paused",
                 )
             return session
 
@@ -3203,9 +3226,7 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             session = self._ensure_current_session_locked()
             with self._tx() as cur:
-                self._apply_reconcile_state_locked(
-                    cur, session, to=to, reason=reason
-                )
+                self._apply_reconcile_state_locked(cur, session, to=to, reason=reason)
             return session
 
     def _current_trading_state_locked(self, session_id: str) -> TradingState:
@@ -3237,19 +3258,25 @@ class SqliteStateStore(StateStore):
     ) -> None:
         session = self._ensure_current_session_locked()
         event = emergency_reduce_override_event(
-            session.id, symbol, actor=actor, reason=reason, resolved=resolved,
+            session.id,
+            symbol,
+            actor=actor,
+            reason=reason,
+            resolved=resolved,
         )
         with self._tx() as cur:
             self._insert_execution_event(cur, event)
             self._insert_event(
                 cur,
-                "emergency_reduce_override_resolved" if resolved
+                "emergency_reduce_override_resolved"
+                if resolved
                 else "emergency_reduce_override_granted",
                 message=(
                     f"emergency reduce override {'resolved' if resolved else 'granted'} "
                     f"for {symbol} by {actor}"
                 ),
-                symbol=symbol, session_id=session.id,
+                symbol=symbol,
+                session_id=session.id,
                 payload={"actor": actor, "reason": reason},
             )
 
@@ -3280,7 +3307,10 @@ class SqliteStateStore(StateStore):
         key = normalize_symbol(symbol)
         async with self._lock:
             session = self._ensure_current_session_locked()
-            if self._current_trading_state_locked(session.id) is not TradingState.HALTED:
+            if (
+                self._current_trading_state_locked(session.id)
+                is not TradingState.HALTED
+            ):
                 raise EmergencyReduceBlockedError(
                     f"emergency reduce of {key} refused: session is not halted "
                     "(use an ordinary flatten)"
@@ -3499,13 +3529,10 @@ class SqliteStateStore(StateStore):
             session.updated_at = now
             return session
 
-    async def list_position_snapshots(
-        self, session_id: str
-    ) -> list[PositionSnapshot]:
+    async def list_position_snapshots(self, session_id: str) -> list[PositionSnapshot]:
         async with self._lock:
             rows = self._read_all(
-                "SELECT * FROM position_snapshots WHERE session_id = ? "
-                "ORDER BY rowid",
+                "SELECT * FROM position_snapshots WHERE session_id = ? ORDER BY rowid",
                 (session_id,),
             )
             return [self._snapshot(r) for r in rows]

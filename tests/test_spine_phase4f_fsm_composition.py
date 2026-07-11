@@ -33,7 +33,7 @@ def test_compose_is_most_restrictive():
     assert compose_trading_state(H, R) is H
     assert compose_trading_state(R, H) is H
     assert compose_trading_state(A, H) is H
-    assert compose_trading_state() is A          # no drivers → Active
+    assert compose_trading_state() is A  # no drivers → Active
     assert compose_trading_state(A) is A
 
 
@@ -52,8 +52,8 @@ async def test_reconcile_reducing_composes_over_active_control(any_store):
 async def test_kill_dominates_a_reconcile_reducing(any_store):
     await any_store.initialize()
     await any_store.set_reconcile_trading_state(R, reason="pending")
-    await any_store.set_kill_switch(True)                       # control → HALTED
-    assert await any_store.current_trading_state() is H          # kill dominates
+    await any_store.set_kill_switch(True)  # control → HALTED
+    assert await any_store.current_trading_state() is H  # kill dominates
     # A kill RELEASE cannot lift the Reducing that reconciliation still requires.
     s = await any_store.set_kill_switch(False)
     assert s.trading_state is R
@@ -71,7 +71,7 @@ async def test_parity_restored_lifts_reconcile_to_active(any_store):
 
 async def test_buys_paused_and_reconcile_both_reducing_stays_reducing(any_store):
     await any_store.initialize()
-    await any_store.set_buys_paused(True)                        # control → REDUCING
+    await any_store.set_buys_paused(True)  # control → REDUCING
     await any_store.set_reconcile_trading_state(R, reason="pending")
     assert await any_store.current_trading_state() is R
     # Resuming buys while reconciliation still pending stays Reducing (reconcile holds).
@@ -94,20 +94,21 @@ async def test_reconcile_driver_rejects_halted(any_store):
 async def test_drivers_fold_independently_from_the_log(any_store):
     await any_store.initialize()
     session = await any_store.get_current_session()
-    await any_store.set_kill_switch(True)                        # control HALTED
+    await any_store.set_kill_switch(True)  # control HALTED
     await any_store.set_reconcile_trading_state(R, reason="pending")
-    await any_store.set_kill_switch(False)                       # control ACTIVE
+    await any_store.set_kill_switch(False)  # control ACTIVE
 
     events = await any_store.get_execution_events()
-    assert control_trading_state(events, session.id) is A        # control folded alone
-    assert reconcile_trading_state(events, session.id) is R      # reconcile folded alone
+    assert control_trading_state(events, session.id) is A  # control folded alone
+    assert reconcile_trading_state(events, session.id) is R  # reconcile folded alone
     # The column read-model equals the composed effective state.
     fresh = await any_store.get_current_session()
     assert fresh.trading_state is R
 
     # Each reconcile change is a driver="reconcile" TRADING_STATE_CHANGED event.
     recon = [
-        e for e in events
+        e
+        for e in events
         if e.event_type is ExecutionEventType.TRADING_STATE_CHANGED
         and (e.payload or {}).get("driver") == "reconcile"
     ]

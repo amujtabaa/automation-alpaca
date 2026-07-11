@@ -68,24 +68,45 @@ def test_release_projects_created_not_submitting():
 
 
 def test_release_then_reclaim_projects_submitting():
-    p = _p([_ev(ET.SUBMIT_PENDING, seq=1), _ev(ET.SUBMIT_RELEASED, seq=2), _ev(ET.SUBMIT_PENDING, seq=3)])
+    p = _p(
+        [
+            _ev(ET.SUBMIT_PENDING, seq=1),
+            _ev(ET.SUBMIT_RELEASED, seq=2),
+            _ev(ET.SUBMIT_PENDING, seq=3),
+        ]
+    )
     assert p.status is OS.SUBMITTING
 
 
 def test_submitted_projects_submitted():
-    assert _p([_ev(ET.SUBMIT_PENDING, seq=1), _ev(ET.SUBMITTED, seq=2)]).status is OS.SUBMITTED
+    assert (
+        _p([_ev(ET.SUBMIT_PENDING, seq=1), _ev(ET.SUBMITTED, seq=2)]).status
+        is OS.SUBMITTED
+    )
 
 
 def test_live_cancel_pending_projects_cancel_pending():
     # THE key regression #2 (the live pending-cancel): SUBMITTED -> CANCEL_PENDING,
     # not yet CANCELED. Without the Stage A CANCEL_PENDING event this would
     # mis-project as SUBMITTED.
-    p = _p([_ev(ET.SUBMIT_PENDING, seq=1), _ev(ET.SUBMITTED, seq=2), _ev(ET.CANCEL_PENDING, seq=3)])
+    p = _p(
+        [
+            _ev(ET.SUBMIT_PENDING, seq=1),
+            _ev(ET.SUBMITTED, seq=2),
+            _ev(ET.CANCEL_PENDING, seq=3),
+        ]
+    )
     assert p.status is OS.CANCEL_PENDING
 
 
 def test_cancel_pending_then_canceled_projects_canceled():
-    p = _p([_ev(ET.SUBMITTED, seq=1), _ev(ET.CANCEL_PENDING, seq=2), _ev(ET.CANCELED, seq=3)])
+    p = _p(
+        [
+            _ev(ET.SUBMITTED, seq=1),
+            _ev(ET.CANCEL_PENDING, seq=2),
+            _ev(ET.CANCELED, seq=3),
+        ]
+    )
     assert p.status is OS.CANCELED
 
 
@@ -94,7 +115,10 @@ def test_filled_projects_filled():
 
 
 def test_rejected_projects_rejected():
-    assert _p([_ev(ET.SUBMIT_PENDING, seq=1), _ev(ET.REJECTED, seq=2)]).status is OS.REJECTED
+    assert (
+        _p([_ev(ET.SUBMIT_PENDING, seq=1), _ev(ET.REJECTED, seq=2)]).status
+        is OS.REJECTED
+    )
 
 
 def test_timeout_quarantine_projects_timeout_quarantine():
@@ -115,7 +139,11 @@ def test_filled_quantity_folds_fill_events():
 def test_filled_quantity_capped_at_order_quantity_on_overfill():
     # Broker overfill: FILL events sum > order.quantity; the store caps the column
     # at quantity (filled_quantity_reason), so the fold must too for parity.
-    events = [_ev(ET.SUBMITTED, seq=1), _ev(ET.FILL, seq=2, quantity=8), _ev(ET.FILL, seq=3, quantity=8)]
+    events = [
+        _ev(ET.SUBMITTED, seq=1),
+        _ev(ET.FILL, seq=2, quantity=8),
+        _ev(ET.FILL, seq=3, quantity=8),
+    ]
     assert _p(events, quantity=10).filled_quantity == 10
 
 
@@ -124,7 +152,10 @@ def test_filled_quantity_raw_when_no_quantity_given():
 
 
 def test_other_orders_events_ignored():
-    events = [_ev(ET.FILLED, order_id="other", seq=1), _ev(ET.SUBMIT_PENDING, order_id="o1", seq=2)]
+    events = [
+        _ev(ET.FILLED, order_id="other", seq=1),
+        _ev(ET.SUBMIT_PENDING, order_id="o1", seq=2),
+    ]
     assert _p(events, order_id="o1").status is OS.SUBMITTING
 
 
@@ -144,10 +175,18 @@ def test_projection_is_authority_independent_latest_wins():
     # production (the transition graph forbids FILLED -> CANCEL_PENDING); the test
     # pins the fold's contract so the ADR cannot silently drift toward weighting.
     events = [
-        _ev(ET.FILLED, seq=1, source=EventSource.BROKER_REST,
-            authority=EventAuthority.BROKER_AUTHORITATIVE),
-        _ev(ET.CANCEL_PENDING, seq=2, source=EventSource.ENGINE,
-            authority=EventAuthority.LOCAL),
+        _ev(
+            ET.FILLED,
+            seq=1,
+            source=EventSource.BROKER_REST,
+            authority=EventAuthority.BROKER_AUTHORITATIVE,
+        ),
+        _ev(
+            ET.CANCEL_PENDING,
+            seq=2,
+            source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL,
+        ),
     ]
     assert _p(events).status is OS.CANCEL_PENDING
 
@@ -157,9 +196,17 @@ def test_projection_broker_fact_wins_by_sequence_not_authority():
     # wins by SEQUENCE, so no authority weighting is needed for correctness — a
     # requested cancel is correctly superseded by the confirmed fill.
     events = [
-        _ev(ET.CANCEL_PENDING, seq=1, source=EventSource.ENGINE,
-            authority=EventAuthority.LOCAL),
-        _ev(ET.FILLED, seq=2, source=EventSource.BROKER_REST,
-            authority=EventAuthority.BROKER_AUTHORITATIVE),
+        _ev(
+            ET.CANCEL_PENDING,
+            seq=1,
+            source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL,
+        ),
+        _ev(
+            ET.FILLED,
+            seq=2,
+            source=EventSource.BROKER_REST,
+            authority=EventAuthority.BROKER_AUTHORITATIVE,
+        ),
     ]
     assert _p(events).status is OS.FILLED

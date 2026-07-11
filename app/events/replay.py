@@ -54,10 +54,7 @@ def _describe_projection_diff(
         pa = a.positions.get(symbol)
         pb = b.positions.get(symbol)
         if pa != pb:
-            return (
-                f"position for {symbol!r} differs: "
-                f"{label_a}={pa!r} {label_b}={pb!r}"
-            )
+            return f"position for {symbol!r} differs: {label_a}={pa!r} {label_b}={pb!r}"
     # Unreachable from compare_projections (it only calls this when a != b, and
     # an unequal projection must differ on up_to_sequence or some position);
     # a defensive fallback for any direct caller passing equal projections.
@@ -72,7 +69,9 @@ def compare_projections(
 
     if a == b:
         return ParityResult(ok=True)
-    return ParityResult(ok=False, detail=_describe_projection_diff(label_a, a, label_b, b))
+    return ParityResult(
+        ok=False, detail=_describe_projection_diff(label_a, a, label_b, b)
+    )
 
 
 def verify_snapshot_replay(
@@ -113,9 +112,7 @@ async def verify_dual_store_parity(
 
     mem_projection = await project_store_event_log(memory_store)
     sqlite_projection = await project_store_event_log(sqlite_store)
-    return compare_projections(
-        "memory", mem_projection, "sqlite", sqlite_projection
-    )
+    return compare_projections("memory", mem_projection, "sqlite", sqlite_projection)
 
 
 # --------------------------------------------------------------------------- #

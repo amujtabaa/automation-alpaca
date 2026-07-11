@@ -43,6 +43,7 @@ def _api_error(status_code: int, message: str = "rejected") -> APIError:
     http_error = SimpleNamespace(response=SimpleNamespace(status_code=status_code))
     return APIError('{"message": "%s"}' % message, http_error=http_error)
 
+
 # 2026-01-07 (Wednesday). ET offsets: EST = UTC-5 in January.
 _PRE_MARKET = datetime(2026, 1, 7, 10, 0, tzinfo=timezone.utc)  # 05:00 ET
 _REGULAR = datetime(2026, 1, 7, 16, 0, tzinfo=timezone.utc)  # 11:00 ET
@@ -73,7 +74,9 @@ async def _submit_and_capture_request(monkeypatch, *, now: datetime):
     return the LimitOrderRequest that was actually sent."""
 
     adapter = _adapter()
-    adapter._client.submit_order = Mock(return_value=SimpleNamespace(id="alpaca-order-1"))
+    adapter._client.submit_order = Mock(
+        return_value=SimpleNamespace(id="alpaca-order-1")
+    )
     monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: now)
 
     broker_order_id = await adapter.submit_order(_order())
@@ -210,7 +213,9 @@ class TestSubmitErrorClassification:
     @pytest.mark.parametrize("code", [400, 401, 403, 404, 422])
     async def test_definitive_4xx_is_terminal(self, monkeypatch, code):
         adapter = _adapter()
-        adapter._client.submit_order = Mock(side_effect=_api_error(code, "no buying power"))
+        adapter._client.submit_order = Mock(
+            side_effect=_api_error(code, "no buying power")
+        )
         monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
         with pytest.raises(TerminalBrokerError):
             await adapter.submit_order(_order())
@@ -236,7 +241,9 @@ class TestSubmitErrorClassification:
         # oversell path). A regression back to plain BrokerError would revive the
         # blind redrive — this pins the classification.
         adapter = _adapter()
-        adapter._client.submit_order = Mock(side_effect=_api_error(code, "server error"))
+        adapter._client.submit_order = Mock(
+            side_effect=_api_error(code, "server error")
+        )
         monkeypatch.setattr("app.broker.alpaca_paper.utcnow", lambda: _REGULAR)
         with pytest.raises(AmbiguousBrokerError):
             await adapter.submit_order(_order())

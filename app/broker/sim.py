@@ -193,7 +193,9 @@ class SimBrokerAdapter(MockBrokerAdapter):
 
         self._cancel_predicates.append(predicate)
 
-    def script(self, order_id_or_broker_id: str, updates: list[BrokerOrderUpdate]) -> None:
+    def script(
+        self, order_id_or_broker_id: str, updates: list[BrokerOrderUpdate]
+    ) -> None:
         """Queue ``updates`` to be returned one-per-call from
         ``get_order_status`` for one order. Accepts either our order id or a
         broker id:
@@ -280,7 +282,9 @@ class SimBrokerAdapter(MockBrokerAdapter):
                 )
         return None
 
-    def _cancel_failure(self, broker_order_id: str, call_index: int) -> Optional[BaseException]:
+    def _cancel_failure(
+        self, broker_order_id: str, call_index: int
+    ) -> Optional[BaseException]:
         for predicate in self._cancel_predicates:
             result = predicate(broker_order_id, call_index)
             if result:

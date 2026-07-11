@@ -62,9 +62,17 @@ _CONCRETE_VENUE_MODULES = {
 # The venue-agnostic engine layer (mirrors the `engine-is-venue-agnostic` contract
 # source list). Kept in sync with `.importlinter`.
 _ENGINE_PACKAGES = [
-    "app.monitoring", "app.reconciliation", "app.policy", "app.position",
-    "app.protection", "app.strategy", "app.strategy_loop", "app.features",
-    "app.transitions", "app.events", "app.approval",
+    "app.monitoring",
+    "app.reconciliation",
+    "app.policy",
+    "app.position",
+    "app.protection",
+    "app.strategy",
+    "app.strategy_loop",
+    "app.features",
+    "app.transitions",
+    "app.events",
+    "app.approval",
 ]
 
 

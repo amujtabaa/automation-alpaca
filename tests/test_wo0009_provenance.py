@@ -72,17 +72,23 @@ def _prov(event):
 
 
 def test_helper_claim_is_engine_local():
-    ev = execution_event_for_routine_transition(_order(OrderStatus.CREATED), OrderStatus.SUBMITTING, None, occurrence=0)
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.CREATED), OrderStatus.SUBMITTING, None, occurrence=0
+    )
     assert ev is not None and _prov(ev) == _ENGINE
 
 
 def test_helper_submitted_is_broker():
-    ev = execution_event_for_routine_transition(_order(OrderStatus.SUBMITTING), OrderStatus.SUBMITTED, None)
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.SUBMITTING), OrderStatus.SUBMITTED, None
+    )
     assert ev is not None and _prov(ev) == _BROKER
 
 
 def test_helper_partially_filled_first_entry_is_broker():
-    ev = execution_event_for_routine_transition(_order(OrderStatus.SUBMITTED), OrderStatus.PARTIALLY_FILLED, 3)
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.SUBMITTED), OrderStatus.PARTIALLY_FILLED, 3
+    )
     assert ev is not None and _prov(ev) == _BROKER
 
 
@@ -96,18 +102,24 @@ def test_helper_partially_filled_self_loop_is_broker():
 
 
 def test_helper_filled_is_broker():
-    ev = execution_event_for_routine_transition(_order(OrderStatus.SUBMITTED), OrderStatus.FILLED, 10)
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.SUBMITTED), OrderStatus.FILLED, 10
+    )
     assert ev is not None and _prov(ev) == _BROKER
 
 
 def test_helper_rejected_is_broker():
-    ev = execution_event_for_routine_transition(_order(OrderStatus.SUBMITTING), OrderStatus.REJECTED, None)
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.SUBMITTING), OrderStatus.REJECTED, None
+    )
     assert ev is not None and _prov(ev) == _BROKER
 
 
 def test_helper_canceled_from_created_is_engine_local():
     # Never submitted -> local cancel (session close / flatten supersede / manual never-submitted).
-    ev = execution_event_for_routine_transition(_order(OrderStatus.CREATED), OrderStatus.CANCELED, 0)
+    ev = execution_event_for_routine_transition(
+        _order(OrderStatus.CREATED), OrderStatus.CANCELED, 0
+    )
     assert ev is not None and _prov(ev) == _ENGINE
 
 
@@ -149,14 +161,18 @@ async def _created_buy(store, symbol="AAPL", qty=10):
     await store.initialize()
     sess = await store.get_current_session()
     cand = await store.create_candidate(symbol, session_id=sess.id)
-    order = await store.create_order_for_test(cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id)
+    order = await store.create_order_for_test(
+        cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id
+    )
     return sess, order
 
 
 async def _submitted(store, qty=10):
     _, order = await _created_buy(store, qty=qty)
     await store.claim_order_for_submission(order.id)
-    await store.transition_order(order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1")
+    await store.transition_order(
+        order.id, OrderStatus.SUBMITTED, broker_order_id="brk-1"
+    )
     return order
 
 
@@ -181,7 +197,9 @@ async def test_store_submitted_is_broker(any_store):
 
 async def test_store_partial_and_fill_are_broker(any_store):
     order = await _submitted(any_store, qty=10)
-    await any_store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4)
+    await any_store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4
+    )
     await any_store.transition_order(order.id, OrderStatus.FILLED, filled_quantity=10)
     events = await any_store.get_execution_events()
     assert _prov(_one(events, ExecutionEventType.PARTIALLY_FILLED)) == _BROKER
@@ -241,8 +259,12 @@ async def test_dual_store_provenance_parity(tmp_path):
     try:
         for store in (memory, sqlite):
             order = await _submitted(store, qty=10)
-            await store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4)
-            await store.transition_order(order.id, OrderStatus.FILLED, filled_quantity=10)
+            await store.transition_order(
+                order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4
+            )
+            await store.transition_order(
+                order.id, OrderStatus.FILLED, filled_quantity=10
+            )
 
         def shape(events):
             return [

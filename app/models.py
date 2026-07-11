@@ -256,9 +256,15 @@ class EventType(str, Enum):
     ORDER_SUBMISSION_BLOCKED = "order_submission_blocked"  # loop held a submission
     # Submission-claim + durable broker-submit recovery (D-017 / Wave 0).
     ORDER_SUBMISSION_CLAIMED = "order_submission_claimed"  # CREATED -> SUBMITTING
-    SUBMIT_RECOVERY_RECORDED = "submit_recovery_recorded"  # a stranded broker order logged
-    SUBMIT_RECOVERY_RESOLVED = "submit_recovery_resolved"  # recovery loop cleanly cancelled it
-    SUBMIT_RECOVERY_NEEDS_REVIEW = "submit_recovery_needs_review"  # stranded order had fills
+    SUBMIT_RECOVERY_RECORDED = (
+        "submit_recovery_recorded"  # a stranded broker order logged
+    )
+    SUBMIT_RECOVERY_RESOLVED = (
+        "submit_recovery_resolved"  # recovery loop cleanly cancelled it
+    )
+    SUBMIT_RECOVERY_NEEDS_REVIEW = (
+        "submit_recovery_needs_review"  # stranded order had fills
+    )
     # A stale SUBMITTING order's idempotent re-drive hit a transient broker error
     # and was deferred to the next tick (AIR-003). Counted to bound livelock.
     STALE_SUBMITTING_REDRIVE_DEFERRED = "stale_submitting_redrive_deferred"
@@ -325,10 +331,10 @@ class EventType(str, Enum):
     # exit rather than duplicating it (INV-036) — the provenance record that closes
     # the "flatten click reads as success with no audit trail" gap.
     MANUAL_FLATTEN_DEFERRED = "manual_flatten_deferred"
-    PROTECTION_TRIGGERED = "protection_triggered"      # floor breach -> auto exit
-    PROTECTION_PAUSED = "protection_paused"            # kill switch froze auto exit
-    PROTECTION_RESUMED = "protection_resumed"          # kill switch released
-    PROTECTION_STALLED = "protection_stalled"          # a protective order sits unfilled
+    PROTECTION_TRIGGERED = "protection_triggered"  # floor breach -> auto exit
+    PROTECTION_PAUSED = "protection_paused"  # kill switch froze auto exit
+    PROTECTION_RESUMED = "protection_resumed"  # kill switch released
+    PROTECTION_STALLED = "protection_stalled"  # a protective order sits unfilled
 
 
 # --------------------------------------------------------------------------- #
@@ -382,7 +388,7 @@ class ExecutionEventType(str, Enum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     REPLACED = "replaced"
-    TIMEOUT_QUARANTINE = "timeout_quarantine"            # ADR-002, Phase 3
+    TIMEOUT_QUARANTINE = "timeout_quarantine"  # ADR-002, Phase 3
     UNKNOWN_RECONCILE_REQUIRED = "unknown_reconcile_required"
     # TradingState transition (§8) — Phase 3.
     TRADING_STATE_CHANGED = "trading_state_changed"
@@ -402,9 +408,9 @@ class EventSource(str, Enum):
     which ingestion path produced the event.
     """
 
-    ENGINE = "engine"                  # local single-writer engine decision
-    BROKER_STREAM = "broker_stream"    # Alpaca trade-update websocket
-    BROKER_REST = "broker_rest"        # Alpaca REST (status/position fetch)
+    ENGINE = "engine"  # local single-writer engine decision
+    BROKER_STREAM = "broker_stream"  # Alpaca trade-update websocket
+    BROKER_REST = "broker_rest"  # Alpaca REST (status/position fetch)
     RECONCILIATION = "reconciliation"  # inferred by the reconciliation engine
 
 
@@ -623,10 +629,10 @@ class PositionSnapshot(_Entity):
 
 
 # SubmitRecoveryRecord.cleanup_status values (D-017 / F-002).
-RECOVERY_UNRESOLVED = "unresolved"          # the recovery loop is still working it
-RECOVERY_RESOLVED = "resolved_canceled"     # cleanly cancelled at the broker — no position
-RECOVERY_NEEDS_REVIEW = "needs_review"      # the broker order had fills — a real untracked
-                                            # position exists; a human must reconcile it
+RECOVERY_UNRESOLVED = "unresolved"  # the recovery loop is still working it
+RECOVERY_RESOLVED = "resolved_canceled"  # cleanly cancelled at the broker — no position
+RECOVERY_NEEDS_REVIEW = "needs_review"  # the broker order had fills — a real untracked
+# position exists; a human must reconcile it
 # Statuses the operator must still SEE (not cleanly resolved). The recovery loop
 # itself acts only on RECOVERY_UNRESOLVED — a needs_review record is done being
 # worked automatically and must not be re-cancelled.

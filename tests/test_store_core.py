@@ -153,7 +153,8 @@ class TestPlanCreateOrder:
 
     def test_reject_blocked_writes_event(self):
         blocked = SessionRecord(
-            session_date="2026-07-02", kill_switch=True,
+            session_date="2026-07-02",
+            kill_switch=True,
             trading_state=TradingState.HALTED,
         )
         plan = core.plan_create_order_for_candidate(
@@ -532,9 +533,7 @@ class TestSellIntentIsActive:
         # a fresh protective intent rather than being blocked forever.
         intent = _sell_intent(status=SellIntentStatus.ORDERED, order_id="o1")
         order = _sell_order(status=OrderStatus.SUBMITTED)
-        assert not core.sell_intent_is_active(
-            intent, order, order_needs_review=True
-        )
+        assert not core.sell_intent_is_active(intent, order, order_needs_review=True)
 
     def test_needs_review_false_default_preserves_prior_behavior(self):
         # order_needs_review defaults False — a caller that hasn't been updated

@@ -42,7 +42,8 @@ async def test_one_session_per_date_after_close(any_store):
     await any_store.get_current_session()
 
     todays = [
-        s for s in await any_store.list_sessions()
+        s
+        for s in await any_store.list_sessions()
         if s.session_date == session.session_date
     ]
     assert len(todays) == 1
@@ -54,7 +55,9 @@ async def test_get_session_by_date_returns_closed_session_post_close(any_store):
     await any_store.close_session()
     await any_store.get_current_session()  # must not create a second session
 
-    found = await any_store.get_session_by_date(date.fromisoformat(session.session_date))
+    found = await any_store.get_session_by_date(
+        date.fromisoformat(session.session_date)
+    )
     assert found is not None
     assert found.id == session.id
     assert found.status is SessionStatus.CLOSED

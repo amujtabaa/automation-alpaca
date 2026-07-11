@@ -56,11 +56,15 @@ async def test_already_active_protection_intent_returns_idempotently_when_halted
     path, so it is not lost."""
     await any_store.initialize()
     first = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
     )
     await any_store.set_kill_switch(True)  # -> Halted
     again = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
     )
     assert again.id == first.id
 
