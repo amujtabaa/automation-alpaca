@@ -62,7 +62,17 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 | 9 Only fills change positions | Signals are upstream of intents; structurally cannot touch positions. |
 | 10 Kill switch blocks new intent | Conversion gate sits behind the kill switch. |
 | 11 Browser-first | Approval surface is the browser UI. |
-| INV-1..9 | To be mapped line-by-line by the planning seat — **UNVERIFIED in this draft**. (Install note: §5 of `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md` is available in-repo; mapping remains an open action item before acceptance.) |
+| INV-1 fills only change `remaining_qty` | No signal event type touches spawn/fill accounting; approval emits an order intent *upstream* of primary creation. `SIGNAL_*` events are structurally outside the `remaining_qty` fold. |
+| INV-2 single active spawn | Unaffected: signal-originated intents enter before the engine's spawn machinery, which enforces INV-2 identically for every intent origin. |
+| INV-3 block on ambiguity | No bypass: a `BLOCKED` primary blocks new/replacement spawns regardless of whether the originating intent came from a signal or an operator. |
+| INV-4 no oversell | `SignalProposal.suggested sizing` is advisory-only, never binding; actual sizing passes the same pre-submit risk gate; overfill quarantine semantics unchanged. |
+| INV-5 fill dedup | Untouched. `signal_id` dedupe deliberately *mirrors* the `client_order_id`/`trade_id` idempotency practice but lives upstream in its own key space; signal events never key fills. |
+| INV-6 monotonic status | Spawn status machinery untouched. The signal lifecycle is its own state machine (RECEIVED→terminal, no regression) — WO-0101 must spec it with the same monotonicity discipline. |
+| INV-7 reduce-only, quantity-aware | The conversion gate applies `TradingState` rules: in `Reducing`, only risk-reducing signals are convertible, and the resulting intent is still evaluated by the same quantity-aware risk gate. |
+| INV-8 completion | Signals cannot mark primaries complete; no `SIGNAL_*` event reaches primary/spawn projections. |
+| INV-9 position ≠ acks | The Position Service consumes only deduped fill events; the new `SIGNAL_*` event family is structurally invisible to it, exactly as `SUBMITTED`/`ACCEPTED` are. |
+
+*INV-1..9 rows drafted line-by-line against `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §5` on install (2026-07-11, implementer seat) — to be confirmed by the human + independent review before acceptance.*
 
 ## Options Considered
 
@@ -81,6 +91,6 @@ Easier: adding/swapping producers (any agent that can POST JSON); auditing exact
 ## Action Items
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
-2. [ ] Human review of this draft; resolve the INV-1..9 line-by-line mapping against `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §5`.
-3. [ ] Queue for independent cross-model review (ADR amendment class) — create a `work/review/REV-*` packet at the human's discretion; acceptance blocked until that packet is dispositioned.
+2. [ ] Human review of this draft. (INV-1..9 mapping drafted from §5 on install, 2026-07-11 — confirm the rows, don't re-derive from scratch.)
+3. [ ] Independent cross-model review: packet **REV-0022** queued (`work/review/REV-0022/request.md`) — dispatch at the human's discretion; acceptance blocked until it is dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
 4. [ ] WO-0101..0104 (installed to `work/queue/`, status draft) — all remain gated on this ADR's acceptance.
