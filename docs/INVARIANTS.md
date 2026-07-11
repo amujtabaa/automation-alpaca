@@ -538,6 +538,42 @@ mechanism executing the exit the human already has in flight.
 `test_deferral_to_a_live_protection_exit_leaves_its_envelope_alone`) +
 `tests/test_phase7_flatten_atomic.py` (kept green, unmodified).
 
+**INV-082 — Plan/write validator disagreement is a DEFECT signal: freeze +
+ENVELOPE_PLAN_DIVERGENCE, zero venue calls.** ``stage_envelope_action`` (both
+stores) re-runs the SAME ``app.sellside.policy.validate_action`` the policy
+ran at plan time, inside one lock/transaction with the HALTED check and the
+durable writes. Any rail violation the plan claimed was valid — or a
+structural mismatch (REPRICE with no live working order; SUBMIT over one) —
+freezes the envelope and appends ``ENVELOPE_PLAN_DIVERGENCE`` with the rail,
+detail, and snapshot fingerprint; no order is minted and the executor makes
+no venue call (ADR-009 §5, D-3).
+*Why:* if plan-time and write-time validation can disagree silently, the
+"bounds checked twice" guarantee is theater — the divergence event is the
+tripwire that turns a validator drift into an operator-visible incident.
+*Pinned by:* `tests/test_wo0019_engine_seam.py`
+(`test_write_time_rejection_freezes_with_divergence_event`,
+`test_divergence_makes_zero_venue_calls`,
+`test_structural_disagreement_is_also_divergence`).
+
+**INV-083 — Envelope budget accounting is atomic with the order it pays for,
+and a quarantined leg pauses the envelope.** The ENVELOPE_ACTION event (the
+policy's history-derived budget/cooldown accounting substrate) commits in the
+SAME transaction as the staged order row — a crash between them is
+structurally impossible, and recovery re-drives the SAME staged order without
+a new accounting event (no double-spend). While ANY of an envelope's orders
+is in TIMEOUT_QUARANTINE, staging refuses (`EnvelopeActionPausedError`) —
+the ADR-002 rule that an ambiguous outcome is never blind-re-driven extends
+to the whole envelope. The venue leg enters SUBMITTING only through the
+existing submission claim (INV-021 unbroken).
+*Why:* budget accounting that can desynchronize from its order lets a crash
+mint free replaces; acting on an envelope with an unknown-fate order is the
+blind-resubmit failure mode ADR-002 exists to prevent.
+*Pinned by:* `tests/test_wo0019_engine_seam.py`
+(`test_sqlite_staging_is_all_or_nothing`,
+`test_ambiguous_replace_quarantines_and_pauses_the_envelope`,
+`test_transient_failure_releases_and_redrive_spends_no_new_budget`,
+`test_kill_between_staging_and_venue_call_blocks_at_the_claim`).
+
 ---
 
 ## Superseded / historical

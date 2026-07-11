@@ -116,6 +116,12 @@ from app.store.core import (
     FLATTEN_SUPERSEDE_AND_CREATE,
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
+    STAGE_DIVERGENCE,
+    STAGE_STAGED,
+    EnvelopeActionPausedError,
+    EnvelopeActionStageResult,
+    PlannedAction,
+    plan_stage_envelope_action,
     ENVELOPE_TRANSITION_NOOP,
     ENVELOPE_TRANSITION_REJECT,
     EnvelopeTransitionError,
@@ -2057,6 +2063,119 @@ class SqliteStateStore(StateStore):
                         cur, plan.transition
                     )
                 return stored
+
+    def _envelope_action_context_locked(
+        self, cur: sqlite3.Cursor, envelope: ExecutionEnvelope
+    ) -> tuple[list[ExecutionEvent], Optional[Order]]:
+        """(action events, current working order) for one envelope, read on an
+        open ``_tx`` cursor. Raises :class:`EnvelopeActionPausedError` if any
+        of the envelope's orders is in TIMEOUT_QUARANTINE (ADR-002 pause).
+        Mirrors ``InMemoryStateStore._envelope_action_context_unlocked``."""
+
+        rows = cur.execute(
+            "SELECT * FROM execution_events WHERE envelope_id = ? AND "
+            "event_type = ? ORDER BY sequence",
+            (envelope.id, ExecutionEventType.ENVELOPE_ACTION.value),
+        ).fetchall()
+        actions = [self._execution_event(r) for r in rows]
+        working: Optional[Order] = None
+        for event in actions:
+            if event.order_id is None:
+                continue
+            order_row = cur.execute(
+                "SELECT * FROM orders WHERE id = ?", (event.order_id,)
+            ).fetchone()
+            if order_row is None:
+                continue
+            order = self._order(order_row)
+            if order.status is OrderStatus.TIMEOUT_QUARANTINE:
+                raise EnvelopeActionPausedError(
+                    f"envelope {envelope.id} is paused: order {order.id} is in "
+                    "timeout quarantine (resolve it before any further action)"
+                )
+            if order.status not in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+            ):
+                working = order
+        return actions, working
+
+    async def stage_envelope_action(
+        self,
+        envelope_id: str,
+        action: PlannedAction,
+        *,
+        snapshot_fingerprint: str,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        session_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> EnvelopeActionStageResult:
+        """WO-0019: the write-time half of D-3, one lock hold + ONE SQL
+        transaction (a failure anywhere rolls back the order row AND the
+        accounting event together). See
+        :func:`app.store.core.plan_stage_envelope_action`."""
+
+        async with self._lock:
+            session = self._ensure_current_session_locked()
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {envelope_id} not found")
+                env = self._envelope(row)
+                # INV-060: staging is new order intent — refused while HALTED,
+                # checked inside the SAME transaction as the writes below.
+                if (
+                    self._current_trading_state_locked(session.id)
+                    is TradingState.HALTED
+                ):
+                    raise OrderIntentBlockedError(
+                        "envelope action refused: trading halted (kill switch engaged)"
+                    )
+                actions, working = self._envelope_action_context_locked(cur, env)
+                sid = session_id if session_id is not None else session.id
+                plan = plan_stage_envelope_action(
+                    env,
+                    action,
+                    history=actions,
+                    working_order=working,
+                    session_id=sid,
+                    snapshot_fingerprint=snapshot_fingerprint,
+                    actor=actor,
+                    now=now,
+                )
+                if plan.error is not None:
+                    raise plan.error
+                if plan.outcome == STAGE_DIVERGENCE:
+                    assert plan.freeze is not None
+                    frozen = self._apply_envelope_transition_locked(cur, plan.freeze)
+                    assert plan.divergence_event is not None
+                    assert plan.audit_event is not None
+                    self._insert_execution_event(cur, plan.divergence_event)
+                    self._insert_event(
+                        cur,
+                        plan.audit_event.event_type,
+                        **plan.audit_event.as_kwargs(),
+                    )
+                    return EnvelopeActionStageResult(STAGE_DIVERGENCE, envelope=frozen)
+                assert plan.order is not None and plan.action_event is not None
+                assert plan.audit_event is not None
+                self._insert_order(cur, plan.order)
+                self._insert_execution_event(cur, plan.action_event)
+                self._insert_event(
+                    cur,
+                    plan.audit_event.event_type,
+                    **plan.audit_event.as_kwargs(),
+                )
+                return EnvelopeActionStageResult(
+                    STAGE_STAGED,
+                    envelope=env,
+                    order=plan.order,
+                    working_order=working,
+                )
 
     async def approve_envelope_activation(
         self,

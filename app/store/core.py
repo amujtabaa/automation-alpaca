@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from app.models import (
     Candidate,
@@ -57,6 +57,9 @@ from app.models import (
     utcnow,
 )
 from app.position import would_go_negative
+from app.sellside.policy import validate_action as _sellside_validate_action
+from app.sellside.types import ActionKind as _SellsideActionKind
+from app.sellside.types import PlannedAction
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -2694,3 +2697,241 @@ def plan_supersede_envelope(
         ),
         audit_event=audit_event,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Envelope engine seam — write-time validation + divergence (WO-0019, D-3)
+# --------------------------------------------------------------------------- #
+
+
+class EnvelopeActionPausedError(ValueError):
+    """The envelope has a working order in TIMEOUT_QUARANTINE: no further
+    actions may be planned or written until the quarantine resolves (ADR-002 —
+    never blind-re-replace an order whose fate is unknown)."""
+
+
+STAGE_DIVERGENCE = "divergence"  # plan/write disagreement: frozen + event, no order
+STAGE_STAGED = "staged"  # order minted + accounting committed; drive the venue leg
+
+
+@dataclass(frozen=True)
+class EnvelopeActionStagePlan:
+    """Pure outcome of staging one envelope PlannedAction (WO-0019).
+
+    ``STAGE_STAGED``: ``order`` + ``action_event`` + ``audit_event`` commit as
+    ONE atomic unit — the ENVELOPE_ACTION event IS the budget/cooldown
+    accounting, so it can never desynchronize from the order it paid for.
+    ``STAGE_DIVERGENCE``: apply ``freeze`` then append ``divergence_event`` +
+    ``audit_event`` in the same unit; NOTHING else is written and the caller
+    must make ZERO venue calls (ADR-009 §5, D-3).
+    """
+
+    outcome: str
+    error: Optional[Exception] = None
+    order: Optional[Order] = None
+    action_event: Optional[ExecutionEvent] = None
+    audit_event: Optional[EventSpec] = None
+    freeze: Optional[EnvelopeTransitionPlan] = None
+    divergence_event: Optional[ExecutionEvent] = None
+
+
+def _divergence(
+    envelope: ExecutionEnvelope,
+    *,
+    rail: str,
+    detail: str,
+    action_payload: dict[str, Any],
+    snapshot_fingerprint: str,
+    now: datetime,
+) -> EnvelopeActionStagePlan:
+    freeze = plan_envelope_transition(
+        envelope,
+        EnvelopeStatus.FROZEN,
+        actor="engine",
+        reason=f"plan_divergence:{rail}",
+        now=now,
+    )
+    assert freeze.outcome == ENVELOPE_TRANSITION_APPLY  # envelope is ACTIVE here
+    assert freeze.envelope is not None
+    divergence_event = _envelope_event(
+        freeze.envelope,
+        ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE,
+        dedupe_key=None,
+        payload={
+            "rail": rail,
+            "detail": detail,
+            "snapshot_fingerprint": snapshot_fingerprint,
+            **action_payload,
+        },
+    )
+    audit_event = EventSpec(
+        "envelope_plan_divergence",
+        message=(
+            f"DEFECT: plan/write validator disagreement on {envelope.symbol} "
+            f"({rail}) — envelope frozen, no venue call"
+        ),
+        symbol=envelope.symbol,
+        payload={"rail": rail, "detail": detail, "envelope_id": envelope.id},
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+    )
+    return EnvelopeActionStagePlan(
+        STAGE_DIVERGENCE,
+        freeze=freeze,
+        divergence_event=divergence_event,
+        audit_event=audit_event,
+    )
+
+
+def plan_stage_envelope_action(
+    envelope: ExecutionEnvelope,
+    action: PlannedAction,
+    *,
+    history: Sequence[ExecutionEvent],
+    working_order: Optional[Order],
+    session_id: Optional[str],
+    snapshot_fingerprint: str,
+    actor: str,
+    now: Optional[datetime] = None,
+) -> EnvelopeActionStagePlan:
+    """Stage one PlannedAction: the WRITE-TIME half of D-3.
+
+    Re-runs the SAME :func:`app.sellside.policy.validate_action` the policy
+    ran at plan time (two mandatory call sites). Any disagreement — a rail
+    violation the plan claimed was valid, or a structural mismatch (REPRICE
+    with no working order / SUBMIT over a live one) — is a software-defect
+    signal: freeze + ENVELOPE_PLAN_DIVERGENCE (ADR-009 §5), never a venue
+    call. On pass, mints the SELL Order (CREATED; XOR origin = the envelope's
+    sell intent; ``replaces_order_id`` links the reprice chain) plus the
+    ENVELOPE_ACTION event carrying envelope_id, snapshot fingerprint and the
+    clamped params (§6).
+    """
+
+    ts = now if now is not None else utcnow()
+    action_payload: dict[str, Any] = {
+        "action": action.kind.value,
+        "limit_price": action.limit_price,
+        "quantity": action.quantity,
+        "tranche": action.tranche,
+        "stop_triggered": action.stop_triggered,
+        "urgency": action.urgency,
+        "regime": action.regime.value if action.regime is not None else None,
+        "working_stop": action.working_stop,
+        "atr": action.atr,
+        "clamps": [
+            {"field": c.field, "computed": c.computed, "clamped_to": c.clamped_to}
+            for c in action.clamps
+        ],
+    }
+
+    if envelope.status is not EnvelopeStatus.ACTIVE:
+        return EnvelopeActionStagePlan(
+            STAGE_DIVERGENCE,
+            error=EnvelopeTransitionError(
+                f"envelope {envelope.id} is {envelope.status.value}: no action "
+                "may be staged"
+            ),
+        )
+
+    working_live = working_order is not None and working_order.status not in (
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.REJECTED,
+    )
+    if action.kind is _SellsideActionKind.REPRICE:
+        if (
+            not working_live
+            or working_order is None
+            or (working_order.broker_order_id is None)
+        ):
+            return _divergence(
+                envelope,
+                rail="structural",
+                detail="REPRICE planned but no live working order with a venue id",
+                action_payload=action_payload,
+                snapshot_fingerprint=snapshot_fingerprint,
+                now=ts,
+            )
+    elif working_live:
+        return _divergence(
+            envelope,
+            rail="structural",
+            detail="SUBMIT planned over a live working order (max outstanding=1)",
+            action_payload=action_payload,
+            snapshot_fingerprint=snapshot_fingerprint,
+            now=ts,
+        )
+
+    violation = _sellside_validate_action(envelope, action, history=history, now=ts)
+    if violation is not None:
+        return _divergence(
+            envelope,
+            rail=violation.rail,
+            detail=violation.detail,
+            action_payload=action_payload,
+            snapshot_fingerprint=snapshot_fingerprint,
+            now=ts,
+        )
+
+    if action.kind is _SellsideActionKind.REPRICE:
+        assert working_order is not None  # narrowed by the structural gate above
+        replaces_id: Optional[str] = working_order.id
+    else:
+        replaces_id = None
+    order = Order(
+        sell_intent_id=envelope.sell_intent_id,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=action.quantity,
+        limit_price=action.limit_price,
+        replaces_order_id=replaces_id,
+        session_id=session_id,
+    )
+    action_event = ExecutionEvent(
+        event_type=ExecutionEventType.ENVELOPE_ACTION,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        quantity=action.quantity,
+        price=action.limit_price,
+        order_id=order.id,
+        envelope_id=envelope.id,
+        session_id=session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload={
+            **action_payload,
+            "snapshot_fingerprint": snapshot_fingerprint,
+            "actor": actor,
+            "replaces_order_id": order.replaces_order_id,
+        },
+    )
+    audit_event = EventSpec(
+        "envelope_action_staged",
+        message=(
+            f"envelope action staged: {action.kind.value} {action.quantity} "
+            f"{envelope.symbol} @ {action.limit_price}"
+        ),
+        symbol=envelope.symbol,
+        order_id=order.id,
+        payload={"envelope_id": envelope.id, **action_payload},
+        session_id=session_id,
+        correlation_id=envelope.sell_intent_id,
+    )
+    return EnvelopeActionStagePlan(
+        STAGE_STAGED,
+        order=order,
+        action_event=action_event,
+        audit_event=audit_event,
+    )
+
+
+@dataclass(frozen=True)
+class EnvelopeActionStageResult:
+    """What a store's ``stage_envelope_action`` returns (both stores)."""
+
+    outcome: str  # STAGE_STAGED | STAGE_DIVERGENCE
+    envelope: ExecutionEnvelope
+    order: Optional[Order] = None
+    working_order: Optional[Order] = None

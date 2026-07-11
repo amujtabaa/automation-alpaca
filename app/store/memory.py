@@ -100,6 +100,12 @@ from app.store.core import (
     FLATTEN_SUPERSEDE_AND_CREATE,
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
+    STAGE_DIVERGENCE,
+    STAGE_STAGED,
+    EnvelopeActionPausedError,
+    EnvelopeActionStageResult,
+    PlannedAction,
+    plan_stage_envelope_action,
     ENVELOPE_TRANSITION_NOOP,
     ENVELOPE_TRANSITION_REJECT,
     EnvelopeTransitionError,
@@ -1141,6 +1147,112 @@ class InMemoryStateStore(StateStore):
                     assert plan.transition.outcome == ENVELOPE_TRANSITION_APPLY
                     stored = self._apply_envelope_transition_unlocked(plan.transition)
             return stored.model_copy(deep=True)
+
+    def _envelope_action_context_unlocked(
+        self, envelope: ExecutionEnvelope
+    ) -> tuple[list[ExecutionEvent], Optional[Order]]:
+        """(action events, current working order) for one envelope, read under
+        the lock. Raises :class:`EnvelopeActionPausedError` if any of the
+        envelope's orders is in TIMEOUT_QUARANTINE (ADR-002 pause)."""
+
+        actions = [
+            e
+            for e in self._execution_events
+            if e.envelope_id == envelope.id
+            and e.event_type is ExecutionEventType.ENVELOPE_ACTION
+        ]
+        working: Optional[Order] = None
+        for event in actions:  # sequence order: latest live order wins
+            if event.order_id is None:
+                continue
+            order = self._orders.get(event.order_id)
+            if order is None:
+                continue
+            if order.status is OrderStatus.TIMEOUT_QUARANTINE:
+                raise EnvelopeActionPausedError(
+                    f"envelope {envelope.id} is paused: order {order.id} is in "
+                    "timeout quarantine (resolve it before any further action)"
+                )
+            if order.status not in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+            ):
+                working = order
+        return actions, working
+
+    async def stage_envelope_action(
+        self,
+        envelope_id: str,
+        action: PlannedAction,
+        *,
+        snapshot_fingerprint: str,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        session_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> EnvelopeActionStageResult:
+        """WO-0019: the write-time half of D-3, one lock hold + one atomic
+        block. ``now`` is the injected validation clock (engine discipline —
+        cooldown math never reads a bare wall clock when the caller ticks).
+        See :func:`app.store.core.plan_stage_envelope_action`."""
+
+        async with self._lock:
+            env = self._envelopes.get(envelope_id)
+            if env is None:
+                raise UnknownEntityError(f"envelope {envelope_id} not found")
+            # INV-060: staging is new order intent — refused while HALTED,
+            # checked under the SAME lock as the writes below.
+            session = self._ensure_current_session_unlocked()
+            if (
+                current_trading_state(self._execution_events, session.id)
+                is TradingState.HALTED
+            ):
+                raise OrderIntentBlockedError(
+                    "envelope action refused: trading halted (kill switch engaged)"
+                )
+            actions, working = self._envelope_action_context_unlocked(env)
+            if session_id is None:
+                session_id = session.id
+            plan = plan_stage_envelope_action(
+                env,
+                action,
+                history=actions,
+                working_order=working,
+                session_id=session_id,
+                snapshot_fingerprint=snapshot_fingerprint,
+                actor=actor,
+                now=now,
+            )
+            if plan.error is not None:
+                raise plan.error
+            with self._atomic():
+                if plan.outcome == STAGE_DIVERGENCE:
+                    assert plan.freeze is not None
+                    frozen = self._apply_envelope_transition_unlocked(plan.freeze)
+                    assert plan.divergence_event is not None
+                    assert plan.audit_event is not None
+                    self._append_execution_event_unlocked(plan.divergence_event)
+                    self._append_event_unlocked(
+                        plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+                    )
+                    return EnvelopeActionStageResult(
+                        STAGE_DIVERGENCE, envelope=frozen.model_copy(deep=True)
+                    )
+                assert plan.order is not None and plan.action_event is not None
+                assert plan.audit_event is not None
+                self._orders[plan.order.id] = plan.order.model_copy(deep=True)
+                self._append_execution_event_unlocked(plan.action_event)
+                self._append_event_unlocked(
+                    plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+                )
+            return EnvelopeActionStageResult(
+                STAGE_STAGED,
+                envelope=env.model_copy(deep=True),
+                order=plan.order.model_copy(deep=True),
+                working_order=(
+                    working.model_copy(deep=True) if working is not None else None
+                ),
+            )
 
     async def approve_envelope_activation(
         self,
