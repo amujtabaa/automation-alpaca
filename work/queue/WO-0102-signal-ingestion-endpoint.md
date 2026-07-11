@@ -41,6 +41,7 @@ allowed_paths:
   - app/api/deps.py                  # wiring + producer/operator credential dependencies
   - app/main.py                      # router mount only (create_app mounts routers explicitly)
   - app/facade/**                    # signal command/query facade — the ADR-005 seam the route talks to
+  - cockpit/api_client.py            # operator-credential header plumbing ONLY (no signal UI — that is WO-0103)
   - app/models.py                    # signal event types
   - app/events/**                    # event-type additions + projection
   - app/store/**                     # signal store, both paths
@@ -58,7 +59,7 @@ forbidden_paths:
   - app/facade/commands.py           # order submission path
   - app/protection.py                # kill switch
   - app/transitions.py
-  - cockpit/**                       # UI
+  - cockpit/** (except cockpit/api_client.py — credential header plumbing only, see allowed_paths)
 ```
 
 ## Required behavior
@@ -70,6 +71,7 @@ forbidden_paths:
 - [ ] Router mounted in `create_app` (`app/main.py`) behind the feature flag — the flag-off⇒404 test is only meaningful against the real mount path; route-registration test included (Codex PR #5 P1).
 - [ ] **Route reaches the backend only through a typed signal facade** (ADR-005 / `.importlinter` contract 5): `routes_signals` imports the facade, never `app.store`/`app.events` directly and never via the `get_store` dependency loophole — once listed in contract 5, `lint-imports` proves it (Codex PR #5 round-4 P1).
 - [ ] **Operator credential required on mutating command routes from this WO onward** (ADR-009 §Contract 1): once producers can reach FastAPI, unauthenticated command access is denied — negative tests for the existing command routes with no credential and with an invalid credential, not just producer-key rejection (Codex PR #5 round-4 P1).
+- [ ] **Cockpit credential plumbing lands in the SAME change as the auth flip** (Codex PR #5 round-5 P1): `cockpit/api_client.py::_request` sends the operator credential header, so the browser client's kill-switch / manual-flatten / candidate / watchlist controls keep working the moment enforcement turns on — invariant 11 (browser-first) must never have a window where the operator is locked out of safety controls. Test: authenticated cockpit client exercises kill switch + flatten + a candidate command against the enforced backend; unauthenticated request to the same routes → 401/403. Scope note: `api_client.py` ONLY — the rest of `cockpit/**` stays forbidden here (signal UI is WO-0103).
 - [ ] Producer API keys are **ingestion-scoped** (ADR-009 §Contract 1 role separation): valid for `POST /signals` only; a producer credential is rejected by every other command route (negative test).
 - [ ] Post-quarantine backpressure per ADR-009 rails: ingress from a quarantined producer is rejected at the boundary WITHOUT per-request event appends; coalesced audit only — event log proven bounded under post-quarantine flood (test) (Codex PR #5 P2).
 - [ ] Event-log truth: signals reconstructable purely from events (replay test).
