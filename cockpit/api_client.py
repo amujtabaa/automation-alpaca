@@ -182,6 +182,23 @@ def get_review(date: Optional[str] = None) -> dict:
 
 
 # --- Controls ------------------------------------------------------------- #
+def list_envelopes() -> list[dict]:
+    """GET /api/envelopes — read-only envelope visibility (ADR-009/WO-0020)."""
+    return _request("GET", "/api/envelopes")
+
+
+def approve_envelope(draft: dict) -> dict:
+    """POST /api/envelopes/approve — the envelope approval intent. The payload
+    IS the draft; the backend rejects it (422) unless BOTH approval-time
+    dispositions and the TTL are present."""
+    return _request("POST", "/api/envelopes/approve", json=draft)
+
+
+def cancel_envelope(envelope_id: str) -> dict:
+    """POST /api/envelopes/{id}/cancel — withdraw a pre-activation envelope."""
+    return _request("POST", f"/api/envelopes/{envelope_id}/cancel")
+
+
 def set_kill_switch(engaged: bool) -> dict:
     return _request("POST", "/api/controls/kill-switch", json={"engaged": engaged})
 

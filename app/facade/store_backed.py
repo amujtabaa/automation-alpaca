@@ -52,8 +52,10 @@ from app.models import (
     RECOVERY_OPEN_STATUSES,
     Candidate,
     CandidateStatus,
+    EnvelopeStatus,
     Event,
     EventType,
+    ExecutionEnvelope,
     Order,
     OrderStatus,
     Position,
@@ -600,6 +602,15 @@ class StoreBackedQueryFacade:
             )
         return views
 
+    async def list_envelopes(self) -> list[ExecutionEnvelope]:
+        """``GET /api/envelopes`` (WO-0020): read-only envelope visibility —
+        the abstract query facade doesn't declare the envelope API yet (the
+        facade-ABC lift is queued with the base.py lift)."""
+
+        from typing import cast as _cast
+
+        return await _cast(Any, self._store).list_envelopes()
+
 
 class StoreBackedCommandFacade:
     """``ExecutionCommandFacade`` implementation wrapping an existing store.
@@ -837,6 +848,60 @@ class StoreBackedCommandFacade:
                 result.order.status.value if result.deferred and result.order else None
             ),
         )
+
+    # ------------------------------------------------------------------ #
+    # Execution envelopes (ADR-009 / WO-0020) — thin, typed passthroughs.
+    # The abstract StateStore does not declare the envelope API yet (base.py
+    # is outside every W3 WO's scope; the ABC lift is a queued follow-up), so
+    # these cast to the structural surface both stores implement.
+    # ------------------------------------------------------------------ #
+    async def approve_envelope(
+        self, *, draft: ExecutionEnvelope, actor: str
+    ) -> ExecutionEnvelope:
+        """``POST /api/envelopes/approve``: create→approve→activate as ONE
+        store-atomic unit (WO-0017). The mandatory approval-time dispositions
+        are structurally enforced before this is even reachable (the route's
+        request model IS ExecutionEnvelope — a draft without them 422s at
+        parse time). 409 for kill-switch block / terminal or duplicate-ACTIVE
+        conflicts; the raw draft never touches the store on failure."""
+
+        from typing import cast as _cast
+
+        from app.store.core import EnvelopeTransitionError
+
+        try:
+            return await _cast(Any, self._store).approve_envelope_activation(
+                draft, actor=actor
+            )
+        except OrderIntentBlockedError as exc:
+            raise ConflictError(str(exc)) from exc
+        except (EnvelopeTransitionError, InvalidOrderError) as exc:
+            raise ConflictError(str(exc)) from exc
+
+    async def cancel_envelope(
+        self, *, envelope_id: str, actor: str
+    ) -> ExecutionEnvelope:
+        """``POST /api/envelopes/{id}/cancel``: withdraw a PRE-ACTIVATION
+        envelope (the §3 escape edges; idempotent for already-CANCELLED). An
+        ACTIVE mandate is NOT cancellable here — stopping a live mandate goes
+        through the precedence paths (kill / flatten), so this maps the
+        illegal edge to 409. 404 for an unknown id."""
+
+        from typing import cast as _cast
+
+        from app.store.core import EnvelopeTransitionError
+
+        try:
+            return await _cast(Any, self._store).transition_envelope(
+                envelope_id,
+                EnvelopeStatus.CANCELLED,
+                actor=actor,
+                reason="operator_cancel",
+            )
+        except UnknownEntityError as exc:
+            raise EntityNotFoundError(str(exc)) from exc
+        except (EnvelopeTransitionError, OrderIntentBlockedError) as exc:
+            raise ConflictError(str(exc)) from exc
 
     async def cancel(self, *, order_id: str, actor: str) -> Order:
         """``POST /api/orders/{order_id}/cancel`` (P6e): human-triggered manual

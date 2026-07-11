@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, cast
 
 from app.broker.adapter import (
     AmbiguousBrokerError,
@@ -45,15 +45,20 @@ from app.broker.adapter import (
 )
 from app.config import Settings
 from app.features import session_type_for
-from app.marketdata.service import MarketDataService
+from app.marketdata.service import MarketDataService, MarketSnapshot
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
     RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
+    EnvelopeExpiryDisposition,
+    EnvelopeStaleDataDisposition,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     EventType,
+    ExecutionEnvelope,
+    ExecutionEventType,
     Order,
     OrderSide,
     OrderStatus,
@@ -73,10 +78,23 @@ from app.protection import (
     protective_limit_price,
 )
 from app.reconciliation import (
+    ENVELOPE_EXEC_BLOCKED,
+    ENVELOPE_EXEC_RELEASED,
     ReconcileFairnessCursor,
     ReconciliationPlan,
     ReconcileQueryBudget,
+    execute_envelope_action,
+    market_snapshot_fingerprint,
     plan_reconciliation,
+    redrive_staged_envelope_action,
+)
+from app.sellside.policy import decide
+from app.sellside.types import (
+    BreachSignal,
+    ExhaustedSignal,
+    ExpiredSignal,
+    PlannedAction,
+    StaleDataSignal,
 )
 from app.store.base import (
     CLAIM_BLOCKED,
@@ -430,6 +448,275 @@ async def _reconcile_protection_pause(
         )
 
 
+class _EnvelopeStoreOps(Protocol):
+    """The envelope store surface the tick drives — the abstract StateStore
+    does not declare it yet (base.py has stayed outside every W3 WO's scope;
+    the ABC lift is a queued follow-up)."""
+
+    async def list_envelopes(
+        self,
+        *,
+        sell_intent_id: Optional[str] = ...,
+        symbol: Optional[str] = ...,
+        status: Optional[EnvelopeStatus] = ...,
+    ) -> list[ExecutionEnvelope]: ...
+
+    async def transition_envelope(
+        self,
+        envelope_id: str,
+        new_status: EnvelopeStatus,
+        *,
+        actor: str = ...,
+        reason: Optional[str] = ...,
+    ) -> ExecutionEnvelope: ...
+
+    async def record_envelope_fill(
+        self,
+        envelope_id: str,
+        *,
+        quantity: int,
+        dedupe_key: str,
+        price: Optional[float] = ...,
+        order_id: Optional[str] = ...,
+        session_id: Optional[str] = ...,
+        ts_event: Optional[datetime] = ...,
+    ) -> ExecutionEnvelope: ...
+
+
+class EnvelopeTapeBuffer:
+    """Per-symbol session snapshot tape for the pure sell-side policy.
+
+    WORKING DATA, not persisted (the same ruling as ``MarketSnapshot`` itself,
+    docs/02): a restart empties it and the policy simply re-warms
+    (INSUFFICIENT_DATA → conservative no-action for the warmup window) —
+    fail-quiet, never fail-open. Appends dedupe on ``updated_at`` so a quiet
+    feed doesn't stutter duplicate ticks into the bars; bounded so a
+    long-lived session cannot grow memory without limit.
+    """
+
+    def __init__(self, max_len: int = 4096) -> None:
+        self._tapes: dict[str, list[MarketSnapshot]] = {}
+        self._max = max_len
+
+    def append(self, snapshot: MarketSnapshot) -> None:
+        tape = self._tapes.setdefault(snapshot.symbol, [])
+        if tape and tape[-1].updated_at == snapshot.updated_at:
+            tape[-1] = snapshot  # same tick refreshed, not a new observation
+            return
+        tape.append(snapshot)
+        if len(tape) > self._max:
+            del tape[: len(tape) - self._max]
+
+    def tape(self, symbol: str) -> list[MarketSnapshot]:
+        return list(self._tapes.get(symbol, ()))
+
+
+async def _envelope_working_order(
+    store: StateStore, envelope_id: str
+) -> Optional[Order]:
+    """The envelope's latest non-terminal order, discovered from its
+    ENVELOPE_ACTION events (the event log IS the envelope→order linkage)."""
+
+    events = await store.get_execution_events()
+    working: Optional[Order] = None
+    for event in events:
+        if (
+            event.envelope_id != envelope_id
+            or event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+            or event.order_id is None
+        ):
+            continue
+        order = await store.get_order(event.order_id)
+        if order is not None and order.status not in (
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+        ):
+            working = order
+    return working
+
+
+async def _envelope_id_for_order(store: StateStore, order_id: str) -> Optional[str]:
+    """The envelope that minted ``order_id`` (via its ENVELOPE_ACTION event),
+    or None for every non-envelope order."""
+
+    events = await store.get_execution_events()
+    for event in events:
+        if (
+            event.order_id == order_id
+            and event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id is not None
+        ):
+            return event.envelope_id
+    return None
+
+
+async def _cancel_envelope_working_order(
+    store: StateStore, adapter: BrokerAdapter, envelope: ExecutionEnvelope
+) -> None:
+    """Best-effort venue cancel of the envelope's working order (the CANCEL
+    dispositions). A never-submitted CREATED order cancels locally; a live one
+    gets an idempotent venue cancel + CANCEL_PENDING so the poll confirms
+    (CHAOS-1 discipline: a late fill is still ingested, never missed)."""
+
+    order = await _envelope_working_order(store, envelope.id)
+    if order is None:
+        return
+    try:
+        if order.status is OrderStatus.CREATED:
+            await store.transition_order(order.id, OrderStatus.CANCELED)
+            return
+        if order.broker_order_id is not None:
+            await adapter.cancel_order(order.broker_order_id)
+            await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+    except (BrokerError, *_TRANSITION_ERRORS) as exc:
+        _log.warning(
+            "envelope %s: working-order cancel failed (%s); reconcile will converge it",
+            envelope.id,
+            exc,
+        )
+
+
+async def _run_envelopes(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    market_data: Optional[MarketDataService],
+    settings: Optional[Settings],
+    *,
+    tapes: Optional[EnvelopeTapeBuffer],
+    now: Optional[datetime] = None,
+) -> None:
+    """The envelope pass (ADR-009 §1): runs immediately after protection —
+    protection always outranks autonomous repricing. Per-envelope failure
+    isolation matches the protection conventions: a policy exception freezes
+    ONLY that envelope (event-logged via the transition) and the tick
+    continues; the pass as a whole never raises."""
+
+    if market_data is None or tapes is None:
+        return
+    estore = cast(_EnvelopeStoreOps, store)
+    try:
+        envelopes = await estore.list_envelopes(status=EnvelopeStatus.ACTIVE)
+    except Exception:  # noqa: BLE001 — never crash the tick
+        _log.exception("envelope pass: listing active envelopes failed")
+        return
+    if not envelopes:
+        return
+    ts = now if now is not None else utcnow()
+    snap_memo: dict[str, Optional[MarketSnapshot]] = {}
+    for envelope in envelopes:
+        try:
+            await _run_one_envelope(
+                store,
+                adapter,
+                market_data,
+                envelope,
+                tapes=tapes,
+                snap_memo=snap_memo,
+                now=ts,
+            )
+        except Exception as exc:  # noqa: BLE001 — isolate per envelope
+            _log.exception(
+                "envelope %s (%s): pass failed; freezing that envelope only",
+                envelope.id,
+                envelope.symbol,
+            )
+            try:
+                await estore.transition_envelope(
+                    envelope.id,
+                    EnvelopeStatus.FROZEN,
+                    actor="engine",
+                    reason=f"policy_error:{type(exc).__name__}",
+                )
+            except Exception:  # noqa: BLE001
+                _log.exception(
+                    "envelope %s: freeze after policy error ALSO failed",
+                    envelope.id,
+                )
+
+
+async def _run_one_envelope(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    market_data: MarketDataService,
+    envelope: ExecutionEnvelope,
+    *,
+    tapes: EnvelopeTapeBuffer,
+    snap_memo: dict[str, Optional[MarketSnapshot]],
+    now: datetime,
+) -> None:
+    estore = cast(_EnvelopeStoreOps, store)
+    symbol = envelope.symbol
+    if symbol not in snap_memo:
+        # One fetch per symbol per pass, shared across the symbol's envelopes.
+        snap_memo[symbol] = await market_data.get_snapshot(symbol)
+    snapshot = snap_memo[symbol]
+    if snapshot is not None:
+        tapes.append(snapshot)
+
+    # A staged-but-unexecuted action (transient release / crash between
+    # staging and the venue call) resumes FIRST, with no new accounting —
+    # the budget was spent when it was staged (INV-083).
+    redriven = await redrive_staged_envelope_action(
+        cast(Any, store), adapter, envelope.id
+    )
+    if redriven is not None and redriven.outcome not in (
+        ENVELOPE_EXEC_BLOCKED,
+        ENVELOPE_EXEC_RELEASED,
+    ):
+        return  # one venue action per envelope per tick
+
+    events = await store.get_execution_events()
+    history = [e for e in events if e.envelope_id == envelope.id]
+    decision = decide(envelope, tapes.tape(symbol), now=now, history=history)
+
+    if isinstance(decision, PlannedAction):
+        if snapshot is None:
+            return  # no live snapshot to fingerprint — hold this tick
+        await execute_envelope_action(
+            cast(Any, store),
+            adapter,
+            envelope.id,
+            decision,
+            snapshot_fingerprint=market_snapshot_fingerprint(snapshot),
+            actor="engine",
+            now=now,
+        )
+    elif isinstance(decision, BreachSignal):
+        # A real market-vs-mandate breach (e.g. exit only executable below
+        # floor): terminal-pending-human, quarantine posture.
+        await estore.transition_envelope(
+            envelope.id,
+            EnvelopeStatus.BREACHED,
+            actor="engine",
+            reason=f"{decision.rail}: {decision.detail}",
+        )
+    elif isinstance(decision, ExhaustedSignal):
+        await estore.transition_envelope(
+            envelope.id,
+            EnvelopeStatus.EXHAUSTED,
+            actor="engine",
+            reason=decision.detail,
+        )
+    elif isinstance(decision, ExpiredSignal):
+        await estore.transition_envelope(
+            envelope.id,
+            EnvelopeStatus.EXPIRED,
+            actor="engine",
+            reason=f"ttl_lapsed:{decision.disposition.value}",
+        )
+        if decision.disposition is EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
+            await _cancel_envelope_working_order(store, adapter, envelope)
+        # REST_AT_FLOOR: the working order deliberately keeps resting.
+    elif isinstance(decision, StaleDataSignal):
+        # Fail closed: repricing already stopped (the policy returned no
+        # plan). The envelope stays ACTIVE — staleness is transient — and the
+        # approval-time choice decides the resting order's fate.
+        if decision.disposition is EnvelopeStaleDataDisposition.CANCEL:
+            await _cancel_envelope_working_order(store, adapter, envelope)
+    # NoAction (monitoring / cooldown / warmup / out-of-phase): nothing.
+
+
 async def monitoring_loop(
     store: StateStore,
     adapter: BrokerAdapter,
@@ -460,6 +747,9 @@ async def monitoring_loop(
     # the earliest TIMEOUT_QUARANTINE orders starve later ones — spans ticks like the
     # budget; direct run_monitoring_tick callers (tests) pass none.
     reconcile_fairness = ReconcileFairnessCursor()
+    # WO-0020: the loop owns the per-symbol snapshot tape the envelope policy
+    # consumes (working data — a restart re-warms; see EnvelopeTapeBuffer).
+    envelope_tapes = EnvelopeTapeBuffer()
     # Wave 4f gate: the startup reduce-only gate is owned by ``run_startup_reconcile``
     # (called in the app lifespan BEFORE this loop, so trading is Reducing-until-parity
     # before the first tick). This loop then MAINTAINS the reconcile driver each tick
@@ -475,6 +765,7 @@ async def monitoring_loop(
                 reconcile_budget=reconcile_budget,
                 reconcile_fairness=reconcile_fairness,
                 drive_reconcile_state=True,
+                envelope_tapes=envelope_tapes,
             )
         except asyncio.CancelledError:
             _log.info("monitoring loop cancelled; shutting down")
@@ -547,6 +838,8 @@ async def run_monitoring_tick(
     reconcile_budget: Optional[ReconcileQueryBudget] = None,
     reconcile_fairness: Optional[ReconcileFairnessCursor] = None,
     drive_reconcile_state: bool = False,
+    envelope_tapes: Optional[EnvelopeTapeBuffer] = None,
+    envelope_now: Optional[datetime] = None,
 ) -> None:
     """One monitoring iteration: submit pending orders, then reconcile open ones.
 
@@ -561,6 +854,19 @@ async def run_monitoring_tick(
     # + submitted in the SAME tick (no extra cadence of latency). No-op when there
     # is no market-data handle or protection is disabled.
     await _run_protection(store, adapter, market_data, settings)
+    # ADR-009 §1 (WO-0020): the envelope pass runs immediately AFTER protection
+    # (protection always first) and BEFORE the submit sweep, so a stop-exit the
+    # policy stages is claimed + submitted in this same tick. No-op without a
+    # market-data handle or a tape buffer (the loop owns one; direct tick
+    # callers that don't pass one are untouched).
+    await _run_envelopes(
+        store,
+        adapter,
+        market_data,
+        settings,
+        tapes=envelope_tapes,
+        now=envelope_now,  # injected policy clock; None = wall clock (loop)
+    )
     await _submit_pending_orders(store, adapter, settings, market_data=market_data)
     await _redrive_stale_submitting(store, adapter, settings, market_data=market_data)
     # ADR-002: resolve any TIMEOUT_QUARANTINE order with a read-only targeted query
@@ -1542,8 +1848,35 @@ async def _apply_update(
     position mutation.
     """
 
+    # WO-0020 envelope bridge: if this order was minted by an envelope, apply
+    # each broker fill to the envelope FIRST with the SAME canonical dedupe
+    # key the fill append uses. Record-first means the log gets ONE FILL event
+    # (envelope-attributed); append_fill's own shadow event append then dedupes
+    # to it while still writing the fill ROW — position folds exactly once and
+    # the envelope's remaining decrements exactly once (INV-076). Fills without
+    # a source_fill_id cannot be bridged deterministically (no venue identity
+    # before the row exists) — production Alpaca fills always carry one.
+    envelope_id = await _envelope_id_for_order(store, order.id)
     rejected: list[dict[str, Any]] = []
     for bf in update.fills:
+        if envelope_id is not None and bf.source_fill_id is not None:
+            try:
+                await cast(_EnvelopeStoreOps, store).record_envelope_fill(
+                    envelope_id,
+                    quantity=bf.quantity,
+                    dedupe_key=f"fill:{order.id}:{bf.source_fill_id}",
+                    price=bf.price,
+                    order_id=order.id,
+                    session_id=order.session_id,
+                    ts_event=bf.filled_at,
+                )
+            except Exception:  # noqa: BLE001 — never block fill ingest
+                _log.exception(
+                    "envelope fill bridge failed for order %s (envelope %s); "
+                    "fill ingest continues",
+                    order.id,
+                    envelope_id,
+                )
         try:
             await store.append_fill(
                 order.id,
