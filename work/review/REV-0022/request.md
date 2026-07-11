@@ -38,7 +38,11 @@ rate-limit → producer quarantine). Your verdict gates acceptance; the implemen
 3. **Rails sufficiency.** TTL/staleness, dedupe on producer-generated `signal_id`, per-producer
    rate limits with producer-level quarantine, kill-switch/Halted/Reducing interaction table —
    any missing failure mode for an adversarial or malfunctioning producer (e.g. id-collision
-   games, clock skew on `issued_at`, quarantine-release races, event-log flooding)?
+   games, clock skew on `issued_at`, quarantine-release races, event-log flooding)? Also verify
+   the recorded **INV-7 asymmetry decision** (ADR-009 invariant table, Ameen 2026-07-11): a false
+   "not-risk-reducing" classification silently blocks a protective exit with no downstream
+   backstop — does the ADR's remedy (classification conservative toward convertibility, risk gate
+   as binding check, operator-visible blocks, manual-flatten fallback) actually close that hole?
 4. **Boundary hygiene.** Zero producer code in-repo, OpenAPI-only coupling, no new dependencies —
    consistent with the pinned stack, `.importlinter` contracts, and ADR-005/006 seams? Does the
    Streamlit approval panel spec keep contract 2 (cockpit imports no `app.*`) satisfiable?

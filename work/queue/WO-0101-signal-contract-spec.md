@@ -53,6 +53,7 @@ forbidden_paths:
 ## Required behavior
 
 - [ ] Spec documents exist covering: schema (all fields typed, deterministic `signal_id` dedupe rule), lifecycle state machine (RECEIVED→QUARANTINED|EXPIRED|REJECTED|APPROVED), TTL/staleness rules, rate-limit policy, kill-switch/Halted/Reducing interaction table.
+- [ ] The **risk-reducing classification** (which signals are convertible in `Reducing`) is explicitly defined, honoring the recorded human decision in ADR-009's INV-7 row: the false-negative (a genuine protective sell classified not-risk-reducing → exit silently blocked) has no downstream backstop and is the worse error class — spec the classification conservatively toward convertibility, with the quantity-aware risk gate as the binding check.
 - [ ] Every one of the 11 CLAUDE.md invariants + INV-1..9 has an explicit preservation note.
 - [ ] A third party could implement WO-0102 from the spec alone.
 
