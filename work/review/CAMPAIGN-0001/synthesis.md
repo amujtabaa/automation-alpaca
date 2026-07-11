@@ -1,3 +1,12 @@
+> **FINAL STATUS (2026-07-11) — all gated remediations cleared.** Every human-gated fix from Waves 1–2
+> has passed independent cross-model re-review on the authoritative Python 3.12 env:
+> **REV-0019 re-run + REV-0020** (F-001, ENG-001 kill-switch via the atomic exit-open, UC-002, ADR-008)
+> = ACCEPT, and **REV-0021** (W2-CAND, W2-STALE protective-floor, W2-SESS, W2-RISK) = ACCEPT. No live P0
+> was ever found across the spine; every confirmed P1/P2 was remediated test-first, dual-confirmed
+> (author in-process + Codex independent 3.12.13), and gate-cleared. Full suite **2044 passed / 0
+> failed**; ruff / mypy / import-linter (5-0) clean. **The spine is certified; the branch is merge-ready.**
+> Details: `work/review/REV-0019|0020|0021/disposition.md`, `work/ledger.jsonl` (CAMPAIGN-0001-COMPLETE).
+
 # CAMPAIGN-0001 — Interim Synthesis: Is the Wave-1 Spine Solid?
 
 **Scope:** Wave 1 (the safety-critical spine) — REV-0004 ATTACK-CHAIN, REV-0005 ENGINE,

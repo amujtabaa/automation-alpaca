@@ -2,9 +2,21 @@
 type: Review Disposition
 rev_id: REV-0019
 verdict_received: ACCEPT-WITH-CHANGES
-disposition_status: PARTIAL
+disposition_status: RESOLVED   # was PARTIAL; ENG-001 residual now cleared via REV-0020 (see addendum)
 date: 2026-07-10
+addendum_date: 2026-07-11
 ---
+
+> **Addendum (2026-07-11) — env-corrected re-run.** Codex re-ran REV-0019 on the authoritative env
+> (Python 3.12.13, single clean commit `9fd1e74`, no checkout movement — the prior run's transient
+> checkout reversion is resolved) and its `result.md` was overwritten with a clean **ACCEPT**. The three
+> targets that cleared here are re-confirmed authoritatively: **REV-0006-F-001** (sqlite flatten
+> one-`_tx()` atomicity), **UC-002** (cancel operator-actor, both branches, `system` default),
+> **ADR-008 / INV-075** wording (pure append-sequence fold; no `ORDER_TRANSITIONS` consultation). The
+> **ENG-001** residual (REV-0019-F-001) this packet originally found — the post-create/pre-approval
+> HALTED window — has since been **remediated (commit `7d41e4d`) and independently CLEARED under
+> REV-0020** (`work/review/REV-0020/disposition.md`). So all four REV-0019 targets are now closed and
+> this disposition is RESOLVED. The body below is the original (pre-remediation) record.
 
 # Disposition — REV-0019 (re-review of the Tier-1 gated remediation)
 
