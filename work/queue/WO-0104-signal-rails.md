@@ -39,6 +39,7 @@ allowed_paths:
   - app/models.py
   - app/store/**
   - app/api/**                       # release route — human-gated action
+  - app/facade/**                    # signal facade (release command/queries) — contract 5: the route never reaches store/events directly; commands.py stays forbidden below
   - cockpit/**                       # producer-quarantine RELEASE control only (browser-first: the required human action needs a browser path)
   - .importlinter                    # if the release route is a new module: add it to contract 5
   - tests/**
@@ -49,8 +50,8 @@ allowed_paths:
 ```yaml
 forbidden_paths:
   - app/broker/**
-  - cockpit/**
-  - app/facade/commands.py           # order submission path
+  - cockpit/** (except the producer-quarantine release control — see allowed_paths; no other UI changes)
+  - app/facade/commands.py           # order submission path stays forbidden (release is not an order intent)
 ```
 
 ## Required behavior
