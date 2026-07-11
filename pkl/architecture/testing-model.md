@@ -4,7 +4,7 @@ title: Testing Model and Determinism Rules
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-08
+last_verified: 2026-07-11
 tags: [testing, determinism, ci]
 source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md]
 supersedes: []
@@ -26,7 +26,7 @@ Deterministic, dual-path testing posture inherited from the migration and kept p
 - Replay / parity verifier runs where implemented; event-log replay is regression evidence.
 - Never weaken a test to make code pass; never merge failing or newly-skipped tests. Phase-named tests remain active regression evidence unless replaced and reviewed.
 - CI gate (as wired today): `ruff check`, `mypy app/`, `pytest` + coverage, import-linter (`lint-imports`) contracts, `pip-audit` where configured. Formatting authority: `ruff format`.
-- `mypy` static typecheck (ADR-007, wired 2026-07-08): baseline-and-ratchet over `app/` via `pyproject.toml [tool.mypy]` — 16 grandfathered modules (`ignore_errors`); new/clean modules are checked; the punch-list only shrinks (burn down `store/*`, `monitoring`, `policy` first). Baseline was 187 errors/16 files (pydantic plugin + ignore-missing-imports). Known limitation: a new error inside a grandfathered module isn't caught until that module is cleaned.
+- `mypy` static typecheck (ADR-007, wired 2026-07-08; **burn-down complete 2026-07-09, WO-0012**): the grandfather list is EMPTY — the whole `app/` package is typechecked with no `ignore_errors` override (started 16 modules / ~187 baseline errors; every error fixed by triage, never silenced). `warn_unused_ignores = true` since 2026-07-11 (the ADR-007 follow-up flip; a stale `# type: ignore` now fails the gate). A line-level mypy-baseline (ADR-007's other documented future upgrade) is **moot** — with zero grandfathered errors there is nothing to baseline; revisit only if a future mypy/dep bump introduces a large new error class. Dependency closure pinned in `constraints.txt` (CI installs `-c constraints.txt`), so the gate can't drift out from under a green PR.
 
 ## Rationale
 
@@ -45,3 +45,4 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
 
 - 2026-07-07: Created from CLAUDE.md §7/§8 decomposition.
 - 2026-07-08: Corrected the CI-gate list to what is actually wired (removed the unwired `mypy`); recorded `mypy` as a deferred gate with a measured baseline (193 errors) and a WO-0008 pointer. last_verified refreshed for the gate facts.
+- 2026-07-11: mypy gate facts updated for the completed WO-0012 burn-down (grandfather list empty); `warn_unused_ignores` flipped true (WO-0016) and the one stale ignore removed (`app/broker/sim.py`); line-level baseline recorded as moot; constraints.txt lock noted. last_verified refreshed.
