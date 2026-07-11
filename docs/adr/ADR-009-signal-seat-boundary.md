@@ -11,11 +11,13 @@
 >    `check_version_consistency.py` → `VERSION CHECK PASSED: v0.9.1`;
 >    `check_mcp_spec.py` → `SKIPPED: mcp/ not installed (optional layer)` (all exit 0).
 > 2. **WO-0001 disposition** — `work/ledger.jsonl`: WO-0001 CLOSED, disposition
->    `[PKL_UPDATED, RESULT_SUMMARY_KEPT]`, commit `4eccaac`, 2026-07-08. Caveat the planning
->    seat should weigh: WO-0001's verdict was **NOT-TERMINAL (narrow)** — the order-status/spawn
->    state machine remains `legacy_truth` pending WO-0007b. Signal lifecycle events are new
->    event types and do not depend on that flow, but the approval→intent conversion (WO-0103)
->    lands upstream of it.
+>    `[PKL_UPDATED, RESULT_SUMMARY_KEPT]`, commit `4eccaac`, 2026-07-08. WO-0001's
+>    NOT-TERMINAL (narrow) residual has since been **closed**: WO-0007b flipped the
+>    order-status/spawn flow to `event_truth` (2026-07-08, human sign-off), WO-0013 remediated
+>    the REV-0001 P0s on the write path, ADR-008 was **Accepted** (2026-07-09), and the
+>    independent review dispositioned RESOLVED (REV-0003, ACCEPT-WITH-CHANGES). The migration
+>    is substantially terminal; the only known deferral is `filled_quantity` event-sourcing
+>    (status-only flip; separate follow-up), which the signal WOs do not depend on.
 > 3. **Acceptance** — still open: human review + independent cross-model review packet
 >    (`work/review/REV-*`), per the CLAUDE.md review policy. This document remains DRAFT until
 >    that packet is dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
