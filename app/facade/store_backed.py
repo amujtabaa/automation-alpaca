@@ -850,7 +850,7 @@ class StoreBackedCommandFacade:
         )
 
     # ------------------------------------------------------------------ #
-    # Execution envelopes (ADR-009 / WO-0020) — thin, typed passthroughs.
+    # Execution envelopes (ADR-010 / WO-0020) — thin, typed passthroughs.
     # The abstract StateStore does not declare the envelope API yet (base.py
     # is outside every W3 WO's scope; the ABC lift is a queued follow-up), so
     # these cast to the structural surface both stores implement.

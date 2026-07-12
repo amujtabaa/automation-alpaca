@@ -1,9 +1,9 @@
-# W3 wave — Execution Envelope (ADR-009): sequencing and branch strategy
+# W3 wave — Execution Envelope (ADR-010): sequencing and branch strategy
 
 ## Order of operations
 
 ```
-ADR-009 (Proposed) + this wave committed first, alone
+ADR-010 (Proposed) + this wave committed first, alone
         │
      WO-0016  envelope entity / transitions / events / persistence   [gated: migration]
         │
@@ -18,7 +18,7 @@ WO-0017    WO-0018        approval+precedence ∥ pure policy          [0017 gat
         │
      WO-0022  adversarial review: Phase A critic agents → Phase B Codex
         │
-   ADR-009 → Accepted (human) → merge decision
+   ADR-010 → Accepted (human) → merge decision
 ```
 
 ## Branch strategy (decided guidance)
@@ -27,7 +27,7 @@ WO-0017    WO-0018        approval+precedence ∥ pure policy          [0017 gat
   fast-forward superset of master carrying the CAMPAIGN-0001 record) — or from master if the
   pending merge lands first. Do not base on master while it lags the review record.
 - **One integration branch for the wave:** `feat/execution-envelope`. First commit on it is this
-  planning drop (ADR-009 + WO-0016..0022 + this README + the Codex prompt), so every implementation
+  planning drop (ADR-010 + WO-0016..0022 + this README + the Codex prompt), so every implementation
   session and the reviewer share one pinned spec in-repo.
 - **One short-lived branch per WO** off the integration branch (`feat/execution-envelope/wo-0016`
   etc.), merged back after the WO's in-process checks. Disposable Claude Code session per WO, per
@@ -39,7 +39,7 @@ WO-0017    WO-0018        approval+precedence ∥ pure policy          [0017 gat
 - **Review pinning:** WO-0022 Phase B runs on the integration branch tip as a clean single-commit
   checkout on the authoritative env (REV-0020/0021 practice); record the SHA in the review prompt.
 - **Merge gate:** integration branch merges to the mainline only after WO-0022 is dispositioned
-  and ADR-009 is marked Accepted by Ameen. Until then master/dev stay untouched by W3.
+  and ADR-010 is marked Accepted by Ameen. Until then master/dev stay untouched by W3.
 
 ## Standing cautions for implementers
 

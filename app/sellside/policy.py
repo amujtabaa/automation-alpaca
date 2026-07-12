@@ -1,5 +1,5 @@
 """The top-level pure decision function + the shared hard-rail validator
-(WO-0018; ADR-009 §1, D-3).
+(WO-0018; ADR-010 §1, D-3).
 
 ``decide(envelope, snapshots, now=..., history=...)`` is a pure function of
 its arguments: the session-anchored snapshot tape (bars/ATR/VWAP derived
@@ -135,7 +135,7 @@ _TERMINAL_ORDER_EVENTS = frozenset(
 def _live_working_order_id(
     actions: Sequence[ExecutionEvent], history: Sequence[ExecutionEvent]
 ) -> Optional[str]:
-    """WO-0025 (REV-0022 F4): "working order" means LIVE AT THE VENUE NOW —
+    """WO-0025 (REV-0023 F4): "working order" means LIVE AT THE VENUE NOW —
     the newest submit/reprice action's order, unless the log already shows it
     terminal. The old predicate ("any submit event EVER", monotone in the
     event history) forced every envelope's second leg into a REPRICE of a
@@ -168,9 +168,9 @@ def validate_action(
     """The shared plan-time/write-time hard-rail check (D-3). Rails only —
     soft bounds were already clamped (and reported) upstream.
 
-    WO-0024 (REV-0022 F3): TTL and session-phase are §2 HARD rails, so they
+    WO-0024 (REV-0023 F3): TTL and session-phase are §2 HARD rails, so they
     are checked HERE — at both D-3 call sites and at redrive — not only in
-    ``decide``'s gates. Before this, "bounds checked twice" (ADR-009 §1) was
+    ``decide``'s gates. Before this, "bounds checked twice" (ADR-010 §1) was
     untrue for these two rails and a staged order could reach the venue after
     ``expires_at`` or out of phase via the redrive leg.
     """

@@ -7,7 +7,7 @@ wave: W3
 model_tier: strong
 risk: medium
 disposition: []
-owner: Ameen (gates the W3 merge; independent review is policy-mandatory for WO-0017/0019 + ADR-009)
+owner: Ameen (gates the W3 merge; independent review is policy-mandatory for WO-0017/0019 + ADR-010)
 created: 2026-07-11
 ---
 
@@ -17,7 +17,7 @@ created: 2026-07-11
 
 After WO-0016..0021 are all dispositioned, run the two-layer adversarial pass that CAMPAIGN-0001
 validated — (A) in-process critic **agents** with inlined criteria, then (B) independent Codex
-review — against ADR-009 *and* its implementation, and gate the W3 merge on the outcome. This WO
+review — against ADR-010 *and* its implementation, and gate the W3 merge on the outcome. This WO
 produces review artifacts and FINDINGs only; fixes go to follow-up WOs.
 
 ## Preconditions
@@ -61,7 +61,7 @@ Verdict per finding: severity P0-P3, reproduction command, decisive output paste
 
 Agent lenses (≥ one finding attempt each; "no findings" requires stating what was tried):
 
-- [ ] **spec-attacker** — attack ADR-009 itself: under-specified edges (partial fill during
+- [ ] **spec-attacker** — attack ADR-010 itself: under-specified edges (partial fill during
       FROZEN, supersession while an order rests, budget semantics across restart, DST/session
       boundary math), contradictions with ADR-001/002/003/008.
 - [ ] **interleaving-attacker** — concurrency: enumerate await points in the approval unit and
@@ -78,7 +78,7 @@ list of claims Phase A could **not** falsify.
 
 - [ ] Hand Codex the prompt at `work/review/W3-codex-review-prompt.md` + the pinned commit on the
       authoritative env (Python 3.12.13, clean single-commit checkout, per REV-0020/0021 practice).
-- [ ] Scope: ADR-009 acceptance, WO-0017 + WO-0019 gated surfaces, and independent re-derivation
+- [ ] Scope: ADR-010 acceptance, WO-0017 + WO-0019 gated surfaces, and independent re-derivation
       of at least H1, H3, H4, H5 by running its own reproductions (not reading Phase A first;
       Phase A results are shared only after Codex's verdict, then reconciled).
 - [ ] Verdict format per `AGENTS.md`: BLOCK / ACCEPT-WITH-CHANGES / ACCEPT, findings with repro.
@@ -88,7 +88,7 @@ list of claims Phase A could **not** falsify.
 - [ ] Reconcile A+B; every finding → FINDING file + follow-up WO or explicit human-accepted risk.
 - [ ] Ledger entry (RESULT_SUMMARY_KEPT) naming: gates cleared, gates open, dual-confirmation
       status per finding.
-- [ ] ADR-009 status flips to Accepted (or Amended) only on Ameen's mark after Phase B.
+- [ ] ADR-010 status flips to Accepted (or Amended) only on Ameen's mark after Phase B.
 - [ ] Merge of the W3 branch is blocked until this WO is dispositioned.
 
 ## Allowed paths

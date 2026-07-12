@@ -1,4 +1,4 @@
-"""WO-0017 — ADR-009 §4 precedence, BOTH stores.
+"""WO-0017 — ADR-010 §4 precedence, BOTH stores.
 
 Kill switch ⇒ every ACTIVE envelope freezes in the same atomic unit as the
 control change; release never auto-resumes; activation/resume is refused

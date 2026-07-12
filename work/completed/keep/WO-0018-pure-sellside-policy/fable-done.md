@@ -24,7 +24,7 @@ Touched: `app/sellside/**` (new, 9 modules), `tests/test_wo0018_*` (7 files, 105
 
 ## Divergences recorded (amended into the WO context packet)
 
-1. LASE design docs 00/01/02/05 absent from the environment — design derived from ADR-009 §1/§2/D-4 + `pkl/architecture/sellside-research-notes.md` (authoritative per the final drop).
+1. LASE design docs 00/01/02/05 absent from the environment — design derived from ADR-010 §1/§2/D-4 + `pkl/architecture/sellside-research-notes.md` (authoritative per the final drop).
 2. Import-linter contracts live in `.importlinter`, not `pyproject.toml`.
 
 ## Deferred log additions

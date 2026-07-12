@@ -1,12 +1,12 @@
 # FINDING — multi-order envelopes cannot complete: the two D-3 validators use different "working order" predicates
 
-- **Status:** OPEN (REV-0022 Phase A; found INDEPENDENTLY by spec-attacker SPEC-04 and
+- **Status:** OPEN (REV-0023 Phase A; found INDEPENDENTLY by spec-attacker SPEC-04 and
   completeness-critic CC-02 — distinct repros, both stores).
 - **Severity:** **P1** (fail-closed, so no illegal venue action — but a core designed capability
   (tranche exits, TRANCHE_FRACTION=0.5) is broken, a stop-triggered protective exit freezes
   mid-flight with 90/100 shares unsold, and the INV-082 "software defect" tripwire fires on
   routine market flow, devaluing the H5 alarm humans are meant to trust).
-- **Cluster:** F4 in `work/review/REV-0022/phase-a.md`. **Must be remediated together with F5**
+- **Cluster:** F4 in `work/review/REV-0023/phase-a.md`. **Must be remediated together with F5**
   (FINDING-W3-synthetic-fill-envelope-bypass) — F4's freeze currently masks F5's venue leg.
 
 ## What
@@ -26,7 +26,7 @@ a venue id"` — identical on memory and sqlite.
 
 ## Why
 
-ADR-009 never defined the working-order predicate or multi-child sequencing; the two halves of
+ADR-010 never defined the working-order predicate or multi-child sequencing; the two halves of
 D-3 implemented different predicates. Test coverage ended where the defect begins: WO-0020's full
 loop covers only the single-order-completes lifecycle; WO-0021's chaos tests hand-build
 PlannedActions and never exercise decide→stage across legs.
@@ -37,9 +37,9 @@ WO-0025 (DRAFT, paired with F5): unify the predicate — plan time must derive "
 live order state (or the store must expose it to the policy), define the post-terminal-child
 SUBMIT path, add decide→stage multi-leg integration tests (tranche fill → second tranche;
 stop-triggered continuation after full fill; disposition-cancel then re-entry), both stores.
-ADR-009 amendment defining the predicate ships with the change.
+ADR-010 amendment defining the predicate ships with the change.
 
 ## Repros
 
 Completeness-critic `test_critic_second_leg_freeze.py` (session scratchpad); spec-attacker
-harness R3. Decisive outputs quoted in the critic reports compiled under REV-0022.
+harness R3. Decisive outputs quoted in the critic reports compiled under REV-0023.

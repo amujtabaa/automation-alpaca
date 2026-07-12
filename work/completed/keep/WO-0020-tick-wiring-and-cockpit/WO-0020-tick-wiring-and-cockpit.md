@@ -1,6 +1,6 @@
 ---
 type: Work Order
-title: Monitoring-tick wiring + operator visibility for envelopes (ADR-009 §1; LASE 04)
+title: Monitoring-tick wiring + operator visibility for envelopes (ADR-010 §1; LASE 04)
 status: DRAFT
 work_order_id: WO-0020
 wave: W3
@@ -25,7 +25,7 @@ flags) plus the approval affordance — the UI observing state and issuing inten
 Read only these first:
 
 - `AGENTS.md`
-- `docs/adr/ADR-009-execution-envelope.md`
+- `docs/adr/ADR-010-execution-envelope.md`
 - LASE `04_INTEGRATION.md` (placement intent only; store methods there are superseded by WO-0016)
 - `app/monitoring.py` — `run_monitoring_tick`, `_run_protection` ordering; never-crash-the-tick
   conventions

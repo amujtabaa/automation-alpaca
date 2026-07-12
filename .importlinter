@@ -171,7 +171,7 @@ forbidden_modules =
 # (an empty list would itself be flagged by `unmatched_ignore_imports_alerting`).
 
 # --------------------------------------------------------------------------- #
-# Contract 6 — the sell-side policy is a PURE planning layer (ADR-009 §1,
+# Contract 6 — the sell-side policy is a PURE planning layer (ADR-010 §1,
 # WO-0018). It may import only the shared model kernel (app.models) and the
 # abstract market-data types (app.marketdata.service) — never a store, a
 # route, the facade, the engine loops, a concrete venue implementation, or

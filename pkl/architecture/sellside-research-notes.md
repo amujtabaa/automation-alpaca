@@ -32,7 +32,7 @@ tests-after); the underlying math (ATR, Chandelier, Keltner, VWAP, pivots) is pu
 - **Regime classification**: ATR-ratio (current vs. rolling baseline) + trend strength (+ volume
   behavior) is the practitioner-consensus classifier; tighten in ranging, widen in volatile.
 
-## Entry-side findings (seed parameters for W4 ADR-010 — defaults, all tunable)
+## Entry-side findings (seed parameters for W4 ADR-011 — defaults, all tunable; seed renumbered from ADR-010 on 2026-07-12, see W4-SEED-NOTES)
 
 - Liquidity gate: relative volume ≥ ~5x session-adjusted baseline; ≥ ~200k premarket shares;
   price band ~$2–$20 (below ~$2 = manipulated territory). Refuse to enter what you couldn't exit.

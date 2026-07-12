@@ -4,7 +4,7 @@ completed:
   - "WO-0021: be79dda (merge f092ca7), VERIFIED (tests-only charter), RESULT_SUMMARY_KEPT,
      non-gated; chaos & property catalog (regime tapes, interleaving chaos, hypothesis
      properties, dual-store parity). TWO real findings pinned as xfail(strict=True):
-     FINDING-W3-staged-order-outlives-preemption (P1, ADR-009 §4 violation, both stores;
+     FINDING-W3-staged-order-outlives-preemption (P1, ADR-010 §4 violation, both stores;
      fix drafted as WO-0024, human-gated, awaiting approval) and
      FINDING-W3-lase-pullback-structural-hold (P2, mechanism gap, W4/SOL bake-off axis).
      fable-done in work/completed/keep/WO-0021-*/"
@@ -29,24 +29,24 @@ completed:
      wiring deferred to WO-0020 (visible deviation, no consumer yet). fable-done in
      work/completed/keep/WO-0017-*/"
   - "WO-0016: 5ca48f2 (merge f0f75cb), VERIFIED, RESULT_SUMMARY_KEPT+ADR_CREATED, T1 approved;
-     ADR-009 §3+§6 amendments recorded. fable-done in work/completed/keep/WO-0016-*/"
+     ADR-010 §3+§6 amendments recorded. fable-done in work/completed/keep/WO-0016-*/"
   - "WO-0018: def2501 (merge 7eaa262), VERIFIED, RESULT_SUMMARY_KEPT, non-gated; regime-adaptive
      spec per FINAL planning drop (d0b1728); divergences amended into the WO (missing LASE docs;
      .importlinter vs pyproject). fable-done in work/completed/keep/WO-0018-*/"
 in-flight: NOTHING — remediation wave complete. WO-0028, WO-0024(amended), WO-0026,
   WO-0025, WO-0027 all VERIFIED, merged, pushed. ALL TEN finding pins GREEN
-  (tests/test_rev0022_phase_a_pins.py: 32 passed / 0 xfailed; WO-0021 flatten pin flipped;
+  (tests/test_rev0023_phase_a_pins.py: 32 passed / 0 xfailed; WO-0021 flatten pin flipped;
   only remaining xfail in the whole suite is the LASE structural-hold P2 — SOL/W4 territory).
   Remediation summary: reduce-only hard rail at write time + redrive (INV-084); redrive full
   re-validation + staleness ceiling + preemption sweeps flatten AND kill (INV-081 amended);
-  working-order predicate unified live-derived (ADR-009 §5 amended, decide() signature frozen
-  intact); inferred-fill record-first bridge (ADR-009 §6 amended); supersession
-  refuses-while-live/sweeps-staged/conserves (ADR-009 §3 amended, INV-077 amended); memory
+  working-order predicate unified live-derived (ADR-010 §5 amended, decide() signature frozen
+  intact); inferred-fill record-first bridge (ADR-010 §6 amended); supersession
+  refuses-while-live/sweeps-staged/conserves (ADR-010 §3 amended, INV-077 amended); memory
   _atomic envelope snapshot; or-True tautology dead, 14/14 + 9 more mutation-checks killed.
 awaiting:
   - T4: human runs Codex Phase B (work/review/W3-codex-review-prompt.md, pin f092ca7 — the pin
     PREDATES the remediation; reconciliation scaffold pre-filled at
-    work/review/REV-0022/phase-b-reconciliation.md, incl. the recommendation to hand Codex a
+    work/review/REV-0023/phase-b-reconciliation.md, incl. the recommendation to hand Codex a
     second short prompt for the f092ca7..tip remediation diff, which also satisfies the
     independent-review requirement for the gated-surface WOs).
   - WO-0029A DONE (both ADR amendments ACCEPTED + implemented: FROZEN→BREACHED INV-085;
@@ -60,7 +60,7 @@ awaiting:
     (yes/no gate).
   - WO-0030 (interface lift): APPROVED in-chat, next in queue (not started — the last
     approved item; everything else in this list is human/planning-seat/SOL-blocked).
-  - T5: ADR-009 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
+  - T5: ADR-010 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
     blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
     are remediated and pinned at tip.
 anchor-divergences:
@@ -69,7 +69,7 @@ anchor-divergences:
   - WO-0020 committed directly on integration branch (hygiene slip, not rewritten).
   - WO-0018: LASE design docs 00/01/02/05 never present in this environment (amended into WO).
   - WO-0018: import contracts live in .importlinter, not pyproject.toml (amended into WO).
-  - Planning drop (final) ADR-009 copy predates the ratified WO-0016 amendments — in-repo amended
+  - Planning drop (final) ADR-010 copy predates the ratified WO-0016 amendments — in-repo amended
     ADR kept authoritative (drop NOT copied over it), noted in d0b1728's message.
 deferred log (out-of-scope observations):
   - interface-lift WO needed: app/store/base.py ABC + facade ABCs lack envelope API; FOUR
@@ -97,7 +97,7 @@ open decisions:
 ## W3 sequencing status
 0016 ✅ → 0018 ✅ → 0017 ✅ → 0019a ✅ → 0019 ✅ → 0020 ✅ → 0021 ✅ → 0022 Phase A ✅ →
 REMEDIATION ✅ (0028 → 0024 → 0026 → 0025 → 0027; all pins green) →
-**Phase B Codex (T4, human)** → WO-0029 re-cut (planning seat) → T5 ADR-009 Accepted + merge
+**Phase B Codex (T4, human)** → WO-0029 re-cut (planning seat) → T5 ADR-010 Accepted + merge
 (human only).
 
 ## Gate/toolchain reference (this container)

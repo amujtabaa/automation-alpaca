@@ -225,7 +225,7 @@ class BrokerAdapter(ABC):
         quantity: Optional[int] = None,
     ) -> str:
         """Venue-side atomic cancel/replace of a live order (WO-0019a, the
-        envelope executor's reprice seam — ADR-009 §1).
+        envelope executor's reprice seam — ADR-010 §1).
 
         One venue round-trip: the working order is replaced without a window
         in which zero orders (lost queue position, unprotected book) or two

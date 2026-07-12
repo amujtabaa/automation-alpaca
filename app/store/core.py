@@ -2192,7 +2192,7 @@ def plan_close_session(
 
 
 # --------------------------------------------------------------------------- #
-# Execution envelopes (ADR-009 / WO-0016)
+# Execution envelopes (ADR-010 / WO-0016)
 # --------------------------------------------------------------------------- #
 
 
@@ -2269,7 +2269,7 @@ def envelope_created_event(
     envelope: ExecutionEnvelope, *, actor: str = COMMAND_ACTOR_SYSTEM
 ) -> ExecutionEvent:
     """``ENVELOPE_CREATED`` — snapshots the FULL bound set in the payload so the
-    approved mandate is replayable from the log alone (ADR-009 §6), and stamps
+    approved mandate is replayable from the log alone (ADR-010 §6), and stamps
     the commanding actor (operator-* for a human-created draft; the *approval
     flow* itself is WO-0017 — this is data plumbing only)."""
 
@@ -2337,7 +2337,7 @@ def plan_envelope_transition(
     superseded_by_id: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> EnvelopeTransitionPlan:
-    """Plan one status transition per ``ENVELOPE_TRANSITIONS`` (ADR-009 §3).
+    """Plan one status transition per ``ENVELOPE_TRANSITIONS`` (ADR-010 §3).
 
     Same-status is an idempotent no-op; an illegal edge rejects with
     :class:`EnvelopeTransitionError` and mutates nothing. A genuine transition
@@ -2476,7 +2476,7 @@ def plan_envelope_fill(
       record, NO status change (completion happens on resume — the store's
       resume path auto-completes at remaining==0; a freeze is never exited by
       a fill). Overfill while FROZEN chains ``BREACHED`` exactly like ACTIVE
-      (WO-0029A / ADR-009 §2-§3 amendment): a ceiling-violated mandate must
+      (WO-0029A / ADR-010 §2-§3 amendment): a ceiling-violated mandate must
       never reach COMPLETED via resume; the order-level quarantine (ADR-001)
       still applies on top.
     * terminal — a late fill (e.g. cancel raced a fill): recorded + decremented
@@ -2593,7 +2593,7 @@ def plan_supersede_envelope(
     now: Optional[datetime] = None,
     working_order: Optional[Order] = None,
 ) -> EnvelopeSupersedePlan:
-    """Plan ADR-009 §3 amendment-by-supersession as ONE atomic unit.
+    """Plan ADR-010 §3 amendment-by-supersession as ONE atomic unit.
 
     ``successor`` is a fresh PENDING draft for the SAME intent+symbol (its
     bounds are the amendment; approval context arrives via ``actor`` — the
@@ -2639,7 +2639,7 @@ def plan_supersede_envelope(
                 f"({successor.symbol!r} != {old.symbol!r})"
             ),
         )
-    # WO-0027 (REV-0022 F6 / ADR-009 §3 amendment): supersession transfers
+    # WO-0027 (REV-0023 F6 / ADR-010 §3 amendment): supersession transfers
     # the mandate, it never widens or duplicates it.
     # (a) A LIVE working order at the venue blocks supersession outright —
     #     the store cannot venue-cancel, and activating a successor next to a
@@ -2757,7 +2757,7 @@ class EnvelopeActionPausedError(ValueError):
 
 STAGE_DIVERGENCE = "divergence"  # plan/write disagreement: frozen + event, no order
 STAGE_STAGED = "staged"  # order minted + accounting committed; drive the venue leg
-STAGE_REFUSED_STALE = "refused_stale"  # WO-0029A (ADR-009 §5 amendment): the
+STAGE_REFUSED_STALE = "refused_stale"  # WO-0029A (ADR-010 §5 amendment): the
 # plan's FACTS went stale between decide and write (a fill shrank remaining,
 # order liveness flipped) — refused + evented, NO freeze; the policy replans
 # next tick. Only same-inputs validator disagreement is a DEFECT.
@@ -2781,7 +2781,7 @@ class EnvelopeActionStagePlan:
     accounting, so it can never desynchronize from the order it paid for.
     ``STAGE_DIVERGENCE``: apply ``freeze`` then append ``divergence_event`` +
     ``audit_event`` in the same unit; NOTHING else is written and the caller
-    must make ZERO venue calls (ADR-009 §5, D-3).
+    must make ZERO venue calls (ADR-010 §5, D-3).
     ``STAGE_REFUSED_STALE`` (WO-0029A): append ``action_event`` (an
     ENVELOPE_ACTION with payload action="refused_stale" — never counted by
     budget/cooldown accounting) + ``audit_event``; no order, no freeze, zero
@@ -2905,7 +2905,7 @@ def plan_stage_envelope_action(
     ran at plan time (two mandatory call sites). Any disagreement — a rail
     violation the plan claimed was valid, or a structural mismatch (REPRICE
     with no working order / SUBMIT over a live one) — is a software-defect
-    signal: freeze + ENVELOPE_PLAN_DIVERGENCE (ADR-009 §5), never a venue
+    signal: freeze + ENVELOPE_PLAN_DIVERGENCE (ADR-010 §5), never a venue
     call. On pass, mints the SELL Order (CREATED; XOR origin = the envelope's
     sell intent; ``replaces_order_id`` links the reprice chain) plus the
     ENVELOPE_ACTION event carrying envelope_id, snapshot fingerprint and the
@@ -2985,7 +2985,7 @@ def plan_stage_envelope_action(
             snapshot_fingerprint=snapshot_fingerprint,
             now=ts,
         )
-    # WO-0026 (REV-0022 F1): reduce-only is a §2 HARD rail — the SELL must
+    # WO-0026 (REV-0023 F1): reduce-only is a §2 HARD rail — the SELL must
     # never exceed the live fill-derived position (single-writer truth). The
     # stores read their own projection under the SAME lock/transaction as
     # this plan's application, so a fill racing the stage cannot slip an

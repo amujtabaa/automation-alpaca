@@ -1,8 +1,8 @@
-# REV-0022 Phase A — W3 Execution Envelope wave, internal adversarial review
+# REV-0023 Phase A — W3 Execution Envelope wave, internal adversarial review
 
 - **Reviewed commit:** `f092ca7` (`feat/execution-envelope` tip; `15e6a81` above it is work/-docs only).
 - **Method:** four independent critic subagents, fresh contexts, H1–H11 inlined verbatim, pinned SHA:
-  spec-attacker (ADR-009 vs implementation), interleaving-attacker (concurrency, real stores + gather),
+  spec-attacker (ADR-010 vs implementation), interleaving-attacker (concurrency, real stores + gather),
   test-critic (mutation testing, 13 mutations), completeness-critic (claims vs omissions).
   Test-critic temporarily mutated app code and restored (`git status` clean, baseline 410 passed /
   3 xfailed re-confirmed post-restoration). Interleaving evidence re-run on a pristine detached
@@ -28,7 +28,7 @@ parentheses.
 | F5 | Synthetic-fill envelope bypass | **P1** | H1/H8 | CC-01 | Reconciliation-inferred fills call `append_fill` directly, never `record_envelope_fill`: ceiling silently re-arms; 200 sh reached the venue under a 100-sh ceiling. F4 currently MASKS the venue leg — fixing F4 alone converts F5 into a live oversell. Remediate together. | FINDING-W3-synthetic-fill-envelope-bypass.md |
 | F6 | Supersession exposure | **P1 (latent)** | H9/H1 | SPEC-02 + INT-002 (2 independent) | Supersede neither cancels/adopts the predecessor's resting venue order (two live SELLs, 180 sh vs one 100-sh approval) nor conserves remaining (successor resets to full ceiling; a racing fill's decrement is erased). Latent: no production caller of `supersede_envelope` yet; P1 the moment the amendment flow wires up. | FINDING-W3-supersession-exposure.md |
 | F7 | Memory `_atomic` misses `_envelopes` | **P1** | H3/H10 | TC-03 | Memory-store rollback doesn't snapshot envelopes: injected crash mid-transition leaves envelope=APPROVED while the log rolls back to CREATED-only — state/log disagree, replay broken in the memory store. Concealed by the sqlite-only atomicity test. | FINDING-W3-memory-atomic-envelope-rollback.md |
-| F8 | Lifecycle/eventing gaps (grouped) | **P2/P3** | H2/H6/H7/H10 | SPEC-05..10, CC-04/05/06 | FROZEN-overfill clamps a hard rail and terminates COMPLETED (no BREACHED edge); expiry disposition is one-shot post-terminal (failed venue cancel never retried); disposition cancels emit no envelope-provenance events while `_BUDGET_ACTIONS` counts an event species never written; quarantine pause mislabeled `policy_error` freeze; no envelope projector/replay-parity coverage for the 13 new event types; `replaces_used` has no writer (cockpit budget column reads 0 forever; models.py comment false — doc/code conflict recorded); naive `expires_at` passes approval then TypeErrors tick 1; ADR-009 §5's "write-time rejection ⇒ software defect" is falsified by the repo's own pinned test; Protocol-via-`cast` makes mypy-green vacuous at the seams. | FINDING-W3-envelope-lifecycle-eventing-gaps.md |
+| F8 | Lifecycle/eventing gaps (grouped) | **P2/P3** | H2/H6/H7/H10 | SPEC-05..10, CC-04/05/06 | FROZEN-overfill clamps a hard rail and terminates COMPLETED (no BREACHED edge); expiry disposition is one-shot post-terminal (failed venue cancel never retried); disposition cancels emit no envelope-provenance events while `_BUDGET_ACTIONS` counts an event species never written; quarantine pause mislabeled `policy_error` freeze; no envelope projector/replay-parity coverage for the 13 new event types; `replaces_used` has no writer (cockpit budget column reads 0 forever; models.py comment false — doc/code conflict recorded); naive `expires_at` passes approval then TypeErrors tick 1; ADR-010 §5's "write-time rejection ⇒ software defect" is falsified by the repo's own pinned test; Protocol-via-`cast` makes mypy-green vacuous at the seams. | FINDING-W3-envelope-lifecycle-eventing-gaps.md |
 
 Process finding (already remediated): CC-07 — W3-STATE.md was stale at the pinned SHA; corrected in
 `15e6a81` mid-review. Noted so Phase B sees the timeline honestly.
@@ -96,11 +96,11 @@ TC-04) plus two partial survivors (TC-05 dead race branch, TC-06 unreachable pro
 | F1 | **WO-0026** (reduce-only enforcement seam; human-gated: order submission surface) | DRAFT, human-gated |
 | F6 | **WO-0027** (supersession: predecessor order cancel/adopt + remaining conservation) | DRAFT — may be deferred while no production caller exists, but blocks wiring the amendment flow |
 | F2 + F7 | **WO-0028** (test-integrity repairs + memory `_atomic` envelope snapshot; includes the one-character `or True` deletion — recommended FIRST, before Phase B verdict relies on the suite) | DRAFT |
-| F8 | **WO-0029** (grouped; planning seat should re-cut — includes two ADR-009 text amendments: §5 defect-classification and §2/§3 FROZEN-overfill edge) | DRAFT, ADR portions human-gated |
+| F8 | **WO-0029** (grouped; planning seat should re-cut — includes two ADR-010 text amendments: §5 defect-classification and §2/§3 FROZEN-overfill edge) | DRAFT, ADR portions human-gated |
 
 ## 4. Gate implications
 
-- **ADR-009 acceptance (T5) blockers:** F1, F3, F4, F5 (and WO-0024's original finding). F6 blocks
+- **ADR-010 acceptance (T5) blockers:** F1, F3, F4, F5 (and WO-0024's original finding). F6 blocks
   only the amendment-flow wiring. F8's ADR text contradictions (SPEC-05, SPEC-09) must be resolved
   in the ADR itself before acceptance — the code and the ADR currently disagree on what BREACHED
   means and on what a divergence signifies.

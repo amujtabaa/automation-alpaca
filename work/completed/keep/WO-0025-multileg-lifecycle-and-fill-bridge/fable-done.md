@@ -33,7 +33,7 @@ livelocked second leg would have corrupted any W4 bake-off baseline.
    (`test_inferred_fill_bridge_decrements_envelope`). The 200-vs-100 venue
    sequence is unreachable: remaining decrements, and (belt from WO-0026) the
    position projection also gates.
-4. **ADR-009 amendments recorded** (§5: working-order predicate DEFINED; §6:
+4. **ADR-010 amendments recorded** (§5: working-order predicate DEFINED; §6:
    source-agnostic envelope fill provenance); INV-082 wording updated (the
    false-positive class is gone; §5 classification refinement stays WO-0029).
 5. **Full gate green** — ruff/format OK, mypy 64 files, imports 6-0, pytest

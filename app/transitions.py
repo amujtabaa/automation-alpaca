@@ -47,7 +47,7 @@ SELL_INTENT_TRANSITIONS: dict[SellIntentStatus, set[SellIntentStatus]] = {
     SellIntentStatus.ORDERED: set(),
 }
 
-# Execution-envelope machine (ADR-009 §3, incl. the 2026-07-11 pre-activation
+# Execution-envelope machine (ADR-010 §3, incl. the 2026-07-11 pre-activation
 # escape-edge amendment). BREACHED / EXHAUSTED are terminal-pending-human:
 # recorded, never hidden, and deliberately have NO outgoing edges — resumption
 # of a breached/exhausted mandate is not a transition, it is a new envelope
@@ -78,7 +78,7 @@ ENVELOPE_TRANSITIONS: dict[EnvelopeStatus, set[EnvelopeStatus]] = {
     EnvelopeStatus.FROZEN: {
         EnvelopeStatus.ACTIVE,  # kill switch released — resume
         EnvelopeStatus.CANCELLED,
-        # WO-0029A (ADR-009 §2/§3 amendment, accepted 2026-07-12): a
+        # WO-0029A (ADR-010 §2/§3 amendment, accepted 2026-07-12): a
         # broker-authoritative overfill of the hard qty ceiling is a BREACH
         # in every state that can receive a fill — a violated mandate must
         # never terminate in the success state.

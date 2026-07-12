@@ -1,10 +1,10 @@
 ---
 type: Work Order
 title: Envelope terminal-state semantics, disposition eventing, replay coverage (F8 grouped — planning seat to re-cut)
-status: DRAFT — grouped placeholder; planning seat should re-cut into 2-3 WOs. ADR-009 text
+status: DRAFT — grouped placeholder; planning seat should re-cut into 2-3 WOs. ADR-010 text
   amendments (SPEC-05 FROZEN-overfill edge, SPEC-09 §5 defect claim) are human-gated.
 work_order_id: WO-0029
-wave: W3 remediation (REV-0022 Phase A)
+wave: W3 remediation (REV-0023 Phase A)
 model_tier: strong
 risk: medium
 disposition: []

@@ -1,4 +1,4 @@
-# REV-0022 Phase B reconciliation scaffold (pre-filled with Phase A + remediation state)
+# REV-0023 Phase B reconciliation scaffold (pre-filled with Phase A + remediation state)
 
 > Fill the "Codex" columns when the Phase B results file lands. Codex reviewed the SAME pin
 > (`f092ca7`) as Phase A, with Phase A results withheld — so overlap is an independence signal,
@@ -35,11 +35,11 @@
 
 ## Gate implications after reconciliation
 
-- ADR-009 acceptance (T5) blockers remaining BEFORE Phase B input: only F8's two ADR text
+- ADR-010 acceptance (T5) blockers remaining BEFORE Phase B input: only F8's two ADR text
   contradictions (SPEC-05 FROZEN-overfill edge, SPEC-09 §5 defect-classification refinement) +
   whatever Phase B adds. All P0/P1 code defects are remediated and pinned at tip.
 - Independent-review requirement (CLAUDE.md): WO-0024/0026/0027 touched human-gated surfaces —
-  their review packet dispositions ride on THIS packet (REV-0022) getting an
+  their review packet dispositions ride on THIS packet (REV-0023) getting an
   ACCEPT/ACCEPT-WITH-CHANGES verdict that covers the remediation diffs, or a follow-up packet
   scoped to `f092ca7..tip`. Recommend: hand Codex a SECOND, short prompt for the remediation
   diff once its pin review lands (the diff is small and self-contained: 4 WOs, all pinned).

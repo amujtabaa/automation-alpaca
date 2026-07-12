@@ -1,5 +1,5 @@
 """WO-0016 — remaining-quantity semantics: ONLY deduped fill events decrement
-(ADR-009 §2 scope rail), in BOTH stores.
+(ADR-010 §2 scope rail), in BOTH stores.
 
 The structural claim under test: ``record_envelope_fill`` is the sole writer
 of ``remaining_quantity``; submission/ack-shaped operations (envelope
@@ -107,7 +107,7 @@ async def test_duplicate_fill_is_counted_exactly_once(any_store):
 async def test_overfill_of_the_hard_ceiling_breaches(any_store):
     """A broker-authoritative fill EXCEEDING remaining is recorded faithfully
     (never hidden), remaining floors at 0, and the envelope goes BREACHED —
-    terminal-pending-human (ADR-001 posture, ADR-009 hard rail)."""
+    terminal-pending-human (ADR-001 posture, ADR-010 hard rail)."""
 
     await any_store.initialize()
     env = await any_store.create_envelope(make_draft(qty=50))

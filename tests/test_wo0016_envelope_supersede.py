@@ -1,4 +1,4 @@
-"""WO-0016 — amendment-by-supersession atomicity (ADR-009 §3), BOTH stores.
+"""WO-0016 — amendment-by-supersession atomicity (ADR-010 §3), BOTH stores.
 
 The invariant: bounds never mutate in place; a change is a NEW envelope that
 atomically replaces the old one — no observable window with two ACTIVE

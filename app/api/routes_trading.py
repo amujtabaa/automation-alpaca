@@ -309,7 +309,7 @@ async def list_events(
 async def list_envelopes(
     query_facade: ExecutionQueryFacade = Depends(get_query_facade),
 ) -> list[ExecutionEnvelope]:
-    """Read-only envelope visibility (ADR-009 / WO-0020): status, bounds,
+    """Read-only envelope visibility (ADR-010 / WO-0020): status, bounds,
     remaining qty, budget, dispositions — everything the cockpit renders
     derives from this payload; the UI holds no envelope state."""
     return await cast(_EnvelopeFacadeOps, query_facade).list_envelopes()
@@ -322,7 +322,7 @@ async def approve_envelope(
     actor: str = Depends(get_actor),
 ) -> ExecutionEnvelope:
     """Approve + activate an execution envelope — THE human-gated approval
-    surface for autonomous sell-side execution (ADR-009 §1). The request
+    surface for autonomous sell-side execution (ADR-010 §1). The request
     model is the envelope itself, so the mandatory approval-time choices
     (expiry + stale-data dispositions, TTL) are structurally unvoidable:
     a draft missing any of them fails validation (422) before any code runs.

@@ -1,6 +1,6 @@
 ---
 type: Work Order
-title: Pure sell-side policy rebuild — regime-adaptive LASE core (ADR-009 §1, §7; research notes)
+title: Pure sell-side policy rebuild — regime-adaptive LASE core (ADR-010 §1, §7; research notes)
 status: DRAFT
 work_order_id: WO-0018
 wave: W3
@@ -16,7 +16,7 @@ created: 2026-07-11
 ## Goal
 
 Rebuild the LASE policy as a **pure function** of `(envelope, MarketSnapshot, injected clock, prior
-envelope events)` in a new `app/sellside/` package, red-green from scratch per ADR-009 D-4 —
+envelope events)` in a new `app/sellside/` package, red-green from scratch per ADR-010 D-4 —
 now specified as a **regime-adaptive** policy per `pkl/architecture/sellside-research-notes.md`.
 The bundled LASE code is design reference only and is **not ported**.
 
@@ -25,12 +25,12 @@ The bundled LASE code is design reference only and is **not ported**.
 Read only these first:
 
 - `AGENTS.md`
-- `docs/adr/ADR-009-execution-envelope.md` (§2 bounds semantics, §7 spike ruling)
+- `docs/adr/ADR-010-execution-envelope.md` (§2 bounds semantics, §7 spike ruling)
 - `pkl/architecture/sellside-research-notes.md` — the distilled mechanism research (authoritative
   for the classifier/trail design below; do not re-derive from external sources)
 - LASE design docs `00/01/02/05` (intent; the `code/` files are reference-to-delete)
   — **anchor divergence (2026-07-11, implementation seat):** the LASE package was never
-  placed in this environment; design derived from ADR-009 §1/§2/D-4 + the research notes
+  placed in this environment; design derived from ADR-010 §1/§2/D-4 + the research notes
   (which the final drop made authoritative anyway). If the docs later surface and diverge,
   that is WO-0022 / W4 input, not silent adaptation.
 - `app/marketdata/service.py` — `MarketSnapshot` shape; staleness/finiteness semantics

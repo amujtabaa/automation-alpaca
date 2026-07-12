@@ -12,7 +12,7 @@ your authorization for this session, then follow it exactly (its human-checkpoin
 binding).
 
 Contents of this drop:
-- `docs/adr/ADR-009-execution-envelope.md` — the wave's authoritative design (Proposed)
+- `docs/adr/ADR-010-execution-envelope.md` — the wave's authoritative design (Proposed)
 - `work/queue/W3-README.md` — sequencing + branch/worktree strategy
 - `work/queue/W3-KICKOFF-PROMPT.md` — the session bootstrap + operating agreement
 - `work/queue/WO-0016..0022` — the work orders (0018 = the LASE algorithm itself)

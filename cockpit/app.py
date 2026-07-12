@@ -650,7 +650,7 @@ def _do(action, success_message) -> None:
 
 
 def screen_envelopes() -> None:
-    """Execution-envelope visibility + the approval affordance (ADR-009 /
+    """Execution-envelope visibility + the approval affordance (ADR-010 /
     WO-0020). Read-only rendering of what GET /api/envelopes returns — the UI
     holds no envelope state and refresh re-derives everything; approve/cancel
     are INTENTS issued through the typed API client only."""
@@ -658,7 +658,7 @@ def screen_envelopes() -> None:
     st.header("Envelope Monitor")
     st.caption(
         "An envelope is a bounded, immutable, human-approved execution "
-        "mandate (ADR-009). Hard rails breach — they are never clamped."
+        "mandate (ADR-010). Hard rails breach — they are never clamped."
     )
     try:
         envelopes = api_client.list_envelopes()

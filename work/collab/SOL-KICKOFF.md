@@ -105,7 +105,7 @@ H11 UI observes and issues intents only; alpaca-py only inside the adapter; sing
 
 ## 5. Context packet (read in this order; do not range wider)
 
-1. `docs/adr/ADR-009-execution-envelope.md` (as amended in-repo — the drop copies are stale)
+1. `docs/adr/ADR-010-execution-envelope.md` (as amended in-repo — the drop copies are stale)
 2. `pkl/architecture/sellside-research-notes.md` (mechanism research; authoritative)
 3. `work/completed/keep/WO-0018-pure-sellside-policy/` (the WO + fable-done)
 4. `work/queue/WO-0021-envelope-chaos-catalog.md` (regime scenario tapes)
@@ -130,7 +130,7 @@ H11 UI observes and issues intents only; alpaca-py only inside the adapter; sing
   believe break the incumbent and/or showcase your design, each annotated with the expected
   five-metric signature per policy. These seed the W4 bake-off corpus.
 - **D4 — `findings.md` (as needed).** Anything you found about gated surfaces / the engine /
-  ADR-009 itself that is outside your lane: FINDING-style notes (file:line, why it matters,
+  ADR-010 itself that is outside your lane: FINDING-style notes (file:line, why it matters,
   what resolves it). These route into the human-gated pipeline.
 
 ## 7. What happens to your work

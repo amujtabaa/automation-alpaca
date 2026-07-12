@@ -1,4 +1,9 @@
-# ADR-009 — Pre-approved Execution Envelope for autonomous sell-side execution
+# ADR-010 — Pre-approved Execution Envelope for autonomous sell-side execution
+
+> **Renumbered 2026-07-12** (was ADR-009 on this branch): master's merged Signal Seat line
+> (PR #5, `c4271d8`) holds ADR-009 and REV-0022, so this ADR is ADR-010, its W3 review packet is
+> REV-0023, and the W4 Entry-Envelope *seed* moved ADR-010 → ADR-011. All references on this
+> branch were updated in the renumber commit; commit messages before it retain the old ids.
 
 ## Status
 
@@ -69,7 +74,7 @@ lifecycle (`PENDING → REJECTED/EXPIRED`, `APPROVED → EXPIRED` self-heal). Pr
 **supersession stays illegal**: amending an envelope that never ran is just cancel + create new —
 no continuity worth linking.
 
-**Amended 2026-07-12 (WO-0027 / REV-0022 F6):** supersession TRANSFERS the mandate — it never
+**Amended 2026-07-12 (WO-0027 / REV-0023 F6):** supersession TRANSFERS the mandate — it never
 widens or duplicates it. Three storage-enforced rules: (i) a venue-live working order
 (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/CANCEL_PENDING/quarantined) blocks supersession outright —
 the store cannot venue-cancel, and a successor activating next to a resting predecessor SELL is
@@ -80,7 +85,7 @@ at commit time, read under the same lock — a fill racing the amendment shrinks
 the stale draft is refused (re-draft against the truth); WIDENING a mandate requires cancel + a
 fresh human approval, never an amendment. As drafted, none of these were decided: the successor
 reset `remaining` to its full ceiling and the predecessor's venue order was orphaned (two live
-SELLs totalling 180 sh against one 100-sh approval in the REV-0022 repro; found independently by
+SELLs totalling 180 sh against one 100-sh approval in the REV-0023 repro; found independently by
 two Phase A critics).
 
 **Amended 2026-07-12 (WO-0029A, accepted by Ameen):** a broker-authoritative overfill of
@@ -89,7 +94,7 @@ two Phase A critics).
 FROZEN (payload keeps the overfill facts; the ADR-001 order-level quarantine applies on top).
 The resume path can therefore never auto-COMPLETE a ceiling-violated mandate — before this
 amendment the code clamped, flagged in fine print, and terminated in the SUCCESS state (the §2
-"violation → BREACHED" rule and the §3 edge set contradicted each other; REV-0022 SPEC-05).
+"violation → BREACHED" rule and the §3 edge set contradicted each other; REV-0023 SPEC-05).
 
 ### 4. Precedence and TradingState interactions
 
@@ -111,7 +116,7 @@ that means the plan-time and write-time validators disagree — a software defec
 breach. Response: freeze the envelope **and** emit a distinct `ENVELOPE_PLAN_DIVERGENCE`
 ExecutionEvent (P1 tripwire; surfaced to the operator, registered in `docs/INVARIANTS.md`).
 
-**Amended 2026-07-12 (WO-0025 / REV-0022 F4):** the "working order" predicate both D-3 halves
+**Amended 2026-07-12 (WO-0025 / REV-0023 F4):** the "working order" predicate both D-3 halves
 evaluate is DEFINED as: *the newest submit/reprice `envelope_action`'s order, live iff the event
 log shows no FILLED / CANCELED / REJECTED terminal for it*. As originally implemented the two
 halves used different predicates — plan time keyed on "any submit event EVER" (monotone), write
@@ -120,7 +125,7 @@ every stop continuation after a full fill) was planned as a REPRICE of a dead or
 write-time structural check rightly refused: a deterministic false `ENVELOPE_PLAN_DIVERGENCE` +
 freeze on ROUTINE flow, devaluing the very tripwire this section defines. Both halves now derive
 liveness from order state (plan time via the event log — keeping `decide()`'s frozen signature;
-write time via the order row). A REV-0022 Phase A finding
+write time via the order row). A REV-0023 Phase A finding
 (FINDING-W3-multileg-false-divergence-livelock.md, found independently by two critics).
 
 **Amended 2026-07-12 (WO-0029A, accepted by Ameen):** a write-time rejection means the plan's
@@ -137,7 +142,7 @@ verdicts means the validators themselves disagree. `reduce_only` deliberately st
 freeze set although position is state: it is not a plan/write comparison at all (the policy
 cannot see position) — a mandate the book cannot cover needs a human (INV-084). Operator alarm
 calibration keys on the divergence event only; the repo's own partial-fill race test (the case
-REV-0022 SPEC-09 used to falsify the old blanket claim) is now the benign case's pin.
+REV-0023 SPEC-09 used to falsify the old blanket claim) is now the benign case's pin.
 
 ### 6. Eventing and provenance
 
@@ -158,13 +163,13 @@ commanding actor stamped in the payload; envelope FILL facts remain broker-autho
 `EXECUTION_EVENT_SCHEMA_VERSION` bump — the version marks incompatible shape changes; old
 events replay unchanged with `envelope_id = NULL`).
 
-**Amended 2026-07-12 (WO-0025 / REV-0022 F5):** envelope fill provenance is source-agnostic —
+**Amended 2026-07-12 (WO-0025 / REV-0023 F5):** envelope fill provenance is source-agnostic —
 a reconciliation-INFERRED fill on an envelope-minted order routes through
 `record_envelope_fill` FIRST with the same canonical dedupe key
 (`fill:{order_id}:{source_fill_id}`) as the stream bridge, then `append_fill`. Before this, the
 inferred path bypassed the envelope entirely: position folded but `remaining_quantity` did not,
 silently re-arming the human-approved qty ceiling (200 shares reached the venue under a
-100-share ceiling in the REV-0022 repro; masked in the assembled system only by the F4 freeze —
+100-share ceiling in the REV-0023 repro; masked in the assembled system only by the F4 freeze —
 which is why F4 and F5 were remediated in one work order).
 
 ### 7. Disposition of the LASE v1 code

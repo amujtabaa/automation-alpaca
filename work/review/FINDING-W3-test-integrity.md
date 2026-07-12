@@ -1,10 +1,10 @@
 # FINDING — W3 test-integrity defects (mutation-testing survivors)
 
-- **Status:** OPEN (REV-0022 Phase A, test-critic; 13 mutations run one-at-a-time against the full
+- **Status:** OPEN (REV-0023 Phase A, test-critic; 13 mutations run one-at-a-time against the full
   W3 suite at `f092ca7`, 10 killed, 3 survived + 2 partial survivors). Working tree verified
   restored; post-restoration baseline identical (410 passed, 3 xfailed).
 - **Severity:** headline **P0 (test)** for TC-01; remainder P1–P3 as listed.
-- **Cluster:** F2 in `work/review/REV-0022/phase-a.md`. Remediation: WO-0028 (DRAFT).
+- **Cluster:** F2 in `work/review/REV-0023/phase-a.md`. Remediation: WO-0028 (DRAFT).
 
 | ID | Sev | Defect | Evidence |
 |----|-----|--------|----------|

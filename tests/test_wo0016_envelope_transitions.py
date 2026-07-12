@@ -1,4 +1,4 @@
-"""WO-0016 — envelope state machine (ADR-009 §3, incl. the 2026-07-11
+"""WO-0016 — envelope state machine (ADR-010 §3, incl. the 2026-07-11
 pre-activation escape-edge amendment), enforced identically by BOTH stores.
 
 The full legal/illegal transition matrix is derived from ``ENVELOPE_TRANSITIONS``
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.anyio
 
 S = EnvelopeStatus
 
-# The ADR-009 §3 edges, hand-written from the spec text (amended 2026-07-11:
+# The ADR-010 §3 edges, hand-written from the spec text (amended 2026-07-11:
 # pre-activation escape edges). If ENVELOPE_TRANSITIONS drifts from the ADR,
 # THIS is the test that must be consciously edited together with the ADR.
 ADR_EDGES: dict[EnvelopeStatus, set[EnvelopeStatus]] = {
@@ -43,7 +43,7 @@ ADR_EDGES: dict[EnvelopeStatus, set[EnvelopeStatus]] = {
         S.SUPERSEDED,
         S.FROZEN,
     },
-    # WO-0029A (ADR-009 §2/§3 amendment accepted 2026-07-12): overfill
+    # WO-0029A (ADR-010 §2/§3 amendment accepted 2026-07-12): overfill
     # while FROZEN breaches — the edge exists so a violated mandate can
     # never resume into COMPLETED.
     S.FROZEN: {S.ACTIVE, S.CANCELLED, S.BREACHED},
@@ -168,7 +168,7 @@ async def test_unknown_envelope_raises(any_store):
 
 async def test_transitions_emit_the_envelope_event_family(any_store):
     """Lifecycle walk PENDING→APPROVED→ACTIVE→FROZEN→ACTIVE→FROZEN→CANCELLED
-    leaves a replayable ExecutionEvent trail (ADR-009 §6)."""
+    leaves a replayable ExecutionEvent trail (ADR-010 §6)."""
 
     await any_store.initialize()
     env = await any_store.create_envelope(make_draft())

@@ -171,7 +171,7 @@ class InMemoryStateStore(StateStore):
         self._position_snapshots: list[PositionSnapshot] = []
         self._submit_recoveries: list[SubmitRecoveryRecord] = []  # D-017
         self._sell_intents: dict[str, SellIntent] = {}  # Phase 7
-        self._envelopes: dict[str, ExecutionEnvelope] = {}  # ADR-009 / WO-0016
+        self._envelopes: dict[str, ExecutionEnvelope] = {}  # ADR-010 / WO-0016
         # Spine v2 execution-event log (Phase 2): append-only, sequence order.
         # `_execution_event_dedupe` maps a non-null dedupe_key to its event for
         # O(1) INV-5 idempotency without scanning the log.
@@ -911,7 +911,7 @@ class InMemoryStateStore(StateStore):
             return active.model_copy(deep=True) if active else None
 
     # ------------------------------------------------------------------ #
-    # Execution envelopes (ADR-009 / WO-0016)
+    # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
     def _other_active_envelope_unlocked(
         self, sell_intent_id: str, *, excluding: str
@@ -1018,7 +1018,7 @@ class InMemoryStateStore(StateStore):
             if plan.outcome == ENVELOPE_TRANSITION_NOOP:
                 return env.model_copy(deep=True)
             if new_status is EnvelopeStatus.ACTIVE:
-                # ADR-009 §4 / INV-060: activation OR resume is new standing
+                # ADR-010 §4 / INV-060: activation OR resume is new standing
                 # order intent — refused while HALTED, checked under the SAME
                 # lock hold as the write (resume after release is an explicit
                 # human action; it is never automatic).
@@ -1364,7 +1364,7 @@ class InMemoryStateStore(StateStore):
     def _cancel_symbol_envelopes_unlocked(
         self, symbol: str, *, actor: str, reason: str
     ) -> None:
-        """ADR-009 §4 / D-2: cancel every non-terminal envelope for ``symbol``
+        """ADR-010 §4 / D-2: cancel every non-terminal envelope for ``symbol``
         through legal edges (ACTIVE goes via FROZEN) — the manual-flatten
         preemption. Assumes the lock and an ``_atomic()`` block are held, so
         the preemption commits in the SAME atomic unit as the flatten's own
@@ -1666,7 +1666,7 @@ class InMemoryStateStore(StateStore):
                     )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
-                # ADR-009 §4 / D-2: even with nothing to exit, a stale envelope
+                # ADR-010 §4 / D-2: even with nothing to exit, a stale envelope
                 # must never outlive the human's direct backstop.
                 with self._atomic():
                     self._cancel_symbol_envelopes_unlocked(
@@ -1709,7 +1709,7 @@ class InMemoryStateStore(StateStore):
                 session_id = self._ensure_current_session_unlocked().id
             superseded = False
             with self._atomic():
-                # ADR-009 §4: envelope preemption FIRST, same atomic unit —
+                # ADR-010 §4: envelope preemption FIRST, same atomic unit —
                 # the preemption events sequence before the flatten's own
                 # supersede/create writes (asserted by WO-0017 tests).
                 self._cancel_symbol_envelopes_unlocked(
@@ -2708,7 +2708,7 @@ class InMemoryStateStore(StateStore):
                     reason="kill_switch",
                 )
                 if engaged:
-                    # ADR-009 §4: the kill freezes every ACTIVE envelope in
+                    # ADR-010 §4: the kill freezes every ACTIVE envelope in
                     # the SAME atomic unit as the control change. Release
                     # never auto-resumes (FROZEN -> ACTIVE is an explicit
                     # human action, itself refused while HALTED).

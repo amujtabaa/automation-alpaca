@@ -3,7 +3,9 @@
 Planning-seat seeds, 2026-07-11. W4 begins only after W3 merges. Two ADR drafts + one harness WO
 are expected; nothing here is authorized work yet.
 
-## ADR-010 seed — Entry Envelope (buy side)
+## ADR-011 seed — Entry Envelope (buy side)
+
+> Renumbered 2026-07-12: ADR-010 was taken on master by the merged Signal Seat line (PR #5), so the shipped execution-envelope ADR moved to ADR-010 and this seed moved from ADR-010 to ADR-011.
 
 Reuses W3 machinery (entity/transitions pattern, engine seam, divergence tripwire, event
 provenance, flatten/kill precedence). The inversion vs. sell side: worst case is **unbounded
@@ -35,9 +37,9 @@ rails beyond the W3 set:
 ## Owed governance before W4 relies on any of this
 
 - ADR-001/ADR-002 superseding decision records (INV-002 / INV-023) — still open.
-- ADR-009 must be Accepted post-REV (W3 WO-0022).
+- ADR-010 must be Accepted post-REV (W3 WO-0022).
 
-## REV-0022 / remediation-wave learnings for W4 (appended 2026-07-12)
+## REV-0023 / remediation-wave learnings for W4 (appended 2026-07-12)
 
 - **Harness axes confirmed by Phase A:** structural-hold (FINDING-W3-lase-pullback…, SOL-0001
   bake-off) and the redrive staleness ceiling (`REDRIVE_MAX_STAGED_AGE_S`, currently 120s — a

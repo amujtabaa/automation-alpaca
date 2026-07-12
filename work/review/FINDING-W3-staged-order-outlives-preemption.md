@@ -6,7 +6,7 @@
 - **Severity:** P1 (safety-adjacent race on a human-gated surface: manual-flatten preemption /
   order submission). Not P0: reaching it needs a specific interleaving, and a double-fill
   outcome is caught downstream by the broker-authoritative overfill quarantine (ADR-001) —
-  detected, never silent. But ADR-009 §4's letter — "an envelope can never race, block, or
+  detected, never silent. But ADR-010 §4's letter — "an envelope can never race, block, or
   OUTLIVE the human's direct backstop" — is violated.
 
 ## Reproduction (deterministic)

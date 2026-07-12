@@ -1,11 +1,11 @@
 # FINDING — memory-store `_atomic()` does not snapshot `_envelopes`: crash leaves state/log disagreeing
 
-- **Status:** OPEN (REV-0022 Phase A, test-critic TC-03 — a real app defect discovered through a
+- **Status:** OPEN (REV-0023 Phase A, test-critic TC-03 — a real app defect discovered through a
   test-coverage gap: the staging atomicity test is sqlite-only with no memory twin).
 - **Severity:** **P1** (H3/H10; the memory store can end with envelope=APPROVED while the event
   log replays to PENDING — "the log is the truth" broken; dual-store parity broken on the crash
   path).
-- **Cluster:** F7 in `work/review/REV-0022/phase-a.md`.
+- **Cluster:** F7 in `work/review/REV-0023/phase-a.md`.
 
 ## What
 
@@ -31,4 +31,4 @@ supersede units.
 ## Repro
 
 Test-critic injected-crash probe; decisive output above. Quoted in the critic report under
-REV-0022.
+REV-0023.

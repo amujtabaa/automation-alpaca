@@ -1,4 +1,4 @@
-"""WO-0016 — envelope event provenance (ADR-008/ADR-009 §6) round-trip, BOTH
+"""WO-0016 — envelope event provenance (ADR-008/ADR-010 §6) round-trip, BOTH
 stores, plus the additive ``envelope_id`` schema migration.
 
 Provenance contract: every envelope LIFECYCLE fact is a local single-writer

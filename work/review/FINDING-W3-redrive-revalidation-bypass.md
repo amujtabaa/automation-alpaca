@@ -1,10 +1,10 @@
 # FINDING — redrive is a validation-free venue path; WO-0024's status guard does not close it
 
-- **Status:** OPEN (REV-0022 Phase A; found INDEPENDENTLY by interleaving-attacker INT-001,
+- **Status:** OPEN (REV-0023 Phase A; found INDEPENDENTLY by interleaving-attacker INT-001,
   spec-attacker SPEC-03, completeness-critic CC-03 — 3/4 critics, distinct repros, both stores).
 - **Severity:** **P1** (H1/H5/H6; oversized and post-TTL venue submissions reproduced from the
   production tick path).
-- **Cluster:** F3 in `work/review/REV-0022/phase-a.md`.
+- **Cluster:** F3 in `work/review/REV-0023/phase-a.md`.
 
 ## What
 
@@ -26,7 +26,7 @@ stale/bad-data gates. Reproduced consequences (each on both stores):
 
 **WO-0024 as originally drafted does not fix any of these:** its guard is "refuse unless ACTIVE",
 and the envelope is ACTIVE in every repro above. TTL and session-phase are also absent from
-`validate_action` itself (app/sellside/policy.py:123-161) — "bounds checked twice" (ADR-009 §1)
+`validate_action` itself (app/sellside/policy.py:123-161) — "bounds checked twice" (ADR-010 §1)
 is currently untrue for two of the §2 hard rails even on the fresh path.
 
 ## Why
@@ -47,4 +47,4 @@ stores.
 
 Interleaving probe suite (session scratchpad `test_w3_interleaving_probes.py`, re-confirmed on a
 pristine `f092ca7` worktree); spec-attacker harness R2; completeness-critic path analysis with
-quoted code. Decisive outputs quoted in the critic reports compiled under REV-0022.
+quoted code. Decisive outputs quoted in the critic reports compiled under REV-0023.

@@ -32,7 +32,7 @@ at commit time under the same lock (widening = cancel + fresh approval).
    unchanged (decrements the SUPERSEDED envelope's counter, recorded per
    INV-076 late-fill semantics); the successor's venue exposure is bounded by
    INV-084. Residual accepted + documented in the ADR amendment.
-4. **ADR-009 §3 amendment recorded; INV-077 amended** (binds in substance,
+4. **ADR-010 §3 amendment recorded; INV-077 amended** (binds in substance,
    not just status). Full gate green (ruff/format/mypy 64/imports 6-0/pytest
    exit 0, zero FAILED).
 
@@ -44,8 +44,8 @@ conservation-off → 4 failures; live-refusal-off → 2; memory-sweep-off → 1.
 
 - CREATED is deliberately NOT venue-live for the refusal (it is local truth,
   safely swept in-unit) — documented in the planner.
-- **All eight REV-0022 Phase A finding pins are now GREEN** (F1, F3×3, F4,
-  F5, F6×2): tests/test_rev0022_phase_a_pins.py runs 32 passed / 0 xfailed.
+- **All eight REV-0023 Phase A finding pins are now GREEN** (F1, F3×3, F4,
+  F5, F6×2): tests/test_rev0023_phase_a_pins.py runs 32 passed / 0 xfailed.
 - Deviation: executed directly on the integration branch (as 0024/0025).
 
 ## Status: VERIFIED

@@ -1,6 +1,6 @@
 ---
 type: Work Order
-title: Broker-adapter replace/edit seam (pre-requisite for WO-0019, ADR-009 §1)
+title: Broker-adapter replace/edit seam (pre-requisite for WO-0019, ADR-010 §1)
 status: DRAFT — awaiting human gate approval (T3a); drafted by the implementation seat at the
   WO-0019 tripwire per the kickoff protocol ("Absent → NEEDS-INPUT")
 work_order_id: WO-0019a
@@ -31,7 +31,7 @@ quarantinable, never blind-retried.
 
 ## Context packet
 
-- `docs/adr/ADR-002-*` (ambiguous-outcome discipline), ADR-009 §1
+- `docs/adr/ADR-002-*` (ambiguous-outcome discipline), ADR-010 §1
 - `app/broker/adapter.py` — the ABC + report shapes
 - `app/broker/alpaca_paper.py` — SDK call conventions, D-017 client_order_id discipline,
   `work/review/FINDING-alpaca-adapter-wrong-sdk-method.md` (this surface's review debt)

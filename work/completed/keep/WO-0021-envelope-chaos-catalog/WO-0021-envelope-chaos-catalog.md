@@ -17,7 +17,7 @@ created: 2026-07-11
 
 Turn the adversarial scenario catalog below into named hypothesis properties and deterministic
 regression scenarios against the assembled envelope stack (WO-0016..0020), each asserting a
-specific ADR-009 rail. This WO ships **tests only**; any failure it finds becomes a FINDING +
+specific ADR-010 rail. This WO ships **tests only**; any failure it finds becomes a FINDING +
 follow-up WO, never an in-scope fix.
 
 ## Context packet
@@ -25,7 +25,7 @@ follow-up WO, never an in-scope fix.
 Read only these first:
 
 - `AGENTS.md`
-- `docs/adr/ADR-009-execution-envelope.md`
+- `docs/adr/ADR-010-execution-envelope.md`
 - LASE `05_TESTING_AND_HARDENING.md` (intent source)
 - `tests/` — existing hypothesis usage and stub-broker/failure-injection conventions
   (REV-0019/0020/0021 regression shapes are the quality bar)

@@ -37,7 +37,7 @@
    - TC-08: `create_autospec(TradingClient, instance=True)` replaces the bare
      `Mock()`; M8 at the real call site KILLED (autospec raises on a renamed
      SDK method — upgrade-proof, closing the X-002 residual).
-   - Item 9: `tests/test_rev0022_phase_a_pins.py` — 8 strict-xfail pins
+   - Item 9: `tests/test_rev0023_phase_a_pins.py` — 8 strict-xfail pins
      (F1, F3×3, F4, F5, F6×2) all xfailing for the right reason on both stores
      (16 xfailed), + 8 HELD interleaving probes promoted (16 passed).
    - Item 10: pre-existing ruff F841 at test_wo0021_envelope_chaos.py fixed

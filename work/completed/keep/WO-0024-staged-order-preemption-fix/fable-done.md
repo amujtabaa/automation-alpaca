@@ -30,10 +30,10 @@ word; the amendment was in the draft BEFORE that approval).
 5. **(Amendment) validate_action covers TTL + session phase at BOTH call
    sites** — `test_write_time_ttl_rail_bites_at_the_seam` +
    `test_write_time_session_phase_rail_bites_at_the_seam`, both stores.
-   "Bounds checked twice" (ADR-009 §1) is now true for every §2 hard rail.
+   "Bounds checked twice" (ADR-010 §1) is now true for every §2 hard rail.
 6. **intent→ORDERED linkage — decided + documented:** envelope-driven orders
    deliberately do NOT advance the SellIntent lifecycle in W3; envelope↔order
-   linkage derives from ENVELOPE_ACTION events (ADR-009 §6, no Order schema
+   linkage derives from ENVELOPE_ACTION events (ADR-010 §6, no Order schema
    change). Formal SellIntent-status reconciliation is QUEUED TO THE PLANNING
    SEAT (W4) — recorded in W3-STATE open decisions. Rationale: the intent
    lifecycle is shared with non-envelope paths; changing it mid-remediation

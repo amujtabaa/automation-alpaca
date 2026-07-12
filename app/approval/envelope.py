@@ -1,5 +1,5 @@
 """``EnvelopeApprovalGate`` — the human-in-the-loop gate for execution
-envelopes (ADR-009 §1, WO-0017).
+envelopes (ADR-010 §1, WO-0017).
 
 Same conventions as :class:`~app.approval.human.HumanApprovalGate`:
 ``evaluate`` never auto-decides (beta is human-only — the envelope is
@@ -66,7 +66,7 @@ class EnvelopeApprovalGate:
         self, envelope_id: str, *, actor: str = COMMAND_ACTOR_SYSTEM
     ) -> ExecutionEnvelope:
         """Withdraw a PRE-ACTIVATION envelope (PENDING/APPROVED → CANCELLED,
-        the ADR-009 §3 escape edges; idempotent for already-CANCELLED). An
+        the ADR-010 §3 escape edges; idempotent for already-CANCELLED). An
         ACTIVE envelope is not gate-rejectable — stopping a live mandate goes
         through the precedence paths (kill freeze, flatten preemption, or an
         explicit freeze-then-cancel), never a quiet gate call."""

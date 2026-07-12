@@ -3,7 +3,7 @@ type: Work Order
 title: Interface lift — envelope API onto StateStore ABC + facade ABCs; retire the Protocol/cast workarounds
 status: DRAFT — awaiting approval (non-gated surfaces; mechanical, but broad import surface)
 work_order_id: WO-0030
-wave: W3 remediation follow-up (REV-0022 CC-06 + four deferred-log entries)
+wave: W3 remediation follow-up (REV-0023 CC-06 + four deferred-log entries)
 model_tier: standard
 risk: medium
 disposition: []

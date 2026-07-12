@@ -1,7 +1,7 @@
 """Decision vocabulary for the pure sell-side policy (WO-0018).
 
 ``decide`` returns exactly one of these frozen shapes. Soft-bound clamps are
-REPORTED (ClampNote) — silently clamping a hard rail is forbidden (ADR-009
+REPORTED (ClampNote) — silently clamping a hard rail is forbidden (ADR-010
 §2): hard-rail violations surface as :class:`BreachSignal` and freeze the
 envelope at the engine seam, never as an adjusted plan.
 """

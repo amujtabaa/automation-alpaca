@@ -4,7 +4,7 @@
    rail (arbitrary valid/invalid PlannedActions driven through the real
    stage→claim→venue pipeline against the stub broker).
 2. Replaying the event log reconstructs the envelope's state (status +
-   remaining) — the log IS the truth (ADR-009 §6 replayability).
+   remaining) — the log IS the truth (ADR-010 §6 replayability).
 3. Memory and sqlite stores agree on final state for arbitrary generated
    scenarios (the parity mandate).
 """

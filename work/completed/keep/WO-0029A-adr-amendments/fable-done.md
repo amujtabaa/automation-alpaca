@@ -2,8 +2,8 @@
 
 [FABLE • FULL • verification: DIRECT • task: WO-0029A]
 
-Both ADR-009 text amendments ACCEPTED by Ameen in-chat 2026-07-12 ("I'll
-accept both ADR-009 proposals"); carved from the WO-0029 umbrella (parts B/C
+Both ADR-010 text amendments ACCEPTED by Ameen in-chat 2026-07-12 ("I'll
+accept both ADR-010 proposals"); carved from the WO-0029 umbrella (parts B/C
 — disposition retry/provenance, replaces_used, projector/replay coverage —
 remain with the planning seat).
 
@@ -28,7 +28,7 @@ remain with the planning seat).
 3. **Tests updated to the ACCEPTED semantics** (not weakened — a decided
    behavior change with ADR citations in each test): the old blanket-freeze
    pins rewritten; every defect-rail pin retained.
-4. **ADR-009 §2/§3 + §5 amendment texts applied** as accepted; proposal file
+4. **ADR-010 §2/§3 + §5 amendment texts applied** as accepted; proposal file
    marked ACCEPTED; INV-085 registered; INV-082 amended again.
 5. **Full gate green** — ruff/format OK, mypy 64 files, imports 6-0, pytest
    exit 0 / zero FAILED.

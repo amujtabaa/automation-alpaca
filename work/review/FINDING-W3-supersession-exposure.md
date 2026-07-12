@@ -1,11 +1,11 @@
 # FINDING — supersession neither adopts the predecessor's venue order nor conserves remaining
 
-- **Status:** OPEN (REV-0022 Phase A; spec-attacker SPEC-02 + interleaving-attacker INT-002 —
+- **Status:** OPEN (REV-0023 Phase A; spec-attacker SPEC-02 + interleaving-attacker INT-002 —
   same seam, two distinct defects, both stores, both lock-serialization orders).
 - **Severity:** **P1 (latent)** — no production caller of `supersede_envelope` exists yet (API
-  exposes only approve/cancel); becomes live P1 the moment the ADR-009 §3 amendment flow is
+  exposes only approve/cancel); becomes live P1 the moment the ADR-010 §3 amendment flow is
   wired. Blocks that wiring.
-- **Cluster:** F6 in `work/review/REV-0022/phase-a.md`.
+- **Cluster:** F6 in `work/review/REV-0023/phase-a.md`.
 
 ## What
 
@@ -29,10 +29,10 @@ Two defects in one seam (`plan_supersede_envelope`, app/store/core.py:2586-2699)
 WO-0027 (DRAFT): supersede's atomic unit must (a) cancel-or-adopt the predecessor's live working
 order (adopt = re-link order + future fills to the successor; cancel = venue cancel sequenced
 before successor activation), and (b) enforce conservation at commit time against the
-predecessor's CURRENT remaining. Racing-fill interleaving tests both stores, both orders. ADR-009
+predecessor's CURRENT remaining. Racing-fill interleaving tests both stores, both orders. ADR-010
 §3 amendment recording the decision ships with the change.
 
 ## Repros
 
 Spec-attacker harness R5; interleaving probe `test_F3_supersede_first_then_late_fill_and_venue_followthrough`
-(pristine-worktree confirmed). Outputs quoted in the critic reports under REV-0022.
+(pristine-worktree confirmed). Outputs quoted in the critic reports under REV-0023.

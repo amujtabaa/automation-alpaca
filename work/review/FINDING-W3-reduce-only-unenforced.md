@@ -1,13 +1,13 @@
 # FINDING — reduce-only is a flag, not a rail: envelope SELLs submit against zero position
 
-- **Status:** OPEN (REV-0022 Phase A, spec-attacker SPEC-01, 2026-07-12). Pin: none yet —
+- **Status:** OPEN (REV-0023 Phase A, spec-attacker SPEC-01, 2026-07-12). Pin: none yet —
   WO-0026 must land a strict pin.
 - **Severity:** **P0** (H1 hard-rail with no enforcement seam; venue call is the harm point).
-- **Cluster:** F1 in `work/review/REV-0022/phase-a.md`.
+- **Cluster:** F1 in `work/review/REV-0023/phase-a.md`.
 
 ## What
 
-ADR-009 §2 declares reduce-only a HARD rail. The only implementation is the `_hard_rails`
+ADR-010 §2 declares reduce-only a HARD rail. The only implementation is the `_hard_rails`
 validator locking the boolean flag on the model. No seam in the envelope order path re-reads live
 position: `plan_claim_order_for_submission` (app/store/core.py:1338-1385) checks session controls
 only; `validate_action` (app/sellside/policy.py:123-161) checks quantity against
@@ -33,4 +33,4 @@ breach→FROZEN semantics, both stores, dual-store tests + a strict pin of the z
 ## Repro
 
 Spec-attacker harness R5, session scratchpad `spec_attack.py` (read-only). Decisive output quoted
-in REV-0022/phase-a source report.
+in REV-0023/phase-a source report.

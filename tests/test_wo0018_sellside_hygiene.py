@@ -3,7 +3,7 @@
 1. Bare-clock ban: no `datetime.now(`, `time.time(`, or `utcnow(` anywhere in
    `app/sellside/` — the injected clock is the ONLY time source (engine
    discipline, CLAUDE.md §Testing; the LASE v1 spike was deleted for exactly
-   this violation, ADR-009 D-4).
+   this violation, ADR-010 D-4).
 2. The import-linter contract for the package exists in `.importlinter`, so
    CI enforces the purity boundary (models/marketdata types only).
 """

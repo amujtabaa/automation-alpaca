@@ -586,7 +586,7 @@ async def _run_envelopes(
     tapes: Optional[EnvelopeTapeBuffer],
     now: Optional[datetime] = None,
 ) -> None:
-    """The envelope pass (ADR-009 §1): runs immediately after protection —
+    """The envelope pass (ADR-010 §1): runs immediately after protection —
     protection always outranks autonomous repricing. Per-envelope failure
     isolation matches the protection conventions: a policy exception freezes
     ONLY that envelope (event-logged via the transition) and the tick
@@ -868,7 +868,7 @@ async def run_monitoring_tick(
     # + submitted in the SAME tick (no extra cadence of latency). No-op when there
     # is no market-data handle or protection is disabled.
     await _run_protection(store, adapter, market_data, settings)
-    # ADR-009 §1 (WO-0020): the envelope pass runs immediately AFTER protection
+    # ADR-010 §1 (WO-0020): the envelope pass runs immediately AFTER protection
     # (protection always first) and BEFORE the submit sweep, so a stop-exit the
     # policy stages is claimed + submitted in this same tick. No-op without a
     # market-data handle or a tape buffer (the loop owns one; direct tick
@@ -2204,12 +2204,12 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
     the store rejects is logged, never crashes the tick."""
 
     for f in plan.inferred_fills:
-        # WO-0025 (REV-0022 F5): the RECORD-FIRST bridge applies to inferred
+        # WO-0025 (REV-0023 F5): the RECORD-FIRST bridge applies to inferred
         # fills exactly as to streamed ones — an envelope-minted order's fill
         # must decrement the envelope's remaining, with the SAME canonical
         # dedupe key, or the human-approved qty ceiling silently re-arms
         # (200 shares reached the venue under a 100-share ceiling in the
-        # REV-0022 repro). Inferred fills always carry a venue
+        # REV-0023 repro). Inferred fills always carry a venue
         # source_fill_id (the engine never infers without one).
         try:
             envelope_id = await _envelope_id_for_order(store, f.order_id)

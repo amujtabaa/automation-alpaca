@@ -130,7 +130,7 @@ async def test_partial_fill_between_plan_and_write_hits_the_qty_rail(any_store):
         snapshot_fingerprint=FP,
         now=later(),
     )
-    # WO-0029A (ADR-009 §5 amendment accepted 2026-07-12): a benign fill
+    # WO-0029A (ADR-010 §5 amendment accepted 2026-07-12): a benign fill
     # racing the plan is NOT a software defect — refused + evented, zero
     # venue calls, envelope stays ACTIVE and replans next tick. (This test
     # is the case SPEC-09 cited when it falsified the old §5 claim.)
@@ -288,7 +288,7 @@ async def test_ttl_rest_at_floor_leaves_the_working_order_resting(any_store):
 async def test_phase_flip_outside_allowed_set_is_no_action_pinned(any_store):
     """Outside the allowed phase set the policy holds (NoAction). PINS the
     current contract: NO disposition executes on a phase exit — only TTL and
-    stale-data have dispositions (ADR-009 §2). Recorded as a spec observation
+    stale-data have dispositions (ADR-010 §2). Recorded as a spec observation
     for the wave review (the WO-0021 catalog wording assumed one)."""
 
     env = await active_envelope(

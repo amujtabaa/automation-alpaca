@@ -1,6 +1,6 @@
 ---
 type: Work Order
-title: Envelope approval surface + flatten/kill-switch precedence (ADR-009 §1, §4)
+title: Envelope approval surface + flatten/kill-switch precedence (ADR-010 §1, §4)
 status: DRAFT
 work_order_id: WO-0017
 wave: W3
@@ -16,7 +16,7 @@ created: 2026-07-11
 ## Goal
 
 Route envelope creation/approval through the `ApprovalGate` pattern as one store-atomic unit (ENG-001
-style), and enforce ADR-009 §4 precedence: kill switch freezes all envelopes; manual flatten
+style), and enforce ADR-010 §4 precedence: kill switch freezes all envelopes; manual flatten
 atomically cancels/freezes a symbol's envelopes *before* proceeding.
 
 ## Context packet
@@ -24,7 +24,7 @@ atomically cancels/freezes a symbol's envelopes *before* proceeding.
 Read only these first:
 
 - `AGENTS.md`
-- `docs/adr/ADR-009-execution-envelope.md` (§1, §4)
+- `docs/adr/ADR-010-execution-envelope.md` (§1, §4)
 - `docs/adr/ADR-003-manual-flatten-halted-reducing.md`
 - `app/approval/gate.py`, `app/approval/human.py` — the gate ABC + idempotency conventions
 - `app/store/core.py` — the ENG-001 atomic exit-open unit (dedup→HALTED check→create→approve→

@@ -1,7 +1,7 @@
 """Regime→trail mapping + the monotonic working-stop ratchet (WO-0018).
 
 All trail distances are ATR MULTIPLES: the envelope's soft trail range
-``trail_distance_min/max`` is ``[min_atr_mult, max_atr_mult]`` under ADR-009
+``trail_distance_min/max`` is ``[min_atr_mult, max_atr_mult]`` under ADR-010
 as specified by WO-0018 (final) — one policy self-calibrates across price
 levels and volatility.
 

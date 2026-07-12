@@ -143,7 +143,7 @@ async def envelope_events(store, envelope_id, event_type=None):
 @pytest.mark.parametrize(
     "bad_action,rail",
     [
-        # WO-0029A (ADR-009 §5 amendment accepted 2026-07-12): only rails
+        # WO-0029A (ADR-010 §5 amendment accepted 2026-07-12): only rails
         # DETERMINISTIC at the seam (same inputs -> the validators themselves
         # disagree) are DEFECTS. State-dependent rails (qty vs remaining,
         # structural order-liveness) are benign stale-plan refusals — see
@@ -195,7 +195,7 @@ async def test_divergence_makes_zero_venue_calls(any_store):
 
 
 async def test_write_time_stale_facts_refuse_without_freezing(any_store):
-    """WO-0029A (ADR-009 §5 amendment): a rail that only fails against
+    """WO-0029A (ADR-010 §5 amendment): a rail that only fails against
     CURRENT state — a fill shrank remaining between plan and write — is a
     BENIGN STALE-PLAN REFUSAL: evented (action=refused_stale), envelope
     UNTOUCHED, no order, zero venue calls; the policy replans next tick."""

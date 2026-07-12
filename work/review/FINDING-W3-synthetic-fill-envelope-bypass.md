@@ -1,11 +1,11 @@
 # FINDING — reconciliation-inferred fills bypass the envelope: the qty ceiling silently re-arms
 
-- **Status:** OPEN (REV-0022 Phase A, completeness-critic CC-01, both stores). Previously
+- **Status:** OPEN (REV-0023 Phase A, completeness-critic CC-01, both stores). Previously
   deferred-logged as "synthetic-fill bridge (rare path)" — the H1-violation compounding was never
   assessed; upgraded to FINDING.
 - **Severity:** **P1** (H1/H8; 200 shares reached the venue under a 100-share human-approved
   ceiling in the repro).
-- **Cluster:** F5 in `work/review/REV-0022/phase-a.md`. **Must be remediated together with F4**
+- **Cluster:** F5 in `work/review/REV-0023/phase-a.md`. **Must be remediated together with F4**
   (FINDING-W3-multileg-false-divergence-livelock): today F4's second-leg freeze masks this venue
   leg on the assembled tick path; fixing F4 alone converts F5 into a live oversell.
 
@@ -36,4 +36,4 @@ same canonical dedupe key), dual-store tests, and a strict pin of the 200-vs-100
 ## Repro
 
 Completeness-critic `test_critic_inferred_fill_gap.py` (session scratchpad; mirrors
-`_apply_inferred_fills` argument-for-argument). Output quoted in the critic report under REV-0022.
+`_apply_inferred_fills` argument-for-argument). Output quoted in the critic report under REV-0023.

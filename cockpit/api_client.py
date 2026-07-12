@@ -183,7 +183,7 @@ def get_review(date: Optional[str] = None) -> dict:
 
 # --- Controls ------------------------------------------------------------- #
 def list_envelopes() -> list[dict]:
-    """GET /api/envelopes — read-only envelope visibility (ADR-009/WO-0020)."""
+    """GET /api/envelopes — read-only envelope visibility (ADR-010/WO-0020)."""
     return _request("GET", "/api/envelopes")
 
 

@@ -1,6 +1,6 @@
 ---
 type: Work Order
-title: Engine seam — write-time envelope validation + ENVELOPE_PLAN_DIVERGENCE (ADR-009 §1, §5)
+title: Engine seam — write-time envelope validation + ENVELOPE_PLAN_DIVERGENCE (ADR-010 §1, §5)
 status: DRAFT
 work_order_id: WO-0019
 wave: W3
@@ -16,16 +16,16 @@ created: 2026-07-11
 ## Goal
 
 Give the single-writer engine an execution path for envelope `PlannedAction`s that re-validates
-every action against the envelope at write time (bounds checked twice per ADR-009 §1), executes
+every action against the envelope at write time (bounds checked twice per ADR-010 §1), executes
 via the existing broker-adapter seams, and treats plan/write validator disagreement as a defect:
-freeze + `ENVELOPE_PLAN_DIVERGENCE` event (ADR-009 §5, D-3).
+freeze + `ENVELOPE_PLAN_DIVERGENCE` event (ADR-010 §5, D-3).
 
 ## Context packet
 
 Read only these first:
 
 - `AGENTS.md`
-- `docs/adr/ADR-009-execution-envelope.md` (§1, §4, §5)
+- `docs/adr/ADR-010-execution-envelope.md` (§1, §4, §5)
 - `docs/adr/ADR-001-overfill-quarantine.md`, `ADR-002-timeout-quarantine.md` — quarantine shapes
   the replace leg must inherit
 - `app/store/core.py` — order create/transition write paths; the claim gate; ENG-001 atomic unit
@@ -76,7 +76,7 @@ forbidden_paths:
       ADR-001 — and decrement/qty accounting stays fill-event-only.
 - [ ] Budget/cooldown accounting events are written in the same atomic unit as the action, so the
       policy's history-derived accounting can never double-spend after a crash, both stores.
-- [ ] All ADR-009 §6 action events carry envelope_id + snapshot fingerprint + clamped params.
+- [ ] All ADR-010 §6 action events carry envelope_id + snapshot fingerprint + clamped params.
 
 ## Required tests
 

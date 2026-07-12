@@ -1,4 +1,4 @@
-# W3 Codex Review Prompt — Execution Envelope wave (ADR-009, WO-0016..0021)
+# W3 Codex Review Prompt — Execution Envelope wave (ADR-010, WO-0016..0021)
 
 Paste to Codex with repo access on the authoritative env (Python 3.12.13), pinned to the W3
 integration branch tip commit `f092ca7` (`feat/execution-envelope`) on a clean, single-commit checkout. Do not share
@@ -7,13 +7,13 @@ Phase A results before the verdict.
 ---
 
 You are the independent adversarial review seat for `automation-alpaca` (per `AGENTS.md`). You are
-reviewing the Execution Envelope wave: `docs/adr/ADR-009-execution-envelope.md` and its
+reviewing the Execution Envelope wave: `docs/adr/ADR-010-execution-envelope.md` and its
 implementation (work orders WO-0016..0021 in `work/queue/`, code under `app/`, tests under
 `tests/`). This wave delegates bounded autonomous sell-side execution (submit/cancel/replace)
 under a human-approved envelope — it amends how the human-gated order-submission and
 cancel/replace surfaces are satisfied, so your review is the policy-mandatory independent gate.
 
-Your job is to find where the implementation, the tests, or ADR-009 itself is wrong, incomplete,
+Your job is to find where the implementation, the tests, or ADR-010 itself is wrong, incomplete,
 or weaker than claimed. Re-derive; do not trust WO close-out claims, comments, or test names.
 Run your own reproductions and paste decisive output for every finding and every cleared gate.
 
@@ -23,7 +23,7 @@ H1  No reachable venue action violates: floor price, qty ceiling (fills-only dec
     floor, lifetime replace budget, max outstanding=1, TTL, allowed session phases, SELL-only,
     reduce-only. Construct hostile snapshots and interleavings; check both stores.
 H2  Hard-rail violations freeze (BREACHED/EXHAUSTED, terminal-pending-human) — never clamp.
-    Soft bounds clamp AND log. Verify the classification matches ADR-009 §2 exactly.
+    Soft bounds clamp AND log. Verify the classification matches ADR-010 §2 exactly.
 H3  Kill switch ⇒ all envelopes FROZEN before any further plan/write; the HALTED/kill check is
     atomic with durable writes — enumerate every await in the approval unit and engine seam and
     attempt the REV-0019-F-001 construction (kill in a post-check window leaving artifacts).
@@ -44,7 +44,7 @@ H11 Boundary contracts hold: alpaca-py only in the adapter; UI holds no envelope
     single-writer preserved; import-linter contract for app/sellside/ actually enforces it.
 
 Also review as design, not just code:
-- ADR-009 internal consistency and its interaction with ADR-001/002/003/008 — flag any
+- ADR-010 internal consistency and its interaction with ADR-001/002/003/008 — flag any
   under-specified edge (e.g., partial fill while FROZEN, supersession with a resting order,
   session-boundary/DST math, restart semantics of cooldown/budget derived from history).
 - Test quality: for each WO-0021 property/scenario, could it ever fail? Flag weakened assertions,

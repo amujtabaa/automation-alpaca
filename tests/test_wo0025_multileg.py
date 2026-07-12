@@ -1,4 +1,4 @@
-"""WO-0025 — multi-leg envelope lifecycle (REV-0022 F4) + inferred-fill
+"""WO-0025 — multi-leg envelope lifecycle (REV-0023 F4) + inferred-fill
 bridge (F5), remediated together by necessity: F4's freeze masked F5's venue
 leg, so fixing the livelock alone would have armed the oversell.
 
@@ -305,7 +305,7 @@ async def test_inferred_fill_bridge_decrements_envelope(any_store):
     env2 = await any_store.get_envelope(env.id)
     assert (env2.remaining_quantity or 0) == 100 - staged.quantity, (
         "the envelope never learned about the inferred fill — the mandate "
-        "re-armed (REV-0022 F5)"
+        "re-armed (REV-0023 F5)"
     )
     # Replay of the SAME execution (stream catches up): exactly-once.
     await any_store.record_envelope_fill(

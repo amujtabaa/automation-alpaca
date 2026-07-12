@@ -1,4 +1,4 @@
-"""WO-0027 — supersession transfers the mandate (REV-0022 F6, ADR-009 §3).
+"""WO-0027 — supersession transfers the mandate (REV-0023 F6, ADR-010 §3).
 
 Three teeth, both stores:
 1. A venue-live working order BLOCKS supersession (the store cannot venue-

@@ -1,4 +1,4 @@
-"""WO-0016 — ExecutionEnvelope entity validation (ADR-009 §2).
+"""WO-0016 — ExecutionEnvelope entity validation (ADR-010 §2).
 
 Every *hard rail* must reject bad construction outright: an envelope that
 could be built with a nonsensical bound would let the executor treat garbage

@@ -166,7 +166,7 @@ class SellIntentStatus(str, Enum):
 
 
 class EnvelopeStatus(str, Enum):
-    """Execution-envelope lifecycle (ADR-009 §3).
+    """Execution-envelope lifecycle (ADR-010 §3).
 
     ``BREACHED`` and ``EXHAUSTED`` are terminal-pending-human — quarantine-
     flavored: recorded, never hidden, never auto-resumed. Amendment is by
@@ -189,7 +189,7 @@ class EnvelopeStatus(str, Enum):
 
 class EnvelopeExpiryDisposition(str, Enum):
     """Mandatory approval-time choice: what happens to the working order when
-    the envelope's TTL lapses (ADR-009 §2 — a hard rail; solves the stuck
+    the envelope's TTL lapses (ADR-010 §2 — a hard rail; solves the stuck
     protective LIMIT by construction)."""
 
     CANCEL_AND_RETURN = "cancel_and_return"
@@ -439,7 +439,7 @@ class ExecutionEventType(str, Enum):
     # and consumed on resolution; the global TradingState stays Halted throughout.
     EMERGENCY_REDUCE_OVERRIDE = "emergency_reduce_override"
     EMERGENCY_REDUCE_OVERRIDE_RESOLVED = "emergency_reduce_override_resolved"
-    # Execution-envelope family (ADR-009 §6, provenance per ADR-008). Lifecycle
+    # Execution-envelope family (ADR-010 §6, provenance per ADR-008). Lifecycle
     # events carry `envelope_id` + the owning sell_intent_id as correlation_id;
     # ENVELOPE_CREATED snapshots the full bound set in `payload` so every
     # autonomous decision is replayable from the log. ENVELOPE_ACTIVATED /
@@ -458,7 +458,7 @@ class ExecutionEventType(str, Enum):
     ENVELOPE_RESUMED = "envelope_resumed"
     ENVELOPE_SUPERSEDED = "envelope_superseded"
     ENVELOPE_CANCELLED = "envelope_cancelled"
-    # Plan-time vs write-time validator disagreement (ADR-009 §5, D-3): a
+    # Plan-time vs write-time validator disagreement (ADR-010 §5, D-3): a
     # software-defect tripwire, distinct from ENVELOPE_BREACHED.
     ENVELOPE_PLAN_DIVERGENCE = "envelope_plan_divergence"
 
@@ -631,12 +631,12 @@ class SellIntent(_Entity):
 
 
 class ExecutionEnvelope(_Entity):
-    """A pre-approved execution mandate for one :class:`SellIntent` (ADR-009).
+    """A pre-approved execution mandate for one :class:`SellIntent` (ADR-010).
 
     The human approves this bounded, immutable box of allowed venue behavior —
     not each order. Every field is a *hard rail* (violation attempt →
     ``BREACHED``) or a *soft bound* (policy output clamped + logged); see the
-    ADR-009 §2 table. Bounds are validated at construction and NEVER mutate —
+    ADR-010 §2 table. Bounds are validated at construction and NEVER mutate —
     no store exposes a bound-update path; amendment is a new envelope via
     supersession. Only ``status``, ``remaining_quantity``, ``replaces_used``,
     supersession linkage, and timestamps change after creation, each through
@@ -702,7 +702,7 @@ class ExecutionEnvelope(_Entity):
 
     @model_validator(mode="after")
     def _hard_rails(self) -> "ExecutionEnvelope":
-        """Reject construction that violates any ADR-009 §2 rail. Soft bounds
+        """Reject construction that violates any ADR-010 §2 rail. Soft bounds
         still validate their *shape* — soft means clamped at runtime, not
         malformed at rest. Raising here is the fail-closed safety rail: bad
         data can never become an approved mandate."""
@@ -712,9 +712,9 @@ class ExecutionEnvelope(_Entity):
         if not self.symbol or not self.symbol.strip():
             raise ValueError("envelope requires a symbol")
         if self.side is not OrderSide.SELL:
-            raise ValueError("envelope side is locked to SELL (ADR-009 scope rail)")
+            raise ValueError("envelope side is locked to SELL (ADR-010 scope rail)")
         if self.reduce_only is not True:
-            raise ValueError("envelope is reduce-only by construction (ADR-009)")
+            raise ValueError("envelope is reduce-only by construction (ADR-010)")
         if self.qty_ceiling <= 0:
             raise ValueError(f"qty_ceiling must be positive, got {self.qty_ceiling}")
         if self.remaining_quantity is None:
@@ -973,7 +973,7 @@ class ExecutionEvent(_Entity):
     quantity: Optional[int] = None
     price: ResponseSafeFloat = None
     order_id: Optional[str] = None
-    # The execution envelope this event belongs to (ADR-009 §6). Additive and
+    # The execution envelope this event belongs to (ADR-010 §6). Additive and
     # nullable — pre-envelope events simply have None, so replay of an existing
     # log stays valid within EXECUTION_EVENT_SCHEMA_VERSION 1 (no bump: the
     # version marks INCOMPATIBLE shape changes, models.py:~430).

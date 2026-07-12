@@ -432,7 +432,7 @@ def plan_reconciliation(
 
 
 # --------------------------------------------------------------------------- #
-# Envelope executor — the venue leg of the engine seam (WO-0019, ADR-009 §1/§5)
+# Envelope executor — the venue leg of the engine seam (WO-0019, ADR-010 §1/§5)
 # --------------------------------------------------------------------------- #
 #
 # The DECISION half (write-time validation, order minting, budget accounting,
@@ -507,7 +507,7 @@ ENVELOPE_EXEC_CANCELLED = "cancelled"  # redrive refusal: staged order locally
 # A staged-but-undriven action is only redrivable while it is FRESH: past this
 # ceiling the decision that produced it is stale (crash-restart warm-up,
 # freeze->resume stretch, long outage) and the policy must re-decide from
-# current data instead. Two 30s ticks + slack. (WO-0024 / REV-0022 F3 — the
+# current data instead. Two 30s ticks + slack. (WO-0024 / REV-0023 F3 — the
 # tape itself is monitoring-owned; this age bound subsumes the
 # restart-with-empty-tape scenario at the executor seam.)
 REDRIVE_MAX_STAGED_AGE_S = 120.0
@@ -523,7 +523,7 @@ class EnvelopeExecutionResult:
 
 def market_snapshot_fingerprint(snapshot: MarketSnapshot) -> str:
     """Deterministic fingerprint of the snapshot a decision was made against —
-    stamped into every ENVELOPE_ACTION event (ADR-009 §6) so an action is
+    stamped into every ENVELOPE_ACTION event (ADR-010 §6) so an action is
     auditable against the exact market state that justified it."""
 
     raw = "|".join(
@@ -664,7 +664,7 @@ async def redrive_staged_envelope_action(
     accounting committed with the original staging and must not be spent
     twice. Returns None when there is nothing to redrive.
 
-    WO-0024 (REV-0022 F3, FINDING-W3-redrive-revalidation-bypass): before any
+    WO-0024 (REV-0023 F3, FINDING-W3-redrive-revalidation-bypass): before any
     venue call, the staged order is RE-VALIDATED against CURRENT state and
     CURRENT time — the original staging validated against the world as it was,
     and fills, TTL, session phase, or a long gap may have invalidated it since:

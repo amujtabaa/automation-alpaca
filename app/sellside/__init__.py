@@ -1,4 +1,4 @@
-"""The pure sell-side policy package (ADR-009 §1/D-4, WO-0018).
+"""The pure sell-side policy package (ADR-010 §1/D-4, WO-0018).
 
 Everything here is a pure function of ``(envelope, snapshot tape, injected
 clock value, prior envelope events)`` — no IO, no global state, no clock

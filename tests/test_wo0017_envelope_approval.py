@@ -1,4 +1,4 @@
-"""WO-0017 — the envelope approval surface (ADR-009 §1), BOTH stores.
+"""WO-0017 — the envelope approval surface (ADR-010 §1), BOTH stores.
 
 ``approve_envelope_activation`` is ONE store-atomic unit in the ENG-001 shape:
 dedup/idempotency → HALTED check → create → approve → activate → events, with

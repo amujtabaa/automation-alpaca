@@ -1,4 +1,4 @@
-"""REV-0022 Phase A — findings pinned as strict xfails + held probes promoted.
+"""REV-0023 Phase A — findings pinned as strict xfails + held probes promoted.
 
 Every OPEN Phase A finding gets an ``xfail(strict=True)`` pin asserting the
 DESIRED behavior: the pin fails today (that's the finding), and the moment a
@@ -51,7 +51,7 @@ from app.store.core import EnvelopeTransitionError
 pytestmark = pytest.mark.anyio
 
 S = EnvelopeStatus
-FP = "fp-rev0022-0001"
+FP = "fp-rev0023-0001"
 
 # Deterministic decision clock (Wed 2026-07-15 14:00 UTC = 10:00 ET REGULAR) —
 # validate_action rails on TTL + session phase since WO-0024, so wall-clock
@@ -624,7 +624,7 @@ async def test_HELD_kill_between_staging_and_redrive_blocks_at_claim(any_store):
 
 # ================================================================== #
 # F8/SPEC-05 — FROZEN + ceiling-overfill chains BREACHED (WO-0029A,
-# ADR-009 §2/§3 amendment ACCEPTED 2026-07-12)
+# ADR-010 §2/§3 amendment ACCEPTED 2026-07-12)
 # ================================================================== #
 
 

@@ -7,7 +7,7 @@ CLAUDE.md's safety core binds inside every task. This prompt is your standing wo
 
 ## Operating agreement (ratified by the human pasting this prompt)
 
-- The wave plan (`work/queue/W3-README.md` + WO-0016..0022 + `docs/adr/ADR-009-execution-envelope.md`)
+- The wave plan (`work/queue/W3-README.md` + WO-0016..0022 + `docs/adr/ADR-010-execution-envelope.md`)
   is the pre-approved plan of record. Wave-level planning does not need re-approval.
 - **Non-gated WOs (0018, 0020, 0021): proceed end-to-end without pausing**, under full Fable
   discipline (gate block, TDD, pasted evidence, done block, disposition + ledger entry each).
@@ -22,10 +22,10 @@ CLAUDE.md's safety core binds inside every task. This prompt is your standing wo
 1. `git status && git log --oneline -3` — confirm clean tree; confirm you are on the current dev
    tip (`claude/fable-mode-os-install-1dlyk8` or its merged successor). If dirty or ambiguous: STOP.
 2. Locate the planning drop: either its files are already at repo root (check for
-   `START_HERE.md` + `docs/adr/ADR-009-execution-envelope.md`) or the human placed
+   `START_HERE.md` + `docs/adr/ADR-010-execution-envelope.md`) or the human placed
    `lase-envelope-wave-W3.zip` at repo root (`unzip -o` it, then remove the zip). Neither
    present: ask the human.
-3. `git checkout -b feat/execution-envelope && git add docs work && git commit -m "W3: ADR-009 (Proposed) + WO-0016..0022 planning drop"`
+3. `git checkout -b feat/execution-envelope && git add docs work && git commit -m "W3: ADR-010 (Proposed) + WO-0016..0022 planning drop"`
    — the pinned in-repo spec, first commit on the integration branch.
 4. Baseline gate on this tip: `ruff check . && ruff format --check . && mypy && lint-imports && pytest -q`
    — paste the tail. Red baseline: STOP, NEEDS-INPUT.
@@ -79,7 +79,7 @@ human to run Codex on the authoritative env. Do not proceed past this point.
 - T2 WO-0017 gate approval (kill-switch / flatten precedence)
 - T3 WO-0019 gate approval (order submission / cancel-replace seam)
 - T4 WO-0022 Phase B: human runs Codex, returns the verdict for reconciliation
-- T5 ADR-009 Accepted mark + merge decision (never yours)
+- T5 ADR-010 Accepted mark + merge decision (never yours)
 - Any NEEDS-INPUT / BLOCKED / circuit-breaker (3 failed fixes) / anchor divergence on a safety
   surface
 

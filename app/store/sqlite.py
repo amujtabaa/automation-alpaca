@@ -361,7 +361,7 @@ CREATE TABLE IF NOT EXISTS execution_events (
     payload         TEXT NOT NULL DEFAULT '{}'
 );
 
--- Execution envelopes (ADR-009 / WO-0016): the pre-approved, immutable,
+-- Execution envelopes (ADR-010 / WO-0016): the pre-approved, immutable,
 -- bounded mandate for one sell intent. Bounds NEVER update in place —
 -- amendment is a new row via the atomic supersede operation. Only status,
 -- remaining_quantity (deduped-fill decrements ONLY), replaces_used,
@@ -491,7 +491,7 @@ class SqliteStateStore(StateStore):
                 "CREATE INDEX IF NOT EXISTS idx_exec_events_order "
                 "ON execution_events(order_id)"
             )
-            # ADR-009 (WO-0016): per-envelope event queries (replay/audit of one
+            # ADR-010 (WO-0016): per-envelope event queries (replay/audit of one
             # mandate) and the structural single-ACTIVE-per-intent invariant —
             # the DB-level twin of the in-memory store's under-lock check.
             # Created here (after _migrate) so they exist on migrated DBs too.
@@ -707,7 +707,7 @@ class SqliteStateStore(StateStore):
             r["name"]
             for r in conn.execute("PRAGMA table_info(execution_events)").fetchall()
         }
-        if "envelope_id" not in exec_event_cols:  # added in W3 (ADR-009 / WO-0016)
+        if "envelope_id" not in exec_event_cols:  # added in W3 (ADR-010 / WO-0016)
             # The owning execution envelope. Additive + nullable: pre-envelope
             # events simply have NULL, replay stays valid within schema_version 1
             # (no bump — the version marks INCOMPATIBLE shape changes). Fresh DBs
@@ -1521,7 +1521,7 @@ class SqliteStateStore(StateStore):
     def _update_envelope(self, cur: sqlite3.Cursor, env: ExecutionEnvelope) -> None:
         """Persist the MUTABLE surface only. Bounds are deliberately absent
         from this UPDATE — the storage layer structurally cannot amend them
-        (ADR-009: amendment is by supersession, never in place)."""
+        (ADR-010: amendment is by supersession, never in place)."""
 
         cur.execute(
             """UPDATE execution_envelopes SET status=?, remaining_quantity=?,
@@ -1789,7 +1789,7 @@ class SqliteStateStore(StateStore):
             return self._active_sell_intent_locked(key)
 
     # ------------------------------------------------------------------ #
-    # Execution envelopes (ADR-009 / WO-0016)
+    # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
     def _other_active_envelope_locked(
         self, cur: sqlite3.Cursor, sell_intent_id: str, *, excluding: str
@@ -1913,7 +1913,7 @@ class SqliteStateStore(StateStore):
                 if plan.outcome == ENVELOPE_TRANSITION_NOOP:
                     return env
                 if new_status is EnvelopeStatus.ACTIVE:
-                    # ADR-009 §4 / INV-060: activation OR resume is new
+                    # ADR-010 §4 / INV-060: activation OR resume is new
                     # standing order intent — refused while HALTED, checked
                     # inside the SAME transaction as the write (resume after
                     # release is explicit human action, never automatic).
@@ -2292,7 +2292,7 @@ class SqliteStateStore(StateStore):
     def _cancel_symbol_envelopes_locked(
         self, cur: sqlite3.Cursor, symbol: str, *, actor: str, reason: str
     ) -> None:
-        """ADR-009 §4 / D-2: cancel every non-terminal envelope for ``symbol``
+        """ADR-010 §4 / D-2: cancel every non-terminal envelope for ``symbol``
         through legal edges (ACTIVE via FROZEN) on an open ``_tx`` cursor —
         the manual-flatten preemption, committing in the SAME transaction as
         the flatten's own writes (mirrors InMemoryStateStore)."""
@@ -2634,7 +2634,7 @@ class SqliteStateStore(StateStore):
                 )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
-                # ADR-009 §4 / D-2: even with nothing to exit, a stale envelope
+                # ADR-010 §4 / D-2: even with nothing to exit, a stale envelope
                 # must never outlive the human's direct backstop.
                 with self._tx() as cur:
                     self._cancel_symbol_envelopes_locked(
@@ -2677,7 +2677,7 @@ class SqliteStateStore(StateStore):
             # (X-001) still provides the concurrency guarantee independently.
             superseded = False
             with self._tx() as cur:
-                # ADR-009 §4: envelope preemption FIRST, same transaction —
+                # ADR-010 §4: envelope preemption FIRST, same transaction —
                 # the preemption events sequence before the flatten's own
                 # supersede/create writes (asserted by WO-0017 tests).
                 self._cancel_symbol_envelopes_locked(
@@ -4022,7 +4022,7 @@ class SqliteStateStore(StateStore):
                     reason="kill_switch",
                 )
                 if engaged:
-                    # ADR-009 §4: the kill freezes every ACTIVE envelope in
+                    # ADR-010 §4: the kill freezes every ACTIVE envelope in
                     # the SAME transaction as the control change. Release
                     # never auto-resumes (FROZEN -> ACTIVE is an explicit
                     # human action, itself refused while HALTED).
