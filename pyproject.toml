@@ -49,7 +49,7 @@ extend-exclude = [".ai-os", ".claude"]
 python_version = "3.11"
 ignore_missing_imports = true      # alpaca-py / streamlit ship no stubs
 plugins = ["pydantic.mypy"]
-warn_unused_ignores = false        # future tightening: flip to true after burn-down
+warn_unused_ignores = true         # flipped 2026-07-11 (ADR-007 follow-up): burn-down complete
 
 # Third-party transitive stubs — `alpaca-py` (imported by the broker adapter and
 # the market-data stream) pulls in pandas / pyarrow / numpy, whose modern wheels

@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Burn down the mypy grandfather list (safety-critical stores first)
-status: draft
+status: CLOSED
 work_order_id: WO-0012
 wave: W2-remediation
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (planning) / Claude (implementer)
 created: 2026-07-08
 ---
@@ -186,5 +186,24 @@ write_allowed:
 - [ ] Module removed from the ignore list; `mypy app/` green; full suite green; ruff clean.
 - [ ] Fable DONE block; no test weakened; behavior-changing fixes have tests.
 
+## Close-out (2026-07-11)
+
+All 16 modules were already cleared (see Progress above; completing commit `b619998`), but the WO
+was never dispositioned — status sat at `draft` in the queue with no ledger entry. Closed out after
+independent re-verification of every claim with fresh evidence:
+
+- `pyproject.toml`: the `[[tool.mypy.overrides]] ignore_errors` grandfather block is GONE (only the
+  third-party numpy/pandas/pyarrow `follow_imports=skip` override remains, as documented).
+- `python -m mypy app/` → **Success: no issues found in 54 source files**.
+- `ruff check .` → All checks passed. `lint-imports` → **5 kept / 0 broken**.
+- Full suite: `python -m pytest -q` → **exit 0** (2049 tests collected, 0 failures).
+- The SDK method-name fix (`get_order_by_client_id`) cleared its independent-review gate:
+  REV-0002 disposition covers the fix; REV-0004 re-verified the recovery path.
+
+Remaining ADR-007 follow-ups deliberately NOT done here (need their own decision/WO):
+flip `warn_unused_ignores = true`; line-level mypy-baseline adoption; dependency pinning root-fix
+(FINDING-flatten §"Secondary issue"); the INV-034 flatten decision gap
+(`work/review/FINDING-flatten-inv034-live-protection.md`) is still an open human decision.
+
 ## Completion disposition
-- [ ] RESULT_SUMMARY_KEPT
+- [x] RESULT_SUMMARY_KEPT
