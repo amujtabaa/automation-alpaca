@@ -1,6 +1,6 @@
 # PROPOSAL (not applied) — ADR-009 text amendments for the two Phase A contradictions
 
-Status: DRAFT wording for the human gate / WO-0029(A). The ADR itself is untouched — these are
+Status: **ACCEPTED by Ameen 2026-07-12** (in-chat: "I'll accept both ADR-009 proposals"); applied to the ADR + implemented by WO-0029A. The ADR itself is untouched — these are
 prepared texts so the gate decision is a yes/no, not a drafting session. (The §5 predicate and
 §3/§6 amendments shipped with WO-0025/0027 per their approved charters; the two below CHANGE
 decided semantics, so they wait for explicit approval.)

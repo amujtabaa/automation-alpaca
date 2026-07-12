@@ -62,7 +62,11 @@ from app.models import (
 from app.sellside.policy import validate_action
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import CLAIM_CLAIMED, SubmissionClaim
-from app.store.core import STAGE_DIVERGENCE, EnvelopeActionStageResult
+from app.store.core import (
+    STAGE_DIVERGENCE,
+    STAGE_REFUSED_STALE,
+    EnvelopeActionStageResult,
+)
 
 # Local order statuses that are "open at the venue" and therefore reconcilable
 # against the mass report (mirrors monitoring._OPEN_STATUSES). CANCEL_PENDING is
@@ -494,6 +498,8 @@ ENVELOPE_EXEC_BLOCKED = "blocked"  # claim control gate held it; order stays CRE
 ENVELOPE_EXEC_QUARANTINED = "quarantined"  # ambiguous venue outcome (ADR-002)
 ENVELOPE_EXEC_RELEASED = "released"  # transient failure; order back to CREATED
 ENVELOPE_EXEC_REJECTED = "rejected"  # definitive venue rejection
+ENVELOPE_EXEC_REFUSED_STALE = "refused_stale"  # WO-0029A: benign stale-plan
+# refusal at the write seam — evented, no freeze, policy replans next tick
 ENVELOPE_EXEC_CANCELLED = "cancelled"  # redrive refusal: staged order locally
 # CANCELED with zero venue calls (WO-0024 — non-ACTIVE envelope, stale staging,
 # or a rail the CURRENT state no longer satisfies)
@@ -628,6 +634,13 @@ async def execute_envelope_action(
         return EnvelopeExecutionResult(
             ENVELOPE_EXEC_DIVERGENCE,
             detail="plan/write validator disagreement — envelope frozen",
+        )
+    if staged.outcome == STAGE_REFUSED_STALE:
+        # WO-0029A: facts changed between plan and write — refused + evented,
+        # no freeze; the policy replans from fresh data next tick.
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_REFUSED_STALE,
+            detail="stale plan refused — facts changed between plan and write",
         )
     assert staged.order is not None
     return await _drive_staged_order(

@@ -43,7 +43,10 @@ ADR_EDGES: dict[EnvelopeStatus, set[EnvelopeStatus]] = {
         S.SUPERSEDED,
         S.FROZEN,
     },
-    S.FROZEN: {S.ACTIVE, S.CANCELLED},
+    # WO-0029A (ADR-009 §2/§3 amendment accepted 2026-07-12): overfill
+    # while FROZEN breaches — the edge exists so a violated mandate can
+    # never resume into COMPLETED.
+    S.FROZEN: {S.ACTIVE, S.CANCELLED, S.BREACHED},
     S.COMPLETED: set(),
     S.EXPIRED: set(),
     S.EXHAUSTED: set(),

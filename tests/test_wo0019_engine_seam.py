@@ -49,6 +49,7 @@ from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import OrderIntentBlockedError
 from app.store.core import (
     STAGE_DIVERGENCE,
+    STAGE_REFUSED_STALE,
     STAGE_STAGED,
     EnvelopeActionPausedError,
 )
@@ -142,8 +143,12 @@ async def envelope_events(store, envelope_id, event_type=None):
 @pytest.mark.parametrize(
     "bad_action,rail",
     [
-        (dict(limit_price=8.99), "floor_price"),  # below floor
-        (dict(quantity=101), "qty_ceiling"),  # beyond remaining
+        # WO-0029A (ADR-009 §5 amendment accepted 2026-07-12): only rails
+        # DETERMINISTIC at the seam (same inputs -> the validators themselves
+        # disagree) are DEFECTS. State-dependent rails (qty vs remaining,
+        # structural order-liveness) are benign stale-plan refusals — see
+        # test_write_time_stale_facts_refuse_without_freezing below.
+        (dict(limit_price=8.99), "floor_price"),  # below floor — a defect
     ],
 )
 async def test_write_time_rejection_freezes_with_divergence_event(
@@ -189,9 +194,48 @@ async def test_divergence_makes_zero_venue_calls(any_store):
     assert adapter.canceled == []
 
 
-async def test_structural_disagreement_is_also_divergence(any_store):
-    """A REPRICE plan with NO working order is plan/write disagreement, not a
-    breach: freeze + divergence."""
+async def test_write_time_stale_facts_refuse_without_freezing(any_store):
+    """WO-0029A (ADR-009 §5 amendment): a rail that only fails against
+    CURRENT state — a fill shrank remaining between plan and write — is a
+    BENIGN STALE-PLAN REFUSAL: evented (action=refused_stale), envelope
+    UNTOUCHED, no order, zero venue calls; the policy replans next tick."""
+
+    env = await active_envelope(any_store)
+    await any_store.record_envelope_fill(
+        env.id, quantity=95, dedupe_key="fill:o:race", order_id="o", price=9.9
+    )  # remaining 100 -> 5; the plan below was sized against 100
+    result = await any_store.stage_envelope_action(
+        env.id, planned(quantity=10), snapshot_fingerprint=FP, now=later()
+    )
+    assert result.outcome == STAGE_REFUSED_STALE
+    after = await any_store.get_envelope(env.id)
+    assert after.status is S.ACTIVE  # NOT frozen — nothing is defective
+    refusals = [
+        e
+        for e in await envelope_events(
+            any_store, env.id, ExecutionEventType.ENVELOPE_ACTION
+        )
+        if e.payload.get("action") == "refused_stale"
+    ]
+    assert len(refusals) == 1 and refusals[0].payload["rail"] == "qty_ceiling"
+    assert (
+        await envelope_events(
+            any_store, env.id, ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE
+        )
+        == []
+    )  # the defect tripwire did NOT fire
+    # The refusal spends no budget and blocks no cooldown: a correctly-sized
+    # replan stages cleanly right after.
+    retry = await any_store.stage_envelope_action(
+        env.id, planned(quantity=5), snapshot_fingerprint="fp-retry", now=later(60)
+    )
+    assert retry.outcome == STAGE_STAGED
+
+
+async def test_structural_disagreement_is_a_stale_refusal(any_store):
+    """WO-0029A: order liveness is state that legitimately changes between
+    plan and write — a REPRICE meeting a dead/absent working order refuses
+    WITHOUT freezing (was: divergence+FROZEN under the pre-amendment §5)."""
 
     env = await active_envelope(any_store)
     result = await any_store.stage_envelope_action(
@@ -200,8 +244,8 @@ async def test_structural_disagreement_is_also_divergence(any_store):
         snapshot_fingerprint=FP,
         now=later(),
     )
-    assert result.outcome == STAGE_DIVERGENCE
-    assert (await any_store.get_envelope(env.id)).status is S.FROZEN
+    assert result.outcome == STAGE_REFUSED_STALE
+    assert (await any_store.get_envelope(env.id)).status is S.ACTIVE
 
 
 async def test_write_time_ttl_rail_bites_at_the_seam(any_store):

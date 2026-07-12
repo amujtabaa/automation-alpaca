@@ -130,9 +130,13 @@ async def test_partial_fill_between_plan_and_write_hits_the_qty_rail(any_store):
         snapshot_fingerprint=FP,
         now=later(),
     )
-    assert result.outcome == "divergence"
+    # WO-0029A (ADR-009 §5 amendment accepted 2026-07-12): a benign fill
+    # racing the plan is NOT a software defect — refused + evented, zero
+    # venue calls, envelope stays ACTIVE and replans next tick. (This test
+    # is the case SPEC-09 cited when it falsified the old §5 claim.)
+    assert result.outcome == "refused_stale"
     assert adapter.submitted == [] and adapter.replaced == []
-    assert (await any_store.get_envelope(env.id)).status is S.FROZEN
+    assert (await any_store.get_envelope(env.id)).status is S.ACTIVE
 
 
 async def test_replayed_fill_on_the_replace_leg_never_double_counts(any_store):

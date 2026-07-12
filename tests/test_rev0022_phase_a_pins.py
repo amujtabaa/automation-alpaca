@@ -620,3 +620,45 @@ async def test_HELD_kill_between_staging_and_redrive_blocks_at_claim(any_store):
     fresh = MockBrokerAdapter()
     await redrive_staged_envelope_action(any_store, fresh, env.id)
     assert fresh.submitted == [] and fresh.replaced == []
+
+
+# ================================================================== #
+# F8/SPEC-05 — FROZEN + ceiling-overfill chains BREACHED (WO-0029A,
+# ADR-009 §2/§3 amendment ACCEPTED 2026-07-12)
+# ================================================================== #
+
+
+async def test_frozen_overfill_chains_breached_never_completed(any_store):
+    """A ceiling-violated mandate must never terminate in the SUCCESS state:
+    overfill while FROZEN -> BREACHED immediately (new legal edge), and a
+    resume of a breached envelope is structurally refused."""
+
+    env = await active_envelope(any_store)
+    await any_store.transition_envelope(env.id, S.FROZEN, actor="op")
+    breached = await any_store.record_envelope_fill(
+        env.id, quantity=150, dedupe_key="fill:o:over", order_id="o", price=9.9
+    )
+    assert breached.remaining_quantity == 0  # floors, never negative
+    assert breached.status is S.BREACHED, (
+        f"ceiling violated while FROZEN must BREACH, got {breached.status}"
+    )
+    with pytest.raises(EnvelopeTransitionError):
+        await any_store.transition_envelope(env.id, S.ACTIVE, actor="op")
+    breach_events = await _envelope_events(
+        any_store, env.id, ExecutionEventType.ENVELOPE_BREACHED
+    )
+    assert len(breach_events) == 1
+
+
+async def test_frozen_exact_fill_still_completes_on_resume(any_store):
+    """The benign twin stays benign: an EXACT fill-to-zero while FROZEN is not
+    a breach — resume auto-completes exactly as before (INV-079 unchanged)."""
+
+    env = await active_envelope(any_store)
+    await any_store.transition_envelope(env.id, S.FROZEN, actor="op")
+    frozen = await any_store.record_envelope_fill(
+        env.id, quantity=100, dedupe_key="fill:o:exact", order_id="o", price=9.9
+    )
+    assert frozen.status is S.FROZEN and frozen.remaining_quantity == 0
+    await any_store.transition_envelope(env.id, S.ACTIVE, actor="op")
+    assert (await any_store.get_envelope(env.id)).status is S.COMPLETED
