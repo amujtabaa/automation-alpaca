@@ -531,12 +531,33 @@ order's manager, and cancelling it would strand the very exit the flatten
 defers to.
 *Why:* the backstop must dominate its dependents without destroying the
 mechanism executing the exit the human already has in flight.
+*Amended (WO-0024 / REV-0022 F3):* preemption extends to the preempted
+envelopes' STAGED orders — every CREATED (never venue-submitted) order staged
+by a preempted envelope is locally CANCELLED in the SAME atomic unit,
+sequenced after the envelope's own cancellation events. The kill switch does
+the same for the envelopes it freezes (a staged order IS pending order
+intent, INV-060). Belt two: ``redrive_staged_envelope_action`` re-validates
+against CURRENT state and time before any venue call — non-ACTIVE envelope,
+staged-action age past the redrive ceiling, or any ``validate_action`` rail
+(now including TTL and session phase, making ADR-009 §1's "bounds checked
+twice" true for every §2 rail) refuses with zero venue calls and locally
+cancels the staged order. Refusals are staleness, not defects: the envelope
+is never frozen by this path (INV-082 stays a defect-only signal).
 *Pinned by:* `tests/test_wo0017_precedence.py`
 (`test_flatten_cancels_the_symbols_envelopes_before_proceeding`,
 `test_flatten_on_a_flat_position_still_cancels_stale_envelopes`,
 `test_flatten_cancels_frozen_and_preactivation_envelopes_too`,
 `test_deferral_to_a_live_protection_exit_leaves_its_envelope_alone`) +
-`tests/test_phase7_flatten_atomic.py` (kept green, unmodified).
+`tests/test_phase7_flatten_atomic.py` (kept green, unmodified) +
+`tests/test_wo0021_envelope_chaos.py`
+(`test_flatten_mid_reprice_staged_order_never_reaches_the_venue` — the
+flipped WO-0021 finding pin) + `tests/test_wo0019_engine_seam.py`
+(`test_kill_between_staging_and_venue_call_blocks_at_the_claim`,
+`test_redrive_of_a_frozen_envelopes_staged_order_cancels_locally`,
+`test_redrive_past_staleness_ceiling_cancels_locally`,
+`test_write_time_ttl_rail_bites_at_the_seam`,
+`test_write_time_session_phase_rail_bites_at_the_seam`) +
+`tests/test_rev0022_phase_a_pins.py` (the three flipped `PIN_F3_*` tests).
 
 **INV-082 — Plan/write validator disagreement is a DEFECT signal: freeze +
 ENVELOPE_PLAN_DIVERGENCE, zero venue calls.** ``stage_envelope_action`` (both

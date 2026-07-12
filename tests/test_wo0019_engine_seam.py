@@ -12,7 +12,7 @@ transient-retry can never double-spend.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -36,6 +36,7 @@ from app.models import (
 from app.reconciliation import (
     ENVELOPE_EXEC_BLOCKED,
     ENVELOPE_EXEC_DIVERGENCE,
+    ENVELOPE_EXEC_CANCELLED,
     ENVELOPE_EXEC_QUARANTINED,
     ENVELOPE_EXEC_RELEASED,
     ENVELOPE_EXEC_REPRICED,
@@ -57,13 +58,17 @@ pytestmark = pytest.mark.anyio
 S = EnvelopeStatus
 FP = "fp-test-0001"
 
+# Deterministic decision clock: Wednesday 2026-07-15 14:00 UTC = 10:00 ET,
+# REGULAR hours. validate_action now rails on TTL + session phase (WO-0024),
+# so wall-clock-derived nows (this container sits on a weekend) would
+# spuriously rail out of phase.
+T_NOW = datetime(2026, 7, 15, 14, 0, 0, tzinfo=timezone.utc)
+
 
 def later(seconds: int = 30):
-    """A validation clock safely PAST any event stamped in this test's own
-    setup — computed at CALL time (a module-level constant would go stale in
-    a long full-suite run and trip the cooldown rail)."""
+    """The injected validation clock, seconds past the fixed T_NOW basis."""
 
-    return utcnow() + timedelta(seconds=seconds)
+    return T_NOW + timedelta(seconds=seconds)
 
 
 def make_draft(intent_id: str = "si-1", **overrides) -> ExecutionEnvelope:
@@ -78,7 +83,7 @@ def make_draft(intent_id: str = "si-1", **overrides) -> ExecutionEnvelope:
         aggressiveness=["passive"],
         cooldown_floor_ms=1,  # keep the rate rail out of these tests' way
         cancel_replace_budget=3,
-        expires_at=utcnow() + timedelta(hours=2),
+        expires_at=T_NOW + timedelta(hours=2),
         allowed_session_phases=[SessionType.REGULAR],
         expiry_disposition=EnvelopeExpiryDisposition.CANCEL_AND_RETURN,
         stale_data_disposition=EnvelopeStaleDataDisposition.CANCEL,
@@ -137,7 +142,7 @@ async def test_write_time_rejection_freezes_with_divergence_event(
     env = await active_envelope(any_store)
     action = planned(**bad_action)
     result = await any_store.stage_envelope_action(
-        env.id, action, snapshot_fingerprint=FP, actor="engine"
+        env.id, action, snapshot_fingerprint=FP, actor="engine", now=later()
     )
     assert result.outcome == STAGE_DIVERGENCE
 
@@ -166,6 +171,7 @@ async def test_divergence_makes_zero_venue_calls(any_store):
         env.id,
         planned(limit_price=1.00),  # far below floor — a defective plan
         snapshot_fingerprint=FP,
+        now=later(),
     )
     assert result.outcome == ENVELOPE_EXEC_DIVERGENCE
     assert adapter.submitted == []
@@ -182,9 +188,49 @@ async def test_structural_disagreement_is_also_divergence(any_store):
         env.id,
         planned(kind=ActionKind.REPRICE),
         snapshot_fingerprint=FP,
+        now=later(),
     )
     assert result.outcome == STAGE_DIVERGENCE
     assert (await any_store.get_envelope(env.id)).status is S.FROZEN
+
+
+async def test_write_time_ttl_rail_bites_at_the_seam(any_store):
+    """WO-0024: TTL is a §2 HARD rail — validate_action (both D-3 call sites)
+    now rails on it, so a plan that crosses expires_at between decide and
+    stage is caught at write time ("bounds checked twice" made true)."""
+
+    env = await active_envelope(any_store)
+    result = await any_store.stage_envelope_action(
+        env.id,
+        planned(),
+        snapshot_fingerprint=FP,
+        now=T_NOW + timedelta(hours=3),  # past the 2h expires_at
+    )
+    assert result.outcome == STAGE_DIVERGENCE
+    divergences = await envelope_events(
+        any_store, env.id, ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE
+    )
+    assert len(divergences) == 1 and divergences[0].payload["rail"] == "ttl"
+
+
+async def test_write_time_session_phase_rail_bites_at_the_seam(any_store):
+    """WO-0024: session phase is a §2 HARD rail at write time too — staged
+    in-phase at 15:59, written out-of-phase at 20:30 must refuse."""
+
+    # TTL must outlive the phase flip so the PHASE rail is what bites.
+    env = await active_envelope(any_store, expires_at=T_NOW + timedelta(days=1))
+    result = await any_store.stage_envelope_action(
+        env.id,
+        planned(),
+        snapshot_fingerprint=FP,
+        now=T_NOW.replace(hour=22),  # 18:00 ET — after-hours, not REGULAR
+    )
+    assert result.outcome == STAGE_DIVERGENCE
+    divergences = await envelope_events(
+        any_store, env.id, ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE
+    )
+    assert len(divergences) == 1
+    assert divergences[0].payload["rail"] == "session_phase"
 
 
 # --- staging: control precedence -------------------------------------------------- #
@@ -203,7 +249,7 @@ async def test_halted_blocks_staging_with_zero_artifacts(any_store):
 
     with pytest.raises((OrderIntentBlockedError, EnvelopeTransitionError)):
         await any_store.stage_envelope_action(
-            env.id, planned(), snapshot_fingerprint=FP
+            env.id, planned(), snapshot_fingerprint=FP, now=later()
         )
     assert (
         await envelope_events(any_store, env.id, ExecutionEventType.ENVELOPE_ACTION)
@@ -220,7 +266,7 @@ async def test_non_active_envelope_refuses_staging(any_store):
     await any_store.transition_envelope(env.id, S.FROZEN)
     with pytest.raises(EnvelopeTransitionError):
         await any_store.stage_envelope_action(
-            env.id, planned(), snapshot_fingerprint=FP
+            env.id, planned(), snapshot_fingerprint=FP, now=later()
         )
 
 
@@ -231,7 +277,7 @@ async def test_submit_leg_end_to_end(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     result = await execute_envelope_action(
-        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
     )
     assert result.outcome == ENVELOPE_EXEC_SUBMITTED
     order = await any_store.get_order(result.order_id)
@@ -255,7 +301,7 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     first = await execute_envelope_action(
-        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
     )
     # Capture the working order's venue id BEFORE the reprice: the replace
     # MUST target exactly this order at the venue. (WO-0028/TC-01: this
@@ -269,7 +315,7 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
         env.id,
         planned(kind=ActionKind.REPRICE, limit_price=9.80),
         snapshot_fingerprint="fp-2",
-        now=later(),
+        now=later(60),
     )
     assert second.outcome == ENVELOPE_EXEC_REPRICED
     # Venue: exactly one replace, aimed at the first order's broker id.
@@ -291,7 +337,7 @@ async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     await execute_envelope_action(
-        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
     )
     adapter.fail_next_replace(AmbiguousBrokerError("504 mid-replace"))
     result = await execute_envelope_action(
@@ -300,7 +346,7 @@ async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
         env.id,
         planned(kind=ActionKind.REPRICE, limit_price=9.80),
         snapshot_fingerprint="fp-2",
-        now=later(),
+        now=later(45),
     )
     assert result.outcome == ENVELOPE_EXEC_QUARANTINED
     quarantined = await any_store.get_order(result.order_id)
@@ -343,7 +389,7 @@ async def test_transient_failure_releases_and_redrive_spends_no_new_budget(
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     await execute_envelope_action(
-        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
     )
     adapter.fail_next_replace(BrokerError("429 pre-flight"))
     result = await execute_envelope_action(
@@ -352,14 +398,18 @@ async def test_transient_failure_releases_and_redrive_spends_no_new_budget(
         env.id,
         planned(kind=ActionKind.REPRICE, limit_price=9.80),
         snapshot_fingerprint="fp-2",
-        now=later(),
+        now=later(45),
     )
     assert result.outcome == ENVELOPE_EXEC_RELEASED
     released = await any_store.get_order(result.order_id)
     assert released.status is OrderStatus.CREATED  # held for redrive
 
     # Redrive completes the SAME staged action — no new ENVELOPE_ACTION event.
-    redriven = await redrive_staged_envelope_action(any_store, adapter, env.id)
+    # (Next tick's clock; WO-0024 gave redrive its own re-validation pass, so
+    # it takes the injected clock like everything else on this seam.)
+    redriven = await redrive_staged_envelope_action(
+        any_store, adapter, env.id, now=later(60)
+    )
     assert redriven is not None
     assert redriven.outcome == ENVELOPE_EXEC_REPRICED
     actions = await envelope_events(
@@ -373,7 +423,7 @@ async def test_terminal_rejection_rejects_the_staged_order(any_store):
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(TerminalBrokerError("account restricted"))
     result = await execute_envelope_action(
-        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
     )
     order = await any_store.get_order(result.order_id)
     assert order.status is OrderStatus.REJECTED
@@ -381,27 +431,120 @@ async def test_terminal_rejection_rejects_the_staged_order(any_store):
 
 async def test_kill_between_staging_and_venue_call_blocks_at_the_claim(any_store):
     """The REV-0020 last-await shape for the venue leg: the kill lands AFTER
-    staging but BEFORE the venue call. The submission claim's atomic control
-    re-check (INV-021 — still the sole entry into SUBMITTING; the envelope
-    path adds no back door) blocks it: order held CREATED, zero venue calls,
-    and the staged action redrives cleanly after release with no new budget
-    event."""
+    staging but BEFORE the venue call. WO-0024 changed the contract here: the
+    kill hook now cancels the staged CREATED order in the SAME atomic unit as
+    the envelope freeze (a staged order IS pending order intent, INV-060), so
+    the redrive finds nothing pending — zero venue calls, and release gives
+    the frozen envelope nothing to silently resubmit. (The OLD behavior —
+    order held CREATED, then venue-submitted after release while the envelope
+    was still FROZEN — was itself a variant of the staged-order finding.)"""
 
     env = await active_envelope(any_store)
-    await any_store.stage_envelope_action(env.id, planned(), snapshot_fingerprint=FP)
+    staged = await any_store.stage_envelope_action(
+        env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
+    assert staged.order is not None
     await any_store.set_kill_switch(True, actor="operator-a")
-    adapter = MockBrokerAdapter()
-    redriven = await redrive_staged_envelope_action(any_store, adapter, env.id)
-    assert redriven is not None
-    assert redriven.outcome == ENVELOPE_EXEC_BLOCKED
-    assert adapter.submitted == [] and adapter.replaced == []
-    held = await any_store.get_order(redriven.order_id)
-    assert held.status is OrderStatus.CREATED
 
-    # Release + redrive: completes with the ORIGINAL staged accounting.
+    # The sweep already killed the staged order, atomically with the freeze.
+    held = await any_store.get_order(staged.order.id)
+    assert held.status is OrderStatus.CANCELED
+    assert (await any_store.get_envelope(env.id)).status is S.FROZEN
+    # Ordering: the envelope freeze sequences BEFORE the staged-order cancel
+    # (the sweep runs after the freezes, inside the same atomic unit).
+    events = await any_store.get_execution_events()
+    frozen_seq = next(
+        e.sequence
+        for e in events
+        if e.envelope_id == env.id
+        and e.event_type is ExecutionEventType.ENVELOPE_FROZEN
+    )
+    cancel_seq = next(
+        e.sequence
+        for e in events
+        if e.order_id == staged.order.id
+        and e.event_type is ExecutionEventType.CANCELED
+    )
+    assert frozen_seq < cancel_seq
+
+    adapter = MockBrokerAdapter()
+    redriven = await redrive_staged_envelope_action(
+        any_store, adapter, env.id, now=later(60)
+    )
+    assert redriven is None  # nothing pending to drive
+    assert adapter.submitted == [] and adapter.replaced == []
+
+    # Release: never auto-resumes, and there is NOTHING staged left to leak
+    # to the venue while the envelope awaits its human.
     await any_store.set_kill_switch(False, actor="operator-a")
-    done = await redrive_staged_envelope_action(any_store, adapter, env.id)
-    assert done is not None and done.outcome == ENVELOPE_EXEC_SUBMITTED
+    assert (await any_store.get_envelope(env.id)).status is S.FROZEN
+    done = await redrive_staged_envelope_action(
+        any_store, adapter, env.id, now=later(90)
+    )
+    assert done is None
+    assert adapter.submitted == [] and adapter.replaced == []
+
+
+async def test_redrive_of_a_frozen_envelopes_staged_order_cancels_locally(any_store):
+    """WO-0024 belt #1 (the original FINDING scope): an envelope that leaves
+    ACTIVE by a path with NO sweep (a direct operator freeze) still cannot
+    have its staged order driven — the redrive re-reads the envelope, refuses,
+    and locally cancels with an event trail. Zero venue calls."""
+
+    env = await active_envelope(any_store)
+    adapter = MockBrokerAdapter()
+    adapter.fail_next_submit(BrokerError("transient"))
+    released = await execute_envelope_action(
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
+    assert released.outcome == ENVELOPE_EXEC_RELEASED
+    await any_store.transition_envelope(env.id, S.FROZEN, actor="operator-a")
+
+    fresh = MockBrokerAdapter()
+    refused = await redrive_staged_envelope_action(
+        any_store, fresh, env.id, now=later(60)
+    )
+    assert refused is not None
+    assert refused.outcome == ENVELOPE_EXEC_CANCELLED
+    assert "frozen" in refused.detail
+    assert fresh.submitted == [] and fresh.replaced == []
+    cancelled = await any_store.get_order(refused.order_id)
+    assert cancelled.status is OrderStatus.CANCELED
+    # The cancel is event-logged (order-transition ExecutionEvent).
+    events = await any_store.get_execution_events()
+    assert any(
+        e.order_id == refused.order_id
+        and e.event_type is ExecutionEventType.CANCELED
+        for e in events
+    )
+
+
+async def test_redrive_past_staleness_ceiling_cancels_locally(any_store):
+    """WO-0024: a staged action older than the redrive ceiling is a STALE
+    decision (crash-restart warm-up, freeze->resume stretch) — refused and
+    locally cancelled; the policy re-decides from current data instead."""
+
+    env = await active_envelope(any_store)
+    adapter = MockBrokerAdapter()
+    adapter.fail_next_submit(BrokerError("transient"))
+    released = await execute_envelope_action(
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
+    assert released.outcome == ENVELOPE_EXEC_RELEASED
+
+    fresh = MockBrokerAdapter()
+    refused = await redrive_staged_envelope_action(
+        any_store, fresh, env.id, now=later(30 + 121)  # past the 120s ceiling
+    )
+    assert refused is not None
+    assert refused.outcome == ENVELOPE_EXEC_CANCELLED
+    assert "old" in refused.detail
+    assert fresh.submitted == [] and fresh.replaced == []
+    assert (
+        await any_store.get_order(refused.order_id)
+    ).status is OrderStatus.CANCELED
+    # The envelope itself is untouched — staleness is not a defect.
+    assert (await any_store.get_envelope(env.id)).status is S.ACTIVE
     actions = await envelope_events(
         any_store, env.id, ExecutionEventType.ENVELOPE_ACTION
     )
@@ -426,7 +569,9 @@ async def test_sqlite_staging_is_all_or_nothing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(SqliteStateStore, "_insert_execution_event", explode)
     with pytest.raises(RuntimeError):
-        await store.stage_envelope_action(env.id, planned(), snapshot_fingerprint=FP)
+        await store.stage_envelope_action(
+        env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
     monkeypatch.setattr(SqliteStateStore, "_insert_execution_event", original)
 
     # The whole transaction rolled back: no order row, no action event —
@@ -490,7 +635,9 @@ async def test_memory_staging_is_all_or_nothing(monkeypatch):
     env = await active_envelope(store)
     _explode_on(monkeypatch, ExecutionEventType.ENVELOPE_ACTION)
     with pytest.raises(RuntimeError):
-        await store.stage_envelope_action(env.id, planned(), snapshot_fingerprint=FP)
+        await store.stage_envelope_action(
+        env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
 
     orders = await store.list_orders()
     assert all(o.sell_intent_id != env.sell_intent_id for o in orders)

@@ -20,7 +20,7 @@ must keep holding (triple races, dedupe storms, single-claim redrive...).
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -56,9 +56,14 @@ pytestmark = pytest.mark.anyio
 S = EnvelopeStatus
 FP = "fp-rev0022-0001"
 
+# Deterministic decision clock (Wed 2026-07-15 14:00 UTC = 10:00 ET REGULAR) —
+# validate_action rails on TTL + session phase since WO-0024, so wall-clock
+# nows would spuriously rail on weekends/out-of-hours containers.
+T_NOW = datetime(2026, 7, 15, 14, 0, 0, tzinfo=timezone.utc)
+
 
 def later(seconds: int = 30):
-    return utcnow() + timedelta(seconds=seconds)
+    return T_NOW + timedelta(seconds=seconds)
 
 
 def make_draft(intent_id: str = "si-1", **overrides) -> ExecutionEnvelope:
@@ -73,7 +78,7 @@ def make_draft(intent_id: str = "si-1", **overrides) -> ExecutionEnvelope:
         aggressiveness=["passive"],
         cooldown_floor_ms=1,
         cancel_replace_budget=3,
-        expires_at=utcnow() + timedelta(hours=2),
+        expires_at=T_NOW + timedelta(hours=2),
         allowed_session_phases=[SessionType.REGULAR],
         expiry_disposition=EnvelopeExpiryDisposition.CANCEL_AND_RETURN,
         stale_data_disposition=EnvelopeStaleDataDisposition.CANCEL,
@@ -155,16 +160,13 @@ async def test_PIN_F1_sell_against_zero_position_never_reaches_venue(any_store):
 
 
 # ================================================================== #
-# F3 — redrive re-validation bypass (P1, INT-001/SPEC-03/CC-03) → WO-0024
+# F3 — redrive re-validation bypass — FLIPPED GREEN by WO-0024
 # ================================================================== #
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-redrive-revalidation-bypass (REV-0022 F3): fill between "
-    "staging and redrive; staged qty exceeds current remaining. WO-0024 amended.",
-)
 async def test_PIN_F3_redrive_respects_current_remaining(any_store):
+    # FLIPPED GREEN by WO-0024 (redrive re-validation): the raced fill shrinks
+    # remaining below the staged qty; redrive must refuse + locally cancel.
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
@@ -185,20 +187,20 @@ async def test_PIN_F3_redrive_respects_current_remaining(any_store):
     assert after_fill.status is S.ACTIVE  # a status-only guard would NOT stop this
 
     fresh = MockBrokerAdapter()
-    await redrive_staged_envelope_action(any_store, fresh, env.id)
-    submitted_qty = [o.quantity for o in fresh.submitted]
+    refused = await redrive_staged_envelope_action(
+        any_store, fresh, env.id, now=later(60)
+    )
+    assert fresh.submitted == [] and fresh.replaced == []
+    assert refused is not None and refused.outcome == "cancelled"
+    assert (await any_store.get_order(refused.order_id)).status is OrderStatus.CANCELED
+    # The envelope is untouched (a raced fill is not a defect) and its
+    # remaining reflects only the fill.
     final = await any_store.get_envelope(env.id)
-    assert submitted_qty == [] or max(submitted_qty) <= (
-        final.remaining_quantity or 0
-    ), f"redrive submitted {submitted_qty} vs remaining={final.remaining_quantity}"
+    assert final.status is S.ACTIVE and final.remaining_quantity == 40
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-redrive-revalidation-bypass (REV-0022 F3): gather "
-    "variant — fill wins the lock, redrive still drives the stale order.",
-)
 async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
+    # FLIPPED GREEN by WO-0024.
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
@@ -219,7 +221,9 @@ async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
 
     async def redrive():
         await asyncio.sleep(0)  # let the fill take the lock first
-        return await redrive_staged_envelope_action(any_store, fresh, env.id)
+        return await redrive_staged_envelope_action(
+            any_store, fresh, env.id, now=later(60)
+        )
 
     await asyncio.gather(fill(), redrive())
     final = await any_store.get_envelope(env.id)
@@ -227,14 +231,10 @@ async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
     assert submitted_qty == [] or max(submitted_qty) <= (final.remaining_quantity or 0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-redrive-revalidation-bypass (REV-0022 F3): TTL is a "
-    "plan-time-only gate; a staged order redrives to the venue after "
-    "expires_at. WO-0024 amended (validate_action gains TTL).",
-)
 async def test_PIN_F3_redrive_after_ttl_makes_no_venue_call(any_store):
-    env = await active_envelope(any_store, expires_at=utcnow() + timedelta(seconds=1))
+    # FLIPPED GREEN by WO-0024: TTL is now a validate_action rail, re-checked
+    # at redrive with the injected clock (no wall-clock sleep needed).
+    env = await active_envelope(any_store, expires_at=T_NOW + timedelta(seconds=60))
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     released = await execute_envelope_action(
@@ -243,16 +243,19 @@ async def test_PIN_F3_redrive_after_ttl_makes_no_venue_call(any_store):
         env.id,
         planned(quantity=10),
         snapshot_fingerprint=FP,
-        now=utcnow(),
+        now=later(1),
     )
     assert released.outcome == ENVELOPE_EXEC_RELEASED
-    await asyncio.sleep(1.2)  # wall clock passes the envelope's TTL
 
     fresh = MockBrokerAdapter()
-    await redrive_staged_envelope_action(any_store, fresh, env.id)
+    refused = await redrive_staged_envelope_action(
+        any_store, fresh, env.id, now=later(90)  # past the 60s TTL
+    )
     assert fresh.submitted == [] and fresh.replaced == [], (
         "an EXPIRED mandate's staged order reached the venue via redrive"
     )
+    assert refused is not None and refused.outcome == "cancelled"
+    assert "ttl" in refused.detail
 
 
 # ================================================================== #

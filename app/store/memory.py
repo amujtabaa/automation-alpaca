@@ -110,6 +110,7 @@ from app.store.core import (
     ENVELOPE_TRANSITION_REJECT,
     EnvelopeTransitionError,
     EnvelopeTransitionPlan,
+    ORDER_TRANSITION_APPLY,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
@@ -1344,6 +1345,7 @@ class InMemoryStateStore(StateStore):
         the preemption commits in the SAME atomic unit as the flatten's own
         writes and its events sequence BEFORE them."""
 
+        preempted: list[str] = []
         for env in list(self._envelopes.values()):
             if env.symbol != symbol:
                 continue
@@ -1361,6 +1363,56 @@ class InMemoryStateStore(StateStore):
             )
             assert plan.outcome == ENVELOPE_TRANSITION_APPLY
             self._apply_envelope_transition_unlocked(plan)
+            preempted.append(env.id)
+        # WO-0024: a preempted mandate's obligations die with it — its staged
+        # CREATED orders are cancelled in the SAME atomic unit, sequenced
+        # AFTER the envelope cancellation events
+        # (FINDING-W3-staged-order-outlives-preemption).
+        self._cancel_staged_envelope_orders_unlocked(preempted, actor=actor)
+
+    def _cancel_staged_envelope_orders_unlocked(
+        self, envelope_ids: list[str], *, actor: str
+    ) -> None:
+        """Locally CANCEL every CREATED order staged by the given envelopes
+        (WO-0024). Assumes the lock and an ``_atomic()`` block are held.
+        CREATED means never venue-submitted, so this is a pure local-truth
+        write — no venue call belongs here. SUBMITTING/SUBMITTED orders are
+        untouched: venue-side wind-down stays with the monitoring loop."""
+
+        if not envelope_ids:
+            return
+        wanted = set(envelope_ids)
+        seen: set[str] = set()
+        for event in self._execution_events:
+            if (
+                event.envelope_id not in wanted
+                or event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+                or event.order_id is None
+                or event.order_id in seen
+            ):
+                continue
+            seen.add(event.order_id)
+            order = self._orders.get(event.order_id)
+            if order is None or order.status is not OrderStatus.CREATED:
+                continue
+            plan = plan_transition_order(
+                order=order,
+                new_status=OrderStatus.CANCELED,
+                filled_quantity=None,
+                broker_order_id=None,
+                actor=actor,
+            )
+            assert plan.outcome == ORDER_TRANSITION_APPLY
+            assert plan.order is not None and plan.event is not None
+            self._orders[order.id] = plan.order
+            self._append_event_unlocked(
+                plan.event.event_type, **plan.event.as_kwargs()
+            )
+            exec_event = execution_event_for_routine_transition(
+                order, plan.order.status, plan.order.filled_quantity
+            )
+            if exec_event is not None:
+                self._append_execution_event_unlocked(exec_event)
 
     def _dispatch_order_for_sell_intent_unlocked(
         self,
@@ -2637,6 +2689,7 @@ class InMemoryStateStore(StateStore):
                     # the SAME atomic unit as the control change. Release
                     # never auto-resumes (FROZEN -> ACTIVE is an explicit
                     # human action, itself refused while HALTED).
+                    frozen: list[str] = []
                     for env in list(self._envelopes.values()):
                         if env.status is EnvelopeStatus.ACTIVE:
                             plan = plan_envelope_transition(
@@ -2647,6 +2700,13 @@ class InMemoryStateStore(StateStore):
                             )
                             assert plan.outcome == ENVELOPE_TRANSITION_APPLY
                             self._apply_envelope_transition_unlocked(plan)
+                            frozen.append(env.id)
+                    # WO-0024: the kill blocks new order intent (INV-060) — a
+                    # staged CREATED order IS pending order intent, so it dies
+                    # in the same atomic unit as the freeze.
+                    self._cancel_staged_envelope_orders_unlocked(
+                        frozen, actor=actor
+                    )
             return session.model_copy(deep=True)
 
     async def set_buys_paused(

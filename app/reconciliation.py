@@ -49,7 +49,17 @@ from app.broker.adapter import (
     TerminalBrokerError,
 )
 from app.marketdata.service import MarketSnapshot
-from app.models import ExecutionEvent, Order, OrderSide, OrderStatus, Position
+from app.models import (
+    EnvelopeStatus,
+    ExecutionEnvelope,
+    ExecutionEvent,
+    Order,
+    OrderSide,
+    OrderStatus,
+    Position,
+    utcnow,
+)
+from app.sellside.policy import validate_action
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import CLAIM_CLAIMED, SubmissionClaim
 from app.store.core import STAGE_DIVERGENCE, EnvelopeActionStageResult
@@ -472,6 +482,8 @@ class _EnvelopeSeamStore(Protocol):
         self, *, after_sequence: int = ..., limit: Optional[int] = ...
     ) -> list[ExecutionEvent]: ...
 
+    async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]: ...
+
 
 ENVELOPE_EXEC_SUBMITTED = "submitted"
 ENVELOPE_EXEC_REPRICED = "repriced"
@@ -480,6 +492,17 @@ ENVELOPE_EXEC_BLOCKED = "blocked"  # claim control gate held it; order stays CRE
 ENVELOPE_EXEC_QUARANTINED = "quarantined"  # ambiguous venue outcome (ADR-002)
 ENVELOPE_EXEC_RELEASED = "released"  # transient failure; order back to CREATED
 ENVELOPE_EXEC_REJECTED = "rejected"  # definitive venue rejection
+ENVELOPE_EXEC_CANCELLED = "cancelled"  # redrive refusal: staged order locally
+# CANCELED with zero venue calls (WO-0024 — non-ACTIVE envelope, stale staging,
+# or a rail the CURRENT state no longer satisfies)
+
+# A staged-but-undriven action is only redrivable while it is FRESH: past this
+# ceiling the decision that produced it is stale (crash-restart warm-up,
+# freeze->resume stretch, long outage) and the policy must re-decide from
+# current data instead. Two 30s ticks + slack. (WO-0024 / REV-0022 F3 — the
+# tape itself is monitoring-owned; this age bound subsumes the
+# restart-with-empty-tape scenario at the executor seam.)
+REDRIVE_MAX_STAGED_AGE_S = 120.0
 
 
 @dataclass(frozen=True)
@@ -618,12 +641,34 @@ async def redrive_staged_envelope_action(
     store: _EnvelopeSeamStore,
     adapter: BrokerAdapter,
     envelope_id: str,
+    *,
+    now: Optional[datetime] = None,
 ) -> Optional[EnvelopeExecutionResult]:
     """Resume a staged-but-not-executed action (transient release / crash
     between staging and the venue call) WITHOUT re-staging — the budget
     accounting committed with the original staging and must not be spent
-    twice. Returns None when there is nothing to redrive."""
+    twice. Returns None when there is nothing to redrive.
 
+    WO-0024 (REV-0022 F3, FINDING-W3-redrive-revalidation-bypass): before any
+    venue call, the staged order is RE-VALIDATED against CURRENT state and
+    CURRENT time — the original staging validated against the world as it was,
+    and fills, TTL, session phase, or a long gap may have invalidated it since:
+
+    * envelope no longer ACTIVE (preempted/frozen/terminal) → refuse;
+    * staged action older than ``REDRIVE_MAX_STAGED_AGE_S`` → the decision is
+      stale (crash-restart warm-up, freeze→resume stretch) → refuse;
+    * the shared hard-rail validator (``validate_action`` — floor, qty vs
+      CURRENT remaining, TTL, session phase, budget) rejects it → refuse.
+
+    A refusal makes ZERO venue calls and locally CANCELs the staged order
+    (CREATED → CANCELED, event-logged) so it can never be driven later; the
+    policy re-decides from current data on the next tick. Refusals are NOT
+    plan/write divergences — nothing here is a software defect, just staleness
+    — so the envelope is never frozen by this path (INV-082 stays a defect
+    signal).
+    """
+
+    ts = now if now is not None else utcnow()
     events = await store.get_execution_events()
     staged_events = [
         e
@@ -644,6 +689,51 @@ async def redrive_staged_envelope_action(
         if last.payload.get("action") == "reprice"
         else ActionKind.SUBMIT
     )
+
+    refusal: Optional[str] = None
+    envelope = await store.get_envelope(envelope_id)
+    if envelope is None or envelope.status is not EnvelopeStatus.ACTIVE:
+        refusal = (
+            "envelope is "
+            f"{envelope.status.value if envelope is not None else 'missing'}"
+        )
+    else:
+        staged_at = last.ts_event or last.created_at
+        age = (ts - staged_at).total_seconds()
+        if age > REDRIVE_MAX_STAGED_AGE_S:
+            refusal = (
+                f"staged action is {age:.0f}s old "
+                f"(redrive ceiling {REDRIVE_MAX_STAGED_AGE_S:.0f}s)"
+            )
+        else:
+            replayed = PlannedAction(
+                kind=kind,
+                limit_price=order.limit_price or 0.0,
+                quantity=order.quantity,
+                regime=None,
+                urgency=0.0,
+                working_stop=None,
+                atr=None,
+                tranche=bool(last.payload.get("tranche", False)),
+                stop_triggered=bool(last.payload.get("stop_triggered", False)),
+                clamps=(),
+            )
+            # Validate as if deciding this action NOW — excluding the staged
+            # action's OWN event, whose committed budget/cooldown accounting
+            # must not refuse its own completion.
+            history = [e for e in events if e.sequence != last.sequence]
+            violation = validate_action(envelope, replayed, history=history, now=ts)
+            if violation is not None:
+                refusal = f"{violation.rail}: {violation.detail}"
+
+    if refusal is not None:
+        await store.transition_order(order.id, OrderStatus.CANCELED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_CANCELLED,
+            order_id=order.id,
+            detail=f"redrive refused — {refusal}; staged order locally cancelled",
+        )
+
     working_order: Optional[Order] = None
     if kind is ActionKind.REPRICE and order.replaces_order_id is not None:
         working_order = await store.get_order(order.replaces_order_id)

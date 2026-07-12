@@ -2892,6 +2892,8 @@ def plan_stage_envelope_action(
         event_type=ExecutionEventType.ENVELOPE_ACTION,
         source=EventSource.ENGINE,
         authority=EventAuthority.LOCAL,
+        ts_event=ts,  # the DECISION clock — redrive's staleness ceiling and
+        # the cooldown rail read this deterministically (WO-0024)
         symbol=envelope.symbol,
         side=OrderSide.SELL,
         quantity=action.quantity,

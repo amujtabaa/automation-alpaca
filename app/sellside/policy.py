@@ -128,8 +128,29 @@ def validate_action(
     now: datetime,
 ) -> Optional[RailViolation]:
     """The shared plan-time/write-time hard-rail check (D-3). Rails only —
-    soft bounds were already clamped (and reported) upstream."""
+    soft bounds were already clamped (and reported) upstream.
 
+    WO-0024 (REV-0022 F3): TTL and session-phase are §2 HARD rails, so they
+    are checked HERE — at both D-3 call sites and at redrive — not only in
+    ``decide``'s gates. Before this, "bounds checked twice" (ADR-009 §1) was
+    untrue for these two rails and a staged order could reach the venue after
+    ``expires_at`` or out of phase via the redrive leg.
+    """
+
+    if now >= envelope.expires_at:
+        return RailViolation(
+            rail="ttl",
+            detail=f"mandate expired at {envelope.expires_at.isoformat()}",
+        )
+    ctx = session_context(now)
+    if ctx.phase is None or ctx.phase not in envelope.allowed_session_phases:
+        return RailViolation(
+            rail="session_phase",
+            detail=(
+                f"phase {ctx.phase.value if ctx.phase else 'none'} not in "
+                f"allowed {[p.value for p in envelope.allowed_session_phases]}"
+            ),
+        )
     if action.limit_price < envelope.floor_price:
         return RailViolation(
             rail="floor_price",

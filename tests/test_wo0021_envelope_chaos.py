@@ -44,7 +44,9 @@ FP = "fp-chaos"
 
 
 def later(seconds: float = 30.0) -> datetime:
-    return utcnow() + timedelta(seconds=seconds)
+    # NOW-based (not wall clock): validate_action rails on TTL + session
+    # phase since WO-0024, and the container may sit on a weekend.
+    return NOW + timedelta(seconds=seconds)
 
 
 def make_draft(intent_id: str, symbol: str = "AAPL", **overrides) -> ExecutionEnvelope:
@@ -173,17 +175,9 @@ async def test_kill_between_snapshot_read_and_action_write(any_store):
     ] == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING-W3-staged-order-outlives-preemption (P1): the venue leg "
-        "never re-checks envelope status, and flatten preemption cancels the "
-        "envelope but not its staged CREATED order — a redrive then submits "
-        "a stale autonomous SELL next to the flatten's own exit. Fix is "
-        "WO-0024 (drafted, human-gated); strict xfail flips when it lands."
-    ),
-)
 async def test_flatten_mid_reprice_staged_order_never_reaches_the_venue(any_store):
+    # FLIPPED GREEN by WO-0024 (was the strict-xfail P1 finding pin:
+    # FINDING-W3-staged-order-outlives-preemption).
     """Flatten preemption vs an in-flight STAGED (CREATED, unexecuted) action:
     after the flatten cancels the envelope, the staged order must never
     submit — not even through the redrive path."""
@@ -221,14 +215,34 @@ async def test_flatten_mid_reprice_staged_order_never_reaches_the_venue(any_stor
 
     # The staged order of a CANCELLED envelope must be dead: a redrive makes
     # ZERO venue calls and the order never leaves CREATED via this path.
+    # WO-0024: the flatten's preemption sweep already cancelled the staged
+    # order in the SAME atomic unit; the redrive finds nothing to drive.
     fresh_adapter = MockBrokerAdapter()
-    redriven = await redrive_staged_envelope_action(any_store, fresh_adapter, env.id)
-    assert redriven is None or redriven.outcome != "submitted"
+    redriven = await redrive_staged_envelope_action(
+        any_store, fresh_adapter, env.id, now=later(60)
+    )
+    assert redriven is None
     assert fresh_adapter.submitted == [] and fresh_adapter.replaced == [], (
         "a cancelled envelope's staged order reached the venue"
     )
     final = await any_store.get_order(released.order_id)
-    assert final.status is not OrderStatus.SUBMITTED
+    assert final.status is OrderStatus.CANCELED  # swept with the preemption
+    # Ordering: envelope cancellation sequences BEFORE its staged order's
+    # cancel, both BEFORE any flatten dispatch events (same atomic unit).
+    events = await any_store.get_execution_events()
+    env_cancel_seq = next(
+        e.sequence
+        for e in events
+        if e.envelope_id == env.id
+        and e.event_type is ExecutionEventType.ENVELOPE_CANCELLED
+    )
+    order_cancel_seq = next(
+        e.sequence
+        for e in events
+        if e.order_id == released.order_id
+        and e.event_type is ExecutionEventType.CANCELED
+    )
+    assert env_cancel_seq < order_cancel_seq
 
 
 # --- time & session edges ----------------------------------------------------------- #
@@ -383,8 +397,11 @@ async def test_exhausted_signal_path_via_the_tick(any_store):
 
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
+    # Drain clocks sit BEFORE the tick's NOW: ENVELOPE_ACTION events carry
+    # the injected decision clock (WO-0024), so the tick's cooldown check
+    # measures from the LAST of these.
     await execute_envelope_action(
-        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later(1)
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later(-120)
     )
     for i, px in enumerate((9.85, 9.80)):
         await execute_envelope_action(
@@ -393,7 +410,7 @@ async def test_exhausted_signal_path_via_the_tick(any_store):
             env.id,
             planned(kind=ActionKind.REPRICE, limit_price=px),
             snapshot_fingerprint=f"fp-{i}",
-            now=later(10 + i * 10),
+            now=later(-110 + i * 10),
         )
     # Now drive the REAL policy through a crashing tape so it WANTS a reprice
     # and finds the budget gone.

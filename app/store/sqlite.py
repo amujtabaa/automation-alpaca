@@ -126,6 +126,7 @@ from app.store.core import (
     ENVELOPE_TRANSITION_REJECT,
     EnvelopeTransitionError,
     EnvelopeTransitionPlan,
+    ORDER_TRANSITION_APPLY,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
@@ -2271,6 +2272,7 @@ class SqliteStateStore(StateStore):
         rows = cur.execute(
             "SELECT * FROM execution_envelopes WHERE symbol = ?", (symbol,)
         ).fetchall()
+        preempted: list[str] = []
         for row in rows:
             env = self._envelope(row)
             if not ENVELOPE_TRANSITIONS.get(env.status):
@@ -2287,6 +2289,67 @@ class SqliteStateStore(StateStore):
             )
             assert plan.outcome == ENVELOPE_TRANSITION_APPLY
             self._apply_envelope_transition_locked(cur, plan)
+            preempted.append(env.id)
+        # WO-0024: a preempted mandate's obligations die with it — its staged
+        # CREATED orders are cancelled in the SAME transaction, sequenced
+        # AFTER the envelope cancellation events
+        # (FINDING-W3-staged-order-outlives-preemption).
+        self._cancel_staged_envelope_orders_locked(cur, preempted, actor=actor)
+
+    def _cancel_staged_envelope_orders_locked(
+        self, cur: sqlite3.Cursor, envelope_ids: list[str], *, actor: str
+    ) -> None:
+        """Locally CANCEL every CREATED order staged by the given envelopes
+        (WO-0024), on the caller's open transaction. CREATED means never
+        venue-submitted, so this is a pure local-truth write — no venue call
+        belongs here. SUBMITTING/SUBMITTED orders are untouched: venue-side
+        wind-down stays with the monitoring loop."""
+
+        if not envelope_ids:
+            return
+        marks = ",".join("?" for _ in envelope_ids)
+        rows = cur.execute(
+            "SELECT DISTINCT order_id FROM execution_events "
+            f"WHERE envelope_id IN ({marks}) AND event_type = ? "
+            "AND order_id IS NOT NULL",
+            (*envelope_ids, ExecutionEventType.ENVELOPE_ACTION.value),
+        ).fetchall()
+        for (order_id,) in rows:
+            order_row = cur.execute(
+                "SELECT * FROM orders WHERE id = ?", (order_id,)
+            ).fetchone()
+            if order_row is None:
+                continue
+            order = self._order(order_row)
+            if order.status is not OrderStatus.CREATED:
+                continue
+            plan = plan_transition_order(
+                order=order,
+                new_status=OrderStatus.CANCELED,
+                filled_quantity=None,
+                broker_order_id=None,
+                actor=actor,
+            )
+            assert plan.outcome == ORDER_TRANSITION_APPLY
+            assert plan.order is not None and plan.event is not None
+            cur.execute(
+                "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
+                "WHERE id=?",
+                (
+                    OrderStatus.CANCELED.value,
+                    _dt(plan.order.canceled_at),
+                    _dt(plan.order.updated_at),
+                    plan.order.id,
+                ),
+            )
+            self._insert_event(
+                cur, plan.event.event_type, **plan.event.as_kwargs()
+            )
+            exec_event = execution_event_for_routine_transition(
+                order, plan.order.status, plan.order.filled_quantity
+            )
+            if exec_event is not None:
+                self._insert_execution_event(cur, exec_event)
 
     def _dispatch_order_for_sell_intent_locked(
         self,
@@ -3942,15 +4005,24 @@ class SqliteStateStore(StateStore):
                         "SELECT * FROM execution_envelopes WHERE status = ?",
                         (EnvelopeStatus.ACTIVE.value,),
                     ).fetchall()
+                    frozen: list[str] = []
                     for row in rows:
+                        env = self._envelope(row)
                         plan = plan_envelope_transition(
-                            self._envelope(row),
+                            env,
                             EnvelopeStatus.FROZEN,
                             actor=actor,
                             reason="kill_switch",
                         )
                         assert plan.outcome == ENVELOPE_TRANSITION_APPLY
                         self._apply_envelope_transition_locked(cur, plan)
+                        frozen.append(env.id)
+                    # WO-0024: the kill blocks new order intent (INV-060) — a
+                    # staged CREATED order IS pending order intent, so it dies
+                    # in the same transaction as the freeze.
+                    self._cancel_staged_envelope_orders_locked(
+                        cur, frozen, actor=actor
+                    )
             return session
 
     async def set_buys_paused(
