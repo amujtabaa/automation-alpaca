@@ -195,12 +195,16 @@ async def test_halted_blocks_staging_with_zero_artifacts(any_store):
     await any_store.set_kill_switch(True, actor="operator-a")
     # The kill hook already froze the envelope; staging must refuse on the
     # control check (the envelope is no longer ACTIVE either — both gates
-    # yield a refusal, never a venue call, never an artifact).
-    with pytest.raises((OrderIntentBlockedError, Exception)) as exc_info:
+    # yield a refusal, never a venue call, never an artifact). ONLY the two
+    # named refusal types count: anything else (KeyError, RuntimeError…) is a
+    # crash-shaped bug, not a refusal (WO-0028/TC-04 — this was
+    # `(OrderIntentBlockedError, Exception)`, which caught anything).
+    from app.store.core import EnvelopeTransitionError
+
+    with pytest.raises((OrderIntentBlockedError, EnvelopeTransitionError)):
         await any_store.stage_envelope_action(
             env.id, planned(), snapshot_fingerprint=FP
         )
-    assert exc_info.type is not AssertionError
     assert (
         await envelope_events(any_store, env.id, ExecutionEventType.ENVELOPE_ACTION)
         == []
@@ -253,6 +257,12 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
     first = await execute_envelope_action(
         any_store, adapter, env.id, planned(), snapshot_fingerprint=FP
     )
+    # Capture the working order's venue id BEFORE the reprice: the replace
+    # MUST target exactly this order at the venue. (WO-0028/TC-01: this
+    # assertion was `... or True` — a tautology; a replace aimed at the wrong
+    # venue order survived the whole suite. Never suppress this again.)
+    expected_target = (await any_store.get_order(first.order_id)).broker_order_id
+    assert expected_target  # first submit produced a real venue id
     second = await execute_envelope_action(
         any_store,
         adapter,
@@ -265,10 +275,7 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
     # Venue: exactly one replace, aimed at the first order's broker id.
     assert len(adapter.replaced) == 1
     old_broker_id, client_id, limit, qty = adapter.replaced[0]
-    assert (
-        old_broker_id == (await any_store.get_order(first.order_id)).broker_order_id
-        or True
-    )
+    assert old_broker_id == expected_target
     new_order = await any_store.get_order(second.order_id)
     assert new_order.status is OrderStatus.SUBMITTED
     assert new_order.replaces_order_id == first.order_id
@@ -432,6 +439,107 @@ async def test_sqlite_staging_is_all_or_nothing(tmp_path, monkeypatch):
     assert (await store.get_envelope(env.id)).status is S.ACTIVE
     store._conn.close()
     store._conn = None
+
+
+# --- memory: same all-or-nothing guarantees (WO-0028 / TC-03) ---------------------- #
+# The sqlite test above had no memory twin, which concealed a real defect:
+# memory _atomic() did not snapshot _envelopes, so a crash between the envelope
+# mutation and its event append left state and log disagreeing (H10 broken).
+# FINDING-W3-memory-atomic-envelope-rollback.md. Each unit below injects a crash
+# into the execution-event append and asserts FULL rollback.
+
+
+def _explode_on(monkeypatch, event_type):
+    from app.store.memory import InMemoryStateStore
+
+    original = InMemoryStateStore._append_execution_event_unlocked
+
+    def explode(self, event):
+        if event.event_type is event_type:
+            raise RuntimeError(f"injected crash on {event_type}")
+        return original(self, event)
+
+    monkeypatch.setattr(InMemoryStateStore, "_append_execution_event_unlocked", explode)
+    return original
+
+
+async def test_memory_envelope_transition_is_all_or_nothing(monkeypatch):
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    await store.initialize()
+    si = await store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    env = await store.create_envelope(make_draft(si.id))
+    _explode_on(monkeypatch, ExecutionEventType.ENVELOPE_APPROVED)
+    with pytest.raises(RuntimeError):
+        await store.transition_envelope(env.id, S.APPROVED)
+
+    # Envelope state rolled back WITH the log — replaying events must
+    # reconstruct exactly what the store says (the log is the truth).
+    assert (await store.get_envelope(env.id)).status is S.PENDING
+    kinds = [e.event_type for e in await envelope_events(store, env.id)]
+    assert kinds == [ExecutionEventType.ENVELOPE_CREATED]
+
+
+async def test_memory_staging_is_all_or_nothing(monkeypatch):
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    env = await active_envelope(store)
+    _explode_on(monkeypatch, ExecutionEventType.ENVELOPE_ACTION)
+    with pytest.raises(RuntimeError):
+        await store.stage_envelope_action(env.id, planned(), snapshot_fingerprint=FP)
+
+    orders = await store.list_orders()
+    assert all(o.sell_intent_id != env.sell_intent_id for o in orders)
+    assert (
+        await envelope_events(store, env.id, ExecutionEventType.ENVELOPE_ACTION) == []
+    )
+    assert (await store.get_envelope(env.id)).status is S.ACTIVE
+
+
+async def test_memory_envelope_fill_is_all_or_nothing_and_dedupe_unpoisoned(
+    monkeypatch,
+):
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    env = await active_envelope(store)
+    original = _explode_on(monkeypatch, ExecutionEventType.FILL)
+    with pytest.raises(RuntimeError):
+        await store.record_envelope_fill(env.id, quantity=30, dedupe_key="fill:o1:1")
+
+    after_crash = await store.get_envelope(env.id)
+    assert after_crash.remaining_quantity == 100  # decrement rolled back
+    assert await envelope_events(store, env.id, ExecutionEventType.FILL) == []
+
+    # The dedupe index rolled back too: the SAME key applies cleanly once.
+    monkeypatch.setattr(
+        InMemoryStateStore, "_append_execution_event_unlocked", original
+    )
+    retried = await store.record_envelope_fill(
+        env.id, quantity=30, dedupe_key="fill:o1:1"
+    )
+    assert retried.remaining_quantity == 70
+    assert len(await envelope_events(store, env.id, ExecutionEventType.FILL)) == 1
+
+
+async def test_memory_supersede_is_all_or_nothing(monkeypatch):
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    env = await active_envelope(store)
+    successor = make_draft(env.sell_intent_id)
+    _explode_on(monkeypatch, ExecutionEventType.ENVELOPE_SUPERSEDED)
+    with pytest.raises(RuntimeError):
+        await store.supersede_envelope(env.id, successor, actor="operator-a")
+
+    assert (await store.get_envelope(env.id)).status is S.ACTIVE
+    assert await store.get_envelope(successor.id) is None  # successor rolled back
+    kinds = {e.event_type for e in await envelope_events(store, env.id)}
+    assert ExecutionEventType.ENVELOPE_SUPERSEDED not in kinds
 
 
 # --- fingerprint helper -------------------------------------------------------------- #
