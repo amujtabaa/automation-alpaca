@@ -115,7 +115,12 @@ def action_event(
     at: datetime,
     quantity: int = 50,
     tranche: bool = False,
+    order_id: str = "order-working-1",
 ) -> ExecutionEvent:
+    # order_id: every REAL envelope_action carries one (the staged order);
+    # WO-0025's live working-order predicate keys on it, and with no later
+    # terminal event for the id the order reads as LIVE — the same "resting
+    # working order" these fixtures always meant to describe.
     return ExecutionEvent(
         event_type=ExecutionEventType.ENVELOPE_ACTION,
         source=EventSource.ENGINE,
@@ -123,6 +128,7 @@ def action_event(
         ts_event=at,
         symbol=envelope.symbol,
         envelope_id=envelope.id,
+        order_id=order_id,
         payload={
             "action": action,
             "limit_price": limit_price,

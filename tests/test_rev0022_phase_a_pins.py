@@ -30,8 +30,6 @@ from app.models import (
     EnvelopeExpiryDisposition,
     EnvelopeStaleDataDisposition,
     EnvelopeStatus,
-    EventAuthority,
-    EventSource,
     ExecutionEnvelope,
     ExecutionEventType,
     OrderSide,
@@ -308,9 +306,7 @@ async def test_PIN_F4_second_leg_after_full_fill_never_false_divergence(any_stor
     # Leg 2, with the kind selected THE WAY decide() selects it (history-based;
     # policy.py flips to REPRICE once any submit has EVER happened).
     events = await any_store.get_execution_events()
-    has_working = (
-        _live_working_order_id(_own_actions(env2, events), events) is not None
-    )
+    has_working = _live_working_order_id(_own_actions(env2, events), events) is not None
     assert not has_working  # the filled first order is DEAD, not "working"
     kind = ActionKind.REPRICE if has_working else ActionKind.SUBMIT
     r2 = await execute_envelope_action(

@@ -89,6 +89,18 @@ that means the plan-time and write-time validators disagree — a software defec
 breach. Response: freeze the envelope **and** emit a distinct `ENVELOPE_PLAN_DIVERGENCE`
 ExecutionEvent (P1 tripwire; surfaced to the operator, registered in `docs/INVARIANTS.md`).
 
+**Amended 2026-07-12 (WO-0025 / REV-0022 F4):** the "working order" predicate both D-3 halves
+evaluate is DEFINED as: *the newest submit/reprice `envelope_action`'s order, live iff the event
+log shows no FILLED / CANCELED / REJECTED terminal for it*. As originally implemented the two
+halves used different predicates — plan time keyed on "any submit event EVER" (monotone), write
+time on the live order row — so every multi-order envelope's second leg (every tranche exit,
+every stop continuation after a full fill) was planned as a REPRICE of a dead order, which the
+write-time structural check rightly refused: a deterministic false `ENVELOPE_PLAN_DIVERGENCE` +
+freeze on ROUTINE flow, devaluing the very tripwire this section defines. Both halves now derive
+liveness from order state (plan time via the event log — keeping `decide()`'s frozen signature;
+write time via the order row). A REV-0022 Phase A finding
+(FINDING-W3-multileg-false-divergence-livelock.md, found independently by two critics).
+
 ### 6. Eventing and provenance
 
 New ExecutionEvents, provenance per ADR-008: `envelope_created` / `envelope_approved`
@@ -107,6 +119,15 @@ commanding actor stamped in the payload; envelope FILL facts remain broker-autho
 `ExecutionEvent` also gains an additive nullable `envelope_id` correlation column (no
 `EXECUTION_EVENT_SCHEMA_VERSION` bump — the version marks incompatible shape changes; old
 events replay unchanged with `envelope_id = NULL`).
+
+**Amended 2026-07-12 (WO-0025 / REV-0022 F5):** envelope fill provenance is source-agnostic —
+a reconciliation-INFERRED fill on an envelope-minted order routes through
+`record_envelope_fill` FIRST with the same canonical dedupe key
+(`fill:{order_id}:{source_fill_id}`) as the stream bridge, then `append_fill`. Before this, the
+inferred path bypassed the envelope entirely: position folded but `remaining_quantity` did not,
+silently re-arming the human-approved qty ceiling (200 shares reached the venue under a
+100-share ceiling in the REV-0022 repro; masked in the assembled system only by the F4 freeze —
+which is why F4 and F5 were remediated in one work order).
 
 ### 7. Disposition of the LASE v1 code
 

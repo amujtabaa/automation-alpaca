@@ -571,6 +571,12 @@ no venue call (ADR-009 §5, D-3).
 *Why:* if plan-time and write-time validation can disagree silently, the
 "bounds checked twice" guarantee is theater — the divergence event is the
 tripwire that turns a validator drift into an operator-visible incident.
+*Amended (WO-0025 / REV-0022 F4):* the false-positive class is gone — plan
+time and write time now evaluate the SAME live working-order predicate
+(ADR-009 §5 amendment), so a healthy second leg (filled tranche, stop
+continuation, disposition-cancel re-entry) never trips the tripwire; a
+divergence event again MEANS a defect (or a benign plan/write race on a
+freshly-changed fact — the §5 classification refinement itself is WO-0029).
 *Pinned by:* `tests/test_wo0019_engine_seam.py`
 (`test_write_time_rejection_freezes_with_divergence_event`,
 `test_divergence_makes_zero_venue_calls`,

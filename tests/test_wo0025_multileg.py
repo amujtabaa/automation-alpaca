@@ -191,23 +191,29 @@ async def test_second_leg_after_terminal_first_order_submits_fresh(any_store):
         return [
             e
             for e in events
-            if e.envelope_id == env.id
-            or (e.order_id is not None and e.order_id in own)
+            if e.envelope_id == env.id or (e.order_id is not None and e.order_id in own)
         ]
 
     # Leg 1: the real policy sees the breakdown and plans the stop exit.
     d1 = decide(env, tape, now=NOW, history=await history())
     assert isinstance(d1, PlannedAction)
     r1 = await execute_envelope_action(
-        any_store, adapter, env.id, d1,
-        snapshot_fingerprint="fp-1", now=NOW,
+        any_store,
+        adapter,
+        env.id,
+        d1,
+        snapshot_fingerprint="fp-1",
+        now=NOW,
     )
     assert r1.outcome == ENVELOPE_EXEC_SUBMITTED
 
     # Venue: 40 shares fill, remainder cancelled (terminal first order).
     await any_store.record_envelope_fill(
-        env.id, quantity=40, dedupe_key=f"fill:{r1.order_id}:x1",
-        order_id=r1.order_id, price=9.60,
+        env.id,
+        quantity=40,
+        dedupe_key=f"fill:{r1.order_id}:x1",
+        order_id=r1.order_id,
+        price=9.60,
     )
     await any_store.append_fill(
         r1.order_id, "AAPL", OrderSide.SELL, 40, 9.60, source_fill_id="x1"
@@ -227,8 +233,12 @@ async def test_second_leg_after_terminal_first_order_submits_fresh(any_store):
 
     assert d2.kind is ActionKind.SUBMIT  # the dead order is not repriced
     r2 = await execute_envelope_action(
-        any_store, adapter, env.id, d2,
-        snapshot_fingerprint="fp-2", now=now2,
+        any_store,
+        adapter,
+        env.id,
+        d2,
+        snapshot_fingerprint="fp-2",
+        now=now2,
     )
     assert r2.outcome == ENVELOPE_EXEC_SUBMITTED
 
@@ -268,8 +278,12 @@ async def test_inferred_fill_bridge_decrements_envelope(any_store):
     )
     assert isinstance(d1, PlannedAction)
     r1 = await execute_envelope_action(
-        any_store, adapter, env.id, d1,
-        snapshot_fingerprint="fp-1", now=NOW,
+        any_store,
+        adapter,
+        env.id,
+        d1,
+        snapshot_fingerprint="fp-1",
+        now=NOW,
     )
     assert r1.outcome == ENVELOPE_EXEC_SUBMITTED
     staged = await any_store.get_order(r1.order_id)
