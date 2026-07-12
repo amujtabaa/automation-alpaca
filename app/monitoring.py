@@ -667,7 +667,21 @@ async def _run_one_envelope(
         return  # one venue action per envelope per tick
 
     events = await store.get_execution_events()
-    history = [e for e in events if e.envelope_id == envelope.id]
+    # WO-0025: the policy's working-order predicate needs the envelope's
+    # ORDERS' lifecycle events too (FILLED/CANCELED/REJECTED terminals carry
+    # order_id but no envelope_id) — include them alongside the envelope's
+    # own events.
+    own_order_ids = {
+        e.order_id
+        for e in events
+        if e.envelope_id == envelope.id and e.order_id is not None
+    }
+    history = [
+        e
+        for e in events
+        if e.envelope_id == envelope.id
+        or (e.order_id is not None and e.order_id in own_order_ids)
+    ]
     decision = decide(envelope, tapes.tape(symbol), now=now, history=history)
 
     if isinstance(decision, PlannedAction):
@@ -2190,6 +2204,29 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
     the store rejects is logged, never crashes the tick."""
 
     for f in plan.inferred_fills:
+        # WO-0025 (REV-0022 F5): the RECORD-FIRST bridge applies to inferred
+        # fills exactly as to streamed ones — an envelope-minted order's fill
+        # must decrement the envelope's remaining, with the SAME canonical
+        # dedupe key, or the human-approved qty ceiling silently re-arms
+        # (200 shares reached the venue under a 100-share ceiling in the
+        # REV-0022 repro). Inferred fills always carry a venue
+        # source_fill_id (the engine never infers without one).
+        try:
+            envelope_id = await _envelope_id_for_order(store, f.order_id)
+            if envelope_id is not None and f.source_fill_id is not None:
+                await cast(_EnvelopeStoreOps, store).record_envelope_fill(
+                    envelope_id,
+                    quantity=f.quantity,
+                    dedupe_key=f"fill:{f.order_id}:{f.source_fill_id}",
+                    price=f.price,
+                    order_id=f.order_id,
+                )
+        except Exception:  # noqa: BLE001 — never block fill ingest
+            _log.exception(
+                "envelope bridge for inferred fill on order %s failed; "
+                "fill ingest continues",
+                f.order_id,
+            )
         try:
             await store.append_fill(
                 f.order_id,

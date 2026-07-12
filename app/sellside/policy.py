@@ -120,6 +120,44 @@ def _last_action_at(actions: Sequence[ExecutionEvent]) -> Optional[datetime]:
     return _event_time(working[-1]) if working else None
 
 
+# Order-terminal event types: the working order is DEAD once the log shows one
+# of these for it (mirrors the write-time structural check's not-live set —
+# FILLED / CANCELED / REJECTED).
+_TERMINAL_ORDER_EVENTS = frozenset(
+    {
+        ExecutionEventType.FILLED,
+        ExecutionEventType.CANCELED,
+        ExecutionEventType.REJECTED,
+    }
+)
+
+
+def _live_working_order_id(
+    actions: Sequence[ExecutionEvent], history: Sequence[ExecutionEvent]
+) -> Optional[str]:
+    """WO-0025 (REV-0022 F4): "working order" means LIVE AT THE VENUE NOW —
+    the newest submit/reprice action's order, unless the log already shows it
+    terminal. The old predicate ("any submit event EVER", monotone in the
+    event history) forced every envelope's second leg into a REPRICE of a
+    dead order, which the write-time structural check rightly refused —
+    freezing healthy tranche exits with a false ENVELOPE_PLAN_DIVERGENCE.
+    Derived purely from the event log (H10: the log is the truth) so the
+    frozen decide() contract keeps its signature."""
+
+    working = [
+        e
+        for e in actions
+        if e.payload.get("action") in _WORKING_ACTIONS and e.order_id is not None
+    ]
+    if not working:
+        return None
+    order_id = working[-1].order_id
+    for e in history:
+        if e.order_id == order_id and e.event_type in _TERMINAL_ORDER_EVENTS:
+            return None
+    return order_id
+
+
 def validate_action(
     envelope: ExecutionEnvelope,
     action: PlannedAction,
@@ -240,9 +278,7 @@ def decide(
 
     # --- history accounting (never internal state) ------------------------- #
     actions = _own_actions(envelope, history)
-    has_working_order = any(
-        e.payload.get("action") in _WORKING_ACTIONS for e in actions
-    )
+    has_working_order = _live_working_order_id(actions, history) is not None
     tranche_taken = any(e.payload.get("tranche") for e in actions)
 
     # --- participation sizing off the raw tape ----------------------------- #

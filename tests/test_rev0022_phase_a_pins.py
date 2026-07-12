@@ -265,21 +265,15 @@ async def test_PIN_F3_redrive_after_ttl_makes_no_venue_call(any_store):
 
 
 # ================================================================== #
-# F4 — multi-leg false-divergence livelock (P1, SPEC-04/CC-02) → WO-0025
+# F4 — multi-leg false-divergence livelock — FLIPPED GREEN by WO-0025
 # ================================================================== #
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-multileg-false-divergence-livelock (REV-0022 F4): "
-    "plan-time works off monotone event history, write-time off live orders; "
-    "the second leg of EVERY multi-order envelope freezes with a false "
-    "ENVELOPE_PLAN_DIVERGENCE. WO-0025. (This pin computes the second-leg "
-    "action kind exactly the way policy.decide does today; WO-0025 replaces "
-    "it with decide→stage integration tests.)",
-)
 async def test_PIN_F4_second_leg_after_full_fill_never_false_divergence(any_store):
-    from app.sellside.policy import _own_actions
+    # FLIPPED GREEN by WO-0025: the working-order predicate is live-derived
+    # (dead orders are not repriced). Full decide→stage integration lives in
+    # tests/test_wo0025_multileg.py; this pin keeps the original repro shape.
+    from app.sellside.policy import _live_working_order_id, _own_actions
 
     env = await active_envelope(any_store, cooldown_floor_ms=1)
     adapter = MockBrokerAdapter()
@@ -314,10 +308,10 @@ async def test_PIN_F4_second_leg_after_full_fill_never_false_divergence(any_stor
     # Leg 2, with the kind selected THE WAY decide() selects it (history-based;
     # policy.py flips to REPRICE once any submit has EVER happened).
     events = await any_store.get_execution_events()
-    has_working = any(
-        e.payload.get("action") in ("submit", "reprice")
-        for e in _own_actions(env2, events)
+    has_working = (
+        _live_working_order_id(_own_actions(env2, events), events) is not None
     )
+    assert not has_working  # the filled first order is DEAD, not "working"
     kind = ActionKind.REPRICE if has_working else ActionKind.SUBMIT
     r2 = await execute_envelope_action(
         any_store,
@@ -340,16 +334,10 @@ async def test_PIN_F4_second_leg_after_full_fill_never_false_divergence(any_stor
 
 
 # ================================================================== #
-# F5 — synthetic-fill envelope bypass (P1, CC-01) → WO-0025
+# F5 — synthetic-fill envelope bypass — FLIPPED GREEN by WO-0025
 # ================================================================== #
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-synthetic-fill-envelope-bypass (REV-0022 F5): "
-    "reconciliation-inferred fills bypass record_envelope_fill; the ceiling "
-    "silently re-arms. WO-0025 (paired with F4).",
-)
 async def test_PIN_F5_inferred_fill_decrements_envelope_remaining(any_store):
     env = await active_envelope(any_store)
     await _seed_position(any_store, 100)
@@ -364,19 +352,27 @@ async def test_PIN_F5_inferred_fill_decrements_envelope_remaining(any_store):
     )
     assert r1.outcome == ENVELOPE_EXEC_SUBMITTED
 
-    # The venue filled it but the stream missed it; reconcile infers the fill
-    # — EXACTLY the app.monitoring._apply_inferred_fills call shape (which
-    # today has no envelope bridge).
-    await any_store.append_fill(
-        r1.order_id,
-        "AAPL",
-        OrderSide.SELL,
-        100,
-        9.90,
-        source_fill_id="venue-exec-1",
-        source=EventSource.RECONCILIATION,
-        authority=EventAuthority.SYNTHETIC,
+    # FLIPPED GREEN by WO-0025: the venue filled it but the stream missed
+    # it; reconcile's REAL bridge (monitoring._apply_inferred_fills) now
+    # routes envelope-minted orders through record_envelope_fill first.
+    from types import SimpleNamespace
+
+    import app.monitoring as monitoring
+    from app.reconciliation import InferredFill
+
+    plan = SimpleNamespace(
+        inferred_fills=[
+            InferredFill(
+                order_id=r1.order_id,
+                symbol="AAPL",
+                side=OrderSide.SELL,
+                quantity=100,
+                price=9.90,
+                source_fill_id="venue-exec-1",
+            )
+        ]
     )
+    await monitoring._apply_inferred_fills(any_store, plan)
     await any_store.transition_order(
         r1.order_id, OrderStatus.FILLED, filled_quantity=100
     )
