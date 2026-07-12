@@ -82,8 +82,12 @@ deferred log (out-of-scope observations):
     constraints.txt. Fresh containers must redo. Python 3.11 here (authoritative env is 3.12).
   - pytest final summary line suppressed in this container; exit code + [100%] used as evidence.
 open decisions:
-  - WO-0024 approve/amend/reject (human-gated surface: engine cancel-path truth).
-  - T4 Codex run timing (human executes).
+  - T4 Codex run timing (human executes; scaffold ready).
+  - WO-0029 ADR text amendments — yes/no on prepared proposal texts (human gate).
+  - WO-0030 interface-lift approval.
+  - intent→ORDERED linkage (planning seat, W4 — decided-deferred in WO-0024 close-out).
+  - record_envelope_fill price=None poisons position projection — make price required
+    (planning seat; surfaced by WO-0026).
 
 ## W3 sequencing status
 0016 ✅ → 0018 ✅ → 0017 ✅ → 0019a ✅ → 0019 ✅ → 0020 ✅ → 0021 ✅ → 0022 Phase A ✅ →
