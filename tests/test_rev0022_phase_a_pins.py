@@ -381,19 +381,16 @@ async def test_PIN_F5_inferred_fill_decrements_envelope_remaining(any_store):
 
 
 # ================================================================== #
-# F6 — supersession exposure (P1-latent, SPEC-02/INT-002) → WO-0027
+# F6 — supersession exposure — FLIPPED GREEN by WO-0026 (venue leg) + WO-0027 (conservation)
 # ================================================================== #
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-supersession-exposure (REV-0022 F6): successor resets "
-    "remaining to its full ceiling; a racing fill's decrement is erased. "
-    "WO-0027.",
-)
 async def test_PIN_F6_supersede_conserves_remaining_fill_first(any_store):
+    # FLIPPED GREEN by WO-0027: supersession CONSERVES the mandate. A fill
+    # racing the amendment shrinks remaining first (store lock serializes),
+    # and the stale 100-ceiling successor is REFUSED — the amendment re-drafts
+    # against the truth instead of silently widening the live mandate.
     env = await active_envelope(any_store)
-    await _seed_position(any_store)
 
     async def fill():
         return await any_store.record_envelope_fill(
@@ -404,17 +401,27 @@ async def test_PIN_F6_supersede_conserves_remaining_fill_first(any_store):
 
     async def supersede():
         await asyncio.sleep(0)  # fill wins the lock
-        return await any_store.supersede_envelope(
-            env.id, successor, actor="operator-a", reason="amendment"
-        )
+        try:
+            return await any_store.supersede_envelope(
+                env.id, successor, actor="operator-a", reason="amendment"
+            )
+        except EnvelopeTransitionError as e:
+            return e
 
-    filled, new_env = await asyncio.gather(fill(), supersede())
+    filled, outcome = await asyncio.gather(fill(), supersede())
     assert filled.remaining_quantity == 60
-    stored = await any_store.get_envelope(new_env.id)
-    assert (stored.remaining_quantity or 0) <= 60, (
-        f"successor ACTIVE with remaining={stored.remaining_quantity} while "
-        f"only 60 shares remain unsold (fill decrement erased by supersession)"
+    assert isinstance(outcome, EnvelopeTransitionError)
+    assert "conserves" in str(outcome)
+    assert (await any_store.get_envelope(env.id)).status is S.ACTIVE  # untouched
+
+    # The re-drafted amendment (against current truth) goes through, conserved.
+    redrafted = make_draft(env.sell_intent_id, qty_ceiling=60)
+    new_env = await any_store.supersede_envelope(
+        env.id, redrafted, actor="operator-a", reason="amendment-redraft"
     )
+    stored = await any_store.get_envelope(new_env.id)
+    assert stored.status is S.ACTIVE and stored.remaining_quantity == 60
+    assert (await any_store.get_envelope(env.id)).status is S.SUPERSEDED
 
 
 async def test_PIN_F6_supersede_first_late_fill_venue_followthrough(any_store):

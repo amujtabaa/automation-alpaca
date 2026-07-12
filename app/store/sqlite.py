@@ -1978,8 +1978,13 @@ class SqliteStateStore(StateStore):
                 normalized = successor.model_copy(
                     update={"symbol": normalize_symbol(successor.symbol)}
                 )
+                _, working = self._envelope_action_context_locked(cur, old)
                 plan = plan_supersede_envelope(
-                    old, normalized, actor=actor, reason=reason
+                    old,
+                    normalized,
+                    actor=actor,
+                    reason=reason,
+                    working_order=working,
                 )
                 if plan.outcome == ENVELOPE_TRANSITION_REJECT:
                     assert plan.error is not None
@@ -2005,6 +2010,13 @@ class SqliteStateStore(StateStore):
                     cur,
                     plan.audit_event.event_type,
                     **plan.audit_event.as_kwargs(),
+                )
+                # WO-0027: the superseded mandate's staged CREATED orders die
+                # with it, in the SAME transaction (live venue orders were
+                # refused by the planner — nothing of the old mandate
+                # survives).
+                self._cancel_staged_envelope_orders_locked(
+                    cur, [plan.old_envelope.id], actor=actor
                 )
                 return plan.new_envelope
 

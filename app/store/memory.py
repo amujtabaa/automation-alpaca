@@ -1075,7 +1075,10 @@ class InMemoryStateStore(StateStore):
             normalized = successor.model_copy(
                 update={"symbol": normalize_symbol(successor.symbol)}
             )
-            plan = plan_supersede_envelope(old, normalized, actor=actor, reason=reason)
+            _, working = self._envelope_action_context_unlocked(old)
+            plan = plan_supersede_envelope(
+                old, normalized, actor=actor, reason=reason, working_order=working
+            )
             if plan.outcome == ENVELOPE_TRANSITION_REJECT:
                 assert plan.error is not None
                 raise plan.error
@@ -1103,6 +1106,12 @@ class InMemoryStateStore(StateStore):
                 assert plan.audit_event is not None
                 self._append_event_unlocked(
                     plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+                )
+                # WO-0027: the superseded mandate's staged CREATED orders die
+                # with it, in the SAME atomic unit (live venue orders were
+                # refused above — nothing of the old mandate survives).
+                self._cancel_staged_envelope_orders_unlocked(
+                    [plan.old_envelope.id], actor=actor
                 )
             return plan.new_envelope.model_copy(deep=True)
 

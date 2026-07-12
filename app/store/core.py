@@ -2590,6 +2590,7 @@ def plan_supersede_envelope(
     actor: str = COMMAND_ACTOR_SYSTEM,
     reason: Optional[str] = None,
     now: Optional[datetime] = None,
+    working_order: Optional[Order] = None,
 ) -> EnvelopeSupersedePlan:
     """Plan ADR-009 §3 amendment-by-supersession as ONE atomic unit.
 
@@ -2635,6 +2636,49 @@ def plan_supersede_envelope(
             error=InvalidOrderError(
                 "a successor envelope must keep the symbol "
                 f"({successor.symbol!r} != {old.symbol!r})"
+            ),
+        )
+    # WO-0027 (REV-0022 F6 / ADR-009 §3 amendment): supersession transfers
+    # the mandate, it never widens or duplicates it.
+    # (a) A LIVE working order at the venue blocks supersession outright —
+    #     the store cannot venue-cancel, and activating a successor next to a
+    #     resting predecessor order is exactly the double exposure INV-077
+    #     forbids in substance. The amendment flow cancels first (staged
+    #     CREATED orders are swept locally by the store in this same unit).
+    # CREATED is deliberately NOT venue-live: a staged, never-submitted order
+    # is local truth only — the stores sweep it in the same atomic unit as
+    # the supersession (WO-0024 machinery). Anything that may rest at the
+    # venue (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/CANCEL_PENDING/quarantine)
+    # blocks.
+    working_live = working_order is not None and working_order.status not in (
+        OrderStatus.CREATED,
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.REJECTED,
+    )
+    if working_live:
+        assert working_order is not None
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                f"envelope {old.id} has a live working order "
+                f"({working_order.id}, {working_order.status.value}) at the "
+                "venue; cancel it before superseding — a successor next to a "
+                "resting predecessor order is double exposure (INV-077)"
+            ),
+        )
+    # (b) Conservation: the successor's ceiling may not exceed what is LEFT
+    #     of the mandate the human approved (read under the caller's lock —
+    #     a fill racing the amendment shrinks remaining first and the
+    #     amendment re-drafts). Widening requires cancel + fresh approval.
+    old_remaining = old.remaining_quantity or 0
+    if successor.qty_ceiling > old_remaining:
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                f"successor ceiling {successor.qty_ceiling} exceeds the "
+                f"predecessor's remaining {old_remaining} — supersession "
+                "conserves the mandate, it never widens it (INV-077)"
             ),
         )
 
