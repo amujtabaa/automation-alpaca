@@ -2475,9 +2475,10 @@ def plan_envelope_fill(
     * ``FROZEN`` — a resting order can fill before/while frozen: decrement,
       record, NO status change (completion happens on resume — the store's
       resume path auto-completes at remaining==0; a freeze is never exited by
-      a fill). Overfill: floors at 0, flagged in payload, no BREACHED edge
-      exists from FROZEN — the order-level overfill quarantine (ADR-001)
-      remains the enforcement point.
+      a fill). Overfill while FROZEN chains ``BREACHED`` exactly like ACTIVE
+      (WO-0029A / ADR-009 §2-§3 amendment): a ceiling-violated mandate must
+      never reach COMPLETED via resume; the order-level quarantine (ADR-001)
+      still applies on top.
     * terminal — a late fill (e.g. cancel raced a fill): recorded + decremented
       + flagged ``late_fill``; terminal status never changes.
     * ``PENDING``/``APPROVED`` — structurally impossible (no child order can
@@ -2539,7 +2540,7 @@ def plan_envelope_fill(
     )
 
     transition: Optional[EnvelopeTransitionPlan] = None
-    if envelope.status is EnvelopeStatus.ACTIVE:
+    if envelope.status in (EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN):
         if overfill:
             transition = plan_envelope_transition(
                 updated,
@@ -2552,7 +2553,7 @@ def plan_envelope_fill(
                 ),
                 now=ts,
             )
-        elif new_remaining == 0:
+        elif new_remaining == 0 and envelope.status is EnvelopeStatus.ACTIVE:
             transition = plan_envelope_transition(
                 updated,
                 EnvelopeStatus.COMPLETED,
@@ -2756,6 +2757,19 @@ class EnvelopeActionPausedError(ValueError):
 
 STAGE_DIVERGENCE = "divergence"  # plan/write disagreement: frozen + event, no order
 STAGE_STAGED = "staged"  # order minted + accounting committed; drive the venue leg
+STAGE_REFUSED_STALE = "refused_stale"  # WO-0029A (ADR-009 §5 amendment): the
+# plan's FACTS went stale between decide and write (a fill shrank remaining,
+# order liveness flipped) — refused + evented, NO freeze; the policy replans
+# next tick. Only same-inputs validator disagreement is a DEFECT.
+
+# Rails whose write-time verdict can differ from plan time because the WORLD
+# changed (state-dependent), vs rails deterministic in (envelope constants,
+# action, the shared injected now, history) — where disagreement means the
+# validators themselves disagree (DEFECT). reduce_only is deliberately in the
+# defect/freeze set: it is not a plan/write comparison at all (the policy
+# cannot see position) — a mandate the book cannot cover needs a human
+# (INV-084).
+_STALE_REFUSAL_RAILS = frozenset({"qty_ceiling", "structural"})
 
 
 @dataclass(frozen=True)
@@ -2768,6 +2782,10 @@ class EnvelopeActionStagePlan:
     ``STAGE_DIVERGENCE``: apply ``freeze`` then append ``divergence_event`` +
     ``audit_event`` in the same unit; NOTHING else is written and the caller
     must make ZERO venue calls (ADR-009 §5, D-3).
+    ``STAGE_REFUSED_STALE`` (WO-0029A): append ``action_event`` (an
+    ENVELOPE_ACTION with payload action="refused_stale" — never counted by
+    budget/cooldown accounting) + ``audit_event``; no order, no freeze, zero
+    venue calls; the policy replans from fresh facts next tick.
     """
 
     outcome: str
@@ -2823,6 +2841,48 @@ def _divergence(
         STAGE_DIVERGENCE,
         freeze=freeze,
         divergence_event=divergence_event,
+        audit_event=audit_event,
+    )
+
+
+def _refused_stale(
+    envelope: ExecutionEnvelope,
+    *,
+    rail: str,
+    detail: str,
+    action_payload: dict[str, Any],
+    snapshot_fingerprint: str,
+) -> EnvelopeActionStagePlan:
+    """WO-0029A: a benign stale-plan refusal — the world changed between
+    decide and write. Evented distinctly, envelope untouched."""
+
+    refusal_event = _envelope_event(
+        envelope,
+        ExecutionEventType.ENVELOPE_ACTION,
+        dedupe_key=None,
+        payload={
+            **action_payload,
+            "action": "refused_stale",
+            "refused_action": action_payload.get("action"),
+            "rail": rail,
+            "detail": detail,
+            "snapshot_fingerprint": snapshot_fingerprint,
+        },
+    )
+    audit_event = EventSpec(
+        "envelope_action_refused_stale",
+        message=(
+            f"stale plan refused on {envelope.symbol} ({rail}) — facts "
+            "changed between plan and write; policy replans next tick"
+        ),
+        symbol=envelope.symbol,
+        payload={"rail": rail, "detail": detail, "envelope_id": envelope.id},
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+    )
+    return EnvelopeActionStagePlan(
+        STAGE_REFUSED_STALE,
+        action_event=refusal_event,
         audit_event=audit_event,
     )
 
@@ -2889,26 +2949,34 @@ def plan_stage_envelope_action(
             or working_order is None
             or (working_order.broker_order_id is None)
         ):
-            return _divergence(
+            # Order liveness is state that legitimately changes between plan
+            # and write (a fill landed) — benign stale refusal (WO-0029A).
+            return _refused_stale(
                 envelope,
                 rail="structural",
                 detail="REPRICE planned but no live working order with a venue id",
                 action_payload=action_payload,
                 snapshot_fingerprint=snapshot_fingerprint,
-                now=ts,
             )
     elif working_live:
-        return _divergence(
+        return _refused_stale(
             envelope,
             rail="structural",
             detail="SUBMIT planned over a live working order (max outstanding=1)",
             action_payload=action_payload,
             snapshot_fingerprint=snapshot_fingerprint,
-            now=ts,
         )
 
     violation = _sellside_validate_action(envelope, action, history=history, now=ts)
     if violation is not None:
+        if violation.rail in _STALE_REFUSAL_RAILS:
+            return _refused_stale(
+                envelope,
+                rail=violation.rail,
+                detail=violation.detail,
+                action_payload=action_payload,
+                snapshot_fingerprint=snapshot_fingerprint,
+            )
         return _divergence(
             envelope,
             rail=violation.rail,

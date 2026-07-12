@@ -583,6 +583,11 @@ time and write time now evaluate the SAME live working-order predicate
 continuation, disposition-cancel re-entry) never trips the tripwire; a
 divergence event again MEANS a defect (or a benign plan/write race on a
 freshly-changed fact — the §5 classification refinement itself is WO-0029).
+*Amended again (WO-0029A, accepted):* write-time rejections are now
+CLASSIFIED — state-dependent rails (qty_ceiling, structural) refuse as
+benign ``refused_stale`` events without freezing; only deterministic-rail
+disagreement (floor/ttl/phase/cooldown/budget) and reduce_only fire the
+divergence tripwire. A divergence event now ALWAYS merits investigation.
 *Pinned by:* `tests/test_wo0019_engine_seam.py`
 (`test_write_time_rejection_freezes_with_divergence_event`,
 `test_divergence_makes_zero_venue_calls`,
@@ -628,6 +633,21 @@ surfacing only post-venue as an overfill quarantine, exactly what H1 forbids.
 P0 finding pin) + `tests/test_wo0019_engine_seam.py`
 (`test_position_shrink_between_plan_and_write_hits_reduce_only`,
 `test_redrive_recheck_catches_position_shrink`).
+
+**INV-085 — A ceiling-violated mandate never terminates in the success
+state.** A broker-authoritative overfill of ``qty_ceiling`` chains the
+envelope to ``BREACHED`` in every state that can receive a fill — including
+FROZEN (edge added by the accepted WO-0029A amendment). Remaining floors at
+0 (never negative), the overfill facts stay in the FILL event payload, and a
+resume of a breached envelope is structurally refused; an EXACT fill-to-zero
+while FROZEN remains benign (resume auto-completes, INV-079 unchanged).
+*Why:* before this, an overfill while FROZEN was clamped + flagged and the
+envelope resumed into COMPLETED — the audit trail filed a violated mandate
+as a success (REV-0022 SPEC-05).
+*Pinned by:* `tests/test_rev0022_phase_a_pins.py`
+(`test_frozen_overfill_chains_breached_never_completed`,
+`test_frozen_exact_fill_still_completes_on_resume`) +
+`tests/test_wo0016_envelope_transitions.py` (ADR-mirror table).
 
 ---
 

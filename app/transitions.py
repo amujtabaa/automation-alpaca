@@ -78,6 +78,11 @@ ENVELOPE_TRANSITIONS: dict[EnvelopeStatus, set[EnvelopeStatus]] = {
     EnvelopeStatus.FROZEN: {
         EnvelopeStatus.ACTIVE,  # kill switch released — resume
         EnvelopeStatus.CANCELLED,
+        # WO-0029A (ADR-009 §2/§3 amendment, accepted 2026-07-12): a
+        # broker-authoritative overfill of the hard qty ceiling is a BREACH
+        # in every state that can receive a fill — a violated mandate must
+        # never terminate in the success state.
+        EnvelopeStatus.BREACHED,
     },
     EnvelopeStatus.COMPLETED: set(),
     EnvelopeStatus.EXPIRED: set(),

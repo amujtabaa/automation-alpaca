@@ -117,6 +117,7 @@ from app.store.core import (
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
     STAGE_DIVERGENCE,
+    STAGE_REFUSED_STALE,
     STAGE_STAGED,
     EnvelopeActionPausedError,
     EnvelopeActionStageResult,
@@ -2177,6 +2178,18 @@ class SqliteStateStore(StateStore):
                         **plan.audit_event.as_kwargs(),
                     )
                     return EnvelopeActionStageResult(STAGE_DIVERGENCE, envelope=frozen)
+                if plan.outcome == STAGE_REFUSED_STALE:
+                    # WO-0029A: benign stale-plan refusal — evented, envelope
+                    # untouched, no order, zero venue calls.
+                    assert plan.action_event is not None
+                    assert plan.audit_event is not None
+                    self._insert_execution_event(cur, plan.action_event)
+                    self._insert_event(
+                        cur,
+                        plan.audit_event.event_type,
+                        **plan.audit_event.as_kwargs(),
+                    )
+                    return EnvelopeActionStageResult(STAGE_REFUSED_STALE, envelope=env)
                 assert plan.order is not None and plan.action_event is not None
                 assert plan.audit_event is not None
                 self._insert_order(cur, plan.order)

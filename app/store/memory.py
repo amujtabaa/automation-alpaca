@@ -101,6 +101,7 @@ from app.store.core import (
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
     STAGE_DIVERGENCE,
+    STAGE_REFUSED_STALE,
     STAGE_STAGED,
     EnvelopeActionPausedError,
     EnvelopeActionStageResult,
@@ -1254,6 +1255,18 @@ class InMemoryStateStore(StateStore):
                     )
                     return EnvelopeActionStageResult(
                         STAGE_DIVERGENCE, envelope=frozen.model_copy(deep=True)
+                    )
+                if plan.outcome == STAGE_REFUSED_STALE:
+                    # WO-0029A: benign stale-plan refusal — evented, envelope
+                    # untouched, no order, zero venue calls.
+                    assert plan.action_event is not None
+                    assert plan.audit_event is not None
+                    self._append_execution_event_unlocked(plan.action_event)
+                    self._append_event_unlocked(
+                        plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+                    )
+                    return EnvelopeActionStageResult(
+                        STAGE_REFUSED_STALE, envelope=env.model_copy(deep=True)
                     )
                 assert plan.order is not None and plan.action_event is not None
                 assert plan.audit_event is not None

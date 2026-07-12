@@ -83,6 +83,14 @@ reset `remaining` to its full ceiling and the predecessor's venue order was orph
 SELLs totalling 180 sh against one 100-sh approval in the REV-0022 repro; found independently by
 two Phase A critics).
 
+**Amended 2026-07-12 (WO-0029A, accepted by Ameen):** a broker-authoritative overfill of
+`qty_ceiling` is a BREACH in every state that can receive a fill. The §3 machine gains the edge
+`FROZEN → BREACHED`, taken atomically when a fill drives the counter past the ceiling while
+FROZEN (payload keeps the overfill facts; the ADR-001 order-level quarantine applies on top).
+The resume path can therefore never auto-COMPLETE a ceiling-violated mandate — before this
+amendment the code clamped, flagged in fine print, and terminated in the SUCCESS state (the §2
+"violation → BREACHED" rule and the §3 edge set contradicted each other; REV-0022 SPEC-05).
+
 ### 4. Precedence and TradingState interactions
 
 - **Kill switch** blocks new order intent (invariant 10); a replace **is** new order intent. Kill
@@ -114,6 +122,22 @@ freeze on ROUTINE flow, devaluing the very tripwire this section defines. Both h
 liveness from order state (plan time via the event log — keeping `decide()`'s frozen signature;
 write time via the order row). A REV-0022 Phase A finding
 (FINDING-W3-multileg-false-divergence-livelock.md, found independently by two critics).
+
+**Amended 2026-07-12 (WO-0029A, accepted by Ameen):** a write-time rejection means the plan's
+FACTS went stale or the validators disagree — and the seam now distinguishes them by rail
+category. State-dependent rails, whose verdict legitimately changes when the world moves
+between plan and write — `qty_ceiling` (a fill shrank remaining) and `structural`
+(working-order liveness flipped) — produce a **benign stale-plan refusal**: an
+`envelope_action` event with `action=refused_stale` (never counted by budget/cooldown
+accounting), no freeze, zero venue calls; the policy replans from fresh facts next tick.
+Rails deterministic in (envelope constants, action, the shared injected clock, history) —
+`floor_price`, `ttl`, `session_phase`, `cooldown_floor`, `cancel_replace_budget` — remain
+**DEFECTS**: freeze + `ENVELOPE_PLAN_DIVERGENCE`, because same inputs producing different
+verdicts means the validators themselves disagree. `reduce_only` deliberately stays in the
+freeze set although position is state: it is not a plan/write comparison at all (the policy
+cannot see position) — a mandate the book cannot cover needs a human (INV-084). Operator alarm
+calibration keys on the divergence event only; the repo's own partial-fill race test (the case
+REV-0022 SPEC-09 used to falsify the old blanket claim) is now the benign case's pin.
 
 ### 6. Eventing and provenance
 
