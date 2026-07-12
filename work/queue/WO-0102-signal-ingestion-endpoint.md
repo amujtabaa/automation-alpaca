@@ -13,7 +13,7 @@ created: 2026-07-11
 
 # Work Order: Signal ingestion endpoint + event-log provenance
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **ADR GATE CLEARED (2026-07-12)** — ADR-009 Accepted, REV-0022 RESOLVED. **STILL GATED on WO-0101's spec** (this WO must be implementable from that spec alone). Original: until ADR-009 is accepted post independent cross-model review
 > **and** WO-0101's spec is complete (this WO must be implementable from that spec alone).
 > Sequencing: 0101 → 0102 → {0103, 0104 in parallel}.
 

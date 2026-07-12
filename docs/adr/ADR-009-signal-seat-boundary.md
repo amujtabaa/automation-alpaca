@@ -1,7 +1,9 @@
 # ADR-009: Signal Seat — External Agentic Signal Producers as Bounded Intent Sources
 
-**Status:** DRAFT / PROPOSED — pending human acceptance + independent cross-model review
-**Date:** 2026-07-11
+**Status:** **Accepted** (2026-07-12, by Ameen). Independent cross-model review: **REV-0022**,
+verdict ACCEPT-WITH-CHANGES — satisfied by GPT-5/Codex's seven-pass adversarial review on PR #5
+(16 findings, all applied pre-merge; see `work/review/REV-0022/`).
+**Date:** 2026-07-11 (drafted); accepted 2026-07-12
 **Deciders:** Ameen (human gate). Queues for independent cross-model review before acceptance (ADR amendment per review policy).
 **Number:** ADR-009 (renumbered on install from planning-seat draft "ADR-010"; 009 is the next free slot after ADR-008).
 
@@ -94,6 +96,6 @@ Easier: adding/swapping producers (any agent that can POST JSON); auditing exact
 ## Action Items
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
-2. [ ] Human review of this draft. (INV-1..9 mapping drafted from §5 on install, 2026-07-11 — confirm the rows, don't re-derive from scratch.)
-3. [ ] Independent cross-model review: packet **REV-0022** queued (`work/review/REV-0022/request.md`) — dispatch at the human's discretion; acceptance blocked until it is dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
-4. [ ] WO-0101..0104 (installed to `work/queue/`, status draft) — all remain gated on this ADR's acceptance.
+2. [x] Human review — done through the INV-7 asymmetry decision (2026-07-11) and formal acceptance (2026-07-12).
+3. [x] Independent cross-model review — **REV-0022 RESOLVED, ACCEPT-WITH-CHANGES** (PR #5 adversarial record, 16 findings applied pre-merge; `work/review/REV-0022/`).
+4. [x] WO-0101..0104: the ADR-acceptance gate CLEARED (2026-07-12); inter-WO sequencing gates remain (0101 → 0102 → {0103, 0104}).

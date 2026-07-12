@@ -13,7 +13,8 @@ created: 2026-07-11
 
 # Work Order: Signal contract specification (design-only)
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 (Signal Seat) is accepted post independent
+> **GATE CLEARED (2026-07-12):** ADR-009 Accepted; REV-0022 dispositioned ACCEPT-WITH-CHANGES.
+> First in the bundle — activatable on assignment. Original gate text (historical): until ADR-009 (Signal Seat) is accepted post independent
 > cross-model review. Install gates already cleared 2026-07-11: install checks PASSED,
 > WO-0001 dispositioned (ledger, commit `4eccaac`). Sequencing for the bundle:
 > 0101 → 0102 → {0103, 0104 in parallel}.

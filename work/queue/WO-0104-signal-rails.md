@@ -13,7 +13,7 @@ created: 2026-07-11
 
 # Work Order: Signal rails — TTL, staleness, rate limits, producer quarantine
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **ADR GATE CLEARED (2026-07-12)** — ADR-009 Accepted, REV-0022 RESOLVED. **STILL GATED on WO-0102.** Original: until ADR-009 is accepted post independent cross-model review
 > and WO-0102 is complete. Runs after 0102; may run in parallel with 0103. The producer
 > **release** route is a human-gated action — same Complex treatment as WO-0103.
 

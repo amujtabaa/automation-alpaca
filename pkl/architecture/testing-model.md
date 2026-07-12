@@ -45,4 +45,4 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
 
 - 2026-07-07: Created from CLAUDE.md §7/§8 decomposition.
 - 2026-07-08: Corrected the CI-gate list to what is actually wired (removed the unwired `mypy`); recorded `mypy` as a deferred gate with a measured baseline (193 errors) and a WO-0008 pointer. last_verified refreshed for the gate facts.
-- 2026-07-11: mypy gate facts updated for the completed WO-0012 burn-down (grandfather list empty); `warn_unused_ignores` flipped true (WO-0016) and the one stale ignore removed (`app/broker/sim.py`); line-level baseline recorded as moot; constraints.txt lock noted. last_verified refreshed.
+- 2026-07-11: mypy gate facts updated for the completed WO-0012 burn-down (grandfather list empty); `warn_unused_ignores` flipped true (WO-0100 — renumbered from WO-0016 on 2026-07-12 to clear the collision with feat/execution-envelope's WO-0016) and the one stale ignore removed (`app/broker/sim.py`); line-level baseline recorded as moot; constraints.txt lock noted. last_verified refreshed.
