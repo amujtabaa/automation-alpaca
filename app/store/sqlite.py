@@ -2189,9 +2189,7 @@ class SqliteStateStore(StateStore):
                         plan.audit_event.event_type,
                         **plan.audit_event.as_kwargs(),
                     )
-                    return EnvelopeActionStageResult(
-                        STAGE_REFUSED_STALE, envelope=env
-                    )
+                    return EnvelopeActionStageResult(STAGE_REFUSED_STALE, envelope=env)
                 assert plan.order is not None and plan.action_event is not None
                 assert plan.audit_event is not None
                 self._insert_order(cur, plan.order)
