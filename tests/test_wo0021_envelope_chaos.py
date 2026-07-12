@@ -88,6 +88,15 @@ def planned(kind=ActionKind.SUBMIT, limit_price=9.90, quantity=10) -> PlannedAct
 
 async def active_envelope(store, **overrides) -> ExecutionEnvelope:
     await store.initialize()
+    # WO-0026: staging rails on the live position (reduce-only).
+    session = await store.get_current_session()
+    cand = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+    )
     si = await store.create_sell_intent(
         symbol=overrides.get("symbol", "AAPL"),
         reason=SellReason.PROTECTION_FLOOR,
@@ -109,7 +118,7 @@ async def test_partial_fill_between_plan_and_write_hits_the_qty_rail(any_store):
     env = await active_envelope(any_store)
     stale_view_action = planned(quantity=80)  # valid when planned...
     await any_store.record_envelope_fill(
-        env.id, quantity=60, dedupe_key="fill:o0:race", order_id="o0"
+        env.id, quantity=60, dedupe_key="fill:o0:race", order_id="o0", price=9.9
     )  # ...then the fill lands (remaining 40)
 
     adapter = MockBrokerAdapter()

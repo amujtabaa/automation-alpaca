@@ -28,6 +28,7 @@ from app.models import (
     EnvelopeStatus,
     ExecutionEnvelope,
     ExecutionEventType,
+    OrderSide,
     OrderStatus,
     SellReason,
     SessionType,
@@ -108,6 +109,16 @@ def planned(kind=ActionKind.SUBMIT, limit_price=9.90, quantity=10) -> PlannedAct
 
 async def active_envelope(store, **overrides) -> ExecutionEnvelope:
     await store.initialize()
+    # WO-0026: staging rails on the live position (reduce-only) — a
+    # realistic envelope test holds the shares it is mandated to sell.
+    session = await store.get_current_session()
+    cand = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+    )
     si = await store.create_sell_intent(
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
@@ -230,6 +241,77 @@ async def test_write_time_session_phase_rail_bites_at_the_seam(any_store):
     )
     assert len(divergences) == 1
     assert divergences[0].payload["rail"] == "session_phase"
+
+
+async def test_position_shrink_between_plan_and_write_hits_reduce_only(any_store):
+    """WO-0026: the D-3 race shape, extended to POSITION. The plan was sized
+    against a 100-share book; a non-envelope SELL (manual flatten leg,
+    external reconcile fill) shrinks it to 20 before the write. The envelope
+    counter alone would pass (80 <= remaining 100) — the reduce-only rail is
+    what refuses, which is exactly why BOTH counters must gate (F1×F5)."""
+
+    env = await active_envelope(any_store)
+    session = await any_store.get_current_session()
+    flat_cand = await any_store.create_candidate("AAPL", session_id=session.id)
+    sell = await any_store.create_order_for_test(
+        flat_cand.id, "AAPL", OrderSide.SELL, 80, session_id=session.id
+    )
+    await any_store.append_fill(
+        sell.id, "AAPL", OrderSide.SELL, 80, 10.5, session_id=session.id
+    )  # book: 100 -> 20; envelope remaining untouched (100)
+
+    adapter = MockBrokerAdapter()
+    result = await execute_envelope_action(
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=80),  # valid against the envelope counter
+        snapshot_fingerprint=FP,
+        now=later(),
+    )
+    assert result.outcome == ENVELOPE_EXEC_DIVERGENCE
+    assert adapter.submitted == [] and adapter.replaced == []
+    divergences = await envelope_events(
+        any_store, env.id, ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE
+    )
+    assert len(divergences) == 1
+    assert divergences[0].payload["rail"] == "reduce_only"
+    assert (await any_store.get_envelope(env.id)).status is S.FROZEN
+
+
+async def test_redrive_recheck_catches_position_shrink(any_store):
+    """WO-0026 at the redrive seam: staged valid against a full book, book
+    shrinks while the order waits (transient release) — the redrive refuses
+    and locally cancels; zero venue calls."""
+
+    env = await active_envelope(any_store)
+    adapter = MockBrokerAdapter()
+    adapter.fail_next_submit(BrokerError("transient"))
+    released = await execute_envelope_action(
+        any_store, adapter, env.id, planned(quantity=80), snapshot_fingerprint=FP,
+        now=later(),
+    )
+    assert released.outcome == ENVELOPE_EXEC_RELEASED
+
+    session = await any_store.get_current_session()
+    flat_cand = await any_store.create_candidate("AAPL", session_id=session.id)
+    sell = await any_store.create_order_for_test(
+        flat_cand.id, "AAPL", OrderSide.SELL, 95, session_id=session.id
+    )
+    await any_store.append_fill(
+        sell.id, "AAPL", OrderSide.SELL, 95, 10.5, session_id=session.id
+    )  # book: 100 -> 5
+
+    fresh = MockBrokerAdapter()
+    refused = await redrive_staged_envelope_action(
+        any_store, fresh, env.id, now=later(60)
+    )
+    assert refused is not None and refused.outcome == ENVELOPE_EXEC_CANCELLED
+    assert "reduce_only" in refused.detail
+    assert fresh.submitted == [] and fresh.replaced == []
+    assert (
+        await any_store.get_order(refused.order_id)
+    ).status is OrderStatus.CANCELED
 
 
 # --- staging: control precedence -------------------------------------------------- #

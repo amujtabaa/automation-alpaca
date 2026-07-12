@@ -484,6 +484,8 @@ class _EnvelopeSeamStore(Protocol):
 
     async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]: ...
 
+    async def get_position(self, symbol: str) -> Position: ...
+
 
 ENVELOPE_EXEC_SUBMITTED = "submitted"
 ENVELOPE_EXEC_REPRICED = "repriced"
@@ -725,6 +727,15 @@ async def redrive_staged_envelope_action(
             violation = validate_action(envelope, replayed, history=history, now=ts)
             if violation is not None:
                 refusal = f"{violation.rail}: {violation.detail}"
+            else:
+                # WO-0026: reduce-only re-check — the position may have
+                # shrunk (fills, manual flatten) since staging.
+                position = await store.get_position(envelope.symbol)
+                if order.quantity > max(0, position.quantity):
+                    refusal = (
+                        f"reduce_only: SELL {order.quantity} exceeds live "
+                        f"position {max(0, position.quantity)}"
+                    )
 
     if refusal is not None:
         await store.transition_order(order.id, OrderStatus.CANCELED)

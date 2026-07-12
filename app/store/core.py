@@ -2793,6 +2793,7 @@ def plan_stage_envelope_action(
     snapshot_fingerprint: str,
     actor: str,
     now: Optional[datetime] = None,
+    current_position: Optional[int] = None,
 ) -> EnvelopeActionStagePlan:
     """Stage one PlannedAction: the WRITE-TIME half of D-3.
 
@@ -2868,6 +2869,25 @@ def plan_stage_envelope_action(
             envelope,
             rail=violation.rail,
             detail=violation.detail,
+            action_payload=action_payload,
+            snapshot_fingerprint=snapshot_fingerprint,
+            now=ts,
+        )
+    # WO-0026 (REV-0022 F1): reduce-only is a §2 HARD rail — the SELL must
+    # never exceed the live fill-derived position (single-writer truth). The
+    # stores read their own projection under the SAME lock/transaction as
+    # this plan's application, so a fill racing the stage cannot slip an
+    # oversell through (the D-3 shape, extended to position). Checked AFTER
+    # the mandate rails: the envelope's own bounds adjudicate first, and
+    # reduce_only fires only when the mandate says yes but the book says no.
+    if current_position is not None and action.quantity > max(0, current_position):
+        return _divergence(
+            envelope,
+            rail="reduce_only",
+            detail=(
+                f"SELL {action.quantity} exceeds live position "
+                f"{max(0, current_position)}"
+            ),
             action_payload=action_payload,
             snapshot_fingerprint=snapshot_fingerprint,
             now=ts,

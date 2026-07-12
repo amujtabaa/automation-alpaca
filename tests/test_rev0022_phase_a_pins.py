@@ -101,8 +101,14 @@ def planned(kind=ActionKind.SUBMIT, limit_price=9.90, quantity=10) -> PlannedAct
     )
 
 
-async def active_envelope(store, **overrides) -> ExecutionEnvelope:
+async def active_envelope(
+    store, *, seed_position: bool = True, **overrides
+) -> ExecutionEnvelope:
     await store.initialize()
+    # WO-0026: staging now rails on the live position (reduce-only), so a
+    # realistic envelope test holds the shares it is mandated to sell.
+    if seed_position:
+        await _seed_position(store, 100)
     si = await store.create_sell_intent(
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
@@ -132,19 +138,15 @@ async def _envelope_events(store, envelope_id, event_type=None):
 
 
 # ================================================================== #
-# F1 — reduce-only unenforced (P0, SPEC-01) → WO-0026
+# F1 — reduce-only — FLIPPED GREEN by WO-0026
 # ================================================================== #
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-reduce-only-unenforced (REV-0022 F1): no seam re-reads "
-    "live position; a SELL against a flat book reaches the venue. WO-0026.",
-)
 async def test_PIN_F1_sell_against_zero_position_never_reaches_venue(any_store):
-    env = await active_envelope(any_store)  # NOTE: no position seeded — flat book
+    # FLIPPED GREEN by WO-0026 (reduce-only write-time rail).
+    env = await active_envelope(any_store, seed_position=False)  # flat book
     adapter = MockBrokerAdapter()
-    await execute_envelope_action(
+    result = await execute_envelope_action(
         any_store,
         adapter,
         env.id,
@@ -156,6 +158,8 @@ async def test_PIN_F1_sell_against_zero_position_never_reaches_venue(any_store):
         "reduce-only is a HARD rail: a SELL with no position must refuse "
         "before the venue call"
     )
+    assert result.outcome == ENVELOPE_EXEC_DIVERGENCE
+    assert (await any_store.get_envelope(env.id)).status is S.FROZEN
 
 
 # ================================================================== #
@@ -421,15 +425,13 @@ async def test_PIN_F6_supersede_conserves_remaining_fill_first(any_store):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING-W3-supersession-exposure (REV-0022 F6): supersede-first "
-    "serialization; the reset mandate then passes the D-3 rails end-to-end "
-    "(fills 40 + fresh submit 100 = 140 vs the 100 approved once). WO-0027.",
-)
 async def test_PIN_F6_supersede_first_late_fill_venue_followthrough(any_store):
-    env = await active_envelope(any_store)
-    await _seed_position(any_store)
+    # FLIPPED GREEN by WO-0026, not WO-0027: envelope-attributed FILL events
+    # fold into the position projection, so the reduce-only rail blocks THIS
+    # repro's venue leg (fills 40 + submit 100 > position). The supersession
+    # RESET defect itself is still open — pinned by
+    # test_PIN_F6_supersede_conserves_remaining_fill_first above (WO-0027).
+    env = await active_envelope(any_store)  # helper seeds the 100-share book
     successor = make_draft(env.sell_intent_id, qty_ceiling=100)
 
     async def supersede():

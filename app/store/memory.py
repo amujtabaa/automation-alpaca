@@ -1227,6 +1227,9 @@ class InMemoryStateStore(StateStore):
                 snapshot_fingerprint=snapshot_fingerprint,
                 actor=actor,
                 now=now,
+                # WO-0026: live fill-derived position, read under the SAME
+                # lock as the writes — the reduce-only hard rail's truth.
+                current_position=self._position_unlocked(env.symbol).quantity,
             )
             if plan.error is not None:
                 raise plan.error
