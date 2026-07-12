@@ -1,5 +1,5 @@
-# W3 state — updated 2026-07-12, tip f092ca7 (feat/execution-envelope)
-approved-agreement: W3 kickoff prompt (work/queue/W3-KICKOFF-PROMPT.md, FINAL drop version), pasted 2026-07-11
+# W3 state — updated 2026-07-12 (remediation wave complete), tip = origin/feat/execution-envelope
+approved-agreement: W3 kickoff prompt + Ameen 2026-07-12 blanket approval: "You may proceed for anything that isn't waiting on SOL" (covers WO-0024 amended, 0025, 0026, 0027, 0028 + prep artifacts).
 completed:
   - "WO-0021: be79dda (merge f092ca7), VERIFIED (tests-only charter), RESULT_SUMMARY_KEPT,
      non-gated; chaos & property catalog (regime tapes, interleaving chaos, hypothesis
@@ -33,25 +33,31 @@ completed:
   - "WO-0018: def2501 (merge 7eaa262), VERIFIED, RESULT_SUMMARY_KEPT, non-gated; regime-adaptive
      spec per FINAL planning drop (d0b1728); divergences amended into the WO (missing LASE docs;
      .importlinter vs pyproject). fable-done in work/completed/keep/WO-0018-*/"
-in-flight: WO-0022 — Phase A COMPLETE (all four critics returned, findings compiled in
-  work/review/REV-0022/phase-a.md: 1 P0 app + 1 P0 test + 5 P1 clusters + grouped P2/P3;
-  7 new FINDING files; WO-0024 amended pre-approval; WO-0025..0029 drafted; NOTHING fixed
-  per charter). Phase B: SHA f092ca7 pinned in work/review/W3-codex-review-prompt.md —
-  awaiting human (T4). Per protocol Phase A results are NOT shared with Codex pre-verdict.
+in-flight: NOTHING — remediation wave complete. WO-0028, WO-0024(amended), WO-0026,
+  WO-0025, WO-0027 all VERIFIED, merged, pushed. ALL TEN finding pins GREEN
+  (tests/test_rev0022_phase_a_pins.py: 32 passed / 0 xfailed; WO-0021 flatten pin flipped;
+  only remaining xfail in the whole suite is the LASE structural-hold P2 — SOL/W4 territory).
+  Remediation summary: reduce-only hard rail at write time + redrive (INV-084); redrive full
+  re-validation + staleness ceiling + preemption sweeps flatten AND kill (INV-081 amended);
+  working-order predicate unified live-derived (ADR-009 §5 amended, decide() signature frozen
+  intact); inferred-fill record-first bridge (ADR-009 §6 amended); supersession
+  refuses-while-live/sweeps-staged/conserves (ADR-009 §3 amended, INV-077 amended); memory
+  _atomic envelope snapshot; or-True tautology dead, 14/14 + 9 more mutation-checks killed.
 awaiting:
-  - T4: human runs Codex Phase B with work/review/W3-codex-review-prompt.md (SHA pinned).
-    Note: the Sol/Codex seat already has the SOL-0001 addendum queued behind its in-flight
-    review run.
-  - Remediation WO approvals (all human-gated, all DRAFT): WO-0024 (AMENDED — redrive
-    re-validation added; original status-guard scope proven insufficient by 3 critics),
-    WO-0025 (multileg+fill-bridge, paired), WO-0026 (reduce-only P0), WO-0027 (supersession,
-    latent), WO-0028 (test integrity + memory _atomic fix — recommended FIRST), WO-0029
-    (F8 umbrella, planning seat re-cuts). ADR-009 acceptance blockers: F1/F3/F4/F5 +
-    original WO-0024 finding + ADR text contradictions (SPEC-05/09).
-  - SOL-0001 deliverables (D1-D4) landing in work/collab/SOL-0001/; collab-protocol
-    codification into .ai-os deferred until pilot returns (WO-0023 draft deleted at
-    Ameen's request).
-  - T5: ADR-009 Accepted + W3 merge — human only, after Phase B reconciliation.
+  - T4: human runs Codex Phase B (work/review/W3-codex-review-prompt.md, pin f092ca7 — the pin
+    PREDATES the remediation; reconciliation scaffold pre-filled at
+    work/review/REV-0022/phase-b-reconciliation.md, incl. the recommendation to hand Codex a
+    second short prompt for the f092ca7..tip remediation diff, which also satisfies the
+    independent-review requirement for the gated-surface WOs).
+  - WO-0029 umbrella: planning seat re-cut; ADR text amendments PREPARED as proposals at
+    work/review/REV-0022/adr-009-text-amendment-proposals.md (SPEC-05 FROZEN→BREACHED edge,
+    SPEC-09 stale-plan-vs-defect classification) — human gate, yes/no on prepared text.
+  - WO-0030 (interface lift, drafted): approval — non-gated, mechanical, kills the cast/Protocol
+    debt (CC-06).
+  - SOL-0001 deliverables; collab-protocol codification deferred until pilot returns.
+  - T5: ADR-009 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
+    blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
+    are remediated and pinned at tip.
 anchor-divergences:
   - W3-README branch naming `feat/execution-envelope/wo-00XX` impossible in git (ref namespace);
     using `feat/execution-envelope-wo-00XX`.
@@ -80,9 +86,10 @@ open decisions:
   - T4 Codex run timing (human executes).
 
 ## W3 sequencing status
-0016 ✅ → 0018 ✅ → 0017 ✅ → 0019a ✅ → 0019 ✅ → 0020 ✅ → 0021 ✅ →
-**0022 Phase A [critics running @ f092ca7]** → Phase B Codex (T4, human) → T5 ADR-009
-Accepted + merge (human only).
+0016 ✅ → 0018 ✅ → 0017 ✅ → 0019a ✅ → 0019 ✅ → 0020 ✅ → 0021 ✅ → 0022 Phase A ✅ →
+REMEDIATION ✅ (0028 → 0024 → 0026 → 0025 → 0027; all pins green) →
+**Phase B Codex (T4, human)** → WO-0029 re-cut (planning seat) → T5 ADR-009 Accepted + merge
+(human only).
 
 ## Gate/toolchain reference (this container)
 ruff 0.15.20 · mypy 2.2.0 · pytest 9.1.1 · import-linter 2.13 — all == constraints.txt.

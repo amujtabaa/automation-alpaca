@@ -36,3 +36,21 @@ rails beyond the W3 set:
 
 - ADR-001/ADR-002 superseding decision records (INV-002 / INV-023) — still open.
 - ADR-009 must be Accepted post-REV (W3 WO-0022).
+
+## REV-0022 / remediation-wave learnings for W4 (appended 2026-07-12)
+
+- **Harness axes confirmed by Phase A:** structural-hold (FINDING-W3-lase-pullback…, SOL-0001
+  bake-off) and the redrive staleness ceiling (`REDRIVE_MAX_STAGED_AGE_S`, currently 120s — a
+  constant the harness should tune) are both empirical questions, not design questions.
+- **Property-strategy reachability lesson (TC-06):** random strategies do not reach rail EDGES
+  (the budget off-by-one survived 3/3 property runs). W4 harness scenarios need directed
+  edge-drain examples alongside generative ones — treat every rail's boundary as an explicit
+  `@example`.
+- **Tape-synthesis debt:** a STEADY_SURGE tranche-regime tape good enough for a decide→stage
+  END-TO-END multi-tranche test does not exist yet (WO-0025 pinned the predicate mechanism
+  instead). The W4 tape library should include it — it is also the F4-regression scenario.
+- **Clock discipline:** all envelope-suite clocks are now Wednesday-fixed (2026-07-15 14:00 UTC)
+  because validate_action rails on session phase; W4 harness must inject its clock everywhere
+  from day one (weekend containers WILL bite otherwise).
+- **Projection sharp edge:** `record_envelope_fill(price=None)` poisons position projection
+  (surfaced by WO-0026) — W4/planning seat: make price required.
