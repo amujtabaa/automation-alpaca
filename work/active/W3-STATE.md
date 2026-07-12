@@ -33,17 +33,21 @@ completed:
   - "WO-0018: def2501 (merge 7eaa262), VERIFIED, RESULT_SUMMARY_KEPT, non-gated; regime-adaptive
      spec per FINAL planning drop (d0b1728); divergences amended into the WO (missing LASE docs;
      .importlinter vs pyproject). fable-done in work/completed/keep/WO-0018-*/"
-in-flight: WO-0022 Phase A — four critic subagents (spec-attacker, interleaving-attacker,
-  test-critic, completeness-critic) launched against pinned tip f092ca7, H1-H11 inlined
-  verbatim, fresh contexts. On completion: compile work/review/REV-0022/phase-a.md
-  (findings → FINDING files + draft follow-up WOs; fix nothing). Phase B prep DONE:
-  f092ca7 pinned into work/review/W3-codex-review-prompt.md — hand to human (T4).
+in-flight: WO-0022 — Phase A COMPLETE (all four critics returned, findings compiled in
+  work/review/REV-0022/phase-a.md: 1 P0 app + 1 P0 test + 5 P1 clusters + grouped P2/P3;
+  7 new FINDING files; WO-0024 amended pre-approval; WO-0025..0029 drafted; NOTHING fixed
+  per charter). Phase B: SHA f092ca7 pinned in work/review/W3-codex-review-prompt.md —
+  awaiting human (T4). Per protocol Phase A results are NOT shared with Codex pre-verdict.
 awaiting:
   - T4: human runs Codex Phase B with work/review/W3-codex-review-prompt.md (SHA pinned).
     Note: the Sol/Codex seat already has the SOL-0001 addendum queued behind its in-flight
     review run.
-  - WO-0024 approval (staged-order preemption fix — human-gated; blocks ADR-009 acceptance
-    recommendation).
+  - Remediation WO approvals (all human-gated, all DRAFT): WO-0024 (AMENDED — redrive
+    re-validation added; original status-guard scope proven insufficient by 3 critics),
+    WO-0025 (multileg+fill-bridge, paired), WO-0026 (reduce-only P0), WO-0027 (supersession,
+    latent), WO-0028 (test integrity + memory _atomic fix — recommended FIRST), WO-0029
+    (F8 umbrella, planning seat re-cuts). ADR-009 acceptance blockers: F1/F3/F4/F5 +
+    original WO-0024 finding + ADR text contradictions (SPEC-05/09).
   - SOL-0001 deliverables (D1-D4) landing in work/collab/SOL-0001/; collab-protocol
     codification into .ai-os deferred until pilot returns (WO-0023 draft deleted at
     Ameen's request).
