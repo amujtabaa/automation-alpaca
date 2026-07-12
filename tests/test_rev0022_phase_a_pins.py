@@ -141,8 +141,12 @@ async def test_PIN_F1_sell_against_zero_position_never_reaches_venue(any_store):
     env = await active_envelope(any_store)  # NOTE: no position seeded — flat book
     adapter = MockBrokerAdapter()
     await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=10),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=10),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     assert adapter.submitted == [], (
         "reduce-only is a HARD rail: a SELL with no position must refuse "
@@ -165,8 +169,12 @@ async def test_PIN_F3_redrive_respects_current_remaining(any_store):
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     released = await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=80),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=80),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     assert released.outcome == ENVELOPE_EXEC_RELEASED
 
@@ -195,8 +203,12 @@ async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=80),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=80),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     fresh = MockBrokerAdapter()
 
@@ -212,9 +224,7 @@ async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
     await asyncio.gather(fill(), redrive())
     final = await any_store.get_envelope(env.id)
     submitted_qty = [o.quantity for o in fresh.submitted]
-    assert submitted_qty == [] or max(submitted_qty) <= (
-        final.remaining_quantity or 0
-    )
+    assert submitted_qty == [] or max(submitted_qty) <= (final.remaining_quantity or 0)
 
 
 @pytest.mark.xfail(
@@ -224,14 +234,16 @@ async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
     "expires_at. WO-0024 amended (validate_action gains TTL).",
 )
 async def test_PIN_F3_redrive_after_ttl_makes_no_venue_call(any_store):
-    env = await active_envelope(
-        any_store, expires_at=utcnow() + timedelta(seconds=1)
-    )
+    env = await active_envelope(any_store, expires_at=utcnow() + timedelta(seconds=1))
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     released = await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=10),
-        snapshot_fingerprint=FP, now=utcnow(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=10),
+        snapshot_fingerprint=FP,
+        now=utcnow(),
     )
     assert released.outcome == ENVELOPE_EXEC_RELEASED
     await asyncio.sleep(1.2)  # wall clock passes the envelope's TTL
@@ -266,13 +278,20 @@ async def test_PIN_F4_second_leg_after_full_fill_never_false_divergence(any_stor
     # Leg 1: 50-share tranche, submitted then FULLY filled via the correct
     # stream-bridge sequence (record-first, then position fold, then terminal).
     r1 = await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=50),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=50),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     assert r1.outcome == ENVELOPE_EXEC_SUBMITTED
     await any_store.record_envelope_fill(
-        env.id, quantity=50, dedupe_key=f"fill:{r1.order_id}:x1",
-        order_id=r1.order_id, price=9.90,
+        env.id,
+        quantity=50,
+        dedupe_key=f"fill:{r1.order_id}:x1",
+        order_id=r1.order_id,
+        price=9.90,
     )
     await any_store.append_fill(
         r1.order_id, "AAPL", OrderSide.SELL, 50, 9.90, source_fill_id="x1"
@@ -292,8 +311,12 @@ async def test_PIN_F4_second_leg_after_full_fill_never_false_divergence(any_stor
     )
     kind = ActionKind.REPRICE if has_working else ActionKind.SUBMIT
     r2 = await execute_envelope_action(
-        any_store, adapter, env.id, planned(kind=kind, quantity=25),
-        snapshot_fingerprint="fp-2", now=later(60),
+        any_store,
+        adapter,
+        env.id,
+        planned(kind=kind, quantity=25),
+        snapshot_fingerprint="fp-2",
+        now=later(60),
     )
     env3 = await any_store.get_envelope(env.id)
     divergences = await _envelope_events(
@@ -323,8 +346,12 @@ async def test_PIN_F5_inferred_fill_decrements_envelope_remaining(any_store):
     await _seed_position(any_store, 100)
     adapter = MockBrokerAdapter()
     r1 = await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=100),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=100),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     assert r1.outcome == ENVELOPE_EXEC_SUBMITTED
 
@@ -414,8 +441,12 @@ async def test_PIN_F6_supersede_first_late_fill_venue_followthrough(any_store):
     new_env, _ = await asyncio.gather(supersede(), fill())
     adapter = MockBrokerAdapter()
     result = await execute_envelope_action(
-        any_store, adapter, new_env.id, planned(quantity=100),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        new_env.id,
+        planned(quantity=100),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     total_mandated = 40 + sum(o.quantity for o in adapter.submitted)
     assert result.outcome != ENVELOPE_EXEC_SUBMITTED or total_mandated <= 100
@@ -465,8 +496,12 @@ async def test_HELD_concurrent_double_stage_single_venue_order(any_store):
     async def exec_one(adapter, now):
         try:
             return await execute_envelope_action(
-                any_store, adapter, env.id, planned(quantity=10),
-                snapshot_fingerprint=FP, now=now,
+                any_store,
+                adapter,
+                env.id,
+                planned(quantity=10),
+                snapshot_fingerprint=FP,
+                now=now,
             )
         except (OrderIntentBlockedError, EnvelopeTransitionError) as e:
             return e
@@ -548,8 +583,12 @@ async def test_HELD_redrive_vs_redrive_single_claim(any_store):
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=10),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=10),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     a1, a2 = MockBrokerAdapter(), MockBrokerAdapter()
     await asyncio.gather(
@@ -564,8 +603,12 @@ async def test_HELD_kill_between_staging_and_redrive_blocks_at_claim(any_store):
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=10),
-        snapshot_fingerprint=FP, now=later(),
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=10),
+        snapshot_fingerprint=FP,
+        now=later(),
     )
     await any_store.set_kill_switch(True, actor="op")
     fresh = MockBrokerAdapter()

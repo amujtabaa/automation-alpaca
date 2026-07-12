@@ -129,7 +129,9 @@ async def test_halted_blocks_approval_with_zero_artifacts(any_store):
     assert await envelope_events(any_store, draft.id) == []
 
 
-@pytest.mark.parametrize("kill_first", [True, False], ids=["kill-first", "approve-first"])
+@pytest.mark.parametrize(
+    "kill_first", [True, False], ids=["kill-first", "approve-first"]
+)
 async def test_kill_race_never_ends_with_an_active_envelope_under_halted(
     any_store, kill_first
 ):
