@@ -288,7 +288,11 @@ async def test_redrive_recheck_catches_position_shrink(any_store):
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     released = await execute_envelope_action(
-        any_store, adapter, env.id, planned(quantity=80), snapshot_fingerprint=FP,
+        any_store,
+        adapter,
+        env.id,
+        planned(quantity=80),
+        snapshot_fingerprint=FP,
         now=later(),
     )
     assert released.outcome == ENVELOPE_EXEC_RELEASED
@@ -309,9 +313,7 @@ async def test_redrive_recheck_catches_position_shrink(any_store):
     assert refused is not None and refused.outcome == ENVELOPE_EXEC_CANCELLED
     assert "reduce_only" in refused.detail
     assert fresh.submitted == [] and fresh.replaced == []
-    assert (
-        await any_store.get_order(refused.order_id)
-    ).status is OrderStatus.CANCELED
+    assert (await any_store.get_order(refused.order_id)).status is OrderStatus.CANCELED
 
 
 # --- staging: control precedence -------------------------------------------------- #

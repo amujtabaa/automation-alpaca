@@ -595,6 +595,28 @@ blind-resubmit failure mode ADR-002 exists to prevent.
 `test_transient_failure_releases_and_redrive_spends_no_new_budget`,
 `test_kill_between_staging_and_venue_call_blocks_at_the_claim`).
 
+**INV-084 — Reduce-only is enforced against the live fill-derived position at
+every pre-venue seam.** ``stage_envelope_action`` (both stores) reads the
+symbol's fill-derived position projection under the SAME lock/transaction as
+the staging writes and refuses any SELL whose quantity exceeds it
+(``ENVELOPE_PLAN_DIVERGENCE`` rail ``reduce_only``, envelope FROZEN, zero
+venue calls); ``redrive_staged_envelope_action`` re-checks the same bound
+before its venue call and locally cancels on violation. The envelope's own
+``remaining_quantity`` counter is NOT the enforcement point for this rail —
+both counters gate independently, so a fill/flatten racing the stage (or a
+stale envelope counter, REV-0022 F5) cannot produce a venue SELL the account
+cannot cover. Position source is the deduped fill log (single-writer truth),
+never the broker snapshot.
+*Why:* ADR-009 §2 declares reduce-only a HARD rail; before WO-0026 the only
+implementation was a validator locking the boolean flag — 180 shares were
+SOLD against a zero-share book in the REV-0022 Phase A repro, with harm
+surfacing only post-venue as an overfill quarantine, exactly what H1 forbids.
+*Pinned by:* `tests/test_rev0022_phase_a_pins.py`
+(`test_PIN_F1_sell_against_zero_position_never_reaches_venue` — the flipped
+P0 finding pin) + `tests/test_wo0019_engine_seam.py`
+(`test_position_shrink_between_plan_and_write_hits_reduce_only`,
+`test_redrive_recheck_catches_position_shrink`).
+
 ---
 
 ## Superseded / historical
