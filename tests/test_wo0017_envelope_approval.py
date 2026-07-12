@@ -129,27 +129,40 @@ async def test_halted_blocks_approval_with_zero_artifacts(any_store):
     assert await envelope_events(any_store, draft.id) == []
 
 
+@pytest.mark.parametrize("kill_first", [True, False], ids=["kill-first", "approve-first"])
 async def test_kill_race_never_ends_with_an_active_envelope_under_halted(
-    any_store,
+    any_store, kill_first
 ):
-    """gather(kill, approve): whichever order the lock serializes them in,
-    the end state is consistent — either the approval was blocked with zero
-    artifacts, or it landed and the kill hook froze it. Never ACTIVE+HALTED."""
+    """Both serializations of kill×approve, each with its EXACT outcome
+    asserted. (WO-0028/TC-05: the old single-gather version had an either/or
+    branch whose approve-first arm was structurally unreachable — gather +
+    the store lock deterministically serialized kill first, so a deleted
+    kill-freeze hook passed 20/20. gather schedules tasks in argument order
+    and the store lock is FIFO, so ordering the arguments forces the
+    serialization; if that scheduling guarantee ever changes, these exact
+    assertions fail loudly instead of silently passing.)"""
 
     await any_store.initialize()
     draft = make_draft()
-    results = await asyncio.gather(
-        any_store.set_kill_switch(True, actor="operator-a"),
-        any_store.approve_envelope_activation(draft, actor="operator-a"),
-        return_exceptions=True,
-    )
-    approval = results[1]
+    kill = any_store.set_kill_switch(True, actor="operator-a")
+    approve = any_store.approve_envelope_activation(draft, actor="operator-a")
+    first, second = (kill, approve) if kill_first else (approve, kill)
+    results = await asyncio.gather(first, second, return_exceptions=True)
     stored = await any_store.get_envelope(draft.id)
-    if isinstance(approval, OrderIntentBlockedError):
+
+    if kill_first:
+        # Kill wins the lock: approval must refuse with ZERO artifacts.
+        approval = results[1]
+        assert isinstance(approval, OrderIntentBlockedError)
         assert stored is None
+        assert await envelope_events(any_store, draft.id) == []
     else:
+        # Approval wins the lock: it lands ACTIVE, then the kill hook freezes
+        # it atomically with the control change — the branch the old test
+        # never reached, and the one that pins the hook itself.
+        assert not isinstance(results[0], BaseException)
         assert stored is not None
-        assert stored.status is S.FROZEN  # landed first, then frozen by the kill
+        assert stored.status is S.FROZEN
     if stored is not None:
         assert stored.status is not S.ACTIVE
 
