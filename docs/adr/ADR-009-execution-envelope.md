@@ -69,6 +69,20 @@ lifecycle (`PENDING → REJECTED/EXPIRED`, `APPROVED → EXPIRED` self-heal). Pr
 **supersession stays illegal**: amending an envelope that never ran is just cancel + create new —
 no continuity worth linking.
 
+**Amended 2026-07-12 (WO-0027 / REV-0022 F6):** supersession TRANSFERS the mandate — it never
+widens or duplicates it. Three storage-enforced rules: (i) a venue-live working order
+(SUBMITTING/SUBMITTED/PARTIALLY_FILLED/CANCEL_PENDING/quarantined) blocks supersession outright —
+the store cannot venue-cancel, and a successor activating next to a resting predecessor SELL is
+double exposure; the amendment FLOW cancels first, then supersedes. (ii) A staged CREATED
+(never-submitted) order does not block: it is locally cancelled in the same atomic unit (nothing
+of the old mandate survives). (iii) Conservation: `successor.qty_ceiling ≤ old.remaining_quantity`
+at commit time, read under the same lock — a fill racing the amendment shrinks remaining first and
+the stale draft is refused (re-draft against the truth); WIDENING a mandate requires cancel + a
+fresh human approval, never an amendment. As drafted, none of these were decided: the successor
+reset `remaining` to its full ceiling and the predecessor's venue order was orphaned (two live
+SELLs totalling 180 sh against one 100-sh approval in the REV-0022 repro; found independently by
+two Phase A critics).
+
 ### 4. Precedence and TradingState interactions
 
 - **Kill switch** blocks new order intent (invariant 10); a replace **is** new order intent. Kill

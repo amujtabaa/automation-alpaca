@@ -473,6 +473,12 @@ atomic unit, and concurrent supersedes of the same envelope yield exactly one
 ACTIVE successor.
 *Why:* two live mandates for one intent means two executors repricing the same
 position — double exposure the human approved once.
+*Amended (WO-0027 / REV-0022 F6):* the invariant binds in SUBSTANCE, not just
+status: supersession refuses while a venue-live working order exists, sweeps
+staged CREATED orders in its atomic unit, and conserves the mandate
+(successor ceiling ≤ predecessor's current remaining, read under the same
+lock). One human approval can never become two live venue orders or a wider
+live mandate via amendment.
 *Pinned by:* `tests/test_wo0016_envelope_supersede.py`
 (`test_concurrent_supersedes_yield_exactly_one_active_successor`,
 `test_second_activation_for_same_intent_is_blocked`).
