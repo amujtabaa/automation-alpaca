@@ -28,7 +28,9 @@ broker snapshot. Interplay with F5 (stale envelope counter) is why BOTH counters
 
 ## Allowed paths
 ```yaml
-allowed_paths: [app/sellside/policy.py, app/store/core.py, app/store/memory.py, app/store/sqlite.py, tests/**, docs/INVARIANTS.md]
+allowed_paths: [app/sellside/policy.py, app/store/core.py, app/store/memory.py, app/store/sqlite.py, app/reconciliation.py, tests/**, docs/INVARIANTS.md]
+# (amended at execution start: reconciliation.py was missing though the WO's own
+#  done-when requires the redrive position re-check — drafting omission)
 ```
 
 ## Done-when
