@@ -29,6 +29,7 @@ from app.models import (
     EnvelopeStatus,
     ExecutionEnvelope,
     ExecutionEventType,
+    OrderSide,
     SellReason,
 )
 from app.reconciliation import execute_envelope_action
@@ -89,6 +90,17 @@ async def _drive_script(store, script):
     """Drive one action script through the REAL pipeline; return the adapter."""
 
     await store.initialize()
+    # WO-0026: staging rails on the live position (reduce-only); the pipeline
+    # under test holds a realistic 150-share book (the strategy sizes up to
+    # 150, so the qty rail — not reduce-only — stays the binding constraint).
+    session = await store.get_current_session()
+    cand = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 150, session_id=session.id
+    )
+    await store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 150, 10.0, session_id=session.id
+    )
     si = await store.create_sell_intent(
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
@@ -226,6 +238,7 @@ async def test_event_log_replay_reconstructs_envelope_state(steps):
                     env.id,
                     quantity=int(step.split("_")[1]),
                     dedupe_key=f"fill:p:{fills}",
+                    price=9.9,
                 )
             elif step == "cancel":
                 await store.transition_envelope(env.id, S.CANCELLED)

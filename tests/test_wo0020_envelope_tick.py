@@ -214,12 +214,8 @@ async def test_full_loop_stop_exit_fill_completes_envelope(any_store):
 async def test_policy_exception_freezes_only_that_envelope(any_store, monkeypatch):
     await any_store.initialize()
     env_a = await _active_envelope(any_store, symbol="AAPL")
-    si_b = await any_store.create_sell_intent(
-        symbol="MSFT", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
-    )
-    env_b = await any_store.approve_envelope_activation(
-        make_draft(si_b.id, "MSFT"), actor="operator-a"
-    )
+    await _hold(any_store, "MSFT", 100)  # WO-0026: reduce-only needs a book
+    env_b = await _active_envelope(any_store, symbol="MSFT")
     adapter = MockBrokerAdapter()
     md, tapes = _wired(crash_tape("AAPL"))
     for s in crash_tape("MSFT"):

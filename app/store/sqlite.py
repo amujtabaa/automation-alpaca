@@ -2147,6 +2147,9 @@ class SqliteStateStore(StateStore):
                     snapshot_fingerprint=snapshot_fingerprint,
                     actor=actor,
                     now=now,
+                    # WO-0026: live fill-derived position, read inside the
+                    # SAME transaction — the reduce-only hard rail's truth.
+                    current_position=self._position_locked(env.symbol).quantity,
                 )
                 if plan.error is not None:
                     raise plan.error
