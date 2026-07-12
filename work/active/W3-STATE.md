@@ -49,18 +49,17 @@ awaiting:
     work/review/REV-0022/phase-b-reconciliation.md, incl. the recommendation to hand Codex a
     second short prompt for the f092ca7..tip remediation diff, which also satisfies the
     independent-review requirement for the gated-surface WOs).
-  - WO-0029 umbrella: planning seat re-cut; ADR text amendments PREPARED as proposals at
-    work/review/REV-0022/adr-009-text-amendment-proposals.md (SPEC-05 FROZEN→BREACHED edge,
-    SPEC-09 stale-plan-vs-defect classification) — human gate, yes/no on prepared text.
-  - WO-0030 (interface lift, drafted): approval — non-gated, mechanical, kills the cast/Protocol
-    debt (CC-06).
+  - WO-0029A DONE (both ADR amendments ACCEPTED + implemented: FROZEN→BREACHED INV-085;
+    stale-vs-defect split, INV-082 re-amended). WO-0029 B/C remain with the planning seat.
   - SOL-0001: Sol FINISHED (4 files in its sandbox: sol_policy.py, test_sol_policy.py,
     sol_conformance_plugin.py, MANIFEST.md) but NOT YET PUSHED to any branch of this repo —
     Ameen to commit/push (suggested: branch collab/sol-0001 or onto feat/execution-envelope).
-    Intake + crosswise-review protocol PREPARED at work/collab/SOL-0001/INTAKE-CHECKLIST.md
+    ULTRACODE crosswise-review workflow AUTHORED (work/collab/SOL-0001/ultracode-crosswise.workflow.js — Ameen invoked ultracode for SOL work) + intake protocol at work/collab/SOL-0001/INTAKE-CHECKLIST.md
     (incl. the drift table: Sol's baseline predates the WO-0024..0027 contract-relevant
     changes). Collab-lane codification PREPARED at work/collab/PROPOSAL-cross-model-lane.md
     (yes/no gate).
+  - WO-0030 (interface lift): APPROVED in-chat, next in queue (not started — the last
+    approved item; everything else in this list is human/planning-seat/SOL-blocked).
   - T5: ADR-009 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
     blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
     are remediated and pinned at tip.

@@ -1,6 +1,6 @@
 # PROPOSAL — codify the cross-model collaboration lane into the AI Project OS
 
-Status: DRAFT for Ameen's yes/no. He asked on 2026-07-12 whether the SOL-0001 system should be
+Status: **ACCEPTED 2026-07-12** — installed as `.ai-os/core/16_CROSS_MODEL_BUILD.md` (v1.0). He asked on 2026-07-12 whether the SOL-0001 system should be
 refined into `.ai-os/` and then deferred the decision "until the work comes back." It is back —
 this is the prepared codification, distilled from what the pilot actually exercised. If
 approved, this text becomes `.ai-os/core/16_CROSS_MODEL_BUILD.md` (sibling of
