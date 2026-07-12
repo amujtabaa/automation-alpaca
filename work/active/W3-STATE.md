@@ -54,7 +54,13 @@ awaiting:
     SPEC-09 stale-plan-vs-defect classification) — human gate, yes/no on prepared text.
   - WO-0030 (interface lift, drafted): approval — non-gated, mechanical, kills the cast/Protocol
     debt (CC-06).
-  - SOL-0001 deliverables; collab-protocol codification deferred until pilot returns.
+  - SOL-0001: Sol FINISHED (4 files in its sandbox: sol_policy.py, test_sol_policy.py,
+    sol_conformance_plugin.py, MANIFEST.md) but NOT YET PUSHED to any branch of this repo —
+    Ameen to commit/push (suggested: branch collab/sol-0001 or onto feat/execution-envelope).
+    Intake + crosswise-review protocol PREPARED at work/collab/SOL-0001/INTAKE-CHECKLIST.md
+    (incl. the drift table: Sol's baseline predates the WO-0024..0027 contract-relevant
+    changes). Collab-lane codification PREPARED at work/collab/PROPOSAL-cross-model-lane.md
+    (yes/no gate).
   - T5: ADR-009 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
     blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
     are remediated and pinned at tip.
