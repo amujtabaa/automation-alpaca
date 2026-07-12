@@ -24,7 +24,6 @@ from app.models import (
     OrderStatus,
     SellReason,
     SessionType,
-    utcnow,
 )
 from app.monitoring import EnvelopeTapeBuffer
 from app.reconciliation import (

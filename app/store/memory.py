@@ -1405,9 +1405,7 @@ class InMemoryStateStore(StateStore):
             assert plan.outcome == ORDER_TRANSITION_APPLY
             assert plan.order is not None and plan.event is not None
             self._orders[order.id] = plan.order
-            self._append_event_unlocked(
-                plan.event.event_type, **plan.event.as_kwargs()
-            )
+            self._append_event_unlocked(plan.event.event_type, **plan.event.as_kwargs())
             exec_event = execution_event_for_routine_transition(
                 order, plan.order.status, plan.order.filled_quantity
             )
@@ -2704,9 +2702,7 @@ class InMemoryStateStore(StateStore):
                     # WO-0024: the kill blocks new order intent (INV-060) — a
                     # staged CREATED order IS pending order intent, so it dies
                     # in the same atomic unit as the freeze.
-                    self._cancel_staged_envelope_orders_unlocked(
-                        frozen, actor=actor
-                    )
+                    self._cancel_staged_envelope_orders_unlocked(frozen, actor=actor)
             return session.model_copy(deep=True)
 
     async def set_buys_paused(

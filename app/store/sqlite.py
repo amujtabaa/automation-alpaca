@@ -2333,8 +2333,7 @@ class SqliteStateStore(StateStore):
             assert plan.outcome == ORDER_TRANSITION_APPLY
             assert plan.order is not None and plan.event is not None
             cur.execute(
-                "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
-                "WHERE id=?",
+                "UPDATE orders SET status=?, canceled_at=?, updated_at=? WHERE id=?",
                 (
                     OrderStatus.CANCELED.value,
                     _dt(plan.order.canceled_at),
@@ -2342,9 +2341,7 @@ class SqliteStateStore(StateStore):
                     plan.order.id,
                 ),
             )
-            self._insert_event(
-                cur, plan.event.event_type, **plan.event.as_kwargs()
-            )
+            self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
             exec_event = execution_event_for_routine_transition(
                 order, plan.order.status, plan.order.filled_quantity
             )
@@ -4020,9 +4017,7 @@ class SqliteStateStore(StateStore):
                     # WO-0024: the kill blocks new order intent (INV-060) — a
                     # staged CREATED order IS pending order intent, so it dies
                     # in the same transaction as the freeze.
-                    self._cancel_staged_envelope_orders_locked(
-                        cur, frozen, actor=actor
-                    )
+                    self._cancel_staged_envelope_orders_locked(cur, frozen, actor=actor)
             return session
 
     async def set_buys_paused(

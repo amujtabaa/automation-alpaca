@@ -38,7 +38,6 @@ from app.models import (
     OrderStatus,
     SellReason,
     SessionType,
-    utcnow,
 )
 from app.reconciliation import (
     ENVELOPE_EXEC_DIVERGENCE,
@@ -249,7 +248,10 @@ async def test_PIN_F3_redrive_after_ttl_makes_no_venue_call(any_store):
 
     fresh = MockBrokerAdapter()
     refused = await redrive_staged_envelope_action(
-        any_store, fresh, env.id, now=later(90)  # past the 60s TTL
+        any_store,
+        fresh,
+        env.id,
+        now=later(90),  # past the 60s TTL
     )
     assert fresh.submitted == [] and fresh.replaced == [], (
         "an EXPIRED mandate's staged order reached the venue via redrive"

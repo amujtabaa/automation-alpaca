@@ -34,7 +34,6 @@ from app.models import (
     utcnow,
 )
 from app.reconciliation import (
-    ENVELOPE_EXEC_BLOCKED,
     ENVELOPE_EXEC_DIVERGENCE,
     ENVELOPE_EXEC_CANCELLED,
     ENVELOPE_EXEC_QUARANTINED,
@@ -462,8 +461,7 @@ async def test_kill_between_staging_and_venue_call_blocks_at_the_claim(any_store
     cancel_seq = next(
         e.sequence
         for e in events
-        if e.order_id == staged.order.id
-        and e.event_type is ExecutionEventType.CANCELED
+        if e.order_id == staged.order.id and e.event_type is ExecutionEventType.CANCELED
     )
     assert frozen_seq < cancel_seq
 
@@ -513,8 +511,7 @@ async def test_redrive_of_a_frozen_envelopes_staged_order_cancels_locally(any_st
     # The cancel is event-logged (order-transition ExecutionEvent).
     events = await any_store.get_execution_events()
     assert any(
-        e.order_id == refused.order_id
-        and e.event_type is ExecutionEventType.CANCELED
+        e.order_id == refused.order_id and e.event_type is ExecutionEventType.CANCELED
         for e in events
     )
 
@@ -534,15 +531,16 @@ async def test_redrive_past_staleness_ceiling_cancels_locally(any_store):
 
     fresh = MockBrokerAdapter()
     refused = await redrive_staged_envelope_action(
-        any_store, fresh, env.id, now=later(30 + 121)  # past the 120s ceiling
+        any_store,
+        fresh,
+        env.id,
+        now=later(30 + 121),  # past the 120s ceiling
     )
     assert refused is not None
     assert refused.outcome == ENVELOPE_EXEC_CANCELLED
     assert "old" in refused.detail
     assert fresh.submitted == [] and fresh.replaced == []
-    assert (
-        await any_store.get_order(refused.order_id)
-    ).status is OrderStatus.CANCELED
+    assert (await any_store.get_order(refused.order_id)).status is OrderStatus.CANCELED
     # The envelope itself is untouched — staleness is not a defect.
     assert (await any_store.get_envelope(env.id)).status is S.ACTIVE
     actions = await envelope_events(
@@ -570,8 +568,8 @@ async def test_sqlite_staging_is_all_or_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(SqliteStateStore, "_insert_execution_event", explode)
     with pytest.raises(RuntimeError):
         await store.stage_envelope_action(
-        env.id, planned(), snapshot_fingerprint=FP, now=later()
-    )
+            env.id, planned(), snapshot_fingerprint=FP, now=later()
+        )
     monkeypatch.setattr(SqliteStateStore, "_insert_execution_event", original)
 
     # The whole transaction rolled back: no order row, no action event —
@@ -636,8 +634,8 @@ async def test_memory_staging_is_all_or_nothing(monkeypatch):
     _explode_on(monkeypatch, ExecutionEventType.ENVELOPE_ACTION)
     with pytest.raises(RuntimeError):
         await store.stage_envelope_action(
-        env.id, planned(), snapshot_fingerprint=FP, now=later()
-    )
+            env.id, planned(), snapshot_fingerprint=FP, now=later()
+        )
 
     orders = await store.list_orders()
     assert all(o.sell_intent_id != env.sell_intent_id for o in orders)

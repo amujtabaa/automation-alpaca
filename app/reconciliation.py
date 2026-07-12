@@ -698,7 +698,7 @@ async def redrive_staged_envelope_action(
             f"{envelope.status.value if envelope is not None else 'missing'}"
         )
     else:
-        staged_at = last.ts_event or last.created_at
+        staged_at = last.ts_event or last.ts_init
         age = (ts - staged_at).total_seconds()
         if age > REDRIVE_MAX_STAGED_AGE_S:
             refusal = (
