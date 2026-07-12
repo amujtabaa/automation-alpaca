@@ -223,6 +223,7 @@ async def test_flatten_mid_reprice_staged_order_never_reaches_the_venue(any_stor
     # ZERO venue calls and the order never leaves CREATED via this path.
     fresh_adapter = MockBrokerAdapter()
     redriven = await redrive_staged_envelope_action(any_store, fresh_adapter, env.id)
+    assert redriven is None or redriven.outcome != "submitted"
     assert fresh_adapter.submitted == [] and fresh_adapter.replaced == [], (
         "a cancelled envelope's staged order reached the venue"
     )
@@ -408,5 +409,9 @@ async def test_exhausted_signal_path_via_the_tick(any_store):
         now=T20.NOW,
     )
     after = await any_store.get_envelope(env.id)
-    assert after.status in (S.EXHAUSTED, S.FROZEN)  # never a venue call:
+    # WO-0028/TC-07: the union (EXHAUSTED, FROZEN) let a plan-time miss that
+    # lands FROZEN via write-time divergence pass a test named for the
+    # exhausted SIGNAL. Pin the mechanism: the policy itself must emit
+    # ExhaustedSignal -> EXHAUSTED terminal.
+    assert after.status is S.EXHAUSTED
     assert len(adapter.replaced) == 2

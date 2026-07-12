@@ -294,6 +294,9 @@ class InMemoryStateStore(StateStore):
             k: v.model_copy(deep=True) for k, v in self._candidates.items()
         }
         saved_orders = {k: v.model_copy(deep=True) for k, v in self._orders.items()}
+        saved_envelopes = {
+            k: v.model_copy(deep=True) for k, v in self._envelopes.items()
+        }
         saved_sell_intents = {
             k: v.model_copy(deep=True) for k, v in self._sell_intents.items()
         }
@@ -315,6 +318,7 @@ class InMemoryStateStore(StateStore):
             self._watchlist = saved_watchlist
             self._candidates = saved_candidates
             self._orders = saved_orders
+            self._envelopes = saved_envelopes
             self._sell_intents = saved_sell_intents
             self._fills = saved_fills
             self._submit_recoveries = saved_recoveries

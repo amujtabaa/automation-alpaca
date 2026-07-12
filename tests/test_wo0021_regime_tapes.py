@@ -180,6 +180,39 @@ def test_grinder_never_shaken_out_and_ratchet_monotone():
     assert stops and all(b >= a - 1e-9 for a, b in zip(stops, stops[1:]))
 
 
+def test_ratchet_holds_when_atr_expands_and_candidates_collapse():
+    """WO-0028/TC-02 — the tape that actually pins the ratchet.
+
+    The grinder above re-ratchets per cut, so `stop = candidate` (ratchet
+    deleted) survived it: on a smooth tape the LAST candidate is itself
+    monotone. Here ATR expands violently AFTER a tight rise while ref_high
+    stays put, so the last per-step candidate collapses far below an earlier
+    one — only the running max (the ratchet) keeps the working stop from
+    LOOSENING exactly when it must not."""
+
+    calm = walk(120, 10.0, lambda j: 0.02, lambda j: 120)
+    # Whipsaw below the peak: first step down, then ±0.25 oscillation — the
+    # running high never advances, but 30s-bar true ranges explode.
+    whip = walk(
+        120,
+        calm[-1].last_price,
+        lambda j: -0.25 if j % 2 == 0 else 0.25,
+        lambda j: 120,
+        start_i=120,
+        start_cum=calm[-1].volume,
+    )
+    env = envelope()
+    ws_calm = compute_working_stop(env, aggregate(calm, BAR), urgency=0.0)
+    ws_full = compute_working_stop(env, aggregate(calm + whip, BAR), urgency=0.0)
+    assert ws_calm.stop is not None and ws_full.stop is not None
+    # Sanity: the tape genuinely distinguishes — the final unratcheted
+    # candidate sits strictly below the calm-phase stop.
+    assert ws_full.candidate is not None
+    assert ws_full.candidate < ws_calm.stop - 1e-6
+    # The pin: extending the tape can NEVER loosen the working stop.
+    assert ws_full.stop >= ws_calm.stop - 1e-9
+
+
 # --- 3. trend-then-pullback: tranche into strength, remainder survives ----------- #
 
 

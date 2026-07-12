@@ -14,7 +14,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from hypothesis import HealthCheck, given, settings as hyp_settings, strategies as st
+from hypothesis import (
+    HealthCheck,
+    example,
+    given,
+    settings as hyp_settings,
+    strategies as st,
+)
 
 from app.broker.mock import MockBrokerAdapter
 from app.models import (
@@ -113,6 +119,20 @@ async def _drive_script(store, script):
 
 
 @given(script=st.lists(ACTION_STRATEGY, min_size=1, max_size=6))
+# WO-0028/TC-06: the random strategy essentially never produces the exact
+# all-valid [SUBMIT, REPRICE×5] drain that reaches the budget edge (an
+# off-by-one in the budget rail survived 3/3 full runs), so the edge is
+# pinned as an explicit directed example — hypothesis always runs it.
+@example(
+    script=[
+        (ActionKind.SUBMIT, 9.90, 10),
+        (ActionKind.REPRICE, 9.80, 10),
+        (ActionKind.REPRICE, 9.70, 10),
+        (ActionKind.REPRICE, 9.60, 10),
+        (ActionKind.REPRICE, 9.50, 10),
+        (ActionKind.REPRICE, 9.40, 10),
+    ]
+)
 @hyp_settings(
     max_examples=25,
     deadline=None,

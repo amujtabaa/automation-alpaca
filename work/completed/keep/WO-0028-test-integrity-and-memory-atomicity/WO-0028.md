@@ -32,6 +32,13 @@ created: 2026-07-12
    so the `replace_calls <= 4` leg is reachable.
 7. TC-08: `create_autospec(TradingClient)` in WO-0019a adapter tests.
 8. Re-run the test-critic's 13-mutation matrix; all 13 must now be KILLED (paste evidence).
+9. (Amended at execution start, 2026-07-12) Pin the REV-0022 Phase A repros as
+   `xfail(strict=True)` tests — F1 zero-position, F3 redrive shapes, F4 second-leg freeze,
+   F5 inferred-fill bypass, F6 supersession (both defects) — so findings cannot silently
+   drift and each remediation WO flips its pin loudly (the WO-0021 pattern).
+10. (Amended) Fix the pre-existing ruff F841 at tests/test_wo0021_envelope_chaos.py:225
+    discovered at baseline — the WO-0021 close-out gate claim did not hold at the merged
+    tip; incident noted in the fable-done.
 
 ## Allowed paths
 ```yaml

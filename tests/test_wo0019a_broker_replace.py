@@ -130,15 +130,18 @@ class TestAlpacaReplace:
     def _adapter_and_mock():
         pytest.importorskip("alpaca")
         from types import SimpleNamespace
-        from unittest.mock import Mock
+        from unittest.mock import create_autospec
+
+        from alpaca.trading.client import TradingClient
 
         from app.broker.alpaca_paper import AlpacaPaperAdapter
 
         adapter = AlpacaPaperAdapter("fake-key", "fake-secret")
-        client = Mock()
-        client.replace_order_by_id = Mock(
-            return_value=SimpleNamespace(id="new-venue-id")
-        )
+        # WO-0028/TC-08: autospec, not a bare Mock — if an SDK upgrade renames
+        # replace_order_by_id / get_order_by_client_id, these tests FAIL
+        # instead of silently passing against a method that no longer exists.
+        client = create_autospec(TradingClient, instance=True)
+        client.replace_order_by_id.return_value = SimpleNamespace(id="new-venue-id")
         adapter._client = client
         return adapter, client
 
@@ -198,26 +201,23 @@ class TestAlpacaReplace:
         adopt the already-created replacement, never mint a second one."""
 
         from types import SimpleNamespace
-        from unittest.mock import Mock
 
         adapter, client = self._adapter_and_mock()
         client.replace_order_by_id.side_effect = self._api_error(
             422, "duplicate client_order_id"
         )
-        client.get_order_by_client_id = Mock(
-            return_value=SimpleNamespace(id="already-created")
+        client.get_order_by_client_id.return_value = SimpleNamespace(
+            id="already-created"
         )
         new_id = await adapter.replace_order("venue-1", client_order_id="repl-a6")
         assert new_id == "already-created"
         client.get_order_by_client_id.assert_called_once_with("repl-a6")
 
     async def test_duplicate_whose_lookup_fails_is_terminal(self):
-        from unittest.mock import Mock
-
         adapter, client = self._adapter_and_mock()
         client.replace_order_by_id.side_effect = self._api_error(
             422, "duplicate client_order_id"
         )
-        client.get_order_by_client_id = Mock(side_effect=RuntimeError("down"))
+        client.get_order_by_client_id.side_effect = RuntimeError("down")
         with pytest.raises(TerminalBrokerError):
             await adapter.replace_order("venue-1", client_order_id="repl-a7")
