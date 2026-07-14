@@ -61,6 +61,13 @@ awaiting:
     spec-0 (ADR/INV text). Non-gated (may pin+fix under a WO): parity-0, mutation-0, completeness-1,
     parity-1, interface-lift-0. Nine non-P0 pins queued for the remediation WO (not yet written —
     several are gated/decision-gaps and must not be pinned directionally).
+    REMEDIATION WOs DRAFTED (await human approval; nothing implemented):
+      - WO-0032 (P0 single-mandate-per-symbol) — HUMAN-GATED (order-intent/session-close); fix
+        direction is a human decision (recommend per-symbol single-ACTIVE guard).
+      - WO-0033 (non-gated batch: parity-0/mutation-0/completeness-1/parity-1/interface-lift-0) —
+        ready to execute on approval.
+      - WO-0034 (event-log fidelity: concurrency-0, spec-1) — HUMAN-GATED (event-log truth); also
+        routes spec-0 (INV-085 text) + pure-math-0 (magnitude band) to the planning seat.
   - T4: human runs Codex Phase B (work/review/W3-codex-review-prompt.md, pin f092ca7 — the pin
     PREDATES the remediation; reconciliation scaffold pre-filled at
     work/review/REV-0023/phase-b-reconciliation.md, incl. the recommendation to hand Codex a
