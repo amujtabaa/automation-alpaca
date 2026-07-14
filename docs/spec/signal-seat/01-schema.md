@@ -35,7 +35,7 @@ rejection-and-forget"):
 ```
 class SignalStatus(str, Enum):
     RECEIVED = "received"          # pending operator action
-    QUARANTINED = "quarantined"    # terminal (validation / duplicate-conflict / producer-quarantine sweep)
+    QUARANTINED = "quarantined"    # terminal (validation / producer-quarantine sweep; duplicate-conflicts are audit-only and never set this)
     EXPIRED = "expired"            # terminal (TTL lapse or implausible issued_at)
     REJECTED = "rejected"          # terminal (operator)
     APPROVED = "approved"          # terminal (operator; conversion succeeded atomically)
