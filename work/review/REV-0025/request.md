@@ -3,7 +3,7 @@ type: Review Request
 rev_id: REV-0025
 title: ADR-009 re-review — REV-0024 BLOCK remediation (A-1 clause 6, A-4 invalid budget + rails gate)
 status: QUEUED   # flip to AWAITING_REVIEW at dispatch; re-freeze commit_range if the branch merges first
-targets: [ADR-009 (A-1 clause 6, A-4 amendments), docs/spec/signal-seat/**, WO-0102/0104 gating + rails text, pkl/architecture/signal-seat.md]
+targets: ["ADR-009 (A-1 clause 6, A-4 amendments)", "docs/spec/signal-seat/**", "WO-0102/0104 gating + rails text", "pkl/architecture/signal-seat.md"]
 human_gated_surfaces: [order-submission, event-log-vocabulary, schema-migration, transport-boundary]   # A-1 clause 6 adds a launch/transport surface — Ameen-decided 2026-07-14
 prior_packet: REV-0024 (verdict BLOCK; F-002/F-003 CLOSED, F-001/F-004 NOT — this packet verifies the two re-remediations)
 commit_range: SET-ON-DISPATCH   # branch under active fix — Codex reviews whatever is pushed when pointed at this request; freeze the reviewed SHA in result.md frontmatter

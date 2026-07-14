@@ -91,7 +91,7 @@ what enter those fields):
 
 | Field | Type | Constraints |
 |---|---|---|
-| `quantity` | `int` | `> 0`; for sells, `quantity > live position` at conversion time (read under the store lock) **refuses** the conversion with reason `POSITION_CHANGED` — never silently capped (`05-conversion.md §1`) |
+| `quantity` | `int` | `> 0`; for sells, `quantity > (live position − outstanding committed sell exposure)` at conversion time (read under the store lock) **refuses** the conversion with reason `POSITION_CHANGED` — never silently capped. **The ceiling is the exposure-aware available position in EVERY state, not bare `live position`** (ADR-009 A-3 / `05-conversion.md §3a`; a bare-`live position` check admits a 50-share signal sell against a 100-share position with 90 already committed to exits — the joint-oversell hole INV-4 forbids; REV-0024-F P1) |
 | `limit_price` | `float` | finite, `> 0` (`limit_price_reason` — the F1/BACKEND-1 rule) |
 | `actor` | threaded from the authenticated operator credential + `X-Actor` audit label | |
 
