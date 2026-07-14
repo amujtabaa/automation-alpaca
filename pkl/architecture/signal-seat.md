@@ -55,9 +55,13 @@ Implementation: WO-0102 → WO-0103 ∥ WO-0104, all RE-GATED pending remediatio
 - Rails: TTL/staleness quarantine at ingest; per-producer **refilling rate bucket** (bounds
   throughput) **plus a non-refilling invalid/conflict budget** (bounds storage — the refilling
   bucket alone lets paced-at-refill hostility append forever; ADR-009 A-4, REV-0024-F-002); either
-  breach → producer quarantine with operator release (browser control required, resets the budget);
-  post-quarantine ingress is boundary-rejected with epoch-bounded coalesced audit — the event log
-  stays bounded under indefinite flood. **No interim ceiling** (withdrawn, REV-0024-F-004): instead
+  breach → producer quarantine with operator release (browser control required, resets **both** the
+  bucket and the budget; the budget's check-debit is atomic with the terminal append and its consumed
+  count is durable across restart — REV-0025-F-003/F-004); post-quarantine ingress is boundary-rejected
+  with epoch-bounded coalesced audit. **The constant storage bound is on attributable-rejection traffic
+  only** (≤ invalid_budget + 2 rail events per cycle, each cycle needing a human release); legitimately
+  *accepted* signals are **rate-bounded, not finite over indefinite time** (REV-0025-F-006 — not a
+  globally-finite-storage claim). **No interim ceiling** (withdrawn, REV-0024-F-004): instead
   `signal_seat_enabled` is gated on full rails by a **rails-presence startup guard**, so an enabled
   endpoint structurally cannot run unrailed. Live enablement is the joint WO-0102+WO-0103+WO-0104
   milestone (ingest + atomic conversion + rails; the A-2 conversion is WO-0103's, not WO-0102's).

@@ -14,10 +14,8 @@ created: 2026-07-11
 
 # Work Order: Approval surface (Streamlit) + conversion gate
 
-> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, then WO-0102 (this WO's own independent review requirement also stands). NOTE F-002 lands here hardest: conversion must be one dual-store atomic command with crash/interleaving tests
-> and WO-0102 is complete. **Approval = order submission trigger ⇒ human-gated surface ⇒
-> Complex classification regardless of size; queues for independent cross-model review before
-> any beta milestone relies on it.** Runs after 0102; may run in parallel with 0104.
+> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022 BLOCK → A-1..A-4 → REV-0024 BLOCK → REV-0025 BLOCK (7 P1s); re-remediated per Ameen's D-1/D-2, gated on **REV-0026** acceptance, then WO-0102 (this WO's own independent review requirement also stands). NOTE F-002 lands here hardest: conversion must be one dual-store atomic command with crash/interleaving tests.
+> **This WO owns the A-2 atomic approval→conversion — the WO-0103 half of the joint enablement milestone** (ADR-009 A-4, REV-0025-F-005): live enablement is the joint WO-0102+WO-0103+WO-0104 milestone, and the joint mounted-app suite proves **ingest → operator approval → exactly one atomically-linked intent** against the real rails. Enforced as a release/deployment gate + that conversion oracle (Ameen D-2), not a new runtime startup check. **Approval = order submission trigger ⇒ human-gated surface ⇒ Complex classification regardless of size; queues for independent cross-model review before any beta milestone relies on it.** Runs after 0102; may run in parallel with 0104.
 
 ## Goal
 

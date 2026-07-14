@@ -2,9 +2,10 @@
 type: Review Disposition
 rev_id: REV-0025
 verdict_received: BLOCK
-disposition_status: AWAITING_HUMAN
+disposition_status: REMEDIATION_DRAFTED   # Ameen's D-1/D-2 decided; all 7 findings + 2 extras applied; queued for REV-0026
 reviewed_commit: 209496d3812648376920a7dacccea6664eb5def8
 reviewer_model: GPT-5 Codex
+next_packet: REV-0026
 date: 2026-07-14
 ---
 
@@ -112,8 +113,40 @@ literally F-003, the other two are new-but-mechanical, captured here so they lan
 - No remediation applied yet — D-1 and D-2 are yours to decide; the mechanical fixes land in one
   batch alongside your decisions (not per-finding reactive pushes).
 
+## Human decisions (Ameen, 2026-07-14) and the remediation applied
+
+- **D-1 → restore proxy-private (F-001).** The bind guarantee moves to **app construction/import**:
+  the sanctioned launcher mints an opaque one-shot code-owned capability (not env/config/importable)
+  before importing the app; with the flag on, building the app without it **raises**, so bare
+  `uvicorn app.main:app` fails at import → **no listener** (connection refused, true pre-serve
+  failure). The 503 request guard is retained only as defense-in-depth. (ADR A-1 clause 6, 04-auth §1,
+  WO-0102.)
+- **D-2 → release/deployment gate + test (F-005).** The WO-0103 conversion half is a binding
+  sequencing/deployment gate + a joint mounted-app conversion oracle (ingest → approval → exactly one
+  atomically-linked intent), **not** a new runtime startup check. The rails-presence guard is
+  **permanent and satisfied** (never deleted); production is proven to wire the real provider; fakes
+  are test-only construction production can't select. (ADR A-4, 03-rails §2, WO-0102/0103/0104.)
+
+### Remediation change set (applied 2026-07-14, PROPOSED — pending REV-0026)
+All seven findings + the two extra inline items landed in one batch:
+- **F-001/F-002** — construction-time capability refusal (no listener without the launcher);
+  mutation-sensitive subprocess proof (all unrelated preconditions set, exact A-1 failure reason,
+  same-config loopback positive control, socket-level connection-refused).
+- **F-003** — the check-reserve-debit is atomic with the terminal append (one lock/txn); step-2 pass
+  doesn't pre-grant a slot; concurrency/slow-body/crash tests.
+- **F-004** — pinned limit AND consumed/remaining count are durable rail state, restored before
+  serving, replay-reconstructable; restart can't zero consumed.
+- **F-005** — permanent guard satisfied-not-deleted; production wires real provider; joint conversion
+  oracle; matrix asserts required routes exist.
+- **F-006** — one-write epoch-opener carve-out carried through WO-0102 (no blanket "zero writes");
+  "write-free" reserved for post-opener rejects; storage claims narrowed to attributable-rejection
+  traffic (accepted signals rate-bounded, not globally finite).
+- **F-007** — `POST /api/session/close` added to the §1a matrix as operator-only.
+- **Extras** — boundary rejection precedes idempotent replay (01-schema §3); `SIGNAL_APPROVED`
+  carries `record_id`.
+
 ## Path to clearing the gate
 
-You decide D-1 (proxy-private vs. reachable-503) and D-2 (WO-0103 gate: process vs. runtime check) →
-I apply those plus the six mechanical fixes as one coherent batch → re-review (REV-0026). The gate
-clears only on an ACCEPT / ACCEPT-WITH-CHANGES disposition of that re-review.
+**REV-0026** re-reviews this batch (`request.md` staged). The gate clears only on an ACCEPT /
+ACCEPT-WITH-CHANGES disposition of REV-0026 — at which point ADR-009 may be marked Accepted and
+WO-0102..0104 unfreeze. ADR-009 stays **Proposed** and the WOs stay **RE-GATED** until then.

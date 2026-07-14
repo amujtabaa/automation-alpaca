@@ -171,27 +171,40 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
      uds=…)`) with the bind derived from — and re-validated against — that setting. With
      `signal_seat_enabled`, the entrypoint **refuses to start** (process exits non-zero, before any
      socket serves) on any non-loopback/non-socket bind, under both transport policies.
-   - **A launch-provenance guard enforced at BOTH lifespan startup AND request time**: the
-     entrypoint sets an in-process sentinel (`app.state`-carried, not an env var an attacker
-     controls) marking the app as started through the sanctioned launcher. With `signal_seat_enabled`
-     on: (i) lifespan startup **fails fast unless the sentinel is present** (loud, early failure); and
-     (ii) — because a direct launch can **skip lifespan entirely** (`uvicorn app.main:app --host
-     0.0.0.0 --lifespan off`, which uvicorn supports, would otherwise dodge the startup guard,
-     REV-0024-F P1) — an ASGI-level **fail-closed request guard** rejects **every** request
-     (503/refused, no route work) whenever the sentinel is absent. The request guard runs regardless
-     of `--lifespan`, so even a lifespan-off direct launch serves nothing. A bare
-     `uvicorn app.main:app` (with or without `--lifespan off`) imports the module-level `app` without
-     the launcher, cannot set the sentinel, and is therefore inert for the flag-on seat. (Flag off ⇒
-     the sentinel is not required; beta's current `uvicorn app.main:app` dev command works unchanged.)
-   - **The direct `uvicorn app.main:app` invocation is deprecated AND non-functional when the seat is
-     enabled** (the request guard makes it serve nothing, not merely discouraged); the README
-     documents `python -m app` as the sole sanctioned start command for an enabled seat.
-   - **Proof (WO-0102 subprocess tests):** (a) the launcher invoked with a non-loopback bind and the
-     flag on exits non-zero before serving; (b) `uvicorn app.main:app --host 0.0.0.0` with the flag on
-     — **both with and without `--lifespan off`** — serves no request (lifespan-on fails at startup;
-     lifespan-off starts but every request is 503/refused by the request guard, so nothing is
-     reachable on the network bind). An app-setting-only or lifespan-only assertion does not satisfy
-     this clause.
+   - **Construction-time launch-provenance capability — no listener without the launcher** (Ameen
+     decision 2026-07-14 D-1, remediates REV-0024-F-001 / REV-0025-F-001). A request-time 503 guard
+     is **insufficient**: it still lets a bare `uvicorn app.main:app --host 0.0.0.0 --lifespan off`
+     **accept TCP connections and serve `HTTP 503` on the forbidden non-loopback port** (Codex
+     REV-0025 live-reproduced this) — reachable is not proxy-private, and A-1's invariant demands
+     failure **before any socket accepts**. So the guarantee is enforced at **app construction /
+     import**, before Uvicorn can open a listener: the sanctioned launcher mints an **opaque,
+     one-shot, code-owned capability** (an in-process token created in `app/server.py::run()`,
+     **not** an env var, config value, or anything an operator/attacker can set) and passes it to a
+     construction factory; with `signal_seat_enabled` on, **building the app without that capability
+     raises** (`create_app`/the factory refuses). Constraints on the capability: **no environment
+     switch, no importable pre-authorized `app` object, and no zero-argument authorized factory** may
+     mint it — otherwise the bare-uvicorn path could re-acquire it. Consequently the module-level
+     `app = create_app()` import target is **removed (or itself refuses) under the flag**: a bare
+     `uvicorn app.main:app` fails at **import**, Uvicorn never receives an app, and **no listener is
+     ever opened** — true pre-serve failure, connection refused, nothing on the network port.
+   - **A fail-closed ASGI request guard remains as defense-in-depth** (not the primary control): if
+     any future path constructs a flag-on app without the capability, every request is refused. But
+     the *binding* guarantee is the construction refusal above — the request guard is the backstop,
+     not the boundary.
+   - **The direct `uvicorn app.main:app` invocation is unsupported when the seat is enabled** (it
+     fails at import — no listener); the README documents `python -m app` as the sole sanctioned start
+     command for an enabled seat. (Flag off ⇒ construction is unrestricted; beta's current
+     `uvicorn app.main:app` dev command works unchanged.)
+   - **Proof (WO-0102 subprocess tests, mutation-sensitive — REV-0025-F-002):** with `OPERATOR_API_KEY`
+     + producer map + rails all present (so no *unrelated* startup guard supplies the failure): (a)
+     `uvicorn app.main:app --host 0.0.0.0` with the flag on, **both `--lifespan on` and `--lifespan
+     off`**, fails to open an accepting listener — the hostile client gets **connection refused / no
+     listener**, asserted at the socket level, not an HTTP 503; (b) a **same-config positive control**
+     — the sanctioned `python -m app` launcher on the policy-valid loopback bind — reaches a **ready
+     listener** serving `GET /api/health`; (c) the launcher with a non-loopback bind + flag on exits
+     non-zero before serving, asserting the **exact A-1 bind-policy failure reason** (not a generic
+     pre-serve error). Removing/mutating any single A-1 check must make its own assertion fail; an
+     app-setting-only, lifespan-only, or reachable-503 assertion does not satisfy this clause.
 
 ### A-2 (remediates F-002) — Atomic conversion contract
 
@@ -304,12 +317,21 @@ correctly showed is unbounded over indefinite hostility):
   does **not** refill while the producer is un-quarantined; on exhaustion the producer is
   **quarantined** (`PRODUCER_QUARANTINED` opens the epoch), after which ingress is write-free per the
   epoch rule; the budget **resets only on human release** (`PRODUCER_RELEASED` — clause below).
-  Therefore
-  the append-only attributable-rejection volume per producer per cycle is **≤ `invalid_budget`
-  events + the rate-bucket-bounded accepted signals + 2 rail events**, and every *further* cycle
-  requires a human `PRODUCER_RELEASED` — indefinitely-paced invalid/conflict hostility can no longer
-  append forever, because it exhausts the non-refilling budget and stops at quarantine until a human
-  chooses to re-open the producer.
+  **The check-reserve-debit and the terminal event append are one linearizable store operation**
+  (one memory lock / one SQLite transaction — REV-0025-F-003): a request that cleared the pre-body
+  step-2 rails check re-checks-and-debits atomically at step 4, so with one slot left, concurrent or
+  slow-streamed-body requests cannot each append — exactly one consumes the slot, the rest are
+  post-exhaustion; a crash leaves either the whole {debit + event} or neither, both stores.
+  **Both the pinned per-cycle limit AND the consumed/remaining count are durable producer-rail state**
+  restored **before serving** and updated atomically with each terminal append (REV-0025-F-004): a
+  restart cannot reset consumed slots to zero (which would grant a fresh budget without a human
+  release); replay reconstructs both the historical limit and the consumed count in both stores.
+  The **constant storage bound is on attributable-rejection traffic only**: per cycle **≤
+  `invalid_budget` terminal-at-ingest events + 2 rail events**, and every *further* cycle requires a
+  human `PRODUCER_RELEASED` — so indefinitely-paced invalid/conflict/expiry hostility can no longer
+  append forever. (Legitimately *accepted* signals are separately **rate-bounded, not part of this
+  constant** — see the Option-E scope note in A-2: their volume is finite per window but not over
+  indefinite time, by design.)
 - **At most ONE `PRODUCER_QUARANTINED` event per quarantine epoch** (epoch = quarantine →
   release), opened by **either** trigger — rate-bucket breach **or** invalid/conflict-budget
   exhaustion. Post-quarantine ingress appends **nothing**.
@@ -331,22 +353,30 @@ correctly showed is unbounded over indefinite hostility):
 ceiling* in WO-0102 ahead of the full rails, on the theory that a counting-only ceiling kept an
 enabled endpoint from ever being unrailed. REV-0024 showed that ceiling was rate-bounded, not
 storage-bounded, so it left exactly the paced-flood hole above. It is **removed**, not tuned.
-In its place, `signal_seat_enabled` gains a **rails-presence startup guard**, exactly parallel to
-clause A-1.4's credential-presence guard: **with the flag on, startup fails fast unless the full
-per-producer rails are wired** — the refilling rate bucket, the non-refilling invalid/conflict
-budget, the producer-quarantine epoch machinery, and the human `PRODUCER_RELEASED` path. There is
-therefore **no window in which an enabled endpoint runs without finite-audit flood protection**, and
-no interim ceiling to reason about. Consequence for sequencing: the endpoint's **live enablement is
-the joint WO-0102 + WO-0103 + WO-0104 milestone** — WO-0102 ships the ingestion endpoint and the
-A-1 boundary; **WO-0103 owns the A-2 atomic approval→conversion** (the human-gated order-submission
-surface — it is NOT WO-0102's, and enabling the seat without it would either pull that surface into
-the medium-risk ingestion WO or falsely imply the F-002 conversion gate landed, REV-0024-F P1); and
-WO-0104 lands the full rails. The flag is **structurally un-enable-able** until WO-0104's rails
-satisfy the rails-presence guard, and an enabled seat whose approval path cannot atomically convert
-is incoherent (re-opening F-002), so **all three** must land before live enablement. WO-0104 lands
-the rails and lifts the guard; the flag-on integration suite (route-authorization matrix at the
-mounted app, constant-event-row flood tests) is authored across the WOs and runs green at that
-joint milestone — never against a half-railed or conversion-less app.
+In its place, `signal_seat_enabled` gains a **permanent rails-presence startup guard**, exactly
+parallel to clause A-1.4's credential-presence guard: **with the flag on, startup fails fast unless
+the full per-producer rails are wired** — the refilling rate bucket, the non-refilling invalid/conflict
+budget, the producer-quarantine epoch machinery, and the human `PRODUCER_RELEASED` path. The guard is
+**never removed** — it is a standing invariant that WO-0104 **satisfies** by wiring the real provider,
+**not** a scaffold that WO-0104 deletes (REV-0025-F-005). A *Protocol-presence* check alone cannot
+tell a real rails provider from a permissive no-op fake, so: **the production entrypoint is proven to
+construct the real WO-0104 provider, and any fake/permissive provider is confined to a test-only
+construction path that production config/environment cannot select** (the sole distinction is
+enforced, not merely labelled "never a production default"). There is therefore **no window in which
+an enabled endpoint runs without finite-audit flood protection**, and no interim ceiling to reason
+about.
+
+Consequence for sequencing: the endpoint's **live enablement is the joint WO-0102 + WO-0103 + WO-0104
+milestone** — WO-0102 ships the ingestion endpoint and the A-1 boundary; **WO-0103 owns the A-2
+atomic approval→conversion** (the human-gated order-submission surface — NOT WO-0102's); and WO-0104
+lands the full rails and satisfies the rails guard. **The WO-0103 half is enforced as a
+release/deployment gate + test, not a new runtime startup check** (Ameen decision 2026-07-14 D-2):
+the sequencing dependency is binding, and the **joint mounted-app integration suite proves
+ingest → operator approval → exactly one atomically-linked intent** against the real rails, alongside
+the route-authorization matrix and constant-event-row flood tests. The **route matrix asserts the
+required sensitive routes EXIST** (not merely classifies whatever happens to be mounted, REV-0025-F-005/
+F-007). All three WOs must land before live enablement; the suite runs green at that joint milestone —
+never against a half-railed or conversion-less app.
 
 ## Action Items
 

@@ -38,23 +38,41 @@ holds a **non-refilling** budget:
   (`expires_at ≤ received_at`, or a skew-based `issued_at_future`/`issued_at_stale` terminal
   quarantine, `02-lifecycle.md §3`) — so a producer cannot dodge the budget by pacing unique
   just-expired proposals (REV-0024-F P1). It does **not** refill while the producer is un-quarantined.
-- **Exact transition on the final slot (no ambiguity — REV-0024-F P2):** the attributable-rejection
-  append that debits the **last** slot completes **normally** — its own event is appended and its own
-  status returned (422 for validation, 409 for novel conflict, the `SIGNAL_EXPIRED`-at-ingest 201/terminal
-  for dead-on-arrival). The budget is then at zero; the **next** ingest (step 2, before body read)
-  observes exhaustion and opens the epoch with `PRODUCER_QUARANTINED` (429/403, write-free). The
-  budget reaching zero never retroactively suppresses the append that consumed it. Event count is
-  therefore exact: ≤ `invalid_budget` attributable events, then one `PRODUCER_QUARANTINED` on the
-  following ingest.
+- **The debit is linearizable and atomic with the terminal append (REV-0025-F-003).** Deciding
+  "is a slot available", **reserving/consuming** it, and appending the terminal event are **one
+  store operation** — a single memory lock hold / one SQLite transaction (the same single-writer
+  discipline as `app/store/base.py`). A request that cleared the pre-body step-2 rails check does
+  **not** get a free slot: at step 4, inside that atomic op, it **re-checks-and-debits** (or consumes
+  a reservation taken at step 2), so with one slot left and N concurrent (or slow-streamed-body)
+  requests, **exactly one** appends its terminal event and consumes the slot; the rest find zero and
+  are handled as post-exhaustion (below). If the budget is event-derived, the atomic append **is**
+  the debit; if it is a separate rail record, its update shares the same lock/transaction. Crash
+  between decision and append leaves **either** the complete {debit + event} **or** neither, in both
+  stores.
+- **Exact transition on the final slot (no ambiguity — REV-0024-F P2 / REV-0025-F-006):** the
+  attributable-rejection append that consumes the **last** slot completes **normally** — its own
+  event and status (422 validation, 409 novel conflict, terminal `SIGNAL_EXPIRED` for dead-on-arrival).
+  The budget is then zero; the **next** ingest, at step 2, opens the epoch by appending **exactly one**
+  `PRODUCER_QUARANTINED` (the single permitted epoch-opener write) and returns 429/403. **Only the
+  rejects *after* that opener are write-free** — the opener itself is a write; "write-free" never
+  describes the opener. Event count is exact: ≤ `invalid_budget` attributable events, then one
+  `PRODUCER_QUARANTINED`, then write-free rejects until release.
 - The budget **resets only on human release** (`PRODUCER_RELEASED`, §5), never by refill — so each
   further cycle of attributable-rejection flooding requires a human to re-open the producer.
+- **Both the pinned limit AND the consumed/remaining count are durable producer-rail state
+  (REV-0025-F-004).** It is not enough to persist the cycle's limit: the **consumed count** (or
+  equivalently remaining slots) must survive restart/redeploy too, restored **before the app serves**,
+  and updated atomically with each terminal append (same op as the debit above). Otherwise an
+  implementation could pin `limit=50`, consume 49, restart with `used=0`, and grant a fresh budget
+  with no `PRODUCER_RELEASED` — violating reset-only-on-human-release. **Replay** reconstructs both:
+  the historical pinned limit is carried in the durable rail record (or an event payload) and the
+  consumed count folds from the attributable terminal-at-ingest events since the last release, so
+  memory-replay and SQLite-reopen restore the **same binding remaining budget** in both stores.
 - **Config changes are cycle-scoped, not retroactive** (REV-0024-F P1): a change to
-  `signal_invalid_budget_per_epoch` (restart/redeploy) applies **only to accumulation cycles that
-  begin after the change** — a cycle begins at a producer's first attributable rejection after a
-  release (or from fresh). The limit in force when a cycle begins is **pinned and persisted with the
-  producer's rail state** (replay- and restart-stable), so a mid-cycle config bump cannot silently
-  grant a producer extra writes, and a mid-cycle reduction cannot retroactively quarantine on replay.
-  This preserves the non-refilling / resets-only-on-release contract across deploys.
+  `signal_invalid_budget_per_epoch` applies **only to cycles that begin after the change** — a cycle
+  begins at a producer's first attributable rejection after a release (or from fresh). The limit in
+  force when a cycle begins is pinned in that durable rail state, so a mid-cycle config bump cannot
+  grant extra writes and a mid-cycle reduction cannot retroactively quarantine on replay.
 
 Consequence: append-only attributable-rejection volume per producer per epoch is **≤
 `invalid_budget` events + 2 rail events** (plus the pre-quarantine accepted signals, themselves
@@ -71,22 +89,27 @@ REV-0024 showed that ceiling was **rate-bounded, not storage-bounded** (a produc
 ceiling still appended validation/conflict events forever, §1a). It is **withdrawn**, not tuned —
 there is no `signal_ingest_ceiling_*` setting and no interim window to reason about.
 
-In its place, `signal_seat_enabled` carries a **rails-presence startup guard**, exactly parallel to
-the credential-presence guard (`04-auth-and-api.md §1`): **with the flag on, `create_app` startup
-fails fast unless the full per-producer rails are wired** — the §1 refilling rate bucket, the §1a
-non-refilling invalid/conflict budget, the §4 producer-quarantine epoch machinery, and the §5 human
-release path. An enabled endpoint therefore structurally cannot run without finite-audit flood
-protection.
+In its place, `signal_seat_enabled` carries a **permanent rails-presence startup guard**, exactly
+parallel to the credential-presence guard (`04-auth-and-api.md §1`): **with the flag on, `create_app`
+startup fails fast unless the full per-producer rails are wired** — the §1 refilling rate bucket, the
+§1a non-refilling invalid/conflict budget, the §4 producer-quarantine epoch machinery, and the §5
+human release path. The guard is a **standing invariant that WO-0104 SATISFIES by wiring the real
+provider — never a scaffold it deletes** (REV-0025-F-005). Because a Protocol-presence check cannot
+distinguish a real provider from a permissive fake, **the production entrypoint is proven to
+construct the real WO-0104 provider, and any fake is confined to a test-only construction path
+production config/environment cannot select**. An enabled endpoint therefore structurally cannot run
+without finite-audit flood protection.
 
 **Sequencing consequence — live enablement is the joint WO-0102 + WO-0103 + WO-0104 milestone.**
 WO-0102 ships the ingestion endpoint and the A-1 boundary (**not** the atomic conversion — that A-2
-approval→conversion is WO-0103's human-gated surface, REV-0024-F P1), but the flag is **structurally
-un-enable-able** in that WO alone: turning it on fails the rails-presence guard until WO-0104's rails
-exist, and an enabled seat without WO-0103's conversion path re-opens F-002. WO-0104 lands
-§1/§1a/§3/§4/§5 and lifts the guard in the same change that first makes enablement possible. The
-flag-on integration suite (the `04-auth-and-api.md §1a` mounted-route matrix, and the
-constant-event-row flood tests of §1a/§4) is authored across the WOs and runs green
-at that joint milestone — never against a half-railed app.
+approval→conversion is WO-0103's human-gated surface). The flag is **un-enable-able** until WO-0104's
+rails **satisfy** the permanent guard, and an enabled seat without WO-0103's conversion path re-opens
+F-002. **The WO-0103 half is a release/deployment gate + test, not a new runtime startup check**
+(Ameen D-2): binding sequencing dependency + a **joint mounted-app suite proving
+ingest → operator approval → exactly one atomically-linked intent** against the real rails. The
+matrix **asserts the required sensitive routes exist** (not merely classifies mounted ones,
+REV-0025-F-005/F-007). Authored across the WOs, run green at the joint milestone — never against a
+half-railed or conversion-less app.
 
 ## 3. Sweeps (WO-0104)
 
@@ -102,10 +125,12 @@ One periodic engine-side sweep (injected clock; monitoring-loop cadence):
 **Ingest processing order is normative:** (1) authenticate — constant-time key lookup, before any
 body read; (2) rails check — quarantine epoch, rate limit (§1); (3) bounded body
 read — `Content-Length` capped at 64 KiB, streamed reject beyond; (4) parse + field-validate. The
-non-refilling invalid/conflict budget (§1a) is debited at step 4 when an attributable terminal-at-ingest
-event is actually appended — validation quarantine, novel-hash conflict, **and dead-on-arrival
-`SIGNAL_EXPIRED`** (`expires_at ≤ received_at` / skew-based; REV-0024-F P1 — omitting expiry here
-reopens the paced-flood hole) — and its exhaustion opens the epoch on the next ingest at step 2. Steps 1–2 reject with zero store writes and zero body
+non-refilling invalid/conflict budget (§1a) is debited at step 4 **atomically with** the terminal
+event append (the §1a linearizable re-check-and-debit — a step-2 pass does not pre-grant a slot) when
+an attributable terminal-at-ingest event is appended — validation quarantine, novel-hash conflict,
+**and dead-on-arrival `SIGNAL_EXPIRED`** (`expires_at ≤ received_at` / skew-based; REV-0024-F P1 —
+omitting expiry here reopens the paced-flood hole) — and its exhaustion opens the epoch on the next
+ingest at step 2. Steps 1–2 reject with zero store writes and zero body
 processing, with exactly one carve-out: the single request that first crosses **either** breach
 threshold — rate-bucket empty (§1) **or** invalid/conflict budget exhausted (§1a) — appends the
 epoch-opening `PRODUCER_QUARANTINED` (once per epoch); all subsequent rejects in the epoch are

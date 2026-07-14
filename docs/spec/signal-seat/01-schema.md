@@ -71,8 +71,16 @@ cross-producer duplicate ids are distinct signals).
 
 On `POST /api/signals` with an existing `(producer_id, signal_id)`:
 
-- **Identical `payload_hash`** → idempotent replay: HTTP 200 with the existing record; **no new
-  event appended** (mirrors `client_order_id` idempotency). Works in every signal status.
+- **Boundary rejection takes precedence over idempotent replay** (REV-0025 inline): the
+  quarantine-epoch / rate / budget rails check runs at step 2 **before the body is read**, so the
+  `payload_hash` dedupe path (which needs the body) is **not reached** for a quarantined or
+  over-limit producer — its request, *even an identical replay of an already-accepted signal*, is
+  boundary-rejected **403/429**, not 200. This is required for the flood bound (a quarantined
+  producer must not earn cheap 200s), and the dedupe contract below is scoped to **admitted**
+  ingests only.
+- **Identical `payload_hash`** (admitted producer) → idempotent replay: HTTP 200 with the existing
+  record; **no new event appended** (mirrors `client_order_id` idempotency). Works in every signal
+  status.
 - **Different `payload_hash`** → duplicate-conflict: the **existing** record's status is untouched;
   the conflict is recorded **event-only** as **`SIGNAL_DUPLICATE_CONFLICT`** — a dedicated
   audit-only event type, **explicitly excluded from the signal lifecycle fold** (Codex PR #6: a
