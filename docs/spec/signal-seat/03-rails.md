@@ -28,21 +28,33 @@ one novel-hash `SIGNAL_DUPLICATE_CONFLICT` per request indefinitely without ever
 (REV-0024-F-002 probe: 10080 events / 7 days at 1/min, bucket never below 9). So each producer also
 holds a **non-refilling** budget:
 
-- `signal_invalid_budget_per_epoch: int = 50` (`Settings`-tunable, hard cap) — debited by **every
-  attributable-rejection append**: a validation `SIGNAL_QUARANTINED` **and** each novel-hash
-  `SIGNAL_DUPLICATE_CONFLICT` (a same-hash conflicting replay is already coalesced to one event per
-  `01-schema.md §3` and does not re-debit). It does **not** refill while the producer is
-  un-quarantined.
-- On exhaustion → **producer-level quarantine** (`PRODUCER_QUARANTINED` opens the epoch, §4), same
-  as a rate breach; the exhausting request gets 429/403 folded into the coalesced audit.
-- The budget **resets only on human release** (`PRODUCER_RELEASED`), never by refill — so each
+- `signal_invalid_budget_per_epoch: int = 50` — `Settings`-tunable within **`[1, 1000]`**; **1000 is
+  a hard architectural cap** no config may exceed, and **startup fails fast** on any value outside the
+  range (mirrors `server_max_ttl`; REV-0024-F P2 — the "finite and small" property must not be
+  configurable away). Debited by **every attributable terminal-at-ingest append** — one that
+  authenticates, embeds the proposal, and grows the log: a validation `SIGNAL_QUARANTINED`, each
+  novel-hash `SIGNAL_DUPLICATE_CONFLICT` (a same-hash replay is already coalesced to one event per
+  `01-schema.md §3` and does not re-debit), **and each dead-on-arrival `SIGNAL_EXPIRED`**
+  (`expires_at ≤ received_at`, or a skew-based `issued_at_future`/`issued_at_stale` terminal
+  quarantine, `02-lifecycle.md §3`) — so a producer cannot dodge the budget by pacing unique
+  just-expired proposals (REV-0024-F P1). It does **not** refill while the producer is un-quarantined.
+- **Exact transition on the final slot (no ambiguity — REV-0024-F P2):** the attributable-rejection
+  append that debits the **last** slot completes **normally** — its own event is appended and its own
+  status returned (422 for validation, 409 for novel conflict, the `SIGNAL_EXPIRED`-at-ingest 201/terminal
+  for dead-on-arrival). The budget is then at zero; the **next** ingest (step 2, before body read)
+  observes exhaustion and opens the epoch with `PRODUCER_QUARANTINED` (429/403, write-free). The
+  budget reaching zero never retroactively suppresses the append that consumed it. Event count is
+  therefore exact: ≤ `invalid_budget` attributable events, then one `PRODUCER_QUARANTINED` on the
+  following ingest.
+- The budget **resets only on human release** (`PRODUCER_RELEASED`, §5), never by refill — so each
   further cycle of attributable-rejection flooding requires a human to re-open the producer.
 
 Consequence: append-only attributable-rejection volume per producer per epoch is **≤
-`invalid_budget` events + the rate-bucket-bounded accepted signals + 2 rail events** — constant,
-and finite over indefinite hostility. Test contract (WO-0104): pace invalid **and** novel-conflict
-requests at or below the refill rate over arbitrarily many windows; assert a constant event-row
-ceiling and that quarantine opens on budget exhaustion — both stores.
+`invalid_budget` events + 2 rail events** (plus the pre-quarantine accepted signals, themselves
+rate-limited) — constant, and finite over indefinite hostility. Test contract (WO-0104): pace
+invalid, novel-conflict, **and dead-on-arrival-expiry** requests at or below the refill rate over
+arbitrarily many windows; assert a constant event-row ceiling and that quarantine opens on budget
+exhaustion — both stores.
 
 ## 2. Enablement gated on full rails — the interim ceiling is withdrawn (ADR-009 A-4; REV-0024-F-004)
 
@@ -59,12 +71,14 @@ non-refilling invalid/conflict budget, the §4 producer-quarantine epoch machine
 release path. An enabled endpoint therefore structurally cannot run without finite-audit flood
 protection.
 
-**Sequencing consequence — live enablement is the joint WO-0102 + WO-0104 milestone.** WO-0102 ships
-the ingestion endpoint, the A-1 boundary, and the atomic conversion, but the flag is **structurally
+**Sequencing consequence — live enablement is the joint WO-0102 + WO-0103 + WO-0104 milestone.**
+WO-0102 ships the ingestion endpoint and the A-1 boundary (**not** the atomic conversion — that A-2
+approval→conversion is WO-0103's human-gated surface, REV-0024-F P1), but the flag is **structurally
 un-enable-able** in that WO alone: turning it on fails the rails-presence guard until WO-0104's rails
-exist. WO-0104 lands §1/§1a/§3/§4/§5 and lifts the guard in the same change that first makes
-enablement possible. The flag-on integration suite (the §1a `04-auth-and-api.md §1a` mounted-route
-matrix, and the constant-event-row flood tests of §1a/§4) is authored across both WOs and runs green
+exist, and an enabled seat without WO-0103's conversion path re-opens F-002. WO-0104 lands
+§1/§1a/§3/§4/§5 and lifts the guard in the same change that first makes enablement possible. The
+flag-on integration suite (the `04-auth-and-api.md §1a` mounted-route matrix, and the
+constant-event-row flood tests of §1a/§4) is authored across the WOs and runs green
 at that joint milestone — never against a half-railed app.
 
 ## 3. Sweeps (WO-0104)
@@ -110,7 +124,11 @@ For any ingest from a quarantined producer, or beyond a rate/budget limit:
 
 `POST /api/producers/{producer_id}/release` — **operator-only** credential (a producer key can
 never release its own quarantine; negative test). Appends `PRODUCER_RELEASED` (actor recorded),
-resets the §1 bucket, and re-opens ingestion. Signals swept to quarantine by §3 stay terminal —
+resets **BOTH** the §1 refilling bucket **and the §1a non-refilling invalid/conflict budget**, and
+re-opens ingestion. **Resetting the §1a budget is mandatory (REV-0024-F P1):** a producer quarantined
+by budget exhaustion that is released without a budget reset re-enters quarantine on its very next
+ingest, making the browser release control inert — test asserts a released producer can ingest again
+without immediate re-quarantine, both stores. Signals swept to quarantine by §3 stay terminal —
 the producer resubmits fresh proposals (new `signal_id`s or identical replays of untouched ids).
 **Browser path required** (invariant 11): the cockpit gains a release control on the signal panel
 (WO-0104 scope; thin-client rules — typed API client only, no state owned client-side).

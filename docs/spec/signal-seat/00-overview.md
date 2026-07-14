@@ -44,7 +44,9 @@ with the flag on, startup **fails fast** unless the full per-producer rails are 
 rate bucket, non-refilling invalid/conflict budget, producer-quarantine epoch, and human release
 path (parallel to the credential-presence guard). There is **no interim ceiling** and no window in
 which an enabled endpoint is unrailed; the former audit-free interim ceiling was withdrawn after
-REV-0024. Live enablement is therefore the **joint WO-0102 + WO-0104 milestone** (`03-rails.md §2`).
+REV-0024. Live enablement is therefore the **joint WO-0102 + WO-0103 + WO-0104 milestone** — ingest
+endpoint, the WO-0103 atomic approval→conversion (an enabled seat that can't atomically convert
+re-opens F-002), and the rails (`03-rails.md §2`).
 
 ## Out of scope (log, don't build)
 

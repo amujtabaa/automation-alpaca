@@ -34,17 +34,27 @@ Two design decisions were made by the human (Ameen, 2026-07-14) and drafted:
   the flag; `04-auth-and-api.md §1` + `pkl` reconciled; WO-0102 gains the launcher/`__main__`/README
   allowed-paths and a **subprocess** bind-failure test asserting pre-serve process failure.
 - **REV-0024-F-004 → ADR-009 A-4 (non-refilling invalid budget + rails-presence enablement gate).**
-  A per-producer **non-refilling** `signal_invalid_budget_per_epoch` (default 50) is debited by every
-  attributable-rejection append (validation `SIGNAL_QUARANTINED` + each novel-hash
-  `SIGNAL_DUPLICATE_CONFLICT`), does not refill while un-quarantined, quarantines on exhaustion, and
-  **resets only on human release**. The audit-free interim ceiling is **withdrawn** (it was rate-bounded,
-  not storage-bounded); `signal_seat_enabled` is gated on full rails by a **rails-presence startup guard**
-  (parallel to the credential-presence guard), making live enablement the joint WO-0102+WO-0104 milestone.
+  A per-producer **non-refilling** `signal_invalid_budget_per_epoch` (default 50, tunable `[1, 1000]`,
+  hard cap 1000 with startup validation) is debited by **every attributable terminal-at-ingest append**
+  — validation `SIGNAL_QUARANTINED`, each novel-hash `SIGNAL_DUPLICATE_CONFLICT`, **and each
+  dead-on-arrival `SIGNAL_EXPIRED`** — does not refill while un-quarantined, quarantines on exhaustion,
+  and **resets on human release together with the §1 bucket**. The audit-free interim ceiling is
+  **withdrawn**; `signal_seat_enabled` is gated on full rails by a **rails-presence startup guard**,
+  making live enablement the joint WO-0102+WO-0103+WO-0104 milestone (ingest + atomic conversion + rails).
 - **Propagation:** `00-overview.md` + `pkl/architecture/signal-seat.md` now say enforcement is on every
   sensitive route **reads included** (F-003); `03-rails.md` drops the "otherwise-valid" qualifier (rate
   decision before body parse), adds §1a (non-refilling budget), rewrites §2 (enablement gate), §4
   dual-trigger; `WO-0102` withdraws the interim-ceiling/post-quarantine items (moved to WO-0104);
   `WO-0104` gains the invalid budget, the guard lift, and the joint flag-on integration suite.
+- **Second-pass fixes folded from the auto-review of the first remediation commit (Ameen-approved,
+  same branch):** (a) A-2 atomic conversion is WO-0103's, struck from the WO-0102 milestone; live
+  enablement co-gates on WO-0103 too. (b) dead-on-arrival `SIGNAL_EXPIRED` now debits the budget
+  (a paced just-expired flood otherwise evaded it). (c) `PRODUCER_RELEASED` resets the §1a budget as
+  well as the §1 bucket (else release is inert). (d) the exact final-slot transition is pinned (the
+  debiting append completes normally; the epoch opens on the next ingest). (e) the budget hard cap is
+  numeric (`1000`) with startup validation. (f) the Option-E finite-volume claim is narrowed —
+  legitimate accepted-signal volume is rate-bounded, not finite over indefinite time (no false
+  globally-finite-storage promise). These are refinements to the same amendment, not new design.
 
 ## Questions to answer
 1. **F-001 closed?** Is the backend-owned launch path an *enforceable* seam — can a bare

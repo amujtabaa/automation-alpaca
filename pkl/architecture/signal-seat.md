@@ -59,7 +59,8 @@ Implementation: WO-0102 → WO-0103 ∥ WO-0104, all RE-GATED pending remediatio
   post-quarantine ingress is boundary-rejected with epoch-bounded coalesced audit — the event log
   stays bounded under indefinite flood. **No interim ceiling** (withdrawn, REV-0024-F-004): instead
   `signal_seat_enabled` is gated on full rails by a **rails-presence startup guard**, so an enabled
-  endpoint structurally cannot run unrailed. Live enablement is the joint WO-0102+WO-0104 milestone.
+  endpoint structurally cannot run unrailed. Live enablement is the joint WO-0102+WO-0103+WO-0104
+  milestone (ingest + atomic conversion + rails; the A-2 conversion is WO-0103's, not WO-0102's).
 - Correlation: `SIGNAL_APPROVED` ↔ minted intent id; Candidate/SellIntent carry nullable
   `signal_producer_id`/`signal_signal_id` — every signal-originated order's trace resolves to
   exactly its signal.

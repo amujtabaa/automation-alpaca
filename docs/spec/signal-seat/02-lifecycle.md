@@ -47,7 +47,7 @@ self-decide if they judge otherwise:
 | `SIGNAL_REJECTED` | operator reject | `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id`, `producer_id`, `signal_id` |
 | `PRODUCER_QUARANTINED` | rate-bucket breach **or** non-refilling invalid/conflict budget exhaustion (`03-rails.md §1a`) — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach trigger + counters, epoch start |
-| `PRODUCER_RELEASED` | operator release — closes the epoch | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
+| `PRODUCER_RELEASED` | operator release — closes the epoch, **resets both the §1 rate bucket and the §1a non-refilling invalid/conflict budget** (`03-rails.md §5`; else the producer re-quarantines on its next ingest) | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
 
 A terminal-at-ingest event (`SIGNAL_QUARANTINED`/`SIGNAL_EXPIRED` written directly at ingest with no
 preceding `SIGNAL_RECEIVED`) carries `received_at` always, and `expires_at` **only when the freshness

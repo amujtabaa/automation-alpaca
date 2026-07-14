@@ -211,12 +211,19 @@ Approval→intent conversion is **one atomic store command** in both stores:
   approval, in both stores (WO-0103 required tests).
 - **Option E, considered and recorded** (reviewer's ask): a separate bounded signal-inbox store
   + idempotent conversion-outbox would decouple untrusted-volume lifecycle traffic from
-  execution replay entirely. **Recommended: not for beta.** With A-4's hard bounds the signal
-  event volume is finite and small; one log + one atomic command preserves the single-writer,
-  one-truth property that the whole spine is built on, at beta's volume. Option E is the
-  designated evolution IF L1 (batch approval) ever raises signal volume by orders of magnitude —
-  that superseding ADR must re-evaluate it. This paragraph exists so the choice is a decision,
-  not an omission.
+  execution replay entirely. **Recommended: not for beta.** A-4 makes the *hostile* signal event
+  volume finite (attributable-rejection appends are hard-bounded per epoch by the non-refilling
+  budget, and post-quarantine ingress is write-free). **Scope honesty (REV-0024-F P1):** *legitimate*
+  accepted-signal volume is **rate-bounded, not finite over indefinite time** — a well-behaved
+  producer sending valid proposals at the refill rate grows the event log like any other legitimate
+  rate-limited activity (each such signal also self-limits via the A-3 TTL, so the operator queue
+  stays bounded even though the append-only audit trail does not). That is acceptable at beta's
+  single-operator, paper-only volume, and is the normal cost of an event-sourced spine; it is **not**
+  a claim of globally finite storage. Option E is the designated evolution IF L1 (batch approval) or
+  sustained legitimate volume ever raises signal throughput by orders of magnitude — that superseding
+  ADR must re-evaluate it. One log + one atomic command preserves the single-writer, one-truth
+  property the whole spine is built on, at beta's volume. This paragraph exists so the choice is a
+  decision, not an omission.
 
 ### A-3 (remediates F-003) — Server-owned freshness and classification semantics
 
@@ -279,11 +286,18 @@ correctly showed is unbounded over indefinite hostility):
   `SIGNAL_QUARANTINED` (validation) or one novel-hash `SIGNAL_DUPLICATE_CONFLICT` per request
   indefinitely (Codex probe: 10080 events over 7 days at 1/min, bucket never below 9 tokens). So
   **in addition to** the refilling bucket, each producer holds a **non-refilling** budget
-  `signal_invalid_budget_per_epoch` (default **50**, `Settings`-tunable, hard cap) that is debited
-  by every *attributable-rejection append* — validation `SIGNAL_QUARANTINED` **and** each novel-hash
-  `SIGNAL_DUPLICATE_CONFLICT`. It does **not** refill while the producer is un-quarantined; on
-  exhaustion the producer is **quarantined** (`PRODUCER_QUARANTINED` opens the epoch), after which
-  ingress is write-free per the epoch rule; the budget **resets only on human release**. Therefore
+  `signal_invalid_budget_per_epoch` (default **50**, `Settings`-tunable within **`[1, 1000]`**; a
+  hard architectural cap of **1000** that no config may exceed — startup **fails fast** on a value
+  outside the range, mirroring `server_max_ttl`'s cap so the "finite and small" property cannot be
+  configured away, REV-0024-F P2). It is debited by **every attributable terminal-at-ingest append**
+  — one that authenticates, embeds the proposal, and grows the log: validation `SIGNAL_QUARANTINED`,
+  each novel-hash `SIGNAL_DUPLICATE_CONFLICT`, **and** each dead-on-arrival `SIGNAL_EXPIRED`
+  (`expires_at ≤ received_at`, or a skew-based `issued_at_future`/`issued_at_stale` terminal quarantine)
+  — so a producer cannot evade the budget by pacing unique just-expired proposals (REV-0024-F P1). It
+  does **not** refill while the producer is un-quarantined; on exhaustion the producer is
+  **quarantined** (`PRODUCER_QUARANTINED` opens the epoch), after which ingress is write-free per the
+  epoch rule; the budget **resets only on human release** (`PRODUCER_RELEASED` — clause below).
+  Therefore
   the append-only attributable-rejection volume per producer per cycle is **≤ `invalid_budget`
   events + the rate-bucket-bounded accepted signals + 2 rail events**, and every *further* cycle
   requires a human `PRODUCER_RELEASED` — indefinitely-paced invalid/conflict hostility can no longer
@@ -295,8 +309,12 @@ correctly showed is unbounded over indefinite hostility):
 - Rejected-request counting is a **saturating in-memory counter outside the event log**
   (diagnostic, best-effort across restarts by design).
 - **One summary on epoch close:** `PRODUCER_RELEASED` carries the saturated rejected-count and
-  epoch window. Total signal-rail event volume per producer per epoch is therefore a constant
-  (≤ 2 events + the pre-quarantine accepted signals, themselves rate-limited).
+  epoch window, and **resets BOTH rails — the §1 refilling bucket AND the §1a non-refilling
+  invalid/conflict budget** (REV-0024-F P1: releasing without resetting the budget re-quarantines the
+  producer on its very next ingest, making the human release control inert). Total signal-rail event
+  volume per producer per epoch is therefore a constant (≤ 2 rail events + the ≤ `invalid_budget`
+  attributable-rejection events accrued before the epoch opened + the pre-quarantine accepted
+  signals, themselves rate-limited).
 - Test contract: model-based/long-duration tests assert **constant event-row count** and bounded
   storage under sustained hostile flood — paced at or below the refill rate over arbitrarily many
   windows, not merely a burst that eventually exceeds the rate limit — in both stores.
@@ -312,16 +330,20 @@ per-producer rails are wired** — the refilling rate bucket, the non-refilling 
 budget, the producer-quarantine epoch machinery, and the human `PRODUCER_RELEASED` path. There is
 therefore **no window in which an enabled endpoint runs without finite-audit flood protection**, and
 no interim ceiling to reason about. Consequence for sequencing: the endpoint's **live enablement is
-the joint WO-0102 + WO-0104 milestone** — WO-0102 ships the endpoint, the A-1 boundary, and the
-atomic conversion with the flag **structurally un-enable-able** (enabling it fails the rails-presence
-guard until the rails exist); WO-0104 lands the full rails and lifts the guard in the change that
-first makes enablement possible. The flag-on integration suite (route-authorization matrix at the
-mounted app, constant-event-row flood tests) is authored across both WOs and runs green at that
-joint milestone — never against a half-railed app.
+the joint WO-0102 + WO-0103 + WO-0104 milestone** — WO-0102 ships the ingestion endpoint and the
+A-1 boundary; **WO-0103 owns the A-2 atomic approval→conversion** (the human-gated order-submission
+surface — it is NOT WO-0102's, and enabling the seat without it would either pull that surface into
+the medium-risk ingestion WO or falsely imply the F-002 conversion gate landed, REV-0024-F P1); and
+WO-0104 lands the full rails. The flag is **structurally un-enable-able** until WO-0104's rails
+satisfy the rails-presence guard, and an enabled seat whose approval path cannot atomically convert
+is incoherent (re-opening F-002), so **all three** must land before live enablement. WO-0104 lands
+the rails and lifts the guard; the flag-on integration suite (route-authorization matrix at the
+mounted app, constant-event-row flood tests) is authored across the WOs and runs green at that
+joint milestone — never against a half-railed or conversion-less app.
 
 ## Action Items
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
 2. [x] Human review — INV-7 asymmetry decision (2026-07-11); the 2026-07-12 acceptance was rescinded (see Status).
 3. [ ] Independent cross-model review — **REV-0022 BLOCK** (frozen `25590a7`) → A-1..A-4 → **REV-0024 BLOCK** (frozen `413da38`: A-2/A-3 CLOSED, A-1/A-4 not) → re-remediated (A-1 clause 6 + A-4 invalid budget/rails gate) → **REV-0025 queued** (`work/review/REV-0025/request.md`). Gate clears only on REV-0025 ACCEPT / ACCEPT-WITH-CHANGES.
-4. [ ] WO-0101..0104: RE-GATED 2026-07-14 pending REV-0025. Live enablement is the joint WO-0102+WO-0104 milestone (A-4 rails-presence gate). WO-0101's spec output stands as draft input to the remediation.
+4. [ ] WO-0101..0104: RE-GATED 2026-07-14 pending REV-0025. Live enablement is the joint WO-0102+WO-0103+WO-0104 milestone (ingest + atomic conversion + rails; A-4 rails-presence gate enforces the 0104 half). WO-0101's spec output stands as draft input to the remediation.
