@@ -72,12 +72,12 @@ forbidden_paths:
 
 ## Required tests
 
-- [ ] Expiry sweep emits `SIGNAL_EXPIRED`; expired signal never approvable — property-style, dual-store.
+- [ ] Expiry sweep emits `SIGNAL_EXPIRED`; expired signal never approvable — property-style, dual-store. **`SIGNAL_EXPIRED` carries `(producer_id, signal_id)`/`record_id`; replay with multiple RECEIVED signals expiring in one sweep transitions each independently** (REV-0024-F P1).
 - [ ] Staleness/plausibility on `issued_at` (future / implausibly old → quarantine).
 - [ ] Producer quarantine on rate-limit breach; release only via explicit human release event.
 - [ ] **Paced-hostility flood** (REV-0024-F-002): invalid, novel-conflict, **and dead-on-arrival-expiry** requests paced at or below the refill rate over many windows → constant event-row count, quarantine opens on non-refilling-budget exhaustion — both stores.
 - [ ] **Release resets both rails** (REV-0024-F P1): a budget-exhausted, then released, producer ingests again without immediate re-quarantine — both stores.
-- [ ] **Budget config validation** (REV-0024-F P2): `signal_invalid_budget_per_epoch` outside `[1, 1000]` → startup fails fast.
+- [ ] **Budget config validation + cycle-scope** (REV-0024-F P1/P2): `signal_invalid_budget_per_epoch` outside `[1, 1000]` → startup fails fast; and a mid-cycle config change applies only to cycles beginning after it — an in-flight cycle's pinned/persisted limit is unchanged across restart/replay (no silent grant or retroactive quarantine), both stores.
 - [ ] **Enablement gate**: with `signal_seat_enabled` on and rails NOT wired, `create_app` startup fails the rails-presence guard; with the full rails wired, it starts — and the joint flag-on route-authorization matrix passes at the mounted app.
 
 ## Required commands

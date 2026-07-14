@@ -20,12 +20,16 @@ the CLI, outside the app, and the ASGI lifespan scope never carries the listener
 backend owns its launch path: an entrypoint `app/server.py::run()` (invoked as `python -m app`, the
 sole documented start command for an enabled seat) starts Uvicorn **programmatically** with the bind
 derived from and re-validated against `signal_transport_policy`, exiting non-zero before serving on
-any non-loopback/non-socket bind; and it sets an `app.state` launch-provenance sentinel that the
-lifespan startup guard **requires** when `signal_seat_enabled` is on — so a bare
-`uvicorn app.main:app --host 0.0.0.0` (which cannot set the sentinel) fails startup before serving.
-The direct `uvicorn app.main:app` path is deprecated when the seat is enabled; flag off ⇒ it keeps
-working (beta dev command unchanged). WO-0102 proves both via a subprocess test that observes
-pre-serve process failure.
+any non-loopback/non-socket bind; and it sets an `app.state` launch-provenance sentinel enforced
+**at both lifespan startup and request time** when `signal_seat_enabled` is on. The request-time
+enforcement is a **fail-closed ASGI guard** that rejects every request (503) when the sentinel is
+absent — necessary because a direct `uvicorn app.main:app --host 0.0.0.0 --lifespan off` **skips
+lifespan** and would otherwise dodge a startup-only guard (REV-0024-F P1); the request guard runs
+regardless of `--lifespan`, so a bare `uvicorn app.main:app` (with or without `--lifespan off`)
+serves nothing for the flag-on seat. The direct path is deprecated **and non-functional** when the
+seat is enabled; flag off ⇒ it keeps working (beta dev command unchanged). WO-0102 proves it via a
+subprocess test covering both `--lifespan on` (startup fails) and `--lifespan off` (every request
+503) — nothing reachable on the network bind either way.
 
 **Credential-presence startup guard** (ADR-009 A-1): with the flag on, startup **fails fast** unless
 `OPERATOR_API_KEY` is set non-blank AND the producer key map is loaded — otherwise every sensitive

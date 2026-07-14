@@ -171,20 +171,27 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
      uds=…)`) with the bind derived from — and re-validated against — that setting. With
      `signal_seat_enabled`, the entrypoint **refuses to start** (process exits non-zero, before any
      socket serves) on any non-loopback/non-socket bind, under both transport policies.
-   - **A launch-provenance guard in the lifespan startup**: the entrypoint sets an in-process
-     sentinel (`app.state`-carried, not an env var an attacker controls) that marks the app as
-     started through the sanctioned launcher; with `signal_seat_enabled` on, lifespan startup
-     **fails fast unless that sentinel is present**. A bare `uvicorn app.main:app --host 0.0.0.0`
-     imports the module-level `app` without the launcher and therefore cannot set the sentinel — so
-     it fails at startup, before serving, closing the bypass. (Flag off ⇒ the sentinel is not
-     required; beta's current `uvicorn app.main:app` dev command keeps working unchanged.)
-   - **The direct `uvicorn app.main:app` invocation is deprecated when the seat is enabled**; the
-     README documents `python -m app` as the sole sanctioned start command for an enabled seat.
-   - **Proof (WO-0102 subprocess test):** (a) the launcher invoked with a non-loopback bind and the
-     flag on exits non-zero before serving; (b) `uvicorn app.main:app --host 0.0.0.0` with the flag
-     on fails startup via the provenance guard before serving. Both observed as pre-serve process
-     failures, not per-request rejections. An app-setting-only assertion does not satisfy this
-     clause.
+   - **A launch-provenance guard enforced at BOTH lifespan startup AND request time**: the
+     entrypoint sets an in-process sentinel (`app.state`-carried, not an env var an attacker
+     controls) marking the app as started through the sanctioned launcher. With `signal_seat_enabled`
+     on: (i) lifespan startup **fails fast unless the sentinel is present** (loud, early failure); and
+     (ii) — because a direct launch can **skip lifespan entirely** (`uvicorn app.main:app --host
+     0.0.0.0 --lifespan off`, which uvicorn supports, would otherwise dodge the startup guard,
+     REV-0024-F P1) — an ASGI-level **fail-closed request guard** rejects **every** request
+     (503/refused, no route work) whenever the sentinel is absent. The request guard runs regardless
+     of `--lifespan`, so even a lifespan-off direct launch serves nothing. A bare
+     `uvicorn app.main:app` (with or without `--lifespan off`) imports the module-level `app` without
+     the launcher, cannot set the sentinel, and is therefore inert for the flag-on seat. (Flag off ⇒
+     the sentinel is not required; beta's current `uvicorn app.main:app` dev command works unchanged.)
+   - **The direct `uvicorn app.main:app` invocation is deprecated AND non-functional when the seat is
+     enabled** (the request guard makes it serve nothing, not merely discouraged); the README
+     documents `python -m app` as the sole sanctioned start command for an enabled seat.
+   - **Proof (WO-0102 subprocess tests):** (a) the launcher invoked with a non-loopback bind and the
+     flag on exits non-zero before serving; (b) `uvicorn app.main:app --host 0.0.0.0` with the flag on
+     — **both with and without `--lifespan off`** — serves no request (lifespan-on fails at startup;
+     lifespan-off starts but every request is 503/refused by the request guard, so nothing is
+     reachable on the network bind). An app-setting-only or lifespan-only assertion does not satisfy
+     this clause.
 
 ### A-2 (remediates F-002) — Atomic conversion contract
 

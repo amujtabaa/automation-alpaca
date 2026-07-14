@@ -41,10 +41,10 @@ self-decide if they judge otherwise:
 | Event | Emitted when | Payload (minimum) |
 |---|---|---|
 | `SIGNAL_RECEIVED` | proposal accepted into RECEIVED | full proposal fields + `payload_hash`, `producer_id`, `signal_id`, server `record_id`, **server-computed `received_at` + `expires_at`** (replay rebuilds the deadline byte-identically after restart — ADR-009 A-3; Codex rev-3) |
-| `SIGNAL_QUARANTINED` | validation failure (attributable) or producer-quarantine sweep — folds terminally onto ITS OWN record only | `quarantine_reason`, offending fields / sweep ref |
+| `SIGNAL_QUARANTINED` | validation failure (attributable) or producer-quarantine sweep — folds terminally onto ITS OWN record only | **`producer_id`, `signal_id`, `record_id`** (per-record fold target), `quarantine_reason`, offending fields / sweep ref |
 | `SIGNAL_DUPLICATE_CONFLICT` | **audit-only, excluded from the lifecycle fold**: a different-payload replay of an existing `(producer_id, signal_id)` — the original record's state is untouched (live path AND replay) | conflicting proposal, both hashes, original record id |
-| `SIGNAL_EXPIRED` | sweep, lazy-expiry, or dead-on-arrival at ingest | `received_at`, `expires_at`, `detected_by: "sweep" | "read" | "ingest"` (`"ingest"` = dead-on-arrival `expires_at ≤ received_at`, §3; debits the §1a budget per `03-rails.md`) |
-| `SIGNAL_REJECTED` | operator reject | `actor`, optional `reason` |
+| `SIGNAL_EXPIRED` | sweep, lazy-expiry, or dead-on-arrival at ingest | **`producer_id`, `signal_id`, server `record_id`** (REQUIRED — the projector must know which record to transition; with several RECEIVED signals expiring together, timing metadata alone is ambiguous, REV-0024-F P1), `received_at`, `expires_at`, `detected_by: "sweep" | "read" | "ingest"` (`"ingest"` = dead-on-arrival `expires_at ≤ received_at`, §3; debits the §1a budget per `03-rails.md`) |
+| `SIGNAL_REJECTED` | operator reject | **`producer_id`, `signal_id`, `record_id`** (per-record fold target), `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id`, `producer_id`, `signal_id` |
 | `PRODUCER_QUARANTINED` | rate-bucket breach **or** non-refilling invalid/conflict budget exhaustion (`03-rails.md §1a`) — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach trigger + counters, epoch start |
 | `PRODUCER_RELEASED` | operator release — closes the epoch, **resets both the §1 rate bucket and the §1a non-refilling invalid/conflict budget** (`03-rails.md §5`; else the producer re-quarantines on its next ingest) | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
@@ -92,10 +92,14 @@ exactly once).
 
 `SignalRecord` state and producer quarantine state are pure folds over the `SIGNAL_*` /
 `PRODUCER_*` events: replaying the event log from empty reconstructs byte-identical signal and
-producer read-models in both stores. The projector lives with the existing ones
-(`app/events/projectors.py`); replay-parity is asserted in the same style as the order-status
-projector tests. `SIGNAL_DUPLICATE_CONFLICT` is audit-only — excluded from the lifecycle fold; the
-replay test must include a duplicate-conflict sequence and assert the original signal's state is
-unchanged after replay. Rejected-traffic counting lives OUTSIDE the event log entirely (ADR-009
+producer read-models in both stores. **Every per-record lifecycle-transition event
+(`SIGNAL_QUARANTINED`, `SIGNAL_EXPIRED`, `SIGNAL_REJECTED`, `SIGNAL_APPROVED`) carries the record key
+`(producer_id, signal_id)` (and server `record_id`)** so the fold targets exactly one record —
+timing/actor metadata alone is ambiguous when several records transition together (REV-0024-F P1).
+The projector lives with the existing ones (`app/events/projectors.py`); replay-parity is asserted
+in the same style as the order-status projector tests. **The replay test must include multiple
+RECEIVED signals expiring in one sweep and assert each transitions to EXPIRED independently**, plus a
+`SIGNAL_DUPLICATE_CONFLICT` sequence (audit-only — excluded from the lifecycle fold) asserting the
+original signal's state is unchanged after replay. Rejected-traffic counting lives OUTSIDE the event log entirely (ADR-009
 A-4): only the epoch-open (`PRODUCER_QUARANTINED`) / epoch-close (`PRODUCER_RELEASED`, carrying
 the saturated count) pair is ever appended.

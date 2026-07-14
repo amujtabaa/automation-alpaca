@@ -48,6 +48,13 @@ holds a **non-refilling** budget:
   following ingest.
 - The budget **resets only on human release** (`PRODUCER_RELEASED`, §5), never by refill — so each
   further cycle of attributable-rejection flooding requires a human to re-open the producer.
+- **Config changes are cycle-scoped, not retroactive** (REV-0024-F P1): a change to
+  `signal_invalid_budget_per_epoch` (restart/redeploy) applies **only to accumulation cycles that
+  begin after the change** — a cycle begins at a producer's first attributable rejection after a
+  release (or from fresh). The limit in force when a cycle begins is **pinned and persisted with the
+  producer's rail state** (replay- and restart-stable), so a mid-cycle config bump cannot silently
+  grant a producer extra writes, and a mid-cycle reduction cannot retroactively quarantine on replay.
+  This preserves the non-refilling / resets-only-on-release contract across deploys.
 
 Consequence: append-only attributable-rejection volume per producer per epoch is **≤
 `invalid_budget` events + 2 rail events** (plus the pre-quarantine accepted signals, themselves
@@ -95,9 +102,10 @@ One periodic engine-side sweep (injected clock; monitoring-loop cadence):
 **Ingest processing order is normative:** (1) authenticate — constant-time key lookup, before any
 body read; (2) rails check — quarantine epoch, rate limit (§1); (3) bounded body
 read — `Content-Length` capped at 64 KiB, streamed reject beyond; (4) parse + field-validate. The
-non-refilling invalid/conflict budget (§1a) is debited at step 4 when an attributable-rejection
-event is actually appended (validation quarantine or novel-hash conflict), and its exhaustion opens
-the epoch on the next ingest at step 2. Steps 1–2 reject with zero store writes and zero body
+non-refilling invalid/conflict budget (§1a) is debited at step 4 when an attributable terminal-at-ingest
+event is actually appended — validation quarantine, novel-hash conflict, **and dead-on-arrival
+`SIGNAL_EXPIRED`** (`expires_at ≤ received_at` / skew-based; REV-0024-F P1 — omitting expiry here
+reopens the paced-flood hole) — and its exhaustion opens the epoch on the next ingest at step 2. Steps 1–2 reject with zero store writes and zero body
 processing, with exactly one carve-out: the single request that first crosses **either** breach
 threshold — rate-bucket empty (§1) **or** invalid/conflict budget exhausted (§1a) — appends the
 epoch-opening `PRODUCER_QUARANTINED` (once per epoch); all subsequent rejects in the epoch are

@@ -55,6 +55,16 @@ Two design decisions were made by the human (Ameen, 2026-07-14) and drafted:
   numeric (`1000`) with startup validation. (f) the Option-E finite-volume claim is narrowed —
   legitimate accepted-signal volume is rate-bounded, not finite over indefinite time (no false
   globally-finite-storage promise). These are refinements to the same amendment, not new design.
+- **Third-pass fixes (Ameen-approved, same branch):** (a) **the launch-provenance guard is now
+  enforced at request time, not only lifespan startup** — `uvicorn app.main:app --host 0.0.0.0
+  --lifespan off` skipped the lifespan guard and served the flag-on app on a network bind; a
+  fail-closed ASGI request guard (503 when the sentinel is absent) closes that bypass, and the
+  subprocess test now covers `--lifespan off`. (b) `SIGNAL_EXPIRED`/`SIGNAL_QUARANTINED`/
+  `SIGNAL_REJECTED` now carry `(producer_id, signal_id)`/`record_id` so replay folds to the right
+  record (multi-pending-expiry replay test added). (c) the §4 normative-order debit rule now includes
+  dead-on-arrival expiry. (d) WO-0102's isolation tests get a sanctioned fixture that sets the launch
+  sentinel through the real seam (no guard-weakening bypass). (e) budget config changes are
+  cycle-scoped/pinned so a mid-cycle redeploy can't silently alter the bound.
 
 ## Questions to answer
 1. **F-001 closed?** Is the backend-owned launch path an *enforceable* seam — can a bare
