@@ -58,8 +58,10 @@ awaiting:
     (incl. the drift table: Sol's baseline predates the WO-0024..0027 contract-relevant
     changes). Collab-lane codification PREPARED at work/collab/PROPOSAL-cross-model-lane.md
     (yes/no gate).
-  - WO-0030 (interface lift): APPROVED in-chat, next in queue (not started — the last
-    approved item; everything else in this list is human/planning-seat/SOL-blocked).
+  - WO-0031 DONE (Sol's two P0s vs the incumbent closed: lifetime-monotone stop INV-086,
+    whole-tape screening; probe reported + upsize per adjudication; tranche latch fixed).
+  - WO-0030 (interface lift): APPROVED, next in queue — the ONLY remaining approved
+    implementation item.
   - T5: ADR-010 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
     blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
     are remediated and pinned at tip.
@@ -69,7 +71,7 @@ toolchain-incidents (must-read before any destructive git op; never pruned):
   - WO-0029A: a mutation-check "0 failures" from a nested-shell `-k` selector was a NO-OP
     selection, not a survivor/kill — verify selectors collected >0 tests (or use explicit test
     ids) before trusting any mutation result.
-- WO-0031: a pin can be VACUOUSLY green — the first SOLF3 pin priced its tape below the
+  - WO-0031: a pin can be VACUOUSLY green — the first SOLF3 pin priced its tape below the
     envelope floor so both arms returned BreachSignal and compared equal regardless of the
     mechanism. Always check the assertion can DISTINGUISH the mechanism (run the discovery
     mutation before trusting a new pin).
