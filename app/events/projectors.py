@@ -507,6 +507,30 @@ _SIGNAL_TRANSITION_STATUS: dict[ExecutionEventType, SignalStatus] = {
     ExecutionEventType.SIGNAL_APPROVED: SignalStatus.APPROVED,
 }
 
+# The SignalRecord terminal-timestamp field each transition status sets, mirroring
+# the terminal-at-ingest branch's own quarantined_at/expired_at population.
+_SIGNAL_TRANSITION_TIMESTAMP_FIELD: dict[ExecutionEventType, str] = {
+    ExecutionEventType.SIGNAL_QUARANTINED: "quarantined_at",
+    ExecutionEventType.SIGNAL_EXPIRED: "expired_at",
+    ExecutionEventType.SIGNAL_REJECTED: "rejected_at",
+    ExecutionEventType.SIGNAL_APPROVED: "approved_at",
+}
+
+# Payload keys a per-record TRANSITION event may carry that map DIRECTLY onto a
+# SignalRecord field of the same name (auto-reviewer P1 #6, forward-compat with
+# WO-0103's atomic approval/conversion): SIGNAL_APPROVED's converted_kind/
+# converted_id (05-conversion §4 correlation) must survive the fold, not just
+# status — otherwise a replay silently loses the link between a signal and the
+# order intent it produced.
+_SIGNAL_TRANSITION_DIRECT_FIELDS = ("converted_kind", "converted_id")
+
+# Spec payload key -> SignalRecord field, for names that differ (02-lifecycle §2:
+# SIGNAL_APPROVED/SIGNAL_REJECTED carry `actor`; the model's approval-audit field
+# is `approved_by`). Applied only for the event type it is keyed under.
+_SIGNAL_TRANSITION_ALIASES: dict[ExecutionEventType, dict[str, str]] = {
+    ExecutionEventType.SIGNAL_APPROVED: {"actor": "approved_by"},
+}
+
 
 def project_signal_records(
     events: Iterable[ExecutionEvent],
@@ -527,7 +551,10 @@ def project_signal_records(
         if etype is ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT:
             continue  # audit-only — never folds onto a record
         # Per-record TRANSITION of an already-installed record (WO-0103/0104):
-        # carries the record key + new terminal status, no full snapshot.
+        # carries the record key + new terminal status, no full snapshot. Applies
+        # the WHOLE relevant payload — not only status — so a future
+        # SIGNAL_APPROVED/SIGNAL_REJECTED (actor, converted_kind/converted_id,
+        # ...) is folded forward-compatibly (auto-reviewer P1 #6).
         mapped = _SIGNAL_TRANSITION_STATUS.get(etype)
         if mapped is None:
             continue
@@ -538,7 +565,16 @@ def project_signal_records(
         existing = records.get((producer_id, signal_id))
         if existing is None:
             continue
-        records[(producer_id, signal_id)] = existing.model_copy(
-            update={"status": mapped}
-        )
+        transition_ts = event.ts_event or event.ts_init
+        update: dict[str, object] = {"status": mapped, "updated_at": transition_ts}
+        ts_field = _SIGNAL_TRANSITION_TIMESTAMP_FIELD.get(etype)
+        if ts_field is not None:
+            update[ts_field] = transition_ts
+        for field_name in _SIGNAL_TRANSITION_DIRECT_FIELDS:
+            if field_name in payload:
+                update[field_name] = payload[field_name]
+        for src_key, dest_field in _SIGNAL_TRANSITION_ALIASES.get(etype, {}).items():
+            if src_key in payload:
+                update[dest_field] = payload[src_key]
+        records[(producer_id, signal_id)] = existing.model_copy(update=update)
     return records

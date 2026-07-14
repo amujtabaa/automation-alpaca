@@ -288,11 +288,20 @@ def create_app(
 # clause 6 / slice-1 bug fix). Importing this module (and ``create_app``) must NOT
 # raise under the flag — the backend-owned launcher (`app/server.py`) needs to
 # import ``create_app`` to build its OWN capability-bearing app. So:
-#   * flag OFF  → build the module-level app (bare uvicorn works unchanged);
-#   * flag ON   → leave it None, so `uvicorn app.main:app` fails to serve (no
-#                 listener) at load, before binding a socket — while `python -m app`
-#                 constructs a capability-bearing app itself.
-if load_settings().signal_seat_enabled:
-    app = None
-else:
+#   * flag OFF  → define the module-level ``app`` (bare uvicorn works unchanged);
+#   * flag ON   → do NOT define ``app`` at all (no assignment, not even ``None``).
+#     Setting it to ``None`` is INSUFFICIENT (auto-reviewer P1 #7, empirically
+#     reproduced): uvicorn's ``getattr(module, "app")`` would happily return
+#     ``None``, pass Config.load()'s `self.loaded_app = self.loaded_app()` /
+#     ASGI-interface checks in a way that still lets the server bind a socket and
+#     report "startup complete" while erroring per-request — the forbidden port
+#     stays reachable (TCP accepts). Leaving the name UNDEFINED makes
+#     ``uvicorn.importer.import_from_string``'s ``getattr(instance, attr_str)``
+#     raise ``AttributeError`` -> ``ImportFromStringError`` inside
+#     ``Config.load()``, which runs synchronously BEFORE ``Server._serve``/
+#     ``startup()`` ever binds a listening socket — true pre-serve failure,
+#     connection refused, nothing on the network port (REV-0025-F-002).
+#     ``python -m app`` (the sanctioned launcher) never references this module
+#     attribute — it calls ``create_app()`` directly with its own capability.
+if not load_settings().signal_seat_enabled:
     app = create_app()

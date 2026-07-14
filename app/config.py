@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -354,6 +355,23 @@ def _parse_producer_keys(raw: Optional[str]) -> dict[str, str]:
                 f"{SIGNAL_PRODUCER_KEYS_ENV} keys and values must be strings "
                 f"(key -> producer_id)"
             )
+        # Auto-reviewer P1 #1: a blank/whitespace-only producer KEY must be
+        # rejected — a configured "" key would let ANY request that sends no
+        # `X-Producer-Key` value (or an empty one) authenticate, since an
+        # unconfigured/blank credential must never be a valid match. A
+        # blank/whitespace producer ID is equally rejected: it would silently
+        # attribute every ingest from that key to an unnamed/unauditable
+        # producer, defeating per-producer dedupe/rate/quarantine namespacing.
+        if not key.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} keys must be non-blank (a blank "
+                f"producer key would authenticate an empty X-Producer-Key)"
+            )
+        if not value.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} values (producer ids) must be "
+                f"non-blank"
+            )
     return dict(parsed)
 
 
@@ -437,6 +455,24 @@ def load_settings() -> Settings:
     signal_producer_keys = _parse_producer_keys(
         os.environ.get(SIGNAL_PRODUCER_KEYS_ENV)
     )
+    # Auto-reviewer P1 #4 — role-separation guard: the operator credential must
+    # never equal any producer key, or that producer could present its own key
+    # as X-Operator-Key and pass every operator-only route (ADR-009 A-1 role
+    # separation: a producer key authorizes POST /api/signals ONLY). Compared
+    # constant-time (secrets.compare_digest) against every configured producer
+    # key — never short-circuited on the first mismatch, so this check itself
+    # leaks no timing signal about which producer key (if any) collides.
+    if operator_api_key:
+        overlap = any(
+            secrets.compare_digest(operator_api_key, producer_key)
+            for producer_key in signal_producer_keys
+        )
+        if overlap:
+            raise ValueError(
+                f"{OPERATOR_API_KEY_ENV} must not equal any key in "
+                f"{SIGNAL_PRODUCER_KEYS_ENV} (ADR-009 A-1 role separation — a "
+                f"producer key must never also authenticate as the operator)"
+            )
 
     broker_adapter = os.environ.get(BROKER_ENV, "auto").strip().lower()
     if broker_adapter not in {"auto", "mock", "alpaca"}:

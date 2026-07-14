@@ -112,3 +112,78 @@ def test_producer_keys_non_string_values_rejected(monkeypatch):
     monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"k": 123}')
     with pytest.raises(ValueError, match="SIGNAL_PRODUCER_KEYS"):
         load_settings()
+
+
+# --------------------------------------------------------------------------- #
+# Auto-reviewer P1 #1: a blank/whitespace producer KEY (or a blank producer ID)
+# must be rejected at startup — an empty `X-Producer-Key:` header must never
+# authenticate (secrets.compare_digest("", "") is True for a blank configured
+# key, which would let ANY caller sending no key value at all match it).
+# --------------------------------------------------------------------------- #
+def test_blank_producer_key_rejected(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"": "vibe-trading"}')
+    with pytest.raises(ValueError, match="SIGNAL_PRODUCER_KEYS"):
+        load_settings()
+
+
+def test_whitespace_producer_key_rejected(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"   ": "vibe-trading"}')
+    with pytest.raises(ValueError, match="SIGNAL_PRODUCER_KEYS"):
+        load_settings()
+
+
+def test_blank_producer_id_rejected(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"prod-key-abc": ""}')
+    with pytest.raises(ValueError, match="SIGNAL_PRODUCER_KEYS"):
+        load_settings()
+
+
+def test_whitespace_producer_id_rejected(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"prod-key-abc": "   "}')
+    with pytest.raises(ValueError, match="SIGNAL_PRODUCER_KEYS"):
+        load_settings()
+
+
+def test_valid_producer_map_still_accepted(monkeypatch):
+    # Regression guard: the new blank/whitespace checks must not reject a
+    # genuinely well-formed map.
+    _clear(monkeypatch)
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"prod-key-abc": "vibe-trading"}')
+    assert load_settings().signal_producer_keys == {"prod-key-abc": "vibe-trading"}
+
+
+# --------------------------------------------------------------------------- #
+# Auto-reviewer P1 #4: OPERATOR_API_KEY must not equal any configured producer
+# key — else a producer could present its own key as X-Operator-Key and pass
+# operator-only routes (role-separation breach, ADR-009 A-1).
+# --------------------------------------------------------------------------- #
+def test_operator_key_equal_to_producer_key_fails_startup(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("OPERATOR_API_KEY", "shared-secret")
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"shared-secret": "vibe-trading"}')
+    with pytest.raises(ValueError, match="OPERATOR_API_KEY"):
+        load_settings()
+
+
+def test_operator_key_equal_to_one_of_several_producer_keys_fails_startup(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("OPERATOR_API_KEY", "shared-secret")
+    monkeypatch.setenv(
+        "SIGNAL_PRODUCER_KEYS",
+        '{"prod-key-a": "vibe-a", "shared-secret": "vibe-b"}',
+    )
+    with pytest.raises(ValueError, match="OPERATOR_API_KEY"):
+        load_settings()
+
+
+def test_operator_key_distinct_from_producer_keys_ok(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("OPERATOR_API_KEY", "op-secret-xyz")
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"prod-key-abc": "vibe-trading"}')
+    s = load_settings()
+    assert s.operator_api_key == "op-secret-xyz"
+    assert s.signal_producer_keys == {"prod-key-abc": "vibe-trading"}

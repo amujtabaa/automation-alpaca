@@ -85,6 +85,31 @@ def test_idempotent_replay_then_conflict(client):
     assert r.status_code == 409
 
 
+def test_string_ttl_seconds_is_validation_quarantine_not_lax_coercion(client):
+    # Auto-reviewer P2 #3: a lax int field coerces JSON "300" to 300, silently
+    # accepting a type-malformed TTL as RECEIVED. ttl_seconds must be a STRICT
+    # int — a JSON string, even a numeric-looking one, is a 422 validation
+    # failure (recorded quarantine), never coerced.
+    r = client.post(
+        "/api/signals", json=_proposal(ttl_seconds="300"), headers=_PROD_H
+    )
+    assert r.status_code == 422
+    assert r.json()["status"] == "quarantined"
+    assert r.json()["quarantine_reason"] == "validation"
+
+
+def test_well_typed_out_of_range_ttl_still_freshness_quarantine(client):
+    # Regression guard: strict typing must not disturb the RANGE-based
+    # ttl_out_of_range path for a well-typed (real JSON int) out-of-range value.
+    r = client.post(
+        "/api/signals", json=_proposal(ttl_seconds=5), headers=_PROD_H
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["status"] == "quarantined"
+    assert body["quarantine_reason"] == "ttl_out_of_range"
+
+
 def test_malformed_naive_datetime_quarantined(client):
     # Naive issued_at (no offset) → 422 recorded as SIGNAL_QUARANTINED.
     r = client.post(
@@ -95,6 +120,40 @@ def test_malformed_naive_datetime_quarantined(client):
     assert r.status_code == 422
     assert r.json()["status"] == "quarantined"
     assert r.json()["quarantine_reason"] == "validation"
+
+
+def test_distinct_malformed_no_signal_id_bodies_do_not_collide(client):
+    # Auto-reviewer P1 #5: two structurally-different malformed bodies, both
+    # lacking a usable signal_id, must each be recorded as their OWN terminal
+    # quarantine — never conflated via a shared "unknown" sentinel identity
+    # (which would make the second request an idempotent 200 replay of the
+    # first, silently losing a distinct malformed-but-attributable fact).
+    r1 = client.post("/api/signals", json={"foo": 1}, headers=_PROD_H)
+    r2 = client.post("/api/signals", json={"bar": 2}, headers=_PROD_H)
+    assert r1.status_code == 422
+    assert r2.status_code == 422
+    assert r1.json()["id"] != r2.json()["id"]
+
+    records = client.get("/api/signals", headers=_OP_H).json()
+    assert len(records) == 2
+    signal_ids = {r["signal_id"] for r in records}
+    assert len(signal_ids) == 2  # distinct identities, not both "unknown"
+    for r in records:
+        assert r["status"] == "quarantined"
+        assert r["quarantine_reason"] == "validation"
+
+
+def test_identical_malformed_body_replayed_idempotently(client):
+    # The flip side: an EXACT resubmission of the same malformed body is a
+    # legitimate idempotent replay (mirrors the well-formed dedupe contract),
+    # not a second distinct record.
+    body = {"foo": 1, "same": "content"}
+    r1 = client.post("/api/signals", json=body, headers=_PROD_H)
+    r2 = client.post("/api/signals", json=body, headers=_PROD_H)
+    assert r1.status_code == 422
+    assert r2.status_code == 200  # idempotent replay of the same quarantine
+    assert r1.json()["id"] == r2.json()["id"]
+    assert len(client.get("/api/signals", headers=_OP_H).json()) == 1
 
 
 def test_unparseable_body_is_400_no_event(client):
@@ -174,6 +233,40 @@ def test_existing_read_route_requires_operator(client):
     assert client.get("/api/positions", headers=_OP_H).status_code == 200
 
 
+def test_get_signals_status_query_param_actually_filters(client):
+    # Auto-reviewer P2 #2: the query param is documented/contracted as `status`
+    # (04-auth-and-api.md §2: "parameters: [status: SignalStatus = received, ...]")
+    # — it must actually filter, not be silently ignored under a mismatched
+    # internal parameter name.
+    client.post("/api/signals", json=_proposal(signal_id="a"), headers=_PROD_H)
+    client.post(
+        "/api/signals",
+        json=_proposal(signal_id="b", ttl_seconds=5),  # -> quarantined (ttl range)
+        headers=_PROD_H,
+    )
+    all_records = client.get("/api/signals", headers=_OP_H).json()
+    assert len(all_records) == 2
+
+    received_only = client.get(
+        "/api/signals", params={"status": "received"}, headers=_OP_H
+    ).json()
+    assert len(received_only) == 1
+    assert received_only[0]["signal_id"] == "a"
+
+    quarantined_only = client.get(
+        "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+    ).json()
+    assert len(quarantined_only) == 1
+    assert quarantined_only[0]["signal_id"] == "b"
+
+
+def test_get_signals_invalid_status_value_rejected(client):
+    r = client.get(
+        "/api/signals", params={"status": "not-a-real-status"}, headers=_OP_H
+    )
+    assert r.status_code == 422
+
+
 def test_docs_disabled_under_flag(client):
     assert client.get("/openapi.json").status_code == 404
     assert client.get("/docs").status_code == 404
@@ -195,12 +288,17 @@ def test_import_under_flag_does_not_raise():
     assert "ok" in proc.stdout
 
 
-def test_module_app_is_none_under_flag():
+def test_module_app_attribute_absent_under_flag():
+    # Auto-reviewer P1 #7: a module-level `app = None` is INSUFFICIENT — uvicorn's
+    # `getattr(module, "app")` happily returns None and can still end up binding a
+    # socket. The name must be UNDEFINED so `getattr` raises AttributeError inside
+    # uvicorn's `Config.load()`, before any listener opens (see
+    # test_signal_seat_launcher.py for the socket-level empirical proof).
     proc = subprocess.run(
         [
             sys.executable,
             "-c",
-            "import app.main; print('APP_IS', app.main.app is None)",
+            "import app.main; print('HAS_APP', hasattr(app.main, 'app'))",
         ],
         env={"SIGNAL_SEAT_ENABLED": "true", "PATH": "/usr/bin:/bin:/usr/local/bin"},
         capture_output=True,
@@ -208,4 +306,4 @@ def test_module_app_is_none_under_flag():
         cwd=".",
     )
     assert proc.returncode == 0, proc.stderr
-    assert "APP_IS True" in proc.stdout
+    assert "HAS_APP False" in proc.stdout

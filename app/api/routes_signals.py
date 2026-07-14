@@ -12,10 +12,11 @@ reaches the backend ONLY through the typed signal facade (contract 5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -82,6 +83,25 @@ def _raw_str(raw: dict, key: str, default: str) -> str:
     return value if isinstance(value, str) and value else default
 
 
+def _malformed_identity(raw: dict) -> str:
+    """Deterministic identity for a malformed body that carries no usable
+    ``signal_id`` (auto-reviewer P1 #5).
+
+    Distinct malformed-but-attributable bodies must NOT collide on the store's
+    ``(producer_id, signal_id)`` dedupe key — a shared sentinel (e.g. "unknown")
+    would silently conflate ``{"foo": 1}`` and ``{"bar": 2}`` into one record, so
+    the second request reads as an idempotent replay of the first instead of its
+    own recorded fact (violating "record malformed-but-attributable, never
+    reject-and-forget", spec 01-schema §1/§3). Content-hashing the raw body keeps
+    the desired symmetry: an EXACT resubmission of the same malformed body still
+    dedupes as an idempotent replay (mirrors the well-formed-signal contract),
+    while any content change gets its own terminal QUARANTINED record."""
+
+    canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"malformed-{digest}"
+
+
 @router.post("/signals")
 async def ingest_signal(
     request: Request,
@@ -125,9 +145,15 @@ async def ingest_signal(
             ".".join(str(p) for p in err["loc"]): repr(err.get("input"))
             for err in exc.errors()
         }
+        # A missing/non-string/blank signal_id gets a CONTENT-HASHED synthetic
+        # identity (P1 #5) — never a shared "unknown" sentinel, which would
+        # collide distinct malformed bodies onto one store row.
+        signal_id = _raw_str(raw, "signal_id", "")
+        if not signal_id:
+            signal_id = _malformed_identity(raw)
         result = await facade.ingest_signal(
             producer_id=producer_id,
-            signal_id=_raw_str(raw, "signal_id", "unknown"),
+            signal_id=signal_id,
             symbol=_raw_str(raw, "symbol", "UNKNOWN"),
             direction=_raw_str(raw, "direction", "buy"),
             issued_at=None,
@@ -171,7 +197,11 @@ def _record_response(outcome: str, record) -> JSONResponse:
 
 @router.get("/signals")
 async def list_signals(
-    status_filter: Optional[SignalStatus] = None,
+    # auto-reviewer P2 #2: the wire contract (04-auth-and-api.md §2) names this
+    # query param `status`; alias it explicitly rather than relying on the
+    # Python parameter name (which would silently ignore `?status=...` under any
+    # internal rename) — an invalid SignalStatus value is FastAPI's normal 422.
+    status_filter: Optional[SignalStatus] = Query(default=None, alias="status"),
     symbol: Optional[str] = None,
     producer_id: Optional[str] = None,
     _actor: str = Depends(require_operator),

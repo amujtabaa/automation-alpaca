@@ -143,7 +143,15 @@ class SignalProposal(BaseModel):
 
     signal_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     issued_at: datetime
-    ttl_seconds: int
+    # strict=True (auto-reviewer P2 #3): a lax int field silently coerces a JSON
+    # string like "300" (or a bool) to an int BEFORE this model even finishes
+    # validating — so a type-malformed TTL would slip past into RECEIVED instead
+    # of the malformed-but-attributable validation-quarantine path (and later
+    # never debit the A-4 invalid budget for a genuinely bad value). Strict mode
+    # rejects a non-integer JSON value outright while still accepting a real
+    # JSON integer; the range check (ttl_out_of_range quarantine) is separate and
+    # untouched by this — it only fires for a well-typed out-of-range int.
+    ttl_seconds: int = Field(strict=True)
     symbol: str = Field(min_length=1, max_length=10)
     direction: Literal["buy", "sell"]
     suggested_quantity: Optional[int] = Field(default=None, gt=0)
