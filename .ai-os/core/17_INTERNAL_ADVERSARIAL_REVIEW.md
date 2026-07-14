@@ -56,6 +56,31 @@ Every internal review fields AT MINIMUM:
 - **R6 — Adversarial verification.** Every finding faces independent refuters before it is
   reported; every report carries an explicit not-falsified list so coverage is auditable.
 
+## Right-sizing rules (v1.1 amendment, 2026-07-12 — Ameen directive: high performance, token-efficient, tiered)
+
+- **R7 — Tier the models to the work.** Reviews are staged pipelines; only judgment-heavy
+  stages earn the strongest model. Defaults: *finder/auditor lenses and refuters → sonnet*
+  (targeted reading + reproduction, medium effort); *the one judgment-heavy lens per review
+  (e.g. mechanism attack) and the final synthesis → opus (or the session model)*; *haiku only
+  for mechanical collation, never for code judgment*. Never let a whole fleet silently inherit
+  the session model — that is the default failure, not a choice.
+- **R8 — Budget every agent, out loud.** Each agent prompt carries a hard tool-call budget
+  (~30 for finders, ~15 for refuters), `timeout`-prefixed suite runs, and the instruction to
+  return PARTIAL results at budget rather than grinding. An agent that cannot finish inside
+  its budget is a scoping error in the review plan.
+- **R9 — Size the fan-out to the floor, not the ceiling.** Concurrency is capped by the
+  container (min(16, cores−2); a 4-core box runs TWO agents at a time). Breadth beyond ~2×cap
+  serializes — get coverage from cheaper tiers and tighter briefs, not more heads. Verification
+  is tiered the same way: P0/P1 findings get two independent refuters (survive only if neither
+  refutes); P2/P3 get one.
+- **R10 — Phase-relevance scope.** A review targets the DELTA under review and its blast
+  radius at the CURRENT tip. Historical incidents enter only as calibration evidence for lens
+  design — never as scan targets. A lens that re-audits an already-dispositioned wave, or
+  probes machinery the current phase cannot conceivably exercise, is cut at planning time.
+- **R11 — Heartbeat, don't wonder.** Long reviews log per-phase counts (`raw findings: N`,
+  `verifying: N`) so a human watching sees progress, and the orchestrator checks the journal
+  before assuming "stuck" — on a 2-slot box, thorough LOOKS stuck.
+
 ## Standing artifacts
 
 Findings → `work/review/REV-*/` packet + strict-xfail pins (the house pattern: a pin that flips

@@ -59,15 +59,19 @@ const LENSES = [
   { key: 'session-continuity', prompt: `LENS: SESSION CONTINUITY + STATE ARTIFACTS. Read work/active/W3-STATE.md history (git log -p -- work/active/W3-STATE.md | head -400), .ai-os/core/13_SESSION_LENGTH_AND_CONTEXT_HYGIENE.md. The state file went stale mid-wave once (REV-0023 CC-07). Audit: what does the state file capture vs what post-compaction work actually needed? Are deferred-log items structurally guaranteed to surface in the next WO's gate, or do they rely on memory? Propose the minimal structure change (not more prose) that makes deferrals and incidents flow forward automatically.` },
   { key: 'toolchain-env', prompt: `LENS: TOOLCHAIN + ENVIRONMENT REPRODUCIBILITY. Read constraints.txt, requirements.txt, .importlinter, pyproject/CI config if present, and the W3-STATE toolchain notes (shim shadowing; Python 3.11 container vs 3.12 authoritative; pytest summary line suppressed; weekend wall clock breaking phase-dependent tests until clocks were pinned). Each of these cost real debugging time. Propose: what belongs in a session-start preflight script (checked into the repo) that asserts the environment before any gate run is trusted, and what test-suite conventions (e.g. the fixed Wednesday clock) should be codified where new tests will actually see them (conftest? a testing-model doc?).` },
 ]
+const GUARD = `BUDGET (hard): <=25 tool calls; read what you cite, cite what you read; return
+PARTIAL at budget rather than grinding. Scope: current practices only — historical incidents
+are calibration evidence, not scan targets (doc 17 R10).`
 const audits = await parallel(LENSES.map(l => () =>
-  agent(`${COMMON}\n${l.prompt}`, { label: `audit:${l.key}`, schema: PROPOSALS })))
+  agent(`${COMMON}\n${GUARD}\n${l.prompt}`,
+    { label: `audit:${l.key}`, schema: PROPOSALS, model: 'sonnet', effort: 'medium' })))
 
 phase('Verify')
 const all = audits.filter(Boolean).flatMap(a => a.proposals)
 log(`raw proposals: ${all.length}`)
 const verified = await parallel(all.map(p => () =>
-  agent(`${COMMON}\nADVERSARIALLY REFUTE this process proposal: target=${p.target}; change=${p.change}; claimed evidence=${p.problem_evidence.slice(0, 400)}. Refute if: the cited miss would NOT actually have been prevented; the change duplicates an existing rule (cite it); the ongoing cost exceeds the miss it prevents; or the evidence misreads the repo record (check the cited files). Default refuted=true when in doubt — process bloat is itself a failure mode this repo names.`,
-    { label: `verify:${p.id}`, phase: 'Verify', schema: VERDICT })
+  agent(`${COMMON}\nBUDGET: <=12 tool calls. ADVERSARIALLY REFUTE this process proposal: target=${p.target}; change=${p.change}; claimed evidence=${p.problem_evidence.slice(0, 400)}. Refute if: the cited miss would NOT actually have been prevented; the change duplicates an existing rule (cite it); the ongoing cost exceeds the miss it prevents; or the evidence misreads the repo record (check the cited files). Default refuted=true when in doubt — process bloat is itself a failure mode this repo names.`,
+    { label: `verify:${p.id}`, phase: 'Verify', schema: VERDICT, model: 'sonnet', effort: 'medium' })
     .then(v => ({ ...p, confirmed: v ? !v.refuted : false }))))
 
 phase('Synthesize')
@@ -80,6 +84,6 @@ good: ${JSON.stringify(heldAll, null, 1)}\nProduce markdown: (1) top changes ran
 (2) a "do not add" list — refuted/bloat proposals worth recording so they aren't re-proposed;
 (3) which changes need Ameen's gate (template/OS changes) vs which the implementation seat can
 apply under standing discipline. Keep the whole plan holdable in one head.`,
-  { label: 'synthesize', effort: 'high' })
+  { label: 'synthesize', model: 'opus', effort: 'high' })
 
 return { confirmed_count: confirmed.length, held: heldAll, memo }

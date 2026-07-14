@@ -91,29 +91,39 @@ need file:line on BOTH sides (sol_policy.py and app/).`,
     { label: `drift:${row.key}`, phase: 'Drift', schema: FINDINGS })))
 
 phase('Adversarial')
+// Right-sized 2026-07-12 (Ameen): this container caps workflow concurrency at
+// ~2 agents, so breadth must come from CHEAP TIERED agents with hard budgets,
+// not from a wide fan-out of session-model heavyweights. Conformance/Drift
+// prompts above are byte-identical to the first run so resume returns them
+// from cache.
+const GUARD = `BUDGET GUARDS (hard): at most ~30 tool calls; prefix every test-suite run with
+'timeout 240'; if a command would exceed that, kill it and record the timing as a finding.
+If you hit the budget, STOP and return what you have marked partial=true in a held entry.
+Scope: review ONLY the Sol drop vs the CURRENT tip contract — do not re-audit incumbent
+history, past waves, or anything the intake checklist does not name.`
+
 const adv = await parallel([
-  () => agent(`${COMMON}\nLENS: MUTATION-CRITIC on THEIR tests. Copy ${ROOT} to a scratch dir,
-mutate the COPY only: (a) delete/neuter their ratchet or monotonicity mechanism, (b) neuter
-their fade/hold trigger, (c) break one hard-rail check. Run THEIR suite against each mutant
-(one at a time). A survivor = their suite is decorative on that mechanism (P1/P2 finding, the
-repo's TC-01 lesson). Paste each mutant diff + suite tail. Restore nothing in the real tree —
-you never touched it (verify + state 'git status --porcelain' is clean for ${ROOT}).`,
-    { label: 'adv:mutation', schema: FINDINGS }),
-  () => agent(`${COMMON}\nLENS: OUR TAPES vs THEIR POLICY. Adapt the repo's regime tapes
-(tests/test_wo0021_regime_tapes.py walk/envelope helpers, the WO-0028 ATR-expansion-collapse
-tape, tests/test_wo0020_envelope_tick.py crash_tape) to drive sol_policy.decide in a scratch
-script. Assert: every exit above floor, sized within remaining, ratchet never loosens, no
-action out of allowed phases/TTL (validate_action must pass on every PlannedAction they emit).
-Any rail-violating or malformed action is P0/P1. Paste the script path + decisive output.`,
-    { label: 'adv:tapes', schema: FINDINGS }),
-  () => agent(`${COMMON}\nLENS: STRUCTURAL-HOLD ATTACK. Their headline territory is the
-structural-hold mechanism (FINDING-W3-lase-pullback-structural-hold: hold a pull-to-VWAP on
-low-vol grinds WITHOUT violating rails). Build the adversarial tapes: (1) grind-then-orderly-
-pullback (must HOLD: this is the P2 finding's scenario - if they hold it, that is a HELD entry
-of high value), (2) grind-then-true-breakdown through the floor (must EXIT above floor - a hold
-below floor or missed stop is P0), (3) chop designed to whipsaw their hold trigger. Paste
-outputs. Compare against our incumbent compute_working_stop on the same tapes for the memo.`,
-    { label: 'adv:structural-hold', schema: FINDINGS }),
+  () => agent(`${COMMON}\n${GUARD}\nLENS: MUTATION-CRITIC on THEIR tests. Copy ${ROOT} to a
+scratch dir; make THREE mutants of the COPY, one at a time: (a) neuter their ratchet/
+monotonicity mechanism, (b) neuter their fade/hold trigger, (c) break one hard-rail check.
+Run THEIR suite per mutant ('timeout 240 pytest <scratch>/test_sol_policy.py -q -x'). A
+survivor = decorative suite on that mechanism (P1/P2, the TC-01 lesson). Paste each mutant
+diff line + suite tail. Never touch the real tree.`,
+    { label: 'adv:mutation', schema: FINDINGS, model: 'sonnet', effort: 'medium' }),
+  () => agent(`${COMMON}\n${GUARD}\nLENS: OUR TAPES vs THEIR POLICY. ONE scratch script that
+drives sol_policy.decide over exactly THREE tapes: the WO-0020 crash_tape (stop exit), the
+WO-0028 ATR-expansion-collapse shape (ratchet), and one thin/gappy tape of your design. For
+every PlannedAction they emit assert: app.sellside.policy.validate_action passes, limit >=
+floor, 0 < qty <= remaining. Any violation is P0/P1 with the pasted action. Do not build more
+tapes than these three.`,
+    { label: 'adv:tapes', schema: FINDINGS, model: 'sonnet', effort: 'medium' }),
+  () => agent(`${COMMON}\n${GUARD}\nLENS: STRUCTURAL-HOLD ATTACK (their headline mechanism —
+the one lens worth a strong model). THREE tapes only: (1) low-vol grind then orderly
+pull-to-VWAP — holding it is the prize (record as held-of-high-value if they do), (2) grind
+then TRUE breakdown through the floor — any hold below floor or missed stop is P0, (3) chop
+built to whipsaw their hold trigger. Compare against incumbent compute_working_stop on the
+same tapes (one table). Paste decisive outputs.`,
+    { label: 'adv:structural-hold', schema: FINDINGS, model: 'opus', effort: 'medium' }),
 ])
 
 phase('Verify')
@@ -126,18 +136,25 @@ const deduped = allFindings.filter(f => {
   seen.add(k)
   return true
 })
-const verified = await parallel(deduped.map(f => () =>
-  parallel([
-    () => agent(`${COMMON}\nADVERSARIALLY REFUTE this finding about the Sol drop: [${f.severity}] ${f.claim}
-(evidence claimed: ${f.evidence.slice(0, 500)}). Reproduce it yourself from scratch. Default to
-refuted=true if you cannot reproduce it or the evidence does not support the severity.`,
-      { label: `verify:${f.id}:a`, phase: 'Verify', schema: VERDICT }),
-    () => agent(`${COMMON}\nSECOND INDEPENDENT REFUTER, different angle (read the code path the
-finding names rather than re-running the reproducer): [${f.severity}] ${f.claim}. refuted=true
-unless the code genuinely shows it.`,
-      { label: `verify:${f.id}:b`, phase: 'Verify', schema: VERDICT }),
-  ]).then(vs => ({ ...f, confirmed: vs.filter(Boolean).filter(v => !v.refuted).length >= 1, verdicts: vs }))
-))
+// Tiered verification: P0/P1 get two INDEPENDENT cheap refuters and survive
+// only if NEITHER refutes (a false P0 against a rival's work poisons the
+// collaboration); P2/P3 get one refuter. All sonnet — refutation is targeted
+// reproduction, not open-ended judgment.
+const p01 = deduped.filter(f => f.severity === 'P0' || f.severity === 'P1')
+const rest = deduped.filter(f => f.severity !== 'P0' && f.severity !== 'P1')
+log(`verifying: ${p01.length} P0/P1 (2 refuters), ${rest.length} P2/P3 (1 refuter)`)
+const refute = (f, angle) => agent(
+  `${COMMON}\nBUDGET: <=15 tool calls. ADVERSARIALLY REFUTE (${angle}): [${f.severity}] ${f.claim}
+Evidence claimed: ${String(f.evidence).slice(0, 400)}
+${angle === 'reproduce' ? 'Reproduce it yourself from scratch; refuted=true if you cannot.' :
+  'Read the exact code path the finding names; refuted=true unless the code genuinely shows it.'}`,
+  { label: `verify:${f.id}:${angle[0]}`, phase: 'Verify', schema: VERDICT, model: 'sonnet', effort: 'medium' })
+const verifiedP01 = await parallel(p01.map(f => () =>
+  parallel([() => refute(f, 'reproduce'), () => refute(f, 'code-read')])
+    .then(vs => ({ ...f, confirmed: vs.filter(Boolean).every(v => !v.refuted), verdicts: vs }))))
+const verifiedRest = await parallel(rest.map(f => () =>
+  refute(f, 'code-read').then(v => ({ ...f, confirmed: v ? !v.refuted : false }))))
+const verified = [...verifiedP01, ...verifiedRest]
 
 phase('Synthesize')
 const confirmed = verified.filter(Boolean).filter(f => f.confirmed)
@@ -145,13 +162,11 @@ const heldAll = [...conf, ...drift, ...adv].filter(Boolean).flatMap(r => r.held)
 const memo = await agent(`${COMMON}\nSYNTHESIZE the crosswise review. CONFIRMED findings:
 ${JSON.stringify(confirmed.map(f => ({ id: f.id, sev: f.severity, claim: f.claim })), null, 1)}
 HELD (not falsified): ${JSON.stringify(heldAll, null, 1)}
-Produce (as your final text, markdown): (1) verdict per INTAKE-CHECKLIST section; (2) the
-consolidation recommendation split: merge-now candidates (contract-conformant, rail-safe,
-mutation-hardened) vs W4-bake-off items (empirical mechanism-quality claims); (3) the W4
-harness spec addendum (exact shared scenario set incl. the structural-hold tapes, five-metric
-scorer, no-peeking rule); (4) the drift-remediation list Sol's operator needs (what to rebase
-onto the remediated contract). Do not soften findings.`,
-  { label: 'synthesize', effort: 'high' })
+Produce (markdown): (1) verdict per INTAKE-CHECKLIST section; (2) consolidation split:
+merge-now candidates vs W4-bake-off items; (3) W4 harness spec addendum (shared scenario set
+incl. structural-hold tapes, five metrics, no-peeking); (4) drift-remediation list for Sol's
+operator. Do not soften findings.`,
+  { label: 'synthesize', model: 'opus', effort: 'high' })
 
 return {
   confirmed,
