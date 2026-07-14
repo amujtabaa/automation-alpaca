@@ -41,6 +41,30 @@ Rules:
 - A producer key on an operator route (or vice versa) is a 403, distinct from 401, and is a
   required negative test in WO-0102 (routes exist) and WO-0103/0104 (approval/release routes).
 
+## 1a. Mounted-route authorization matrix (normative, fail-closed)
+
+Every router `create_app` (`app/main.py`) mounts, classified. With `signal_seat_enabled=True`:
+
+| Route group (module) | Class |
+|---|---|
+| `GET /api/health` (`routes_system`) | **public** (liveness only — no state) |
+| session reads (`routes_system`) | operator-only |
+| `routes_watchlist` (all) | operator-only |
+| `routes_candidates` (all) | operator-only |
+| `routes_trading` (all — orders, positions, flatten) | operator-only |
+| `routes_controls` (all — kill switch, session control) | operator-only |
+| `routes_review` (all) | operator-only |
+| `routes_marketdata` (all) | operator-only |
+| `routes_dev` (when mounted) | operator-only |
+| `POST /api/signals` (`routes_signals`) | **producer-only** |
+| `GET /api/signals`, approve/reject (`routes_signals`) | operator-only |
+| `/api/producers*` | operator-only |
+
+**Fail-closed enforcement (WO-0102 test):** a parameterized test introspects the real mounted
+app's route table at runtime; any route not present in this classification is a test FAILURE, and
+each classified route is asserted against {none, invalid, producer-key, operator-key}. A route
+added later cannot ship unclassified.
+
 ## 2. Endpoints (OpenAPI fragment)
 
 All under the feature flag (`00-overview.md`); routers not mounted when off (404). Route module:
@@ -49,12 +73,19 @@ change** (WO-0102), reaching the backend only through the typed signal facade
 (`app/facade/` — command + query protocols mirroring the existing facade split; the route never
 imports `app.store`/`app.events` and never uses the `get_store` dependency).
 
+**Ingest body-handling constraint (A-4; Codex rev-2 finding):** the `POST /api/signals` handler
+MUST NOT declare a Pydantic body parameter — FastAPI reads the request body for body-model routes
+before the auth/rails dependencies can reject, defeating the normative ordering. The handler takes
+the raw `Request`; auth + rails run as dependencies (no body access); the handler then streams the
+body with the 64 KiB cap and validates `SignalProposal` manually. The OpenAPI fragment below
+documents the WIRE contract; the implementation binds it manually.
+
 ```yaml
 paths:
   /api/signals:
     post:                     # producer-only
       security: [ProducerKey]
-      requestBody: SignalProposal          # 01-schema.md §1
+      requestBody: SignalProposal          # 01-schema.md §1 (manually bound - see constraint above)
       responses:
         "201": {description: accepted -> RECEIVED (or recorded terminal: quarantined/expired at ingest), content: SignalRecordView}
         "200": {description: idempotent replay (identical payload_hash), content: SignalRecordView}

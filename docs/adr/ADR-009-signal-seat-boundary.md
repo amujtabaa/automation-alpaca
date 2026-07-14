@@ -107,10 +107,13 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
 1. **Transport policy** (`Settings.signal_transport_policy`, mandatory when `signal_seat_enabled`):
    - `loopback` (beta default): the backend binds `127.0.0.1` only; producers and cockpit run on
      the same host. Startup **fails fast** if the bind address is non-loopback under this policy.
-   - `tls_proxy`: any non-loopback exposure requires a TLS-terminating reverse proxy in front;
-     the backend refuses to start with `signal_seat_enabled` on a non-loopback bind unless this
-     policy is explicitly set (an audited, deliberate act). Plain HTTP across a network boundary
-     is never a supported configuration.
+   - `tls_proxy`: external exposure happens ONLY through a TLS-terminating reverse proxy — and
+     the backend listener itself stays **proxy-private**: it binds loopback (or a Unix socket)
+     with the proxy forwarding to it on the same host. The startup guard verifies the **bind**,
+     not just the flag: with `signal_seat_enabled`, a non-loopback/non-socket backend bind fails
+     fast under BOTH policies — a same-network client must never be able to bypass the proxy and
+     hit the plain-HTTP backend port directly (Codex rev-2 finding). Plain HTTP across a network
+     boundary is never a supported configuration.
 2. **Key lifecycle**: keys are env-injected secrets (never committed, never logged, redacted in
    error paths); comparison is constant-time (`secrets.compare_digest`); rotation = deploy a new
    key map (producer map supports N keys per producer to allow overlap-rotation); revocation =
@@ -122,15 +125,25 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
    operator credential**: positions, orders, sessions, watchlist, candidates, review queues,
    signal list, producer states, and all mutating commands. Producer keys authorize exactly one
    route: `POST /api/signals`. The matrix {none, invalid, producer-key, operator-key} × {every
-   mounted route} is enumerated in the spec (`04-auth-and-api.md`) and asserted by a
-   parameterized test; unauthenticated or producer-credentialed access to any sensitive read is
-   401/403. Rationale: an untrusted producer with network reach must learn nothing about
+   mounted route} is enumerated in the spec (`04-auth-and-api.md` §1a — an explicit
+   classification table covering every router `create_app` mounts: system/health, session,
+   watchlist, candidates, trading, controls, review, marketdata, dev, signals, producers) and
+   enforced **fail-closed**: a parameterized test introspects the mounted app's actual routes at
+   runtime and FAILS if any route is absent from the classification table — a new or forgotten
+   route cannot silently ship unclassified (Codex rev-2 finding). Unauthenticated or
+   producer-credentialed access to any sensitive route, reads included, is 401/403. Rationale: an untrusted producer with network reach must learn nothing about
    positions, orders, sessions, or other producers' theses.
 
 ### A-2 (remediates F-002) — Atomic conversion contract
 
 Approval→intent conversion is **one atomic store command** in both stores:
 
+- The conversion is a **dedicated atomic store command** (both stores). The existing facade
+  composition — `await gate.approve(candidate_id)` then `await create_order_for_candidate(...)`
+  (`app/facade/store_backed.py`) — is **explicitly forbidden** inside signal conversion: its
+  inter-await window is precisely the F-002 crash window (Codex rev-2 re-confirmed it in the
+  as-built code). The store command performs the candidate/sell-intent mint, approval, and order
+  creation as one plan-and-apply inside the lock.
 - Under a single lock hold (memory) / one transaction (SQLite), the command: re-reads the
   signal's status and server deadline (A-3), the producer-quarantine epoch, the current
   `TradingState`/kill-switch, and the fresh derived position **plus outstanding sell-intent
@@ -184,11 +197,19 @@ Ingest processing order is normative: **(1) authenticate** (constant-time key lo
 body read) → **(2) rails check** (quarantine epoch, rate limit / interim ceiling) → **(3) bounded
 body read** (`Content-Length` capped at **64 KiB**, streamed reject beyond) → **(4) parse +
 field-validate** (thesis ≤ 4000 chars, provenance ≤ 20 keys × 500 chars). Steps 1–2 reject with
-zero store writes and zero body processing.
+zero store writes and zero body processing — with **exactly one carve-out**: the single request
+that first breaches the rate limit performs the epoch-opening `PRODUCER_QUARANTINED` append (once
+per epoch, by definition); every subsequent step-1/step-2 reject in that epoch is write-free
+(Codex rev-2 finding: without the carve-out the breach path is unimplementable as written).
 
 Audit bounds (replacing the draft's "periodic rejected-count record", which the reviewer
 correctly showed is unbounded over indefinite hostility):
 
+- **The rate limit debits EVERY authenticated ingest** — valid, invalid, or duplicate — not
+  merely accepted proposals (Codex rev-2 finding: otherwise endless unique parseable-but-invalid
+  bodies each record `SIGNAL_QUARANTINED` without ever consuming the bucket, growing the log
+  unbounded once the interim ceiling retires). Validation-quarantine events are therefore
+  bucket-bounded by construction.
 - **At most ONE `PRODUCER_QUARANTINED` event per quarantine epoch** (epoch = quarantine →
   release). Post-quarantine ingress appends **nothing**.
 - Rejected-request counting is a **saturating in-memory counter outside the event log**

@@ -58,7 +58,7 @@ forbidden_paths:
 
 - [ ] Injected clock throughout (no bare `datetime.now()` / `time.time()`).
 - [ ] Property-style tests: no ordering of signal events can yield an APPROVED state for an expired/quarantined signal.
-- [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test).
+- [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test). **The bucket debits EVERY authenticated ingest** — valid, invalid, or duplicate — so validation-quarantine events are bucket-bounded (Codex rev-2; test: sustained invalid-body flood breaches the limit and the log stays bounded).
 - [ ] Post-quarantine backpressure per ADR-009 **Amendment A-4**: epoch-bounded audit (ONE PRODUCER_QUARANTINED per epoch; nothing appended post-quarantine; saturating out-of-log counter; count carried on PRODUCER_RELEASED) — model-based flood test asserts CONSTANT event-row count under sustained hostility, both stores.
 - [ ] Expiry semantics per **Amendment A-3**: server-computed durable `expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)`, skew bounds, restart-stable, atomically re-checked at conversion (property tests, injected clock).
 - [ ] The release route is **operator-only** (same credential split as WO-0103); a producer API key cannot release its own quarantine (negative test).

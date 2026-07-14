@@ -11,13 +11,15 @@ approval → append `SIGNAL_APPROVED` → create + link exactly one direction-co
 or nothing** (crash-injection + interleaving tests at every point: expiry, quarantine/release,
 TradingState flips, duplicate approval; both stores). Within that command, per direction:
 
-- **Buy-direction signal** → create a `Candidate` with
-  `strategy="signal"`, `reason=<short thesis ref>`, `suggested_quantity=<operator quantity>`,
-  `suggested_limit_price=<operator limit_price>`, plus the correlation fields (§4) — then drive it
-  through the **existing** approve→dispatch path (`plan_create_order_for_candidate` et al.) with
-  the same actor. The operator's one approval action approves both the signal and the candidate it
-  mints; no second panel click, no bypassed gate — the same session-control / risk-gate /
-  kill-switch checks run unchanged.
+- **Buy-direction signal** → the atomic command mints a `Candidate`
+  (`strategy="signal"`, `reason=<short thesis ref>`, `suggested_quantity=<operator quantity>`,
+  `suggested_limit_price=<operator limit_price>`, correlation fields §4), approves it, and creates
+  its order **inside the same lock/transaction**, composing the existing plan functions
+  (`plan_create_order_for_candidate` et al.) as one plan-and-apply. **The facade's
+  `gate.approve(...)` → `create_order_for_candidate(...)` await-sequence is forbidden here** —
+  its inter-await window is the F-002 crash window (ADR-009 A-2, Codex rev-2). Same
+  session-control / risk-gate / kill-switch checks, evaluated inside the command; one approval
+  action, no second panel click, no bypassed gate.
 - **Sell-direction signal** → create a `SellIntent` with **`reason=SellReason.SIGNAL`** (new enum
   member — the third value after `manual_flatten` / `protection_floor`, exactly the extension
   point the enum's docstring anticipated), `target_quantity=<operator quantity>` — and if the operator quantity exceeds the live position
@@ -72,8 +74,11 @@ Error-direction asymmetry, honored as decided:
   reduce-only enforcement) remains the **binding** check on the produced intent — classification
   never substitutes for it.
 - **False "not-risk-reducing"** has no downstream backstop, so the classification is deliberately
-  this simple and conservative-toward-convertibility: any within-position sell **is** convertible
-  in `Reducing`. A blocked conversion in `Reducing` returns the structured reason to the operator
+  this simple and conservative-toward-convertibility: any sell within the **available uncommitted
+  position** (live position − outstanding committed sell exposure) **is** convertible in
+  `Reducing` — e.g. position 100 with 90 already committed to exits leaves 10 convertible, and a
+  50-share approval is refused (`POSITION_CHANGED`) even though 50 < 100 (Codex rev-2: position-
+  only phrasing would miss joint-oversell protection). A blocked conversion in `Reducing` returns the structured reason to the operator
   — **never silent** (WO-0103 test: genuine protective sell IS convertible in `Reducing`,
   end-to-end over the real `SellReason.SIGNAL` route, both stores). Manual flatten stays the
   signal-independent fallback regardless.

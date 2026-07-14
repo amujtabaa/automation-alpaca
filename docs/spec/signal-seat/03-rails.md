@@ -7,7 +7,10 @@ producer must not be able to grow the append-only log (SQLite) without bound.
 
 Token bucket per `producer_id`, evaluated at ingest, injected clock:
 
-- `signal_rate_limit_per_hour: int = 60` (accepted proposals/hour; `Settings`-tunable)
+- `signal_rate_limit_per_hour: int = 60` (**authenticated ingests**/hour — every authenticated
+  request debits the bucket whether it validates, quarantines, or duplicates; `Settings`-tunable.
+  Codex rev-2: an accepted-only bucket lets unbounded invalid-but-attributable bodies write
+  `SIGNAL_QUARANTINED` events without ever breaching)
 - `signal_rate_burst: int = 10`
 
 Breach (bucket empty at an otherwise-valid ingest) → **producer-level quarantine**:
@@ -41,7 +44,9 @@ One periodic engine-side sweep (injected clock; monitoring-loop cadence):
 **Ingest processing order is normative:** (1) authenticate — constant-time key lookup, before any
 body read; (2) rails check — quarantine epoch, rate limit / interim ceiling; (3) bounded body
 read — `Content-Length` capped at 64 KiB, streamed reject beyond; (4) parse + field-validate.
-Steps 1–2 reject with zero store writes and zero body processing.
+Steps 1–2 reject with zero store writes and zero body processing, with exactly one carve-out:
+the single breach-crossing request appends the epoch-opening `PRODUCER_QUARANTINED` (once per
+epoch); all subsequent rejects in the epoch are write-free.
 
 For any ingest from a quarantined producer, or beyond a ceiling/limit:
 
