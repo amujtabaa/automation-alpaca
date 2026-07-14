@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Optional
+import math
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
@@ -80,12 +81,79 @@ async def _read_capped_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
+# --------------------------------------------------------------------------- #
+# Defensive quarantine-record field extraction (auto-reviewer round 3).
+#
+# ROOT INVARIANT: for an authenticated producer, ANY parseable JSON body that
+# fails SignalProposal validation — whatever its shape (object, array, null,
+# bare number/string/bool) or whatever malformed values it carries — is
+# recorded as a terminal SIGNAL_QUARANTINED (422), never a 400/500-and-forget.
+# Building that record must NEVER itself raise: every accessor below is total
+# (defined for every input) and returns a value guaranteed to satisfy the
+# SignalRecord field it feeds — never partially-validated raw content passed
+# straight through. This is what closes the class, not just the reported cases.
+# --------------------------------------------------------------------------- #
+def _as_dict(raw: object) -> dict[str, Any]:
+    """Best-effort dict view of ANY parsed JSON value. A non-object top-level
+    body (list/null/bare number/string/bool) yields an empty view, so every
+    accessor below falls back to its safe default instead of raising
+    ``AttributeError`` on a bare ``.get()`` call (auto-reviewer P1 #2)."""
+
+    return raw if isinstance(raw, dict) else {}
+
+
 def _raw_str(raw: dict, key: str, default: str) -> str:
     value = raw.get(key)
     return value if isinstance(value, str) and value else default
 
 
-def _malformed_identity(raw: dict) -> str:
+def _safe_optional_int(raw: dict, key: str) -> Optional[int]:
+    """A well-typed JSON integer, or ``None`` for anything else — explicitly
+    excluding ``bool`` (a ``bool`` is an ``int`` subclass in Python, so a bare
+    ``isinstance(x, int)`` would silently let a producer's ``true``/``false``
+    through as ``1``/``0``, auto-reviewer P2 #6's own failure mode reapplied to
+    the malformed-record path)."""
+
+    value = raw.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _safe_optional_float(raw: dict, key: str) -> Optional[float]:
+    """A well-typed, finite JSON number, or ``None`` for anything else
+    (bool-excluded, same reasoning as :func:`_safe_optional_int`; NaN/Infinity
+    — which Python's ``json`` module accepts as a non-standard extension —
+    excluded too, so a non-finite value can never reach the store)."""
+
+    value = raw.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+def _safe_provenance(raw: dict) -> dict[str, str]:
+    """A ``dict[str, str]`` ALWAYS — never a value that could raise
+    constructing ``SignalRecord.provenance`` (auto-reviewer P1 #1: a non-string
+    value like ``{"model": 1}`` passed straight through crashed record
+    construction with an uncaught Pydantic ``ValidationError`` -> 500). A
+    non-dict ``provenance`` becomes ``{}``; a non-string VALUE is stringified
+    (``str(v)``) rather than dropped, so the offending content is still visible
+    on the quarantined record, not silently discarded."""
+
+    value = raw.get("provenance")
+    if not isinstance(value, dict):
+        return {}
+    return {
+        (key if isinstance(key, str) else str(key)): (
+            val if isinstance(val, str) else str(val)
+        )
+        for key, val in value.items()
+    }
+
+
+def _malformed_identity(raw: object) -> str:
     """Deterministic identity for a malformed body that carries no usable
     ``signal_id`` (auto-reviewer P1 #5).
 
@@ -97,7 +165,12 @@ def _malformed_identity(raw: dict) -> str:
     reject-and-forget", spec 01-schema §1/§3). Content-hashing the raw body keeps
     the desired symmetry: an EXACT resubmission of the same malformed body still
     dedupes as an idempotent replay (mirrors the well-formed-signal contract),
-    while any content change gets its own terminal QUARANTINED record."""
+    while any content change gets its own terminal QUARANTINED record.
+
+    ``raw`` is ANY value ``json.loads`` can produce (object, array, null, bare
+    number/string/bool) — every one of those is already JSON-native, so
+    ``json.dumps`` can never raise on it (auto-reviewer P1 #2: this is no
+    longer object-only)."""
 
     canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -115,22 +188,23 @@ async def ingest_signal(
 
     body = await _read_capped_body(request)
     try:
-        raw = json.loads(body) if body else None
+        raw = json.loads(body)
     except (ValueError, UnicodeDecodeError) as exc:
-        # Unparseable body — unattributable garbage, no event (spec 01-schema §1).
+        # Unparseable body (incl. a genuinely empty one — zero bytes is not a
+        # JSON document at all) — unattributable garbage, no event (spec
+        # 01-schema §1). This is the ONLY no-event boundary reject besides
+        # auth/rails; every body that DOES parse, whatever its shape, is
+        # attributable and reaches the quarantine flow below.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="body is not valid JSON"
         ) from exc
-    if not isinstance(raw, dict):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="signal body must be a JSON object",
-        )
 
     # Identity binding: producer_id is NEVER body-trusted. A body-supplied
     # producer_id that mismatches the credential-derived id is a boundary reject
     # (spoof attempt); a matching one is silently ignored (tolerant clients).
-    body_producer = raw.get("producer_id")
+    # `_as_dict` guards a non-object `raw` (list/null/bare scalar), which has no
+    # "body producer_id" to compare at all.
+    body_producer = _as_dict(raw).get("producer_id")
     if body_producer is not None and body_producer != producer_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -138,38 +212,47 @@ async def ingest_signal(
         )
 
     try:
+        # `raw` may be ANY parsed JSON value here (object, array, null, bare
+        # scalar) — pydantic's model_validate raises ValidationError uniformly
+        # for a non-object top-level input (a single `model_type` error with
+        # `loc=()`), so every shape is handled by the SAME quarantine path
+        # below (auto-reviewer P1 #2: no separate "not a dict" 400 branch).
         proposal = SignalProposal.model_validate(raw)
     except ValidationError as exc:
-        # Malformed-but-attributable: record a terminal validation-quarantine with
-        # the raw offender preserved (never reject-and-forget). Best-effort extract
-        # of the identity/display fields so the record is representable.
+        # Malformed-but-attributable: record a terminal validation-quarantine
+        # with the raw offender preserved (never reject-and-forget). Every
+        # field below is extracted through a TOTAL, never-raising accessor
+        # (`_as_dict`/`_raw_str`/`_safe_optional_int`/`_safe_optional_float`/
+        # `_safe_provenance`) so constructing the quarantine record itself can
+        # never raise (auto-reviewer P1 #1).
+        raw_dict = _as_dict(raw)
         raw_fields = {
-            ".".join(str(p) for p in err["loc"]): repr(err.get("input"))
+            (".".join(str(p) for p in err["loc"]) or "__root__"): repr(
+                err.get("input")
+            )
             for err in exc.errors()
         }
         # A missing/non-string/blank signal_id gets a CONTENT-HASHED synthetic
         # identity (P1 #5) — never a shared "unknown" sentinel, which would
-        # collide distinct malformed bodies onto one store row.
-        signal_id = _raw_str(raw, "signal_id", "")
+        # collide distinct malformed bodies onto one store row. Hashes the
+        # WHOLE raw body (not just raw_dict), so a non-object body's actual
+        # content — not merely "it was an empty view" — drives the identity.
+        signal_id = _raw_str(raw_dict, "signal_id", "")
         if not signal_id:
             signal_id = _malformed_identity(raw)
         result = await facade.ingest_signal(
             producer_id=producer_id,
             signal_id=signal_id,
-            symbol=_raw_str(raw, "symbol", "UNKNOWN"),
-            direction=_raw_str(raw, "direction", "buy"),
+            symbol=_raw_str(raw_dict, "symbol", "UNKNOWN"),
+            direction=_raw_str(raw_dict, "direction", "buy"),
             issued_at=None,
             ttl_seconds=None,
-            suggested_quantity=raw.get("suggested_quantity")
-            if isinstance(raw.get("suggested_quantity"), int)
-            else None,
-            suggested_limit_price=raw.get("suggested_limit_price")
-            if isinstance(raw.get("suggested_limit_price"), (int, float))
-            else None,
-            thesis=_raw_str(raw, "thesis", ""),
-            provenance=raw["provenance"]
-            if isinstance(raw.get("provenance"), dict)
-            else {},
+            suggested_quantity=_safe_optional_int(raw_dict, "suggested_quantity"),
+            suggested_limit_price=_safe_optional_float(
+                raw_dict, "suggested_limit_price"
+            ),
+            thesis=_raw_str(raw_dict, "thesis", ""),
+            provenance=_safe_provenance(raw_dict),
             validation_failed=True,
             raw_fields=raw_fields,
         )

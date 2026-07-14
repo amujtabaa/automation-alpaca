@@ -127,3 +127,62 @@ async def test_list_signals_bad_symbol_is_invalid_input_error(any_store):
     facade = _facade(any_store)
     with pytest.raises(InvalidInputError):
         await facade.list_signals(symbol="bad$")
+
+
+# --------------------------------------------------------------------------- #
+# P2 #5 (round 3) — the ingest facade's echoed record (idempotent replay AND
+# duplicate-conflict) must reflect effective_signal_status too, same as the
+# read methods — an identical resubmission of a now-expired RECEIVED signal
+# must not respond status:received while GET already excludes it.
+# --------------------------------------------------------------------------- #
+async def test_idempotent_replay_of_expired_signal_echoes_effective_status(any_store):
+    await any_store.initialize()
+    ingested = await _ingest_backdated_received(any_store)
+    assert ingested.record.status is SignalStatus.RECEIVED
+
+    facade = _facade(any_store)
+    # An identical resubmission through the FACADE (not the raw store) — same
+    # signal_id, same content — is the idempotent-replay path.
+    replay = await facade.ingest_signal(
+        producer_id="vibe",
+        signal_id="sig-1",
+        symbol="AAPL",
+        direction="buy",
+        issued_at=ingested.record.issued_at,
+        ttl_seconds=ingested.record.ttl_seconds,
+        suggested_quantity=None,
+        suggested_limit_price=None,
+        thesis="momentum",
+        provenance={},
+    )
+    assert replay.record.status is SignalStatus.EXPIRED  # NOT "received"
+
+    # The durable stored status is still untouched (echo != mutation).
+    raw = await any_store.get_signal("vibe", "sig-1")
+    assert raw is not None
+    assert raw.status is SignalStatus.RECEIVED
+
+
+async def test_duplicate_conflict_against_expired_signal_echoes_effective_status(
+    any_store,
+):
+    await any_store.initialize()
+    ingested = await _ingest_backdated_received(any_store)
+    assert ingested.record.status is SignalStatus.RECEIVED
+
+    facade = _facade(any_store)
+    # A DIFFERENT payload, same (producer_id, signal_id) — the conflict path;
+    # the ECHOED original record must also reflect the effective status.
+    conflict = await facade.ingest_signal(
+        producer_id="vibe",
+        signal_id="sig-1",
+        symbol="AAPL",
+        direction="buy",
+        issued_at=ingested.record.issued_at,
+        ttl_seconds=ingested.record.ttl_seconds,
+        suggested_quantity=None,
+        suggested_limit_price=None,
+        thesis="a different thesis",
+        provenance={},
+    )
+    assert conflict.record.status is SignalStatus.EXPIRED  # NOT "received"

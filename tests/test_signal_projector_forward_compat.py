@@ -142,6 +142,53 @@ def test_rejected_transition_folds_timestamp():
     assert rec.updated_at == _NOW + timedelta(minutes=5)
 
 
+def _producer_sweep_quarantine_event(
+    *, producer_id="vibe", signal_id="sig-1"
+) -> ExecutionEvent:
+    # A WO-0104 producer-quarantine sweep transitions an existing RECEIVED
+    # record to QUARANTINED with quarantine_reason="producer_sweep" (03-rails
+    # §3) — distinct from an ingest-time "validation" quarantine, and EXCLUDED
+    # from the invalid/conflict budget fold (02-lifecycle §2/§4): it carries NO
+    # cycle_budget_limit, unlike a validation/skew SIGNAL_QUARANTINED.
+    ts = _NOW + timedelta(minutes=5)
+    return ExecutionEvent(
+        event_type=ExecutionEventType.SIGNAL_QUARANTINED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        symbol="AAPL",
+        ts_init=ts,
+        payload={
+            "producer_id": producer_id,
+            "signal_id": signal_id,
+            "record_id": "rec-1",
+            "quarantine_reason": "producer_sweep",
+        },
+    )
+
+
+def test_producer_sweep_quarantine_transition_folds_reason():
+    # Auto-reviewer round-3 P1 #3: the transition fold used to apply ONLY
+    # status, so a producer-sweep SIGNAL_QUARANTINED replayed with
+    # quarantine_reason=None — breaking both the sweep-vs-validation display
+    # distinction and (once WO-0104 lands) the budget fold's producer_sweep
+    # EXCLUSION, which keys off quarantine_reason.
+    events = [_received_event(), _producer_sweep_quarantine_event()]
+    records = project_signal_records(events)
+    rec = records[("vibe", "sig-1")]
+    assert rec.status is SignalStatus.QUARANTINED
+    assert rec.quarantine_reason == "producer_sweep"
+    assert rec.quarantined_at == _NOW + timedelta(minutes=5)
+
+
+async def test_producer_sweep_quarantine_folds_through_both_stores(any_store):
+    await any_store.initialize()
+    await any_store.append_execution_event(_received_event())
+    await any_store.append_execution_event(_producer_sweep_quarantine_event())
+    records = project_signal_records(await any_store.get_execution_events())
+    rec = records[("vibe", "sig-1")]
+    assert rec.quarantine_reason == "producer_sweep"
+
+
 def test_transition_never_disturbs_a_different_records_fields():
     # Two records; only one transitions. The untouched one must be byte-identical.
     other = _received_event(signal_id="sig-2")

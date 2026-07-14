@@ -83,7 +83,7 @@ class StoreBackedSignalFacade:
         validation_failed: bool = False,
         raw_fields: Optional[dict[str, str]] = None,
     ) -> SignalIngestResult:
-        return await self._store.ingest_signal(
+        result = await self._store.ingest_signal(
             producer_id=producer_id,
             signal_id=signal_id,
             symbol=symbol,
@@ -98,6 +98,20 @@ class StoreBackedSignalFacade:
             cycle_budget_limit=self._settings.signal_invalid_budget_per_epoch,
             validation_failed=validation_failed,
             raw_fields=raw_fields,
+        )
+        # P2 #5 (round 3) — lazy expiry (rule A4) must apply to EVERY echoed
+        # record, not only the read methods: an idempotent-replay or
+        # duplicate-conflict outcome ECHOES the EXISTING record verbatim, which
+        # may be a RECEIVED signal whose expires_at has since elapsed. Without
+        # this, a resubmission of an already-expired signal would respond
+        # status:"received" while GET /api/signals already excludes it —
+        # exactly the inconsistency the read-path fix closed, reopened here.
+        now = utcnow()
+        return SignalIngestResult(
+            outcome=result.outcome,
+            record=result.record.model_copy(
+                update={"status": effective_signal_status(result.record, now=now)}
+            ),
         )
 
     async def list_signals(

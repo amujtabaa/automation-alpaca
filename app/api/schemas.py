@@ -33,6 +33,13 @@ from app.models import (
 # that are not in the documented [A-Z.]+ domain (01-schema §1).
 _ASCII_SYMBOL_RE = re.compile(r"[A-Z.]+")
 
+# A bare numeric token (optionally signed/decimal) — auto-reviewer P2 #4 (round
+# 3): pydantic's lax datetime parser accepts a digit-only STRING as a Unix
+# timestamp, so "1784059129" (still a str, passing the earlier non-string
+# rejection) would silently produce a normal RECEIVED signal. issued_at must
+# look like ISO-8601 (contain a date/time separator), never a bare number.
+_BARE_NUMERIC_RE = re.compile(r"^[+-]?\d+(\.\d+)?$")
+
 
 class WatchlistCreate(BaseModel):
     """Body for ``POST /api/watchlist``.
@@ -187,6 +194,18 @@ class SignalProposal(BaseModel):
         if not isinstance(value, str):
             raise ValueError(
                 "issued_at must be an ISO-8601 string, not a number/bool"
+            )
+        # auto-reviewer P2 #4 (round 3): a digit-only STRING ("1784059129")
+        # still passes the check above, and pydantic's lax datetime parser
+        # would then interpret it as a Unix timestamp — a quoted number is not
+        # an ISO-8601 shape. Require at least one date/time separator and
+        # reject a bare (optionally decimal/signed) numeric token outright.
+        stripped = value.strip()
+        has_separator = any(sep in stripped for sep in ("-", ":", "T", "t"))
+        if not has_separator or _BARE_NUMERIC_RE.fullmatch(stripped):
+            raise ValueError(
+                "issued_at must be an ISO-8601-shaped string (date/time "
+                "separators required), not a bare numeric timestamp"
             )
         return value
 

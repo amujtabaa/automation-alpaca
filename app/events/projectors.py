@@ -521,8 +521,17 @@ _SIGNAL_TRANSITION_TIMESTAMP_FIELD: dict[ExecutionEventType, str] = {
 # WO-0103's atomic approval/conversion): SIGNAL_APPROVED's converted_kind/
 # converted_id (05-conversion §4 correlation) must survive the fold, not just
 # status — otherwise a replay silently loses the link between a signal and the
-# order intent it produced.
-_SIGNAL_TRANSITION_DIRECT_FIELDS = ("converted_kind", "converted_id")
+# order intent it produced. ``quarantine_reason`` (auto-reviewer round-3 P1 #3)
+# is the same class of gap: a WO-0104 producer-quarantine sweep's transition
+# SIGNAL_QUARANTINED carries ``quarantine_reason="producer_sweep"`` — folding
+# only ``status`` would replay it as ``quarantine_reason=None``, breaking both
+# the sweep-vs-validation display distinction and the A-4 invalid-budget fold's
+# producer_sweep EXCLUSION (which keys off this exact field, 02-lifecycle §2).
+_SIGNAL_TRANSITION_DIRECT_FIELDS = (
+    "converted_kind",
+    "converted_id",
+    "quarantine_reason",
+)
 
 # Spec payload key -> SignalRecord field, for names that differ (02-lifecycle §2:
 # SIGNAL_APPROVED/SIGNAL_REJECTED carry `actor`; the model's approval-audit field
