@@ -27,13 +27,12 @@ from app.models import (
     ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
-    OrderSide,
     SessionType,
 )
 from app.sellside.bars import Bar, aggregate
 from app.sellside.policy import _urgency_at, decide
 from app.sellside.trails import compute_working_stop
-from app.sellside.types import NoAction, PlannedAction
+from app.sellside.types import PlannedAction
 
 BASE = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
 ET = ZoneInfo("America/New_York")
@@ -98,10 +97,16 @@ def test_SOLF2_stop_never_decreases_across_phase_boundary():
     pre = datetime(2026, 7, 13, 9, 29, 59, tzinfo=ET)
     reg = datetime(2026, 7, 13, 9, 30, 0, tzinfo=ET)
     stop_pre = compute_working_stop(
-        env, bars, urgency=_urgency_at(env, pre), urgency_at=lambda t: _urgency_at(env, t)
+        env,
+        bars,
+        urgency=_urgency_at(env, pre),
+        urgency_at=lambda t: _urgency_at(env, t),
     ).stop
     stop_reg = compute_working_stop(
-        env, bars, urgency=_urgency_at(env, reg), urgency_at=lambda t: _urgency_at(env, t)
+        env,
+        bars,
+        urgency=_urgency_at(env, reg),
+        urgency_at=lambda t: _urgency_at(env, t),
     ).stop
     assert stop_pre is not None and stop_reg is not None
     assert stop_reg >= stop_pre - 1e-9, (
@@ -155,8 +160,7 @@ def test_SOLF3_stale_crossed_history_never_drives_features():
     # BreachSignal for clean AND poisoned alike, making the assertion vacuous
     # (caught by this WO's own discovery-mutation sweep; recorded honestly).
     clean = [
-        _snap(10 * i, 10.0 + 0.001 * i, 1000.0 + 10 * i, base=start)
-        for i in range(170)
+        _snap(10 * i, 10.0 + 0.001 * i, 1000.0 + 10 * i, base=start) for i in range(170)
     ]
     poisoned = list(clean)
     poisoned[40] = _snap(
@@ -183,10 +187,14 @@ def _frozen_volume_crash(base):
     """Rise on volume, then crash through any trail with ZERO volume deltas
     in the participation window — allowance floors to 0 while the stop fires."""
 
-    tape = [_snap(10 * i, 10.0 + 0.005 * i, 1000.0 + 10 * i, base=base) for i in range(180)]
+    tape = [
+        _snap(10 * i, 10.0 + 0.005 * i, 1000.0 + 10 * i, base=base) for i in range(180)
+    ]
     cum = tape[-1].volume
     for j in range(60):
-        tape.append(_snap(1800 + 10 * j, 10.9 - 0.038 * j, cum, base=base))  # bottoms ~8.66, above the 8.00 floor
+        tape.append(
+            _snap(1800 + 10 * j, 10.9 - 0.038 * j, cum, base=base)
+        )  # bottoms ~8.66, above the 8.00 floor
     return tape
 
 
@@ -197,8 +205,8 @@ def test_SOLF4_zero_allowance_probe_is_reported():
     assert isinstance(d, PlannedAction) and d.stop_triggered
     assert d.quantity >= 1
     notes = [c for c in d.clamps if c.field == "participation"]
-    assert notes and notes[0].computed == 0.0 and notes[0].clamped_to == float(
-        d.quantity
+    assert (
+        notes and notes[0].computed == 0.0 and notes[0].clamped_to == float(d.quantity)
     ), "the zero-allowance probe must carry a participation ClampNote"
 
 
@@ -284,7 +292,10 @@ def test_SVD2_refused_stale_does_not_consume_tranche():
     )
     # Control: a REAL working tranche submit still consumes it exactly once.
     taken = T18.action_event(
-        env, action="submit", limit_price=12.0, at=T18.NOW - timedelta(minutes=2),
+        env,
+        action="submit",
+        limit_price=12.0,
+        at=T18.NOW - timedelta(minutes=2),
         tranche=True,
     )
     out2 = decide(env, T18.spike_tape_snapshots(), now=T18.NOW, history=[taken])

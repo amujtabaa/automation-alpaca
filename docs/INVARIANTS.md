@@ -655,6 +655,30 @@ as a success (REV-0023 SPEC-05).
 `test_frozen_exact_fill_still_completes_on_resume`) +
 `tests/test_wo0016_envelope_transitions.py` (ADR-mirror table).
 
+**INV-086 — The working stop is monotone over the ENVELOPE LIFETIME, and only
+validated data ever drives it.** Three mechanisms, all in the pure policy:
+(1) historical ratchet candidates are computed with the urgency of their OWN
+epoch (``urgency_at``), so a session-phase boundary that widens time-to-close
+can never loosen an already-ratcheted stop; (2) the still-filling 30s bucket
+is excluded from the ratchet (``last_bar_open``) — the stop ratchets only on
+immutable completed bars, so an intra-bucket rewrite cannot lower it; (3) the
+ENTIRE active tape is screened by ``_snapshot_invalid_reasons`` before any
+feature computation — a stale/crossed/non-finite historical print never
+drives bars, ATR, VWAP, regime, sizing, or the stop (H6, whole-tape scope).
+Additionally the zero-allowance protective probe is REPORTED (participation
+ClampNote) and a venue-REJECTED probe doubles the next probe's floor, capped
+by remaining (adjudicated by the operator 2026-07-12); and a
+``refused_stale`` event never consumes the tranche entitlement (WORKING
+actions only).
+*Why:* SOL-0001 crosswise findings SOL-F-002/003/004 + DRIFT-SVD-2 — the
+stop loosened exactly at session opens and during intra-bar selloffs, a
+single poisoned historical print could re-anchor every feature, the 1-share
+probe was silent, and a benign refusal burned the one tranche.
+*Pinned by:* `tests/test_sol0001_incumbent_pins.py` (all six tests; each
+mechanism mutation-checked — including the pin itself, whose first version
+was vacuously green below the floor and was caught by the R4 discovery
+sweep).
+
 ---
 
 ## Superseded / historical

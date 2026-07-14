@@ -565,8 +565,7 @@ def compute_working_stop(
         last_move = float(prefix[-1].close) - float(prefix[-2].close)
         stressed = _gap_stressed(prefix) or _spread_stressed(prefix, atr_value)
         tightening = (
-            regime is Regime.STALL_FADE
-            or last_move < TIGHTEN_DOWNSIDE_ATR * atr_value
+            regime is Regime.STALL_FADE or last_move < TIGHTEN_DOWNSIDE_ATR * atr_value
         )
 
         lo = envelope.trail_distance_min
