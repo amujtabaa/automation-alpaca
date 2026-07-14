@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, Header, Request
+import secrets
+from typing import Optional
+
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.approval.gate import ApprovalGate
 from app.broker.adapter import BrokerAdapter
 from app.config import Settings
 from app.facade.commands import ExecutionCommandFacade
 from app.facade.queries import ExecutionQueryFacade
+from app.facade.signals import SignalFacade, StoreBackedSignalFacade
 from app.facade.store_backed import StoreBackedCommandFacade, StoreBackedQueryFacade
 from app.marketdata.service import MarketDataService
 from app.store.base import StateStore
+
+# ADR-009 A-1 credential headers.
+PRODUCER_KEY_HEADER = "X-Producer-Key"
+OPERATOR_KEY_HEADER = "X-Operator-Key"
 
 # Default actor for command endpoints when no ``X-Actor`` header is sent. Beta is
 # single-user localhost with no authentication (docs/01_ARCHITECTURE.md), so
@@ -87,6 +95,121 @@ def get_actor(x_actor: str | None = Header(default=None)) -> str:
     if x_actor is None or not x_actor.strip():
         return DEFAULT_ACTOR
     return x_actor.strip()
+
+
+# --------------------------------------------------------------------------- #
+# Signal Seat credentials (ADR-009 A-1) — constant-time, env-injected secrets.
+# --------------------------------------------------------------------------- #
+def resolve_producer_id(
+    *,
+    producer_key: Optional[str],
+    operator_key: Optional[str],
+    settings: Settings,
+) -> str:
+    """Map a producer API key to its ``producer_id`` (constant-time), or raise.
+
+    Iterates the whole configured map with :func:`secrets.compare_digest` and
+    never short-circuits, so lookup time does not leak which key matched. A
+    producer key is ingestion-scoped: a caller presenting an OPERATOR key (and no
+    valid producer key) to the producer route is a wrong-credential-type 403,
+    distinct from the 401 for a missing/unknown producer key (ADR-009 A-1)."""
+
+    matched: Optional[str] = None
+    if producer_key is not None:
+        for key, producer_id in settings.signal_producer_keys.items():
+            if secrets.compare_digest(producer_key, key):
+                matched = producer_id
+    if matched is not None:
+        return matched
+    if operator_key is not None and producer_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="operator credential is not valid for POST /api/signals "
+            "(producer key required)",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="missing or unknown producer key",
+    )
+
+
+def operator_key_valid(operator_key: Optional[str], settings: Settings) -> bool:
+    """Constant-time check of the operator credential (ADR-009 A-1)."""
+
+    if not settings.operator_api_key or operator_key is None:
+        return False
+    return secrets.compare_digest(operator_key, settings.operator_api_key)
+
+
+def get_producer_id(
+    x_producer_key: Optional[str] = Header(default=None),
+    x_operator_key: Optional[str] = Header(default=None),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    """Body-blind producer authentication for ``POST /api/signals``. Reads ONLY
+    headers + settings (never the body), so it rejects before the body is read
+    (A-4 ordering). Returns the credential-derived ``producer_id``."""
+
+    return resolve_producer_id(
+        producer_key=x_producer_key,
+        operator_key=x_operator_key,
+        settings=settings,
+    )
+
+
+def require_operator(
+    x_operator_key: Optional[str] = Header(default=None),
+    x_producer_key: Optional[str] = Header(default=None),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    """Operator authentication for a sensitive route. Valid operator key → the
+    ``"operator"`` actor label; a producer key on an operator route → 403; missing/
+    invalid → 401 (ADR-009 A-1 route-authorization matrix)."""
+
+    if operator_key_valid(x_operator_key, settings):
+        return DEFAULT_ACTOR
+    if x_producer_key is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="producer credential is not valid for this operator route",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="operator credential required",
+    )
+
+
+async def check_signal_rails(
+    request: Request, producer_id: str = Depends(get_producer_id)
+) -> str:
+    """Body-blind rails gate (A-4 step 2): after authentication, consult the wired
+    rails seam for this ``producer_id`` BEFORE any body read. A denied decision is
+    the boundary reject (403 quarantined / 429 over-limit). The rails presence is
+    guaranteed by the startup guard; a missing provider is a fail-closed 503."""
+
+    rails = getattr(request.app.state, "signal_rails", None)
+    if rails is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="signal rails not wired",
+        )
+    decision = await rails.check_ingest(producer_id)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=decision.http_status or status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=decision.reason or "signal ingest rejected by rails",
+        )
+    return producer_id
+
+
+def get_signal_facade(
+    store: StateStore = Depends(get_store),
+    settings: Settings = Depends(get_settings),
+) -> SignalFacade:
+    """The typed signal facade (ADR-005 seam). Built here in the composition root
+    so ``routes_signals`` never imports ``app.store``/``app.events`` directly."""
+
+    return StoreBackedSignalFacade(store, settings)
 
 
 def get_query_facade(

@@ -40,6 +40,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api import (
@@ -48,19 +49,32 @@ from app.api import (
     routes_dev,
     routes_marketdata,
     routes_review,
+    routes_signals,
     routes_system,
     routes_trading,
     routes_watchlist,
 )
+from app.api.deps import (
+    OPERATOR_KEY_HEADER,
+    PRODUCER_KEY_HEADER,
+    operator_key_valid,
+)
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
 from app.config import Settings, load_settings
+from app.facade.signal_rails import is_conforming_rails
 from app.launch_guard import is_sanctioned
 from app.marketdata.factory import create_market_data_service
 from app.monitoring import monitoring_loop, run_startup_reconcile
 from app.store import create_state_store
 from app.store.base import StateStore
 from app.strategy_loop import strategy_loop
+
+# Sensitive-route auth exemptions when the Signal Seat flag is on (ADR-009 A-1a):
+# health is the only public route; the producer route enforces its own producer
+# credential via route deps, so the operator-enforcement middleware skips it.
+_PUBLIC_PATHS = frozenset({"/api/health"})
+_PRODUCER_ROUTE_PREFIX = "/api/signals"
 
 _log = logging.getLogger(__name__)
 
@@ -70,6 +84,7 @@ def create_app(
     *,
     settings: Optional[Settings] = None,
     launch_capability: object = None,
+    signal_rails: object = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -92,13 +107,35 @@ def create_app(
     if settings is None:
         settings = load_settings()
 
-    if settings.signal_seat_enabled and not is_sanctioned(launch_capability):
-        raise RuntimeError(
-            "signal_seat_enabled requires the backend-owned launcher "
-            "(`python -m app`); constructing the app without a launch capability "
-            "is unsupported for the enabled seat, so a bare `uvicorn app.main:app` "
-            "cannot serve it (ADR-009 A-1 clause 6)."
-        )
+    # ADR-009 A-1/A-4 construction-time guards, in force ONLY when the flag is on.
+    # These are STANDING invariants: the seat is structurally un-enable-able until
+    # the launcher (capability), the operator+producer credentials, and WO-0104's
+    # real rails are ALL wired. Flag off ⇒ none apply (beta dev unchanged).
+    sanctioned = is_sanctioned(launch_capability)
+    if settings.signal_seat_enabled:
+        # (1) A-1 clause 6 — no listener without the backend-owned launcher.
+        if not sanctioned:
+            raise RuntimeError(
+                "signal_seat_enabled requires the backend-owned launcher "
+                "(`python -m app`); constructing the app without a launch "
+                "capability is unsupported for the enabled seat, so a bare "
+                "`uvicorn app.main:app` cannot serve it (ADR-009 A-1 clause 6)."
+            )
+        # (2) A-1.4 credential-presence — else every sensitive route is a
+        # permanent 401 with no credential to supply (the lockout A-1 forbids).
+        if not settings.operator_api_key or not settings.signal_producer_keys:
+            raise RuntimeError(
+                "signal_seat_enabled requires OPERATOR_API_KEY and a non-empty "
+                "SIGNAL_PRODUCER_KEYS map (ADR-009 A-1 credential-presence guard)."
+            )
+        # (3) A-4 rails-presence — the seat cannot run without finite-audit flood
+        # protection. WO-0104 SATISFIES this by wiring the real provider; a fake
+        # is confined to a test-only construction path production cannot select.
+        if not is_conforming_rails(signal_rails):
+            raise RuntimeError(
+                "signal_seat_enabled requires a conforming signal rails provider "
+                "(ADR-009 A-4 rails-presence guard); WO-0104 wires the real one."
+            )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -106,6 +143,9 @@ def create_app(
         await active_store.initialize()
         app.state.store = active_store
         app.state.settings = settings
+        # Signal Seat rails seam (ADR-009 A-4). None when the flag is off; the
+        # rails-presence guard above guarantees a conforming provider when on.
+        app.state.signal_rails = signal_rails
         app.state.approval_gate = HumanApprovalGate(active_store)
         app.state.broker_adapter = create_broker_adapter(settings)
         app.state.market_data = create_market_data_service(settings)
@@ -168,12 +208,62 @@ def create_app(
             if owns_store:
                 await active_store.close()
 
+    # ADR-009 A-1.5: with the flag on, FastAPI's auto-docs routes are DISABLED —
+    # they disclose the API surface to reachable producers (never public). Flag
+    # off keeps FastAPI's defaults.
+    docs_on = not settings.signal_seat_enabled
     app = FastAPI(
         title="Alpaca Clean-Sheet CAPI Option 2.5 — Backend",
         version=__version__,
         summary="Paper-first durable engine. Alpaca paper only — no live trading.",
         lifespan=lifespan,
+        docs_url="/docs" if docs_on else None,
+        redoc_url="/redoc" if docs_on else None,
+        openapi_url="/openapi.json" if docs_on else None,
     )
+
+    if settings.signal_seat_enabled:
+        # ADR-009 A-1 fail-closed request guard (defense-in-depth, runs regardless
+        # of --lifespan): if a flag-on app were ever constructed without the launch
+        # capability, every request is refused. The construction refusal above is
+        # the PRIMARY control; this is the backstop.
+        @app.middleware("http")
+        async def _fail_closed_launch_guard(request, call_next):
+            if not sanctioned:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "signal seat not sanctioned (A-1)"},
+                )
+            return await call_next(request)
+
+        # ADR-009 A-1a: with the flag on, EVERY sensitive route — reads included —
+        # requires the operator credential, EXCEPT public health and the producer
+        # route (which enforces its own producer credential via route deps). This
+        # is the auth flip that lands WITH the flag; the cockpit sends
+        # X-Operator-Key from the same change so the operator is never locked out.
+        @app.middleware("http")
+        async def _operator_enforcement(request, call_next):
+            path = request.url.path
+            if path in _PUBLIC_PATHS or path.startswith(_PRODUCER_ROUTE_PREFIX):
+                return await call_next(request)
+            if path.startswith("/api"):
+                if operator_key_valid(
+                    request.headers.get(OPERATOR_KEY_HEADER), settings
+                ):
+                    return await call_next(request)
+                if request.headers.get(PRODUCER_KEY_HEADER) is not None:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": "producer credential is not valid for this "
+                            "operator route"
+                        },
+                    )
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "operator credential required"},
+                )
+            return await call_next(request)
 
     app.include_router(routes_system.router)
     app.include_router(routes_watchlist.router)
@@ -182,6 +272,10 @@ def create_app(
     app.include_router(routes_controls.router)
     app.include_router(routes_review.router)
     app.include_router(routes_marketdata.router)
+    # Signal Seat routes — mounted ONLY when the flag is on (flag off ⇒ 404, no
+    # auth surface, no store writes possible).
+    if settings.signal_seat_enabled:
+        app.include_router(routes_signals.router)
     # DEV/MOCK scaffolding — mounted only when enabled (default on in beta so the
     # candidate flow is exercisable; ENABLE_DEV_ROUTES=false keeps it off).
     if settings.enable_dev_routes:
@@ -190,5 +284,15 @@ def create_app(
     return app
 
 
-# Module-level app for `uvicorn app.main:app`.
-app = create_app()
+# Module-level app for the bare `uvicorn app.main:app` dev command (ADR-009 A-1
+# clause 6 / slice-1 bug fix). Importing this module (and ``create_app``) must NOT
+# raise under the flag — the backend-owned launcher (`app/server.py`) needs to
+# import ``create_app`` to build its OWN capability-bearing app. So:
+#   * flag OFF  → build the module-level app (bare uvicorn works unchanged);
+#   * flag ON   → leave it None, so `uvicorn app.main:app` fails to serve (no
+#                 listener) at load, before binding a socket — while `python -m app`
+#                 constructs a capability-bearing app itself.
+if load_settings().signal_seat_enabled:
+    app = None
+else:
+    app = create_app()

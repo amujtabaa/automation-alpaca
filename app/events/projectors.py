@@ -32,6 +32,8 @@ from app.models import (
     Fill,
     OrderStatus,
     Position,
+    SignalRecord,
+    SignalStatus,
     TradingState,
 )
 from app.policy import fill_value_reason
@@ -471,3 +473,72 @@ class PositionProjector:
             # quarantine detector. Local malformed input is rejected at append.
             positions[fill.symbol] = apply_fill(current, fill, allow_short=True)
         return PositionProjection(positions=positions, up_to_sequence=up_to_sequence)
+
+
+# --------------------------------------------------------------------------- #
+# Signal Seat projector (ADR-009 / WO-0102, spec 02-lifecycle §4).
+#
+# SignalRecord state is a pure fold over the SIGNAL_* events, keyed by
+# (producer_id, signal_id). Creation events (SIGNAL_RECEIVED and the terminal-at-
+# ingest SIGNAL_QUARANTINED / SIGNAL_EXPIRED) carry the full record snapshot in
+# payload["record"], so replay reconstructs the record byte-identically in both
+# stores. Per-record TRANSITION events (a producer-quarantine sweep, or the
+# operator SIGNAL_REJECTED / SIGNAL_APPROVED of WO-0103/0104) carry the record key
+# and the new terminal fields, and update an already-installed record. A
+# SIGNAL_DUPLICATE_CONFLICT is AUDIT-ONLY — explicitly EXCLUDED from the fold, so a
+# different-payload replay never disturbs the original record (live path or replay).
+# --------------------------------------------------------------------------- #
+
+_SIGNAL_CREATION_EVENT_TYPES = frozenset(
+    {
+        ExecutionEventType.SIGNAL_RECEIVED,
+        ExecutionEventType.SIGNAL_QUARANTINED,
+        ExecutionEventType.SIGNAL_EXPIRED,
+    }
+)
+
+# Terminal statuses a per-record transition event maps to (WO-0103/0104 emit
+# these against an existing RECEIVED record; a terminal-at-ingest event carries a
+# full "record" snapshot instead and is handled by the creation branch).
+_SIGNAL_TRANSITION_STATUS: dict[ExecutionEventType, SignalStatus] = {
+    ExecutionEventType.SIGNAL_QUARANTINED: SignalStatus.QUARANTINED,
+    ExecutionEventType.SIGNAL_EXPIRED: SignalStatus.EXPIRED,
+    ExecutionEventType.SIGNAL_REJECTED: SignalStatus.REJECTED,
+    ExecutionEventType.SIGNAL_APPROVED: SignalStatus.APPROVED,
+}
+
+
+def project_signal_records(
+    events: Iterable[ExecutionEvent],
+) -> dict[tuple[str, str], SignalRecord]:
+    """Fold the ``SIGNAL_*`` events into the per-``(producer_id, signal_id)``
+    ``SignalRecord`` read model (pure). Events must be in ascending ``sequence``
+    order (the store guarantees it). SIGNAL_DUPLICATE_CONFLICT is skipped."""
+
+    records: dict[tuple[str, str], SignalRecord] = {}
+    for event in events:
+        etype = event.event_type
+        payload = event.payload or {}
+        snapshot = payload.get("record")
+        if etype in _SIGNAL_CREATION_EVENT_TYPES and snapshot is not None:
+            record = SignalRecord.model_validate(snapshot)
+            records[(record.producer_id, record.signal_id)] = record
+            continue
+        if etype is ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT:
+            continue  # audit-only — never folds onto a record
+        # Per-record TRANSITION of an already-installed record (WO-0103/0104):
+        # carries the record key + new terminal status, no full snapshot.
+        mapped = _SIGNAL_TRANSITION_STATUS.get(etype)
+        if mapped is None:
+            continue
+        producer_id = payload.get("producer_id")
+        signal_id = payload.get("signal_id")
+        if producer_id is None or signal_id is None:
+            continue
+        existing = records.get((producer_id, signal_id))
+        if existing is None:
+            continue
+        records[(producer_id, signal_id)] = existing.model_copy(
+            update={"status": mapped}
+        )
+    return records

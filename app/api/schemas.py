@@ -8,9 +8,9 @@ responses that don't map to a single stored entity.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 # ExternalOrderView / PositionMismatchView are the reconciliation facade's own
 # typed return DTOs (app.facade.dtos). Imported here so ReconciliationStatusResponse
@@ -123,6 +123,65 @@ class ReviewResponse(BaseModel):
 # the query facade (ADR-005), and the facade owns its return DTOs (ADR-006
 # api→facade direction). The JSON shapes are unchanged. ``FlattenResponse``
 # stays here — the flatten/emergency-reduce commands are P6e.
+
+
+class SignalProposal(BaseModel):
+    """Wire body of ``POST /api/signals`` (ADR-009 / spec 01-schema §1).
+
+    Bound **manually** by the route (never as a FastAPI body parameter) so the
+    auth + rails dependencies can reject before the body is read (A-4 ordering).
+    ``producer_id`` is deliberately ABSENT from identity — the server derives it
+    from the authenticated key. A client MAY still send a ``producer_id`` field:
+    the route rejects it 422 on mismatch, silently ignores it on match (tolerant
+    to naive clients, never spoofable). ``extra="forbid"`` rejects any other
+    unknown field. Freshness/skew/ttl-range are NOT enforced here — they are
+    server-owned freshness checks (A-3) that RECORD a terminal signal, so a
+    well-formed-but-stale proposal is a fact, not a shape error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    issued_at: datetime
+    ttl_seconds: int
+    symbol: str = Field(min_length=1, max_length=10)
+    direction: Literal["buy", "sell"]
+    suggested_quantity: Optional[int] = Field(default=None, gt=0)
+    suggested_limit_price: Optional[float] = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
+    thesis: str = Field(min_length=1, max_length=4000)
+    provenance: dict[str, str] = Field(default_factory=dict)
+    # Optional, never identity — compared to the credential-derived id by the route.
+    producer_id: Optional[str] = None
+
+    @field_validator("issued_at")
+    @classmethod
+    def _tz_aware(cls, value: datetime) -> datetime:
+        # Naive datetimes are a validation failure → the quarantine path (A-3:
+        # "naive datetimes are rejected at validation"). All A-3 comparisons use
+        # the injected server clock, so a tz-naive instant is unusable.
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            raise ValueError("issued_at must be timezone-aware (ISO-8601 with offset)")
+        return value
+
+    @field_validator("symbol")
+    @classmethod
+    def _symbol_domain(cls, value: str) -> str:
+        upper = value.strip().upper()
+        if not upper or not all(c.isalpha() or c == "." for c in upper):
+            raise ValueError("symbol must be 1-10 chars of A-Z and '.'")
+        return upper
+
+    @field_validator("provenance")
+    @classmethod
+    def _provenance_bounds(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 20:
+            raise ValueError("provenance may carry at most 20 keys")
+        for key, val in value.items():
+            if len(val) > 500:
+                raise ValueError(f"provenance value for {key!r} exceeds 500 chars")
+        return value
 
 
 class ReconciliationStatusResponse(BaseModel):

@@ -21,12 +21,33 @@ def base_url() -> str:
     return os.environ.get("ALPACA_API_BASE", DEFAULT_BASE_URL).rstrip("/")
 
 
+# ADR-009 A-1 / WO-0102 (Codex PR #5 round-5): the operator credential header, read
+# from the environment. When the Signal Seat flag is ON the backend enforces the
+# operator key on EVERY sensitive route — reads included — so the browser client
+# MUST send it or the operator's kill-switch / flatten / candidate / watchlist
+# controls would answer 401 the moment enforcement flips on (invariant 11 — no
+# lockout window). When unset (flag off, localhost no-auth), no header is sent and
+# behavior is unchanged. This is the credential plumbing that lands in the SAME
+# change as the auth flip; the signal UI itself is WO-0103.
+OPERATOR_KEY_HEADER = "X-Operator-Key"
+
+
+def _operator_headers() -> dict[str, str]:
+    key = os.environ.get("OPERATOR_API_KEY")
+    return {OPERATOR_KEY_HEADER: key} if key and key.strip() else {}
+
+
 class BackendError(RuntimeError):
     """A backend call failed (unreachable, timeout, or non-2xx response)."""
 
 
 def _request(method: str, path: str, **kwargs: Any) -> Any:
     url = f"{base_url()}{path}"
+    # Merge the operator credential into any caller-supplied headers (caller wins
+    # on an explicit clash, though nothing sets X-Operator-Key itself).
+    headers = {**_operator_headers(), **(kwargs.pop("headers", None) or {})}
+    if headers:
+        kwargs["headers"] = headers
     try:
         resp = requests.request(method, url, timeout=TIMEOUT_SECONDS, **kwargs)
     except requests.exceptions.RequestException as exc:

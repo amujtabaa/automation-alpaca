@@ -25,8 +25,10 @@ still behave identically after each method is migrated here.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from app.models import (
@@ -51,6 +53,14 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    SIGNAL_CONFLICT,
+    SIGNAL_EXPIRED_AT_INGEST,
+    SIGNAL_QUARANTINED_FRESHNESS,
+    SIGNAL_QUARANTINED_VALIDATION,
+    SIGNAL_RECEIVED_OK,
+    SIGNAL_REPLAYED,
+    SignalRecord,
+    SignalStatus,
     TradingState,
     utcnow,
 )
@@ -2167,4 +2177,374 @@ def plan_close_session(
         sell_intent_events=sell_intent_events,
         snapshots=snapshots,
         close_event=close_event,
+    )
+
+
+# =========================================================================== #
+# Signal Seat ingest (ADR-009 / WO-0102, spec 01-schema + 02-lifecycle)
+#
+# Pure decision + event construction for external-producer signal ingestion,
+# shared verbatim by InMemoryStateStore and SqliteStateStore so the two stores
+# behave identically (dual-store parity) and every signal is reconstructable
+# purely from its SIGNAL_* events (event-truth / replay).
+# =========================================================================== #
+
+# A-3 freshness bounds (spec 02-lifecycle §3). Defaults; the server_max_ttl is
+# Settings-tunable and passed in per call. Skew/ttl bounds are spec constants.
+SIGNAL_FUTURE_SKEW_SECONDS = 30
+SIGNAL_STALE_SECONDS = 24 * 3600
+SIGNAL_TTL_MIN_SECONDS = 30
+SIGNAL_TTL_MAX_SECONDS = 86400
+
+# SignalIngestResult.outcome values live on the leaf model kernel (app.models) so
+# the route can share them without importing app.store (import-linter contract 5);
+# re-exported here for the store/planner call sites.
+
+
+def signal_canonical_hash(payload: dict[str, Any]) -> str:
+    """Deterministic sha256 over the canonical proposal JSON (dedupe/conflict
+    detection). Keys sorted, compact separators, datetimes as ISO-8601 — so an
+    identical proposal always hashes identically across processes and both
+    stores, and any content change flips the hash (duplicate-conflict)."""
+
+    def _default(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        raise TypeError(f"unhashable proposal value: {value!r}")
+
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=_default
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_signal_proposal_payload(
+    *,
+    signal_id: str,
+    symbol: str,
+    direction: str,
+    issued_at: Optional[datetime],
+    ttl_seconds: Optional[int],
+    suggested_quantity: Optional[int],
+    suggested_limit_price: Optional[float],
+    thesis: str,
+    provenance: dict[str, str],
+) -> dict[str, Any]:
+    """The canonical proposal dict both stores hash (and embed in the
+    duplicate-conflict event). Excludes ``producer_id`` (the namespace, not
+    content) and any server-computed field, so the hash reflects only what the
+    producer sent — identical resend → identical hash (idempotent replay), any
+    change → conflict."""
+
+    return {
+        "signal_id": signal_id,
+        "symbol": symbol,
+        "direction": direction,
+        "issued_at": issued_at,
+        "ttl_seconds": ttl_seconds,
+        "suggested_quantity": suggested_quantity,
+        "suggested_limit_price": suggested_limit_price,
+        "thesis": thesis,
+        "provenance": provenance,
+    }
+
+
+@dataclass(frozen=True)
+class SignalFreshness:
+    """A-3 freshness classification of a well-formed proposal (pure)."""
+
+    expires_at: Optional[datetime]
+    status: SignalStatus  # RECEIVED | QUARANTINED | EXPIRED
+    event_type: Optional[ExecutionEventType]
+    quarantine_reason: Optional[str]
+    detected_by: Optional[str]  # "ingest" for DOA expiry
+    ttl_nulled: bool  # ttl_out_of_range → store ttl_seconds NULL + raw_fields
+    raw_fields: Optional[dict[str, str]]
+
+
+def classify_signal_freshness(
+    *,
+    issued_at: datetime,
+    ttl_seconds: int,
+    received_at: datetime,
+    server_max_ttl_seconds: int,
+) -> SignalFreshness:
+    """Server-owned freshness (spec 02-lifecycle §3), injected clock via
+    ``received_at``. Order: ttl-bounds (must be valid to compute a deadline),
+    then future/stale skew, then ``expires_at = min(received_at + server_max_ttl,
+    issued_at + ttl_seconds)``, then dead-on-arrival. A stale/expired signal can
+    never be approved (rule A3) because it never reaches RECEIVED."""
+
+    if ttl_seconds < SIGNAL_TTL_MIN_SECONDS or ttl_seconds > SIGNAL_TTL_MAX_SECONDS:
+        return SignalFreshness(
+            expires_at=None,
+            status=SignalStatus.QUARANTINED,
+            event_type=ExecutionEventType.SIGNAL_QUARANTINED,
+            quarantine_reason="ttl_out_of_range",
+            detected_by=None,
+            ttl_nulled=True,
+            raw_fields={"ttl_seconds": str(ttl_seconds)},
+        )
+    if issued_at > received_at + timedelta(seconds=SIGNAL_FUTURE_SKEW_SECONDS):
+        return SignalFreshness(
+            expires_at=None,
+            status=SignalStatus.QUARANTINED,
+            event_type=ExecutionEventType.SIGNAL_QUARANTINED,
+            quarantine_reason="issued_at_future",
+            detected_by=None,
+            ttl_nulled=False,
+            raw_fields=None,
+        )
+    if issued_at < received_at - timedelta(seconds=SIGNAL_STALE_SECONDS):
+        return SignalFreshness(
+            expires_at=None,
+            status=SignalStatus.QUARANTINED,
+            event_type=ExecutionEventType.SIGNAL_QUARANTINED,
+            quarantine_reason="issued_at_stale",
+            detected_by=None,
+            ttl_nulled=False,
+            raw_fields=None,
+        )
+    expires_at = min(
+        received_at + timedelta(seconds=server_max_ttl_seconds),
+        issued_at + timedelta(seconds=ttl_seconds),
+    )
+    if expires_at <= received_at:
+        return SignalFreshness(
+            expires_at=expires_at,
+            status=SignalStatus.EXPIRED,
+            event_type=ExecutionEventType.SIGNAL_EXPIRED,
+            quarantine_reason=None,
+            detected_by="ingest",
+            ttl_nulled=False,
+            raw_fields=None,
+        )
+    return SignalFreshness(
+        expires_at=expires_at,
+        status=SignalStatus.RECEIVED,
+        event_type=ExecutionEventType.SIGNAL_RECEIVED,
+        quarantine_reason=None,
+        detected_by=None,
+        ttl_nulled=False,
+        raw_fields=None,
+    )
+
+
+def signal_record_event(
+    record: SignalRecord,
+    event_type: ExecutionEventType,
+    *,
+    cycle_budget_limit: Optional[int] = None,
+    detected_by: Optional[str] = None,
+) -> ExecutionEvent:
+    """The per-record creation ExecutionEvent (SIGNAL_RECEIVED / terminal-at-ingest
+    SIGNAL_QUARANTINED / SIGNAL_EXPIRED). Carries the full record snapshot so replay
+    reconstructs the SignalRecord byte-identically in both stores. All signal events
+    are EngineSource/LOCAL (nothing broker-authoritative). ``dedupe_key`` makes the
+    single creation append idempotent (defense-in-depth); a later transition event
+    (WO-0103/0104) uses a distinct key. ``cycle_budget_limit`` is stamped on every
+    attributable-terminal-at-ingest rejection (spec 02-lifecycle §2) so the
+    non-refilling budget is reconstructable from the log alone (WO-0104 folds it)."""
+
+    payload: dict[str, Any] = {"record": record.model_dump(mode="json")}
+    if cycle_budget_limit is not None:
+        payload["cycle_budget_limit"] = cycle_budget_limit
+    if detected_by is not None:
+        payload["detected_by"] = detected_by
+    return ExecutionEvent(
+        event_type=event_type,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=f"signal_create:{record.producer_id}:{record.signal_id}",
+        symbol=record.symbol,
+        payload=payload,
+    )
+
+
+def signal_duplicate_conflict_event(
+    *,
+    existing: SignalRecord,
+    new_payload_hash: str,
+    conflicting_proposal: dict[str, Any],
+    cycle_budget_limit: int,
+) -> ExecutionEvent:
+    """The audit-only SIGNAL_DUPLICATE_CONFLICT event: a different-payload replay
+    of an existing (producer_id, signal_id). EXCLUDED from the lifecycle fold — the
+    original record's state is untouched (live path AND replay). Coalesced to one
+    event per (producer_id, signal_id, new_hash) via ``dedupe_key``."""
+
+    # JSON-safe the embedded proposal (datetimes → ISO) so the SQLite payload
+    # round-trips identically to the in-memory dict (dual-store parity).
+    safe_proposal = {
+        key: (value.isoformat() if isinstance(value, datetime) else value)
+        for key, value in conflicting_proposal.items()
+    }
+    return ExecutionEvent(
+        event_type=ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=(
+            f"signal_conflict:{existing.producer_id}:"
+            f"{existing.signal_id}:{new_payload_hash}"
+        ),
+        symbol=existing.symbol,
+        payload={
+            "producer_id": existing.producer_id,
+            "signal_id": existing.signal_id,
+            "original_record_id": existing.id,
+            "original_payload_hash": existing.payload_hash,
+            "new_payload_hash": new_payload_hash,
+            "conflicting_proposal": safe_proposal,
+            "cycle_budget_limit": cycle_budget_limit,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class SignalIngestPlan:
+    """Pure outcome of an ingest decision (existing record fetched by the store)."""
+
+    outcome: str
+    record: Optional[SignalRecord]        # to insert (new records only)
+    event: Optional[ExecutionEvent]       # to append (None for idempotent replay)
+    result_record: SignalRecord           # what the caller returns (new or existing)
+
+
+def plan_signal_ingest(
+    *,
+    existing: Optional[SignalRecord],
+    producer_id: str,
+    signal_id: str,
+    symbol: str,
+    direction: str,
+    issued_at: Optional[datetime],
+    ttl_seconds: Optional[int],
+    suggested_quantity: Optional[int],
+    suggested_limit_price: Optional[float],
+    thesis: str,
+    provenance: dict[str, str],
+    payload_hash: str,
+    canonical_proposal: dict[str, Any],
+    validation_failed: bool,
+    raw_fields: Optional[dict[str, str]],
+    received_at: datetime,
+    server_max_ttl_seconds: int,
+    cycle_budget_limit: int,
+) -> SignalIngestPlan:
+    """Decide a signal ingest (pure). Dedupe on (producer_id, signal_id):
+
+    * existing + identical ``payload_hash`` → idempotent replay (no event).
+    * existing + different hash → SIGNAL_DUPLICATE_CONFLICT (audit-only, no row).
+    * new + Pydantic-validation-failed → terminal QUARANTINED("validation") + raw.
+    * new + well-formed → A-3 freshness classification (RECEIVED / skew|ttl
+      QUARANTINED / DOA EXPIRED).
+    """
+
+    if existing is not None:
+        if existing.payload_hash == payload_hash:
+            return SignalIngestPlan(
+                outcome=SIGNAL_REPLAYED,
+                record=None,
+                event=None,
+                result_record=existing,
+            )
+        return SignalIngestPlan(
+            outcome=SIGNAL_CONFLICT,
+            record=None,
+            event=signal_duplicate_conflict_event(
+                existing=existing,
+                new_payload_hash=payload_hash,
+                conflicting_proposal=canonical_proposal,
+                cycle_budget_limit=cycle_budget_limit,
+            ),
+            result_record=existing,
+        )
+
+    # New record. Malformed-but-attributable (Pydantic verdict from the route) is a
+    # terminal validation-quarantine: the offending typed fields are NULL, the raw
+    # offender preserved in raw_fields, expires_at uncomputable/NULL.
+    if validation_failed:
+        record = SignalRecord(
+            producer_id=producer_id,
+            signal_id=signal_id,
+            status=SignalStatus.QUARANTINED,
+            symbol=symbol,
+            direction=direction,
+            issued_at=None,
+            ttl_seconds=None,
+            expires_at=None,
+            received_at=received_at,
+            raw_fields=raw_fields or {},
+            suggested_quantity=suggested_quantity,
+            suggested_limit_price=suggested_limit_price,
+            thesis=thesis,
+            provenance=provenance,
+            payload_hash=payload_hash,
+            quarantine_reason="validation",
+            quarantined_at=received_at,
+            created_at=received_at,
+            updated_at=received_at,
+        )
+        return SignalIngestPlan(
+            outcome=SIGNAL_QUARANTINED_VALIDATION,
+            record=record,
+            event=signal_record_event(
+                record,
+                ExecutionEventType.SIGNAL_QUARANTINED,
+                cycle_budget_limit=cycle_budget_limit,
+            ),
+            result_record=record,
+        )
+
+    assert issued_at is not None and ttl_seconds is not None
+    fresh = classify_signal_freshness(
+        issued_at=issued_at,
+        ttl_seconds=ttl_seconds,
+        received_at=received_at,
+        server_max_ttl_seconds=server_max_ttl_seconds,
+    )
+    record = SignalRecord(
+        producer_id=producer_id,
+        signal_id=signal_id,
+        status=fresh.status,
+        symbol=symbol,
+        direction=direction,
+        issued_at=issued_at,
+        ttl_seconds=None if fresh.ttl_nulled else ttl_seconds,
+        expires_at=fresh.expires_at,
+        received_at=received_at,
+        raw_fields=fresh.raw_fields,
+        suggested_quantity=suggested_quantity,
+        suggested_limit_price=suggested_limit_price,
+        thesis=thesis,
+        provenance=provenance,
+        payload_hash=payload_hash,
+        quarantine_reason=fresh.quarantine_reason,
+        quarantined_at=(
+            received_at if fresh.status is SignalStatus.QUARANTINED else None
+        ),
+        expired_at=received_at if fresh.status is SignalStatus.EXPIRED else None,
+        created_at=received_at,
+        updated_at=received_at,
+    )
+    if fresh.status is SignalStatus.RECEIVED:
+        outcome = SIGNAL_RECEIVED_OK
+        event = signal_record_event(record, ExecutionEventType.SIGNAL_RECEIVED)
+    elif fresh.status is SignalStatus.EXPIRED:
+        outcome = SIGNAL_EXPIRED_AT_INGEST
+        event = signal_record_event(
+            record,
+            ExecutionEventType.SIGNAL_EXPIRED,
+            cycle_budget_limit=cycle_budget_limit,
+            detected_by="ingest",
+        )
+    else:  # freshness QUARANTINED (skew / ttl_out_of_range)
+        outcome = SIGNAL_QUARANTINED_FRESHNESS
+        event = signal_record_event(
+            record,
+            ExecutionEventType.SIGNAL_QUARANTINED,
+            cycle_budget_limit=cycle_budget_limit,
+        )
+    return SignalIngestPlan(
+        outcome=outcome, record=record, event=event, result_record=record
     )
