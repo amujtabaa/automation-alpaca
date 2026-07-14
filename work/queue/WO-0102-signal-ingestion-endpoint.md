@@ -13,7 +13,7 @@ created: 2026-07-11
 
 # Work Order: Signal ingestion endpoint + event-log provenance
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **ADR GATE CLEARED (2026-07-12)** — ADR-009 Accepted, REV-0022 RESOLVED. **STILL GATED on WO-0101's spec** (this WO must be implementable from that spec alone). Original: until ADR-009 is accepted post independent cross-model review
 > **and** WO-0101's spec is complete (this WO must be implementable from that spec alone).
 > Sequencing: 0101 → 0102 → {0103, 0104 in parallel}.
 
@@ -74,6 +74,7 @@ forbidden_paths:
 - [ ] **Cockpit credential plumbing lands in the SAME change as the auth flip** (Codex PR #5 round-5 P1): `cockpit/api_client.py::_request` sends the operator credential header, so the browser client's kill-switch / manual-flatten / candidate / watchlist controls keep working the moment enforcement turns on — invariant 11 (browser-first) must never have a window where the operator is locked out of safety controls. Test: authenticated cockpit client exercises kill switch + flatten + a candidate command against the enforced backend; unauthenticated request to the same routes → 401/403. Scope note: `api_client.py` ONLY — the rest of `cockpit/**` stays forbidden here (signal UI is WO-0103).
 - [ ] Producer API keys are **ingestion-scoped** (ADR-009 §Contract 1 role separation): valid for `POST /signals` only; a producer credential is rejected by every other command route (negative test).
 - [ ] Post-quarantine backpressure per ADR-009 rails: ingress from a quarantined producer is rejected at the boundary WITHOUT per-request event appends; coalesced audit only — event log proven bounded under post-quarantine flood (test) (Codex PR #5 P2).
+- [ ] **Interim ingest ceiling ships WITH the endpoint** (Codex PR #5 round-6 P2): a conservative hard per-producer + global requests-per-window ceiling, boundary-rejected (429) beyond it with bounded/coalesced audit — so there is NO configurable window between this WO and WO-0104 in which an authenticated producer can flood the append-only log with unique or malformed proposals. Test: sustained over-ceiling ingest leaves the event log bounded. WO-0104's full rails (policy limits + producer quarantine + human release) supersede this ceiling; the ceiling is not removed until they land.
 - [ ] Event-log truth: signals reconstructable purely from events (replay test).
 - [ ] Flag off ⇒ endpoint absent/404; proven by test.
 

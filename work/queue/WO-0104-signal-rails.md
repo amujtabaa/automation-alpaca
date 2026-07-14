@@ -13,7 +13,7 @@ created: 2026-07-11
 
 # Work Order: Signal rails — TTL, staleness, rate limits, producer quarantine
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **ADR GATE CLEARED (2026-07-12)** — ADR-009 Accepted, REV-0022 RESOLVED. **STILL GATED on WO-0102.** Original: until ADR-009 is accepted post independent cross-model review
 > and WO-0102 is complete. Runs after 0102; may run in parallel with 0103. The producer
 > **release** route is a human-gated action — same Complex treatment as WO-0103.
 
@@ -39,6 +39,8 @@ allowed_paths:
   - app/models.py
   - app/store/**
   - app/api/**                       # release route — human-gated action
+  - app/facade/**                    # signal facade (release command/queries) — contract 5: the route never reaches store/events directly; commands.py stays forbidden below
+  - cockpit/**                       # producer-quarantine RELEASE control only (browser-first: the required human action needs a browser path)
   - .importlinter                    # if the release route is a new module: add it to contract 5
   - tests/**
 ```
@@ -48,8 +50,8 @@ allowed_paths:
 ```yaml
 forbidden_paths:
   - app/broker/**
-  - cockpit/**
-  - app/facade/commands.py           # order submission path
+  - cockpit/** (except the producer-quarantine release control — see allowed_paths; no other UI changes)
+  - app/facade/commands.py           # order submission path stays forbidden (release is not an order intent)
 ```
 
 ## Required behavior
@@ -59,6 +61,8 @@ forbidden_paths:
 - [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test).
 - [ ] Post-quarantine backpressure (ADR-009 rails; Codex PR #5 P2): ingress from a quarantined producer is boundary-rejected with coalesced audit, no per-request event appends — event log bounded under sustained post-quarantine flood (test).
 - [ ] The release route is **operator-only** (same credential split as WO-0103); a producer API key cannot release its own quarantine (negative test).
+- [ ] **Release is reachable from the browser** (Codex PR #5 round-6 P2, invariant 11): the cockpit gains a producer-quarantine release control (on WO-0103's signal panel if it exists, else a minimal standalone control) issuing the release intent via the typed API client — the required human action must not be raw-API-only. Thin-client rules apply (no signal state owned client-side; contract 2 stays green).
+- [ ] WO-0102's interim ingest ceiling is replaced by the full rails **in this change** — never removed before them.
 
 ## Required tests
 

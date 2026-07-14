@@ -13,7 +13,7 @@ created: 2026-07-11
 
 # Work Order: Approval surface (Streamlit) + conversion gate
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **ADR GATE CLEARED (2026-07-12)** — ADR-009 Accepted, REV-0022 RESOLVED. **STILL GATED on WO-0102** (and this WO's own independent review requirement stands). Original: until ADR-009 is accepted post independent cross-model review
 > and WO-0102 is complete. **Approval = order submission trigger ⇒ human-gated surface ⇒
 > Complex classification regardless of size; queues for independent cross-model review before
 > any beta milestone relies on it.** Runs after 0102; may run in parallel with 0104.

@@ -1,7 +1,9 @@
 # ADR-009: Signal Seat — External Agentic Signal Producers as Bounded Intent Sources
 
-**Status:** DRAFT / PROPOSED — pending human acceptance + independent cross-model review
-**Date:** 2026-07-11
+**Status:** **Accepted** (2026-07-12, by Ameen). Independent cross-model review: **REV-0022**,
+verdict ACCEPT-WITH-CHANGES — satisfied by GPT-5/Codex's seven-pass adversarial review on PR #5
+(16 findings, all applied pre-merge; see `work/review/REV-0022/`).
+**Date:** 2026-07-11 (drafted); accepted 2026-07-12
 **Deciders:** Ameen (human gate). Queues for independent cross-model review before acceptance (ADR amendment per review policy).
 **Number:** ADR-009 (renumbered on install from planning-seat draft "ADR-010"; 009 is the next free slot after ADR-008).
 
@@ -49,7 +51,7 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 5. **Rails (quarantine semantics extended to signals).**
    - TTL/staleness: a signal past `ttl_seconds`, or carrying `issued_at` in the future or implausibly old, is `SIGNAL_EXPIRED`/`SIGNAL_QUARANTINED` — the market-data fail-fast rail applied to signal freshness. A stale signal can never be approved.
    - Malformed, duplicate-conflicting, or self-contradictory signals → `SIGNAL_QUARANTINED`, recorded never hidden.
-   - Per-producer rate limits; breach → producer-level quarantine (all further signals quarantined until human release). **Post-quarantine backpressure (Codex PR #5 P2):** once a producer is quarantined, further ingress from it is rejected at the boundary (HTTP 429/403) and does **not** append per-request events — the audit trail is coalesced (the quarantine event itself plus a bounded/periodic rejected-count record), so a malicious authenticated producer cannot flood the append-only log or grow SQLite without bound. Test-proven: requests after producer quarantine leave the event log bounded.
+   - Per-producer rate limits; breach → producer-level quarantine (all further signals quarantined until human release). **Rails ship no later than exposure (Codex round 6):** the ingestion endpoint carries a conservative hard ingest ceiling from its first commit, superseded (never just removed) by the full rate-limit/quarantine rails — there is no window in which an enabled endpoint lacks flood protection. The human **release** action has a browser path (cockpit control), not raw-API-only — invariant 11. **Post-quarantine backpressure (Codex PR #5 P2):** once a producer is quarantined, further ingress from it is rejected at the boundary (HTTP 429/403) and does **not** append per-request events — the audit trail is coalesced (the quarantine event itself plus a bounded/periodic rejected-count record), so a malicious authenticated producer cannot flood the append-only log or grow SQLite without bound. Test-proven: requests after producer quarantine leave the event log bounded.
    - Kill switch / `Halted` state: signals may still be *recorded* (facts are facts), but signal→intent conversion is blocked exactly as any other new order intent is. In `Reducing`, only risk-reducing signals are convertible.
 6. **UI.** Streamlit gains a read/approve panel: renders pending proposals, issues approve/reject *intents* to the API. It remains a thin client — no signal state owned client-side, no direct mutation, and (as always) no Alpaca calls.
 
@@ -94,6 +96,6 @@ Easier: adding/swapping producers (any agent that can POST JSON); auditing exact
 ## Action Items
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
-2. [ ] Human review of this draft. (INV-1..9 mapping drafted from §5 on install, 2026-07-11 — confirm the rows, don't re-derive from scratch.)
-3. [ ] Independent cross-model review: packet **REV-0022** queued (`work/review/REV-0022/request.md`) — dispatch at the human's discretion; acceptance blocked until it is dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
-4. [ ] WO-0101..0104 (installed to `work/queue/`, status draft) — all remain gated on this ADR's acceptance.
+2. [x] Human review — done through the INV-7 asymmetry decision (2026-07-11) and formal acceptance (2026-07-12).
+3. [x] Independent cross-model review — **REV-0022 RESOLVED, ACCEPT-WITH-CHANGES** (PR #5 adversarial record, 16 findings applied pre-merge; `work/review/REV-0022/`).
+4. [x] WO-0101..0104: the ADR-acceptance gate CLEARED (2026-07-12); inter-WO sequencing gates remain (0101 → 0102 → {0103, 0104}).
