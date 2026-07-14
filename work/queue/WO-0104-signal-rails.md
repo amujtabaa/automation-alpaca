@@ -13,7 +13,7 @@ created: 2026-07-11
 
 # Work Order: Signal rails — TTL, staleness, rate limits, producer quarantine
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, then WO-0102. NOTE F-003/F-004 land here: server-max-TTL/expiry formula and per-epoch audit bound become ADR text, not WO discretion
 > and WO-0102 is complete. Runs after 0102; may run in parallel with 0103. The producer
 > **release** route is a human-gated action — same Complex treatment as WO-0103.
 

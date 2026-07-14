@@ -2,10 +2,10 @@
 type: Review Request
 rev_id: REV-0022
 title: ADR-009 Signal Seat boundary — acceptance review (ADR amendment class)
-status: QUEUED   # flip to AWAITING_REVIEW and freeze commit_range when dispatched
+status: BLOCK_RECEIVED   # formal packet run on frozen 25590a7 -> BLOCK (result.md); remediation open (disposition.md)
 targets: [ADR-009]
 human_gated_surfaces: [order-submission]   # via the WO-0103 conversion gate the ADR authorizes
-commit_range: SET-ON-DISPATCH   # freeze to the repo SHA the reviewer will read; docs-only review
+commit_range: 25590a7   # frozen SHA of the formal review (result.md); the PR#5-record file is superseded
 created: 2026-07-11
 ---
 

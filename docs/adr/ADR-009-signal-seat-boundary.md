@@ -1,7 +1,11 @@
 # ADR-009: Signal Seat — External Agentic Signal Producers as Bounded Intent Sources
 
-**Status:** DRAFT / PROPOSED — pending human acceptance + independent cross-model review
-**Date:** 2026-07-11
+**Status:** **Proposed** — acceptance of 2026-07-12 **RESCINDED 2026-07-14**: the formal REV-0022
+packet (frozen `25590a7`) returned **BLOCK** with four P1 findings (credential/transport boundary,
+non-atomic approval→intent conversion, unbounded/underspecified TTL + classification semantics,
+unbounded audit growth). Not acceptable until F-001..F-004 are remediated in this document and the
+re-review clears. Full record: `work/review/REV-0022/`.
+**Date:** 2026-07-11 (drafted); accepted 2026-07-12; rescinded 2026-07-14
 **Deciders:** Ameen (human gate). Queues for independent cross-model review before acceptance (ADR amendment per review policy).
 **Number:** ADR-009 (renumbered on install from planning-seat draft "ADR-010"; 009 is the next free slot after ADR-008).
 
@@ -18,9 +22,9 @@
 >    independent review dispositioned RESOLVED (REV-0003, ACCEPT-WITH-CHANGES). The migration
 >    is substantially terminal; the only known deferral is `filled_quantity` event-sourcing
 >    (status-only flip; separate follow-up), which the signal WOs do not depend on.
-> 3. **Acceptance** — still open: human review + independent cross-model review packet
->    (`work/review/REV-*`), per the CLAUDE.md review policy. This document remains DRAFT until
->    that packet is dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
+> 3. **Acceptance** — OPEN (rescinded 2026-07-14): REV-0022's formal run returned BLOCK; this
+>    document remains Proposed until F-001..F-004 are remediated and the re-review is
+>    dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
 
 ## Context
 
@@ -94,6 +98,6 @@ Easier: adding/swapping producers (any agent that can POST JSON); auditing exact
 ## Action Items
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
-2. [ ] Human review of this draft. (INV-1..9 mapping drafted from §5 on install, 2026-07-11 — confirm the rows, don't re-derive from scratch.)
-3. [ ] Independent cross-model review: packet **REV-0022** queued (`work/review/REV-0022/request.md`) — dispatch at the human's discretion; acceptance blocked until it is dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
-4. [ ] WO-0101..0104 (installed to `work/queue/`, status draft) — all remain gated on this ADR's acceptance.
+2. [x] Human review — INV-7 asymmetry decision (2026-07-11); the 2026-07-12 acceptance was rescinded (see Status).
+3. [ ] Independent cross-model review — **REV-0022 returned BLOCK** (formal packet, frozen `25590a7`); remediate F-001..F-004 here, then re-review. The PR #5 sixteen-finding record remains applied but does not clear the gate.
+4. [ ] WO-0101..0104: RE-GATED 2026-07-14 pending F-001..F-004 remediation + re-review. WO-0101's spec output stands as draft input to the remediation.

@@ -13,7 +13,7 @@ created: 2026-07-11
 
 # Work Order: Approval surface (Streamlit) + conversion gate
 
-> **GATED — DO NOT ACTIVATE** until ADR-009 is accepted post independent cross-model review
+> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, then WO-0102 (this WO's own independent review requirement also stands). NOTE F-002 lands here hardest: conversion must be one dual-store atomic command with crash/interleaving tests
 > and WO-0102 is complete. **Approval = order submission trigger ⇒ human-gated surface ⇒
 > Complex classification regardless of size; queues for independent cross-model review before
 > any beta milestone relies on it.** Runs after 0102; may run in parallel with 0104.
@@ -96,6 +96,7 @@ Strong, risk high: triggers order submission — a human-gated safety surface; C
 ## Notes
 
 - `allowed_paths` corrected on install from the draft's `src/ui|api|facade|engine` to the as-built tree (`cockpit/`, `app/…`); finalize against WO-0101's spec at activation.
+- **Schema-migration gate (Codex PR #6):** the nullable `signal_producer_id`/`signal_signal_id` columns on Candidate/SellIntent are a DB schema change — human-gated; migration plan requires explicit approval before execution.
 - Disposition intent from planning seat: RESULT_SUMMARY_KEPT + ledger entry; independent review queued.
 
 ## Completion disposition
