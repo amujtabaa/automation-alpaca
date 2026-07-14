@@ -73,11 +73,12 @@ On `POST /api/signals` with an existing `(producer_id, signal_id)`:
 - **Identical `payload_hash`** → idempotent replay: HTTP 200 with the existing record; **no new
   event appended** (mirrors `client_order_id` idempotency). Works in every signal status.
 - **Different `payload_hash`** → duplicate-conflict: the **existing** record's status is untouched;
-  the conflict is recorded **event-only** — one `SIGNAL_QUARANTINED` event (reason
-  `"duplicate_conflict"`) whose payload embeds the conflicting proposal + both hashes, linked to
-  the original record's id. **No second `SignalRecord` row is created** — `(producer_id,
-  signal_id)` stays a true unique key in both stores (Codex PR #6: a same-key second row would
-  contradict the unique index). HTTP 409. Further conflicting replays of the same `(producer_id,
+  the conflict is recorded **event-only** as **`SIGNAL_DUPLICATE_CONFLICT`** — a dedicated
+  audit-only event type, **explicitly excluded from the signal lifecycle fold** (Codex PR #6: a
+  `SIGNAL_QUARANTINED` event linked to the original record would quarantine the valid signal on
+  replay). Its payload embeds the conflicting proposal + both hashes, linked to the original
+  record's id. **No second `SignalRecord` row is created** — `(producer_id, signal_id)` stays a
+  true unique key in both stores. HTTP 409. Further conflicting replays of the same `(producer_id,
   signal_id, payload_hash)` are boundary-rejected 409 with coalesced audit only (`03-rails.md §4`)
   — one conflict, one event.
 
@@ -89,7 +90,7 @@ what enter those fields):
 
 | Field | Type | Constraints |
 |---|---|---|
-| `quantity` | `int` | `> 0`; for sells additionally `≤ live position` at conversion time (checked under the store lock) |
+| `quantity` | `int` | `> 0`; for sells, `quantity > live position` at conversion time (read under the store lock) **refuses** the conversion with reason `POSITION_CHANGED` — never silently capped (`05-conversion.md §1`) |
 | `limit_price` | `float` | finite, `> 0` (`limit_price_reason` — the F1/BACKEND-1 rule) |
 | `actor` | threaded from the authenticated operator credential + `X-Actor` audit label | |
 

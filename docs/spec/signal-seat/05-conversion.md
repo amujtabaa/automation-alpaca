@@ -14,8 +14,12 @@ the single-writer lock** (rule A2):
   kill-switch checks run unchanged.
 - **Sell-direction signal** → create a `SellIntent` with **`reason=SellReason.SIGNAL`** (new enum
   member — the third value after `manual_flatten` / `protection_floor`, exactly the extension
-  point the enum's docstring anticipated), `target_quantity=<operator quantity, capped at the live
-  position under the same lock>`, correlation fields — driven through the existing sell-side
+  point the enum's docstring anticipated), `target_quantity=<operator quantity>` — and if the operator quantity exceeds the live position
+  read under the same lock, the conversion **refuses** with structured reason `POSITION_CHANGED`
+  (the position moved since the form was filled); the operator re-confirms with a fresh quantity.
+  **Never silently capped** (Codex PR #6: a cap would dispatch a different quantity than the
+  operator approved while the audit records the original — breaking the operator-confirmed sizing
+  guarantee), correlation fields — driven through the existing sell-side
   approve→dispatch path. **Kill-switch semantics: `SIGNAL` sells pause under the kill switch like
   `PROTECTION_FLOOR`** — they are NOT the human backstop and get no `MANUAL_FLATTEN`-style bypass;
   manual flatten remains the separate, dumber, direct path.

@@ -41,7 +41,8 @@ self-decide if they judge otherwise:
 | Event | Emitted when | Payload (minimum) |
 |---|---|---|
 | `SIGNAL_RECEIVED` | proposal accepted into RECEIVED | full proposal fields + `payload_hash`, `producer_id`, `signal_id`, server `record_id` |
-| `SIGNAL_QUARANTINED` | validation failure (attributable), duplicate-conflict, or producer-quarantine sweep | `quarantine_reason`, offending fields / conflict link / sweep ref |
+| `SIGNAL_QUARANTINED` | validation failure (attributable) or producer-quarantine sweep — folds terminally onto ITS OWN record only | `quarantine_reason`, offending fields / sweep ref |
+| `SIGNAL_DUPLICATE_CONFLICT` | **audit-only, excluded from the lifecycle fold**: a different-payload replay of an existing `(producer_id, signal_id)` — the original record's state is untouched (live path AND replay) | conflicting proposal, both hashes, original record id |
 | `SIGNAL_EXPIRED` | sweep or lazy-expiry durable transition | `expires_at`, `detected_by: "sweep" | "read"` |
 | `SIGNAL_REJECTED` | operator reject | `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id`, `producer_id`, `signal_id` |
