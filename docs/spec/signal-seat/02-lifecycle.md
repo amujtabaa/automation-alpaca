@@ -40,14 +40,18 @@ self-decide if they judge otherwise:
 
 | Event | Emitted when | Payload (minimum) |
 |---|---|---|
-| `SIGNAL_RECEIVED` | proposal accepted into RECEIVED | full proposal fields + `payload_hash`, `producer_id`, `signal_id`, server `record_id` |
+| `SIGNAL_RECEIVED` | proposal accepted into RECEIVED | full proposal fields + `payload_hash`, `producer_id`, `signal_id`, server `record_id`, **server-computed `received_at` + `expires_at`** (replay rebuilds the deadline byte-identically after restart — ADR-009 A-3; Codex rev-3) |
 | `SIGNAL_QUARANTINED` | validation failure (attributable) or producer-quarantine sweep — folds terminally onto ITS OWN record only | `quarantine_reason`, offending fields / sweep ref |
 | `SIGNAL_DUPLICATE_CONFLICT` | **audit-only, excluded from the lifecycle fold**: a different-payload replay of an existing `(producer_id, signal_id)` — the original record's state is untouched (live path AND replay) | conflicting proposal, both hashes, original record id |
-| `SIGNAL_EXPIRED` | sweep or lazy-expiry durable transition | `expires_at`, `detected_by: "sweep" | "read"` |
+| `SIGNAL_EXPIRED` | sweep or lazy-expiry durable transition | `received_at`, `expires_at`, `detected_by: "sweep" | "read"` |
 | `SIGNAL_REJECTED` | operator reject | `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id`, `producer_id`, `signal_id` |
 | `PRODUCER_QUARANTINED` | rate-limit breach — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach counters, epoch start |
 | `PRODUCER_RELEASED` | operator release — closes the epoch | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
+
+A terminal-at-ingest event (`SIGNAL_QUARANTINED`/`SIGNAL_EXPIRED` written directly at ingest with no
+preceding `SIGNAL_RECEIVED`) carries the same server-computed `received_at`/`expires_at`, so every
+signal replays its timestamps regardless of entry path (Codex rev-3).
 
 Provenance: all signal events are `EventSource.ENGINE` (or an `OPERATOR`-flavored source if the
 implementer prefers a new member — either way `EventAuthority.LOCAL`; nothing here is

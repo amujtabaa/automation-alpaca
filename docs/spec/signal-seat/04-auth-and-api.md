@@ -6,10 +6,17 @@ Beta posture per **ADR-009 Amendment A-1**: static keys from `Settings` (env-inj
 never committed, never logged, redacted in error paths), compared constant-time
 (`secrets.compare_digest`). No user store, no OAuth — one operator, N producers.
 
-**Transport policy** (`Settings.signal_transport_policy`, mandatory when the flag is on):
-`loopback` (beta default — backend binds `127.0.0.1` only; startup fails fast on a non-loopback
-bind) or `tls_proxy` (non-loopback exposure requires a TLS-terminating reverse proxy and this
-explicit, audited setting). Plain HTTP across a network boundary is never supported.
+**Transport policy** (`Settings.signal_transport_policy`, mandatory when the flag is on) — ADR-009
+A-1: `loopback` (beta default — backend binds `127.0.0.1` only) or `tls_proxy` (external exposure
+ONLY via a TLS-terminating reverse proxy). Under **BOTH** policies the **backend listener itself
+stays proxy-private** (loopback or Unix socket); the startup guard verifies the actual **bind**, not
+the flag, and **fails fast on any non-loopback/non-socket backend bind** — so a same-network client
+can never bypass the proxy and hit the plain-HTTP backend port directly. Plain HTTP across a network
+boundary is never supported.
+
+**Credential-presence startup guard** (ADR-009 A-1): with the flag on, startup **fails fast** unless
+`OPERATOR_API_KEY` is set non-blank AND the producer key map is loaded — otherwise every sensitive
+route would be permanently 401 with no credential to supply (WO-0102 test).
 
 **Key lifecycle:** rotation = deploy a new key map (the producer map supports multiple keys per
 producer for overlap-rotation); revocation = remove the key (effective on config reload/restart).
@@ -19,7 +26,7 @@ recorded alongside it, never a substitute.
 | Credential | Header | Config | Scope |
 |---|---|---|---|
 | Producer key | `X-Producer-Key: <key>` | `Settings.signal_producer_keys: dict[str, str]` (env `SIGNAL_PRODUCER_KEYS`, JSON `{"key": "producer_id"}`) | `POST /api/signals` **only**. Rejected by every other route (negative test, WO-0102). |
-| Operator key | `X-Operator-Key: <key>` | `Settings.operator_api_key: str` (env `OPERATOR_API_KEY`) | All mutating command routes (existing + signal approval/reject/release). |
+| Operator key | `X-Operator-Key: <key>` | `Settings.operator_api_key: str` (env `OPERATOR_API_KEY`) | **Every sensitive route — reads included** (§1a matrix): all mutating commands + all sensitive reads (positions/orders/sessions/marketdata/signals-list/producers). NOT the `POST /api/signals` producer route. |
 
 Rules:
 
@@ -59,6 +66,7 @@ Every router `create_app` (`app/main.py`) mounts, classified. With `signal_seat_
 | `POST /api/signals` (`routes_signals`) | **producer-only** |
 | `GET /api/signals`, approve/reject (`routes_signals`) | operator-only |
 | `/api/producers*` | operator-only |
+| `/openapi.json`, `/docs`, `/redoc`, `/docs/oauth2-redirect` (FastAPI auto) | **disabled under the flag** (or operator-only if a deployment needs them) — never public; classified + tested (Codex rev-3) |
 
 **Fail-closed enforcement (WO-0102 test):** a parameterized test introspects the real mounted
 app's route table at runtime; any route not present in this classification is a test FAILURE, and

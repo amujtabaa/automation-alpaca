@@ -38,6 +38,7 @@ Read only these first:
 allowed_paths:
   - app/events/**                    # signal rails + SIGNAL_EXPIRED events
   - app/models.py
+  - app/config.py                    # server_max_ttl / rate-limit Settings (A-3/A-4 tunables + hard caps) — Codex rev-3
   - app/store/**
   - app/api/**                       # release route — human-gated action
   - app/facade/**                    # signal facade (release command/queries) — contract 5: the route never reaches store/events directly; commands.py stays forbidden below

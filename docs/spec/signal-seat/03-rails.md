@@ -25,10 +25,12 @@ Hard caps, deliberately cruder than §1, so there is no unrailed window between 
 - `signal_ingest_ceiling_per_producer_per_minute: int = 10`
 - `signal_ingest_ceiling_global_per_minute: int = 60`
 
-Over-ceiling → HTTP 429, **no per-request event append**, coalesced audit only (§4). Test contract
-(WO-0102): sustained over-ceiling ingest leaves the event log bounded (≤ 1 coalesced event per
-producer per window). WO-0104 replaces the ceiling with §1 **in the same change** it lands the
-full rails.
+Over-ceiling → HTTP 429, **no event append at all** — the interim ceiling is **audit-free in the
+event log**: rejected requests only bump a saturating in-memory counter (there is no
+`PRODUCER_INGEST_REJECTED` event — it was removed from the vocabulary). Test contract (WO-0102):
+sustained over-ceiling ingest appends **zero** events (constant event-row count — a per-window
+append rate is unbounded over indefinite hostility, Codex rev-3). WO-0104 replaces the ceiling with
+§1's full rails (rate-limit → quarantine epoch) **in the same change** it lands them.
 
 ## 3. Sweeps (WO-0104)
 

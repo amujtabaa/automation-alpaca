@@ -22,9 +22,11 @@ TradingState flips, duplicate approval; both stores). Within that command, per d
   action, no second panel click, no bypassed gate.
 - **Sell-direction signal** → create a `SellIntent` with **`reason=SellReason.SIGNAL`** (new enum
   member — the third value after `manual_flatten` / `protection_floor`, exactly the extension
-  point the enum's docstring anticipated), `target_quantity=<operator quantity>` — and if the operator quantity exceeds the live position
-  read under the same lock, the conversion **refuses** with structured reason `POSITION_CHANGED`
-  (the position moved since the form was filled); the operator re-confirms with a fresh quantity.
+  point the enum's docstring anticipated), `target_quantity=<operator quantity>` — and if the operator quantity exceeds
+  **`(live position − outstanding committed sell exposure)`** read under the same lock (the available
+  *uncommitted* position, ADR-009 A-3 — enforced in **every** `TradingState`, `Active` included, not
+  only the `Reducing` classifier; Codex rev-3), the conversion **refuses** with structured reason
+  `POSITION_CHANGED`; the operator re-confirms with a fresh quantity.
   **Never silently capped** (Codex PR #6: a cap would dispatch a different quantity than the
   operator approved while the audit records the original — breaking the operator-confirmed sizing
   guarantee), correlation fields — driven through the existing sell-side

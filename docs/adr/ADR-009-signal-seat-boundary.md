@@ -134,6 +134,15 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
    producer-credentialed access to any sensitive route, reads included, is 401/403. Rationale: an untrusted producer with network reach must learn nothing about
    positions, orders, sessions, or other producers' theses.
 
+4. **Credential-presence startup guard**: with `signal_seat_enabled`, startup **fails fast** unless
+   `OPERATOR_API_KEY` is set non-blank AND the producer key map is loaded. An enabled flag with no
+   operator key makes every sensitive route (kill switch, flatten, cockpit reads) permanently 401
+   with no credential to supply — recreating the lockout A-1 forbids (Codex rev-3). Tested.
+5. **Auto-docs routes**: FastAPI auto-registers `/openapi.json`, `/docs`, `/redoc`,
+   `/docs/oauth2-redirect`. With `signal_seat_enabled` these are **disabled** (they disclose the API
+   surface to reachable producers); a deployment that needs them puts them behind the operator
+   credential. Either way they are classified in the §1a matrix and tested — never public (Codex rev-3).
+
 ### A-2 (remediates F-002) — Atomic conversion contract
 
 Approval→intent conversion is **one atomic store command** in both stores:
@@ -190,6 +199,12 @@ Approval→intent conversion is **one atomic store command** in both stores:
   codes (`TRADING_STATE_REDUCING`, `POSITION_CHANGED`, `TRADING_HALTED`, `KILL_SWITCH`),
   operator-visible, never silent — the recorded INV-7 asymmetry decision stands (conservative
   toward convertibility; the quantity-aware risk gate remains the binding check).
+
+- **The exposure ceiling is universal — enforced in EVERY `TradingState`, not only the `Reducing`
+  classifier:** the A-2 conversion refuses a signal sell whose `operator_qty` exceeds
+  `(live position − outstanding committed sell exposure)` in `Active` too. A naive
+  `qty ≤ live position` check would admit a 50-share signal sell against a 100-share position that
+  already has 90 committed to exits — the joint-oversell hole INV-4 forbids (Codex rev-3).
 
 ### A-4 (remediates F-004) — Finite ingest and audit bounds
 
