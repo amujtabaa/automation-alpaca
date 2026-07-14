@@ -22,9 +22,13 @@ acceptance was RESCINDED after the formal REV-0022 review returned BLOCK (4 P1s:
 transport boundary, non-atomic conversion, TTL/classification bounds, unbounded audit). Amendments
 A-1..A-4 drafted; the REV-0024 re-review confirmed A-2/A-3 CLOSED (atomic conversion, server-owned
 freshness) but A-1/A-4 NOT — re-remediated 2026-07-14 (A-1 clause 6 backend-owned launch for F-001;
-A-4 non-refilling invalid budget + rails-presence enablement gate for F-004). Nothing below is
-implementable until REV-0025 clears the re-remediation; WO-0102..0104 stay re-gated.** ADR-009
-(Proposed) is the decision; the
+A-4 non-refilling invalid budget + rails-presence enablement gate for F-004). REV-0025 returned BLOCK
+(7 P1s, no A-2/A-3 regression); Ameen decided its forks (D-1 construction-time bind refusal; D-2
+release/deployment gate) and **LOCKED the spec 2026-07-14** — remaining items are implementation-
+semantic WO-time contracts (atomic epoch-open → WO-0104; multi-exit + local-order exposure →
+WO-0103). The four staged rounds are the amendment-design review record. **ADR-009 stays _Proposed_;
+the Proposed→Accepted flip + WO-0102..0104 unfreeze is a distinct explicit human-gated action not yet
+performed.** ADR-009 (Proposed) is the decision; the
 draft contract is `docs/spec/signal-seat/` (WO-0101 output — DRAFT input to the remediation).
 Implementation: WO-0102 → WO-0103 ∥ WO-0104, all RE-GATED pending remediation + re-review.
 

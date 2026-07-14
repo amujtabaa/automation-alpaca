@@ -14,7 +14,7 @@ created: 2026-07-11
 
 # Work Order: Signal ingestion endpoint + event-log provenance
 
-> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022 returned BLOCK (F-001..F-004); amendments A-1..A-4 drafted; REV-0024 re-review confirmed A-2/A-3 CLOSED but A-1/A-4 NOT — re-remediated 2026-07-14 (A-1 backend-owned launch clause 6 for F-001; A-4 non-refilling invalid budget + rails-presence enablement gate for F-004). Gated on **REV-0025** acceptance of that re-remediation, and on WO-0101's spec (`docs/spec/signal-seat/`, draft pending the same).
+> **GATED — DO NOT ACTIVATE until the human ADR-009 acceptance flip**: REV-0022→0025 all BLOCK; the amendment design was exhaustively hardened across four staged rounds, and Ameen **LOCKED the spec 2026-07-14** (D-1 construction-time bind refusal; D-2 release/deployment gate; remaining items are WO-time contracts). Gated on the explicit **ADR-009 Proposed→Accepted flip + WO unfreeze** (order-submission surface; not yet performed) and WO-0101's now-LOCKED spec.
 > **Enablement is the joint WO-0102 + WO-0103 + WO-0104 milestone** (ADR-009 A-4): this WO ships the **ingestion endpoint + A-1 boundary only** — the **A-2 atomic approval→conversion is WO-0103's** human-gated surface, NOT this WO's (REV-0024-F P1). The flag is structurally un-enable-able until WO-0104's rails satisfy the rails-presence guard, and an enabled seat without WO-0103's conversion path is incoherent (re-opens F-002), so all three co-gate enablement; the flag-on integration tests (route matrix, paced-flood) run at that milestone, not in isolation.
 > Sequencing: 0101 → 0102 (ingest endpoint, flag gated off) → 0104 (rails, satisfies the permanent guard) ∥ 0103 (approval/conversion); 0102+0103+0104 co-gate live enablement.
 

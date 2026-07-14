@@ -56,6 +56,13 @@ fields are valid enough to compute it** (A-3 formula). A validation-quarantine f
 raw offending fields and `expires_at: null`; the record is terminal QUARANTINED and never approvable,
 so it needs none. Replay is exact either way — the payload determines the record (Codex rev-3).
 
+Every **attributable-rejection** event (`SIGNAL_QUARANTINED`, novel-hash `SIGNAL_DUPLICATE_CONFLICT`,
+dead-on-arrival `SIGNAL_EXPIRED`) additionally carries **`cycle_budget_limit`** — the non-refilling
+invalid-budget limit pinned for the producer's current cycle (`03-rails.md §1a`, REV-0025-F P1) — so
+the budget is reconstructable from the event log alone. The event that consumes the last slot
+**co-appends the single `PRODUCER_QUARANTINED`** epoch-opener in the same atomic op (§4; Ameen
+2026-07-14) — no zero-budget gap.
+
 Provenance: all signal events are `EventSource.ENGINE` (or an `OPERATOR`-flavored source if the
 implementer prefers a new member — either way `EventAuthority.LOCAL`; nothing here is
 broker-authoritative). Position projection folds only `FILL` — `SIGNAL_*`/`PRODUCER_*` are
@@ -92,12 +99,13 @@ exactly once).
 
 `SignalRecord` state and producer quarantine state are pure folds over the `SIGNAL_*` /
 `PRODUCER_*` events: replaying the event log from empty reconstructs byte-identical signal and
-producer read-models in both stores. **The producer rail state includes the cycle's pinned invalid
-budget limit AND its consumed/remaining count** (`03-rails.md §1a`, REV-0025-F-004): the consumed
-count folds from the attributable terminal-at-ingest events (`SIGNAL_QUARANTINED`/novel
-`SIGNAL_DUPLICATE_CONFLICT`/dead-on-arrival `SIGNAL_EXPIRED`) since the last `PRODUCER_RELEASED`, and
-the historical limit is carried in the durable rail record — so a restart/replay restores the same
-binding remaining budget and cannot silently grant a fresh one. **Every per-record lifecycle-transition event
+producer read-models in both stores. **The producer rail state (pinned invalid-budget limit
++ consumed/remaining count) is reconstructed from the event log alone** (`03-rails.md §1a`,
+REV-0025-F-004/F P1): each attributable terminal-at-ingest event (`SIGNAL_QUARANTINED` / novel
+`SIGNAL_DUPLICATE_CONFLICT` / dead-on-arrival `SIGNAL_EXPIRED`) carries **`cycle_budget_limit`**; the
+consumed count folds as the number of such events since the last `PRODUCER_RELEASED`, and the limit
+is read from the cycle's first such event — so a restart/replay restores the same binding remaining
+budget (a side table is a cache, not the source of truth) and cannot silently grant a fresh one. **Every per-record lifecycle-transition event
 (`SIGNAL_QUARANTINED`, `SIGNAL_EXPIRED`, `SIGNAL_REJECTED`, `SIGNAL_APPROVED`) carries the record key
 `(producer_id, signal_id)` (and server `record_id`)** so the fold targets exactly one record —
 timing/actor metadata alone is ambiguous when several records transition together (REV-0024-F P1).

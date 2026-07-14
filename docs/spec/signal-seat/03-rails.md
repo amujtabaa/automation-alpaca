@@ -49,14 +49,18 @@ holds a **non-refilling** budget:
   the debit; if it is a separate rail record, its update shares the same lock/transaction. Crash
   between decision and append leaves **either** the complete {debit + event} **or** neither, in both
   stores.
-- **Exact transition on the final slot (no ambiguity — REV-0024-F P2 / REV-0025-F-006):** the
-  attributable-rejection append that consumes the **last** slot completes **normally** — its own
-  event and status (422 validation, 409 novel conflict, terminal `SIGNAL_EXPIRED` for dead-on-arrival).
-  The budget is then zero; the **next** ingest, at step 2, opens the epoch by appending **exactly one**
-  `PRODUCER_QUARANTINED` (the single permitted epoch-opener write) and returns 429/403. **Only the
-  rejects *after* that opener are write-free** — the opener itself is a write; "write-free" never
-  describes the opener. Event count is exact: ≤ `invalid_budget` attributable events, then one
-  `PRODUCER_QUARANTINED`, then write-free rejects until release.
+- **Exact transition on the final slot — the exhausting append opens the epoch in the SAME atomic op**
+  (Ameen decision 2026-07-14, REV-0025-F P1; this **supersedes** the earlier REV-0024 "epoch opens on
+  the next ingest" rule). The attributable-rejection append that consumes the **last** slot, in one
+  memory-lock/SQLite-transaction, appends **both** its own terminal event (422 validation / 409 novel
+  conflict / terminal `SIGNAL_EXPIRED`) **and** the single `PRODUCER_QUARANTINED` epoch-opener — so
+  there is **no zero-budget-but-un-quarantined gap** in which the A-2 conversion check would still
+  approve an exhausted producer's already-RECEIVED signals, and the epoch is immediately releasable if
+  the producer goes silent. It remains **exactly one `PRODUCER_QUARANTINED` per epoch**; subsequent
+  rejects are write-free. Event count is exact: ≤ `invalid_budget` attributable events, the last of
+  which co-appends one `PRODUCER_QUARANTINED`, then write-free rejects until release. (A pure
+  rate-bucket breach with no terminal append still opens the epoch on its own single
+  `PRODUCER_QUARANTINED`.)
 - The budget **resets only on human release** (`PRODUCER_RELEASED`, §5), never by refill — so each
   further cycle of attributable-rejection flooding requires a human to re-open the producer.
 - **Both the pinned limit AND the consumed/remaining count are durable producer-rail state
@@ -64,10 +68,15 @@ holds a **non-refilling** budget:
   equivalently remaining slots) must survive restart/redeploy too, restored **before the app serves**,
   and updated atomically with each terminal append (same op as the debit above). Otherwise an
   implementation could pin `limit=50`, consume 49, restart with `used=0`, and grant a fresh budget
-  with no `PRODUCER_RELEASED` — violating reset-only-on-human-release. **Replay** reconstructs both:
-  the historical pinned limit is carried in the durable rail record (or an event payload) and the
-  consumed count folds from the attributable terminal-at-ingest events since the last release, so
-  memory-replay and SQLite-reopen restore the **same binding remaining budget** in both stores.
+  with no `PRODUCER_RELEASED` — violating reset-only-on-human-release. **Replay is event-authoritative
+  (REV-0025-F P1):** the event log alone must reconstruct the binding budget, so **each
+  attributable-rejection event (`SIGNAL_QUARANTINED` / novel `SIGNAL_DUPLICATE_CONFLICT` / DOA
+  `SIGNAL_EXPIRED`) carries `cycle_budget_limit`** — the pinned limit in force for the current cycle.
+  The consumed count folds as the number of such events since the last `PRODUCER_RELEASED` (cycle
+  boundary); the limit is read from the cycle's first such event. A side table/snapshot may cache this
+  for the live path, but it is **not** the source of truth — after a config change, replay knows
+  whether a cycle started at 50 or 100 purely from `cycle_budget_limit` in the log, so live and replay
+  never diverge, both stores.
 - **Config changes are cycle-scoped, not retroactive** (REV-0024-F P1): a change to
   `signal_invalid_budget_per_epoch` applies **only to cycles that begin after the change** — a cycle
   begins at a producer's first attributable rejection after a release (or from fresh). The limit in

@@ -8,8 +8,27 @@ unbounded audit growth). Amendments A-1..A-4 were drafted; the **REV-0024** re-r
 but **A-1/A-4 NOT** — the bind guard was unenforceable through the ASGI seam (F-001) and a
 refilling-bucket-only audit was unbounded under paced hostility (F-004). Both were re-remediated
 2026-07-14 per Ameen's decisions (A-1 clause 6 backend-owned launch; A-4 non-refilling invalid
-budget + rails-presence enablement gate). Not acceptable until **REV-0025** clears the
-re-remediation. Full record: `work/review/REV-0022/`, `work/review/REV-0024/`, `work/review/REV-0025/`.
+budget + rails-presence enablement gate). **REV-0025** (frozen `209496d`) returned **BLOCK** (7 P1s,
+no A-2/A-3 regression); Ameen decided its two forks (D-1 construction-time bind refusal; D-2
+release/deployment gate) and, on 2026-07-14, **LOCKED the specification** — the four staged rounds
+(REV-0022→0025) exhaustively hardened the amendment design, and the remaining items are
+implementation-semantic (atomic epoch-open, local order states, multi-exit single-flight), decided
+and documented as **WO-time contracts** to be resolved against real code + TDD rather than in further
+spec-only review rounds.
+**GATE (2026-07-14): the spec is LOCKED and implementation-ready; the two open behavior forks are
+decided (see "Locked open-items" below). ADR-009 remains _Proposed_ — the formal Proposed→Accepted
+flip and the WO-0102..0104 unfreeze are a distinct, explicit human-gated action (order-submission
+surface) that has NOT been performed here.** Full record: `work/review/REV-0022/`, `REV-0024/`,
+`REV-0025/` (REV-0026 withdrawn — spec locked instead of a fifth spec-only round).
+
+### Locked open-items (Ameen decisions 2026-07-14 — implement + test in the named WO, do not re-litigate)
+- **Zero-budget epoch-open (REV-0025-F P1, WO-0104):** the invalid-budget-exhausting terminal append
+  **co-opens the `PRODUCER_QUARANTINED` epoch in the same atomic op** (supersedes "epoch opens on the
+  next ingest") — no gap where an exhausted producer's RECEIVED signals stay approvable.
+- **Multi-exit (REV-0025-F P1, WO-0103):** signal sells are **not** single-flight-refused; concurrent
+  signal exits are allowed, bounded only by the combined-exposure ceiling (which counts every
+  non-terminal **local** SELL order, `CREATED`/`ORDERED`-pre-submit included), proven no-oversell in
+  both stores.
 **Date:** 2026-07-11 (drafted); accepted 2026-07-12; rescinded 2026-07-14
 **Deciders:** Ameen (human gate). Queues for independent cross-model review before acceptance (ADR amendment per review policy).
 **Number:** ADR-009 (renumbered on install from planning-seat draft "ADR-010"; 009 is the next free slot after ADR-008).
@@ -264,10 +283,14 @@ Approval→intent conversion is **one atomic store command** in both stores:
   signal is risk-reducing iff `direction == sell` AND
   `operator_qty ≤ (live derived position − outstanding committed sell exposure)`, both terms
   read under the A-2 lock; `outstanding committed sell exposure` = Σ `target_quantity` of sell
-  intents pending/approved but **not yet `ORDERED`** + Σ remaining quantity of open SELL orders —
+  intents pending/approved but **not yet `ORDERED`** + Σ remaining quantity of **every non-terminal
+  LOCAL SELL order — committed-in-the-store, not broker-open only: `CREATED`/`ORDERED`-before-submit
+  count, since a local order the broker has not yet seen still holds its shares** (REV-0025-F P1) —
   each commitment counted **once**, never an `ORDERED` intent's target AND its order's remaining
   (`SellIntentStatus.ORDERED` is non-terminal, so a 50-share ordered sell counts as 50, not 100;
-  Codex rev-3). Two signal sells can therefore never jointly oversell via classification. Refusals carry stable reason
+  Codex rev-3). **Multi-exit is allowed (Ameen 2026-07-14): concurrent signal exits are permitted so
+  long as their summed exposure never exceeds the position — the single-flight-per-symbol behavior is
+  deliberately relaxed for signal sells, proven no-oversell in both stores (WO-0103).** Refusals carry stable reason
   codes (`TRADING_STATE_REDUCING`, `POSITION_CHANGED`, `TRADING_HALTED`, `KILL_SWITCH`),
   operator-visible, never silent — the recorded INV-7 asymmetry decision stands (conservative
   toward convertibility; the quantity-aware risk gate remains the binding check).
@@ -285,12 +308,15 @@ body read) → **(2) rails check** (quarantine epoch, refilling rate bucket; no 
 qualifier) → **(3) bounded body read** (`Content-Length` capped at **64 KiB**, streamed reject
 beyond) → **(4) parse + field-validate** (thesis ≤ 4000 chars, provenance ≤ 20 keys × 500 chars).
 The non-refilling invalid/conflict budget is debited at step 4 when an attributable-rejection event
-is appended, and its exhaustion opens the epoch at step 2 on the next ingest. Steps 1–2 reject with
-zero store writes and zero body processing — with **exactly one carve-out**: the single request
-that first crosses **either** breach threshold — rate-bucket empty **or** invalid/conflict budget
-exhausted — performs the epoch-opening `PRODUCER_QUARANTINED` append (once per epoch, by
-definition); every subsequent step-1/step-2 reject in that epoch is write-free (Codex rev-2 finding:
-without the carve-out the breach path is unimplementable as written).
+is appended; **the append that consumes the last slot co-appends the `PRODUCER_QUARANTINED`
+epoch-opener in the same atomic op** (Ameen decision 2026-07-14, REV-0025-F P1 — supersedes the
+earlier "epoch opens on the next ingest," which left a zero-budget-but-un-quarantined gap where an
+exhausted producer's RECEIVED signals were still approvable). Steps 1–2 reject with zero store writes
+and zero body processing — with **exactly one carve-out**: the single request that first crosses
+**either** breach threshold — rate-bucket empty (opens on that request) **or** invalid/conflict
+budget exhausted (co-opened by the exhausting step-4 append) — performs the epoch-opening
+`PRODUCER_QUARANTINED` append (once per epoch, by definition); every subsequent reject in that epoch
+is write-free.
 
 Audit bounds (replacing the draft's "periodic rejected-count record", which the reviewer
 correctly showed is unbounded over indefinite hostility):
@@ -382,5 +408,5 @@ never against a half-railed or conversion-less app.
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
 2. [x] Human review — INV-7 asymmetry decision (2026-07-11); the 2026-07-12 acceptance was rescinded (see Status).
-3. [ ] Independent cross-model review — **REV-0022 BLOCK** (frozen `25590a7`) → A-1..A-4 → **REV-0024 BLOCK** (frozen `413da38`: A-2/A-3 CLOSED, A-1/A-4 not) → re-remediated (A-1 clause 6 + A-4 invalid budget/rails gate) → **REV-0025 queued** (`work/review/REV-0025/request.md`). Gate clears only on REV-0025 ACCEPT / ACCEPT-WITH-CHANGES.
-4. [ ] WO-0101..0104: RE-GATED 2026-07-14 pending REV-0025. Live enablement is the joint WO-0102+WO-0103+WO-0104 milestone (ingest + atomic conversion + rails; A-4 rails-presence gate enforces the 0104 half). WO-0101's spec output stands as draft input to the remediation.
+3. [x] Independent cross-model review — **REV-0022 BLOCK** → A-1..A-4 → **REV-0024 BLOCK** (A-2/A-3 CLOSED) → re-remediated → **REV-0025 BLOCK** (7 P1s, no A-2/A-3 regression) → Ameen decided D-1/D-2 and **LOCKED the spec 2026-07-14**; remaining items are documented WO-time contracts (see Status). Four staged rounds constitute the independent-review record for the amendment design; REV-0026 withdrawn.
+4. [ ] **Human-gated flip (pending):** mark ADR-009 **Accepted** and **unfreeze WO-0102..0104** — the explicit human action that starts implementation (order-submission surface; not auto-performed). Live enablement remains the joint WO-0102+WO-0103+WO-0104 milestone; each WO's implementation still gets its own independent (code) review.

@@ -67,10 +67,26 @@ A signal is **risk-reducing** iff, evaluated inside the A-2 atomic command (same
 clock): `direction == "sell"` AND
 `operator_qty ≤ (live derived position − outstanding committed sell exposure)`, where
 outstanding committed sell exposure = Σ `target_quantity` of sell intents pending/approved but not
-yet `ORDERED` + Σ remaining quantity of open SELL orders — each commitment counted once, never an
-ordered intent's target AND its order's remaining (`SellIntentStatus.ORDERED` is non-terminal, so a
-50-share ordered sell counts as 50; ADR-009 A-3, Codex rev-3). Two signal sells can never jointly
-oversell via classification. Long-only spine: buys are never risk-reducing.
+yet `ORDERED` + Σ remaining quantity of **every non-terminal LOCAL SELL order** — each commitment
+counted once, never an ordered intent's target AND its order's remaining (`SellIntentStatus.ORDERED`
+is non-terminal, so a 50-share ordered sell counts as 50; ADR-009 A-3, Codex rev-3).
+**"Non-terminal local SELL order" means committed-in-the-store, NOT broker-open only (REV-0025-F P1):
+`CREATED` and `ORDERED`-before-the-monitoring-loop-submits states are already committed exposure in
+this codebase — a local order the broker has not yet seen still holds its shares. Counting only
+broker-open orders would let a first signal sell's unsubmitted order leave its shares available to a
+second approval.** Two signal sells can never jointly oversell via classification. Long-only spine:
+buys are never risk-reducing.
+
+**Multi-exit is explicitly allowed (Ameen decision 2026-07-14, REV-0025-F P1).** A signal sell is
+**not** refused merely because another sell intent/order is already active for the symbol — the
+as-built single-flight-per-symbol behavior is **deliberately relaxed** for signal-originated exits.
+The **only** ceiling is the combined-exposure inequality above: concurrent exits are permitted so
+long as their summed committed exposure never exceeds the live position. WO-0103 must **prove, in
+both stores, that N concurrent signal exits on one symbol never oversell** (each new approval's
+`operator_qty` ≤ position − Σ(all other non-terminal exits)), and that the store's single-flight
+guard is relaxed for this path without corrupting the existing manual/protection exit accounting.
+This is a real relaxation of a store invariant — it is implemented and tested in code (WO-0103),
+not assumed.
 
 Error-direction asymmetry, honored as decided:
 

@@ -2,7 +2,7 @@
 type: Review Request
 rev_id: REV-0026
 title: ADR-009 re-review — REV-0025 BLOCK remediation (D-1 construction-refusal bind, D-2 release-gate, F-002..F-007)
-status: QUEUED   # flip to AWAITING_REVIEW at dispatch; re-freeze commit_range if the branch merges first
+status: WITHDRAWN   # 2026-07-14 — Ameen LOCKED the spec after REV-0025 rather than run a fifth spec-only round; remaining items are WO-time contracts verified against real code + TDD. The REV-0022→0025 packets are the amendment-design review record. This request is retained for provenance only; do NOT dispatch.
 targets: ["ADR-009 (A-1 clause 6, A-4)", "docs/spec/signal-seat/**", "WO-0102/0103/0104", "pkl/architecture/signal-seat.md"]
 human_gated_surfaces: [order-submission, event-log-vocabulary, schema-migration, transport-boundary]
 prior_packet: REV-0025 (verdict BLOCK, 7 P1s — this packet verifies their closure)
