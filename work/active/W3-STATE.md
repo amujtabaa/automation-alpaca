@@ -44,6 +44,23 @@ in-flight: NOTHING — remediation wave complete. WO-0028, WO-0024(amended), WO-
   refuses-while-live/sweeps-staged/conserves (ADR-010 §3 amended, INV-077 amended); memory
   _atomic envelope snapshot; or-True tautology dead, 14/14 + 9 more mutation-checks killed.
 awaiting:
+  - REV-0023 PHASE A2 (internal adversarial review of the ASSEMBLED delta f092ca7..HEAD,
+    26-agent ultracode workflow) DONE — DREW BLOOD. 10 CONFIRMED findings survive the green gate
+    (packet: work/review/REV-0023/phase-a2.md). Headline: **1 P0 (completeness-0)** — the
+    single-ACTIVE mandate is scoped per sell_intent_id, NOT per symbol, and close_session orphans
+    an ACTIVE envelope by EXPIRing its (session-stamped, APPROVED-not-ORDERED) backing intent →
+    two ACTIVE envelopes for one symbol/position across a session boundary. Reproduced + PINNED
+    strict-xfail on BOTH stores (tests/test_rev0023_phase_a2_pins.py). REACHABILITY (implementer-
+    verified): store-contract-level violation; NOT an active oversell in today's wiring (the
+    automatic intent creators dispatch ORDERED legacy orders, never expired at close; create_sell_intent
+    does not auto-stamp session_id) — becomes live when the envelope-native exit flow is wired.
+    MUST-FIX before T5 merge relies on the single-mandate guarantee. + 5 P1s (concurrency-0 fabricated
+    overfill audit event; spec-0 INV-085 terminal-state overclaim [decision gap]; spec-1 redrive
+    refusal not durably evented; parity-0 redrive drops now=now → wall clock; mutation-0 WO-0025
+    wiring has no killing test) + 3 P2s + 1 P3. Human-gated: P0 fix, concurrency-0/spec-1 (event-log),
+    spec-0 (ADR/INV text). Non-gated (may pin+fix under a WO): parity-0, mutation-0, completeness-1,
+    parity-1, interface-lift-0. Nine non-P0 pins queued for the remediation WO (not yet written —
+    several are gated/decision-gaps and must not be pinned directionally).
   - T4: human runs Codex Phase B (work/review/W3-codex-review-prompt.md, pin f092ca7 — the pin
     PREDATES the remediation; reconciliation scaffold pre-filled at
     work/review/REV-0023/phase-b-reconciliation.md, incl. the recommendation to hand Codex a
