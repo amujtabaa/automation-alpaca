@@ -913,16 +913,25 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
-    def _other_active_envelope_unlocked(
-        self, sell_intent_id: str, *, excluding: str
+    def _other_active_envelope_for_symbol_unlocked(
+        self, symbol: str, *, excluding: str
     ) -> Optional[ExecutionEnvelope]:
-        """Any OTHER envelope of this intent currently ACTIVE (single-ACTIVE
-        invariant probe; the SQLite twin is a partial unique index)."""
+        """Any OTHER envelope for this SYMBOL currently ACTIVE — the per-symbol
+        single-ACTIVE mandate (WO-0032 / REV-0023 P0; the SQLite twin is a
+        partial unique index on ``symbol``).
 
+        Scoped to symbol, NOT ``sell_intent_id``: at most one live selling
+        mandate per symbol/position. A second intent for the same symbol (e.g.
+        across a session boundary that EXPIREd the first intent while its
+        envelope stayed ACTIVE) must not be able to activate a second envelope
+        and double-book the exit — two ACTIVE mandates could each stage a
+        full-size SELL against one position (INV-087)."""
+
+        key = normalize_symbol(symbol)
         for env in self._envelopes.values():
             if (
                 env.id != excluding
-                and env.sell_intent_id == sell_intent_id
+                and env.symbol == key
                 and env.status is EnvelopeStatus.ACTIVE
             ):
                 return env
@@ -1031,13 +1040,13 @@ class InMemoryStateStore(StateStore):
                         f"envelope {env.id} cannot enter ACTIVE: trading "
                         "halted (kill switch engaged)"
                     )
-                clash = self._other_active_envelope_unlocked(
-                    env.sell_intent_id, excluding=env.id
+                clash = self._other_active_envelope_for_symbol_unlocked(
+                    env.symbol, excluding=env.id
                 )
                 if clash is not None:
                     raise EnvelopeTransitionError(
-                        f"envelope {clash.id} is already ACTIVE for intent "
-                        f"{env.sell_intent_id} (single-ACTIVE invariant)"
+                        f"envelope {clash.id} is already ACTIVE for symbol "
+                        f"{env.symbol} (per-symbol single-ACTIVE invariant)"
                     )
             with self._atomic():
                 stored = self._apply_envelope_transition_unlocked(plan)
@@ -1084,16 +1093,16 @@ class InMemoryStateStore(StateStore):
                 assert plan.error is not None
                 raise plan.error
             assert plan.old_envelope is not None and plan.new_envelope is not None
-            # Belt over the planner's braces: no OTHER envelope of the intent
+            # Belt over the planner's braces: no OTHER envelope for the symbol
             # may be ACTIVE while the successor takes over (the old one is
             # leaving ACTIVE inside this same atomic unit).
-            clash = self._other_active_envelope_unlocked(
-                old.sell_intent_id, excluding=old.id
+            clash = self._other_active_envelope_for_symbol_unlocked(
+                old.symbol, excluding=old.id
             )
             if clash is not None:
                 raise EnvelopeTransitionError(
-                    f"envelope {clash.id} is already ACTIVE for intent "
-                    f"{old.sell_intent_id} (single-ACTIVE invariant)"
+                    f"envelope {clash.id} is already ACTIVE for symbol "
+                    f"{old.symbol} (per-symbol single-ACTIVE invariant)"
                 )
             with self._atomic():
                 self._envelopes[plan.old_envelope.id] = plan.old_envelope.model_copy(
@@ -1324,12 +1333,14 @@ class InMemoryStateStore(StateStore):
                 raise OrderIntentBlockedError(
                     "envelope activation refused: trading halted (kill switch engaged)"
                 )
-            intent_id = (stored or draft).sell_intent_id
-            clash = self._other_active_envelope_unlocked(intent_id, excluding=draft.id)
+            symbol = (stored or draft).symbol
+            clash = self._other_active_envelope_for_symbol_unlocked(
+                symbol, excluding=draft.id
+            )
             if clash is not None:
                 raise EnvelopeTransitionError(
-                    f"envelope {clash.id} is already ACTIVE for intent "
-                    f"{intent_id} (single-ACTIVE invariant)"
+                    f"envelope {clash.id} is already ACTIVE for symbol "
+                    f"{symbol} (per-symbol single-ACTIVE invariant)"
                 )
             with self._atomic():
                 if stored is None:

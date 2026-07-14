@@ -51,12 +51,40 @@ allowed_paths: [app/store/core.py, app/store/memory.py, app/store/sqlite.py, tes
 ```
 
 ## Done-when
-- [ ] The Phase-A2 P0 pin flips green (xpass) and is promoted to a hard assertion.
-- [ ] Chosen invariant holds in BOTH stores (dual-store parity test); memory and
+- [x] The Phase-A2 P0 pin flips green and is promoted to a hard assertion.
+- [x] Chosen invariant holds in BOTH stores (dual-store parity test); memory and
       sqlite refuse/allow identically.
-- [ ] A new INV entry records the per-symbol single-ACTIVE guarantee (or the
-      freeze-at-close rule) — invariant text ships with the code.
-- [ ] Mutation-check kills the guard; full gate green; no existing envelope test
-      regressed (or expanded in the same change if semantics shift).
-- [ ] Independent review packet (this is a human-gated surface): queue REV before
-      any beta-relevant milestone relies on it.
+- [x] A new INV entry records the per-symbol single-ACTIVE guarantee.
+- [x] Full gate green; no existing envelope test regressed.
+- [ ] Independent review packet (human-gated surface): queue REV before any
+      beta-relevant milestone relies on it. **STILL OPEN — human/Codex gate.**
+
+## Outcome (2026-07-14) — direction 2(a) per-symbol single-ACTIVE guard (Ameen "go ahead")
+
+Implemented the per-symbol single-ACTIVE guard in BOTH stores; the orphaned
+first envelope keeps working its exit (no freeze-at-close needed — 2b/2c not
+taken), and a redundant/conflicting second mandate for the symbol is refused.
+
+- **memory:** `_other_active_envelope_unlocked(sell_intent_id)` →
+  `_other_active_envelope_for_symbol_unlocked(symbol)`; all three call sites
+  (activation, resume, supersede) pass the envelope's symbol and raise
+  `EnvelopeTransitionError("... already ACTIVE for symbol S (per-symbol
+  single-ACTIVE invariant)")`.
+- **sqlite:** twin `_other_active_envelope_for_symbol_locked` +
+  **schema change** (human-gated, approved): the partial unique index
+  `idx_envelopes_one_active` moved from `ON(sell_intent_id)` to `ON(symbol)
+  WHERE status='active'`, with a `DROP INDEX IF EXISTS` first so a re-init /
+  migrated DB adopts the symbol-scoped index. (A pre-existing DB already holding
+  two active envelopes for one symbol — impossible in today's unwired flow —
+  would need manual cleanup before the index builds; noted for beta.)
+- **INV-087** registered (docs/INVARIANTS.md).
+- **Pins:** `tests/test_rev0023_phase_a2_pins.py` P0 pin FLIPPED GREEN (the
+  session-boundary reproduction now refuses the second activation, exactly one
+  ACTIVE remains); `tests/test_wo0032_per_symbol_mandate.py` (4 tests × 2
+  stores): second-same-symbol refused, different-symbols coexist, supersession
+  within a symbol still permitted, FROZEN→ACTIVE resume not self-blocked.
+- Gate: ruff/format, mypy 64, imports 6/6, full suite exit 0 (breaker-check run
+  b7zjectbu confirmed nothing relied on the old per-intent scoping).
+
+## Status: VERIFIED (code) — independent review gate STILL OPEN (human-gated surface)
+Disposition: RESULT_SUMMARY_KEPT

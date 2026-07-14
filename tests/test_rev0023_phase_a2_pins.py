@@ -1,14 +1,15 @@
 """REV-0023 Phase-A2 internal-review pins (the assembled W3 remediation+WO-0030
 delta, f092ca7..HEAD).
 
-House pattern: each pin is a strict xfail that flips loudly (xpass -> strict
-failure) when the fix lands, so the gate tells us to promote it to a hard
-assertion. Fix NOTHING here — this is review output.
+House pattern: a review pin starts as a strict xfail documenting the defect,
+then is FLIPPED to a hard assertion when the fix lands.
 
-Currently pinned: the one CONFIRMED **P0** (completeness-0). The other nine
-Phase-A2 findings are recorded in ``work/review/REV-0023/phase-a2.md``; their
-pins are queued for the remediation work order (several are human-gated or
-planning-seat decision-gaps and must not be pinned directionally yet).
+The one CONFIRMED **P0** (completeness-0) has been FIXED by WO-0032 (per-symbol
+single-ACTIVE guard, INV-087), so its pin below is now an ordinary green
+regression (the session-boundary reproduction refuses the second activation).
+The other nine Phase-A2 findings are recorded in
+``work/review/REV-0023/phase-a2.md``; the non-gated ones were addressed by
+WO-0033 and the event-log ones by WO-0034.
 
 ------------------------------------------------------------------------------
 P0 — completeness-0: the single-ACTIVE-mandate invariant is scoped per
@@ -54,6 +55,7 @@ from app.models import (
     SellReason,
     SessionType,
 )
+from app.store.base import EnvelopeTransitionError
 
 pytestmark = pytest.mark.anyio
 
@@ -92,17 +94,12 @@ async def _seed_position(store, quantity: int = 100):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="REV-0023 P0 completeness-0: single-ACTIVE mandate is per-intent, "
-    "not per-symbol; close_session orphans an ACTIVE envelope whose intent it "
-    "expires, so two ACTIVE envelopes for one symbol are reachable across a "
-    "session boundary. Fix is human-gated; pin flips when the per-symbol "
-    "invariant is enforced.",
-)
 async def test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary(
     any_store,
 ):
+    # FLIPPED GREEN by WO-0032 (per-symbol single-ACTIVE guard). The scenario
+    # that used to yield two ACTIVE envelopes for one symbol now REFUSES the
+    # second activation while the first is still ACTIVE.
     await any_store.initialize()
     await _seed_position(any_store, 100)
 
@@ -116,11 +113,12 @@ async def test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary
     )
     await any_store.approve_envelope_activation(_draft(si1.id), actor="operator-a")
 
-    # Ordinary end-of-day close: expires si1, leaves the envelope ACTIVE.
+    # Ordinary end-of-day close: expires si1, leaves the envelope ACTIVE (orphan).
     await any_store.close_session()
 
     # Next session, same still-held symbol: dedup is blind (si1 is EXPIRED), so a
-    # fresh intent + a SECOND envelope activate for the same symbol/position.
+    # fresh intent is created — but the per-symbol single-ACTIVE guard now refuses
+    # a SECOND envelope for the symbol while the first is still ACTIVE.
     session2 = await any_store.get_current_session()
     si2 = await any_store.create_sell_intent(
         symbol="AAPL",
@@ -128,15 +126,16 @@ async def test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary
         target_quantity=100,
         session_id=session2.id,
     )
-    await any_store.approve_envelope_activation(_draft(si2.id), actor="operator-a")
+    with pytest.raises(EnvelopeTransitionError):
+        await any_store.approve_envelope_activation(_draft(si2.id), actor="operator-a")
 
     active = [
         e
         for e in await any_store.list_envelopes(symbol="AAPL")
         if e.status is EnvelopeStatus.ACTIVE
     ]
-    # THE INVARIANT any fix must restore: at most one live mandate per symbol.
-    assert len(active) <= 1, (
-        f"two ACTIVE envelopes for one symbol/position: {[e.id for e in active]} "
-        "— overlapping full-size SELL mandates (single-ACTIVE bypass)"
+    # At most one live mandate per symbol — the orphaned env1 keeps working the
+    # exit; a redundant/conflicting second mandate can no longer double-book it.
+    assert len(active) == 1, (
+        f"expected exactly one ACTIVE envelope for AAPL, got {[e.id for e in active]}"
     )

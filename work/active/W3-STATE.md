@@ -62,8 +62,12 @@ awaiting:
     parity-1, interface-lift-0. Nine non-P0 pins queued for the remediation WO (not yet written —
     several are gated/decision-gaps and must not be pinned directionally).
     REMEDIATION WOs DRAFTED (await human approval; nothing implemented):
-      - WO-0032 (P0 single-mandate-per-symbol) — HUMAN-GATED (order-intent/session-close); fix
-        direction is a human decision (recommend per-symbol single-ACTIVE guard).
+      - WO-0032 (P0 single-mandate-per-symbol) — DONE (Ameen "go ahead", direction 2a). Per-symbol
+        single-ACTIVE guard in BOTH stores (predicate + explicit check + partial unique index moved
+        to ON(symbol) WHERE status='active', DROP-then-CREATE for re-init). INV-087 registered. P0
+        pin FLIPPED GREEN; tests/test_wo0032_per_symbol_mandate.py (4×2). Breaker-check full suite
+        exit 0. Independent-review gate STILL OPEN (human-gated surface — queue REV before a milestone
+        relies on it).
       - WO-0033 (non-gated batch) — DONE 3/5 (Ameen "your call"): parity-0 (redrive now=now,
         H11), parity-1 (sqlite validate-before-session-ensure, H10), mutation-0 (WO-0025 union
         coverage test, mutant-killed) all delivered dual-store, gate green, pushed e2ead56.

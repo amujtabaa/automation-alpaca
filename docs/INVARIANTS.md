@@ -679,6 +679,29 @@ mechanism mutation-checked — including the pin itself, whose first version
 was vacuously green below the floor and was caught by the R4 discovery
 sweep).
 
+**INV-087 — At most one ACTIVE execution envelope per SYMBOL.** The
+single-ACTIVE mandate is scoped per ``symbol``, not per ``sell_intent_id``:
+activation (``approve_envelope_activation``), resume (``transition_envelope``
+→ ACTIVE), and supersession all refuse if any OTHER envelope for the same
+symbol is already ACTIVE — enforced under the store lock/transaction in both
+stores (the SQLite twin is the partial unique index
+``idx_envelopes_one_active ON execution_envelopes(symbol) WHERE
+status='active'``).
+*Why:* REV-0023 Phase-A2 P0. Scoping the guard per intent left a hole: a
+second sell_intent for the same symbol (e.g. across a session boundary that
+EXPIREd the first intent while its envelope stayed ACTIVE, since the envelope
+path never advances its backing intent past APPROVED) could activate a SECOND
+envelope for the same symbol/position. Two ACTIVE mandates could then each
+stage a full-size SELL against one position — a broker-authoritative
+oversell / double-book the single-mandate design exists to prevent. The
+orphaned first envelope keeps working its exit; a redundant second mandate is
+simply refused.
+*Pinned by:*
+`tests/test_rev0023_phase_a2_pins.py::test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary`
+(both stores; the session-boundary reproduction now refuses the second
+activation) and `tests/test_wo0032_per_symbol_mandate.py` (direct guard +
+supersession still permitted).
+
 ---
 
 ## Superseded / historical

@@ -499,9 +499,15 @@ class SqliteStateStore(StateStore):
                 "CREATE INDEX IF NOT EXISTS idx_exec_events_envelope "
                 "ON execution_events(envelope_id)"
             )
+            # WO-0032 / REV-0023 P0: the single-ACTIVE mandate is per SYMBOL, not
+            # per sell_intent_id (a second intent for the same symbol — e.g.
+            # across a session boundary that expired the first intent — must not
+            # be able to double-book the exit). Drop the old intent-scoped index
+            # first so a re-init/migrated DB adopts the symbol-scoped one.
+            conn.execute("DROP INDEX IF EXISTS idx_envelopes_one_active")
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_envelopes_one_active "
-                "ON execution_envelopes(sell_intent_id) WHERE status = 'active'"
+                "ON execution_envelopes(symbol) WHERE status = 'active'"
             )
             self._backfill_fill_events_locked()
             self._backfill_trading_state_events_locked()
@@ -1791,17 +1797,22 @@ class SqliteStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
-    def _other_active_envelope_locked(
-        self, cur: sqlite3.Cursor, sell_intent_id: str, *, excluding: str
+    def _other_active_envelope_for_symbol_locked(
+        self, cur: sqlite3.Cursor, symbol: str, *, excluding: str
     ) -> Optional[str]:
-        """Id of any OTHER envelope of this intent currently ACTIVE (the
+        """Id of any OTHER envelope for this SYMBOL currently ACTIVE (the
         explicit twin of the idx_envelopes_one_active partial unique index,
-        checked first for a clean domain error instead of an IntegrityError)."""
+        checked first for a clean domain error instead of an IntegrityError).
+
+        Scoped to symbol, not sell_intent_id (WO-0032 / REV-0023 P0): at most
+        one live selling mandate per symbol/position — see the InMemoryStateStore
+        twin ``_other_active_envelope_for_symbol_unlocked`` for the rationale
+        (INV-087)."""
 
         row = cur.execute(
-            "SELECT id FROM execution_envelopes WHERE sell_intent_id = ? "
+            "SELECT id FROM execution_envelopes WHERE symbol = ? "
             "AND status = ? AND id != ? LIMIT 1",
-            (sell_intent_id, EnvelopeStatus.ACTIVE.value, excluding),
+            (normalize_symbol(symbol), EnvelopeStatus.ACTIVE.value, excluding),
         ).fetchone()
         return row["id"] if row is not None else None
 
@@ -1926,13 +1937,13 @@ class SqliteStateStore(StateStore):
                             f"envelope {env.id} cannot enter ACTIVE: trading "
                             "halted (kill switch engaged)"
                         )
-                    clash = self._other_active_envelope_locked(
-                        cur, env.sell_intent_id, excluding=env.id
+                    clash = self._other_active_envelope_for_symbol_locked(
+                        cur, env.symbol, excluding=env.id
                     )
                     if clash is not None:
                         raise EnvelopeTransitionError(
-                            f"envelope {clash} is already ACTIVE for intent "
-                            f"{env.sell_intent_id} (single-ACTIVE invariant)"
+                            f"envelope {clash} is already ACTIVE for symbol "
+                            f"{env.symbol} (per-symbol single-ACTIVE invariant)"
                         )
                 stored = self._apply_envelope_transition_locked(cur, plan)
                 # A freeze is never exited by a fill: an envelope fully filled
@@ -1991,13 +2002,13 @@ class SqliteStateStore(StateStore):
                     assert plan.error is not None
                     raise plan.error
                 assert plan.old_envelope is not None and plan.new_envelope is not None
-                clash = self._other_active_envelope_locked(
-                    cur, old.sell_intent_id, excluding=old.id
+                clash = self._other_active_envelope_for_symbol_locked(
+                    cur, old.symbol, excluding=old.id
                 )
                 if clash is not None:
                     raise EnvelopeTransitionError(
-                        f"envelope {clash} is already ACTIVE for intent "
-                        f"{old.sell_intent_id} (single-ACTIVE invariant)"
+                        f"envelope {clash} is already ACTIVE for symbol "
+                        f"{old.symbol} (per-symbol single-ACTIVE invariant)"
                     )
                 # One atomic unit: A leaves ACTIVE and B enters it in the same
                 # transaction — no two-ACTIVE window, and a concurrent second
@@ -2265,14 +2276,14 @@ class SqliteStateStore(StateStore):
                         "envelope activation refused: trading halted "
                         "(kill switch engaged)"
                     )
-                intent_id = (stored or draft).sell_intent_id
-                clash = self._other_active_envelope_locked(
-                    cur, intent_id, excluding=draft.id
+                symbol = (stored or draft).symbol
+                clash = self._other_active_envelope_for_symbol_locked(
+                    cur, symbol, excluding=draft.id
                 )
                 if clash is not None:
                     raise EnvelopeTransitionError(
-                        f"envelope {clash} is already ACTIVE for intent "
-                        f"{intent_id} (single-ACTIVE invariant)"
+                        f"envelope {clash} is already ACTIVE for symbol "
+                        f"{symbol} (per-symbol single-ACTIVE invariant)"
                     )
                 if stored is None:
                     key = normalize_symbol(draft.symbol)
