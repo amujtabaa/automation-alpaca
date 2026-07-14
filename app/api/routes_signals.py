@@ -22,6 +22,8 @@ from pydantic import ValidationError
 
 from app.api.deps import check_signal_rails, get_signal_facade, require_operator
 from app.api.schemas import SignalProposal
+from app.facade.errors import FacadeError
+from app.facade.http_mapping import facade_error_to_http
 from app.facade.signals import SignalFacade
 from app.models import (
     SIGNAL_CONFLICT,
@@ -209,7 +211,14 @@ async def list_signals(
 ) -> list[dict]:
     """Operator-only list of stored signals (default: all; filterable)."""
 
-    records = await facade.list_signals(
-        status=status_filter, symbol=symbol, producer_id=producer_id
-    )
+    # auto-reviewer P2 #4: an out-of-domain symbol filter raises the facade's
+    # InvalidInputError (wrapping normalize_symbol's ValueError) — map it to a
+    # clean 422 via the same facade_error_to_http convention every other
+    # symbol-filtered route uses, never a leaked 500.
+    try:
+        records = await facade.list_signals(
+            status=status_filter, symbol=symbol, producer_id=producer_id
+        )
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
     return [r.model_dump(mode="json") for r in records]

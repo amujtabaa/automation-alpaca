@@ -141,6 +141,103 @@ async def test_malformed_validation_quarantine(any_store):
     assert events[0].payload["cycle_budget_limit"] == _BUDGET
 
 
+async def test_distinct_malformed_content_same_signal_id_is_conflict_not_replay(
+    any_store,
+):
+    # Auto-reviewer P1 #1: the malformed-with-usable-signal_id case. The route
+    # normalizes issued_at/ttl_seconds to None for EVERY malformed body
+    # regardless of what was actually sent, so two requests differing only in
+    # their raw offending content (issued_at="not-date" vs "also-not-date")
+    # must NOT hash identically — that would make the second a silent 200
+    # replay with no new event and no invalid-budget debit, discarding a
+    # distinct attributable fact. Including raw_fields in the hash makes the
+    # second correctly a SIGNAL_DUPLICATE_CONFLICT (audit-only, budget-debiting,
+    # per 02-lifecycle §2's "novel-hash SIGNAL_DUPLICATE_CONFLICT" — NOT a second
+    # SIGNAL_QUARANTINED row: (producer_id, signal_id) stays a true unique key,
+    # 01-schema §3, "works in every signal status").
+    await any_store.initialize()
+    first = await any_store.ingest_signal(
+        **_valid_kwargs(
+            signal_id="sig-x",
+            issued_at=None,
+            ttl_seconds=None,
+            validation_failed=True,
+            raw_fields={"issued_at": "not-date"},
+        )
+    )
+    assert first.outcome == SIGNAL_QUARANTINED_VALIDATION
+
+    second = await any_store.ingest_signal(
+        **_valid_kwargs(
+            signal_id="sig-x",
+            issued_at=None,
+            ttl_seconds=None,
+            validation_failed=True,
+            raw_fields={"issued_at": "also-not-date"},
+        )
+    )
+    assert second.outcome == SIGNAL_CONFLICT  # NOT SIGNAL_REPLAYED (the P1 #1 bug)
+
+    quarantine_events = await _events_of(any_store, ExecutionEventType.SIGNAL_QUARANTINED)
+    assert len(quarantine_events) == 1  # only the first creation
+
+    conflict_events = await _events_of(
+        any_store, ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT
+    )
+    assert len(conflict_events) == 1  # the second distinct fact IS recorded
+    assert conflict_events[0].payload["cycle_budget_limit"] == _BUDGET
+
+    # (producer_id, signal_id) stays a true unique key — one row, the original.
+    rows = await any_store.list_signals()
+    assert len(rows) == 1
+    assert rows[0].raw_fields == {"issued_at": "not-date"}  # untouched by the conflict
+
+
+async def test_identical_malformed_content_same_signal_id_still_idempotent(any_store):
+    # Regression guard: an EXACT resubmission (same raw_fields) of the malformed
+    # body is still a legitimate idempotent replay, not a conflict.
+    await any_store.initialize()
+    kwargs = _valid_kwargs(
+        signal_id="sig-y",
+        issued_at=None,
+        ttl_seconds=None,
+        validation_failed=True,
+        raw_fields={"issued_at": "not-date"},
+    )
+    first = await any_store.ingest_signal(**kwargs)
+    second = await any_store.ingest_signal(**kwargs)
+    assert first.outcome == SIGNAL_QUARANTINED_VALIDATION
+    assert second.outcome == SIGNAL_REPLAYED
+    assert first.record.id == second.record.id
+    assert len(await any_store.list_signals()) == 1
+
+
+async def test_dedupe_key_no_ambiguous_collision_across_signal_ids(any_store):
+    # Auto-reviewer P1 #2: a naive ':'-joined dedupe key makes ('a:b', 'c') and
+    # ('a', 'b:c') both encode to "signal_create:a:b:c" — a validation-quarantine
+    # can carry an arbitrary raw signal_id containing ':'. Both must produce
+    # DISTINCT ExecutionEvent dedupe keys, so both creation events are appended
+    # (not silently swallowed as a false duplicate) and BOTH rows persist.
+    await any_store.initialize()
+    r1 = await any_store.ingest_signal(**_valid_kwargs(producer_id="a:b", signal_id="c"))
+    r2 = await any_store.ingest_signal(**_valid_kwargs(producer_id="a", signal_id="b:c"))
+    assert r1.outcome == SIGNAL_RECEIVED_OK
+    assert r2.outcome == SIGNAL_RECEIVED_OK  # NOT a false duplicate of r1
+    assert r1.record.id != r2.record.id
+
+    received_events = await _events_of(any_store, ExecutionEventType.SIGNAL_RECEIVED)
+    assert len(received_events) == 2  # both creation events actually appended
+
+    rows = await any_store.list_signals()
+    assert len(rows) == 2
+    keys = {(r.producer_id, r.signal_id) for r in rows}
+    assert keys == {("a:b", "c"), ("a", "b:c")}
+
+    # Replay parity: both stores reconstruct both distinct records identically.
+    projected = project_signal_records(await any_store.get_execution_events())
+    assert set(projected) == {("a:b", "c"), ("a", "b:c")}
+
+
 @pytest.mark.parametrize(
     "over,reason",
     [

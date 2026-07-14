@@ -110,6 +110,57 @@ def test_well_typed_out_of_range_ttl_still_freshness_quarantine(client):
     assert body["quarantine_reason"] == "ttl_out_of_range"
 
 
+def test_numeric_issued_at_is_validation_quarantine(client):
+    # Auto-reviewer P2 #5: a lax datetime field accepts a JSON number (Unix
+    # timestamp) and silently produces a normal RECEIVED signal. issued_at must
+    # be an ISO-8601 STRING — a number is a 422 validation-quarantine.
+    r = client.post(
+        "/api/signals", json=_proposal(issued_at=1752505200), headers=_PROD_H
+    )
+    assert r.status_code == 422
+    assert r.json()["status"] == "quarantined"
+    assert r.json()["quarantine_reason"] == "validation"
+
+
+def test_boolean_suggested_quantity_is_validation_quarantine(client):
+    # Auto-reviewer P2 #6: strict-type the advisory numerics — a bool/string
+    # must not be silently coerced into a plausible-looking value.
+    r = client.post(
+        "/api/signals",
+        json=_proposal(suggested_quantity=True),
+        headers=_PROD_H,
+    )
+    assert r.status_code == 422
+    assert r.json()["quarantine_reason"] == "validation"
+
+
+def test_string_suggested_limit_price_is_validation_quarantine(client):
+    r = client.post(
+        "/api/signals",
+        json=_proposal(suggested_limit_price="12.5"),
+        headers=_PROD_H,
+    )
+    assert r.status_code == 422
+    assert r.json()["quarantine_reason"] == "validation"
+
+
+def test_non_ascii_symbol_is_validation_quarantine(client):
+    # Auto-reviewer P2 #7: str.isalpha() accepts Unicode (full-width 'ＡＡＰＬ',
+    # Nordic 'Å') — the documented domain is ASCII [A-Z.]+. A non-ASCII symbol
+    # must be quarantined at ingest, not slip through to a later normalization.
+    r = client.post(
+        "/api/signals", json=_proposal(symbol="ＡＡＰＬ"), headers=_PROD_H
+    )
+    assert r.status_code == 422
+    assert r.json()["quarantine_reason"] == "validation"
+
+
+def test_nordic_non_ascii_symbol_is_validation_quarantine(client):
+    r = client.post("/api/signals", json=_proposal(symbol="Å"), headers=_PROD_H)
+    assert r.status_code == 422
+    assert r.json()["quarantine_reason"] == "validation"
+
+
 def test_malformed_naive_datetime_quarantined(client):
     # Naive issued_at (no offset) → 422 recorded as SIGNAL_QUARANTINED.
     r = client.post(
@@ -258,6 +309,13 @@ def test_get_signals_status_query_param_actually_filters(client):
     ).json()
     assert len(quarantined_only) == 1
     assert quarantined_only[0]["signal_id"] == "b"
+
+
+def test_get_signals_bad_symbol_is_422_not_500(client):
+    # Auto-reviewer P2 #4: normalize_symbol's bare ValueError must never leak
+    # as an unmapped 500.
+    r = client.get("/api/signals", params={"symbol": "bad$"}, headers=_OP_H)
+    assert r.status_code == 422
 
 
 def test_get_signals_invalid_status_value_rejected(client):

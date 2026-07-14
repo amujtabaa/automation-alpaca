@@ -14,8 +14,10 @@ from __future__ import annotations
 from typing import Optional, Protocol, runtime_checkable
 
 from app.config import Settings
-from app.models import SignalRecord, SignalStatus
+from app.facade.errors import InvalidInputError
+from app.models import SignalRecord, SignalStatus, utcnow
 from app.store.base import SignalIngestResult, StateStore
+from app.store.core import effective_signal_status
 
 __all__ = ["SignalFacade", "StoreBackedSignalFacade"]
 
@@ -105,11 +107,43 @@ class StoreBackedSignalFacade:
         symbol: Optional[str] = None,
         producer_id: Optional[str] = None,
     ) -> list[SignalRecord]:
-        return await self._store.list_signals(
-            status=status, symbol=symbol, producer_id=producer_id
-        )
+        # P2 #3 — lazy expiry (02-lifecycle rule A4): filter on the EFFECTIVE
+        # status (injected clock), not the raw stored column, so a RECEIVED
+        # record past its expires_at is never presented as actionable ahead of
+        # WO-0104's sweep. The store is queried WITHOUT the status filter (which
+        # would otherwise miss a stored-RECEIVED-but-effectively-EXPIRED row, or
+        # wrongly include it under ?status=received) and the filter is applied
+        # here, in Python, over the effective status.
+        #
+        # P2 #4 — an out-of-domain symbol filter raises normalize_symbol's bare
+        # ValueError inside the store; translate it to InvalidInputError (422)
+        # here rather than letting it leak as an unmapped 500 (mirrors
+        # app.facade.store_backed's identical ValueError -> InvalidInputError
+        # convention for every other symbol-filtered read).
+        try:
+            records = await self._store.list_signals(
+                symbol=symbol, producer_id=producer_id
+            )
+        except ValueError as exc:
+            raise InvalidInputError(str(exc)) from exc
+        now = utcnow()
+        effective = [
+            record.model_copy(
+                update={"status": effective_signal_status(record, now=now)}
+            )
+            for record in records
+        ]
+        if status is not None:
+            effective = [r for r in effective if r.status is status]
+        return effective
 
     async def get_signal(
         self, *, producer_id: str, signal_id: str
     ) -> Optional[SignalRecord]:
-        return await self._store.get_signal(producer_id, signal_id)
+        record = await self._store.get_signal(producer_id, signal_id)
+        if record is None:
+            return None
+        now = utcnow()
+        return record.model_copy(
+            update={"status": effective_signal_status(record, now=now)}
+        )

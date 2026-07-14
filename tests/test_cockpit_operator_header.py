@@ -50,3 +50,13 @@ def test_blank_key_sends_no_header(monkeypatch, capture):
     monkeypatch.setenv("OPERATOR_API_KEY", "   ")
     api_client.get_health()
     assert not capture["headers"]
+
+
+def test_key_is_stripped_before_sending(monkeypatch, capture):
+    # Auto-reviewer P2 #8: the backend strips OPERATOR_API_KEY in load_settings
+    # (app.config._clean); the cockpit must strip too, or surrounding whitespace
+    # in the env value makes every operator route 401 (secrets.compare_digest
+    # is exact-match, not whitespace-tolerant).
+    monkeypatch.setenv("OPERATOR_API_KEY", "  op-secret\n")
+    api_client.get_health()
+    assert capture["headers"]["X-Operator-Key"] == "op-secret"

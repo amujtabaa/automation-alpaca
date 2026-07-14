@@ -3188,6 +3188,9 @@ class SqliteStateStore(StateStore):
             suggested_limit_price=suggested_limit_price,
             thesis=thesis,
             provenance=provenance,
+            # P1 #1: fold the raw offending content into the hash so distinct
+            # malformed bodies with the same signal_id never hash identically.
+            raw_fields=raw_fields,
         )
         payload_hash = signal_canonical_hash(canonical)
         async with self._lock:

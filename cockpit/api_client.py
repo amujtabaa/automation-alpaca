@@ -33,8 +33,13 @@ OPERATOR_KEY_HEADER = "X-Operator-Key"
 
 
 def _operator_headers() -> dict[str, str]:
+    # auto-reviewer P2 #8: strip before sending — the backend strips
+    # OPERATOR_API_KEY in app.config.load_settings (`_clean`), and
+    # secrets.compare_digest is an EXACT match, so surrounding whitespace in the
+    # cockpit's raw env value would make every operator route 401.
     key = os.environ.get("OPERATOR_API_KEY")
-    return {OPERATOR_KEY_HEADER: key} if key and key.strip() else {}
+    stripped = key.strip() if key else ""
+    return {OPERATOR_KEY_HEADER: stripped} if stripped else {}
 
 
 class BackendError(RuntimeError):

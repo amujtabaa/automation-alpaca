@@ -7,6 +7,7 @@ responses that don't map to a single stored entity.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -26,6 +27,11 @@ from app.models import (
     SellIntent,
     SessionRecord,
 )
+
+# ASCII-only ticker domain for SignalProposal.symbol (auto-reviewer P2 #7):
+# str.isalpha() is Unicode-aware and would accept full-width/accented letters
+# that are not in the documented [A-Z.]+ domain (01-schema §1).
+_ASCII_SYMBOL_RE = re.compile(r"[A-Z.]+")
 
 
 class WatchlistCreate(BaseModel):
@@ -154,14 +160,35 @@ class SignalProposal(BaseModel):
     ttl_seconds: int = Field(strict=True)
     symbol: str = Field(min_length=1, max_length=10)
     direction: Literal["buy", "sell"]
-    suggested_quantity: Optional[int] = Field(default=None, gt=0)
+    # strict=True (auto-reviewer P2 #6): the advisory sizing fields are
+    # display-only, but a malformed producer type (bool/numeric-string) must
+    # still be quarantined, not silently rewritten into a plausible-looking
+    # value (`True` -> `1`, `"12.5"` -> `12.5`) before the operator ever sees
+    # the raw offender. Mirrors ``MockCandidateCreate``'s identical strict
+    # convention elsewhere in this file.
+    suggested_quantity: Optional[int] = Field(default=None, gt=0, strict=True)
     suggested_limit_price: Optional[float] = Field(
-        default=None, gt=0, allow_inf_nan=False
+        default=None, gt=0, allow_inf_nan=False, strict=True
     )
     thesis: str = Field(min_length=1, max_length=4000)
     provenance: dict[str, str] = Field(default_factory=dict)
     # Optional, never identity — compared to the credential-derived id by the route.
     producer_id: Optional[str] = None
+
+    @field_validator("issued_at", mode="before")
+    @classmethod
+    def _issued_at_must_be_string(cls, value: object) -> object:
+        # auto-reviewer P2 #5: pydantic's lax datetime coercion accepts a JSON
+        # NUMBER (interpreted as a Unix timestamp) and would silently produce a
+        # normal RECEIVED signal from a numeric issued_at. The wire contract is
+        # an ISO-8601 STRING (01-schema §1); reject any non-string BEFORE
+        # pydantic's own datetime parsing runs, so a numeric/bool issued_at is a
+        # validation-quarantine, not a quietly-accepted timestamp.
+        if not isinstance(value, str):
+            raise ValueError(
+                "issued_at must be an ISO-8601 string, not a number/bool"
+            )
+        return value
 
     @field_validator("issued_at")
     @classmethod
@@ -176,9 +203,15 @@ class SignalProposal(BaseModel):
     @field_validator("symbol")
     @classmethod
     def _symbol_domain(cls, value: str) -> str:
+        # auto-reviewer P2 #7: str.isalpha() is Unicode-aware — it accepts
+        # full-width ('ＡＡＰＬ') and accented ('Å') letters, which are NOT in
+        # the documented ASCII [A-Z.]+ domain (01-schema §1) and would otherwise
+        # slip through ingest validation to be caught (or silently mangled) only
+        # later at the conversion normalization path. An explicit ASCII regex
+        # after uppercasing closes that gap.
         upper = value.strip().upper()
-        if not upper or not all(c.isalpha() or c == "." for c in upper):
-            raise ValueError("symbol must be 1-10 chars of A-Z and '.'")
+        if not upper or not _ASCII_SYMBOL_RE.fullmatch(upper):
+            raise ValueError("symbol must be 1-10 ASCII chars of A-Z and '.'")
         return upper
 
     @field_validator("provenance")

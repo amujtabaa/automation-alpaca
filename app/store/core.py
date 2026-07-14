@@ -2201,6 +2201,29 @@ SIGNAL_TTL_MAX_SECONDS = 86400
 # re-exported here for the store/planner call sites.
 
 
+def signal_dedupe_key(prefix: str, *parts: str) -> str:
+    """Collision-safe composite ``ExecutionEvent.dedupe_key`` (auto-reviewer P1
+    #2). A naive ``":"``-joined key is ambiguous: ``("a:b", "c")`` and
+    ``("a", "b:c")`` both join to ``"a:b:c"`` — and a producer-supplied
+    (including validation-quarantined, never format-checked) ``signal_id`` can
+    itself contain ``":"``, so two genuinely distinct ``(producer_id,
+    signal_id)`` pairs could collide onto ONE dedupe key. That collision is not
+    cosmetic: ``append_execution_event``/``_insert_execution_event`` treat a
+    dedupe-key match as "already appended" and silently drop the SECOND
+    creation event — the second record persists in the read path (a live
+    insert) but never replays back from the event log (replay/live divergence),
+    and any rail/budget fold that keys off the event log undercounts it.
+
+    Each part is length-prefixed (netstring-style: ``"<decimal length>:<part>"``,
+    joined by ``"|"``) — an INJECTIVE encoding: two different tuples of strings
+    always encode to different strings, regardless of any separator characters
+    embedded in a part, because the length prefix pins exactly where each part
+    ends. Used for EVERY signal event dedupe key this module composes."""
+
+    encoded = "|".join(f"{len(part)}:{part}" for part in parts)
+    return f"{prefix}:{encoded}"
+
+
 def signal_canonical_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 over the canonical proposal JSON (dedupe/conflict
     detection). Keys sorted, compact separators, datetimes as ISO-8601 — so an
@@ -2229,12 +2252,26 @@ def build_signal_proposal_payload(
     suggested_limit_price: Optional[float],
     thesis: str,
     provenance: dict[str, str],
+    raw_fields: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """The canonical proposal dict both stores hash (and embed in the
     duplicate-conflict event). Excludes ``producer_id`` (the namespace, not
     content) and any server-computed field, so the hash reflects only what the
     producer sent — identical resend → identical hash (idempotent replay), any
-    change → conflict."""
+    change → conflict.
+
+    ``raw_fields`` (auto-reviewer P1 #1) is the raw offending content of a
+    validation-quarantine (``app.models.SignalRecord.raw_fields`` — the same
+    value, not a second copy). For a MALFORMED-with-usable-signal_id request the
+    route normalizes every unparseable/absent field to ``None`` regardless of
+    what was actually sent, so two structurally-different malformed bodies
+    (e.g. ``issued_at: "not-date"`` vs ``issued_at: "also-not-date"``) would
+    otherwise hash IDENTICALLY on their normalized fields alone — the second
+    would then read as an idempotent 200 replay of the first, silently dropping
+    a distinct attributable fact and never debiting the A-4 invalid budget.
+    Folding ``raw_fields`` into the hash (``None`` for a well-formed proposal,
+    which never changes its hash) makes any distinct malformed content correctly
+    diverge into the existing SIGNAL_DUPLICATE_CONFLICT path instead."""
 
     return {
         "signal_id": signal_id,
@@ -2246,6 +2283,7 @@ def build_signal_proposal_payload(
         "suggested_limit_price": suggested_limit_price,
         "thesis": thesis,
         "provenance": provenance,
+        "raw_fields": raw_fields,
     }
 
 
@@ -2260,6 +2298,31 @@ class SignalFreshness:
     detected_by: Optional[str]  # "ingest" for DOA expiry
     ttl_nulled: bool  # ttl_out_of_range → store ttl_seconds NULL + raw_fields
     raw_fields: Optional[dict[str, str]]
+
+
+def effective_signal_status(record: SignalRecord, *, now: datetime) -> SignalStatus:
+    """Lazy expiry at read (02-lifecycle rule A4; auto-reviewer P2 #3): a
+    RECEIVED record whose ``expires_at`` has already elapsed is EFFECTIVELY
+    ``EXPIRED`` even before WO-0104's periodic sweep durably transitions it.
+    ``GET /api/signals`` (and the future WO-0103 approve path) must treat
+    ``now >= expires_at`` as EXPIRED regardless of the stored status — the
+    operator panel must never present a stale thesis as still actionable.
+
+    Pure and read-only: it returns the EFFECTIVE status for display, never
+    mutates the record or appends an event (a real transition to EXPIRED is
+    either the durable sweep, WO-0104, or the atomic re-check inside a future
+    approval command, WO-0103). Any non-RECEIVED (already-terminal) status, or a
+    RECEIVED record not yet past its deadline, is returned unchanged. A
+    RECEIVED record with no ``expires_at`` (should not occur — every RECEIVED
+    record has one) is left as-is defensively rather than raising."""
+
+    if (
+        record.status is SignalStatus.RECEIVED
+        and record.expires_at is not None
+        and now >= record.expires_at
+    ):
+        return SignalStatus.EXPIRED
+    return record.status
 
 
 def classify_signal_freshness(
@@ -2355,7 +2418,9 @@ def signal_record_event(
         event_type=event_type,
         source=EventSource.ENGINE,
         authority=EventAuthority.LOCAL,
-        dedupe_key=f"signal_create:{record.producer_id}:{record.signal_id}",
+        dedupe_key=signal_dedupe_key(
+            "signal_create", record.producer_id, record.signal_id
+        ),
         symbol=record.symbol,
         payload=payload,
     )
@@ -2383,9 +2448,11 @@ def signal_duplicate_conflict_event(
         event_type=ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT,
         source=EventSource.ENGINE,
         authority=EventAuthority.LOCAL,
-        dedupe_key=(
-            f"signal_conflict:{existing.producer_id}:"
-            f"{existing.signal_id}:{new_payload_hash}"
+        dedupe_key=signal_dedupe_key(
+            "signal_conflict",
+            existing.producer_id,
+            existing.signal_id,
+            new_payload_hash,
         ),
         symbol=existing.symbol,
         payload={
