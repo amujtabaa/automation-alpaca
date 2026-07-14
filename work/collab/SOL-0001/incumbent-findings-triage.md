@@ -30,6 +30,11 @@ completed partial-bar candidates; regression pins = the two SOLF2 xfails.
 (b) F-003: screen the ACTIVE tape (not just the latest row) before any feature computation;
 invalid rows → fail closed per the envelope's stale-data disposition; pin = SOLF3 xfail.
 (c) F-004: human chooses keep-and-report vs refuse-at-zero; implement + pin.
-Allowed paths: app/sellside/{trails,bars,indicators,policy}.py, tests/**. Non-gated surfaces,
-but touches the frozen-contract module — sequence AFTER the ultracode crosswise verdict so one
-consolidation plan covers both sides' trail mechanisms.
+(d) DRIFT-SVD-2 (from the crosswise run — OUR WO-0029A regression): refused_stale keeps the
+refused action's tranche:true and the policy latch counts it — a benignly-refused tranche
+permanently consumes the entitlement. One-line fix + production-shape pin
+(FINDING-W3-refused-stale-tranche-latch.md).
+Allowed paths: app/sellside/{trails,bars,indicators,policy}.py, app/store/core.py, tests/**.
+Non-gated surfaces, but touches the frozen-contract module — sequence AFTER the ultracode
+crosswise verdict so one consolidation plan covers both sides' trail mechanisms.
+CROSSWISE VERDICT NOW IN (see CROSSWISE-REVIEW.md): WO-0031 is clear to draft formally.
