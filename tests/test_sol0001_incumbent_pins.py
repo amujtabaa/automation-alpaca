@@ -151,13 +151,16 @@ def test_SOLF3_stale_crossed_history_never_drives_features():
     move ref-high/stop/regime — it is dropped before any feature math."""
 
     start = NOW - timedelta(minutes=30)
+    # Price scale ABOVE the 8.00 floor — a below-floor tape returns
+    # BreachSignal for clean AND poisoned alike, making the assertion vacuous
+    # (caught by this WO's own discovery-mutation sweep; recorded honestly).
     clean = [
-        _snap(10 * i, 1.0 + 0.001 * i, 1000.0 + 10 * i, base=start)
+        _snap(10 * i, 10.0 + 0.001 * i, 1000.0 + 10 * i, base=start)
         for i in range(170)
     ]
     poisoned = list(clean)
     poisoned[40] = _snap(
-        400, 10.0, 1400.0, bid=10.2, ask=10.1, stale=True, base=start
+        400, 30.0, 1400.0, bid=30.2, ask=30.1, stale=True, base=start
     )  # stale AND crossed AND wildly off-market
     env = envelope(activated_at=start)
     d_clean = decide(env, clean, now=NOW, history=[])
@@ -168,7 +171,7 @@ def test_SOLF3_stale_crossed_history_never_drives_features():
     ws_poison = getattr(d_poison, "working_stop", None)
     assert ws_clean == ws_poison
     if ws_poison is not None:
-        assert ws_poison < 9.0  # never anchored to the $10 phantom
+        assert ws_poison < 11.0  # never anchored to the $30 phantom
 
 
 # ================================================================== #
