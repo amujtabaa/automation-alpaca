@@ -375,6 +375,27 @@ def _parse_producer_keys(raw: Optional[str]) -> dict[str, str]:
     return dict(parsed)
 
 
+def operator_producer_key_overlap(
+    operator_api_key: Optional[str], signal_producer_keys: dict[str, str]
+) -> bool:
+    """True iff the operator credential equals any configured producer key
+    (ADR-009 A-1 role separation). Constant-time over the WHOLE map (never
+    short-circuited, so no timing signal about which key collides) and byte-safe
+    (UTF-8 bytes, so a non-ASCII secret does not raise). Shared by ``load_settings``
+    AND the ``create_app`` flag-on guard so an INJECTED ``Settings`` (bypassing
+    ``load_settings``) cannot skip the role-separation invariant (auto-review
+    round 10)."""
+
+    if not operator_api_key:
+        return False
+    operator_key_bytes = operator_api_key.encode("utf-8")
+    overlap = False
+    for producer_key in signal_producer_keys:
+        if secrets.compare_digest(operator_key_bytes, producer_key.encode("utf-8")):
+            overlap = True
+    return overlap
+
+
 def load_settings() -> Settings:
     """Build :class:`Settings` from the current environment.
 
@@ -466,18 +487,12 @@ def load_settings() -> Settings:
     # secrets.compare_digest and crash settings load before the intended
     # credential diagnostics — consistent with the request-time byte-safe compare
     # (auto-review round 8).
-    if operator_api_key:
-        operator_key_bytes = operator_api_key.encode("utf-8")
-        overlap = any(
-            secrets.compare_digest(operator_key_bytes, producer_key.encode("utf-8"))
-            for producer_key in signal_producer_keys
+    if operator_producer_key_overlap(operator_api_key, signal_producer_keys):
+        raise ValueError(
+            f"{OPERATOR_API_KEY_ENV} must not equal any key in "
+            f"{SIGNAL_PRODUCER_KEYS_ENV} (ADR-009 A-1 role separation — a "
+            f"producer key must never also authenticate as the operator)"
         )
-        if overlap:
-            raise ValueError(
-                f"{OPERATOR_API_KEY_ENV} must not equal any key in "
-                f"{SIGNAL_PRODUCER_KEYS_ENV} (ADR-009 A-1 role separation — a "
-                f"producer key must never also authenticate as the operator)"
-            )
 
     broker_adapter = os.environ.get(BROKER_ENV, "auto").strip().lower()
     if broker_adapter not in {"auto", "mock", "alpaca"}:

@@ -109,3 +109,25 @@ def test_is_conforming_rails_rejects_non_async_check_ingest():
     assert is_conforming_rails(AsyncRails()) is True
     assert is_conforming_rails(SyncRails()) is False
     assert is_conforming_rails(object()) is False
+
+
+def test_flag_on_injected_settings_with_overlapping_credentials_fails():
+    # Auto-review round 10 (P2): an INJECTED Settings (built directly, bypassing
+    # load_settings' role-separation check) whose operator key equals a producer
+    # key must be REFUSED at construction — otherwise that producer could present
+    # its own secret as X-Operator-Key and pass every operator-only route.
+    from tests.signal_seat_helpers import PermissiveSignalRails
+
+    on = Settings(signal_seat_enabled=True)
+    with pytest.raises(RuntimeError, match="role separation|OPERATOR_API_KEY"):
+        create_app(
+            settings=Settings(
+                signal_seat_enabled=True,
+                operator_api_key="shared-secret",
+                signal_producer_keys={"shared-secret": "vibe"},
+            ),
+            launch_capability=mint_launch_capability(
+                host="127.0.0.1", uds=None, settings=on
+            ),
+            signal_rails=PermissiveSignalRails(),
+        )

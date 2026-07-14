@@ -63,7 +63,7 @@ from app.api.deps import (
 )
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
-from app.config import Settings, load_settings
+from app.config import Settings, load_settings, operator_producer_key_overlap
 from app.facade.signal_rails import is_conforming_rails
 from app.launch_guard import is_sanctioned
 from app.marketdata.factory import create_market_data_service
@@ -129,6 +129,18 @@ def create_app(
             raise RuntimeError(
                 "signal_seat_enabled requires OPERATOR_API_KEY and a non-empty "
                 "SIGNAL_PRODUCER_KEYS map (ADR-009 A-1 credential-presence guard)."
+            )
+        # (2b) A-1 role separation — re-checked HERE, not only in load_settings, so
+        # an INJECTED Settings (constructed directly, bypassing load_settings)
+        # cannot ship an operator key that equals a producer key. Otherwise that
+        # producer could present its own secret as X-Operator-Key and pass every
+        # operator-only route, defeating the producer/operator split (round 10).
+        if operator_producer_key_overlap(
+            settings.operator_api_key, settings.signal_producer_keys
+        ):
+            raise RuntimeError(
+                "signal_seat_enabled forbids OPERATOR_API_KEY equal to any "
+                "SIGNAL_PRODUCER_KEYS entry (ADR-009 A-1 role separation)."
             )
         # (3) A-4 rails-presence — the seat cannot run without finite-audit flood
         # protection. WO-0104 SATISFIES this by wiring the real provider; a fake

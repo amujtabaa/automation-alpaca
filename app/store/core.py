@@ -2536,6 +2536,18 @@ def plan_signal_ingest(
     # malformed, mirroring SignalRecord's nullability contract; advisory fields
     # were already preserved this way).
     if validation_failed:
+        # A well-typed but OUT-OF-RANGE ttl_seconds (positive, yet outside
+        # [MIN, MAX]) is not valid freshness data to surface as normalized typed
+        # data on the quarantine record: null it and record it as an offender,
+        # matching the freshness path's ttl_out_of_range handling (auto-review
+        # round 10). A valid in-range ttl is preserved (round-8 fidelity).
+        record_raw_fields = dict(raw_fields or {})
+        record_ttl = ttl_seconds
+        if record_ttl is not None and not (
+            SIGNAL_TTL_MIN_SECONDS <= record_ttl <= SIGNAL_TTL_MAX_SECONDS
+        ):
+            record_raw_fields.setdefault("ttl_seconds", str(record_ttl))
+            record_ttl = None
         record = SignalRecord(
             producer_id=producer_id,
             signal_id=signal_id,
@@ -2543,10 +2555,10 @@ def plan_signal_ingest(
             symbol=symbol,
             direction=direction,
             issued_at=issued_at,
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=record_ttl,
             expires_at=None,
             received_at=received_at,
-            raw_fields=raw_fields or {},
+            raw_fields=record_raw_fields,
             suggested_quantity=suggested_quantity,
             suggested_limit_price=suggested_limit_price,
             thesis=thesis,

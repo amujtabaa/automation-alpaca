@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timezone
 
 import functools
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -469,6 +470,97 @@ def test_same_id_distinct_valid_issued_at_is_conflict_not_idempotent_replay(clie
     )
     assert r1.status_code == 422
     assert r2.status_code == 409  # distinct payload -> conflict, NOT a 200 replay
+
+
+def test_out_of_range_ttl_on_combined_malformed_is_nulled_and_recorded(client):
+    # Auto-review round 10 (P2): a positive but OUT-OF-RANGE ttl_seconds on a body
+    # quarantined for a DIFFERENT field must be nulled + recorded as an offender,
+    # matching the freshness path's ttl_out_of_range handling — not surfaced as
+    # normalized typed data.
+    r = client.post(
+        "/api/signals",
+        json={
+            "signal_id": "ttl-oor",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 5,  # positive but below the 30s minimum
+            "symbol": "AAPL",
+            "direction": "buy",
+            "thesis": "x",
+            "provenance": {"model": 1},  # the Pydantic offender
+        },
+        headers=_PROD_H,
+    )
+    assert r.status_code == 422
+    body = r.json()
+    assert body["status"] == "quarantined"
+    assert body["ttl_seconds"] is None  # out-of-range nulled
+    assert any("ttl_seconds" in k for k in body["raw_fields"])  # recorded offender
+
+
+def _post_json_bytes(client, body: dict):
+    # A real producer's wire bytes: JSON with the surrogate as a \udXXX escape
+    # (ensure_ascii=True → pure-ASCII bytes). The httpx client's own json=
+    # encoder uses ensure_ascii=False and would itself raise on the surrogate, so
+    # the value can only reach the SERVER via raw content, exactly as over HTTP.
+    return client.post(
+        "/api/signals",
+        content=json.dumps(body).encode("ascii"),
+        headers={**_PROD_H, "Content-Type": "application/json"},
+    )
+
+
+def test_unpaired_surrogate_string_does_not_poison_read_path(client):
+    # Auto-review round 10 (P1): a thesis with an unpaired surrogate ("\ud800") is
+    # rejected by Pydantic (validation branch); the raw value must NOT be copied
+    # onto the stored record, or serializing the 422 response — and later
+    # GET /api/signals?status=quarantined — would raise UnicodeEncodeError (500)
+    # and poison the operator read path.
+    r = _post_json_bytes(
+        client,
+        {
+            "signal_id": "surr",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 300,
+            "symbol": "AAPL",
+            "direction": "buy",
+            "thesis": "\ud800",
+            "provenance": {},
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["status"] == "quarantined"
+    assert r.json()["thesis"] == ""  # surrogate NOT stored on the normalized field
+    # The operator read path must stay 200, not 500 on the poisoned value.
+    listed = client.get(
+        "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+    )
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+
+
+def test_surrogate_in_provenance_value_is_escaped_not_500(client):
+    # The same poisoning via a provenance VALUE must be escaped, not stored raw.
+    r = _post_json_bytes(
+        client,
+        {
+            "signal_id": "surr-prov",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 300,
+            "symbol": "AAPL",
+            "direction": "buy",
+            "thesis": "x",
+            "provenance": {"model": "\ud800", "bad": 1},  # surrogate + a real offender
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["status"] == "quarantined"
+    # Escaped form is UTF-8-safe; the read path does not 500.
+    assert (
+        client.get(
+            "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+        ).status_code
+        == 200
+    )
 
 
 def test_get_signals_status_query_param_actually_filters(client):

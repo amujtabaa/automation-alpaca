@@ -103,9 +103,38 @@ def _as_dict(raw: object) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _is_utf8_safe(value: str) -> bool:
+    """False iff ``value`` cannot round-trip through UTF-8 (e.g. it contains an
+    unpaired surrogate like ``"\\ud800"``). Such a string is a valid Python str
+    that Pydantic parses, but FastAPI's ``ensure_ascii=False`` JSON response —
+    and a SQLite TEXT bind — raise ``UnicodeEncodeError`` on it, so it must never
+    reach a stored/serialized record field (auto-review round 10 P1)."""
+
+    try:
+        value.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _utf8_escape(value: str) -> str:
+    """``value`` if UTF-8-safe, else a backslash-escaped ASCII form (surrogates
+    become literal ``\\udXXX`` text) — so the offending content stays visible on
+    the quarantine record WITHOUT poisoning the operator read path."""
+
+    if _is_utf8_safe(value):
+        return value
+    return value.encode("utf-8", "backslashreplace").decode("ascii")
+
+
 def _raw_str(raw: dict, key: str, default: str) -> str:
+    # Non-string / empty / UTF-8-unsafe (unpaired surrogate) -> the safe default;
+    # the raw offender is preserved in raw_fields (via repr, which is ASCII-safe),
+    # so no information is lost while the stored field stays serializable.
     value = raw.get(key)
-    return value if isinstance(value, str) and value else default
+    if isinstance(value, str) and value and _is_utf8_safe(value):
+        return value
+    return default
 
 
 def _safe_optional_int(raw: dict, key: str) -> Optional[int]:
@@ -175,13 +204,15 @@ def _safe_provenance(raw: dict) -> dict[str, str]:
     construction with an uncaught Pydantic ``ValidationError`` -> 500). A
     non-dict ``provenance`` becomes ``{}``; a non-string VALUE is stringified
     (``str(v)``) rather than dropped, so the offending content is still visible
-    on the quarantined record, not silently discarded."""
+    on the quarantined record, not silently discarded. Every key/value is run
+    through :func:`_utf8_escape` so an unpaired surrogate cannot poison the read
+    path with a 500 (auto-review round 10 P1)."""
 
     value = raw.get("provenance")
     if not isinstance(value, dict):
         return {}
     return {
-        (key if isinstance(key, str) else str(key)): (
+        _utf8_escape(key if isinstance(key, str) else str(key)): _utf8_escape(
             val if isinstance(val, str) else str(val)
         )
         for key, val in value.items()
