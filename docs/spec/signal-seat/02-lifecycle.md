@@ -3,7 +3,7 @@
 ## 1. State machine
 
 ```
-                        ┌────────────► QUARANTINED   (validation | duplicate_conflict | producer_sweep)
+                        ┌────────────► QUARANTINED   (validation | producer_sweep — duplicate-conflicts are audit-only, §2, and never transition a record)
                         │
   POST /signals ──► RECEIVED ─────────► EXPIRED      (TTL lapse via sweep, or lazily at read/approve time)
                         │
