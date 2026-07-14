@@ -64,8 +64,11 @@ awaiting:
     REMEDIATION WOs DRAFTED (await human approval; nothing implemented):
       - WO-0032 (P0 single-mandate-per-symbol) — HUMAN-GATED (order-intent/session-close); fix
         direction is a human decision (recommend per-symbol single-ACTIVE guard).
-      - WO-0033 (non-gated batch: parity-0/mutation-0/completeness-1/parity-1/interface-lift-0) —
-        ready to execute on approval.
+      - WO-0033 (non-gated batch) — DONE 3/5 (Ameen "your call"): parity-0 (redrive now=now,
+        H11), parity-1 (sqlite validate-before-session-ensure, H10), mutation-0 (WO-0025 union
+        coverage test, mutant-killed) all delivered dual-store, gate green, pushed e2ead56.
+        DEFERRED w/ rationale: completeness-1 (correct guard but 13 test-site churn + no live
+        trigger; await Codex severity) and interface-lift-0 (P3 facade -> Any convention).
       - WO-0034 (event-log fidelity: concurrency-0, spec-1) — HUMAN-GATED (event-log truth); also
         routes spec-0 (INV-085 text) + pure-math-0 (magnitude band) to the planning seat.
   - T4: human runs Codex Phase B (work/review/W3-codex-review-prompt.md, pin f092ca7 — the pin
