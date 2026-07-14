@@ -52,9 +52,9 @@ fifth spec-only round).
 >    independent review dispositioned RESOLVED (REV-0003, ACCEPT-WITH-CHANGES). The migration
 >    is substantially terminal; the only known deferral is `filled_quantity` event-sourcing
 >    (status-only flip; separate follow-up), which the signal WOs do not depend on.
-> 3. **Acceptance** — OPEN (rescinded 2026-07-14): REV-0022's formal run returned BLOCK; this
->    document remains Proposed until F-001..F-004 are remediated and the re-review is
->    dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
+> 3. **Acceptance** — **CLEARED 2026-07-14**: the 2026-07-12 acceptance was rescinded after REV-0022's
+>    BLOCK, then F-001..F-004 (and REV-0025's F-001..F-007) were remediated across REV-0022/0024/0025;
+>    Ameen re-accepted ADR-009 post spec-lock (REV-0026 withdrawn — see Status). Not Proposed.
 
 ## Context
 
@@ -109,7 +109,7 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 | INV-8 completion | Signals cannot mark primaries complete; no `SIGNAL_*` event reaches primary/spawn projections. |
 | INV-9 position ≠ acks | The Position Service consumes only deduped fill events; the new `SIGNAL_*` event family is structurally invisible to it, exactly as `SUBMITTED`/`ACCEPTED` are. |
 
-*INV-1..9 rows drafted line-by-line against `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §5` on install (2026-07-11, implementer seat) — to be confirmed by the human + independent review before acceptance.*
+*INV-1..9 rows drafted line-by-line against `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §5` on install (2026-07-11, implementer seat); confirmed by the human + independent review (REV-0022/0024/0025) prior to the 2026-07-14 acceptance.*
 
 ## Options Considered
 
@@ -126,11 +126,12 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 Easier: adding/swapping producers (any agent that can POST JSON); auditing exactly what influenced trading (provenance in the event log); later trust-ladder promotion as a pure policy change behind a stable contract. Harder: the integration is deliberately shallow; every signal costs a human approval in beta (accepted — that *is* the design); one new API surface + event types to test on both storage paths. Revisit: L1 promotion criteria after beta produces approval-volume data.
 
 
-## Amendments — REV-0022 remediation (2026-07-14, PROPOSED, pending human acceptance + re-review)
+## Amendments — REV-0022 remediation (ACCEPTED 2026-07-14, binding ADR text)
 
-Each amendment below remediates one BLOCK finding and is **binding ADR text** once this document
-is accepted — implementation WOs tune numbers only, never semantics. Drafted by the implementer
-seat; nothing here is in force until Ameen accepts and the re-review clears.
+Each amendment below remediates one BLOCK finding and is **binding ADR text** — **in force as of the
+2026-07-14 acceptance** (spec LOCKED; REV-0022/0024/0025 concluded, REV-0026 withdrawn). Implementation
+WOs tune numbers only, never semantics. (Historical: drafted by the implementer seat; the acceptance
+gate that once conditioned these amendments has since cleared — see Status.)
 
 > **Re-remediation (2026-07-14, post-REV-0024).** REV-0024 confirmed **A-2 and A-3 CLOSE** their
 > findings but **A-1 and A-4 did not**: the bind guard was unenforceable through the ASGI seam

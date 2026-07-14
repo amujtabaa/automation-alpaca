@@ -1,8 +1,8 @@
 ---
 type: Module Knowledge
 title: Signal Seat — external signal producers (contract summary)
-status: draft
-authority: medium
+status: active
+authority: high
 owner: Ameen
 last_verified: 2026-07-14
 tags: [signal-seat, architecture, boundaries, safety]
@@ -31,7 +31,7 @@ WO-0103). The three staged packets (REV-0022, REV-0024, REV-0025) are the amendm
 WO-0104; live enablement is the joint milestone; each WO's implementation gets its own code review.**
 ADR-009 (Accepted) is the decision; the
 implementation contract is `docs/spec/signal-seat/` (WO-0101 output — LOCKED 2026-07-14, build against it).
-Implementation: WO-0102 → WO-0103 ∥ WO-0104, all RE-GATED pending remediation + re-review.
+Implementation: WO-0102 → WO-0103 ∥ WO-0104, all **UNFROZEN (status: ready)** 2026-07-14 — WO-0102 activatable first; WO-0103 and WO-0104 start after WO-0102 completes and may run in parallel. Each WO's implementation gets its own independent code review.
 
 ## Rules / facts
 
@@ -95,4 +95,5 @@ formalizes that entry point for machine advisors without moving the human gate. 
 ## Change log
 
 - 2026-07-14: Created as WO-0101's PKL distillation of `docs/spec/signal-seat/`.
-- 2026-07-14 (later): marked draft/medium-authority — REV-0022's formal verdict (BLOCK) rescinded ADR-009's acceptance; page re-promotes only when the re-review clears (Codex PR #6 finding).
+- 2026-07-14 (later): marked draft/medium-authority — REV-0022's formal verdict (BLOCK) rescinded ADR-009's acceptance; page to re-promote when the re-review clears (Codex PR #6 finding).
+- 2026-07-14 (latest): **re-promoted to active/high** — ADR-009 re-ACCEPTED post spec-lock, WO-0102..0104 unfrozen (REV-0022/0024/0025 concluded, REV-0026 withdrawn); the re-promotion condition is satisfied.

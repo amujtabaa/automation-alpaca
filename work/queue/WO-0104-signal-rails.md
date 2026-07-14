@@ -68,7 +68,7 @@ forbidden_paths:
 - [ ] The release route is **operator-only** (same credential split as WO-0103); a producer API key cannot release its own quarantine (negative test).
 - [ ] **`PRODUCER_RELEASED` resets BOTH rails** — the §1 refilling bucket **and** the §1a non-refilling invalid/conflict budget (REV-0024-F P1): a producer quarantined by budget exhaustion, once released, must be able to ingest again **without immediate re-quarantine** — else the human release control is inert. Test asserts a released (budget-exhausted) producer's next ingest is accepted, both stores.
 - [ ] **Release is reachable from the browser** (Codex PR #5 round-6 P2, invariant 11): the cockpit gains a producer-quarantine release control (on WO-0103's signal panel if it exists, else a minimal standalone control) issuing the release intent via the typed API client — the required human action must not be raw-API-only. Thin-client rules apply (no signal state owned client-side; contract 2 stays green).
-- [ ] There is **no interim ingest ceiling to replace** — it was withdrawn (REV-0024-F-004). Instead, the no-unrailed-window guarantee is structural: WO-0102 ships the flag un-enable-able, and **this change wires the full rails and lifts the enablement gate together**, so the endpoint is never live without finite-audit flood protection.
+- [ ] There is **no interim ingest ceiling to replace** — it was withdrawn (REV-0024-F-004). Instead, the no-unrailed-window guarantee is structural: WO-0102 ships the flag un-enable-able, and **this change wires the full rails and thereby SATISFIES the permanent rails-presence guard** (never deletes it — REV-0025-F-005), so the endpoint is never live without finite-audit flood protection.
 
 ## Required tests
 
