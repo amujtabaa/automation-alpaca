@@ -54,7 +54,8 @@ from app.api import (
 )
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
-from app.config import load_settings
+from app.config import Settings, load_settings
+from app.launch_guard import is_sanctioned
 from app.marketdata.factory import create_market_data_service
 from app.monitoring import monitoring_loop, run_startup_reconcile
 from app.store import create_state_store
@@ -64,16 +65,40 @@ from app.strategy_loop import strategy_loop
 _log = logging.getLogger(__name__)
 
 
-def create_app(store: Optional[StateStore] = None) -> FastAPI:
+def create_app(
+    store: Optional[StateStore] = None,
+    *,
+    settings: Optional[Settings] = None,
+    launch_capability: object = None,
+) -> FastAPI:
     """Build the FastAPI app.
 
     If ``store`` is provided (tests), it is used as-is; otherwise the configured
     implementation is built from the environment. A store we create is closed on
-    shutdown; an injected one is left to its owner.
+    shutdown; an injected one is left to its owner. ``settings`` may be injected
+    (tests); otherwise it is loaded from the environment.
+
+    **ADR-009 A-1 clause 6 (REV-0025-F-001) — construction-time bind boundary.**
+    With ``signal_seat_enabled`` on, the app may be built ONLY through the
+    backend-owned launcher (``app/server.py`` / ``python -m app``), which mints a
+    launch-provenance capability and passes it here. Constructing without that
+    capability RAISES — so a bare ``uvicorn app.main:app`` (which imports the
+    module-level ``app`` with no capability) fails at import and never opens a
+    listener. This is the primary control; the request-time 503 guard is
+    defense-in-depth. Flag OFF ⇒ construction is unrestricted (unchanged beta).
     """
 
     owns_store = store is None
-    settings = load_settings()
+    if settings is None:
+        settings = load_settings()
+
+    if settings.signal_seat_enabled and not is_sanctioned(launch_capability):
+        raise RuntimeError(
+            "signal_seat_enabled requires the backend-owned launcher "
+            "(`python -m app`); constructing the app without a launch capability "
+            "is unsupported for the enabled seat, so a bare `uvicorn app.main:app` "
+            "cannot serve it (ADR-009 A-1 clause 6)."
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

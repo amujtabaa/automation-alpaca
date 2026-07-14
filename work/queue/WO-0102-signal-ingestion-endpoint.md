@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Signal ingestion endpoint + event-log provenance
-status: ready   # UNFROZEN 2026-07-14 (ADR-009 accepted) — first in sequence, activatable now
+status: active   # WO-0102 underway 2026-07-14 (ADR-009 accepted); first in sequence
 work_order_id: WO-0102
 wave: W4-signal-seat
 model_tier: strong

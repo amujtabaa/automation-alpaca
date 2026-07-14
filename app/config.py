@@ -24,6 +24,7 @@ from typing import Optional
 STATE_STORE_ENV = "STATE_STORE"
 DB_PATH_ENV = "ALPACA_DB_PATH"
 DEV_ROUTES_ENV = "ENABLE_DEV_ROUTES"
+SIGNAL_SEAT_ENABLED_ENV = "SIGNAL_SEAT_ENABLED"
 
 # Phase 4 — Alpaca Paper Adapter + monitoring loop.
 # Credentials are PAPER ONLY (Rules 1-3). There is intentionally no live-key
@@ -142,6 +143,16 @@ class Settings:
     # route stays useful for hand-testing an exact symbol/price/quantity the
     # strategy wouldn't naturally produce — it doesn't remove the need for it.
     enable_dev_routes: bool = True
+
+    # --- Signal Seat (ADR-009, WO-0102) ---------------------------------- #
+    # Master feature flag for the external-signal-producer seat. Default OFF: the
+    # signal routers are not mounted, no auth surface, no store writes possible.
+    # When ON, the app may be built ONLY through the backend-owned launcher's
+    # construction capability (ADR-009 A-1 clause 6) AND requires the full
+    # per-producer rails to be wired (A-4 rails-presence guard) — so it is
+    # structurally un-enable-able until WO-0104 lands. Never enable in a real
+    # environment before that.
+    signal_seat_enabled: bool = False
 
     # --- Phase 4: broker + monitoring loop ------------------------------- #
     # Paper-only credentials. ``None`` when unset (dev/CI). ``repr=False`` keeps
@@ -310,6 +321,13 @@ def load_settings() -> Settings:
         enable_dev_routes = not has_creds
     else:
         enable_dev_routes = dev_raw.strip().lower() not in _FALSEY
+
+    # Signal Seat master flag (ADR-009 / WO-0102). Default OFF; explicit truthy
+    # SIGNAL_SEAT_ENABLED turns it on. Unset/empty/falsey ⇒ False.
+    signal_seat_raw = os.environ.get(SIGNAL_SEAT_ENABLED_ENV)
+    signal_seat_enabled = bool(
+        signal_seat_raw and signal_seat_raw.strip().lower() not in _FALSEY
+    )
 
     broker_adapter = os.environ.get(BROKER_ENV, "auto").strip().lower()
     if broker_adapter not in {"auto", "mock", "alpaca"}:
@@ -483,6 +501,7 @@ def load_settings() -> Settings:
         state_store=state_store,
         db_path=db_path,
         enable_dev_routes=enable_dev_routes,
+        signal_seat_enabled=signal_seat_enabled,
         alpaca_api_key=alpaca_api_key,
         alpaca_api_secret=alpaca_api_secret,
         broker_adapter=broker_adapter,
