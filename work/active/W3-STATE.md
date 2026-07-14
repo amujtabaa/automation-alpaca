@@ -60,7 +60,17 @@ awaiting:
     (yes/no gate).
   - WO-0031 DONE (Sol's two P0s vs the incumbent closed: lifetime-monotone stop INV-086,
     whole-tape screening; probe reported + upsize per adjudication; tranche latch fixed).
-  - WO-0030 (interface lift): APPROVED, next in queue — the ONLY remaining approved
+  - WO-0030 DONE (interface lift): the full envelope API is on the StateStore ABC + facade
+    Protocols; EnvelopeTransitionError relocated to base.py (compat re-export from core.py);
+    the four structural Protocols (_EnvelopeStore/_EnvelopeSeamStore/_EnvelopeStoreOps/
+    _EnvelopeFacadeOps) and every envelope-seam cast deleted. Deliberate-drift PROVEN:
+    dropping OR mistyping a store envelope method now breaks `mypy app/` (was invisible
+    behind cast(Any, ...) before). Interface-only, no behavior change; gate green
+    (ruff/format, mypy 64, imports 6-0, pytest exit 0). ONE test touched — a naming-heuristic
+    guard (test_interface_has_no_fill_mutators) that enumerates "fill"-substring methods;
+    record_envelope_fill is now visible on the ABC and added to its expected set with
+    rationale (NOT a fills-table mutator; the real forbidden-mutator + sqlite-source guards
+    unchanged). Committed 8fa9331 on claude/new-session-gu0z6y. NO remaining approved
     implementation item.
   - T5: ADR-010 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
     blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
@@ -75,6 +85,11 @@ toolchain-incidents (must-read before any destructive git op; never pruned):
     envelope floor so both arms returned BreachSignal and compared equal regardless of the
     mechanism. Always check the assertion can DISTINGUISH the mechanism (run the discovery
     mutation before trusting a new pin).
+  - WO-0030: a background-task "completed (exit code 0)" notification reports the OUTER
+    pipeline's exit, not pytest's — a `pytest ... | tail` pipe masks pytest's real code.
+    pytest here was RED (one failure) while the wrapper said exit 0. Capture the inner code
+    explicitly (`echo EXIT=${PIPESTATUS[0]}`) and read the FAILED/summary line, never trust
+    the wrapper's exit for a piped test run.
 anchor-divergences:
   - W3-README branch naming `feat/execution-envelope/wo-00XX` impossible in git (ref namespace);
     using `feat/execution-envelope-wo-00XX`.
@@ -84,9 +99,9 @@ anchor-divergences:
   - Planning drop (final) ADR-010 copy predates the ratified WO-0016 amendments — in-repo amended
     ADR kept authoritative (drop NOT copied over it), noted in d0b1728's message.
 deferred log (out-of-scope observations):
-  - interface-lift WO needed: app/store/base.py ABC + facade ABCs lack envelope API; FOUR
-    structural-Protocol workarounds accumulated (approval/envelope.py, reconciliation.py,
-    monitoring.py, routes_trading.py) + EnvelopeTransitionError relocation from store/core.py.
+  - [RESOLVED by WO-0030] interface-lift: the envelope API is now on app/store/base.py's
+    StateStore ABC + facade Protocols; the four structural-Protocol workarounds and every
+    envelope-seam cast are deleted; EnvelopeTransitionError relocated to base.py.
   - intent→ORDERED linkage decision (planning seat): envelope fills currently don't advance
     SellIntent lifecycle status.
   - synthetic-fill envelope bridge (reconciliation synthetic fills bypass record_envelope_fill).
@@ -101,16 +116,21 @@ deferred log (out-of-scope observations):
 open decisions:
   - T4 Codex run timing (human executes; scaffold ready).
   - WO-0029 ADR text amendments — yes/no on prepared proposal texts (human gate).
-  - WO-0030 interface-lift approval.
   - intent→ORDERED linkage (planning seat, W4 — decided-deferred in WO-0024 close-out).
   - record_envelope_fill price=None poisons position projection — make price required
     (planning seat; surfaced by WO-0026).
 
 ## W3 sequencing status
 0016 ✅ → 0018 ✅ → 0017 ✅ → 0019a ✅ → 0019 ✅ → 0020 ✅ → 0021 ✅ → 0022 Phase A ✅ →
-REMEDIATION ✅ (0028 → 0024 → 0026 → 0025 → 0027; all pins green) →
+REMEDIATION ✅ (0028 → 0024 → 0026 → 0025 → 0027; all pins green) → 0031 ✅ → 0030 ✅ →
 **Phase B Codex (T4, human)** → WO-0029 re-cut (planning seat) → T5 ADR-010 Accepted + merge
 (human only).
+
+## Branch note (this session)
+WO-0030 was developed on `claude/new-session-gu0z6y` (branched from the feat/execution-envelope
+tip 209709f, per the session's designated-branch instruction), tip commit 8fa9331. The W3
+integration branch feat/execution-envelope is unchanged; a human merge decides how 0030 lands
+relative to it (interface-only, no behavior change — trivially mergeable).
 
 ## Gate/toolchain reference (this container)
 ruff 0.15.20 · mypy 2.2.0 · pytest 9.1.1 · import-linter 2.13 — all == constraints.txt.
