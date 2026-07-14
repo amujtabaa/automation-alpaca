@@ -25,6 +25,26 @@ Durable preference from the repo owner (Ameen) on how to run multi-step work —
 - **Isolate ambiguity instead of blocking on it.** When one thread genuinely needs a human decision,
   set it aside and keep the other threads moving; **batch** the human-only decisions and surface them
   together rather than halting the whole effort for each one.
+- **Route defensive-security work to the current Opus model** (adopted 2026-07-14). Large parts of
+  this repo are defensive security by nature — authentication/credential boundaries, transport/TLS/
+  proxy config, rate-limit / flood / DoS rails, quarantine and kill-switch internals, and the
+  exploit-*prevention* tests that prove them. The prose for this work is dense with attack-shaped
+  language ("bypass the proxy", "expose the key", "flood the log") even though every sentence
+  describes what to **prevent**. On **Fable-family models this reliably false-positives the dual-use
+  safeguard and blocks generation mid-task** (observed 2026-07-14: the ADR-009 A-1 transport
+  amendment was blocked and had to be completed on Opus 4.8). Convention:
+  - Do this class of work — **and the fixes that respond to review findings on it** — on the **most
+    current Opus model** (Opus 4.8 as of 2026-07-14). This is a **friction fix, not a safety
+    relaxation**: every model is bound by the identical `CLAUDE.md` safety core, the same human-gated
+    surfaces, and the same review gates. Routing changes only *which agent writes the defensive
+    documentation/code*, never *what controls apply* — nothing here is a way to get past a gate,
+    only past a content-filter false-positive on defensive material.
+  - **Recognize the class before generating.** Trigger surfaces: auth/credentials/secrets/keys,
+    TLS/transport/proxy/network-boundary, rate-limit/backpressure/quarantine/DoS, kill-switch/flatten
+    internals, and any test whose job is to *demonstrate an attack is refused*. If you are on a
+    Fable-family model and about to enter this class, **STOP and recommend the `/model` switch to the
+    current Opus first** — do not push into the safeguard and lose partial work to a mid-task block.
+    (Work orders on these surfaces carry a `recommended_model` note; honor it at activation.)
 - **Hard limit:** this preference governs *velocity and structure only*. It never overrides the
   `CLAUDE.md` safety core, the invariants, or the human-gated surfaces — those still stop and wait for
   explicit human approval, always. Autonomy means fewer needless pauses, not auto-approving gated actions.

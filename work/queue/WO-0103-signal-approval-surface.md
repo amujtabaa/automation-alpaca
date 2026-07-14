@@ -5,6 +5,7 @@ status: draft
 work_order_id: WO-0103
 wave: W4-signal-seat
 model_tier: strong
+recommended_model: opus   # defensive-security surface (auth/credentials/rate-limit/quarantine) — Fable dual-use safeguard false-positives here; see .claude/rules/repo-primer.md routing preference
 risk: high
 disposition: []
 owner: Ameen (planning) / Claude (implementer)
