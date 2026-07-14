@@ -50,8 +50,11 @@ self-decide if they judge otherwise:
 | `PRODUCER_RELEASED` | operator release — closes the epoch | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
 
 A terminal-at-ingest event (`SIGNAL_QUARANTINED`/`SIGNAL_EXPIRED` written directly at ingest with no
-preceding `SIGNAL_RECEIVED`) carries the same server-computed `received_at`/`expires_at`, so every
-signal replays its timestamps regardless of entry path (Codex rev-3).
+preceding `SIGNAL_RECEIVED`) carries `received_at` always, and `expires_at` **only when the freshness
+fields are valid enough to compute it** (A-3 formula). A validation-quarantine for a missing/naive
+`issued_at` or non-integer `ttl_seconds` cannot compute a deadline — it carries `received_at` + the
+raw offending fields and `expires_at: null`; the record is terminal QUARANTINED and never approvable,
+so it needs none. Replay is exact either way — the payload determines the record (Codex rev-3).
 
 Provenance: all signal events are `EventSource.ENGINE` (or an `OPERATOR`-flavored source if the
 implementer prefers a new member — either way `EventAuthority.LOCAL`; nothing here is

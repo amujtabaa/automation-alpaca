@@ -193,9 +193,11 @@ Approval→intent conversion is **one atomic store command** in both stores:
 - **Risk-reducing classification (executable form; supersedes the position-only draft):** a
   signal is risk-reducing iff `direction == sell` AND
   `operator_qty ≤ (live derived position − outstanding committed sell exposure)`, both terms
-  read under the A-2 lock; `outstanding committed sell exposure` = Σ target quantities of
-  non-terminal sell intents + open SELL order remaining quantities for the symbol. Two signal
-  sells can therefore never jointly oversell via classification. Refusals carry stable reason
+  read under the A-2 lock; `outstanding committed sell exposure` = Σ `target_quantity` of sell
+  intents pending/approved but **not yet `ORDERED`** + Σ remaining quantity of open SELL orders —
+  each commitment counted **once**, never an `ORDERED` intent's target AND its order's remaining
+  (`SellIntentStatus.ORDERED` is non-terminal, so a 50-share ordered sell counts as 50, not 100;
+  Codex rev-3). Two signal sells can therefore never jointly oversell via classification. Refusals carry stable reason
   codes (`TRADING_STATE_REDUCING`, `POSITION_CHANGED`, `TRADING_HALTED`, `KILL_SWITCH`),
   operator-visible, never silent — the recorded INV-7 asymmetry decision stands (conservative
   toward convertibility; the quantity-aware risk gate remains the binding check).

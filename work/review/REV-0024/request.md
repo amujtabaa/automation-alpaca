@@ -4,7 +4,7 @@ rev_id: REV-0024
 title: ADR-009 re-review — REV-0022 BLOCK remediation (amendments A-1..A-4)
 status: QUEUED   # flip to AWAITING_REVIEW at dispatch; re-freeze commit_range if the branch merges first
 targets: [ADR-009 (amendments A-1..A-4), docs/spec/signal-seat/**, WO-0102..0104 gating text]
-human_gated_surfaces: [order-submission]
+human_gated_surfaces: [order-submission, event-log-vocabulary, schema-migration]   # the spec touches all three (06-invariants §Cross-cutting) — Codex rev-3
 prior_packet: REV-0022 (verdict BLOCK, four P1s — this packet exists to verify their closure)
 commit_range: SET-ON-DISPATCH   # branch still under active fix — Codex reviews whatever is pushed when you point it at this request (REV-0023 is the envelope line's packet; 0024 is next free)
 created: 2026-07-14

@@ -66,9 +66,11 @@ new order intent and obeys session control:
 A signal is **risk-reducing** iff, evaluated inside the A-2 atomic command (same lock, injected
 clock): `direction == "sell"` AND
 `operator_qty ≤ (live derived position − outstanding committed sell exposure)`, where
-outstanding committed sell exposure = Σ target quantities of non-terminal sell intents + open
-SELL order remaining quantities for the symbol (ADR-009 A-3 executable form — two signal sells
-can never jointly oversell via classification). Long-only spine: buys are never risk-reducing.
+outstanding committed sell exposure = Σ `target_quantity` of sell intents pending/approved but not
+yet `ORDERED` + Σ remaining quantity of open SELL orders — each commitment counted once, never an
+ordered intent's target AND its order's remaining (`SellIntentStatus.ORDERED` is non-terminal, so a
+50-share ordered sell counts as 50; ADR-009 A-3, Codex rev-3). Two signal sells can never jointly
+oversell via classification. Long-only spine: buys are never risk-reducing.
 
 Error-direction asymmetry, honored as decided:
 
