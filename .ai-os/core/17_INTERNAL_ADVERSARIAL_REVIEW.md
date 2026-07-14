@@ -50,11 +50,18 @@ Every internal review fields AT MINIMUM:
 - **R4 — Discovery mutation sweep.** Besides mutation-checking known-covered code, mutate at
   least one load-bearing line in EVERY in-scope module — including the ones with no dedicated
   tests. A survivor there is not a test bug; it is an unguarded module announcing itself.
+  Before ANY mutation is applied, the working tree must be clean (`git status --porcelain`
+  empty) — commit or stash first; mutation scripts restore via `git checkout` only ever on
+  committed code (PROC-0001 #2: the WO-0017/WO-0028 wipe recurrence, closed at the procedure).
+  And verify the kill-check actually SELECTED tests (collected > 0, or explicit test ids) —
+  a 0-failure result from an empty selection is a no-op, not a survivor (the WO-0029A -k
+  incident).
 - **R5 — Fresh contexts, pinned SHA, inlined invariants.** Critics get the safety-core
   hypotheses verbatim (subagents do not inherit CLAUDE.md), a pinned commit, and no sight of
   each other's findings until the verify phase.
 - **R6 — Adversarial verification.** Every finding faces independent refuters before it is
   reported; every report carries an explicit not-falsified list so coverage is auditable.
+  (Refuters running mutations follow R4's clean-tree + non-empty-selection preconditions.)
 
 ## Right-sizing rules (v1.1 amendment, 2026-07-12 — Ameen directive: high performance, token-efficient, tiered)
 
