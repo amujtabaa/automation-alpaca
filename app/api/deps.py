@@ -141,6 +141,24 @@ def operator_key_valid(operator_key: Optional[str], settings: Settings) -> bool:
     return secrets.compare_digest(operator_key, settings.operator_api_key)
 
 
+def producer_key_valid(producer_key: Optional[str], settings: Settings) -> bool:
+    """Constant-time check that ``producer_key`` matches a CONFIGURED producer
+    (ADR-009 A-1). Presence alone is not validity: the A-1 route-authorization
+    matrix returns 403 only for a *valid* producer key used on the wrong
+    (operator) route — an unknown/garbage ``X-Producer-Key`` is an unrecognized
+    credential and must fall through to 401, exactly like a bad operator key.
+    Iterates the whole map without short-circuiting so timing doesn't leak which
+    key matched (mirrors :func:`resolve_producer_id`)."""
+
+    if producer_key is None:
+        return False
+    matched = False
+    for key in settings.signal_producer_keys:
+        if secrets.compare_digest(producer_key, key):
+            matched = True
+    return matched
+
+
 def get_producer_id(
     x_producer_key: Optional[str] = Header(default=None),
     x_operator_key: Optional[str] = Header(default=None),
@@ -168,7 +186,10 @@ def require_operator(
 
     if operator_key_valid(x_operator_key, settings):
         return DEFAULT_ACTOR
-    if x_producer_key is not None:
+    # A VALID producer key on an operator route is the wrong-role 403; an
+    # unknown/garbage producer key is an unrecognized credential -> 401 (A-1
+    # matrix: invalid credentials are 401, not 403).
+    if producer_key_valid(x_producer_key, settings):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="producer credential is not valid for this operator route",

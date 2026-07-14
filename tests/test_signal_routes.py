@@ -185,7 +185,9 @@ def test_distinct_malformed_no_signal_id_bodies_do_not_collide(client):
     assert r2.status_code == 422
     assert r1.json()["id"] != r2.json()["id"]
 
-    records = client.get("/api/signals", headers=_OP_H).json()
+    records = client.get(
+        "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+    ).json()
     assert len(records) == 2
     signal_ids = {r["signal_id"] for r in records}
     assert len(signal_ids) == 2  # distinct identities, not both "unknown"
@@ -204,7 +206,14 @@ def test_identical_malformed_body_replayed_idempotently(client):
     assert r1.status_code == 422
     assert r2.status_code == 200  # idempotent replay of the same quarantine
     assert r1.json()["id"] == r2.json()["id"]
-    assert len(client.get("/api/signals", headers=_OP_H).json()) == 1
+    assert (
+        len(
+            client.get(
+                "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+            ).json()
+        )
+        == 1
+    )
 
 
 def test_unparseable_body_is_400_no_event(client):
@@ -284,6 +293,29 @@ def test_existing_read_route_requires_operator(client):
     assert client.get("/api/positions", headers=_OP_H).status_code == 200
 
 
+def test_invalid_producer_key_on_operator_route_is_401_not_403(client):
+    # Auto-review round 4 (P2): the A-1 matrix distinguishes an UNKNOWN
+    # credential (401) from a VALID producer key used on the wrong route (403).
+    # A garbage X-Producer-Key is not an authenticated producer, so it must be
+    # 401 — the 403 branch keys off producer-key VALIDITY, not header presence.
+    assert (
+        client.get(
+            "/api/positions", headers={"X-Producer-Key": "not-a-real-key"}
+        ).status_code
+        == 401
+    )
+    # And the signals list route (middleware path) agrees.
+    assert (
+        client.get(
+            "/api/signals", headers={"X-Producer-Key": "not-a-real-key"}
+        ).status_code
+        == 401
+    )
+    # A VALID producer key on the same operator routes stays the wrong-role 403.
+    assert client.get("/api/positions", headers=_PROD_H).status_code == 403
+    assert client.get("/api/signals", headers=_PROD_H).status_code == 403
+
+
 def test_get_signals_status_query_param_actually_filters(client):
     # Auto-reviewer P2 #2: the query param is documented/contracted as `status`
     # (04-auth-and-api.md §2: "parameters: [status: SignalStatus = received, ...]")
@@ -295,8 +327,11 @@ def test_get_signals_status_query_param_actually_filters(client):
         json=_proposal(signal_id="b", ttl_seconds=5),  # -> quarantined (ttl range)
         headers=_PROD_H,
     )
-    all_records = client.get("/api/signals", headers=_OP_H).json()
-    assert len(all_records) == 2
+    # The DEFAULT (no `?status=`) is the RECEIVED actionable queue, per the
+    # LOCKED 04 §2 contract — NOT every status. So a bare list returns only "a".
+    default_records = client.get("/api/signals", headers=_OP_H).json()
+    assert len(default_records) == 1
+    assert default_records[0]["signal_id"] == "a"
 
     received_only = client.get(
         "/api/signals", params={"status": "received"}, headers=_OP_H

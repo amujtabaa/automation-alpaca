@@ -237,7 +237,14 @@ async def ingest_signal(
         # collide distinct malformed bodies onto one store row. Hashes the
         # WHOLE raw body (not just raw_dict), so a non-object body's actual
         # content — not merely "it was an empty view" — drives the identity.
-        signal_id = _raw_str(raw_dict, "signal_id", "")
+        # A WHITESPACE-ONLY signal_id (e.g. "   ") is treated as blank (P2,
+        # auto-review round 4): otherwise two distinct malformed bodies both
+        # carrying "   " would collide onto one (producer_id, signal_id) key —
+        # the second becoming a 409 duplicate-conflict with no new terminal
+        # SIGNAL_QUARANTINED record, silently losing a distinct attributable
+        # fact. Strip before the presence decision AND use the stripped form as
+        # the identity so " x " and "x" never fork either.
+        signal_id = _raw_str(raw_dict, "signal_id", "").strip()
         if not signal_id:
             signal_id = _malformed_identity(raw)
         result = await facade.ingest_signal(
@@ -286,13 +293,23 @@ async def list_signals(
     # query param `status`; alias it explicitly rather than relying on the
     # Python parameter name (which would silently ignore `?status=...` under any
     # internal rename) — an invalid SignalStatus value is FastAPI's normal 422.
-    status_filter: Optional[SignalStatus] = Query(default=None, alias="status"),
+    #
+    # Default is RECEIVED, not None/all (auto-review round 4): the LOCKED wire
+    # contract (04-auth-and-api.md §2) documents `status: SignalStatus = received`.
+    # A default of None returned EVERY status, so a normal panel load (no
+    # `?status=`) mixed terminal quarantined/expired/rejected records into the
+    # actionable queue. Operators fetch other statuses by filtering explicitly.
+    status_filter: SignalStatus = Query(
+        default=SignalStatus.RECEIVED, alias="status"
+    ),
     symbol: Optional[str] = None,
     producer_id: Optional[str] = None,
     _actor: str = Depends(require_operator),
     facade: SignalFacade = Depends(get_signal_facade),
 ) -> list[dict]:
-    """Operator-only list of stored signals (default: all; filterable)."""
+    """Operator-only list of stored signals (default: the RECEIVED actionable
+    queue, per the LOCKED 04-auth-and-api.md §2 contract; filter with `?status=`
+    for quarantined/expired/rejected/etc.)."""
 
     # auto-reviewer P2 #4: an out-of-domain symbol filter raises the facade's
     # InvalidInputError (wrapping normalize_symbol's ValueError) — map it to a

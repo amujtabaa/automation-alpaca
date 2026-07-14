@@ -72,7 +72,26 @@ def test_two_distinct_non_object_bodies_are_distinct_records(client):
     assert r1.status_code == 422
     assert r2.status_code == 422
     assert r1.json()["id"] != r2.json()["id"]
-    records = client.get("/api/signals", headers=_OP_H).json()
+    # Default list is the RECEIVED queue (04 §2); filter for the quarantines.
+    records = client.get(
+        "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+    ).json()
+    assert len(records) == 2
+
+
+def test_whitespace_only_signal_id_is_treated_as_missing(client):
+    # Auto-review round 4 (P2): a whitespace-only "signal_id" must NOT count as a
+    # usable identity — otherwise two distinct malformed bodies both sending
+    # "   " collide onto one (producer_id, signal_id) key, and the second is a
+    # 409 duplicate-conflict with no new terminal quarantine (a lost fact).
+    r1 = _post_raw(client, b'{"signal_id": "   ", "foo": 1}')
+    r2 = _post_raw(client, b'{"signal_id": "   ", "foo": 2}')
+    assert r1.status_code == 422
+    assert r2.status_code == 422  # NOT a 409 conflict / 200 replay
+    assert r1.json()["id"] != r2.json()["id"]  # distinct content-hashed ids
+    records = client.get(
+        "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+    ).json()
     assert len(records) == 2
 
 

@@ -58,6 +58,7 @@ from app.api.deps import (
     OPERATOR_KEY_HEADER,
     PRODUCER_KEY_HEADER,
     operator_key_valid,
+    producer_key_valid,
 )
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
@@ -251,7 +252,13 @@ def create_app(
                     request.headers.get(OPERATOR_KEY_HEADER), settings
                 ):
                     return await call_next(request)
-                if request.headers.get(PRODUCER_KEY_HEADER) is not None:
+                # A VALID producer key on an operator route is the wrong-role
+                # 403; an unknown/garbage X-Producer-Key is an unrecognized
+                # credential -> 401 (A-1 matrix: invalid credentials are 401,
+                # not 403). Presence alone must NOT earn a 403.
+                if producer_key_valid(
+                    request.headers.get(PRODUCER_KEY_HEADER), settings
+                ):
                     return JSONResponse(
                         status_code=403,
                         content={
