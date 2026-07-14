@@ -126,7 +126,7 @@ Diff `5a19410..HEAD` (b772709/tip) before touching anything; Sol coded 41 commit
    - **DRIFT-SVD-3:** `_tranche_filled` records a `refused_stale` (`order_id=None`, `tranche:true`) as an anonymous tranche; a later deduped positive fill of a *different* order then falsely consumes the tranche entitlement — breaks Sol's own MANIFEST design claim. Fix the anonymous-latch fold to require a real order_id.
    - Add refusal-vocabulary tests.
 
-4. **[P2] Adjudicate the protective-exit divergence (SOL-RO-2)** with the human seat: holding the entire position on a zero-volume crash vs the incumbent's 1-share protective probe silently inverts an explicit safety comment. This is a gated-surface decision, not an operator choice.
+4. **[P2] ADJUDICATED (Ameen, 2026-07-12): incumbent behavior but REPORTED** — 1-share probe stays, carries a participation ClampNote, and dynamically sizes up on venue minimum-size rejections (see incumbent-findings-triage.md WO-0031(c) for the full spec). Sol's hold-all is rejected for consolidation; the exit-efficiency comparison still runs in W4. Original item text follows for the record: holding the entire position on a zero-volume crash vs the incumbent's 1-share protective probe silently inverts an explicit safety comment. This is a gated-surface decision, not an operator choice.
 
 5. **[P2] Finalize the packet.** Fill the `<FINAL_SHA256>` placeholder (`b32b8ccd98e7b7a8378b6580eb8d5f3c9a193f412f5f3388e3ea169471ad1e5a`). Deliver the missing **D1 `design-memo.md`** (with the removed/unimplemented-ideas inventory the §3 check requires) and **D3 `tapes.md`** (required for the W4 harness).
 

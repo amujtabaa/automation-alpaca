@@ -33,6 +33,14 @@
 - Phase A findings Codex missed: ___ (weight for future critic-lens design).
 - Codex claims Phase A can refute with existing pins/evidence: ___.
 
+## Required fresh probes in THIS packet (PROC-0001 plan item 3)
+
+INV-078, INV-079, INV-080, INV-085 have never been independently re-probed by any review
+packet (each has only its own pinning test). Phase B reconciliation must include >= 1
+fresh-probe line per ID — a NEW scenario against the invariant statement, not a rerun or a
+mere mention. (Beware the self-citation trap: PROC-0001/result.md quoting the IDs already
+makes a naive `comm -23` scan read clean — the bar is a probe, not a citation.)
+
 ## Gate implications after reconciliation
 
 - ADR-010 acceptance (T5) blockers remaining BEFORE Phase B input: only F8's two ADR text

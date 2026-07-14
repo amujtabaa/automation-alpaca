@@ -63,6 +63,12 @@ awaiting:
   - T5: ADR-010 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
     blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
     are remediated and pinned at tip.
+toolchain-incidents (must-read before any destructive git op; never pruned):
+  - WO-0017 + WO-0028 (RECURRED 11 WOs apart): reflexive `git checkout <file>` wipes
+    UNCOMMITTED WO work. Commit or stash BEFORE any mutation run; restore only committed code.
+  - WO-0029A: a mutation-check "0 failures" from a nested-shell `-k` selector was a NO-OP
+    selection, not a survivor/kill — verify selectors collected >0 tests (or use explicit test
+    ids) before trusting any mutation result.
 anchor-divergences:
   - W3-README branch naming `feat/execution-envelope/wo-00XX` impossible in git (ref namespace);
     using `feat/execution-envelope-wo-00XX`.

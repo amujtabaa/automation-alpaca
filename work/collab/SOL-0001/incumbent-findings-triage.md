@@ -29,7 +29,17 @@ rival restores it from events, an approach worth comparing), and immutable treat
 completed partial-bar candidates; regression pins = the two SOLF2 xfails.
 (b) F-003: screen the ACTIVE tape (not just the latest row) before any feature computation;
 invalid rows → fail closed per the envelope's stale-data disposition; pin = SOLF3 xfail.
-(c) F-004: human chooses keep-and-report vs refuse-at-zero; implement + pin.
+(c) F-004 — **DECIDED by Ameen 2026-07-12: incumbent behavior, but REPORTED** ("protection
+beats participation politeness on the way out" stands; the probe carries a participation
+ClampNote). PLUS: the probe must handle venue minimum-size rejections dynamically — if the
+broker terminally rejects the probe as below minimum order size (possible on low-price
+stocks / venue-specific minimums), the algorithm sizes UP to the smallest accepted quantity,
+still capped by remaining and reported via ClampNote, never silently. Broker research
+(2026-07-12, docs.alpaca.markets): Alpaca equities have NO whole-share minimum above 1 share;
+fractional orders need >= $1 notional, day-TIF, fractionable assets only, non-fractionable
+assets REJECT fractional qty — so the upsize loop starts at 1 whole share and the $1-notional
+floor matters only if a fractional probe path is ever added. Adjudicates SOL-RO-2 the same
+way: Sol's hold-all-at-zero-liquidity is REJECTED for consolidation.
 (d) DRIFT-SVD-2 (from the crosswise run — OUR WO-0029A regression): refused_stale keeps the
 refused action's tranche:true and the policy latch counts it — a benignly-refused tranche
 permanently consumes the entitlement. One-line fix + production-shape pin
