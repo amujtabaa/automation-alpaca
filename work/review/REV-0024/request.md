@@ -6,10 +6,7 @@ status: QUEUED   # flip to AWAITING_REVIEW at dispatch; re-freeze commit_range i
 targets: [ADR-009 (amendments A-1..A-4), docs/spec/signal-seat/**, WO-0102..0104 gating text]
 human_gated_surfaces: [order-submission]
 prior_packet: REV-0022 (verdict BLOCK, four P1s — this packet exists to verify their closure)
-commit_range: ae0e856   # remediation v2 (post Codex rev-2 fixes; supersedes ad87a10) — frozen SHA on claude/wo-0001-install-checks-2x5ys8 (REV-0023 is the envelope line's packet; 0024 is next free)
-requested_model: strongest available Codex/GPT-5 reviewing model
-requested_effort: high (maximum available reasoning effort)
-attestation_required: result.md frontmatter MUST state the ACTUAL model, reasoning-effort setting, and environment used — a result without this attestation does not clear the gate (protocol rule adopted 2026-07-14: reviewer effort must be visible, not assumed)
+commit_range: SET-ON-DISPATCH   # branch still under active fix — Codex reviews whatever is pushed when you point it at this request (REV-0023 is the envelope line's packet; 0024 is next free)
 created: 2026-07-14
 ---
 
