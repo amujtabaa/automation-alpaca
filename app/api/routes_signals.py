@@ -108,29 +108,38 @@ def _raw_str(raw: dict, key: str, default: str) -> str:
 
 
 def _safe_optional_int(raw: dict, key: str) -> Optional[int]:
-    """A well-typed JSON integer, or ``None`` for anything else — explicitly
+    """A well-typed, IN-RANGE JSON integer, or ``None`` for anything else —
     excluding ``bool`` (a ``bool`` is an ``int`` subclass in Python, so a bare
     ``isinstance(x, int)`` would silently let a producer's ``true``/``false``
     through as ``1``/``0``, auto-reviewer P2 #6's own failure mode reapplied to
-    the malformed-record path)."""
+    the malformed-record path), AND excluding non-positive values: the advisory
+    schema constraint is ``gt=0`` (01-schema §1), so a ``0``/negative advisory
+    must be stored as ``None`` on the quarantine record — the offending value is
+    already preserved verbatim in ``raw_fields``, so surfacing it here as
+    normalized typed data would contradict the field's own contract (auto-review
+    round 6)."""
 
     value = raw.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value
 
 
 def _safe_optional_float(raw: dict, key: str) -> Optional[float]:
-    """A well-typed, finite JSON number, or ``None`` for anything else
+    """A well-typed, finite, IN-RANGE JSON number, or ``None`` for anything else
     (bool-excluded, same reasoning as :func:`_safe_optional_int`; NaN/Infinity
     — which Python's ``json`` module accepts as a non-standard extension —
-    excluded too, so a non-finite value can never reach the store)."""
+    excluded too, so a non-finite value can never reach the store; and
+    non-positive excluded per the advisory ``gt=0`` constraint, offender kept in
+    ``raw_fields``, auto-review round 6)."""
 
     value = raw.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     numeric = float(value)
-    return numeric if math.isfinite(numeric) else None
+    if not math.isfinite(numeric) or numeric <= 0:
+        return None
+    return numeric
 
 
 def _safe_provenance(raw: dict) -> dict[str, str]:

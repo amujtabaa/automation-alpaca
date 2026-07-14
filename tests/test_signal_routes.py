@@ -387,6 +387,37 @@ def test_invalid_operator_key_on_producer_route_is_401_not_403(client):
     assert r2.status_code == 403
 
 
+def test_valid_operator_with_stale_producer_header_is_403_not_401(client):
+    # Auto-review round 6 (P2): a VALID operator key on the producer route is the
+    # wrong-role 403 even when a stale/invalid X-Producer-Key is ALSO present —
+    # the earlier `and producer_key is None` guard wrongly downgraded this to 401.
+    r = client.post(
+        "/api/signals",
+        json=_proposal(),
+        headers={**_OP_H, "X-Producer-Key": "stale-junk"},
+    )
+    assert r.status_code == 403
+
+
+def test_out_of_range_advisory_is_nulled_on_quarantine_record_kept_in_raw_fields(
+    client,
+):
+    # Auto-review round 6 (P2): a non-positive advisory (violating the schema's
+    # gt=0) must be stored as None on the quarantine record — the offender is
+    # already preserved verbatim in raw_fields, so surfacing it as normalized
+    # typed data would contradict the field's own contract.
+    r = client.post(
+        "/api/signals",
+        json={**_proposal(signal_id="adv"), "suggested_quantity": 0},
+        headers=_PROD_H,
+    )
+    assert r.status_code == 422
+    body = r.json()
+    assert body["status"] == "quarantined"
+    assert body["suggested_quantity"] is None  # NOT surfaced as 0
+    assert any("suggested_quantity" in k for k in body["raw_fields"])  # kept verbatim
+
+
 def test_get_signals_status_query_param_actually_filters(client):
     # Auto-reviewer P2 #2: the query param is documented/contracted as `status`
     # (04-auth-and-api.md §2: "parameters: [status: SignalStatus = received, ...]")

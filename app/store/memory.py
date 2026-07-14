@@ -2105,6 +2105,12 @@ class InMemoryStateStore(StateStore):
         producer_id: Optional[str] = None,
     ) -> list[SignalRecord]:
         norm_symbol = normalize_symbol(symbol) if symbol is not None else None
+        if status is not None:
+            # Dual-store parity (AIR-009): the SQLite path validates the status
+            # filter via require_status_enum; the memory path must reject a raw
+            # non-enum status too, not silently return zero rows because an
+            # enum `is not` a bare string (auto-review round 6).
+            require_status_enum(status, SignalStatus, field="status filter")
         async with self._lock:
             out = []
             for rec in self._signals.values():

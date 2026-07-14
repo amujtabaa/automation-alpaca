@@ -186,3 +186,17 @@ async def test_duplicate_conflict_against_expired_signal_echoes_effective_status
         provenance={},
     )
     assert conflict.record.status is SignalStatus.EXPIRED  # NOT "received"
+
+
+# --------------------------------------------------------------------------- #
+# Auto-review round 6 (P2) — dual-store parity (AIR-009): a raw non-enum status
+# filter must raise InvalidStatusError on BOTH stores. The memory path used to
+# silently return zero rows (enum `is not` a bare string); the SQLite path
+# already validated via require_status_enum.
+# --------------------------------------------------------------------------- #
+async def test_list_signals_raw_string_status_rejected_on_both_stores(any_store):
+    from app.store.base import InvalidStatusError
+
+    await any_store.initialize()
+    with pytest.raises(InvalidStatusError):
+        await any_store.list_signals(status="received")  # raw string, not enum

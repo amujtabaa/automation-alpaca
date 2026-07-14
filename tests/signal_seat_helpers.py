@@ -60,9 +60,18 @@ def build_flag_on_app(
     """Construct a flag-on app via the sanctioned test seam. Toggles let a test
     prove a guard fires (``with_capability=False`` / ``with_rails=False``)."""
 
+    resolved_settings = settings if settings is not None else flag_on_settings()
     return create_app(
         store=store if store is not None else InMemoryStateStore(),
-        settings=settings if settings is not None else flag_on_settings(),
-        launch_capability=mint_launch_capability() if with_capability else None,
+        settings=resolved_settings,
+        # mint is now bind-bound (round-6): the test seam asserts a proxy-private
+        # loopback bind, exactly as the sanctioned launcher does.
+        launch_capability=(
+            mint_launch_capability(
+                host="127.0.0.1", uds=None, settings=resolved_settings
+            )
+            if with_capability
+            else None
+        ),
         signal_rails=(rails or PermissiveSignalRails()) if with_rails else None,
     )

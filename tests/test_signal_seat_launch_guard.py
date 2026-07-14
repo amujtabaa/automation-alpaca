@@ -41,9 +41,27 @@ def test_flag_on_capability_only_but_no_credentials_fails():
     with pytest.raises(RuntimeError, match="OPERATOR_API_KEY|credential"):
         create_app(
             settings=Settings(signal_seat_enabled=True),
-            launch_capability=mint_launch_capability(),
+            launch_capability=mint_launch_capability(
+                host="127.0.0.1", uds=None, settings=Settings(signal_seat_enabled=True)
+            ),
             signal_rails=object(),
         )
+
+
+def test_mint_refuses_non_proxy_private_bind_under_flag():
+    # Round-6 hardening (REV-0025-F-001): a capability is bind-bound — minting for
+    # a non-loopback/non-UDS bind under the flag RAISES, so an alternate in-repo
+    # launcher cannot mint while claiming a 0.0.0.0 bind. A Unix socket or a
+    # loopback host is accepted.
+    on = Settings(signal_seat_enabled=True)
+    with pytest.raises(RuntimeError, match="proxy-private|A-1"):
+        mint_launch_capability(host="0.0.0.0", uds=None, settings=on)
+    assert is_sanctioned(mint_launch_capability(host="127.0.0.1", uds=None, settings=on))
+    assert is_sanctioned(mint_launch_capability(host=None, uds="/tmp/x.sock", settings=on))
+    # Flag OFF ⇒ the bind policy permits any bind (beta dev unchanged).
+    assert is_sanctioned(
+        mint_launch_capability(host="0.0.0.0", uds=None, settings=Settings())
+    )
 
 
 def test_flag_on_with_credentials_but_no_rails_fails():
@@ -63,6 +81,31 @@ def test_capability_is_code_owned_not_forgeable_from_plain_construction():
 
     with pytest.raises(RuntimeError):
         launch_guard._LaunchCapability(object())  # wrong token
-    assert is_sanctioned(mint_launch_capability()) is True
+    assert (
+        is_sanctioned(
+            mint_launch_capability(host="127.0.0.1", uds=None, settings=Settings())
+        )
+        is True
+    )
     assert is_sanctioned(object()) is False
     assert is_sanctioned(None) is False
+
+
+def test_is_conforming_rails_rejects_non_async_check_ingest():
+    # Round-6 (P2): a runtime_checkable Protocol only checks attribute presence,
+    # so a provider with a SYNCHRONOUS check_ingest would pass the A-4 presence
+    # gate and then 500 at `await rails.check_ingest(...)`. The gate must require
+    # check_ingest to be a coroutine function.
+    from app.facade.signal_rails import RailsDecision, is_conforming_rails
+
+    class AsyncRails:
+        async def check_ingest(self, producer_id: str) -> RailsDecision:
+            return RailsDecision(allowed=True)
+
+    class SyncRails:
+        def check_ingest(self, producer_id: str) -> RailsDecision:  # NOT async
+            return RailsDecision(allowed=True)
+
+    assert is_conforming_rails(AsyncRails()) is True
+    assert is_conforming_rails(SyncRails()) is False
+    assert is_conforming_rails(object()) is False

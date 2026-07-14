@@ -19,6 +19,7 @@ wiring, not by this Protocol.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -56,6 +57,16 @@ class SignalRails(Protocol):
 def is_conforming_rails(candidate: object) -> bool:
     """True iff ``candidate`` structurally satisfies :class:`SignalRails` — the
     rails-presence startup guard's check (A-4). Presence only; the real-vs-fake
-    distinction is enforced by the production entrypoint's wiring, never here."""
+    distinction is enforced by the production entrypoint's wiring, never here.
 
-    return isinstance(candidate, SignalRails)
+    A ``runtime_checkable`` Protocol only checks ATTRIBUTE PRESENCE, so a provider
+    whose ``check_ingest`` is a *synchronous* ``def`` would pass — then the
+    body-blind dependency's ``await rails.check_ingest(...)`` raises ``TypeError``
+    (500) on the first producer request instead of failing fast at startup. Since
+    this is the PERMANENT A-4 rails-presence gate, also require ``check_ingest``
+    to be a coroutine function so a non-async provider is rejected at construction
+    (auto-review round 6)."""
+
+    if not isinstance(candidate, SignalRails):
+        return False
+    return inspect.iscoroutinefunction(getattr(candidate, "check_ingest", None))

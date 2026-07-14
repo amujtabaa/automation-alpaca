@@ -153,11 +153,13 @@ def resolve_producer_id(
                 matched = producer_id
     if matched is not None:
         return matched
-    # A VALID operator key on the producer route is the wrong-role 403; an
-    # unknown/garbage operator key (or none) with no producer key is an
-    # unrecognized credential -> 401 (auto-review round 5: validate before 403,
-    # A-1 matrix reserves 403 for a valid opposite-role credential).
-    if operator_key_valid(operator_key, settings) and producer_key is None:
+    # Once no VALID producer key matched, a VALID operator key is the wrong-role
+    # 403 — regardless of whether a stale/invalid X-Producer-Key was ALSO sent
+    # (auto-review round 6: the earlier `and producer_key is None` wrongly
+    # downgraded "valid operator + junk producer header" to 401). An unknown
+    # operator key (or none) falls through to 401. A-1 matrix reserves 403 for a
+    # valid opposite-role credential, 401 for unknown credentials.
+    if operator_key_valid(operator_key, settings):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="operator credential is not valid for POST /api/signals "

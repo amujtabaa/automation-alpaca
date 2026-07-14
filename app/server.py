@@ -26,36 +26,15 @@ import sys
 from typing import Optional
 
 from app.config import Settings, load_settings
-from app.launch_guard import mint_launch_capability
 
-# Loopback hosts a proxy-private backend may bind under an enabled seat (ADR-009
-# A-1). Anything else (0.0.0.0, a routable interface) is refused before serving.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+# The A-1 launch/bind policy (``validate_transport_bind``) + capability minter
+# live in the leaf module ``app.launch_guard`` (single source of truth, no import
+# edge into the app). Re-imported here so ``python -m app`` drives the launch and
+# so ``app.server.validate_transport_bind`` stays a stable public reference.
+from app.launch_guard import mint_launch_capability, validate_transport_bind
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
-
-
-def validate_transport_bind(
-    *, host: Optional[str], uds: Optional[str], settings: Settings
-) -> Optional[str]:
-    """Return an A-1 bind-policy failure reason, or ``None`` if the bind is
-    permitted (pure). With the flag ON, under BOTH ``loopback`` and ``tls_proxy``
-    policies the backend listener must stay proxy-private (loopback host or Unix
-    socket) — a same-network client must never reach the plain-HTTP backend port
-    directly. Flag OFF ⇒ unrestricted (beta dev unchanged)."""
-
-    if not settings.signal_seat_enabled:
-        return None
-    if uds:  # a Unix domain socket is proxy-private by construction
-        return None
-    if host is None or host not in _LOOPBACK_HOSTS:
-        return (
-            f"ADR-009 A-1: signal_seat_enabled requires a proxy-private backend "
-            f"bind (loopback host or Unix socket) under transport policy "
-            f"'{settings.signal_transport_policy}'; refusing to serve on "
-            f"non-loopback bind host={host!r} before opening any listener."
-        )
-    return None
 
 
 def _load_production_rails(settings: Settings) -> object:
@@ -102,7 +81,9 @@ def run(
 
     from app.main import create_app
 
-    capability = mint_launch_capability()
+    capability = mint_launch_capability(
+        host=resolved_host, uds=uds, settings=settings
+    )
     rails = _load_production_rails(settings) if settings.signal_seat_enabled else None
     app = create_app(
         settings=settings, launch_capability=capability, signal_rails=rails
