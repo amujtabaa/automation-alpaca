@@ -16,6 +16,12 @@ from scratch.
 - Before trusting a green test suite, pick a handful of invariants below and
   write a **fresh probe** against them — not a re-run of the linked pinning
   test, which only proves the implementer's own scenario.
+- Probe each invariant over its **observable scope** (entity lifetime, session,
+  restart boundary), varying every free parameter — a pinning test that held a
+  parameter fixed proves the implementation's frame, not the invariant (the
+  SOL-F-002 lesson: "monotone" held per-call but not per-lifetime). And probe
+  **every ingress** the computation trusts, not just the newest one (SOL-F-003:
+  history rows were never screened).
 - When a new blocker/ADR-declared rule is added, add it here in the same
   session, not as a follow-up — an invariant that exists only in an ADR
   paragraph is exactly the drift class this file is meant to close (see X-003:
