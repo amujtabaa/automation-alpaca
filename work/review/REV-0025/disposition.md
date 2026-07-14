@@ -2,12 +2,17 @@
 type: Review Disposition
 rev_id: REV-0025
 verdict_received: BLOCK
-disposition_status: REMEDIATION_DRAFTED   # Ameen's D-1/D-2 decided; all 7 findings + 2 extras applied; queued for REV-0026
+disposition_status: RESOLVED_BY_LOCK   # D-1/D-2 + all 7 findings + 2 extras applied; spec LOCKED; ADR-009 ACCEPTED 2026-07-14 (REV-0026 withdrawn, no fifth spec-only round)
 reviewed_commit: 209496d3812648376920a7dacccea6664eb5def8
 reviewer_model: GPT-5 Codex
-next_packet: REV-0026
+next_packet: none (REV-0026 withdrawn — spec locked + ADR accepted instead)
 date: 2026-07-14
 ---
+
+> **RESOLVED (2026-07-14).** This was the final staged spec review. Its 7 P1s were remediated per
+> Ameen's D-1/D-2 decisions and the remaining items were locked as WO-time contracts; **ADR-009 was
+> then ACCEPTED by Ameen and WO-0102..0104 unfrozen.** REV-0026 was withdrawn — the next review is of
+> real code (per WO). This packet is the closing spec-review record.
 
 # Disposition — REV-0025 (ADR-009 A-1 clause 6 + A-4 re-remediation re-review)
 

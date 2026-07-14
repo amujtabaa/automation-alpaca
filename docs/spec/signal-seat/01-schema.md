@@ -47,10 +47,11 @@ class SignalRecord(_Entity):
     status: SignalStatus
     symbol: str
     direction: str                 # "buy" | "sell"
-    issued_at: datetime
-    ttl_seconds: int
-    expires_at: datetime           # min(received_at + server_max_ttl, issued_at + ttl_seconds) — ADR-009 A-3; persisted, never re-derived
-    received_at: datetime          # injected server clock at ingest (the A-3 anchor)
+    issued_at: Optional[datetime]  # NULL only for a validation-quarantine ON issued_at (missing/naive) — raw offender kept in raw_fields; non-null for every RECEIVED/valid record
+    ttl_seconds: Optional[int]     # NULL only for a validation-quarantine ON ttl_seconds (non-integer/out-of-range) — raw offender kept in raw_fields
+    expires_at: Optional[datetime] # min(received_at + server_max_ttl, issued_at + ttl_seconds) — ADR-009 A-3; persisted, never re-derived. NULL when the freshness fields are too invalid to compute it (terminal validation-quarantine-at-ingest, 02-lifecycle §2)
+    received_at: datetime          # injected server clock at ingest (the A-3 anchor) — ALWAYS present
+    raw_fields: Optional[dict[str, str]]  # the raw offending input for a validation-quarantine (REV-0025-F P1): a malformed issued_at/ttl_seconds is recorded verbatim here so the terminal record is representable and replay-exact, never invented sentinels
     suggested_quantity: Optional[int]
     suggested_limit_price: ResponseSafeFloat
     thesis: str
@@ -66,6 +67,16 @@ class SignalRecord(_Entity):
 
 Unique index / dict key: **`(producer_id, signal_id)`** — never bare `signal_id` (ADR-009;
 cross-producer duplicate ids are distinct signals).
+
+**Terminal validation-quarantine records are representable, never sentinel-invented** (REV-0025-F P1,
+resolves the 01↔02 field-nullability contradiction): the ADR principle is *record malformed-but-
+attributable, don't reject-and-forget* (§1), so an authenticated body whose `issued_at` is missing/
+naive or whose `ttl_seconds` is non-integer/out-of-range **is** persisted as a terminal `QUARANTINED`
+`SignalRecord` — with the offending typed field `NULL` (`issued_at`/`ttl_seconds`), `expires_at` `NULL`
+(uncomputable), and the raw offending input preserved in `raw_fields`. `received_at`, `producer_id`,
+`signal_id`, `record_id`, `payload_hash`, and `quarantine_reason` are always present. Replay is exact
+from the `SIGNAL_QUARANTINED` event (which embeds the same raw proposal, `02-lifecycle §2`); no
+sentinel dates/ints are ever fabricated. A RECEIVED/valid record has all freshness fields non-null.
 
 ## 3. Dedupe and idempotency
 
