@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Signal ingestion endpoint + event-log provenance
-status: draft
+status: ready   # UNFROZEN 2026-07-14 (ADR-009 accepted) — first in sequence, activatable now
 work_order_id: WO-0102
 wave: W4-signal-seat
 model_tier: strong
@@ -14,7 +14,7 @@ created: 2026-07-11
 
 # Work Order: Signal ingestion endpoint + event-log provenance
 
-> **GATED — DO NOT ACTIVATE until the human ADR-009 acceptance flip**: REV-0022→0025 all BLOCK; the amendment design was exhaustively hardened across four staged rounds, and Ameen **LOCKED the spec 2026-07-14** (D-1 construction-time bind refusal; D-2 release/deployment gate; remaining items are WO-time contracts). Gated on the explicit **ADR-009 Proposed→Accepted flip + WO unfreeze** (order-submission surface; not yet performed) and WO-0101's now-LOCKED spec.
+> **READY — ADR-009 ACCEPTED 2026-07-14; UNFROZEN, activatable now (first in sequence).** REV-0022/0024/0025 hardened the design across three staged packets; the spec is LOCKED (D-1 construction-time bind refusal; D-2 release/deployment gate). This is the first WO of the bundle — build it under Fable/TDD against the LOCKED spec (`docs/spec/signal-seat/`); WO-0103 ∥ WO-0104 follow after it completes. Implementation gets its own independent CODE review; the human-gated surfaces in the CLAUDE.md safety core still stop-and-wait per-action.
 > **Enablement is the joint WO-0102 + WO-0103 + WO-0104 milestone** (ADR-009 A-4): this WO ships the **ingestion endpoint + A-1 boundary only** — the **A-2 atomic approval→conversion is WO-0103's** human-gated surface, NOT this WO's (REV-0024-F P1). The flag is structurally un-enable-able until WO-0104's rails satisfy the rails-presence guard, and an enabled seat without WO-0103's conversion path is incoherent (re-opens F-002), so all three co-gate enablement; the flag-on integration tests (route matrix, paced-flood) run at that milestone, not in isolation.
 > Sequencing: 0101 → 0102 (ingest endpoint, flag gated off) → 0104 (rails, satisfies the permanent guard) ∥ 0103 (approval/conversion); 0102+0103+0104 co-gate live enablement.
 

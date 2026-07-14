@@ -1,12 +1,12 @@
 # Signal Seat — Contract Specification (WO-0101)
 
-**Authority:** implements ADR-009 including its **REV-0022 remediation amendments A-1..A-4**
-(drafted 2026-07-14, PROPOSED — pending human acceptance + re-review; the ADR and this spec are
-one reviewable package). Where this spec and ADR-009 disagree, ADR-009 wins and the disagreement
-is a defect in this spec. **Status: LOCKED 2026-07-14 (Ameen) — implementation-ready; the two open
-behavior forks are decided WO-time contracts (atomic epoch-open → WO-0104; multi-exit + local-order
-exposure → WO-0103). ADR-009 remains Proposed pending the explicit human Accepted-flip + WO unfreeze.**
-**Status:** complete spec, design-only — no code ships with this document set.
+**Authority:** implements ADR-009 including its amendments **A-1..A-4** (ACCEPTED 2026-07-14 after
+three staged review packets — REV-0022, REV-0024, REV-0025; the ADR and this spec are one package). Where this spec and ADR-009
+disagree, ADR-009 wins and the disagreement is a defect in this spec. **Status: LOCKED + ADR-009
+ACCEPTED 2026-07-14 (Ameen) — implementation-ready; WO-0102..0104 UNFROZEN (WO-0102 first). The two
+open behavior forks are decided WO-time contracts (atomic epoch-open → WO-0104; multi-exit +
+local-order exposure → WO-0103).**
+**Status:** complete spec, design-only — no code ships with this document set (implementation is the WOs).
 **Implementer contract:** WO-0102 (ingestion), WO-0103 (approval surface + conversion), WO-0104
 (rails) must be implementable from these documents alone, against the as-built tree at `c4271d8`+.
 

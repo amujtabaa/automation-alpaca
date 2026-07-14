@@ -83,9 +83,11 @@ holds a **non-refilling** budget:
   force when a cycle begins is pinned in that durable rail state, so a mid-cycle config bump cannot
   grant extra writes and a mid-cycle reduction cannot retroactively quarantine on replay.
 
-Consequence: append-only attributable-rejection volume per producer per epoch is **≤
-`invalid_budget` events + 2 rail events** (plus the pre-quarantine accepted signals, themselves
-rate-limited) — constant, and finite over indefinite hostility. Test contract (WO-0104): pace
+Consequence: append-only **attributable-rejection** volume per producer per epoch is **≤
+`invalid_budget` events + 2 rail events** — constant, and finite over indefinite hostility.
+**Accepted signals are NOT part of this constant** (they are rate-bounded only and may continue
+indefinitely in an epoch that never quarantines — REV-0025-F P2); the constant/flood assertion is
+scoped to attributable-rejection traffic, never accepted traffic. Test contract (WO-0104): pace
 invalid, novel-conflict, **and dead-on-arrival-expiry** requests at or below the refill rate over
 arbitrarily many windows; assert a constant event-row ceiling and that quarantine opens on budget
 exhaustion — both stores.
@@ -138,12 +140,14 @@ non-refilling invalid/conflict budget (§1a) is debited at step 4 **atomically w
 event append (the §1a linearizable re-check-and-debit — a step-2 pass does not pre-grant a slot) when
 an attributable terminal-at-ingest event is appended — validation quarantine, novel-hash conflict,
 **and dead-on-arrival `SIGNAL_EXPIRED`** (`expires_at ≤ received_at` / skew-based; REV-0024-F P1 —
-omitting expiry here reopens the paced-flood hole) — and its exhaustion opens the epoch on the next
-ingest at step 2. Steps 1–2 reject with zero store writes and zero body
-processing, with exactly one carve-out: the single request that first crosses **either** breach
-threshold — rate-bucket empty (§1) **or** invalid/conflict budget exhausted (§1a) — appends the
-epoch-opening `PRODUCER_QUARANTINED` (once per epoch); all subsequent rejects in the epoch are
-write-free.
+omitting expiry here reopens the paced-flood hole) — and **when that append exhausts the budget it
+co-appends the epoch-opening `PRODUCER_QUARANTINED` in the SAME atomic op** (§1a; Ameen 2026-07-14 —
+supersedes the earlier "epoch opens on the next ingest" timing, which left a zero-budget-but-
+un-quarantined gap where an exhausted producer's RECEIVED signals stayed approvable). Steps 1–2 reject
+with zero store writes and zero body processing, with exactly one carve-out — the single
+epoch-opening `PRODUCER_QUARANTINED` (once per epoch): appended by the rate-bucket-breaching request
+on the rate path, or co-appended by the budget-exhausting step-4 terminal append on the budget path;
+all subsequent rejects in the epoch are write-free.
 
 For any ingest from a quarantined producer, or beyond a rate/budget limit:
 

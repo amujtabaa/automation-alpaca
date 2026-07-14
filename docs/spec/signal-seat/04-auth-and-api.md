@@ -90,11 +90,18 @@ Every router `create_app` (`app/main.py`) mounts, classified. With `signal_seat_
 | `/openapi.json`, `/docs`, `/redoc`, `/docs/oauth2-redirect` (FastAPI auto) | **disabled under the flag** (or operator-only if a deployment needs them) — never public; classified + tested (Codex rev-3) |
 
 **Fail-closed enforcement (WO-0102 test):** a parameterized test introspects the real mounted
-app's route table at runtime; any route **not present in this classification is a test FAILURE**,
-**and each route this table requires must be asserted to EXIST** (not merely classify whatever
-happens to be mounted — REV-0025-F-005/F-007), each against {none, invalid, producer-key,
-operator-key}. A route added later cannot ship unclassified, and a required route silently unmounted
-cannot pass.
+app's route table at runtime. Routes carry one of two obligations, so the disabled-docs option does
+not collide with the existence assertion (REV-0025-F P2):
+- **Required-present routes** (every operator-only sensitive route + the producer route + public
+  health): asserted to **EXIST** and behave per {none, invalid, producer-key, operator-key} — a
+  required route silently unmounted FAILS (not merely "classify whatever is mounted", REV-0025-F-005/F-007).
+- **Auto-docs routes** (`/openapi.json`, `/docs`, `/redoc`, `/docs/oauth2-redirect`): asserted
+  **ABSENT under the disabled option**, OR present-and-operator-only under the deployment option —
+  **never required to exist and never public**. The implementer may take the safer disabled option
+  without re-enabling docs just to satisfy an existence check.
+
+Any route present but **not** in this classification is a test FAILURE — a route added later cannot
+ship unclassified.
 
 ## 2. Endpoints (OpenAPI fragment)
 

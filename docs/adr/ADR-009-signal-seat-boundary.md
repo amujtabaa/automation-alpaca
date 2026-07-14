@@ -1,6 +1,9 @@
 # ADR-009: Signal Seat — External Agentic Signal Producers as Bounded Intent Sources
 
-**Status:** **Proposed** — acceptance of 2026-07-12 **RESCINDED 2026-07-14**: the formal REV-0022
+**Status:** **ACCEPTED 2026-07-14** (Ameen). History — the 2026-07-12 acceptance was **RESCINDED
+2026-07-14**, remediated across three staged review packets (REV-0022, REV-0024, REV-0025 — REV-0023
+belongs to a separate review line, not this chain), and re-accepted 2026-07-14 after the spec
+was locked (details below): the formal REV-0022
 packet (frozen `25590a7`) returned **BLOCK** with four P1 findings (credential/transport boundary,
 non-atomic approval→intent conversion, unbounded/underspecified TTL + classification semantics,
 unbounded audit growth). Amendments A-1..A-4 were drafted; the **REV-0024** re-review (frozen
@@ -10,16 +13,19 @@ refilling-bucket-only audit was unbounded under paced hostility (F-004). Both we
 2026-07-14 per Ameen's decisions (A-1 clause 6 backend-owned launch; A-4 non-refilling invalid
 budget + rails-presence enablement gate). **REV-0025** (frozen `209496d`) returned **BLOCK** (7 P1s,
 no A-2/A-3 regression); Ameen decided its two forks (D-1 construction-time bind refusal; D-2
-release/deployment gate) and, on 2026-07-14, **LOCKED the specification** — the four staged rounds
-(REV-0022→0025) exhaustively hardened the amendment design, and the remaining items are
+release/deployment gate) and, on 2026-07-14, **LOCKED the specification** — the three staged packets
+(REV-0022, REV-0024, REV-0025) exhaustively hardened the amendment design, and the remaining items are
 implementation-semantic (atomic epoch-open, local order states, multi-exit single-flight), decided
 and documented as **WO-time contracts** to be resolved against real code + TDD rather than in further
 spec-only review rounds.
-**GATE (2026-07-14): the spec is LOCKED and implementation-ready; the two open behavior forks are
-decided (see "Locked open-items" below). ADR-009 remains _Proposed_ — the formal Proposed→Accepted
-flip and the WO-0102..0104 unfreeze are a distinct, explicit human-gated action (order-submission
-surface) that has NOT been performed here.** Full record: `work/review/REV-0022/`, `REV-0024/`,
-`REV-0025/` (REV-0026 withdrawn — spec locked instead of a fifth spec-only round).
+**STATUS: ACCEPTED (Ameen, 2026-07-14).** The spec is LOCKED and implementation-ready; the two open
+behavior forks are decided (see "Locked open-items" below). Ameen performed the explicit human-gated
+Proposed→Accepted flip and **unfroze WO-0102..0104** for implementation (order-submission surface —
+accepted deliberately after three staged review packets). Live enablement remains the joint
+WO-0102+WO-0103+WO-0104 milestone; each WO's implementation gets its own independent CODE review; the
+`CLAUDE.md` safety core and human-gated surfaces continue to apply per-action. Full record:
+`work/review/REV-0022/`, `REV-0024/`, `REV-0025/` (REV-0026 withdrawn — spec locked instead of a
+fifth spec-only round).
 
 ### Locked open-items (Ameen decisions 2026-07-14 — implement + test in the named WO, do not re-litigate)
 - **Zero-budget epoch-open (REV-0025-F P1, WO-0104):** the invalid-budget-exhausting terminal append
@@ -29,8 +35,8 @@ surface) that has NOT been performed here.** Full record: `work/review/REV-0022/
   signal exits are allowed, bounded only by the combined-exposure ceiling (which counts every
   non-terminal **local** SELL order, `CREATED`/`ORDERED`-pre-submit included), proven no-oversell in
   both stores.
-**Date:** 2026-07-11 (drafted); accepted 2026-07-12; rescinded 2026-07-14
-**Deciders:** Ameen (human gate). Queues for independent cross-model review before acceptance (ADR amendment per review policy).
+**Date:** 2026-07-11 (drafted); accepted 2026-07-12; rescinded 2026-07-14; re-accepted 2026-07-14 (post-lock)
+**Deciders:** Ameen (human gate). Independent cross-model review completed (three packets: REV-0022, REV-0024, REV-0025; REV-0023 is a separate review line); accepted after spec lock per review policy.
 **Number:** ADR-009 (renumbered on install from planning-seat draft "ADR-010"; 009 is the next free slot after ADR-008).
 
 > **Install note (2026-07-11).** Installed from the Fable-5 planning-seat handoff. Two of the
@@ -366,10 +372,12 @@ correctly showed is unbounded over indefinite hostility):
 - **One summary on epoch close:** `PRODUCER_RELEASED` carries the saturated rejected-count and
   epoch window, and **resets BOTH rails — the §1 refilling bucket AND the §1a non-refilling
   invalid/conflict budget** (REV-0024-F P1: releasing without resetting the budget re-quarantines the
-  producer on its very next ingest, making the human release control inert). Total signal-rail event
-  volume per producer per epoch is therefore a constant (≤ 2 rail events + the ≤ `invalid_budget`
-  attributable-rejection events accrued before the epoch opened + the pre-quarantine accepted
-  signals, themselves rate-limited).
+  producer on its very next ingest, making the human release control inert). The **constant** bound
+  covers only attributable-rejection + rail traffic: ≤ 2 rail events + ≤ `invalid_budget`
+  attributable-rejection events per cycle. **Legitimately accepted signals are NOT part of this
+  constant** — they are rate-bounded only and may continue indefinitely in an epoch that never
+  quarantines (the Option-E scope note; REV-0025-F P2). Flood/Option-E acceptance tests must assert
+  the constant bound over attributable-rejection traffic, never over accepted traffic.
 - Test contract: model-based/long-duration tests assert **constant event-row count** and bounded
   storage under sustained hostile flood — paced at or below the refill rate over arbitrarily many
   windows, not merely a burst that eventually exceeds the rate limit — in both stores.
@@ -409,4 +417,4 @@ never against a half-railed or conversion-less app.
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
 2. [x] Human review — INV-7 asymmetry decision (2026-07-11); the 2026-07-12 acceptance was rescinded (see Status).
 3. [x] Independent cross-model review — **REV-0022 BLOCK** → A-1..A-4 → **REV-0024 BLOCK** (A-2/A-3 CLOSED) → re-remediated → **REV-0025 BLOCK** (7 P1s, no A-2/A-3 regression) → Ameen decided D-1/D-2 and **LOCKED the spec 2026-07-14**; remaining items are documented WO-time contracts (see Status). Four staged rounds constitute the independent-review record for the amendment design; REV-0026 withdrawn.
-4. [ ] **Human-gated flip (pending):** mark ADR-009 **Accepted** and **unfreeze WO-0102..0104** — the explicit human action that starts implementation (order-submission surface; not auto-performed). Live enablement remains the joint WO-0102+WO-0103+WO-0104 milestone; each WO's implementation still gets its own independent (code) review.
+4. [x] **Human-gated flip — DONE (Ameen, 2026-07-14):** ADR-009 marked **Accepted** and WO-0102..0104 **unfrozen** for implementation (order-submission surface). Sequencing: WO-0102 first, then WO-0103 ∥ WO-0104; live enablement is the joint milestone. Each WO's implementation still gets its own independent (code) review, and the `CLAUDE.md` safety core / human-gated surfaces apply per-action.

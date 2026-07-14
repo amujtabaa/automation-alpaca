@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal rails: TTL, staleness, rate limits, producer quarantine"
-status: draft
+status: ready   # UNFROZEN 2026-07-14 (ADR-009 accepted); sequence-gated — start after WO-0102 completes
 work_order_id: WO-0104
 wave: W4-signal-seat
 model_tier: strong
@@ -14,7 +14,7 @@ created: 2026-07-11
 
 # Work Order: Signal rails — TTL, staleness, rate limits, producer quarantine
 
-> **GATED — DO NOT ACTIVATE until the human ADR-009 acceptance flip**: REV-0022→0025 all BLOCK; Ameen **LOCKED the spec 2026-07-14** (remaining items are WO-time contracts). Gated on the explicit **ADR-009 Proposed→Accepted flip + unfreeze** (not yet performed), then WO-0102. NOTE F-003/F-004 land here: server-max-TTL/expiry formula, per-epoch audit bound, **and the non-refilling invalid/conflict budget (REV-0024-F-004)** become ADR text, not WO discretion. **This WO owns the #2 atomic-epoch-open decision (implement + test in code).**
+> **UNFROZEN — ADR-009 ACCEPTED 2026-07-14; sequence-gated: START AFTER WO-0102 completes** (then ∥ WO-0103). REV-0022/0024/0025 hardened the design; the spec is LOCKED. NOTE F-003/F-004 land here: server-max-TTL/expiry formula, per-epoch audit bound, **and the non-refilling invalid/conflict budget (REV-0024-F-004)** are ADR text, not WO discretion. The producer **release** route is human-gated (Complex). **This WO owns the #2 atomic-epoch-open decision (implement + test in code).**
 > **This WO co-gates live enablement with WO-0102 + WO-0103** (ADR-009 A-4): it wires the full rails (rate bucket + non-refilling invalid budget + quarantine epoch + human release) and **satisfies the permanent rails-presence startup guard** (never deletes it — REV-0025-F-005), with the production entrypoint proven to construct the real provider. The flag also needs WO-0103's atomic conversion path present (an enabled seat that can't atomically convert re-opens F-002), enforced as a **release/deployment gate + joint conversion oracle** (Ameen D-2), not a new runtime check — so all three co-gate enablement. The flag-on integration suite (route-authorization matrix + conversion oracle + paced-flood) runs green here. Runs after 0102; may run in parallel with 0103. The producer **release** route is a human-gated action — same Complex treatment as WO-0103.
 
 ## Goal

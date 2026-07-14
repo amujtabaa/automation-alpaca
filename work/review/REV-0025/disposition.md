@@ -145,8 +145,15 @@ All seven findings + the two extra inline items landed in one batch:
 - **Extras** — boundary rejection precedes idempotent replay (01-schema §3); `SIGNAL_APPROVED`
   carries `record_id`.
 
-## Path to clearing the gate
+## Path to clearing the gate — SUPERSEDED (spec locked; ADR-009 accepted)
 
-**REV-0026** re-reviews this batch (`request.md` staged). The gate clears only on an ACCEPT /
-ACCEPT-WITH-CHANGES disposition of REV-0026 — at which point ADR-009 may be marked Accepted and
-WO-0102..0104 unfreeze. ADR-009 stays **Proposed** and the WOs stay **RE-GATED** until then.
+**UPDATE 2026-07-14:** REV-0026 was staged but then **WITHDRAWN** — rather than run a fifth spec-only
+round, Ameen **LOCKED the spec** (the remaining items were implementation-semantic, decided as
+WO-time contracts) and **ACCEPTED ADR-009**, unfreezing WO-0102..0104. So the gate did **not** clear
+via a REV-0026 verdict; it cleared by the human lock+accept decision after the REV-0022/0024/0025
+review record. Do **not** wait on a REV-0026 packet — it does not exist as a live review. See
+`docs/adr/ADR-009-signal-seat-boundary.md` Status, the `SIGNAL-SEAT-SPEC-LOCK` and `ADR-009-ACCEPTED`
+ledger entries, and `work/review/REV-0026/request.md` (status WITHDRAWN).
+
+(Original, now historical: "REV-0026 re-reviews this batch; the gate clears only on an ACCEPT /
+ACCEPT-WITH-CHANGES disposition of REV-0026.")

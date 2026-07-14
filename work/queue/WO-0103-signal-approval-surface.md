@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Signal approval surface (Streamlit) + conversion gate
-status: draft
+status: ready   # UNFROZEN 2026-07-14 (ADR-009 accepted); sequence-gated — start after WO-0102 completes
 work_order_id: WO-0103
 wave: W4-signal-seat
 model_tier: strong
@@ -14,7 +14,7 @@ created: 2026-07-11
 
 # Work Order: Approval surface (Streamlit) + conversion gate
 
-> **GATED — DO NOT ACTIVATE until the human ADR-009 acceptance flip**: REV-0022→0025 all BLOCK; Ameen decided the forks and **LOCKED the spec 2026-07-14** (remaining items are WO-time contracts). This WO is gated on the explicit **ADR-009 Proposed→Accepted flip + unfreeze** (not yet performed), then WO-0102 (this WO's own independent CODE review requirement also stands). NOTE F-002 lands here hardest: conversion must be one dual-store atomic command with crash/interleaving tests. **This WO owns the #5 multi-exit relaxation + local-order exposure decisions (implement + test in code).**
+> **UNFROZEN — ADR-009 ACCEPTED 2026-07-14; sequence-gated: START AFTER WO-0102 completes** (then ∥ WO-0104). REV-0022/0024/0025 hardened the design; the spec is LOCKED. This WO's own independent CODE review requirement stands (approval = order-submission = human-gated, Complex regardless of size). NOTE F-002 lands here hardest: conversion must be one dual-store atomic command with crash/interleaving tests. **This WO owns the #5 multi-exit relaxation + local-order exposure decisions (implement + test in code).**
 > **This WO owns the A-2 atomic approval→conversion — the WO-0103 half of the joint enablement milestone** (ADR-009 A-4, REV-0025-F-005): live enablement is the joint WO-0102+WO-0103+WO-0104 milestone, and the joint mounted-app suite proves **ingest → operator approval → exactly one atomically-linked intent** against the real rails. Enforced as a release/deployment gate + that conversion oracle (Ameen D-2), not a new runtime startup check. **Approval = order submission trigger ⇒ human-gated surface ⇒ Complex classification regardless of size; queues for independent cross-model review before any beta milestone relies on it.** Runs after 0102; may run in parallel with 0104.
 
 ## Goal
