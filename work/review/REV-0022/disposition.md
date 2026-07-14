@@ -39,6 +39,13 @@ result dated 2026-07-11 — `result.md`). Four P1 findings, none yet remediated:
 3. Same change: **ADR-009 acceptance RESCINDED** (status back to Proposed), WO-0102..0104
    re-gated, WO-0101's spec re-marked as draft input to remediation.
 
+## Remediation status
+
+- 2026-07-14: **Amendments A-1..A-4 drafted** into ADR-009 (one per finding), with the spec
+  (`docs/spec/signal-seat/`) and WO-0102..0104 reconciled to them, and Option E (signal-inbox +
+  conversion-outbox) considered and recorded per the reviewer's ask. PROPOSED — awaiting Ameen's
+  approval of the amendment text, then the re-review.
+
 ## Path to clearing the gate
 
 Remediate F-001..F-004 as ADR-009 text amendments + WO tightening (human-approved), then

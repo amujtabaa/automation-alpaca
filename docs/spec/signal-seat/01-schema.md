@@ -12,7 +12,7 @@ spoofable).
 |---|---|---|---|
 | `signal_id` | `str` | 1–64 chars, `[A-Za-z0-9_-]+` | Producer-generated, deterministic (ULID or equivalent). Half of the idempotency key. |
 | `issued_at` | `datetime` (ISO-8601, tz-aware) | plausibility-checked (`02-lifecycle.md §3`) | Naive datetimes are a 422 validation failure → quarantine path. |
-| `ttl_seconds` | `int` | clamped semantics: valid range `[30, 86400]`; outside → quarantine | Signal expires at `issued_at + ttl_seconds`. |
+| `ttl_seconds` | `int` | valid range `[30, 86400]`; outside → quarantine | Effective expiry is server-capped: `expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)` (ADR-009 A-3). |
 | `symbol` | `str` | 1–10 chars, uppercased, `[A-Z.]+` | Instrument. |
 | `direction` | `Literal["buy", "sell"]` | | Maps to the direction-aware conversion path (`05-conversion.md`). |
 | `suggested_quantity` | `Optional[int]` | `> 0` if present | **Advisory, display-only.** Never flows into any order field (`05-conversion.md §2`). |
@@ -49,7 +49,8 @@ class SignalRecord(_Entity):
     direction: str                 # "buy" | "sell"
     issued_at: datetime
     ttl_seconds: int
-    expires_at: datetime           # issued_at + ttl_seconds, precomputed, tz-aware UTC
+    expires_at: datetime           # min(received_at + server_max_ttl, issued_at + ttl_seconds) — ADR-009 A-3; persisted, never re-derived
+    received_at: datetime          # injected server clock at ingest (the A-3 anchor)
     suggested_quantity: Optional[int]
     suggested_limit_price: ResponseSafeFloat
     thesis: str

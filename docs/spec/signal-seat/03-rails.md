@@ -36,18 +36,27 @@ One periodic engine-side sweep (injected clock; monitoring-loop cadence):
   `SIGNAL_QUARANTINED` (`"producer_sweep"`) — a quarantined producer has no pending proposals
   lingering on the operator's panel.
 
-## 4. Post-quarantine / over-ceiling backpressure (the flood bound)
+## 4. Post-quarantine / over-ceiling backpressure (the flood bound — ADR-009 A-4)
+
+**Ingest processing order is normative:** (1) authenticate — constant-time key lookup, before any
+body read; (2) rails check — quarantine epoch, rate limit / interim ceiling; (3) bounded body
+read — `Content-Length` capped at 64 KiB, streamed reject beyond; (4) parse + field-validate.
+Steps 1–2 reject with zero store writes and zero body processing.
 
 For any ingest from a quarantined producer, or beyond a ceiling/limit:
 
 1. Reject at the boundary: HTTP 429 (over-limit) / 403 (quarantined producer), constant work, no
-   store write on the request path.
-2. Audit is **coalesced**: at most one `PRODUCER_INGEST_REJECTED` event per producer per
-   `signal_reject_audit_window_seconds: int = 300`, carrying the rejected count for the window.
-   Counter state is in-memory per process (best-effort audit; the *bound* is the guarantee, the
-   count is diagnostic).
-3. Test contract (WO-0102 for the ceiling, WO-0104 for quarantine): N-request flood after
-   quarantine/over-ceiling appends O(windows) events, not O(N).
+   store write, no body read beyond step 3's cap.
+2. Audit is bounded **per quarantine epoch** (epoch = quarantine → release), NOT per time window
+   (a periodic append rate is unbounded over indefinite hostility — REV-0022 F-004): at most ONE
+   `PRODUCER_QUARANTINED` event opens the epoch; post-quarantine ingress appends NOTHING; a
+   **saturating in-memory counter outside the event log** tracks rejected requests
+   (diagnostic, best-effort across restarts by design); `PRODUCER_RELEASED` closes the epoch
+   carrying the saturated count + window. Constant ≤ 2 rail events per producer per epoch.
+   (The earlier `PRODUCER_INGEST_REJECTED` per-window event is REMOVED from the vocabulary.)
+3. Test contract (WO-0102 for the ceiling, WO-0104 for quarantine): model-based/long-duration
+   flood tests assert **constant event-row count** and bounded storage — not merely "fewer than
+   request count".
 
 ## 5. Release (WO-0104 — human-gated action)
 

@@ -65,6 +65,7 @@ forbidden_paths:
 - [ ] **Positive path (human decision, ADR-009 INV-7 row):** a genuine protective sell IS convertible in `Reducing` (test) — the classification must not silently block real exits; a blocked conversion in `Reducing` must be operator-visible, never silent.
 - [ ] **Sell-direction conversion uses the origin WO-0101 specifies** (e.g. `SellReason.SIGNAL` on the `SellIntent` machinery) — never misrouted through the buy path or `manual_flatten` (Codex PR #5 round-3 P1); the `Reducing` protective-sell test exercises this real sell route end-to-end, both stores.
 - [ ] Approving twice is idempotent (test). Expired signal unapprovable (test).
+- [ ] **Conversion is the A-2 atomic command** (ADR-009 Amendment A-2): one lock/transaction, no await between checks and writes, memory `_atomic` snapshot includes signal state; crash-injection tests at every interleaving point + races vs expiry / producer quarantine-release / TradingState flips / duplicate approval — both stores. A consumed approval without an intent (or vice versa) must be unconstructible.
 
 ## Required tests
 

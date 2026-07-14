@@ -2,8 +2,19 @@
 
 ## 1. Credential model (ADR-009 role separation + identity binding)
 
-Beta posture: static keys from `Settings` (env-injected), compared constant-time
+Beta posture per **ADR-009 Amendment A-1**: static keys from `Settings` (env-injected secrets —
+never committed, never logged, redacted in error paths), compared constant-time
 (`secrets.compare_digest`). No user store, no OAuth — one operator, N producers.
+
+**Transport policy** (`Settings.signal_transport_policy`, mandatory when the flag is on):
+`loopback` (beta default — backend binds `127.0.0.1` only; startup fails fast on a non-loopback
+bind) or `tls_proxy` (non-loopback exposure requires a TLS-terminating reverse proxy and this
+explicit, audited setting). Plain HTTP across a network boundary is never supported.
+
+**Key lifecycle:** rotation = deploy a new key map (the producer map supports multiple keys per
+producer for overlap-rotation); revocation = remove the key (effective on config reload/restart).
+Actor identity derives from the **authenticated principal**; `X-Actor` is an optional sub-label
+recorded alongside it, never a substitute.
 
 | Credential | Header | Config | Scope |
 |---|---|---|---|
@@ -14,12 +25,15 @@ Rules:
 
 - **Identity binding:** `producer_id` derives from the key via the config map, server-side, always.
   Unknown key → 401, **no event append** (unattributable).
-- **Operator enforcement flips on with the feature flag** (`signal_seat_enabled=True` ⇒ every
-  mutating command route requires a valid `X-Operator-Key`; missing/invalid → 401/403). Flag off ⇒
-  beta's current localhost no-auth posture is unchanged. Rationale: the threat that forced auth is
-  producers having HTTP reach; they only have reach when the flag is on. WO-0102 ships **in the
-  same change**: the FastAPI dependency, negative tests for the existing command routes
-  (no-credential and invalid-credential → denied), and the cockpit plumbing
+- **Operator enforcement flips on with the feature flag**, and per A-1 it covers **every
+  sensitive route — reads included**: positions, orders, sessions, watchlist, candidates, review
+  queues, signal list, producer states, and all mutating commands (`signal_seat_enabled=True` ⇒
+  valid `X-Operator-Key` required; missing/invalid → 401/403). Flag off ⇒ beta's current
+  localhost no-auth posture is unchanged. Rationale: a producer with HTTP reach must learn
+  nothing about positions, orders, sessions, or other producers' theses — read exposure is
+  exposure. WO-0102 ships **in the same change**: the FastAPI dependency, the **full route
+  authorization matrix test** ({none, invalid, producer-key, operator-key} × every mounted
+  sensitive route, asserted against the real mounted app), and the cockpit plumbing
   (`cockpit/api_client.py::_request` sends `X-Operator-Key` from its env) — so the browser's
   kill-switch/flatten/candidate/watchlist controls never see a lockout window (invariant 11).
 - `X-Actor` stays what it is — an audit **label** threaded into event payloads, never

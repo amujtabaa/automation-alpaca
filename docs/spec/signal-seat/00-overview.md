@@ -1,7 +1,9 @@
 # Signal Seat — Contract Specification (WO-0101)
 
-**Authority:** implements ADR-009 — **whose acceptance was rescinded 2026-07-14 (REV-0022 formal verdict: BLOCK)**. This spec is therefore **DRAFT input to the F-001..F-004 remediation** (it already contains partial answers: expiry bounds/atomic re-check §02, approval-atomic-with-conversion rule A2, coalesced audit §03 — the remediation must reconcile or strengthen these to the reviewer's asks, e.g. per-epoch audit bound, server-max-TTL formula, read-route auth, transport/key lifecycle). It implements ADR-009 exactly; where this spec and ADR-009
-disagree, ADR-009 wins and the disagreement is a defect in this spec.
+**Authority:** implements ADR-009 including its **REV-0022 remediation amendments A-1..A-4**
+(drafted 2026-07-14, PROPOSED — pending human acceptance + re-review; the ADR and this spec are
+one reviewable package). Where this spec and ADR-009 disagree, ADR-009 wins and the disagreement
+is a defect in this spec. **Status: DRAFT until the re-review clears.**
 **Status:** complete spec, design-only — no code ships with this document set.
 **Implementer contract:** WO-0102 (ingestion), WO-0103 (approval surface + conversion), WO-0104
 (rails) must be implementable from these documents alone, against the as-built tree at `c4271d8`+.

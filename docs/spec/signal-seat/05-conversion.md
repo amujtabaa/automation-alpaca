@@ -2,8 +2,14 @@
 
 ## 1. The conversion is the existing pipeline, entered atomically at approval
 
-Operator approval (with the payload of `01-schema.md §4`) performs, **in one store operation under
-the single-writer lock** (rule A2):
+Operator approval (with the payload of `01-schema.md §4`) executes the **atomic conversion
+command of ADR-009 Amendment A-2** — one lock hold (memory) / one transaction (SQLite), no
+`await` between checks and durable writes, memory `_atomic` snapshot includes signal state:
+re-read {signal status + `expires_at`, producer-quarantine epoch, `TradingState`/kill-switch,
+fresh derived position + outstanding sell exposure, risk decision} → consume exactly one operator
+approval → append `SIGNAL_APPROVED` → create + link exactly one direction-correct intent — **all
+or nothing** (crash-injection + interleaving tests at every point: expiry, quarantine/release,
+TradingState flips, duplicate approval; both stores). Within that command, per direction:
 
 - **Buy-direction signal** → create a `Candidate` with
   `strategy="signal"`, `reason=<short thesis ref>`, `suggested_quantity=<operator quantity>`,
@@ -53,10 +59,12 @@ new order intent and obeys session control:
 
 ### 3a. The risk-reducing classification (Ameen's INV-7 asymmetry decision, recorded in ADR-009)
 
-A signal is **risk-reducing** iff, evaluated under the same store lock at conversion time:
-`direction == "sell"` AND live net position in `symbol` > 0 AND `operator quantity ≤ live
-position`. (Long-only spine: a sell that stays within the position can only shrink risk; buys are
-never risk-reducing.)
+A signal is **risk-reducing** iff, evaluated inside the A-2 atomic command (same lock, injected
+clock): `direction == "sell"` AND
+`operator_qty ≤ (live derived position − outstanding committed sell exposure)`, where
+outstanding committed sell exposure = Σ target quantities of non-terminal sell intents + open
+SELL order remaining quantities for the symbol (ADR-009 A-3 executable form — two signal sells
+can never jointly oversell via classification). Long-only spine: buys are never risk-reducing.
 
 Error-direction asymmetry, honored as decided:
 

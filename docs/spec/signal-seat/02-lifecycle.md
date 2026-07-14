@@ -46,9 +46,8 @@ self-decide if they judge otherwise:
 | `SIGNAL_EXPIRED` | sweep or lazy-expiry durable transition | `expires_at`, `detected_by: "sweep" | "read"` |
 | `SIGNAL_REJECTED` | operator reject | `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id`, `producer_id`, `signal_id` |
-| `PRODUCER_QUARANTINED` | rate-limit breach (`03-rails.md`) | `producer_id`, breach counters, window |
-| `PRODUCER_RELEASED` | operator release | `producer_id`, `actor` |
-| `PRODUCER_INGEST_REJECTED` | **coalesced** post-quarantine/over-ceiling rejection audit — at most one per producer per coalescing window | `producer_id`, `rejected_count`, `window_start/end`, `reason: "quarantined" | "ceiling"` |
+| `PRODUCER_QUARANTINED` | rate-limit breach — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach counters, epoch start |
+| `PRODUCER_RELEASED` | operator release — closes the epoch | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
 
 Provenance: all signal events are `EventSource.ENGINE` (or an `OPERATOR`-flavored source if the
 implementer prefers a new member — either way `EventAuthority.LOCAL`; nothing here is
@@ -57,14 +56,24 @@ structurally invisible to the Position Service (INV-9, INV-1).
 
 ## 3. TTL and staleness (the market-data fail-fast rail applied to signal freshness)
 
-With server clock `now` (injected clock in engine code — no bare `datetime.now()`):
+Server-owned semantics per **ADR-009 Amendment A-3**. `received_at` = injected server clock at
+ingest (no bare `datetime.now()`); the deadline is computed once, persisted, and never re-derived
+(restart-stable; replay reconstructs it from `SIGNAL_RECEIVED`'s payload):
+
+```
+expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)
+```
+
+`server_max_ttl` default **3600 s** (`Settings`-tunable; hard architectural cap 86400 s that no
+config may exceed) — a producer can never keep a thesis approvable longer than `server_max_ttl`
+regardless of its chosen TTL.
 
 | Check | Rule (defaults; `Settings`-tunable) | Outcome |
 |---|---|---|
-| Future skew | `issued_at > now + 30s` | `SIGNAL_QUARANTINED` (`"issued_at_future"`) |
-| Implausibly old | `issued_at < now − 24h` | `SIGNAL_QUARANTINED` (`"issued_at_stale"`) |
-| Dead on arrival | `issued_at + ttl_seconds ≤ now` | `SIGNAL_EXPIRED` at ingest (recorded — a fact, not an error) |
-| TTL lapse | `now ≥ expires_at` while RECEIVED | EXPIRED (lazy + sweep, rule A4) |
+| Future skew | `issued_at > received_at + 30s` | `SIGNAL_QUARANTINED` (`"issued_at_future"`) |
+| Implausibly old | `issued_at < received_at − 24h` | `SIGNAL_QUARANTINED` (`"issued_at_stale"`) |
+| Dead on arrival | `expires_at ≤ received_at` | `SIGNAL_EXPIRED` at ingest (recorded — a fact, not an error) |
+| TTL lapse | `now ≥ expires_at` while RECEIVED | EXPIRED (lazy + sweep, rule A4); re-checked atomically inside the A-2 conversion command |
 | ttl bounds | `ttl_seconds ∉ [30, 86400]` | `SIGNAL_QUARANTINED` (`"ttl_out_of_range"`) |
 
 A stale/expired signal can **never** be approved (rule A3). Quarantined-at-ingest signals still get
@@ -78,5 +87,8 @@ exactly once).
 `PRODUCER_*` events: replaying the event log from empty reconstructs byte-identical signal and
 producer read-models in both stores. The projector lives with the existing ones
 (`app/events/projectors.py`); replay-parity is asserted in the same style as the order-status
-projector tests. `PRODUCER_INGEST_REJECTED` is audit-only — it folds into counters, never into
-signal state.
+projector tests. `SIGNAL_DUPLICATE_CONFLICT` is audit-only — excluded from the lifecycle fold; the
+replay test must include a duplicate-conflict sequence and assert the original signal's state is
+unchanged after replay. Rejected-traffic counting lives OUTSIDE the event log entirely (ADR-009
+A-4): only the epoch-open (`PRODUCER_QUARANTINED`) / epoch-close (`PRODUCER_RELEASED`, carrying
+the saturated count) pair is ever appended.
