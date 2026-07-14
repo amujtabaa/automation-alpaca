@@ -84,6 +84,7 @@ from app.store.base import (
     FLATTEN_FLAT,
     CandidateTransitionError,
     EmergencyReduceBlockedError,
+    EnvelopeTransitionError,
     FlattenBlockedError,
     InvalidControlValueError,
     InvalidFillError,
@@ -603,13 +604,11 @@ class StoreBackedQueryFacade:
         return views
 
     async def list_envelopes(self) -> list[ExecutionEnvelope]:
-        """``GET /api/envelopes`` (WO-0020): read-only envelope visibility —
-        the abstract query facade doesn't declare the envelope API yet (the
-        facade-ABC lift is queued with the base.py lift)."""
+        """``GET /api/envelopes`` (WO-0020): read-only envelope visibility.
+        The envelope API is now declared on ``StateStore`` (WO-0030), so this
+        is a direct typed passthrough."""
 
-        from typing import cast as _cast
-
-        return await _cast(Any, self._store).list_envelopes()
+        return await self._store.list_envelopes()
 
 
 class StoreBackedCommandFacade:
@@ -851,9 +850,9 @@ class StoreBackedCommandFacade:
 
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0020) — thin, typed passthroughs.
-    # The abstract StateStore does not declare the envelope API yet (base.py
-    # is outside every W3 WO's scope; the ABC lift is a queued follow-up), so
-    # these cast to the structural surface both stores implement.
+    # The envelope API is declared on ``StateStore`` (WO-0030), so these call
+    # the store directly; ``EnvelopeTransitionError`` is caught to map the
+    # illegal-transition edges to the facade's structured HTTP errors.
     # ------------------------------------------------------------------ #
     async def approve_envelope(
         self, *, draft: ExecutionEnvelope, actor: str
@@ -865,14 +864,8 @@ class StoreBackedCommandFacade:
         parse time). 409 for kill-switch block / terminal or duplicate-ACTIVE
         conflicts; the raw draft never touches the store on failure."""
 
-        from typing import cast as _cast
-
-        from app.store.core import EnvelopeTransitionError
-
         try:
-            return await _cast(Any, self._store).approve_envelope_activation(
-                draft, actor=actor
-            )
+            return await self._store.approve_envelope_activation(draft, actor=actor)
         except OrderIntentBlockedError as exc:
             raise ConflictError(str(exc)) from exc
         except (EnvelopeTransitionError, InvalidOrderError) as exc:
@@ -887,12 +880,8 @@ class StoreBackedCommandFacade:
         through the precedence paths (kill / flatten), so this maps the
         illegal edge to 409. 404 for an unknown id."""
 
-        from typing import cast as _cast
-
-        from app.store.core import EnvelopeTransitionError
-
         try:
-            return await _cast(Any, self._store).transition_envelope(
+            return await self._store.transition_envelope(
                 envelope_id,
                 EnvelopeStatus.CANCELLED,
                 actor=actor,

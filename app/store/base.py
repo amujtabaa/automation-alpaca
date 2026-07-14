@@ -22,16 +22,18 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import date
-from typing import Any, Iterable, Literal, Optional
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional
 
 from app.models import (
     RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     Event,
+    ExecutionEnvelope,
     ExecutionEvent,
     Fill,
     Order,
@@ -48,6 +50,15 @@ from app.models import (
     TradingState,
     WatchlistSymbol,
 )
+
+if TYPE_CHECKING:
+    # These live in modules that import ``app.store.base`` (``core`` re-imports
+    # this ABC; ``sellside.types`` is pulled in transitively), so importing them
+    # at runtime here would cycle. They appear only in method annotations, which
+    # ``from __future__ import annotations`` keeps as strings — a TYPE_CHECKING
+    # import is all mypy needs to bind them.
+    from app.sellside.types import PlannedAction
+    from app.store.core import EnvelopeActionStageResult
 
 
 # A bounded ticker domain: a leading letter then up to nine more of
@@ -245,6 +256,18 @@ class ProtectionHaltedError(StoreError):
     idempotently; only a genuinely new intent is refused. Manual flatten has its
     own Halted-deny (``FlattenBlockedError`` / ``plan_flatten_position``). The
     engine treats this as "pause this symbol", not a tick failure.
+    """
+
+
+class EnvelopeTransitionError(ValueError):
+    """An illegal envelope status transition, or an activation that would
+    violate the single-ACTIVE-per-intent invariant (ADR-010 §3).
+
+    Relocated here from ``app.store.core`` by WO-0030 so it sits alongside the
+    ``StateStore`` envelope API it is raised by; ``app.store.core`` re-exports
+    it for compatibility. Kept a plain :class:`ValueError` subclass (not
+    :class:`StoreError`) — reparenting it would widen every ``except
+    StoreError`` and change catch behavior; a relocation must not.
     """
 
 
@@ -1099,6 +1122,146 @@ class StateStore(ABC):
     @abstractmethod
     async def get_max_execution_sequence(self) -> int:
         """The highest assigned ``sequence`` in the log, or ``0`` if empty."""
+
+    # ------------------------------------------------------------------ #
+    # Execution envelopes (Spine v2 / ADR-010 — the autonomous sell-side
+    # execution mandate: a human-approved standing order with bounds the
+    # engine reprices within).
+    #
+    # WO-0030 lifted this API onto the ABC. Before, each method was reachable
+    # only through a per-caller structural ``Protocol`` + ``cast`` (the
+    # approval gate, the reconciliation executor, the monitoring tick, the
+    # trading routes' facade) — so ``mypy`` verified NOTHING at exactly these
+    # seams. Declared here, the seams are typed against BOTH concrete stores:
+    # a dropped or mistyped envelope method now fails ``mypy app/`` at the
+    # store, not silently at a cast.
+    # ------------------------------------------------------------------ #
+    @abstractmethod
+    async def create_envelope(
+        self,
+        envelope: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        """Persist a draft envelope (validated + audited) atomically, writing
+        its ``envelope_created`` execution + audit events. Raises
+        :class:`InvalidOrderError` for a malformed draft or a duplicate id."""
+
+    @abstractmethod
+    async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]:
+        """The envelope with this id, or ``None``."""
+
+    @abstractmethod
+    async def list_envelopes(
+        self,
+        *,
+        sell_intent_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        status: Optional[EnvelopeStatus] = None,
+    ) -> list[ExecutionEnvelope]:
+        """Envelopes, optionally filtered by originating intent / symbol /
+        status. ``status`` is validated as a real :class:`EnvelopeStatus`."""
+
+    @abstractmethod
+    async def transition_envelope(
+        self,
+        envelope_id: str,
+        new_status: EnvelopeStatus,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        """Atomically transition an envelope's status and write its audit +
+        lifecycle execution events (ADR-010 §3). ``new_status`` is typed
+        :class:`EnvelopeStatus`, so a non-envelope state cannot be passed.
+
+        Entering ``ACTIVE`` (activation OR resume from FROZEN) is new standing
+        order intent — refused while ``HALTED``
+        (:class:`OrderIntentBlockedError`) and subject to the
+        single-ACTIVE-per-intent invariant (:class:`EnvelopeTransitionError`),
+        both checked under the same lock/transaction as the write. A
+        same-status request is an idempotent no-op. An envelope fully filled
+        while FROZEN completes atomically on resume. Raises
+        :class:`UnknownEntityError` for an unknown id."""
+
+    @abstractmethod
+    async def supersede_envelope(
+        self,
+        old_envelope_id: str,
+        successor: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        """Atomically retire ``old_envelope_id`` and install ``successor`` as
+        the intent's new mandate (ADR-010 §3), conserving remaining quantity.
+        Refused while a live venue order is working on the old mandate
+        (WO-0027); on success it sweeps the old mandate's staged ``CREATED``
+        orders in the SAME atomic unit, and enforces that no OTHER envelope of
+        the intent is ACTIVE (:class:`EnvelopeTransitionError`). Raises
+        :class:`UnknownEntityError` (unknown old id) / :class:`InvalidOrderError`
+        (duplicate successor id)."""
+
+    @abstractmethod
+    async def record_envelope_fill(
+        self,
+        envelope_id: str,
+        *,
+        quantity: int,
+        dedupe_key: str,
+        price: Optional[float] = None,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        ts_event: Optional[datetime] = None,
+        source: EventSource = EventSource.BROKER_REST,
+        authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    ) -> ExecutionEnvelope:
+        """Apply one deduped fill fact — the ONLY ``remaining_quantity`` writer.
+        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
+        that fill was already counted (exactly-once, INV-5). Appends the FILL
+        execution event and, if the fill exhausts the mandate, chains the
+        terminal transition, atomically. Raises :class:`UnknownEntityError` for
+        an unknown id."""
+
+    @abstractmethod
+    async def stage_envelope_action(
+        self,
+        envelope_id: str,
+        action: "PlannedAction",
+        *,
+        snapshot_fingerprint: str,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        session_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> "EnvelopeActionStageResult":
+        """The write-time half of D-3 (WO-0019): re-validate the planned
+        ``action`` against the envelope's bounds under ONE lock/transaction,
+        then either stage its ``CREATED`` order + accounting event, freeze the
+        envelope on a deterministic-rail divergence
+        (``ENVELOPE_PLAN_DIVERGENCE``, WO-0029A), or benignly refuse a
+        state-stale plan (``STAGE_REFUSED_STALE`` — evented, envelope
+        untouched, no order, zero venue calls). Staging is new order intent,
+        refused while ``HALTED`` (:class:`OrderIntentBlockedError`). ``now`` is
+        the injected validation clock (engine discipline — cooldown math never
+        reads a bare wall clock). See
+        :func:`app.store.core.plan_stage_envelope_action`."""
+
+    @abstractmethod
+    async def approve_envelope_activation(
+        self,
+        draft: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        """The WO-0017 approval surface — the human-gated activation of an
+        autonomous sell-side mandate: dedup/idempotency → HALTED check →
+        create → approve → activate → events, as ONE store-atomic unit
+        (ENG-001 shape). A kill that lands first blocks the op with ZERO
+        artifacts; re-approving an already-``ACTIVE`` envelope is an idempotent
+        no-op; the single-ACTIVE-per-intent invariant is enforced
+        (:class:`EnvelopeTransitionError`). Raises
+        :class:`OrderIntentBlockedError` while ``HALTED`` and
+        :class:`InvalidOrderError` for a malformed new draft."""
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

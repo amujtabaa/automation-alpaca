@@ -24,6 +24,12 @@ class ExecutionQueryFacade(Protocol):
         wired into ``GET /api/positions``."""
         ...
 
+    async def list_envelopes(self) -> Any:
+        """Every execution envelope — read-only visibility for the cockpit
+        Envelope Monitor (ADR-010 / WO-0020): status, bounds, remaining qty,
+        budget, dispositions. ``GET /api/envelopes``."""
+        ...
+
     async def list_watchlist(self) -> Any:
         """All watchlist symbols — ``GET /api/watchlist`` (P6a)."""
         ...

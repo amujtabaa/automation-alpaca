@@ -15,38 +15,15 @@ It is deliberately NOT a subclass of :class:`~app.approval.gate.ApprovalGate`
 
 from __future__ import annotations
 
-from typing import Optional, Protocol
-
 from app.approval.gate import GateDecision
 from app.models import EnvelopeStatus, ExecutionEnvelope
-from app.store.base import COMMAND_ACTOR_SYSTEM
-
-
-class _EnvelopeStore(Protocol):
-    """The envelope surface both stores implement (WO-0016/0017). The
-    abstract ``StateStore`` does not declare it yet — ``app/store/base.py``
-    is outside WO-0016/0017 scope; WO-0019 lifts these into the ABC (see the
-    W3 deferred log). A structural Protocol keeps this gate honestly typed
-    without widening the gated diff."""
-
-    async def approve_envelope_activation(
-        self, draft: ExecutionEnvelope, *, actor: str = ...
-    ) -> ExecutionEnvelope: ...
-
-    async def transition_envelope(
-        self,
-        envelope_id: str,
-        new_status: EnvelopeStatus,
-        *,
-        actor: str = ...,
-        reason: Optional[str] = ...,
-    ) -> ExecutionEnvelope: ...
+from app.store.base import COMMAND_ACTOR_SYSTEM, StateStore
 
 
 class EnvelopeApprovalGate:
     """Human-in-the-loop envelope approval. Defers every decision to a person."""
 
-    def __init__(self, store: _EnvelopeStore) -> None:
+    def __init__(self, store: StateStore) -> None:
         self._store = store
 
     async def evaluate(self, draft: ExecutionEnvelope) -> GateDecision:

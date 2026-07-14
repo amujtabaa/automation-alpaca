@@ -38,7 +38,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import hashlib
-from typing import Protocol
 
 from app.broker.adapter import (
     AmbiguousBrokerError,
@@ -51,8 +50,6 @@ from app.broker.adapter import (
 from app.marketdata.service import MarketSnapshot
 from app.models import (
     EnvelopeStatus,
-    ExecutionEnvelope,
-    ExecutionEvent,
     Order,
     OrderSide,
     OrderStatus,
@@ -61,11 +58,10 @@ from app.models import (
 )
 from app.sellside.policy import validate_action
 from app.sellside.types import ActionKind, PlannedAction
-from app.store.base import CLAIM_CLAIMED, SubmissionClaim
+from app.store.base import CLAIM_CLAIMED, StateStore
 from app.store.core import (
     STAGE_DIVERGENCE,
     STAGE_REFUSED_STALE,
-    EnvelopeActionStageResult,
 )
 
 # Local order statuses that are "open at the venue" and therefore reconcilable
@@ -447,50 +443,6 @@ def plan_reconciliation(
 # order id), transient → release for redrive, terminal → REJECTED.
 
 
-class _EnvelopeSeamStore(Protocol):
-    """The store surface the envelope executor drives. The abstract
-    ``StateStore`` does not declare the envelope API yet (``app/store/base.py``
-    has stayed outside every W3 WO's scope — the ABC lift is deferred-logged
-    for its own small WO); a structural Protocol keeps the seam honestly
-    typed against BOTH concrete stores meanwhile."""
-
-    async def stage_envelope_action(
-        self,
-        envelope_id: str,
-        action: PlannedAction,
-        *,
-        snapshot_fingerprint: str,
-        actor: str = ...,
-        session_id: Optional[str] = ...,
-        now: Optional[datetime] = ...,
-    ) -> EnvelopeActionStageResult: ...
-
-    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim: ...
-
-    async def quarantine_timed_out_order(
-        self, order_id: str, *, reason: Optional[str] = ...
-    ) -> Order: ...
-
-    async def transition_order(
-        self,
-        order_id: str,
-        new_status: OrderStatus,
-        *,
-        filled_quantity: Optional[int] = ...,
-        broker_order_id: Optional[str] = ...,
-    ) -> Order: ...
-
-    async def get_order(self, order_id: str) -> Optional[Order]: ...
-
-    async def get_execution_events(
-        self, *, after_sequence: int = ..., limit: Optional[int] = ...
-    ) -> list[ExecutionEvent]: ...
-
-    async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]: ...
-
-    async def get_position(self, symbol: str) -> Position: ...
-
-
 ENVELOPE_EXEC_SUBMITTED = "submitted"
 ENVELOPE_EXEC_REPRICED = "repriced"
 ENVELOPE_EXEC_DIVERGENCE = "divergence"  # frozen + event; zero venue calls
@@ -543,7 +495,7 @@ def market_snapshot_fingerprint(snapshot: MarketSnapshot) -> str:
 
 
 async def _drive_staged_order(
-    store: _EnvelopeSeamStore,
+    store: StateStore,
     adapter: BrokerAdapter,
     *,
     order: Order,
@@ -611,7 +563,7 @@ async def _drive_staged_order(
 
 
 async def execute_envelope_action(
-    store: _EnvelopeSeamStore,
+    store: StateStore,
     adapter: BrokerAdapter,
     envelope_id: str,
     action: PlannedAction,
@@ -653,7 +605,7 @@ async def execute_envelope_action(
 
 
 async def redrive_staged_envelope_action(
-    store: _EnvelopeSeamStore,
+    store: StateStore,
     adapter: BrokerAdapter,
     envelope_id: str,
     *,

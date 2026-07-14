@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from app.models import ExecutionEnvelope
+
 __all__ = ["ExecutionCommandFacade"]
 
 
@@ -123,4 +125,20 @@ class ExecutionCommandFacade(Protocol):
         ``docs/SPINE_PHASE0_INVENTORY.md``), so there is nothing to wrap
         yet. Phase 3 scope.
         """
+        ...
+
+    async def approve_envelope(self, *, draft: ExecutionEnvelope, actor: str) -> Any:
+        """Approve + activate an execution envelope as ONE store-atomic unit
+        (ADR-010 §1 / WO-0017) — THE human-gated approval surface for
+        autonomous sell-side execution. ``POST /api/envelopes/approve``. 409
+        while ``Halted`` (kill switch blocks new standing order intent) or on a
+        terminal / duplicate-ACTIVE conflict."""
+        ...
+
+    async def cancel_envelope(self, *, envelope_id: str, actor: str) -> Any:
+        """Withdraw a pre-activation envelope (PENDING/APPROVED/FROZEN →
+        CANCELLED, the ADR-010 §3 escape edges; idempotent for already-
+        CANCELLED). An ACTIVE mandate is deliberately NOT cancellable here
+        (409) — stopping a live mandate is the kill switch's or the flatten's
+        job. ``POST /api/envelopes/{id}/cancel``; 404 if unknown."""
         ...

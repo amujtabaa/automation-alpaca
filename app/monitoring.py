@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Protocol, cast
+from typing import Any, Optional
 
 from app.broker.adapter import (
     AmbiguousBrokerError,
@@ -448,41 +448,6 @@ async def _reconcile_protection_pause(
         )
 
 
-class _EnvelopeStoreOps(Protocol):
-    """The envelope store surface the tick drives — the abstract StateStore
-    does not declare it yet (base.py has stayed outside every W3 WO's scope;
-    the ABC lift is a queued follow-up)."""
-
-    async def list_envelopes(
-        self,
-        *,
-        sell_intent_id: Optional[str] = ...,
-        symbol: Optional[str] = ...,
-        status: Optional[EnvelopeStatus] = ...,
-    ) -> list[ExecutionEnvelope]: ...
-
-    async def transition_envelope(
-        self,
-        envelope_id: str,
-        new_status: EnvelopeStatus,
-        *,
-        actor: str = ...,
-        reason: Optional[str] = ...,
-    ) -> ExecutionEnvelope: ...
-
-    async def record_envelope_fill(
-        self,
-        envelope_id: str,
-        *,
-        quantity: int,
-        dedupe_key: str,
-        price: Optional[float] = ...,
-        order_id: Optional[str] = ...,
-        session_id: Optional[str] = ...,
-        ts_event: Optional[datetime] = ...,
-    ) -> ExecutionEnvelope: ...
-
-
 class EnvelopeTapeBuffer:
     """Per-symbol session snapshot tape for the pure sell-side policy.
 
@@ -594,9 +559,8 @@ async def _run_envelopes(
 
     if market_data is None or tapes is None:
         return
-    estore = cast(_EnvelopeStoreOps, store)
     try:
-        envelopes = await estore.list_envelopes(status=EnvelopeStatus.ACTIVE)
+        envelopes = await store.list_envelopes(status=EnvelopeStatus.ACTIVE)
     except Exception:  # noqa: BLE001 — never crash the tick
         _log.exception("envelope pass: listing active envelopes failed")
         return
@@ -622,7 +586,7 @@ async def _run_envelopes(
                 envelope.symbol,
             )
             try:
-                await estore.transition_envelope(
+                await store.transition_envelope(
                     envelope.id,
                     EnvelopeStatus.FROZEN,
                     actor="engine",
@@ -645,7 +609,6 @@ async def _run_one_envelope(
     snap_memo: dict[str, Optional[MarketSnapshot]],
     now: datetime,
 ) -> None:
-    estore = cast(_EnvelopeStoreOps, store)
     symbol = envelope.symbol
     if symbol not in snap_memo:
         # One fetch per symbol per pass, shared across the symbol's envelopes.
@@ -657,9 +620,7 @@ async def _run_one_envelope(
     # A staged-but-unexecuted action (transient release / crash between
     # staging and the venue call) resumes FIRST, with no new accounting —
     # the budget was spent when it was staged (INV-083).
-    redriven = await redrive_staged_envelope_action(
-        cast(Any, store), adapter, envelope.id
-    )
+    redriven = await redrive_staged_envelope_action(store, adapter, envelope.id)
     if redriven is not None and redriven.outcome not in (
         ENVELOPE_EXEC_BLOCKED,
         ENVELOPE_EXEC_RELEASED,
@@ -688,7 +649,7 @@ async def _run_one_envelope(
         if snapshot is None:
             return  # no live snapshot to fingerprint — hold this tick
         await execute_envelope_action(
-            cast(Any, store),
+            store,
             adapter,
             envelope.id,
             decision,
@@ -699,21 +660,21 @@ async def _run_one_envelope(
     elif isinstance(decision, BreachSignal):
         # A real market-vs-mandate breach (e.g. exit only executable below
         # floor): terminal-pending-human, quarantine posture.
-        await estore.transition_envelope(
+        await store.transition_envelope(
             envelope.id,
             EnvelopeStatus.BREACHED,
             actor="engine",
             reason=f"{decision.rail}: {decision.detail}",
         )
     elif isinstance(decision, ExhaustedSignal):
-        await estore.transition_envelope(
+        await store.transition_envelope(
             envelope.id,
             EnvelopeStatus.EXHAUSTED,
             actor="engine",
             reason=decision.detail,
         )
     elif isinstance(decision, ExpiredSignal):
-        await estore.transition_envelope(
+        await store.transition_envelope(
             envelope.id,
             EnvelopeStatus.EXPIRED,
             actor="engine",
@@ -1875,7 +1836,7 @@ async def _apply_update(
     for bf in update.fills:
         if envelope_id is not None and bf.source_fill_id is not None:
             try:
-                await cast(_EnvelopeStoreOps, store).record_envelope_fill(
+                await store.record_envelope_fill(
                     envelope_id,
                     quantity=bf.quantity,
                     dedupe_key=f"fill:{order.id}:{bf.source_fill_id}",
@@ -2214,7 +2175,7 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
         try:
             envelope_id = await _envelope_id_for_order(store, f.order_id)
             if envelope_id is not None and f.source_fill_id is not None:
-                await cast(_EnvelopeStoreOps, store).record_envelope_fill(
+                await store.record_envelope_fill(
                     envelope_id,
                     quantity=f.quantity,
                     dedupe_key=f"fill:{f.order_id}:{f.source_fill_id}",

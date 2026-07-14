@@ -66,6 +66,7 @@ from app.store.base import (
     CLAIM_SKIPPED,
     COMMAND_ACTOR_SYSTEM,
     CandidateTransitionError,
+    EnvelopeTransitionError,
     InvalidControlValueError,
     InvalidFillError,
     InvalidOrderError,
@@ -2196,11 +2197,10 @@ def plan_close_session(
 # --------------------------------------------------------------------------- #
 
 
-class EnvelopeTransitionError(ValueError):
-    """An illegal envelope status transition, or an activation that would
-    violate the single-ACTIVE-per-intent invariant. Lives here rather than
-    ``app/store/base.py`` only because WO-0016's scope does not include the
-    abstract base; WO-0019 may relocate it alongside its siblings."""
+# ``EnvelopeTransitionError`` was relocated to ``app.store.base`` by WO-0030
+# (alongside the ``StateStore`` envelope API it belongs to) and is re-imported
+# above for compatibility, so ``from app.store.core import
+# EnvelopeTransitionError`` keeps working for every existing caller.
 
 
 # Outcomes, mirroring the order-transition planner's dispatch contract.

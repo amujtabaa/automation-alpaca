@@ -22,7 +22,6 @@ from app.facade.dtos import (
 )
 from app.facade.errors import FacadeError
 from app.facade.http_mapping import facade_error_to_http
-from typing import Protocol, cast
 
 from app.facade.queries import ExecutionQueryFacade
 
@@ -35,24 +34,6 @@ from app.models import (
     SellIntent,
     SubmitRecoveryRecord,
 )
-
-
-class _EnvelopeFacadeOps(Protocol):
-    """The envelope surface StoreBackedFacade implements (WO-0020). The
-    abstract command/query facades don't declare it yet — they sit outside
-    this WO's allowed paths; the facade-ABC lift is queued with the base.py
-    lift. Routes still reach the backend ONLY through the injected facade
-    object (ADR-005 boundary intact — this is typing, not a new seam)."""
-
-    async def list_envelopes(self) -> list[ExecutionEnvelope]: ...
-
-    async def approve_envelope(
-        self, *, draft: ExecutionEnvelope, actor: str
-    ) -> ExecutionEnvelope: ...
-
-    async def cancel_envelope(
-        self, *, envelope_id: str, actor: str
-    ) -> ExecutionEnvelope: ...
 
 
 router = APIRouter(prefix="/api", tags=["trading"])
@@ -312,7 +293,7 @@ async def list_envelopes(
     """Read-only envelope visibility (ADR-010 / WO-0020): status, bounds,
     remaining qty, budget, dispositions — everything the cockpit renders
     derives from this payload; the UI holds no envelope state."""
-    return await cast(_EnvelopeFacadeOps, query_facade).list_envelopes()
+    return await query_facade.list_envelopes()
 
 
 @router.post("/envelopes/approve", response_model=ExecutionEnvelope)
@@ -329,9 +310,7 @@ async def approve_envelope(
     409 while HALTED (kill switch blocks new standing order intent) or when
     another envelope is ACTIVE for the intent."""
     try:
-        return await cast(_EnvelopeFacadeOps, command_facade).approve_envelope(
-            draft=draft, actor=actor
-        )
+        return await command_facade.approve_envelope(draft=draft, actor=actor)
     except FacadeError as exc:
         raise facade_error_to_http(exc) from exc
 
@@ -347,7 +326,7 @@ async def cancel_envelope(
     cancellable here (409): stopping a live mandate is the kill switch's or
     the flatten's job, never a quiet route call."""
     try:
-        return await cast(_EnvelopeFacadeOps, command_facade).cancel_envelope(
+        return await command_facade.cancel_envelope(
             envelope_id=envelope_id, actor=actor
         )
     except FacadeError as exc:
