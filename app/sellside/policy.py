@@ -40,6 +40,7 @@ from app.sellside.session import session_context
 from app.sellside.trails import compute_working_stop
 from app.sellside.types import (
     ActionKind,
+    ClampNote,
     BreachSignal,
     ExhaustedSignal,
     ExpiredSignal,
@@ -95,6 +96,18 @@ def _snapshot_invalid_reasons(snap: Optional[MarketSnapshot]) -> tuple[str, ...]
 
 def _event_time(event: ExecutionEvent) -> datetime:
     return event.ts_event if event.ts_event is not None else event.ts_init
+
+
+def _urgency_at(envelope: ExecutionEnvelope, t: datetime) -> float:
+    """Time-to-close urgency AS OF ``t`` (pure). WO-0031: historical ratchet
+    candidates use the urgency of their OWN epoch so a session-phase boundary
+    (which widens time-to-close and drops current urgency) can never loosen
+    an already-ratcheted stop (SOL-F-002)."""
+
+    ttc = session_context(t).time_to_phase_close
+    if ttc is None or (envelope.expires_at - t) < ttc:
+        ttc = envelope.expires_at - t
+    return 1.0 - min(max(ttc / URGENCY_RAMP, 0.0), 1.0)
 
 
 def _own_actions(
@@ -156,6 +169,33 @@ def _live_working_order_id(
         if e.order_id == order_id and e.event_type in _TERMINAL_ORDER_EVENTS:
             return None
     return order_id
+
+
+def _rejected_probe_count(
+    actions: Sequence[ExecutionEvent], history: Sequence[ExecutionEvent]
+) -> int:
+    """How many of this envelope's own stop-probe SUBMITs were venue-REJECTED
+    (WO-0031(c), Ameen 2026-07-12): low-price venues can enforce minimum order
+    sizes above one share, so a rejected protective probe doubles the next
+    probe's floor (capped by remaining, always ClampNote-reported) instead of
+    re-submitting the same too-small order forever. Venue-agnostic: ANY
+    terminal rejection of a stop probe escalates — harmless when the true
+    cause was elsewhere (the size stays remaining/floor/qty railed). Alpaca
+    equities today have no whole-share minimum above 1 (verified
+    docs.alpaca.markets 2026-07-12); this is forward-armor."""
+
+    rejected_ids = {
+        e.order_id
+        for e in history
+        if e.event_type is ExecutionEventType.REJECTED and e.order_id is not None
+    }
+    return sum(
+        1
+        for e in actions
+        if e.payload.get("action") == "submit"
+        and e.payload.get("stop_triggered")
+        and e.order_id in rejected_ids
+    )
 
 
 def validate_action(
@@ -257,10 +297,15 @@ def decide(
         )
 
     # --- market structure since activation -------------------------------- #
+    # WO-0031 (SOL-F-003, H6): EVERY row that feeds features is screened, not
+    # just the latest — a stale/crossed/non-finite historical print must never
+    # drive bars, ATR, VWAP, regime, or sizing. Invalid history is dropped
+    # (the latest row already failed closed above via the disposition gate).
     tape = [
         s
         for s in snapshots
-        if envelope.activated_at is None or s.updated_at >= envelope.activated_at
+        if (envelope.activated_at is None or s.updated_at >= envelope.activated_at)
+        and not _snapshot_invalid_reasons(s)
     ]
     bars = aggregate(tape, BAR_INTERVAL)
     if len(bars) < MIN_CLASSIFY_BARS:
@@ -269,17 +314,29 @@ def decide(
             detail=f"{len(bars)} bars < {MIN_CLASSIFY_BARS} warmup",
         )
 
-    ttc = ctx.time_to_phase_close
-    if ttc is None or (envelope.expires_at - now) < ttc:
-        ttc = envelope.expires_at - now
-    urgency = 1.0 - min(max(ttc / URGENCY_RAMP, 0.0), 1.0)
+    urgency = _urgency_at(envelope, now)
 
-    ws = compute_working_stop(envelope, bars, urgency=urgency)
+    ws = compute_working_stop(
+        envelope,
+        bars,
+        urgency=urgency,
+        # WO-0031 (SOL-F-002): historical candidates keep their own epoch's
+        # urgency; the still-filling bucket never enters the ratchet.
+        urgency_at=lambda t: _urgency_at(envelope, t),
+        last_bar_open=bool(bars) and bars[-1].end > now,
+    )
 
     # --- history accounting (never internal state) ------------------------- #
     actions = _own_actions(envelope, history)
     has_working_order = _live_working_order_id(actions, history) is not None
-    tranche_taken = any(e.payload.get("tranche") for e in actions)
+    # WO-0031 (DRIFT-SVD-2): only WORKING actions consume the tranche
+    # entitlement — a refused_stale event still carries the refused action's
+    # tranche flag (provenance) and must NOT burn the envelope's one tranche.
+    tranche_taken = any(
+        e.payload.get("tranche")
+        for e in actions
+        if e.payload.get("action") in _WORKING_ACTIONS
+    )
 
     # --- participation sizing off the raw tape ----------------------------- #
     window = VolumeWindow(horizon=PARTICIPATION_HORIZON)
@@ -297,19 +354,36 @@ def decide(
         and (latest.last_price <= ws.stop)
     ):
         # Breakdown through the working stop: exit what the tape absorbs,
-        # marketable at the bid (a 1-share probe is allowed here — protection
-        # beats participation politeness on the way out).
+        # marketable at the bid. A probe above the participation allowance is
+        # allowed here — protection beats participation politeness on the way
+        # out — but NEVER silently (WO-0031(c)/SOL-F-004, adjudicated by the
+        # human seat: incumbent behavior, REPORTED): exceeding the allowance
+        # carries a participation ClampNote, and a venue-REJECTED probe
+        # doubles the next probe's floor (min-order-size armor for low-price
+        # venues), still capped by remaining.
+        probe_floor = min(remaining, 2 ** _rejected_probe_count(actions, history))
+        quantity = min(remaining, max(probe_floor, absorbable))
+        clamps = ws.clamps
+        if quantity > absorbable:
+            clamps = (
+                *clamps,
+                ClampNote(
+                    field="participation",
+                    computed=float(absorbable),
+                    clamped_to=float(quantity),
+                ),
+            )
         desired = PlannedAction(
             kind=ActionKind.SUBMIT,
             limit_price=latest.bid,
-            quantity=min(remaining, max(1, absorbable)),
+            quantity=quantity,
             regime=ws.regime,
             urgency=urgency,
             working_stop=ws.stop,
             atr=ws.atr,
             tranche=False,
             stop_triggered=True,
-            clamps=ws.clamps,
+            clamps=clamps,
         )
     elif not tranche_taken and ws.regime in (
         Regime.FAST_SPIKE,
