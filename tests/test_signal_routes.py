@@ -418,6 +418,59 @@ def test_out_of_range_advisory_is_nulled_on_quarantine_record_kept_in_raw_fields
     assert any("suggested_quantity" in k for k in body["raw_fields"])  # kept verbatim
 
 
+def test_quarantine_for_other_field_preserves_valid_freshness_fields(client):
+    # Auto-review round 8 (P2): a quarantine caused by a DIFFERENT field must
+    # preserve valid issued_at/ttl_seconds on the record — SignalRecord nulls
+    # freshness fields ONLY when the field itself is malformed.
+    iso = datetime.now(timezone.utc).isoformat()
+    r = client.post(
+        "/api/signals",
+        json={
+            "signal_id": "adv-fresh",
+            "issued_at": iso,
+            "ttl_seconds": 300,
+            "symbol": "AAPL",
+            "direction": "buy",
+            "thesis": "x",
+            "provenance": {"model": 1},  # the ONLY offender
+        },
+        headers=_PROD_H,
+    )
+    assert r.status_code == 422
+    body = r.json()
+    assert body["status"] == "quarantined"
+    assert body["issued_at"] is not None  # valid freshness field preserved
+    assert body["ttl_seconds"] == 300
+    assert any("provenance" in k for k in body["raw_fields"])  # offender kept
+
+
+def test_same_id_distinct_valid_issued_at_is_conflict_not_idempotent_replay(client):
+    # The hash-distinctness half: two bodies, same signal_id + same offender,
+    # differing ONLY in a VALID issued_at, must not collapse into one idempotent
+    # 200 replay (which silently drops the second distinct fact) — the valid
+    # issued_at is now folded into the dedup hash, so the second is a 409 conflict.
+    base = {
+        "signal_id": "dup-fresh",
+        "ttl_seconds": 300,
+        "symbol": "AAPL",
+        "direction": "buy",
+        "thesis": "x",
+        "provenance": {"model": 1},  # offender in both
+    }
+    r1 = client.post(
+        "/api/signals",
+        json={**base, "issued_at": "2026-07-14T15:00:00+00:00"},
+        headers=_PROD_H,
+    )
+    r2 = client.post(
+        "/api/signals",
+        json={**base, "issued_at": "2026-07-14T16:00:00+00:00"},
+        headers=_PROD_H,
+    )
+    assert r1.status_code == 422
+    assert r2.status_code == 409  # distinct payload -> conflict, NOT a 200 replay
+
+
 def test_get_signals_status_query_param_actually_filters(client):
     # Auto-reviewer P2 #2: the query param is documented/contracted as `status`
     # (04-auth-and-api.md §2: "parameters: [status: SignalStatus = received, ...]")

@@ -459,12 +459,17 @@ def load_settings() -> Settings:
     # never equal any producer key, or that producer could present its own key
     # as X-Operator-Key and pass every operator-only route (ADR-009 A-1 role
     # separation: a producer key authorizes POST /api/signals ONLY). Compared
-    # constant-time (secrets.compare_digest) against every configured producer
-    # key — never short-circuited on the first mismatch, so this check itself
-    # leaks no timing signal about which producer key (if any) collides.
+    # constant-time against every configured producer key — never short-circuited
+    # on the first mismatch, so this check itself leaks no timing signal about
+    # which producer key (if any) collides. UTF-8 bytes are compared (not the
+    # bare str) so a non-ASCII configured secret does not raise TypeError from
+    # secrets.compare_digest and crash settings load before the intended
+    # credential diagnostics — consistent with the request-time byte-safe compare
+    # (auto-review round 8).
     if operator_api_key:
+        operator_key_bytes = operator_api_key.encode("utf-8")
         overlap = any(
-            secrets.compare_digest(operator_api_key, producer_key)
+            secrets.compare_digest(operator_key_bytes, producer_key.encode("utf-8"))
             for producer_key in signal_producer_keys
         )
         if overlap:

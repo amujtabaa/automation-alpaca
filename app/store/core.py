@@ -2528,8 +2528,13 @@ def plan_signal_ingest(
         )
 
     # New record. Malformed-but-attributable (Pydantic verdict from the route) is a
-    # terminal validation-quarantine: the offending typed fields are NULL, the raw
-    # offender preserved in raw_fields, expires_at uncomputable/NULL.
+    # terminal validation-quarantine: the raw offender is preserved in raw_fields
+    # and expires_at is uncomputable/NULL (never approvable, so no deadline). The
+    # typed freshness fields carry whatever the route's safe accessors extracted —
+    # which is None IFF that field itself is malformed, and the valid parsed value
+    # otherwise (auto-review round 8: null only the field that is actually
+    # malformed, mirroring SignalRecord's nullability contract; advisory fields
+    # were already preserved this way).
     if validation_failed:
         record = SignalRecord(
             producer_id=producer_id,
@@ -2537,8 +2542,8 @@ def plan_signal_ingest(
             status=SignalStatus.QUARANTINED,
             symbol=symbol,
             direction=direction,
-            issued_at=None,
-            ttl_seconds=None,
+            issued_at=issued_at,
+            ttl_seconds=ttl_seconds,
             expires_at=None,
             received_at=received_at,
             raw_fields=raw_fields or {},

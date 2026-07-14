@@ -583,6 +583,17 @@ def project_signal_records(
         existing = records.get((producer_id, signal_id))
         if existing is None:
             continue
+        if existing.status is not SignalStatus.RECEIVED:
+            # A1 (02-lifecycle §2): terminal is terminal — QUARANTINED / EXPIRED /
+            # REJECTED / APPROVED accept NO further transition. RECEIVED is the
+            # only transitionable state, so the FIRST terminal state latches; a
+            # later transition event (e.g. a raced sweep SIGNAL_EXPIRED arriving
+            # after SIGNAL_APPROVED, or the reverse) is a no-op on replay. Without
+            # this, RECEIVED→EXPIRED→APPROVED would replay as APPROVED — replay
+            # would "approve" an already-expired signal and diverge from the live
+            # single-writer safety checks once WO-0103/0104 emit these events
+            # (auto-review round 8 P1).
+            continue
         transition_ts = event.ts_event or event.ts_init
         update: dict[str, object] = {"status": mapped, "updated_at": transition_ts}
         ts_field = _SIGNAL_TRANSITION_TIMESTAMP_FIELD.get(etype)

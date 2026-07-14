@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -22,7 +23,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.api.deps import check_signal_rails, get_signal_facade, require_operator
-from app.api.schemas import SignalProposal
+from app.api.schemas import _BARE_NUMERIC_RE, SignalProposal
 from app.facade.errors import FacadeError
 from app.facade.http_mapping import facade_error_to_http
 from app.facade.signals import SignalFacade
@@ -140,6 +141,31 @@ def _safe_optional_float(raw: dict, key: str) -> Optional[float]:
     if not math.isfinite(numeric) or numeric <= 0:
         return None
     return numeric
+
+
+def _safe_optional_issued_at(raw: dict) -> Optional[datetime]:
+    """A valid ISO-8601, timezone-aware ``issued_at`` datetime, or ``None`` —
+    never raising. When a body is quarantined for a DIFFERENT field, a VALID
+    ``issued_at`` must be preserved on the record, not dropped: SignalRecord's
+    contract nulls freshness fields ONLY when the field ITSELF is malformed
+    (auto-review round 8). Mirrors SignalProposal's ``issued_at`` wire rule — a
+    string with ISO separators (not a bare numeric Unix-timestamp token),
+    parseable by ``datetime.fromisoformat``, and timezone-aware; anything else
+    (incl. the offending value itself) yields ``None`` and stays in raw_fields."""
+
+    value = raw.get("issued_at")
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or _BARE_NUMERIC_RE.fullmatch(stripped):
+        return None
+    if not any(sep in stripped for sep in ("-", ":", "T", "t")):
+        return None
+    try:
+        parsed = datetime.fromisoformat(stripped)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _safe_provenance(raw: dict) -> dict[str, str]:
@@ -261,8 +287,14 @@ async def ingest_signal(
             signal_id=signal_id,
             symbol=_raw_str(raw_dict, "symbol", "UNKNOWN"),
             direction=_raw_str(raw_dict, "direction", "buy"),
-            issued_at=None,
-            ttl_seconds=None,
+            # Preserve VALID parsed freshness fields on a quarantine caused by a
+            # different field (auto-review round 8): the safe accessors return
+            # None iff the field itself is malformed, so a valid issued_at/ttl is
+            # kept on the record AND folded into the dedup hash (so two bodies
+            # differing only in a valid freshness field no longer collide as an
+            # idempotent replay). The offenders remain verbatim in raw_fields.
+            issued_at=_safe_optional_issued_at(raw_dict),
+            ttl_seconds=_safe_optional_int(raw_dict, "ttl_seconds"),
             suggested_quantity=_safe_optional_int(raw_dict, "suggested_quantity"),
             suggested_limit_price=_safe_optional_float(
                 raw_dict, "suggested_limit_price"

@@ -187,3 +187,26 @@ def test_operator_key_distinct_from_producer_keys_ok(monkeypatch):
     s = load_settings()
     assert s.operator_api_key == "op-secret-xyz"
     assert s.signal_producer_keys == {"prod-key-abc": "vibe-trading"}
+
+
+def test_non_ascii_secrets_do_not_crash_overlap_guard(monkeypatch):
+    # Auto-review round 8 (P2): a non-ASCII configured secret must not raise
+    # TypeError from secrets.compare_digest in the role-separation overlap guard
+    # (which would crash settings load before any credential diagnostics). The
+    # guard compares UTF-8 bytes, so distinct non-ASCII keys load cleanly...
+    _clear(monkeypatch)
+    monkeypatch.setenv("OPERATOR_API_KEY", "öperator-key")
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"prödücer-key": "vibe-trading"}')
+    s = load_settings()
+    assert s.operator_api_key == "öperator-key"
+    assert s.signal_producer_keys == {"prödücer-key": "vibe-trading"}
+
+
+def test_non_ascii_operator_equal_to_producer_still_detected(monkeypatch):
+    # ...and an ACTUAL overlap of identical non-ASCII keys is still caught (the
+    # byte-safe compare is correct, not merely non-throwing).
+    _clear(monkeypatch)
+    monkeypatch.setenv("OPERATOR_API_KEY", "shäred-secret")
+    monkeypatch.setenv("SIGNAL_PRODUCER_KEYS", '{"shäred-secret": "vibe-trading"}')
+    with pytest.raises(ValueError, match="OPERATOR_API_KEY"):
+        load_settings()

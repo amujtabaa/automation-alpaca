@@ -218,3 +218,44 @@ async def test_transition_payload_round_trips_through_both_stores(any_store):
     assert rec.converted_id == "intent-xyz"
     assert rec.approved_by == "operator"
     assert rec.approved_at == _NOW + timedelta(minutes=5)
+
+
+def _expired_event(*, producer_id="vibe", signal_id="sig-1") -> ExecutionEvent:
+    # Synthetic SIGNAL_EXPIRED (02-lifecycle §2): producer_id, signal_id, record_id.
+    ts = _NOW + timedelta(minutes=3)
+    return ExecutionEvent(
+        event_type=ExecutionEventType.SIGNAL_EXPIRED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        symbol="AAPL",
+        ts_init=ts,
+        payload={
+            "producer_id": producer_id,
+            "signal_id": signal_id,
+            "record_id": "rec-1",
+            "detected_by": "sweep",
+        },
+    )
+
+
+def test_terminal_state_latches_and_later_transition_is_noop():
+    # Auto-review round 8 (P1): once a record folds to a terminal state, a later
+    # transition event MUST NOT overwrite it (02-lifecycle A1: terminal is
+    # terminal). RECEIVED -> EXPIRED -> APPROVED must replay as EXPIRED, never
+    # APPROVED — replay must never "approve" an already-expired signal.
+    events = [_received_event(), _expired_event(), _approved_event()]
+    rec = project_signal_records(events)[("vibe", "sig-1")]
+    assert rec.status is SignalStatus.EXPIRED
+    assert rec.approved_at is None  # the illegal APPROVED did not apply
+    assert rec.converted_id is None  # nor did its correlation fields
+    # The record's updated_at reflects the EXPIRED transition, not the ignored one.
+    assert rec.expired_at == _NOW + timedelta(minutes=3)
+
+
+def test_terminal_quarantine_not_overwritten_by_later_approval():
+    # The same latch for a QUARANTINED terminal (e.g. a producer-sweep quarantine
+    # followed by a stray approval must stay QUARANTINED).
+    events = [_received_event(), _producer_sweep_quarantine_event(), _approved_event()]
+    rec = project_signal_records(events)[("vibe", "sig-1")]
+    assert rec.status is SignalStatus.QUARANTINED
+    assert rec.approved_at is None
