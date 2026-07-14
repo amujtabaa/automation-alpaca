@@ -1,8 +1,8 @@
 ---
 type: Module Knowledge
 title: Signal Seat — external signal producers (contract summary)
-status: active
-authority: high
+status: draft
+authority: medium
 owner: Ameen
 last_verified: 2026-07-14
 tags: [signal-seat, architecture, boundaries, safety]
@@ -17,9 +17,13 @@ superseded_by: null
 
 External agentic producers (untrusted advisors, out-of-process) may POST signal proposals to the
 backend over an authenticated HTTP contract; a proposal becomes an order intent **only** through
-per-signal human approval (trust level L0). ADR-009 (Accepted 2026-07-12) is the decision; the
-full implementable contract is `docs/spec/signal-seat/` (WO-0101 output). Implementation:
-WO-0102 (ingestion) → WO-0103 (approval surface) ∥ WO-0104 (rails), queued.
+per-signal human approval (trust level L0). **GATE STATE (2026-07-14): ADR-009 is Proposed — its
+acceptance was RESCINDED after the formal REV-0022 review returned BLOCK (4 P1s: credential/
+transport boundary, non-atomic conversion, TTL/classification bounds, unbounded audit). Nothing
+below is implementable until F-001..F-004 are remediated and re-review clears; WO-0102..0104 are
+re-gated.** ADR-009 (Proposed) is the decision; the
+draft contract is `docs/spec/signal-seat/` (WO-0101 output — DRAFT input to the remediation).
+Implementation: WO-0102 → WO-0103 ∥ WO-0104, all RE-GATED pending remediation + re-review.
 
 ## Rules / facts
 
@@ -71,3 +75,4 @@ formalizes that entry point for machine advisors without moving the human gate. 
 ## Change log
 
 - 2026-07-14: Created as WO-0101's PKL distillation of `docs/spec/signal-seat/`.
+- 2026-07-14 (later): marked draft/medium-authority — REV-0022's formal verdict (BLOCK) rescinded ADR-009's acceptance; page re-promotes only when the re-review clears (Codex PR #6 finding).

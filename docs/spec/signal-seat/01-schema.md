@@ -73,11 +73,13 @@ On `POST /api/signals` with an existing `(producer_id, signal_id)`:
 - **Identical `payload_hash`** → idempotent replay: HTTP 200 with the existing record; **no new
   event appended** (mirrors `client_order_id` idempotency). Works in every signal status.
 - **Different `payload_hash`** → duplicate-conflict: the **existing** record's status is untouched;
-  the conflicting submission is recorded **once** as `SIGNAL_QUARANTINED` (reason
-  `"duplicate_conflict"`, its own `SignalRecord` with server id, linked to the original in the
-  payload). HTTP 409. Further conflicting replays of the same `(producer_id, signal_id,
-  payload_hash)` are boundary-rejected 409 with coalesced audit only (`03-rails.md §4`) — one
-  conflict, one event.
+  the conflict is recorded **event-only** — one `SIGNAL_QUARANTINED` event (reason
+  `"duplicate_conflict"`) whose payload embeds the conflicting proposal + both hashes, linked to
+  the original record's id. **No second `SignalRecord` row is created** — `(producer_id,
+  signal_id)` stays a true unique key in both stores (Codex PR #6: a same-key second row would
+  contradict the unique index). HTTP 409. Further conflicting replays of the same `(producer_id,
+  signal_id, payload_hash)` are boundary-rejected 409 with coalesced audit only (`03-rails.md §4`)
+  — one conflict, one event.
 
 ## 4. The approval payload (request body of the approve route)
 

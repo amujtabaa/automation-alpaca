@@ -96,6 +96,7 @@ Strong, risk high: triggers order submission — a human-gated safety surface; C
 ## Notes
 
 - `allowed_paths` corrected on install from the draft's `src/ui|api|facade|engine` to the as-built tree (`cockpit/`, `app/…`); finalize against WO-0101's spec at activation.
+- **Schema-migration gate (Codex PR #6):** the nullable `signal_producer_id`/`signal_signal_id` columns on Candidate/SellIntent are a DB schema change — human-gated; migration plan requires explicit approval before execution.
 - Disposition intent from planning seat: RESULT_SUMMARY_KEPT + ledger entry; independent review queued.
 
 ## Completion disposition

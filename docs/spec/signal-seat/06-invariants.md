@@ -40,6 +40,12 @@ Every note names the concrete mechanism in this spec (doc§), not an assertion o
 - Invalid market data never drives sizing: sizing comes from the operator payload validated by
   `limit_price_reason`/positivity (01§4); the risk gate applies its own market-data rails
   unchanged.
-- Human-gated surfaces: order submission is triggered only by the operator's approval (04§1
-  credential model); kill switch, flatten, mode config, schema/event-log truth are untouched
-  (event-type *additions* per 02§2 with the escalation note preserved in WO-0102).
+- Human-gated surfaces — named, not waved through (Codex PR #6 P1): **this spec DOES touch two
+  gated surfaces and their gates apply in full.** (a) `ExecutionEventType` additions (02§2) are a
+  change to the event-log vocabulary — WO-0102's escalation note stands (escalate, never
+  self-decide), and the change queues for independent review coverage before beta reliance.
+  (b) The new `SignalRecord` table and the nullable `signal_producer_id`/`signal_signal_id`
+  columns on Candidate/SellIntent (05§4) are **schema/DB migration** — human-gated: the migration
+  plan (additive-only, NULL-default, no rewrite of existing rows, both stores) requires explicit
+  human approval in WO-0102/0103 before execution. Kill switch, flatten, and mode config are
+  genuinely untouched; order submission is triggered only by the operator's approval (04§1).
