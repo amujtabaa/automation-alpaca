@@ -14,7 +14,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+import functools
+
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -314,6 +317,74 @@ def test_invalid_producer_key_on_operator_route_is_401_not_403(client):
     # A VALID producer key on the same operator routes stays the wrong-role 403.
     assert client.get("/api/positions", headers=_PROD_H).status_code == 403
     assert client.get("/api/signals", headers=_PROD_H).status_code == 403
+
+
+def test_non_ascii_credentials_are_invalid_not_error():
+    # Auto-review round 5 (P2): secrets.compare_digest raises TypeError on a
+    # non-ASCII str, which at request time would surface as a 500 instead of the
+    # A-1 matrix's clean 401/403. Verified at the validator level (an HTTP client
+    # ASCII-encodes header values, so the byte can only arrive via a raw client;
+    # the reviewer's own evidence was operator_key_valid('é', ...) throwing).
+    from app.api.deps import (
+        operator_key_valid,
+        producer_key_valid,
+        resolve_producer_id,
+    )
+
+    settings = Settings(
+        signal_seat_enabled=True,
+        operator_api_key=OPERATOR_KEY,
+        signal_producer_keys={PRODUCER_KEY: "vibe"},
+    )
+    # No TypeError — a non-ASCII value is simply an unequal (invalid) credential.
+    assert operator_key_valid("é", settings) is False
+    assert producer_key_valid("é", settings) is False
+    # And resolve_producer_id maps a non-ASCII producer key to a clean 401.
+    with pytest.raises(HTTPException) as exc:
+        resolve_producer_id(producer_key="é", operator_key=None, settings=settings)
+    assert exc.value.status_code == 401
+
+
+def test_operator_command_audit_actor_is_principal_not_forged_x_actor():
+    # Auto-review round 5 (P1): with the seat flag ON, an operator command
+    # route's AUDITED actor derives from the authenticated principal; a forged
+    # X-Actor can only sub-label it, never replace it (LOCKED 04 §2 / A-1).
+    # Proven end-to-end through middleware -> get_actor -> command facade ->
+    # audit event. Uses the sync TestClient (runs lifespan) + its portal to read
+    # the async store in the app's own loop.
+    from app.models import EventType
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    app = build_flag_on_app(store=store)
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/controls/kill-switch",
+            json={"engaged": True},
+            headers={**_OP_H, "X-Actor": "totally-someone-else"},
+        )
+        assert r.status_code == 200, r.text
+        events = c.portal.call(
+            functools.partial(
+                store.list_events, event_type=EventType.KILL_SWITCH_ENGAGED.value
+            )
+        )
+    assert events, "no kill-switch audit event was written"
+    # The forged X-Actor did NOT replace the authenticated operator principal.
+    assert events[-1].payload["actor"] == "operator:totally-someone-else"
+
+
+def test_invalid_operator_key_on_producer_route_is_401_not_403(client):
+    # Auto-review round 5 (P2): resolve_producer_id returned 403 for ANY operator
+    # key on POST /api/signals without validating it. 403 is reserved for a VALID
+    # opposite-role credential; an unknown operator key is 401.
+    r = client.post(
+        "/api/signals", json=_proposal(), headers={"X-Operator-Key": "not-real"}
+    )
+    assert r.status_code == 401
+    # A VALID operator key on the producer route stays the wrong-role 403.
+    r2 = client.post("/api/signals", json=_proposal(), headers=_OP_H)
+    assert r2.status_code == 403
 
 
 def test_get_signals_status_query_param_actually_filters(client):

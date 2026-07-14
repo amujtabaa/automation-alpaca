@@ -103,7 +103,30 @@ def test_translate_is_transparent_on_success():
     ],
 )
 def test_get_actor_resolves_header_or_default(header, expected):
+    # Flag-off / direct call (no authenticated principal): X-Actor is the label.
     assert get_actor(x_actor=header) == expected
+
+
+def test_get_actor_binds_authenticated_principal_over_x_actor():
+    # Auto-review round 5 (P1): under signal_seat_enabled the operator middleware
+    # stamps request.state.authenticated_actor; that principal is authoritative
+    # and X-Actor can only sub-label it — a valid operator must NOT be able to
+    # record an arbitrary forged actor on a kill-switch/flatten audit payload
+    # (LOCKED 04-auth-and-api.md §2 / ADR-009 A-1).
+    from types import SimpleNamespace
+
+    authed = SimpleNamespace(state=SimpleNamespace(authenticated_actor="operator"))
+    assert get_actor(request=authed, x_actor="totally-someone-else") == (
+        "operator:totally-someone-else"
+    )
+    assert get_actor(request=authed, x_actor=None) == "operator"
+    assert get_actor(request=authed, x_actor="   ") == "operator"
+
+    # No principal on state (flag off) → beta behavior unchanged.
+    unauthed = SimpleNamespace(state=SimpleNamespace())
+    assert get_actor(request=unauthed, x_actor="desk-3") == "desk-3"
+    assert get_actor(request=unauthed, x_actor=None) == DEFAULT_ACTOR
+    assert get_actor(request=None, x_actor=None) == DEFAULT_ACTOR
 
 
 # --------------------------------------------------------------------------- #

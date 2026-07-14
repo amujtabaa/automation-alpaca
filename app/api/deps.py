@@ -21,6 +21,19 @@ from app.store.base import StateStore
 PRODUCER_KEY_HEADER = "X-Producer-Key"
 OPERATOR_KEY_HEADER = "X-Operator-Key"
 
+
+def _credentials_equal(supplied: str, configured: str) -> bool:
+    """Constant-time credential equality that tolerates a non-ASCII supplied
+    value (auto-review round 5). ``secrets.compare_digest`` raises ``TypeError``
+    on a non-ASCII *str* argument; an attacker-supplied ``X-Operator-Key`` /
+    ``X-Producer-Key`` like ``"é"`` would then surface as a 500 instead of the
+    A-1 matrix's clean 401/403. Comparing UTF-8 bytes sidesteps the ASCII-only
+    restriction so any weird value is simply an unequal (invalid) credential."""
+
+    return secrets.compare_digest(
+        supplied.encode("utf-8"), configured.encode("utf-8")
+    )
+
 # Default actor for command endpoints when no ``X-Actor`` header is sent. Beta is
 # single-user localhost with no authentication (docs/01_ARCHITECTURE.md), so
 # there is no login to derive an identity from; ADR-005 still wants a command's
@@ -82,19 +95,38 @@ def get_market_data_service(request: Request) -> MarketDataService:
     return request.app.state.market_data
 
 
-def get_actor(x_actor: str | None = Header(default=None)) -> str:
-    """The audited actor for a command endpoint (Phase-6 minimal actor-audit).
+def get_actor(
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects; None on direct calls
+    x_actor: str | None = Header(default=None),
+) -> str:
+    """The audited actor for a command endpoint.
 
-    Reads an optional ``X-Actor`` request header, falling back to
-    :data:`DEFAULT_ACTOR`. A blank/whitespace-only header falls back too rather
-    than recording an empty actor. This is an audit label, not authentication —
-    beta stays single-user localhost with no auth gate (the accepted Phase-6
-    resolution of the 01_ARCHITECTURE.md vs ADR-005 conflict).
+    Two regimes, per the LOCKED contract (04-auth-and-api.md §2 / ADR-009 A-1
+    line 162): "Actor identity derives from the **authenticated principal**;
+    ``X-Actor`` is an optional sub-label."
+
+    * **Flag ON (``signal_seat_enabled``):** the operator-enforcement middleware
+      has authenticated the caller and stamped ``request.state.authenticated_actor``.
+      That principal is authoritative — ``X-Actor`` can only APPEND a sub-label
+      (``"operator:desk-3"``), never REPLACE the principal. Otherwise a valid
+      operator could record any actor string in a kill-switch/flatten audit
+      payload (auto-review round 5 P1).
+    * **Flag OFF (beta as-built):** no authentication exists, so this stays the
+      Phase-6 minimal actor-audit label — ``X-Actor`` else :data:`DEFAULT_ACTOR`
+      (accepted 01_ARCHITECTURE.md vs ADR-005 resolution). A blank/whitespace
+      header falls back rather than recording an empty actor.
     """
 
-    if x_actor is None or not x_actor.strip():
-        return DEFAULT_ACTOR
-    return x_actor.strip()
+    label = x_actor.strip() if x_actor and x_actor.strip() else None
+    principal = (
+        getattr(request.state, "authenticated_actor", None)
+        if request is not None
+        else None
+    )
+    if principal:
+        # Authenticated principal is authoritative; X-Actor is a demoted sub-label.
+        return f"{principal}:{label}" if label else principal
+    return label or DEFAULT_ACTOR
 
 
 # --------------------------------------------------------------------------- #
@@ -117,11 +149,15 @@ def resolve_producer_id(
     matched: Optional[str] = None
     if producer_key is not None:
         for key, producer_id in settings.signal_producer_keys.items():
-            if secrets.compare_digest(producer_key, key):
+            if _credentials_equal(producer_key, key):
                 matched = producer_id
     if matched is not None:
         return matched
-    if operator_key is not None and producer_key is None:
+    # A VALID operator key on the producer route is the wrong-role 403; an
+    # unknown/garbage operator key (or none) with no producer key is an
+    # unrecognized credential -> 401 (auto-review round 5: validate before 403,
+    # A-1 matrix reserves 403 for a valid opposite-role credential).
+    if operator_key_valid(operator_key, settings) and producer_key is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="operator credential is not valid for POST /api/signals "
@@ -138,7 +174,7 @@ def operator_key_valid(operator_key: Optional[str], settings: Settings) -> bool:
 
     if not settings.operator_api_key or operator_key is None:
         return False
-    return secrets.compare_digest(operator_key, settings.operator_api_key)
+    return _credentials_equal(operator_key, settings.operator_api_key)
 
 
 def producer_key_valid(producer_key: Optional[str], settings: Settings) -> bool:
@@ -154,7 +190,7 @@ def producer_key_valid(producer_key: Optional[str], settings: Settings) -> bool:
         return False
     matched = False
     for key in settings.signal_producer_keys:
-        if secrets.compare_digest(producer_key, key):
+        if _credentials_equal(producer_key, key):
             matched = True
     return matched
 

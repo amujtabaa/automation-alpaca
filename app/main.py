@@ -55,6 +55,7 @@ from app.api import (
     routes_watchlist,
 )
 from app.api.deps import (
+    DEFAULT_ACTOR,
     OPERATOR_KEY_HEADER,
     PRODUCER_KEY_HEADER,
     operator_key_valid,
@@ -251,6 +252,12 @@ def create_app(
                 if operator_key_valid(
                     request.headers.get(OPERATOR_KEY_HEADER), settings
                 ):
+                    # A-1: the audited actor derives from the authenticated
+                    # principal, not a caller-controlled X-Actor header. Stamp it
+                    # so get_actor binds kill-switch/flatten/etc. audit to the
+                    # operator and demotes X-Actor to an optional sub-label
+                    # (auto-review round 5 P1).
+                    request.state.authenticated_actor = DEFAULT_ACTOR
                     return await call_next(request)
                 # A VALID producer key on an operator route is the wrong-role
                 # 403; an unknown/garbage X-Producer-Key is an unrecognized

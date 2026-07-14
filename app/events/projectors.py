@@ -536,6 +536,15 @@ _SIGNAL_TRANSITION_DIRECT_FIELDS = (
 # Spec payload key -> SignalRecord field, for names that differ (02-lifecycle §2:
 # SIGNAL_APPROVED/SIGNAL_REJECTED carry `actor`; the model's approval-audit field
 # is `approved_by`). Applied only for the event type it is keyed under.
+#
+# SIGNAL_REJECTED's actor (auto-review round 5 P2) is deliberately NOT mapped
+# here yet: SignalRecord has `approved_by` but no `rejected_by`, and adding that
+# persisted field is a SignalRecord schema addition that lands WITH WO-0103 (the
+# work order that first EMITS SIGNAL_REJECTED events) under its own human-gated
+# schema-migration approval — not on WO-0102's surface. WO-0103 adds both the
+# `rejected_by` field and its {"actor": "rejected_by"} alias entry together, with
+# a rejected-transition fold test mirroring the approved one. Until then no
+# rejection events exist, so nothing is dropped in practice.
 _SIGNAL_TRANSITION_ALIASES: dict[ExecutionEventType, dict[str, str]] = {
     ExecutionEventType.SIGNAL_APPROVED: {"actor": "approved_by"},
 }
