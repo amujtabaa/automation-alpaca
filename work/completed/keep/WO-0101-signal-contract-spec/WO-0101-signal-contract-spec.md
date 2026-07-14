@@ -126,3 +126,10 @@ not annotations. Evidence: `check_pkl` PASS on the new page; scope diff confined
 `docs/spec/signal-seat/**` + `pkl/architecture/signal-seat.md` + this close-out. Third-party
 implementability judged met: WO-0102's endpoints, schema, storage entity, events, rails, auth,
 and test contracts are all enumerated with types and defaults.
+
+## Post-close correction (2026-07-14)
+
+The activation premise (ADR-009 accepted, REV-0022 ACCEPT-WITH-CHANGES) was rescinded hours after
+close: the formal REV-0022 packet surfaced with verdict **BLOCK** (four P1s). The WO stays CLOSED —
+the spec was genuinely produced and is kept — but `docs/spec/signal-seat/` is re-marked DRAFT input
+to the ADR remediation, and WO-0102..0104 are re-gated. See `work/review/REV-0022/disposition.md`.

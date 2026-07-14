@@ -13,13 +13,13 @@ created: 2026-07-11
 
 # Work Order: Signal ingestion endpoint + event-log provenance
 
-> **ADR GATE CLEARED (2026-07-12)** — ADR-009 Accepted, REV-0022 RESOLVED. **STILL GATED on WO-0101's spec** (this WO must be implementable from that spec alone). Original: until ADR-009 is accepted post independent cross-model review
+> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, and on WO-0101's spec (drafted, `docs/spec/signal-seat/`, itself draft pending the same remediation)
 > **and** WO-0101's spec is complete (this WO must be implementable from that spec alone).
 > Sequencing: 0101 → 0102 → {0103, 0104 in parallel}.
 
 ## Goal
 
-Implement `POST /signals` (auth: per-producer API key), Pydantic validation, dedupe on `signal_id`, and append-only `SIGNAL_RECEIVED`/`SIGNAL_QUARANTINED` events. Feature-flagged, **default off**.
+Implement `POST /signals` (auth: per-producer API key), Pydantic validation, dedupe on **`(producer_id, signal_id)`** (never bare `signal_id`), and append-only `SIGNAL_RECEIVED`/`SIGNAL_QUARANTINED` events. Feature-flagged, **default off**.
 
 ## Context packet
 
@@ -80,7 +80,7 @@ forbidden_paths:
 
 ## Required tests
 
-- [ ] Unit + integration: accept, dedupe on `signal_id`, malformed→`SIGNAL_QUARANTINED`, auth-reject — dual-store.
+- [ ] Unit + integration: accept, dedupe on `(producer_id, signal_id)` incl. the cross-producer duplicate-id case, malformed→`SIGNAL_QUARANTINED`, auth-reject — dual-store.
 - [ ] Replay: signal state reconstructable purely from events.
 - [ ] Flag-off: endpoint absent/404.
 

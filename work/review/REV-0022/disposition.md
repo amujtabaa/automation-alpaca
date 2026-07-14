@@ -1,35 +1,46 @@
 ---
 type: Review Disposition
 rev_id: REV-0022
-verdict_received: ACCEPT-WITH-CHANGES
-disposition_status: RESOLVED
-date: 2026-07-12
+verdict_received: BLOCK
+disposition_status: REMEDIATION_OPEN
+date: 2026-07-14
 ---
 
 # Disposition — REV-0022 (ADR-009 Signal Seat acceptance review)
 
-Reviewer: GPT-5 (Codex), acting as the chatgpt-codex-connector GitHub App on PR #5 — seven
-adversarial passes, 16 findings, all verified against the code and applied before merge
-(`result.md` has the full ledger). Verdict ACCEPT-WITH-CHANGES is constructed from that record;
-the changes were applied in-flight, so nothing remains outstanding from the review.
+**Verdict: BLOCK** (GPT-5/Codex, formal packet run by Ameen on frozen commit `25590a7`,
+result dated 2026-07-11 — `result.md`). Four P1 findings, none yet remediated:
 
-**Human decision (Ameen, 2026-07-12):** the PR #5 review record satisfies the independent
-cross-model review requirement for ADR-009 (option-1 decision, recorded via the implementer
-session after the numbering-collision investigation confirmed no separate packet run existed for
-this REV id). **ADR-009 is ACCEPTED** — status flipped in `docs/adr/ADR-009-signal-seat-boundary.md`
-in the same change as this disposition.
+- **F-001** — the credential boundary is incomplete: read routes (pending-signal list, existing
+  position/order/session queries) stay unauthenticated, and transport/key-lifecycle (TLS or
+  loopback-only, storage, rotation, constant-time compare) is unspecified. Live probe: an
+  unauthenticated request flipped the kill switch.
+- **F-002** — approval→intent conversion is not required to be one atomic operation; a live
+  crash-injection probe consumed a candidate approval without creating its order. The
+  human-gated boundary needs a dual-store atomic command (or durable outbox), with
+  crash/interleaving tests across expiry/quarantine/TradingState races.
+- **F-003** — freshness/classification bounds must live in the ADR, not be deferred: server-max
+  TTL, `expires_at = min(received_at + server_max_ttl, issued_at + bounded_ttl)`, skew limits,
+  restart behavior, and an executable risk-reducing predicate over fresh derived position +
+  outstanding sell exposure.
+- **F-004** — "coalesced periodic audit" still grows without bound over indefinite hostility;
+  bound must be per-quarantine-epoch (one event per epoch + summary on release), with
+  auth/rate-limit before body parse and request-size caps.
 
-## Changes Applied
-All 16 — during the review itself, commits `85443fb`..`f99fa17` (see `result.md` table). No
-post-disposition remediation queue.
+## Rescind record (governance history, kept honest)
 
-## Gate effects
-- ADR-009: DRAFT → **Accepted** (2026-07-12, Ameen).
-- WO-0101..0104: the ADR-acceptance gate is CLEARED; sequencing gates between the WOs remain
-  (0101 → 0102 → {0103, 0104}), and WO-0103's own independent-review requirement (order-submission
-  surface) is untouched by this disposition.
+1. 2026-07-12: with no packet result visible in the repo, Ameen chose option 1 (treat the PR #5
+   seven-pass Codex record as the review) and accepted ADR-009; a constructed
+   ACCEPT-WITH-CHANGES result was filed (commit `15a4db1`).
+2. 2026-07-14: the formal packet result (run locally 2026-07-11, pushed 2026-07-14) surfaced with
+   verdict **BLOCK** — the constructed record is **superseded**
+   (`result-pr5-record-SUPERSEDED.md`, kept as a catalogue of the 16 PR-round findings, several of
+   which the formal review credits as fixed).
+3. Same change: **ADR-009 acceptance RESCINDED** (status back to Proposed), WO-0102..0104
+   re-gated, WO-0101's spec re-marked as draft input to remediation.
 
-## Process note
-This REV id collided with a parallel workstream's packet (`feat/execution-envelope`'s W3 review,
-now renumbered REV-0023) — the collision and its resolution are recorded in that branch's
-renumber commit.
+## Path to clearing the gate
+
+Remediate F-001..F-004 as ADR-009 text amendments + WO tightening (human-approved), then
+re-review (new packet or REV-0022 re-run at Ameen's discretion, mirroring the REV-0001→REV-0003
+pattern). The gate clears only on an ACCEPT/ACCEPT-WITH-CHANGES disposition of that re-review.

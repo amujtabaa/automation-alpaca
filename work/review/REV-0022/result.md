@@ -1,72 +1,42 @@
 ---
 type: Review Result
 rev_id: REV-0022
-reviewer: GPT-5 (Codex) via the chatgpt-codex-connector GitHub App — automated adversarial PR review
-review_venue: PR #5 (amujtabaa/automation-alpaca), commits e50153d..f99fa17
-verdict: ACCEPT-WITH-CHANGES (constructed — see "Verdict basis")
-findings_total: 16
+reviewer_model: GPT-5 Codex
+verdict: BLOCK
 date: 2026-07-11
-ingested: 2026-07-12 (by the implementer session, per Ameen's option-1 decision)
+reviewed_commit: 25590a76656d2e4393609ffc3cf37e27feb71d53
 ---
 
-# REV-0022 Result — ADR-009 Signal Seat, reviewed adversarially on PR #5
+## Verdict
 
-## Verdict basis (read this first)
+**BLOCK.** The HTTP/typed-facade boundary and the proposed L0 human-approval posture are directionally sound, and the existing cockpit/import seams can accommodate the panel without violating ADR-005/006. The ADR cannot be accepted yet because the authorization rollout, approval-to-intent transaction, signal-lifetime rail, and post-quarantine backpressure contract are not closed enough to support the invariant claims.
 
-This packet was never dispatched in the usual paste-the-request form. Instead, the same reviewer
-model (GPT-5/Codex) reviewed the ADR and its WO bundle **adversarially and independently on PR #5
-itself**, across **seven review passes** tracking every push (reviewed commits `e50153d`, `85443fb`,
-`c3bd038`, `8c7c893`, `25590a7`, `0ddabc5`, + trailing findings on the WO-0104 fix), producing
-**16 inline findings** — each re-derived from the as-built code (`.importlinter`, `app/api/deps.py`,
-`app/main.py`, `app/store/core.py:641+`, `app/models.py::SellReason`, `cockpit/api_client.py`),
-not from the author's claims. Every finding was verified against the code by the implementer before
-any change, and every change was applied in-flight; the reviewer raised no further findings after
-the final fix commit (`f99fa17`) through merge (`c4271d8`).
+## Findings
 
-The reviewer never emitted a formal verdict token, so **ACCEPT-WITH-CHANGES is constructed** from
-its observed behavior: 16 change-requests, 16 applied, zero open at merge. Ameen adjudicated that
-this record satisfies the independent cross-model review requirement for ADR-009 (decision recorded
-2026-07-12, this packet's disposition).
+| ID | Severity | File:line | Evidence | Why it matters | Proposed action / Fix |
+|---|---:|---|---|---|---|
+| REV-0022-F-001 | P1 | `docs/adr/ADR-009-signal-seat-boundary.md:38,43`; `work/queue/WO-0102-signal-ingestion-endpoint.md:39-57,70-76`; `work/queue/WO-0103-signal-approval-surface.md:61-64`; `app/api/deps.py:17-23,77-89` | The round-4/5 edits correctly require operator auth on mutating routes and cockpit credential plumbing in the same change, closing the earlier sequencing defect. The remaining credential boundary is unspecified: the ADR promises authenticated “HTTP” but does not require TLS or loopback-only transport, define key storage/rotation/comparison, or require operator auth on the pending-signal query and existing position/order/session query routes. WO-0102 adds producer/operator dependencies and command-route tests only; WO-0103 says the panel lists proposals but only approve/reject are explicitly operator-only. The live baseline probe confirms why this migration is material: bearer and unauthenticated kill-switch requests are currently both accepted as actor `operator`. | A producer that can reach FastAPI may be unable to mutate after WO-0102 yet still read positions, orders, sessions, signal theses/provenance, and pending approvals. Plain HTTP exposes both producer and operator API keys in transit; compromise of the cockpit credential restores access to every human-gated command. The ADR's role-separation claim is therefore incomplete at the trust boundary it introduces. | Amend ADR-009/WO-0101/0102 to require HTTPS (or an explicit loopback-only/reverse-proxy trust boundary), secret-at-rest configuration, rotation/revocation, constant-time comparison, and authenticated-principal-derived actor identity. Define a route matrix for missing/invalid/producer/operator credentials across all signal reads/writes and all existing sensitive queries/commands; the pending-proposal list must be operator-only. Test the matrix at the real mounted app. |
+| REV-0022-F-002 | P1 | `docs/adr/ADR-009-signal-seat-boundary.md:45-46,53,68-74`; `work/queue/WO-0103-signal-approval-surface.md:64-67`; `work/queue/WO-0104-signal-rails.md:58-61`; `app/facade/store_backed.py:696-697,759-772` | The ADR declares that approval emits a normal intent and thereafter needs no special status, but neither it nor WO-0103 requires one atomic conversion operation. The as-built pattern it points to performs `await gate.approve(candidate_id)` and `await create_order_for_candidate(...)` separately and only reverts mapped exceptions. An injected `CancelledError` after the first await reproduced `candidate_status approved orders 0 order_id None`. The draft tests cover double approval and an already-expired signal, but not expiry, producer quarantine/release, or `TradingState` changing between approval and the durable intent write. | A process interruption can consume the human approval without creating its intent; an interleaving can append `SIGNAL_APPROVED` and then create an intent after the signal expired, its producer was quarantined, or the system halted. Conversely, retry/recovery can create an intent without a uniquely bound approval event. This is the human-gated order-submission boundary, so best-effort compensation is insufficient. | Make conversion a dual-store atomic command (or a durable outbox state machine with an explicit recoverable intermediate): under one lock/transaction re-read signal terminal state and server deadline, producer-quarantine epoch, current `TradingState`, fresh position/outstanding-exit exposure and risk result; consume one operator approval; append `SIGNAL_APPROVED`; and create/link exactly one direction-correct intent. Add crash-injection and last-await interleaving tests for expiry, quarantine/release, Halted/Reducing, and duplicate approval in both stores. Consider and record the stronger separate signal-inbox + idempotent conversion-outbox option omitted from Options B-D. |
+| REV-0022-F-003 | P1 | `docs/adr/ADR-009-signal-seat-boundary.md:50,74`; `work/queue/WO-0101-signal-contract-spec.md:55,59`; `work/queue/WO-0103-signal-approval-surface.md:64-67`; `work/queue/WO-0104-signal-rails.md:65-67` | Freshness is controlled by producer-supplied `issued_at` and `ttl_seconds`, but the ADR defines neither a server-enforced maximum TTL nor a server-received deadline, and “future”, “implausibly old”, and “genuine protective sell” have no executable bounds. WO-0104 only repeats those qualitative checks. The INV-7 conclusion therefore assumes a classification and lifetime policy that will be designed only after the ADR is accepted. | An untrusted producer can choose an arbitrarily long TTL and keep a stale thesis approvable. Clock-skew handling can also vary by store or restart. In `Reducing`, an undefined “genuine protective” predicate can either admit exposure-increasing work or silently deny a real exit; saying the later risk gate is binding does not define the inputs or freshness snapshot that gate must evaluate. | Put the non-negotiable policy in ADR-009 before acceptance: compute `expires_at = min(received_at + server_max_ttl, validated_issued_at + bounded_ttl)`, use an injected server clock, define future/past skew limits and restart behavior, and re-check the deadline atomically at conversion. Define risk-reducing from fresh derived position plus outstanding sell exposure (not producer direction text), with a stable reason code/operator-visible block. Leave only numeric tuning to WO-0101. |
+| REV-0022-F-004 | P1 | `docs/adr/ADR-009-signal-seat-boundary.md:52`; `work/queue/WO-0102-signal-ingestion-endpoint.md:67,76,82`; `work/queue/WO-0104-signal-rails.md:59-60` | The backpressure paragraph promises that sustained post-quarantine traffic leaves the append-only event log bounded, but also permits a “periodic rejected-count record.” Any positive periodic append rate grows without bound under an indefinitely malicious producer. The plan also places malformed-body quarantine behind normal Pydantic request parsing without specifying authentication/rate limiting before body decode or a request-size cap. | An authenticated producer can turn the audit mechanism or pre-validation path into unbounded SQLite growth/CPU/memory pressure. That competes with the same durable log and process used for execution truth, undermining availability of the single-writer backend even though no order bypass occurs. | Specify a genuinely bounded design: authenticate and rate-limit before bounded body parsing; cap request bytes and provenance/thesis sizes; append at most one quarantine event per quarantine epoch; maintain a saturating/coalesced counter outside the append-only execution log and emit one summary on release/epoch close. Add long-duration/model-based tests asserting constant event-row count and bounded storage, not merely “less than request count.” |
 
-## Findings ledger (all applied)
+## Proposed Fixes Summary
 
-| # | Sev | Finding (one line) | Fixed in |
-|---|-----|--------------------|----------|
-| 1 | P1 | `.importlinter` contract 5 enumerates route modules — a new `routes_signals` would silently evade the route→facade gate | `85443fb` |
-| 2 | P2 | Global `signal_id` dedupe lets producer A collide/quarantine producer B's signals → key on `(producer_id, signal_id)` | `85443fb` |
-| 3 | P1 | Approvals need operator-only auth — `get_actor` is an audit label, not authentication; a producer could convert its own signal | `c3bd038` |
-| 4 | P2 | Post-breach signals were still event-appended → a quarantined producer could grow the append-only log unboundedly | `c3bd038` |
-| 5 | P1 | `create_app` mounts routers explicitly — WO-0102 couldn't mount `/signals` within scope | `c3bd038` |
-| 6 | P1 | Body-supplied `producer_id` lets A forge B's identity/namespace → derive from the API key, reject mismatch | `19ebd50` |
-| 7 | P1 | No sell-direction conversion origin exists (`SellReason` = {manual_flatten, protection_floor}) → spec `SellReason.SIGNAL` path | `19ebd50` |
-| 8 | P1 | Producer-key scoping is worthless while command routes accept NO credential — require operator credential on all mutating routes | `8c7c893` |
-| 9 | P1 | WO-0102 scoped store/events but no facade seam — implementer forced to break contract 5 or use the `get_store` loophole | `8c7c893` |
-| 10 | P1 | Candidate path binds `suggested_quantity`/`suggested_limit_price` — producer sizing would become binding → operator-confirmed qty/price at approval | `8c7c893` |
-| 11 | P1 | The auth flip would 401 the cockpit's kill-switch/flatten between WO-0102 and WO-0103 → credential plumbing ships with the flip | `25590a7` |
-| 12 | P2 | "No special status after approval" severed the signal→order audit chain → correlation survives (`SIGNAL_APPROVED` ↔ intent id ↔ `(producer_id, signal_id)`) | `25590a7` |
-| 13 | P2 | Flag enabled between WO-0102 and WO-0104 = unrailed flood window → interim hard ingest ceiling ships with the endpoint | `0ddabc5` |
-| 14 | P2 | Producer-quarantine release (required human action) had no browser path → cockpit release control scoped into WO-0104 | `0ddabc5` |
-| 15 | P1 | WO-0104 granted the cockpit release control in allowed_paths while forbidding `cockpit/**` — scope deadlock | `f99fa17` |
-| 16 | P1 | WO-0104's release route had no facade seam in scope (contract 5 unimplementable) | `f99fa17` |
+Revise ADR-009 first, then tighten WO-0101..0104 so the accepted decision—not a later implementation choice—owns the authentication activation boundary, atomic conversion contract, server-side freshness/classification semantics, and finite backpressure invariant. Options B-D are fairly rejected, but the ADR must evaluate a separate bounded signal inbox plus transactional/idempotent conversion outbox because it directly addresses F-002/F-004 without coupling untrusted-volume lifecycle traffic to execution replay.
 
-## Coverage vs. the request's five questions
+## Verification Evidence
 
-1. **Invariant preservation** — attacked and hardened (findings 3, 6, 7, 8, 10: L0-gate bypass via
-   missing auth, identity forgery, advisory-sizing violation, undefined sell origin). The INV-1..9
-   mapping's INV-7 row was strengthened separately by Ameen's recorded asymmetry decision.
-2. **Human-gate integrity** — findings 3, 8, 11 directly; the gate survives with credential
-   separation and no lockout window.
-3. **Rails sufficiency** — findings 2, 4, 6, 13 (id-collision games, log flooding pre- and
-   post-quarantine, identity forgery); the INV-7 asymmetry remedy was folded into the ADR text
-   during the review window.
-4. **Boundary hygiene** — findings 1, 5, 9, 15, 16 (contract-5 enumeration, mount scope, facade
-   seams, scope self-consistency).
-5. **Options analysis** — no findings raised against Options B–D framing across seven passes.
+- Frozen review state: `git rev-parse HEAD` -> `25590a76656d2e4393609ffc3cf37e27feb71d53`; the only changes after the probe SHA were ADR/work-order docs, which were re-reviewed before this result was finalized.
+- Supported environment: Python `3.12.13`, ruff `0.15.20`, mypy `2.2.0`, import-linter `2.13`.
+- `ruff check .` -> `All checks passed!` (permission warnings were limited to old inaccessible pytest temp directories).
+- `mypy app` -> `Success: no issues found in 54 source files`.
+- `lint-imports` -> `5 kept, 0 broken`.
+- Full `pytest -q -p no:cacheprovider --basetemp %TEMP%\codex-rev0022-full-2` -> exit `0` in `204.1s` (5 skips; only deprecation warnings).
+- Targeted current-boundary tests -> 74 passed on the initial probe run.
+- Live baseline auth probe -> producer-like bearer header and no header each returned `200` from the kill-switch command and changed state to `halted`; the reviewed plan now closes mutation auth sequencing but not F-001's transport/read/credential-lifecycle boundary.
+- Live interruption probe -> `CancelledError crash-window` followed by `candidate_status approved orders 0 order_id None`.
 
-## Residual notes for the record
+## Unverified / Packet State
 
-- The final fix commit `f99fa17` received no explicit clean pass before merge; it was a 3-line
-  scope-consistency fix responding to findings 15/16, and no further reviewer activity occurred in
-  the ~18 hours before merge.
-- Scope-growth observation (implementer, endorsed for planning): the operator-credential work now
-  folded into WO-0102 is a candidate to split into a preceding WO-0102a at activation time.
+- `request.md` remains `status: QUEUED` with `commit_range: SET-ON-DISPATCH`; the reviewer did not edit it, per the packet contract. This result freezes its own reviewed SHA above. Human dispatch/disposition metadata remains to be corrected by the author/human seat.
+- No implementation exists for WO-0101..0104, so no signal-specific dual-store or HTTP tests could be run. The findings assess whether the proposed decision and work orders are sufficient to authorize that implementation.
