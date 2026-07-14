@@ -984,6 +984,7 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        prior_position: Optional[int] = None,
     ) -> FillAppendResult:
         """Append a fill atomically (append + dedup check + audit event).
 
@@ -991,6 +992,18 @@ class StateStore(ABC):
         a reconciliation-inferred fill passes ``RECONCILIATION``/``SYNTHETIC``;
         provenance only — dedup/position semantics are unchanged, so a synthetic
         fill dedups against the real observation of the same execution (INV-5).
+
+        ``prior_position`` (REV-0023 Phase-A2 concurrency-0) overrides the position
+        the broker-overfill check evaluates against — it must be the symbol's
+        quantity BEFORE this fill is reflected. The default (``None``) uses the
+        current derived position, correct for every ordinary caller. The envelope
+        fill bridge passes it because it record-first FOLDS the fill (via
+        ``record_envelope_fill``) *before* calling ``append_fill``, so by then the
+        derived position already includes this fill; without the pre-fill value the
+        overfill check would compare the fill against a position that already
+        reflects it and fabricate a ``fill_overfill_quarantined`` event on every
+        clean exit. It affects ONLY the overfill DECISION/event — never the fold
+        (position derives from the deduped FILL event log regardless).
 
         * If ``source_fill_id`` duplicates an existing fill: no row is written,
           position is untouched, a duplicate-ignored event is recorded, and the

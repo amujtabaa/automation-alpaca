@@ -2386,6 +2386,7 @@ class InMemoryStateStore(StateStore):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        prior_position: Optional[int] = None,
     ) -> FillAppendResult:
         key = normalize_symbol(symbol)
         side = OrderSide(side)
@@ -2402,11 +2403,18 @@ class InMemoryStateStore(StateStore):
                 and (order_id, source_fill_id) in self._fill_source_ids
             )
             current = self._position_unlocked(key)
+            # concurrency-0: the overfill check evaluates against the PRE-fill
+            # position when the caller supplies it (the envelope bridge, which
+            # record-first folded this fill already); otherwise the live derived
+            # position. The fold itself is unaffected (event-log derived).
+            overfill_position = (
+                prior_position if prior_position is not None else current.quantity
+            )
             plan = plan_append_fill(
                 order_id=order_id,
                 order=order,
                 prior_filled=prior_filled,
-                current_quantity=current.quantity,
+                current_quantity=overfill_position,
                 is_duplicate=is_duplicate,
                 symbol=key,
                 side=side,

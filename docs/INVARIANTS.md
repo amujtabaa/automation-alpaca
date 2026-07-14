@@ -640,20 +640,39 @@ P0 finding pin) + `tests/test_wo0019_engine_seam.py`
 (`test_position_shrink_between_plan_and_write_hits_reduce_only`,
 `test_redrive_recheck_catches_position_shrink`).
 
-**INV-085 — A ceiling-violated mandate never terminates in the success
+**INV-085 — A ceiling-violated LIVE mandate never terminates in the success
 state.** A broker-authoritative overfill of ``qty_ceiling`` chains the
-envelope to ``BREACHED`` in every state that can receive a fill — including
-FROZEN (edge added by the accepted WO-0029A amendment). Remaining floors at
-0 (never negative), the overfill facts stay in the FILL event payload, and a
-resume of a breached envelope is structurally refused; an EXACT fill-to-zero
-while FROZEN remains benign (resume auto-completes, INV-079 unchanged).
-*Why:* before this, an overfill while FROZEN was clamped + flagged and the
-envelope resumed into COMPLETED — the audit trail filed a violated mandate
-as a success (REV-0023 SPEC-05).
+envelope to ``BREACHED`` when it is still working the mandate — i.e. from
+``ACTIVE`` or ``FROZEN`` (the FROZEN edge added by the accepted WO-0029A
+amendment). Remaining floors at 0 (never negative), the overfill facts stay in
+the FILL event payload, and a resume of a breached envelope is structurally
+refused; an EXACT fill-to-zero while FROZEN remains benign (resume
+auto-completes, INV-079 unchanged).
+
+**Scope (narrowed by REV-0023 Phase-A2 spec-0, decision 3a):** the
+BREACHED-chain applies to the two NON-TERMINAL states only (``ACTIVE`` /
+``FROZEN``). A fill arriving after the envelope has ALREADY reached a terminal
+state (``COMPLETED`` / ``EXPIRED`` / ``EXHAUSTED`` / ``SUPERSEDED`` /
+``CANCELLED``) is recorded as a ``late_fill`` with the terminal status left
+unchanged — a done mandate is not retroactively un-terminated into BREACHED by
+a straggler execution. The independent backstop for a real position short in
+that case is the POSITION-level ADR-001 quarantine on ``append_fill``
+(``fill_overfill_quarantined`` + the projection-derived quarantine latch), which
+is unaffected by the envelope's terminal status. So a *violated live mandate* is
+never filed as a success, and a *late fill on a finished mandate* is faithfully
+recorded without a spurious status flip.
+*Why:* before the FROZEN edge, an overfill while FROZEN was clamped + flagged
+and the envelope resumed into COMPLETED — the audit trail filed a violated
+mandate as a success (REV-0023 SPEC-05). The Phase-A2 narrowing corrects the
+earlier prose "every state that can receive a fill," which over-claimed a
+terminal-state chain the transition table never implemented (COMPLETED etc. have
+no outgoing edge to BREACHED).
 *Pinned by:* `tests/test_rev0023_phase_a_pins.py`
 (`test_frozen_overfill_chains_breached_never_completed`,
 `test_frozen_exact_fill_still_completes_on_resume`) +
-`tests/test_wo0016_envelope_transitions.py` (ADR-mirror table).
+`tests/test_wo0016_envelope_transitions.py` (ADR-mirror table) +
+`tests/test_wo0034_eventlog_fidelity.py`
+(`test_late_fill_on_terminal_envelope_is_recorded_not_breached`).
 
 **INV-086 — The working stop is monotone over the ENVELOPE LIFETIME, and only
 validated data ever drives it.** Three mechanisms, all in the pure policy:

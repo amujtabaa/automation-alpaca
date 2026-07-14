@@ -3597,6 +3597,7 @@ class SqliteStateStore(StateStore):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        prior_position: Optional[int] = None,
     ) -> FillAppendResult:
         key = normalize_symbol(symbol)
         side = OrderSide(side)
@@ -3622,11 +3623,17 @@ class SqliteStateStore(StateStore):
                     is not None
                 )
             current = self._position_locked(key)
+            # concurrency-0: overfill check uses the PRE-fill position when the
+            # caller supplies it (the envelope bridge record-first folded this
+            # fill already); otherwise the live derived position. Fold unaffected.
+            overfill_position = (
+                prior_position if prior_position is not None else current.quantity
+            )
             plan = plan_append_fill(
                 order_id=order_id,
                 order=order,
                 prior_filled=prior_filled,
-                current_quantity=current.quantity,
+                current_quantity=overfill_position,
                 is_duplicate=is_duplicate,
                 symbol=key,
                 side=side,

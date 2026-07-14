@@ -73,8 +73,13 @@ awaiting:
         coverage test, mutant-killed) all delivered dual-store, gate green, pushed e2ead56.
         DEFERRED w/ rationale: completeness-1 (correct guard but 13 test-site churn + no live
         trigger; await Codex severity) and interface-lift-0 (P3 facade -> Any convention).
-      - WO-0034 (event-log fidelity: concurrency-0, spec-1) — HUMAN-GATED (event-log truth); also
-        routes spec-0 (INV-085 text) + pure-math-0 (magnitude band) to the planning seat.
+      - WO-0034 (event-log fidelity) — DONE (Ameen "go ahead"; spec-0 decision 3a). concurrency-0:
+        append_fill gains optional prior_position; the fill bridge passes the pre-fill position so a
+        clean exit no longer fabricates fill_overfill_quarantined (mutation-checked; real overfill
+        still quarantines). spec-1: redrive refusal now writes a durable envelope_redrive_refused
+        event (rail+detail). spec-0: INV-085 narrowed to ACTIVE/FROZEN (terminal late-fill recorded,
+        not breached). tests/test_wo0034_eventlog_fidelity.py (4×2). Independent-review gate STILL
+        OPEN (event-log-truth surface). pure-math-0 (magnitude band) remains a PLANNING-SEAT decision.
   - T4: human runs Codex Phase B (work/review/W3-codex-review-prompt.md, pin f092ca7 — the pin
     PREDATES the remediation; reconciliation scaffold pre-filled at
     work/review/REV-0023/phase-b-reconciliation.md, incl. the recommendation to hand Codex a

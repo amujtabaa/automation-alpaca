@@ -658,8 +658,10 @@ async def redrive_staged_envelope_action(
     )
 
     refusal: Optional[str] = None
+    rail: Optional[str] = None
     envelope = await store.get_envelope(envelope_id)
     if envelope is None or envelope.status is not EnvelopeStatus.ACTIVE:
+        rail = "envelope_state"
         refusal = (
             "envelope is "
             f"{envelope.status.value if envelope is not None else 'missing'}"
@@ -668,6 +670,7 @@ async def redrive_staged_envelope_action(
         staged_at = last.ts_event or last.ts_init
         age = (ts - staged_at).total_seconds()
         if age > REDRIVE_MAX_STAGED_AGE_S:
+            rail = "staleness"
             refusal = (
                 f"staged action is {age:.0f}s old "
                 f"(redrive ceiling {REDRIVE_MAX_STAGED_AGE_S:.0f}s)"
@@ -691,18 +694,37 @@ async def redrive_staged_envelope_action(
             history = [e for e in events if e.sequence != last.sequence]
             violation = validate_action(envelope, replayed, history=history, now=ts)
             if violation is not None:
+                rail = violation.rail
                 refusal = f"{violation.rail}: {violation.detail}"
             else:
                 # WO-0026: reduce-only re-check — the position may have
                 # shrunk (fills, manual flatten) since staging.
                 position = await store.get_position(envelope.symbol)
                 if order.quantity > max(0, position.quantity):
+                    rail = "reduce_only"
                     refusal = (
                         f"reduce_only: SELL {order.quantity} exceeds live "
                         f"position {max(0, position.quantity)}"
                     )
 
     if refusal is not None:
+        # spec-1 (REV-0023 Phase-A2): durably EVENT the refusal (rail + detail)
+        # before the local cancel — a redrive rail refusal (incl. the reduce_only
+        # safety refusal) must leave an audit trail, not vanish into a bare
+        # transition_order(CANCELED) whose caller drops the detail.
+        await store.append_event(
+            "envelope_redrive_refused",
+            message=f"redrive refused — {refusal}; staged order locally cancelled",
+            symbol=envelope.symbol if envelope is not None else order.symbol,
+            order_id=order.id,
+            payload={
+                "rail": rail,
+                "detail": refusal,
+                "envelope_id": envelope_id,
+                "kind": kind.value,
+            },
+            session_id=order.session_id,
+        )
         await store.transition_order(order.id, OrderStatus.CANCELED)
         return EnvelopeExecutionResult(
             ENVELOPE_EXEC_CANCELLED,
