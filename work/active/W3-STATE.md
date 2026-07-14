@@ -69,6 +69,10 @@ toolchain-incidents (must-read before any destructive git op; never pruned):
   - WO-0029A: a mutation-check "0 failures" from a nested-shell `-k` selector was a NO-OP
     selection, not a survivor/kill — verify selectors collected >0 tests (or use explicit test
     ids) before trusting any mutation result.
+- WO-0031: a pin can be VACUOUSLY green — the first SOLF3 pin priced its tape below the
+    envelope floor so both arms returned BreachSignal and compared equal regardless of the
+    mechanism. Always check the assertion can DISTINGUISH the mechanism (run the discovery
+    mutation before trusting a new pin).
 anchor-divergences:
   - W3-README branch naming `feat/execution-envelope/wo-00XX` impossible in git (ref namespace);
     using `feat/execution-envelope-wo-00XX`.

@@ -20,7 +20,8 @@ Two invariants live here:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from datetime import datetime
+from typing import Callable, Optional, Sequence
 
 from app.sellside.bars import Bar
 from app.sellside.indicators import atr, fade_flag
@@ -172,18 +173,45 @@ def compute_working_stop(
     bars: Sequence[Bar],
     *,
     urgency: float,
+    urgency_at: Optional[Callable[[datetime], float]] = None,
+    last_bar_open: bool = False,
 ) -> WorkingStopResult:
-    """Ratchet the per-step candidates over the whole bar sequence (pure —
+    """Ratchet the per-step candidates over the bar sequence (pure —
     recomputable from the tape after any restart; O(n²) in bars, fine at the
-    tick's 30s-bar scale, revisit in W4 if tapes grow)."""
+    tick's 30s-bar scale, revisit in W4 if tapes grow).
+
+    WO-0031 (SOL-F-002): the ratchet is monotone over the ENVELOPE LIFETIME,
+    not just one invocation. Two rules make that true:
+
+    * ``urgency_at`` — each HISTORICAL prefix's candidate is computed with the
+      urgency of ITS OWN epoch (the prefix's last bar end), so a later drop in
+      current urgency (session-phase boundary widens time-to-close) can never
+      loosen candidates that were already tighter. Without it (``None``) every
+      prefix uses the single ``urgency`` — the pre-amendment behavior, kept
+      for callers that hold urgency fixed.
+    * ``last_bar_open`` — a still-filling bucket is MUTABLE (a later print
+      rewrites its low/close), so it is excluded from the ratchet; its view
+      still drives the REPORTED candidate/regime/ATR. The stop therefore only
+      ever ratchets on immutable, completed bars.
+
+    The reported ``candidate`` (and regime/ATR/clamps) always reflects the
+    full tape at the CURRENT urgency; ``stop`` is the running max over the
+    immutable prefix candidates.
+    """
 
     stop: Optional[float] = None
-    last: tuple = (None, None, None, Regime.UNCERTAIN, False, ())
-    for step in range(MIN_CLASSIFY_BARS, len(bars) + 1):
-        last = _step_candidate(envelope, bars[:step], urgency=urgency)
-        candidate = last[0]
+    ratchet_end = len(bars) - 1 if last_bar_open else len(bars)
+    for step in range(MIN_CLASSIFY_BARS, ratchet_end + 1):
+        step_urgency = (
+            urgency_at(bars[step - 1].end) if urgency_at is not None else urgency
+        )
+        candidate = _step_candidate(envelope, bars[:step], urgency=step_urgency)[0]
         if candidate is not None:
             stop = candidate if stop is None else max(stop, candidate)
+    if len(bars) >= MIN_CLASSIFY_BARS:
+        last = _step_candidate(envelope, bars, urgency=urgency)
+    else:
+        last = (None, None, None, Regime.UNCERTAIN, False, ())
     candidate, ref_high, trail_atr, regime, tightened, clamps = last
     return WorkingStopResult(
         stop=stop,
