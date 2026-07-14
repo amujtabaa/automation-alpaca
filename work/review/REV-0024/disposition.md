@@ -2,9 +2,10 @@
 type: Review Disposition
 rev_id: REV-0024
 verdict_received: BLOCK
-disposition_status: AWAITING_HUMAN
+disposition_status: REMEDIATION_DRAFTED   # Ameen's F-001/F-004 decisions captured; A-1/A-4 re-remediated; queued for REV-0025
 reviewed_commit: 413da3813191fe31fabf51e9a7247670a45ec561
 reviewer_model: GPT-5 Codex
+next_packet: REV-0025
 date: 2026-07-14
 ---
 
@@ -90,9 +91,44 @@ review lands"), **nothing below is done yet** — recorded here for Ameen's disp
 - No inline PR review comments patched — the staged `result.md` is the authority; the block is
   addressed as one batch after Ameen's two decisions, not comment-by-comment.
 
+## Human decisions (Ameen, 2026-07-14) and the re-remediation drafted from them
+
+Ameen made both design decisions:
+
+1. **F-001 → backend-owned launch path.** Add a backend-owned entrypoint (`app/server.py` /
+   `python -m app`) that starts uvicorn programmatically with the bind derived from and re-validated
+   against `signal_transport_policy`, plus a lifespan launch-provenance sentinel so a bare
+   `uvicorn app.main:app --host 0.0.0.0` fails startup before serving. Bare-uvicorn deprecated under
+   the flag; proven by a subprocess bind-failure test. **Drafted into ADR-009 A-1 clause 6.**
+2. **F-004 → non-refilling invalid budget + gate the flag on full rails.** Add a per-producer
+   non-refilling `signal_invalid_budget_per_epoch` (default 50) debited by every attributable-
+   rejection append (validation quarantine + novel-hash conflict), which does not refill while
+   un-quarantined, quarantines on exhaustion, and resets only on human release. Withdraw the
+   audit-free interim ceiling; gate `signal_seat_enabled` on full rails via a rails-presence startup
+   guard (no unrailed window). **Drafted into ADR-009 A-4.**
+
+Both are defensive-security surface work (transport/bind, rate-limit/quarantine) — authored on the
+current Opus model per the repo-primer routing preference.
+
+### Re-remediation change set (drafted 2026-07-14, PROPOSED — pending REV-0025)
+
+- `docs/adr/ADR-009-signal-seat-boundary.md`: A-1 clause 6 (backend-owned launch); A-4 non-refilling
+  invalid/conflict budget + rails-presence enablement gate + interim-ceiling withdrawal; body §Contract
+  reconciled; ingest-order dual-trigger.
+- **F-003 propagation:** `00-overview.md` + `pkl/architecture/signal-seat.md` now say enforcement is
+  on **every sensitive route, reads included** (not "mutating command routes"), pointing at the §1a
+  fail-closed matrix.
+- **F-004 propagation:** `03-rails.md` §1 "otherwise-valid" qualifier removed (rate decision before
+  body parse); §1a non-refilling budget added; §2 rewritten as the enablement gate; §4 dual-trigger.
+  `WO-0102` interim-ceiling + post-quarantine items withdrawn/relabelled to WO-0104; backend-owned
+  launch + subprocess test + allowed_paths (launcher, README) added; rails-presence guard + joint
+  enablement milestone. `WO-0104` gains the non-refilling budget, the rails-presence guard lift, and
+  the joint flag-on integration suite.
+- `04-auth-and-api.md` §1 backend-owned launch seam; `02-lifecycle.md` quarantine dual-trigger note.
+
 ## Path to clearing the gate
 
-Ameen decides F-001 (bind-enforcement boundary) and F-004 (finite invalid/conflict budget) →
-amend A-1/A-4 accordingly + apply the F-003/F-004 propagation fixes in the same change → re-review
-(REV-0025 or a REV-0024 re-run). The gate clears only on an ACCEPT / ACCEPT-WITH-CHANGES
-disposition of that re-review.
+**REV-0025** re-reviews this re-remediation (`request.md` staged). The gate clears only on an
+ACCEPT / ACCEPT-WITH-CHANGES disposition of REV-0025 — at which point ADR-009 may be marked Accepted
+by Ameen and WO-0102..0104 unfreeze per the joint-enablement sequencing. ADR-009 stays **Proposed**
+and the WOs stay **RE-GATED** until then.

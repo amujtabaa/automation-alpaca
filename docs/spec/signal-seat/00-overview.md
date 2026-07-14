@@ -14,7 +14,7 @@ is a defect in this spec. **Status: DRAFT until the re-review clears.**
 |---|---|
 | `01-schema.md` | `SignalProposal` wire schema, `SignalRecord` entity, the approval payload, dedupe/idempotency semantics, validation rules |
 | `02-lifecycle.md` | Signal state machine, event-log vocabulary additions, TTL/staleness rules, replay/reconstruction contract |
-| `03-rails.md` | Rate limits, the WO-0102 interim ingest ceiling, producer quarantine + release, flood backpressure |
+| `03-rails.md` | Rate limits, the non-refilling invalid/conflict budget, enablement gated on full rails, producer quarantine + release, flood backpressure |
 | `04-auth-and-api.md` | Producer/operator credential model, endpoint definitions (OpenAPI fragment), feature flag + mount rules |
 | `05-conversion.md` | Approval → order-intent conversion per direction, the risk-reducing classification, TradingState/kill-switch interaction table, signal→order correlation |
 | `06-invariants.md` | Preservation notes: CLAUDE.md invariants 1–11 and spine §5 INV-1..9, each mapped to the concrete mechanism in this spec |
@@ -34,11 +34,17 @@ is a defect in this spec. **Status: DRAFT until the re-review clears.**
 
 `Settings.signal_seat_enabled: bool = False` (env `SIGNAL_SEAT_ENABLED`). Flag off ⇒ the signal
 routers are **not mounted** in `create_app` (`app/main.py`) — endpoints 404, no auth surface, no
-storage writes possible. Flag on ⇒ routers mounted **and** operator-credential enforcement on all
-mutating command routes is active (the two flip together; see `04-auth-and-api.md §4`).
-**Deployment gate (ADR-009 rails):** the flag must not be enabled in any environment before
-WO-0104's full rails land — but the code does not rely on that discipline: WO-0102 ships the
-interim hard ceiling (`03-rails.md §2`) so an enabled endpoint is never unrailed.
+storage writes possible. Flag on ⇒ routers mounted **and** operator-credential enforcement on
+**every sensitive route — reads included** — is active (the two flip together; see the fail-closed
+mounted-route matrix in `04-auth-and-api.md §1a` and `§4`). Read exposure is exposure: a producer
+with HTTP reach must learn nothing about positions, orders, sessions, or other producers' theses,
+so the enforcement is **not** narrowed to mutating command routes (ADR-009 A-1.3; REV-0024-F-003).
+**Enablement is gated on full rails (ADR-009 A-4; not a deployment discipline but a startup guard):**
+with the flag on, startup **fails fast** unless the full per-producer rails are wired — refilling
+rate bucket, non-refilling invalid/conflict budget, producer-quarantine epoch, and human release
+path (parallel to the credential-presence guard). There is **no interim ceiling** and no window in
+which an enabled endpoint is unrailed; the former audit-free interim ceiling was withdrawn after
+REV-0024. Live enablement is therefore the **joint WO-0102 + WO-0104 milestone** (`03-rails.md §2`).
 
 ## Out of scope (log, don't build)
 

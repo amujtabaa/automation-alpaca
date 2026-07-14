@@ -14,6 +14,19 @@ the flag, and **fails fast on any non-loopback/non-socket backend bind** — so 
 can never bypass the proxy and hit the plain-HTTP backend port directly. Plain HTTP across a network
 boundary is never supported.
 
+**Backend-owned launch — the enforceable bind seam** (ADR-009 A-1 clause 6; REV-0024-F-001): the
+bind guarantee cannot be enforced from inside `create_app` (uvicorn's `--host`/`--uds` are set on
+the CLI, outside the app, and the ASGI lifespan scope never carries the listener address). So the
+backend owns its launch path: an entrypoint `app/server.py::run()` (invoked as `python -m app`, the
+sole documented start command for an enabled seat) starts Uvicorn **programmatically** with the bind
+derived from and re-validated against `signal_transport_policy`, exiting non-zero before serving on
+any non-loopback/non-socket bind; and it sets an `app.state` launch-provenance sentinel that the
+lifespan startup guard **requires** when `signal_seat_enabled` is on — so a bare
+`uvicorn app.main:app --host 0.0.0.0` (which cannot set the sentinel) fails startup before serving.
+The direct `uvicorn app.main:app` path is deprecated when the seat is enabled; flag off ⇒ it keeps
+working (beta dev command unchanged). WO-0102 proves both via a subprocess test that observes
+pre-serve process failure.
+
 **Credential-presence startup guard** (ADR-009 A-1): with the flag on, startup **fails fast** unless
 `OPERATOR_API_KEY` is set non-blank AND the producer key map is loaded — otherwise every sensitive
 route would be permanently 401 with no credential to supply (WO-0102 test).

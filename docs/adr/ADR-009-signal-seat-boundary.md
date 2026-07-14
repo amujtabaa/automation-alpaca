@@ -3,8 +3,13 @@
 **Status:** **Proposed** — acceptance of 2026-07-12 **RESCINDED 2026-07-14**: the formal REV-0022
 packet (frozen `25590a7`) returned **BLOCK** with four P1 findings (credential/transport boundary,
 non-atomic approval→intent conversion, unbounded/underspecified TTL + classification semantics,
-unbounded audit growth). Not acceptable until F-001..F-004 are remediated in this document and the
-re-review clears. Full record: `work/review/REV-0022/`.
+unbounded audit growth). Amendments A-1..A-4 were drafted; the **REV-0024** re-review (frozen
+`413da38`) confirmed **A-2/A-3 CLOSED** (atomic conversion; server-owned freshness/classification)
+but **A-1/A-4 NOT** — the bind guard was unenforceable through the ASGI seam (F-001) and a
+refilling-bucket-only audit was unbounded under paced hostility (F-004). Both were re-remediated
+2026-07-14 per Ameen's decisions (A-1 clause 6 backend-owned launch; A-4 non-refilling invalid
+budget + rails-presence enablement gate). Not acceptable until **REV-0025** clears the
+re-remediation. Full record: `work/review/REV-0022/`, `work/review/REV-0024/`, `work/review/REV-0025/`.
 **Date:** 2026-07-11 (drafted); accepted 2026-07-12; rescinded 2026-07-14
 **Deciders:** Ameen (human gate). Queues for independent cross-model review before acceptance (ADR amendment per review policy).
 **Number:** ADR-009 (renumbered on install from planning-seat draft "ADR-010"; 009 is the next free slot after ADR-008).
@@ -53,7 +58,7 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 5. **Rails (quarantine semantics extended to signals).**
    - TTL/staleness: server-owned semantics per **Amendment A-3** — `expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)`, explicit skew bounds, durable deadline, atomic re-check at conversion. A stale signal can never be approved.
    - Malformed, duplicate-conflicting, or self-contradictory signals → `SIGNAL_QUARANTINED`, recorded never hidden.
-   - Per-producer rate limits; breach → producer-level quarantine (all further signals quarantined until human release). **Rails ship no later than exposure (Codex round 6):** the ingestion endpoint carries a conservative hard ingest ceiling from its first commit, superseded (never just removed) by the full rate-limit/quarantine rails — there is no window in which an enabled endpoint lacks flood protection. The human **release** action has a browser path (cockpit control), not raw-API-only — invariant 11. **Post-quarantine backpressure:** superseded by **Amendment A-4** — one `PRODUCER_QUARANTINED` event per epoch, saturating out-of-log counter, one summary on release; nothing periodic (the earlier "periodic rejected-count record" was unbounded over indefinite hostility — REV-0022 F-004).
+   - Per-producer rate limits; breach → producer-level quarantine (all further signals quarantined until human release). **Rails ship no later than exposure, now enforced structurally (Codex round 6; superseded by Amendment A-4 after REV-0024):** the earlier "conservative interim ingest ceiling from the first commit" is **withdrawn** — it was rate-bounded, not storage-bounded (REV-0024-F-004). Instead, `signal_seat_enabled` is **gated on full rails by a rails-presence startup guard**: an enabled endpoint structurally cannot run without the refilling rate bucket, the non-refilling invalid/conflict budget, the producer-quarantine epoch, and the human release path — so there is no window in which an enabled endpoint lacks finite-audit flood protection. The human **release** action has a browser path (cockpit control), not raw-API-only — invariant 11. **Post-quarantine backpressure and finite audit:** per **Amendment A-4** — one `PRODUCER_QUARANTINED` event per epoch (opened by rate-bucket breach or invalid/conflict-budget exhaustion), saturating out-of-log counter, one summary on release; nothing periodic (the earlier "periodic rejected-count record" was unbounded over indefinite hostility — REV-0022 F-004; the refilling-bucket-only bound was likewise unbounded under paced hostility — REV-0024-F-002).
    - Kill switch / `Halted` state: signals may still be *recorded* (facts are facts), but signal→intent conversion is blocked exactly as any other new order intent is. In `Reducing`, only risk-reducing signals are convertible.
 6. **UI.** Streamlit gains a read/approve panel: renders pending proposals, issues approve/reject *intents* to the API. It remains a thin client — no signal state owned client-side, no direct mutation, and (as always) no Alpaca calls.
 
@@ -102,6 +107,13 @@ Each amendment below remediates one BLOCK finding and is **binding ADR text** on
 is accepted — implementation WOs tune numbers only, never semantics. Drafted by the implementer
 seat; nothing here is in force until Ameen accepts and the re-review clears.
 
+> **Re-remediation (2026-07-14, post-REV-0024).** REV-0024 confirmed **A-2 and A-3 CLOSE** their
+> findings but **A-1 and A-4 did not**: the bind guard was unenforceable through the ASGI seam
+> (REV-0024-F-001) and a refilling-bucket-only audit stayed unbounded under paced hostility
+> (REV-0024-F-002/F-004). Per Ameen's decisions, **A-1 gains clause 6 (backend-owned launch seam)**
+> and **A-4 gains the non-refilling invalid/conflict budget + the rails-presence enablement gate,
+> withdrawing the audit-free interim ceiling**. A-2 and A-3 are unchanged. Queued for REV-0025.
+
 ### A-1 (remediates F-001) — Transport and credential-lifecycle boundary
 
 1. **Transport policy** (`Settings.signal_transport_policy`, mandatory when `signal_seat_enabled`):
@@ -113,7 +125,11 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
      not just the flag: with `signal_seat_enabled`, a non-loopback/non-socket backend bind fails
      fast under BOTH policies — a same-network client must never be able to bypass the proxy and
      hit the plain-HTTP backend port directly (Codex rev-2 finding). Plain HTTP across a network
-     boundary is never a supported configuration.
+     boundary is never a supported configuration. **This bind guarantee is enforced through the
+     backend-owned launch path of clause 6 (REV-0024-F-001): an app-level setting check alone is
+     insufficient — `uvicorn app.main:app --host 0.0.0.0` sets the listener bind *outside* the ASGI
+     application, where an in-process guard cannot observe it, so the guard must sit on a launch
+     seam the application actually owns.**
 2. **Key lifecycle**: keys are env-injected secrets (never committed, never logged, redacted in
    error paths); comparison is constant-time (`secrets.compare_digest`); rotation = deploy a new
    key map (producer map supports N keys per producer to allow overlap-rotation); revocation =
@@ -142,6 +158,33 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
    `/docs/oauth2-redirect`. With `signal_seat_enabled` these are **disabled** (they disclose the API
    surface to reachable producers); a deployment that needs them puts them behind the operator
    credential. Either way they are classified in the §1a matrix and tested — never public (Codex rev-3).
+6. **Backend-owned server launch — the enforceable bind seam** (Ameen decision 2026-07-14,
+   remediates REV-0024-F-001). Clause 1's proxy-private-bind guarantee is unobservable from inside
+   `create_app`: the ASGI lifespan scope never carries the listener address (it appears only on
+   per-request HTTP scopes, after startup), and `uvicorn`'s `--host`/`--uds` are set on the CLI,
+   outside the app and taking precedence over any application setting. A guard that only compares an
+   application setting can therefore be green while the process is actually serving `0.0.0.0`. The
+   boundary is closed by moving the guard onto a launch seam the backend owns:
+   - **A backend-owned launch entrypoint** (`app/server.py::run()`, invoked as `python -m app` /
+     the sole documented start command) reads the validated `signal_transport_policy` + bind from
+     `Settings` and starts Uvicorn **programmatically** (`uvicorn.Server`/`uvicorn.run(app, host=…,
+     uds=…)`) with the bind derived from — and re-validated against — that setting. With
+     `signal_seat_enabled`, the entrypoint **refuses to start** (process exits non-zero, before any
+     socket serves) on any non-loopback/non-socket bind, under both transport policies.
+   - **A launch-provenance guard in the lifespan startup**: the entrypoint sets an in-process
+     sentinel (`app.state`-carried, not an env var an attacker controls) that marks the app as
+     started through the sanctioned launcher; with `signal_seat_enabled` on, lifespan startup
+     **fails fast unless that sentinel is present**. A bare `uvicorn app.main:app --host 0.0.0.0`
+     imports the module-level `app` without the launcher and therefore cannot set the sentinel — so
+     it fails at startup, before serving, closing the bypass. (Flag off ⇒ the sentinel is not
+     required; beta's current `uvicorn app.main:app` dev command keeps working unchanged.)
+   - **The direct `uvicorn app.main:app` invocation is deprecated when the seat is enabled**; the
+     README documents `python -m app` as the sole sanctioned start command for an enabled seat.
+   - **Proof (WO-0102 subprocess test):** (a) the launcher invoked with a non-loopback bind and the
+     flag on exits non-zero before serving; (b) `uvicorn app.main:app --host 0.0.0.0` with the flag
+     on fails startup via the provenance guard before serving. Both observed as pre-serve process
+     failures, not per-request rejections. An app-setting-only assertion does not satisfy this
+     clause.
 
 ### A-2 (remediates F-002) — Atomic conversion contract
 
@@ -211,35 +254,74 @@ Approval→intent conversion is **one atomic store command** in both stores:
 ### A-4 (remediates F-004) — Finite ingest and audit bounds
 
 Ingest processing order is normative: **(1) authenticate** (constant-time key lookup, before any
-body read) → **(2) rails check** (quarantine epoch, rate limit / interim ceiling) → **(3) bounded
-body read** (`Content-Length` capped at **64 KiB**, streamed reject beyond) → **(4) parse +
-field-validate** (thesis ≤ 4000 chars, provenance ≤ 20 keys × 500 chars). Steps 1–2 reject with
+body read) → **(2) rails check** (quarantine epoch, refilling rate bucket; no parse-validity
+qualifier) → **(3) bounded body read** (`Content-Length` capped at **64 KiB**, streamed reject
+beyond) → **(4) parse + field-validate** (thesis ≤ 4000 chars, provenance ≤ 20 keys × 500 chars).
+The non-refilling invalid/conflict budget is debited at step 4 when an attributable-rejection event
+is appended, and its exhaustion opens the epoch at step 2 on the next ingest. Steps 1–2 reject with
 zero store writes and zero body processing — with **exactly one carve-out**: the single request
-that first breaches the rate limit performs the epoch-opening `PRODUCER_QUARANTINED` append (once
-per epoch, by definition); every subsequent step-1/step-2 reject in that epoch is write-free
-(Codex rev-2 finding: without the carve-out the breach path is unimplementable as written).
+that first crosses **either** breach threshold — rate-bucket empty **or** invalid/conflict budget
+exhausted — performs the epoch-opening `PRODUCER_QUARANTINED` append (once per epoch, by
+definition); every subsequent step-1/step-2 reject in that epoch is write-free (Codex rev-2 finding:
+without the carve-out the breach path is unimplementable as written).
 
 Audit bounds (replacing the draft's "periodic rejected-count record", which the reviewer
 correctly showed is unbounded over indefinite hostility):
 
 - **The rate limit debits EVERY authenticated ingest** — valid, invalid, or duplicate — not
   merely accepted proposals (Codex rev-2 finding: otherwise endless unique parseable-but-invalid
-  bodies each record `SIGNAL_QUARANTINED` without ever consuming the bucket, growing the log
-  unbounded once the interim ceiling retires). Validation-quarantine events are therefore
-  bucket-bounded by construction.
+  bodies each record `SIGNAL_QUARANTINED` without ever consuming the bucket). This bounds
+  *throughput*; the non-refilling budget below bounds *storage*.
+- **A finite, non-refilling per-producer invalid/conflict budget bounds the *storage*, not just
+  the rate** (Ameen decision 2026-07-14, remediates REV-0024-F-002 / REV-0022-F-004). The refilling
+  rate bucket (60/hour) bounds *throughput* but **not** the append-only log: a producer paced at or
+  below the refill rate keeps the bucket non-empty forever, never breaches, and appends one
+  `SIGNAL_QUARANTINED` (validation) or one novel-hash `SIGNAL_DUPLICATE_CONFLICT` per request
+  indefinitely (Codex probe: 10080 events over 7 days at 1/min, bucket never below 9 tokens). So
+  **in addition to** the refilling bucket, each producer holds a **non-refilling** budget
+  `signal_invalid_budget_per_epoch` (default **50**, `Settings`-tunable, hard cap) that is debited
+  by every *attributable-rejection append* — validation `SIGNAL_QUARANTINED` **and** each novel-hash
+  `SIGNAL_DUPLICATE_CONFLICT`. It does **not** refill while the producer is un-quarantined; on
+  exhaustion the producer is **quarantined** (`PRODUCER_QUARANTINED` opens the epoch), after which
+  ingress is write-free per the epoch rule; the budget **resets only on human release**. Therefore
+  the append-only attributable-rejection volume per producer per cycle is **≤ `invalid_budget`
+  events + the rate-bucket-bounded accepted signals + 2 rail events**, and every *further* cycle
+  requires a human `PRODUCER_RELEASED` — indefinitely-paced invalid/conflict hostility can no longer
+  append forever, because it exhausts the non-refilling budget and stops at quarantine until a human
+  chooses to re-open the producer.
 - **At most ONE `PRODUCER_QUARANTINED` event per quarantine epoch** (epoch = quarantine →
-  release). Post-quarantine ingress appends **nothing**.
+  release), opened by **either** trigger — rate-bucket breach **or** invalid/conflict-budget
+  exhaustion. Post-quarantine ingress appends **nothing**.
 - Rejected-request counting is a **saturating in-memory counter outside the event log**
   (diagnostic, best-effort across restarts by design).
 - **One summary on epoch close:** `PRODUCER_RELEASED` carries the saturated rejected-count and
   epoch window. Total signal-rail event volume per producer per epoch is therefore a constant
   (≤ 2 events + the pre-quarantine accepted signals, themselves rate-limited).
-- Test contract (WO-0102/0104): model-based/long-duration tests assert **constant event-row
-  count** and bounded storage under sustained hostile flood — not merely "fewer than requests".
+- Test contract: model-based/long-duration tests assert **constant event-row count** and bounded
+  storage under sustained hostile flood — paced at or below the refill rate over arbitrarily many
+  windows, not merely a burst that eventually exceeds the rate limit — in both stores.
+
+**Enablement is gated on full rails — the audit-free interim ceiling is withdrawn** (Ameen decision
+2026-07-14, remediates REV-0024-F-004). The earlier design shipped a crude *audit-free interim
+ceiling* in WO-0102 ahead of the full rails, on the theory that a counting-only ceiling kept an
+enabled endpoint from ever being unrailed. REV-0024 showed that ceiling was rate-bounded, not
+storage-bounded, so it left exactly the paced-flood hole above. It is **removed**, not tuned.
+In its place, `signal_seat_enabled` gains a **rails-presence startup guard**, exactly parallel to
+clause A-1.4's credential-presence guard: **with the flag on, startup fails fast unless the full
+per-producer rails are wired** — the refilling rate bucket, the non-refilling invalid/conflict
+budget, the producer-quarantine epoch machinery, and the human `PRODUCER_RELEASED` path. There is
+therefore **no window in which an enabled endpoint runs without finite-audit flood protection**, and
+no interim ceiling to reason about. Consequence for sequencing: the endpoint's **live enablement is
+the joint WO-0102 + WO-0104 milestone** — WO-0102 ships the endpoint, the A-1 boundary, and the
+atomic conversion with the flag **structurally un-enable-able** (enabling it fails the rails-presence
+guard until the rails exist); WO-0104 lands the full rails and lifts the guard in the change that
+first makes enablement possible. The flag-on integration suite (route-authorization matrix at the
+mounted app, constant-event-row flood tests) is authored across both WOs and runs green at that
+joint milestone — never against a half-railed app.
 
 ## Action Items
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
 2. [x] Human review — INV-7 asymmetry decision (2026-07-11); the 2026-07-12 acceptance was rescinded (see Status).
-3. [ ] Independent cross-model review — **REV-0022 returned BLOCK** (formal packet, frozen `25590a7`); remediate F-001..F-004 here, then re-review. The PR #5 sixteen-finding record remains applied but does not clear the gate.
-4. [ ] WO-0101..0104: RE-GATED 2026-07-14 pending F-001..F-004 remediation + re-review. WO-0101's spec output stands as draft input to the remediation.
+3. [ ] Independent cross-model review — **REV-0022 BLOCK** (frozen `25590a7`) → A-1..A-4 → **REV-0024 BLOCK** (frozen `413da38`: A-2/A-3 CLOSED, A-1/A-4 not) → re-remediated (A-1 clause 6 + A-4 invalid budget/rails gate) → **REV-0025 queued** (`work/review/REV-0025/request.md`). Gate clears only on REV-0025 ACCEPT / ACCEPT-WITH-CHANGES.
+4. [ ] WO-0101..0104: RE-GATED 2026-07-14 pending REV-0025. Live enablement is the joint WO-0102+WO-0104 milestone (A-4 rails-presence gate). WO-0101's spec output stands as draft input to the remediation.

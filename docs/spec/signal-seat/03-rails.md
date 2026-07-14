@@ -1,4 +1,4 @@
-# 03 — Rails: rate limits, interim ceiling, producer quarantine, backpressure
+# 03 — Rails: rate limits, non-refilling invalid budget, enablement gate, producer quarantine, backpressure
 
 Principle (ADR-009): **rails ship no later than exposure**, and a quarantined or over-limit
 producer must not be able to grow the append-only log (SQLite) without bound.
@@ -13,24 +13,59 @@ Token bucket per `producer_id`, evaluated at ingest, injected clock:
   `SIGNAL_QUARANTINED` events without ever breaching)
 - `signal_rate_burst: int = 10`
 
-Breach (bucket empty at an otherwise-valid ingest) → **producer-level quarantine**:
-`PRODUCER_QUARANTINED` appended once; all further signals from that producer are handled per §4
-until an explicit human release. The breaching request itself gets HTTP 429 and is folded into the
-coalesced audit (it does NOT get a per-request `SIGNAL_QUARANTINED`).
+Breach (bucket empty at **any authenticated ingest**, decided at rails-check time **before the body
+is read or parsed** — the §4 normative order; no "otherwise-valid" qualifier, which would require
+parsing before the rate decision and defeat A-4's pre-body defense, REV-0024-F-004) →
+**producer-level quarantine**: `PRODUCER_QUARANTINED` appended once; all further signals from that
+producer are handled per §4 until an explicit human release. The breaching request itself gets HTTP
+429 and is folded into the coalesced audit (it does NOT get a per-request `SIGNAL_QUARANTINED`).
 
-## 2. Interim ingest ceiling (WO-0102 — ships WITH the endpoint, superseded by §1, never merely removed)
+## 1a. Non-refilling invalid/conflict budget (WO-0104, the storage rail — ADR-009 A-4)
 
-Hard caps, deliberately cruder than §1, so there is no unrailed window between WO-0102 and WO-0104:
+The refilling bucket of §1 bounds *throughput*, not *storage*: a producer paced at or below the
+refill rate keeps the bucket non-empty forever and appends one `SIGNAL_QUARANTINED` (validation) or
+one novel-hash `SIGNAL_DUPLICATE_CONFLICT` per request indefinitely without ever breaching
+(REV-0024-F-002 probe: 10080 events / 7 days at 1/min, bucket never below 9). So each producer also
+holds a **non-refilling** budget:
 
-- `signal_ingest_ceiling_per_producer_per_minute: int = 10`
-- `signal_ingest_ceiling_global_per_minute: int = 60`
+- `signal_invalid_budget_per_epoch: int = 50` (`Settings`-tunable, hard cap) — debited by **every
+  attributable-rejection append**: a validation `SIGNAL_QUARANTINED` **and** each novel-hash
+  `SIGNAL_DUPLICATE_CONFLICT` (a same-hash conflicting replay is already coalesced to one event per
+  `01-schema.md §3` and does not re-debit). It does **not** refill while the producer is
+  un-quarantined.
+- On exhaustion → **producer-level quarantine** (`PRODUCER_QUARANTINED` opens the epoch, §4), same
+  as a rate breach; the exhausting request gets 429/403 folded into the coalesced audit.
+- The budget **resets only on human release** (`PRODUCER_RELEASED`), never by refill — so each
+  further cycle of attributable-rejection flooding requires a human to re-open the producer.
 
-Over-ceiling → HTTP 429, **no event append at all** — the interim ceiling is **audit-free in the
-event log**: rejected requests only bump a saturating in-memory counter (there is no
-`PRODUCER_INGEST_REJECTED` event — it was removed from the vocabulary). Test contract (WO-0102):
-sustained over-ceiling ingest appends **zero** events (constant event-row count — a per-window
-append rate is unbounded over indefinite hostility, Codex rev-3). WO-0104 replaces the ceiling with
-§1's full rails (rate-limit → quarantine epoch) **in the same change** it lands them.
+Consequence: append-only attributable-rejection volume per producer per epoch is **≤
+`invalid_budget` events + the rate-bucket-bounded accepted signals + 2 rail events** — constant,
+and finite over indefinite hostility. Test contract (WO-0104): pace invalid **and** novel-conflict
+requests at or below the refill rate over arbitrarily many windows; assert a constant event-row
+ceiling and that quarantine opens on budget exhaustion — both stores.
+
+## 2. Enablement gated on full rails — the interim ceiling is withdrawn (ADR-009 A-4; REV-0024-F-004)
+
+The earlier design shipped an *audit-free interim ingest ceiling* in WO-0102 ahead of the full
+rails, on the theory that a counting-only ceiling kept an enabled endpoint from ever being unrailed.
+REV-0024 showed that ceiling was **rate-bounded, not storage-bounded** (a producer paced under the
+ceiling still appended validation/conflict events forever, §1a). It is **withdrawn**, not tuned —
+there is no `signal_ingest_ceiling_*` setting and no interim window to reason about.
+
+In its place, `signal_seat_enabled` carries a **rails-presence startup guard**, exactly parallel to
+the credential-presence guard (`04-auth-and-api.md §1`): **with the flag on, `create_app` startup
+fails fast unless the full per-producer rails are wired** — the §1 refilling rate bucket, the §1a
+non-refilling invalid/conflict budget, the §4 producer-quarantine epoch machinery, and the §5 human
+release path. An enabled endpoint therefore structurally cannot run without finite-audit flood
+protection.
+
+**Sequencing consequence — live enablement is the joint WO-0102 + WO-0104 milestone.** WO-0102 ships
+the ingestion endpoint, the A-1 boundary, and the atomic conversion, but the flag is **structurally
+un-enable-able** in that WO alone: turning it on fails the rails-presence guard until WO-0104's rails
+exist. WO-0104 lands §1/§1a/§3/§4/§5 and lifts the guard in the same change that first makes
+enablement possible. The flag-on integration suite (the §1a `04-auth-and-api.md §1a` mounted-route
+matrix, and the constant-event-row flood tests of §1a/§4) is authored across both WOs and runs green
+at that joint milestone — never against a half-railed app.
 
 ## 3. Sweeps (WO-0104)
 
@@ -41,29 +76,35 @@ One periodic engine-side sweep (injected clock; monitoring-loop cadence):
   `SIGNAL_QUARANTINED` (`"producer_sweep"`) — a quarantined producer has no pending proposals
   lingering on the operator's panel.
 
-## 4. Post-quarantine / over-ceiling backpressure (the flood bound — ADR-009 A-4)
+## 4. Post-quarantine backpressure (the flood bound — ADR-009 A-4)
 
 **Ingest processing order is normative:** (1) authenticate — constant-time key lookup, before any
-body read; (2) rails check — quarantine epoch, rate limit / interim ceiling; (3) bounded body
-read — `Content-Length` capped at 64 KiB, streamed reject beyond; (4) parse + field-validate.
-Steps 1–2 reject with zero store writes and zero body processing, with exactly one carve-out:
-the single breach-crossing request appends the epoch-opening `PRODUCER_QUARANTINED` (once per
-epoch); all subsequent rejects in the epoch are write-free.
+body read; (2) rails check — quarantine epoch, rate limit (§1); (3) bounded body
+read — `Content-Length` capped at 64 KiB, streamed reject beyond; (4) parse + field-validate. The
+non-refilling invalid/conflict budget (§1a) is debited at step 4 when an attributable-rejection
+event is actually appended (validation quarantine or novel-hash conflict), and its exhaustion opens
+the epoch on the next ingest at step 2. Steps 1–2 reject with zero store writes and zero body
+processing, with exactly one carve-out: the single request that first crosses **either** breach
+threshold — rate-bucket empty (§1) **or** invalid/conflict budget exhausted (§1a) — appends the
+epoch-opening `PRODUCER_QUARANTINED` (once per epoch); all subsequent rejects in the epoch are
+write-free.
 
-For any ingest from a quarantined producer, or beyond a ceiling/limit:
+For any ingest from a quarantined producer, or beyond a rate/budget limit:
 
 1. Reject at the boundary: HTTP 429 (over-limit) / 403 (quarantined producer), constant work, no
    store write, no body read beyond step 3's cap.
 2. Audit is bounded **per quarantine epoch** (epoch = quarantine → release), NOT per time window
-   (a periodic append rate is unbounded over indefinite hostility — REV-0022 F-004): at most ONE
-   `PRODUCER_QUARANTINED` event opens the epoch; post-quarantine ingress appends NOTHING; a
-   **saturating in-memory counter outside the event log** tracks rejected requests
-   (diagnostic, best-effort across restarts by design); `PRODUCER_RELEASED` closes the epoch
-   carrying the saturated count + window. Constant ≤ 2 rail events per producer per epoch.
-   (The earlier `PRODUCER_INGEST_REJECTED` per-window event is REMOVED from the vocabulary.)
-3. Test contract (WO-0102 for the ceiling, WO-0104 for quarantine): model-based/long-duration
-   flood tests assert **constant event-row count** and bounded storage — not merely "fewer than
-   request count".
+   (a periodic append rate is unbounded over indefinite hostility — REV-0022 F-004; a refilling-
+   bucket-only bound is likewise unbounded under paced hostility — REV-0024-F-002, which the §1a
+   non-refilling budget closes): at most ONE `PRODUCER_QUARANTINED` event opens the epoch;
+   post-quarantine ingress appends NOTHING; a **saturating in-memory counter outside the event log**
+   tracks rejected requests (diagnostic, best-effort across restarts by design); `PRODUCER_RELEASED`
+   closes the epoch carrying the saturated count + window. Constant ≤ 2 rail events per producer per
+   epoch (plus the ≤ `invalid_budget` attributable-rejection events accrued before the epoch opened,
+   §1a). (The earlier `PRODUCER_INGEST_REJECTED` per-window event is REMOVED from the vocabulary.)
+3. Test contract (WO-0104, run at the joint enablement milestone): model-based/long-duration flood
+   tests — paced at or below the refill rate over arbitrarily many windows — assert **constant
+   event-row count** and bounded storage, not merely "fewer than request count".
 
 ## 5. Release (WO-0104 — human-gated action)
 

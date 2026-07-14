@@ -14,9 +14,8 @@ created: 2026-07-11
 
 # Work Order: Signal rails — TTL, staleness, rate limits, producer quarantine
 
-> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, then WO-0102. NOTE F-003/F-004 land here: server-max-TTL/expiry formula and per-epoch audit bound become ADR text, not WO discretion
-> and WO-0102 is complete. Runs after 0102; may run in parallel with 0103. The producer
-> **release** route is a human-gated action — same Complex treatment as WO-0103.
+> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022 BLOCK → A-1..A-4 → REV-0024 confirmed A-2/A-3 CLOSED, A-1/A-4 re-remediated; gated on **REV-0025** acceptance, then WO-0102. NOTE F-003/F-004 land here: server-max-TTL/expiry formula, per-epoch audit bound, **and the non-refilling invalid/conflict budget (REV-0024-F-004)** become ADR text, not WO discretion.
+> **This WO co-gates live enablement with WO-0102** (ADR-009 A-4): it wires the full rails (rate bucket + non-refilling invalid budget + quarantine epoch + human release) and **lifts the rails-presence startup guard** in the same change — the first point at which `signal_seat_enabled` can be turned on. The flag-on integration suite (route-authorization matrix + paced-flood) runs green here. Runs after 0102; may run in parallel with 0103. The producer **release** route is a human-gated action — same Complex treatment as WO-0103.
 
 ## Goal
 
@@ -38,7 +37,8 @@ Read only these first:
 allowed_paths:
   - app/events/**                    # signal rails + SIGNAL_EXPIRED events
   - app/models.py
-  - app/config.py                    # server_max_ttl / rate-limit Settings (A-3/A-4 tunables + hard caps) — Codex rev-3
+  - app/config.py                    # server_max_ttl / rate-limit / signal_invalid_budget_per_epoch Settings (A-3/A-4 tunables + hard caps) — Codex rev-3, REV-0024
+  - app/main.py                      # lift the rails-presence startup guard once the full rails are wired (A-4; the enablement point) — REV-0024
   - app/store/**
   - app/api/**                       # release route — human-gated action
   - app/facade/**                    # signal facade (release command/queries) — contract 5: the route never reaches store/events directly; commands.py stays forbidden below
@@ -60,18 +60,22 @@ forbidden_paths:
 
 - [ ] Injected clock throughout (no bare `datetime.now()` / `time.time()`).
 - [ ] Property-style tests: no ordering of signal events can yield an APPROVED state for an expired/quarantined signal.
-- [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test). **The bucket debits EVERY authenticated ingest** — valid, invalid, or duplicate — so validation-quarantine events are bucket-bounded (Codex rev-2; test: sustained invalid-body flood breaches the limit and the log stays bounded).
-- [ ] Post-quarantine backpressure per ADR-009 **Amendment A-4**: epoch-bounded audit (ONE PRODUCER_QUARANTINED per epoch; nothing appended post-quarantine; saturating out-of-log counter; count carried on PRODUCER_RELEASED) — model-based flood test asserts CONSTANT event-row count under sustained hostility, both stores.
+- [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test). **The refilling bucket debits EVERY authenticated ingest** — valid, invalid, or duplicate — evaluated at rails-check time **before body parse** (no "otherwise-valid" qualifier; REV-0024-F-004). The bucket bounds *throughput*, not *storage*.
+- [ ] **Non-refilling invalid/conflict budget** (ADR-009 A-4; REV-0024-F-002/F-004 — the storage bound the refilling bucket cannot provide): `signal_invalid_budget_per_epoch` (default 50, tunable, hard cap) debited by every **attributable-rejection append** — validation `SIGNAL_QUARANTINED` **and** each novel-hash `SIGNAL_DUPLICATE_CONFLICT` (same-hash replays already coalesced, `01-schema.md §3`); does **not** refill while un-quarantined; exhaustion → `PRODUCER_QUARANTINED` (opens epoch); **resets only on human release**. Test: pace invalid **and** novel-conflict requests at or below the refill rate over arbitrarily many windows → assert a **constant event-row ceiling** and quarantine-on-exhaustion (not merely "a burst eventually breaches the rate limit"), both stores.
+- [ ] Post-quarantine backpressure per ADR-009 **Amendment A-4**: epoch-bounded audit (ONE PRODUCER_QUARANTINED per epoch — opened by **rate-bucket breach OR invalid/conflict-budget exhaustion**; nothing appended post-quarantine; saturating out-of-log counter; count carried on PRODUCER_RELEASED) — model-based flood test asserts CONSTANT event-row count under sustained hostility, both stores.
+- [ ] **Wire the full rails and lift the rails-presence startup guard** (ADR-009 A-4; the enablement point): once the rate bucket + non-refilling invalid budget + quarantine epoch + human release are wired, `create_app` startup no longer fails the rails-presence guard with `signal_seat_enabled` on. This is the first change at which the flag can be enabled — so the **flag-on integration suite authored across WO-0102 + WO-0104 runs green here**: the `04-auth-and-api.md §1a` mounted-route authorization matrix and the paced-flood constant-event-row tests.
 - [ ] Expiry semantics per **Amendment A-3**: server-computed durable `expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)`, skew bounds, restart-stable, atomically re-checked at conversion (property tests, injected clock).
 - [ ] The release route is **operator-only** (same credential split as WO-0103); a producer API key cannot release its own quarantine (negative test).
 - [ ] **Release is reachable from the browser** (Codex PR #5 round-6 P2, invariant 11): the cockpit gains a producer-quarantine release control (on WO-0103's signal panel if it exists, else a minimal standalone control) issuing the release intent via the typed API client — the required human action must not be raw-API-only. Thin-client rules apply (no signal state owned client-side; contract 2 stays green).
-- [ ] WO-0102's interim ingest ceiling is replaced by the full rails **in this change** — never removed before them.
+- [ ] There is **no interim ingest ceiling to replace** — it was withdrawn (REV-0024-F-004). Instead, the no-unrailed-window guarantee is structural: WO-0102 ships the flag un-enable-able, and **this change wires the full rails and lifts the enablement gate together**, so the endpoint is never live without finite-audit flood protection.
 
 ## Required tests
 
 - [ ] Expiry sweep emits `SIGNAL_EXPIRED`; expired signal never approvable — property-style, dual-store.
 - [ ] Staleness/plausibility on `issued_at` (future / implausibly old → quarantine).
 - [ ] Producer quarantine on rate-limit breach; release only via explicit human release event.
+- [ ] **Paced-hostility flood** (REV-0024-F-002): invalid + novel-conflict requests paced at or below the refill rate over many windows → constant event-row count, quarantine opens on non-refilling-budget exhaustion, budget resets only on human release — both stores.
+- [ ] **Enablement gate**: with `signal_seat_enabled` on and rails NOT wired, `create_app` startup fails the rails-presence guard; with the full rails wired, it starts — and the joint flag-on route-authorization matrix passes at the mounted app.
 
 ## Required commands
 

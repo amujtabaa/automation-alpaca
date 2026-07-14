@@ -46,7 +46,7 @@ self-decide if they judge otherwise:
 | `SIGNAL_EXPIRED` | sweep or lazy-expiry durable transition | `received_at`, `expires_at`, `detected_by: "sweep" | "read"` |
 | `SIGNAL_REJECTED` | operator reject | `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id`, `producer_id`, `signal_id` |
-| `PRODUCER_QUARANTINED` | rate-limit breach — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach counters, epoch start |
+| `PRODUCER_QUARANTINED` | rate-bucket breach **or** non-refilling invalid/conflict budget exhaustion (`03-rails.md §1a`) — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach trigger + counters, epoch start |
 | `PRODUCER_RELEASED` | operator release — closes the epoch | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
 
 A terminal-at-ingest event (`SIGNAL_QUARANTINED`/`SIGNAL_EXPIRED` written directly at ingest with no
