@@ -109,6 +109,8 @@ lint-imports
 - [ ] Scope limited to allowed paths; no forbidden paths touched.
 - [ ] Fable DONE block includes evidence.
 - [ ] PKL update completed or explicitly not required.
+- [ ] **Schema/DB-migration human approval RECORDED before any store-schema change** (human-gated surface; `06-invariants.md §Cross-cutting` (b) + CLAUDE.md safety core): the `SignalRecord` table/index (and the additive nullable `signal_*` columns) is **additive-only, NULL-default, no rewrite of existing rows, both stores**, and its migration plan is **stopped for explicit human approval before execution** — the WO cannot close without that approval recorded. Likewise the `ExecutionEventType` additions: if the implementer judges they cross the event-log-truth human-gated surface, **escalate, do not self-decide** (Notes below).
+- [ ] **Independent CODE review gate cleared before closeout** (this WO touches human-gated surfaces — transport/auth boundary, event-log vocabulary, schema migration): a review packet is queued and dispositioned ACCEPT / ACCEPT-WITH-CHANGES before the work is relied on for a beta milestone. Completion cannot bypass this gate.
 
 ## Model-tier rationale
 

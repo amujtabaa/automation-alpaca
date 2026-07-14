@@ -32,7 +32,9 @@ holds a **non-refilling** budget:
   a hard architectural cap** no config may exceed, and **startup fails fast** on any value outside the
   range (mirrors `server_max_ttl`; REV-0024-F P2 — the "finite and small" property must not be
   configurable away). Debited by **every attributable terminal-at-ingest append** — one that
-  authenticates, embeds the proposal, and grows the log: a validation `SIGNAL_QUARANTINED`, each
+  authenticates, embeds the proposal, and grows the log: a **validation/skew** `SIGNAL_QUARANTINED`
+  (`quarantine_reason ∈ {validation, issued_at_future, issued_at_stale, ttl_out_of_range}` — **NOT**
+  the `producer_sweep` quarantine, which does not debit, `02-lifecycle.md §2/§4`), each
   novel-hash `SIGNAL_DUPLICATE_CONFLICT` (a same-hash replay is already coalesced to one event per
   `01-schema.md §3` and does not re-debit), **and each dead-on-arrival `SIGNAL_EXPIRED`**
   (`expires_at ≤ received_at`, or a skew-based `issued_at_future`/`issued_at_stale` terminal

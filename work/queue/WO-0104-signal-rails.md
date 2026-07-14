@@ -97,6 +97,8 @@ lint-imports
 - [ ] Scope limited to allowed paths; no forbidden paths touched.
 - [ ] Fable DONE block includes evidence.
 - [ ] PKL update completed or explicitly not required.
+- [ ] **Independent CODE review gate cleared before closeout** (REV-0025-F P1): this WO touches human-gated surfaces — the producer **release** action, quarantine rails, and event-log vocabulary — so a review packet is queued and dispositioned ACCEPT / ACCEPT-WITH-CHANGES before the work is relied on for a beta milestone. Completion cannot bypass this gate.
+- [ ] **Any schema/DB change stops for human approval** (if this WO adds producer-rail persistence/columns): additive-only, both stores, explicit human approval recorded before execution (`06-invariants.md §Cross-cutting` (b)).
 
 ## Model-tier rationale
 

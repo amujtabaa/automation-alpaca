@@ -343,7 +343,7 @@ correctly showed is unbounded over indefinite hostility):
   hard architectural cap of **1000** that no config may exceed — startup **fails fast** on a value
   outside the range, mirroring `server_max_ttl`'s cap so the "finite and small" property cannot be
   configured away, REV-0024-F P2). It is debited by **every attributable terminal-at-ingest append**
-  — one that authenticates, embeds the proposal, and grows the log: validation `SIGNAL_QUARANTINED`,
+  — one that authenticates, embeds the proposal, and grows the log: validation/skew `SIGNAL_QUARANTINED` (NOT the `producer_sweep` quarantine — that does not debit),
   each novel-hash `SIGNAL_DUPLICATE_CONFLICT`, **and** each dead-on-arrival `SIGNAL_EXPIRED`
   (`expires_at ≤ received_at`, or a skew-based `issued_at_future`/`issued_at_stale` terminal quarantine)
   — so a producer cannot evade the budget by pacing unique just-expired proposals (REV-0024-F P1). It
