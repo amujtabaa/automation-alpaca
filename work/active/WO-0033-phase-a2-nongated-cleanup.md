@@ -62,3 +62,45 @@ allowed_paths: [app/monitoring.py, app/store/core.py, app/store/sqlite.py, app/f
 - [ ] Item 5 done or explicitly deferred with rationale.
 - [ ] Dual-store parity test for parity-1; determinism test for parity-0.
 - [ ] Full gate green; mutation-checks kill; no test weakened.
+
+## Outcome (2026-07-14) — 3 of 5 delivered; 2 deferred with rationale
+
+DELIVERED (RED→GREEN regressions in `tests/test_wo0033_phase_a2_fixes.py`, both stores):
+- **parity-0 (P1) DONE.** `app/monitoring.py` `_run_one_envelope` now forwards
+  `now=now` to `redrive_staged_envelope_action` (was a bare `utcnow()` fallback).
+  Pin: `test_parity0_tick_forwards_injected_clock_to_redrive` (mock captures the
+  forwarded kwarg — wall-clock-independent).
+- **parity-1 (P2) DONE.** `app/store/sqlite.py` `stage_envelope_action` now
+  validates the envelope EXISTS (cheap `_read_one`) BEFORE
+  `_ensure_current_session_locked`, so a stage against an unknown id no longer
+  leaks a new-date session row + `session_opened` event (dual-store parity).
+  Pin: `test_parity1_stage_unknown_envelope_has_no_session_side_effect`
+  (date-rollover, `any_store`).
+- **mutation-0 (P1) DONE (coverage).** Added
+  `test_mutation0_run_one_envelope_history_includes_order_terminals`: drives the
+  real `_run_one_envelope` assembly and asserts an order's REJECTED terminal
+  (order_id set, envelope_id=None) reaches `decide()`'s history. VERIFIED it
+  KILLS the reverting mutant on both stores (mutation applied via Edit, reverted
+  via Edit — never `git checkout`, per the recorded wipe rule). No production
+  change (the wiring was already correct; this closes the coverage hole).
+
+DEFERRED (visible deviation — recorded, not silently dropped):
+- **completeness-1 (P1/P2) DEFERRED.** The fix (add a `fill_value_reason(qty, price)`
+  guard to `plan_envelope_fill`, mirroring `plan_append_fill`) is correct, but it
+  rejects a `None`-price fill that 13 existing test call sites currently pass
+  (all TESTS — no production caller omits price; AST-verified). Those 13 sites
+  need a valid `price=` added to keep testing their intended rejection reason
+  (pre-activation / bad-qty / unknown-id) rather than short-circuiting on the new
+  price guard. With NO live trigger today (both prod callers pass a price; a
+  `None`-price fill already fails later at `project_symbol_position`), and the
+  finder itself flagging severity UNCERTAIN "confirm with Codex," this is deferred
+  to a focused follow-up after Codex Phase B confirms severity — avoids churning
+  13 test files for a latent, no-trigger item under a "keep moving safely" batch.
+- **interface-lift-0 (P3) DEFERRED (likely won't-fix).** Typing the three facade
+  Protocol returns concretely diverges from the uniform `-> Any` convention across
+  ~15 facade-Protocol methods for marginal gain; that seam is already covered by
+  the concrete impl's return type + the route `response_model` + tests. Recommend
+  leaving as-is unless the whole facade Protocol is hardened at once.
+
+## Status: PARTIAL-VERIFIED (3/5 done, 2 deferred with rationale)
+Disposition: RESULT_SUMMARY_KEPT

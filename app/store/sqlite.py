@@ -2131,6 +2131,20 @@ class SqliteStateStore(StateStore):
         :func:`app.store.core.plan_stage_envelope_action`."""
 
         async with self._lock:
+            # Validate the envelope EXISTS before ensuring the session (parity-1 /
+            # REV-0023): _ensure_current_session_locked runs its OWN committed tx,
+            # so on a date rollover it would otherwise leak a new session row +
+            # session_opened event for a stage that only ever raises
+            # UnknownEntityError — a divergence from InMemoryStateStore, which
+            # checks the envelope first. Both stores now have no session side
+            # effect on an unknown-id stage.
+            if (
+                self._read_one(
+                    "SELECT 1 FROM execution_envelopes WHERE id = ?", (envelope_id,)
+                )
+                is None
+            ):
+                raise UnknownEntityError(f"envelope {envelope_id} not found")
             session = self._ensure_current_session_locked()
             with self._tx() as cur:
                 row = cur.execute(

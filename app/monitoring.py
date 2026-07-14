@@ -620,7 +620,12 @@ async def _run_one_envelope(
     # A staged-but-unexecuted action (transient release / crash between
     # staging and the venue call) resumes FIRST, with no new accounting —
     # the budget was spent when it was staged (INV-083).
-    redriven = await redrive_staged_envelope_action(store, adapter, envelope.id)
+    # Forward the tick's injected clock: redrive RE-VALIDATES the staged action
+    # (TTL / session-phase / reduce-only) and must use the tick's `now`, not a
+    # bare utcnow() fallback (engine determinism — H11 / REV-0023 parity-0).
+    redriven = await redrive_staged_envelope_action(
+        store, adapter, envelope.id, now=now
+    )
     if redriven is not None and redriven.outcome not in (
         ENVELOPE_EXEC_BLOCKED,
         ENVELOPE_EXEC_RELEASED,
