@@ -516,6 +516,21 @@ async def _envelope_id_for_order(store: StateStore, order_id: str) -> Optional[s
     return None
 
 
+async def _envelope_order_ids(store: StateStore) -> set[str]:
+    """Every order id minted by an envelope action (an ENVELOPE_ACTION event
+    carrying both order_id and envelope_id). These orders are driven ONLY by the
+    envelope executor's redrive (atomic replace + write-time re-validation);
+    the generic submit sweep must never claim/submit them (Codex PR#8 #1)."""
+
+    return {
+        e.order_id
+        for e in await store.get_execution_events()
+        if e.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and e.order_id is not None
+        and e.envelope_id is not None
+    }
+
+
 async def _cancel_envelope_working_order(
     store: StateStore, adapter: BrokerAdapter, envelope: ExecutionEnvelope
 ) -> None:
@@ -591,6 +606,7 @@ async def _run_envelopes(
                     EnvelopeStatus.FROZEN,
                     actor="engine",
                     reason=f"policy_error:{type(exc).__name__}",
+                    now=ts,  # Codex #2: injected tick clock, not wall clock
                 )
             except Exception:  # noqa: BLE001
                 _log.exception(
@@ -670,6 +686,7 @@ async def _run_one_envelope(
             EnvelopeStatus.BREACHED,
             actor="engine",
             reason=f"{decision.rail}: {decision.detail}",
+            now=now,  # Codex #2: persisted breached_at matches the decision clock
         )
     elif isinstance(decision, ExhaustedSignal):
         await store.transition_envelope(
@@ -677,6 +694,7 @@ async def _run_one_envelope(
             EnvelopeStatus.EXHAUSTED,
             actor="engine",
             reason=decision.detail,
+            now=now,  # Codex #2
         )
     elif isinstance(decision, ExpiredSignal):
         await store.transition_envelope(
@@ -684,6 +702,7 @@ async def _run_one_envelope(
             EnvelopeStatus.EXPIRED,
             actor="engine",
             reason=f"ttl_lapsed:{decision.disposition.value}",
+            now=now,  # Codex #2
         )
         if decision.disposition is EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
             await _cancel_envelope_working_order(store, adapter, envelope)
@@ -906,6 +925,17 @@ async def _submit_pending_orders(
     """
 
     created = [o for o in await store.list_orders() if o.status is OrderStatus.CREATED]
+    if not created:
+        return
+    # Codex PR#8 #1: envelope-minted orders are driven ONLY by the envelope
+    # executor (redrive: atomic replace + write-time re-validation). Exclude them
+    # from the generic submit sweep — a reprice released to CREATED (transient
+    # BrokerError after replace_order, or a crash before redrive) must NOT be
+    # independently submit_order'd here, which would place a second live SELL
+    # beside its still-working predecessor (double exposure) and bypass the
+    # atomic-replace path.
+    envelope_ids = await _envelope_order_ids(store)
+    created = [o for o in created if o.id not in envelope_ids]
     if not created:
         return
 
@@ -2191,6 +2221,13 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
                     dedupe_key=f"fill:{f.order_id}:{f.source_fill_id}",
                     price=f.price,
                     order_id=f.order_id,
+                    # Codex #7: this record-FIRST call writes the sole durable FILL
+                    # event (append_fill's shadow dedupes to it), so it must carry
+                    # the SYNTHETIC/RECONCILIATION provenance of an inferred fill —
+                    # not the BROKER_REST/BROKER_AUTHORITATIVE default that would
+                    # mis-state an engine-inferred fill as broker-observed.
+                    source=EventSource.RECONCILIATION,
+                    authority=EventAuthority.SYNTHETIC,
                 )
         except Exception:  # noqa: BLE001 — never block fill ingest
             _log.exception(

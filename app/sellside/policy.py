@@ -171,11 +171,21 @@ def _live_working_order_id(
     ]
     if not working:
         return None
-    order_id = working[-1].order_id
-    for e in history:
-        if e.order_id == order_id and e.event_type in _TERMINAL_ORDER_EVENTS:
-            return None
-    return order_id
+    # Codex PR#8 #6: return the NEWEST working order that is not yet terminal —
+    # scanning back past a dead replacement. A reprice whose replacement B is
+    # REJECTED/CANCELED at the venue may leave predecessor A still LIVE (the
+    # atomic replace never terminated it), and A must still count as the working
+    # order; otherwise the policy plans a fresh submit that the write-time
+    # max-1-outstanding check then refuses as stale, stranding the envelope.
+    terminal_ids = {
+        e.order_id
+        for e in history
+        if e.event_type in _TERMINAL_ORDER_EVENTS and e.order_id is not None
+    }
+    for e in reversed(working):
+        if e.order_id not in terminal_ids:
+            return e.order_id
+    return None
 
 
 def _rejected_probe_count(
