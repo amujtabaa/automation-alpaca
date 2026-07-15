@@ -401,6 +401,77 @@ async def test_c6_rest_at_floor_expiry_releases_only_when_the_child_fills(
     assert (await any_store.get_sell_intent(si.id)).status is SI.EXPIRED
 
 
+async def test_c7_staged_replacement_never_masks_a_live_predecessor(any_store):
+    """Fresh-eyes review find (the Codex #6 shape recurring in the release
+    predicate): with predecessor A SUBMITTED-live and a staged CREATED reprice
+    replacement B, the 'newest working order' view is B — a predicate keyed on
+    it would read 'no live child' and release the intent while A still rests
+    at the venue. The live-child scan must consider EVERY child: release only
+    after BOTH B (local cancel) and A (venue terminal) are gone."""
+
+    si, env = await _active_env(any_store)
+    staged_a = await any_store.stage_envelope_action(
+        env.id, _planned(), snapshot_fingerprint=FP, actor="engine", now=T
+    )
+    a = staged_a.order
+    await submit_created_order(any_store, a.id, broker_order_id="brk-c7a")
+    staged_b = await any_store.stage_envelope_action(
+        env.id,
+        _planned(kind=ActionKind.REPRICE, limit_price=9.8),
+        snapshot_fingerprint=FP,
+        actor="engine",
+        now=T + timedelta(seconds=5),
+    )
+    b = staged_b.order
+    assert b is not None and b.status is OrderStatus.CREATED
+    assert (await any_store.get_order(a.id)).status is OrderStatus.SUBMITTED
+
+    await any_store.transition_envelope(
+        env.id, S.BREACHED, actor="engine", reason="floor violation", now=T
+    )
+    assert (await any_store.get_sell_intent(si.id)).status is SI.APPROVED, (
+        "the staged CREATED replacement masked the still-live predecessor — "
+        "the intent released while A rests at the venue (double-book window)"
+    )
+
+    # B dies locally: A still rests — the release must keep deferring.
+    await any_store.transition_order(b.id, OrderStatus.CANCELED)
+    assert (await any_store.get_sell_intent(si.id)).status is SI.APPROVED
+
+    # A reaches its venue terminal: the mandate's last obligation ends.
+    await any_store.transition_order(a.id, OrderStatus.CANCELED)
+    assert (await any_store.get_sell_intent(si.id)).status is SI.EXPIRED
+
+
+async def test_c8_supersede_refused_while_a_masked_predecessor_rests(any_store):
+    """The same masked-predecessor shape at the supersession choke point: with
+    predecessor A SUBMITTED-live and a staged CREATED reprice replacement B,
+    the newest-working-order view is B — the WO-0027 live-order supersession
+    block would wave the amendment through, activating a successor next to
+    the still-resting A (the INV-077 double exposure it exists to prevent).
+    Supersession must refuse while ANY child may rest at the venue."""
+
+    si, env = await _active_env(any_store)
+    staged_a = await any_store.stage_envelope_action(
+        env.id, _planned(), snapshot_fingerprint=FP, actor="engine", now=T
+    )
+    await submit_created_order(any_store, staged_a.order.id, broker_order_id="brk-c8")
+    staged_b = await any_store.stage_envelope_action(
+        env.id,
+        _planned(kind=ActionKind.REPRICE, limit_price=9.8),
+        snapshot_fingerprint=FP,
+        actor="engine",
+        now=T + timedelta(seconds=5),
+    )
+    assert staged_b.order is not None and staged_b.order.status is OrderStatus.CREATED
+
+    with pytest.raises(EnvelopeTransitionError):
+        await any_store.supersede_envelope(
+            env.id, _draft(si.id, qty_ceiling=90), actor="op", reason="amendment"
+        )
+    assert (await any_store.get_envelope(env.id)).status is S.ACTIVE
+
+
 # =========================================================================== #
 # D. Flatten defers to a live envelope child (closes Codex PR#8 #4)
 # =========================================================================== #

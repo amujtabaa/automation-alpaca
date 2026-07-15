@@ -17,9 +17,11 @@ verdict **ACCEPT-WITH-CHANGES, Findings: None**, dispositioned RESOLVED in
 working-order predicate (WO-0025), §3 supersession (WO-0027), FROZEN→BREACHED + stale-vs-defect
 split (WO-0029A, both text proposals accepted by Ameen 2026-07-12), INV-085 scope narrowed to
 ACTIVE/FROZEN (WO-0034, decision 3a), §8 SellIntent↔Envelope lifecycle link + §4 flatten
-deferral-to-live-child (WO-0036 R2, 2026-07-15 — **queued for independent review**; the
-implemented mechanism diverges from the WO's original "intent → ORDERED at activation"
-recommendation for the reasons recorded in §8, flagged for Ameen's ratification at the REV gate).
+deferral-to-live-child (WO-0036 R2, 2026-07-15 — **queued for independent review**, REV-0024).
+The R2 mechanism diverges from the WO's original "intent → ORDERED at activation"
+recommendation for the reasons recorded in §8; **ratified by Ameen 2026-07-15** (session
+directive delegating the REV-0024 decisions to the author's recommendation), with the
+independent reviewer asked to verify the rationale rather than re-decide it.
 
 ## Context
 
@@ -96,6 +98,13 @@ fresh human approval, never an amendment. As drafted, none of these were decided
 reset `remaining` to its full ceiling and the predecessor's venue order was orphaned (two live
 SELLs totalling 180 sh against one 100-sh approval in the REV-0023 repro; found independently by
 two Phase A critics).
+
+**Amended 2026-07-15 (WO-0036 R2 fresh-eyes review):** rule (i)'s liveness check scans **every
+child**, never the single newest working order. A staged CREATED reprice replacement is newer
+than the live predecessor it would replace, so a newest-wins view read "no live order" while the
+predecessor still rested at the venue — waving the amendment through into exactly the rule-(i)
+double exposure (the Codex PR#8 #6 masked-predecessor shape, recurring at this choke point).
+Both stores now belt the supersession with the every-child venue-liveness scan.
 
 **Amended 2026-07-12 (WO-0029A, accepted by Ameen):** a broker-authoritative overfill of
 `qty_ceiling` is a BREACH in every state that can receive a fill. The §3 machine gains the edge

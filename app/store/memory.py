@@ -1069,18 +1069,30 @@ class InMemoryStateStore(StateStore):
                 return
 
     def _envelope_has_live_child_unlocked(self, envelope: ExecutionEnvelope) -> bool:
-        """Whether the envelope's working order MAY be live at the venue.
+        """Whether ANY child of the envelope MAY be live at the venue.
         CREATED is NOT live (local-only staging — the preemption sweep cancels
         it atomically, WO-0024); TIMEOUT_QUARANTINE IS live (ADR-002: an
-        ambiguous submit may be working). Used by the flatten preemption so an
-        envelope is never CANCELLED out from under a possibly-live child (the
-        internal twin of the public transition_envelope→CANCELLED guard)."""
+        ambiguous submit may be working). Used by the flatten preemption and
+        the terminal release, so an envelope is never CANCELLED — and its
+        intent never released — out from under a possibly-live child.
 
-        try:
-            _, working = self._envelope_action_context_unlocked(envelope)
-        except EnvelopeActionPausedError:
-            return True  # quarantined child — MAY be live
-        return working is not None and working.status is not OrderStatus.CREATED
+        Deliberately scans EVERY child, never the single "newest working
+        order": a staged CREATED reprice replacement is newer than the live
+        predecessor it would replace, and a newest-wins view would MASK that
+        predecessor (the Codex PR#8 #6 shape) — reading "no live child" while
+        a SELL still rests at the venue."""
+
+        for event in self._execution_events:
+            if (
+                event.envelope_id != envelope.id
+                or event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+                or event.order_id is None
+            ):
+                continue
+            order = self._orders.get(event.order_id)
+            if order is not None and order.status in VENUE_LIVE_ORDER_STATUSES:
+                return True
+        return False
 
     def _live_envelope_exit_unlocked(
         self, symbol: str
@@ -1301,6 +1313,19 @@ class InMemoryStateStore(StateStore):
                 update={"symbol": normalize_symbol(successor.symbol)}
             )
             _, working = self._envelope_action_context_unlocked(old)
+            # WO-0036 R2 (masked-predecessor class): the planner's live-order
+            # block evaluates the single NEWEST working order — a staged
+            # CREATED replacement would mask a still-resting predecessor and
+            # wave the amendment through next to it (the INV-077 double
+            # exposure WO-0027 rule (i) exists to prevent). Belt with the
+            # every-child scan before planning.
+            if self._envelope_has_live_child_unlocked(old):
+                raise EnvelopeTransitionError(
+                    f"envelope {old.id} may still have a live working order "
+                    "at the venue; cancel it before superseding — a successor "
+                    "next to a resting predecessor order is double exposure "
+                    "(INV-077)"
+                )
             plan = plan_supersede_envelope(
                 old, normalized, actor=actor, reason=reason, working_order=working
             )

@@ -1985,16 +1985,27 @@ class SqliteStateStore(StateStore):
     def _envelope_has_live_child_locked(
         self, cur: sqlite3.Cursor, envelope: ExecutionEnvelope
     ) -> bool:
-        """Whether the envelope's working order MAY be live at the venue
+        """Whether ANY child of the envelope MAY be live at the venue
         (CREATED is local-only staging; TIMEOUT_QUARANTINE IS live, ADR-002).
-        The flatten preemption's skip predicate — mirrors
-        ``InMemoryStateStore._envelope_has_live_child_unlocked``."""
+        The flatten-preemption and terminal-release predicate — mirrors
+        ``InMemoryStateStore._envelope_has_live_child_unlocked``, including
+        the every-child scan: a staged CREATED reprice replacement is newer
+        than the live predecessor it would replace, and a newest-wins view
+        would MASK that predecessor (the Codex PR#8 #6 shape)."""
 
-        try:
-            _, working = self._envelope_action_context_locked(cur, envelope)
-        except EnvelopeActionPausedError:
-            return True  # quarantined child — MAY be live
-        return working is not None and working.status is not OrderStatus.CREATED
+        live_statuses = ",".join("?" for _ in VENUE_LIVE_ORDER_STATUSES)
+        row = cur.execute(
+            "SELECT 1 FROM execution_events ev "
+            "JOIN orders o ON o.id = ev.order_id "
+            "WHERE ev.envelope_id = ? AND ev.event_type = ? "
+            f"AND o.status IN ({live_statuses}) LIMIT 1",
+            (
+                envelope.id,
+                ExecutionEventType.ENVELOPE_ACTION.value,
+                *sorted(s.value for s in VENUE_LIVE_ORDER_STATUSES),
+            ),
+        ).fetchone()
+        return row is not None
 
     def _live_envelope_exit_locked(
         self, symbol: str
@@ -2268,6 +2279,19 @@ class SqliteStateStore(StateStore):
                     update={"symbol": normalize_symbol(successor.symbol)}
                 )
                 _, working = self._envelope_action_context_locked(cur, old)
+                # WO-0036 R2 (masked-predecessor class): the planner's
+                # live-order block evaluates the single NEWEST working order —
+                # a staged CREATED replacement would mask a still-resting
+                # predecessor and wave the amendment through next to it (the
+                # INV-077 double exposure WO-0027 rule (i) exists to prevent).
+                # Belt with the every-child scan before planning.
+                if self._envelope_has_live_child_locked(cur, old):
+                    raise EnvelopeTransitionError(
+                        f"envelope {old.id} may still have a live working "
+                        "order at the venue; cancel it before superseding — a "
+                        "successor next to a resting predecessor order is "
+                        "double exposure (INV-077)"
+                    )
                 plan = plan_supersede_envelope(
                     old,
                     normalized,

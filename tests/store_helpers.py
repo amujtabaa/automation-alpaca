@@ -2,8 +2,30 @@
 
 from __future__ import annotations
 
-from app.models import OrderStatus, SellReason
+from datetime import datetime
+
+from app.models import EnvelopeStatus, OrderStatus, SellReason
 from app.store.base import CLAIM_CLAIMED
+
+
+async def activate_envelope_at(store, draft, *, now: datetime, actor="operator-a"):
+    """Create + approve + activate ``draft`` with an INJECTED activation clock
+    (``activated_at = now``). ``approve_envelope_activation`` stamps lifecycle
+    timestamps with the wall clock; a test whose tape/decide universe is
+    anchored to a fixed NOW must anchor ``activated_at`` the same way — the
+    policy's since-activation window (INV-086: only prints from THIS mandate's
+    life) otherwise EMPTIES the moment the wall clock passes the tape's fixed
+    timestamps, and the suite turns red by time of day (found 2026-07-15:
+    green every morning run, red after ~13:20 UTC — the tape anchors'
+    wall-clock crossover)."""
+
+    env = await store.create_envelope(draft, actor=actor)
+    await store.transition_envelope(
+        env.id, EnvelopeStatus.APPROVED, actor=actor, now=now
+    )
+    return await store.transition_envelope(
+        env.id, EnvelopeStatus.ACTIVE, actor=actor, now=now
+    )
 
 
 async def backing_intent_id(store, symbol: str = "AAPL", qty: int = 100) -> str:

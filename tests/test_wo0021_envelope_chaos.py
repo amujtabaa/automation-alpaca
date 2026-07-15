@@ -34,6 +34,7 @@ from app.reconciliation import (
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import OrderIntentBlockedError
 from app.store.core import STAGE_DIVERGENCE
+from tests.store_helpers import activate_envelope_at
 
 pytestmark = pytest.mark.anyio
 
@@ -102,8 +103,11 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
         reason=SellReason.PROTECTION_FLOOR,
         target_quantity=100,
     )
-    return await store.approve_envelope_activation(
-        make_draft(si.id, **overrides), actor="operator-a"
+    # Injected activation clock, anchored BEFORE the NOW-anchored tapes: the
+    # policy's since-activation window (INV-086) must contain the tape rows
+    # regardless of wall-clock time of day (see activate_envelope_at).
+    return await activate_envelope_at(
+        store, make_draft(si.id, **overrides), now=NOW - timedelta(hours=1)
     )
 
 
@@ -206,8 +210,9 @@ async def test_flatten_mid_reprice_staged_order_never_reaches_the_venue(any_stor
     si = await any_store.create_sell_intent(
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
-    env = await any_store.approve_envelope_activation(
-        make_draft(si.id), actor="operator-a"
+    # Injected activation clock before the tape (see activate_envelope_at).
+    env = await activate_envelope_at(
+        any_store, make_draft(si.id), now=NOW - timedelta(hours=1)
     )
 
     # Stage without executing (the mid-reprice window: transient release).

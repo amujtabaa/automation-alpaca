@@ -31,6 +31,7 @@ from app.models import (
     utcnow,
 )
 from app.monitoring import EnvelopeTapeBuffer, run_monitoring_tick
+from tests.store_helpers import activate_envelope_at
 
 pytestmark = pytest.mark.anyio
 
@@ -111,8 +112,11 @@ async def _active_envelope(store, symbol="AAPL", **overrides):
     si = await store.create_sell_intent(
         symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
-    return await store.approve_envelope_activation(
-        make_draft(si.id, symbol, **overrides), actor="operator-a"
+    # Injected activation clock, anchored BEFORE the NOW-anchored tapes: the
+    # policy's since-activation window (INV-086) must contain the tape rows
+    # regardless of wall-clock time of day (see activate_envelope_at).
+    return await activate_envelope_at(
+        store, make_draft(si.id, symbol, **overrides), now=NOW - timedelta(hours=1)
     )
 
 
