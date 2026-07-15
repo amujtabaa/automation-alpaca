@@ -6,8 +6,8 @@ status: AWAITING_REVIEW
 targets: [WO-0036]
 human_gated_surfaces: [order-intent lifecycle, session-close event truth, cancel/replace, manual flatten]
 review_branch: claude/sellintent-envelope-linking-h2z7i7
-base_sha: 22617f4                # tip before this pass (WO-0036 cluster 4)
-gated_fix_commits: [f022f59]     # the R2 link commit
+base_sha: 22617f4                        # tip before this pass (WO-0036 cluster 4)
+gated_fix_commits: [f022f59, bedf7e4]    # the R2 link + the fresh-eyes follow-up
 env: python 3.12                 # ruff/mypy/pytest pinned by constraints.txt
 created: 2026-07-15
 ---
@@ -45,18 +45,62 @@ Mechanism summary (full semantics in `docs/adr/ADR-010-execution-envelope.md` §
    live-envelope-backed intent.
 6. **INV-087 amendment** — the per-symbol clash counts FROZEN as live.
 
-## Decisions queued for the human at this gate
+## Decisions at this gate — RESOLVED
 
-- **Option-A+ divergence ratification (Ameen):** the WO's original recommendation was
-  "activation transitions the intent APPROVED→ORDERED". The implementation keeps the
-  intent APPROVED-while-owned instead — `sell_intent_is_active` keys an ORDERED intent
-  on its ONE linked order, which an envelope does not have, so ORDERED-with-no-order
-  would read *inactive while the envelope works* (re-opening duplicate protection) and
-  arm the legacy "ORDERED but has no linked order" trap. Rationale recorded in ADR-010 §8.
-- **R6 convergence wording:** the WO's done-when described "N retries → recovery-ledger
-  escalation"; the shipped mechanism is per-tick idempotent re-drive with logged failure
-  (`_converge_expired_envelope_cancels`) — the arm never stops trying, so nothing is
-  silently stranded. Confirm the mechanism satisfies the intent of the wording.
+Resolved by Ameen 2026-07-15 (session directive delegating the REV-0024 decisions to the
+author's recommendation). The reviewer VERIFIES these, it does not re-decide them:
+
+- **Option-A+ divergence — RATIFIED.** The WO's original recommendation was "activation
+  transitions the intent APPROVED→ORDERED". The implementation keeps the intent
+  APPROVED-while-owned instead — `sell_intent_is_active` keys an ORDERED intent on its
+  ONE linked order, which an envelope does not have, so ORDERED-with-no-order would read
+  *inactive while the envelope works* (re-opening duplicate protection) and arm the
+  legacy "ORDERED but has no linked order" trap. Rationale recorded in ADR-010 §8;
+  probe it — if the reviewer finds the rationale unsound, that IS a finding.
+- **R6 convergence wording — ACCEPTED as satisfying the done-when's intent.** The WO
+  described "N retries → recovery-ledger escalation"; the shipped mechanism is per-tick
+  idempotent re-drive with logged failure (`_converge_expired_envelope_cancels`) — the
+  arm never stops trying, so nothing is silently stranded (the wording's substance).
+  Probe: is there any input on which the re-drive arm stops trying without the order
+  reaching a terminal/CANCEL_PENDING state?
+
+## Author's post-landing fresh-eyes pass (2026-07-15) — findings, all fixed (commit bedf7e4)
+
+Disclosed so the packet is a complete account (verify the fixes, and treat any FURTHER
+instance of these classes as novel):
+
+- **R-1 (release predicate, masked predecessor):** `_envelope_has_live_child_*` first
+  keyed on the single newest working order; a staged CREATED reprice replacement masked
+  a still-SUBMITTED predecessor → the terminal release read "no live child" and expired
+  the intent while the predecessor rested (double-book window), and the flatten
+  preemption could CANCEL the envelope under it. Fixed with an every-child
+  venue-liveness scan; pinned `test_c7_staged_replacement_never_masks_a_live_predecessor`.
+- **R-2 (same class, supersession choke point):** WO-0027 rule (i)'s live-order block
+  evaluated the same newest-wins view → an amendment could activate a successor next to
+  the masked resting predecessor (INV-077 double exposure). Fixed with a store-side
+  every-child belt in both stores; pinned
+  `test_c8_supersede_refused_while_a_masked_predecessor_rests`; ADR-010 §3 amended.
+- **F-3 (pre-existing suite time bomb, not an engine defect):** three tape-driven test
+  files activated envelopes with wall-clock `activated_at` while feeding NOW-anchored
+  tapes — the policy's since-activation window (INV-086) empties once wall UTC passes
+  the tape anchors, so 12 tests were green in morning runs and permanently red from
+  2026-07-15 ~13:20 UTC (verified failing at the pre-R2 base 22617f4). Fixtures now
+  activate through the `now=`-threaded transitions
+  (`tests/store_helpers.activate_envelope_at`) — fully injected-clock. The engine
+  behavior (window keyed to THIS mandate's activation) is correct and unchanged.
+
+## Known accepted behaviors (disclosed, not defects — challenge if you disagree)
+
+- **Monitoring's `_envelope_working_order` stays newest-wins**: the EXPIRED
+  cancel-convergence arm and the stale-data CANCEL disposition may need one extra tick
+  when a staged CREATED replacement masks a live predecessor (first pass cancels the
+  CREATED child locally; the next pass sees the predecessor and re-drives its venue
+  cancel). Converges, never strands; left as-is deliberately — the store-side rails
+  above are the exposure-preventing layer.
+- **Emergency reduce under HALTED with a resting envelope child defers** (evented) —
+  the alternative (preempt + fresh MARKET sell) double-books the resting child. The
+  operator's path to a hard exit: cancel the child via the order-cancel route, then
+  flatten. The deferral event carries the child's order id and status for exactly that.
 
 ## Probes (suggested, not exhaustive — re-derive your own)
 

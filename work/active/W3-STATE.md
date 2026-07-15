@@ -211,6 +211,22 @@ cov 94.91%). GATED: independent cross-model review queued as REV-0024 (request.m
 the Option-A+ divergence + R6-wording decisions for Ameen). WO-0036 status → REVIEW; the
 review gate clears only on an ACCEPT/ACCEPT-WITH-CHANGES disposition.
 
+## WO-0036 R2 fresh-eyes pass (2026-07-15, Ameen-directed; commit bedf7e4)
+Clear-eyes re-review of the landed link before the Codex packet. Two more members of the
+masked-predecessor class found + closed (staged CREATED replacement hiding a live
+predecessor — the Codex #6 shape): the release/preemption liveness predicate and the
+supersession live-order block both now scan EVERY child (pins test_c7/test_c8; ADR-010 §3
+amended). Plus F-3, a PRE-EXISTING suite time bomb unrelated to R2: wo0020/wo0021-chaos/
+wo0025 activated envelopes with wall-clock activated_at while feeding NOW-anchored tapes —
+INV-086's since-activation window empties once wall UTC passes the tape anchors, so 12
+tests were green mornings, permanently red after 2026-07-15 ~13:20 UTC (verified failing at
+pre-R2 base 22617f4); fixtures now activate via now=-threaded transitions
+(store_helpers.activate_envelope_at), fully injected-clock. REV-0024 decisions resolved per
+Ameen's session delegation (Option-A+ RATIFIED; R6 per-tick re-drive ACCEPTED); the request
+packet carries them as verify-items plus the disclosed accepted behaviors. Full gate green
+at 17:2x UTC (past the former flake boundary): ruff/mypy/import-linter clean, pytest rc 0,
+coverage 94.90%.
+
 ## Codex PR #8 review (2026-07-15) — 8 inline findings, triaged into WO-0036
 The GitHub Codex bot reviewed PR #8 (execution-envelope → master, commit ac73ad5): 6×P1 + 2×P2
 on the envelope execution surface. Implementer-verified triage: SIX independently confirm my

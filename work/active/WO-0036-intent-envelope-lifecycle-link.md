@@ -94,6 +94,19 @@ surfaced during the build:
 - **Exclusive-driver guards**: `create_order_for_sell_intent` and public
   `transition_sell_intent` refuse a live-envelope-backed intent.
 - **INV-087 clash extended to FROZEN** (live = ACTIVE|FROZEN, uniform predicate everywhere).
+
+**Fresh-eyes pass (Ameen-directed, 2026-07-15, commit bedf7e4):** a clear-eyes re-review of
+the landed link found and closed two more members of the masked-predecessor class (a staged
+CREATED replacement hiding a still-live predecessor — the Codex #6 shape): R-1 the release/
+preemption predicate now scans EVERY child for venue-liveness (pin `test_c7`), R-2 the
+supersession live-order block gets the same every-child belt in both stores (pin `test_c8`;
+ADR-010 §3 amended). Plus F-3, a pre-existing suite time bomb OUTSIDE the R2 change: three
+tape-driven test files mixed wall-clock `activated_at` with NOW-anchored tapes, so 12 tests
+were green mornings and permanently red after 2026-07-15 ~13:20 UTC (fails at pre-R2 base
+22617f4); fixtures now activate via the `now=`-threaded transitions
+(`store_helpers.activate_envelope_at`). REV-0024 decisions resolved per Ameen's session
+delegation: Option-A+ divergence RATIFIED; R6 per-tick re-drive ACCEPTED as satisfying the
+convergence done-when (reviewer verifies both).
 Migration surface (actual): ~9 test files re-fixtured to real backing intents (shared helper
 `tests/store_helpers.backing_intent_id`); wo0032 reframed per the design note; the
 wo0017-precedence hybrid deferral pin rebuilt on an envelope child (the R2-coherent
