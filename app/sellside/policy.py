@@ -346,22 +346,30 @@ def decide(
     if active_window and (len(active_window) - 1) in suspect:
         latest_raw = active_window[-1].last_price
         if latest_raw is not None and latest_raw <= envelope.floor_price:
-            # Deviation-suspect BUT at/below the floor: fail SAFE, not quiet.
-            # Fall through so the hard floor rail produces BreachSignal — a
-            # genuine crash gap gets immediate protection (the WO-0021 pin:
-            # gap below floor is a breach, never a submit, never silence),
-            # and a phantom here yields a spurious-but-frozen-for-human
-            # breach, never an order. The suspect print stays excluded from
-            # the feature tape either way.
-            pass
-        else:
-            # The LATEST print is deviation-suspect and above the floor:
-            # actions are priced off it, so fail quiet this tick — never
-            # size or submit against a phantom.
-            return StaleDataSignal(
-                disposition=envelope.stale_data_disposition,
-                reasons=("price_deviation",),
+            # Deviation-suspect AND at/below the floor: fail SAFE with an
+            # EXPLICIT floor breach. We must NOT fall through to the trigger
+            # logic — it keys on ``latest.last_price`` (this very phantom) and
+            # then prices the order off ``latest.bid``, so a still-healthy bid
+            # above the floor would sail past ``validate_action`` and let a
+            # phantom below-floor print drive a real SELL (Codex PR#8 P1). A
+            # genuine crash gap below the floor is a real breach; a phantom
+            # here yields a spurious-but-frozen-for-human breach — never an
+            # order, never silence (the WO-0021 pin). The suspect print stays
+            # excluded from the feature tape either way.
+            return BreachSignal(
+                rail="floor_price",
+                detail=(
+                    f"deviation-suspect latest {latest_raw} at/below floor "
+                    f"{envelope.floor_price}"
+                ),
             )
+        # The LATEST print is deviation-suspect and above the floor: actions
+        # are priced off it, so fail quiet this tick — never size or submit
+        # against a phantom.
+        return StaleDataSignal(
+            disposition=envelope.stale_data_disposition,
+            reasons=("price_deviation",),
+        )
     tape = [
         s
         for i, s in enumerate(active_window)

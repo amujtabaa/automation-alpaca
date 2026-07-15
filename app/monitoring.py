@@ -1206,9 +1206,31 @@ async def _redrive_stale_submitting(
     )
     already_covered = {r.local_order_id for r in open_recoveries}
     max_attempts = settings.stale_submitting_max_redrive_attempts
+    # Codex PR#8 round-2 F1 (P1): envelope-minted orders must NEVER be blind
+    # `submit_order`'d here (the SUBMITTING sibling of the CREATED-sweep exclusion
+    # in `_submit_pending_orders`). A crash between the envelope claim and
+    # `replace_order` strands a reprice replacement SUBMITTING+idless; a bare
+    # submit would mint a SECOND live SELL beside the still-working predecessor,
+    # because the atomic replace's venue cancel never ran. Route them to
+    # TIMEOUT_QUARANTINE instead so the ADR-002 targeted `client_order_id` query
+    # resolves them — the venue's replace is atomic, so predecessor A and
+    # replacement B are never both live there (only a blind submit creates that).
+    envelope_ids = await _envelope_order_ids(store)
 
     for order in stale:
         if order.id in already_covered:
+            continue
+        if order.id in envelope_ids:
+            try:
+                await store.quarantine_timed_out_order(
+                    order.id, reason="envelope_stale_submit"
+                )
+            except _TRANSITION_ERRORS as q_exc:
+                _log.warning(
+                    "could not quarantine stale envelope submit %s: %s",
+                    order.id,
+                    q_exc,
+                )
             continue
         # Backstop: too many transient re-drive failures already → treat as a
         # permanent failure the classifier missed and escalate rather than loop.

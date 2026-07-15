@@ -189,6 +189,42 @@ async def test_c1_generic_sweep_skips_envelope_minted_orders(any_store):
     assert (await any_store.get_order(order_id)).status is OrderStatus.CREATED
 
 
+# Codex PR#8 round-2 F1 (P1) — the SUBMITTING-redrive sibling of #1. A crash
+# between the envelope claim and `replace_order` leaves the reprice replacement
+# SUBMITTING+idless; the generic stale-SUBMITTING recovery must NOT blind
+# `submit_order` it (that mints a SECOND live SELL beside the still-working
+# predecessor, because the atomic replace's venue cancel never ran). Envelope
+# orders route to TIMEOUT_QUARANTINE for ADR-002 targeted reconciliation — the
+# venue's atomic replace makes that resolution consistent (A and B are never
+# both live at the venue; only a blind submit could create that).
+async def test_c1b_stale_submitting_redrive_skips_envelope_orders(any_store):
+    from app.config import Settings
+    from app.monitoring import _redrive_stale_submitting
+
+    env = await _active_env(any_store)
+    staged = await any_store.stage_envelope_action(
+        env.id, _planned(), snapshot_fingerprint=FP, now=T
+    )
+    order_id = staged.order.id
+    # The crash window: the claim moves CREATED -> SUBMITTING durably, but the
+    # broker call never persisted a broker_order_id.
+    await any_store.claim_order_for_submission(order_id)
+    o = await any_store.get_order(order_id)
+    assert o.status is OrderStatus.SUBMITTING and not o.broker_order_id
+
+    adapter = MockBrokerAdapter()
+    await _redrive_stale_submitting(any_store, adapter, Settings(), market_data=None)
+
+    assert order_id not in [o.id for o in adapter.submitted], (
+        "stale-submitting redrive blind-submitted an envelope order (double-book)"
+    )
+    assert (
+        await any_store.get_order(order_id)
+    ).status is OrderStatus.TIMEOUT_QUARANTINE, (
+        "crash-stranded envelope order was not routed to targeted reconciliation"
+    )
+
+
 # Codex #7 (P2) — reconciliation-inferred envelope fills must carry SYNTHETIC/
 # RECONCILIATION provenance on the sole durable FILL event (the record-first
 # bridge writes it; append_fill's shadow dedupes to it), not the broker default.

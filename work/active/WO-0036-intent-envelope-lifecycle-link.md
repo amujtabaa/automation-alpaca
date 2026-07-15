@@ -78,6 +78,58 @@ exists with a MISMATCHED symbol (catches the cockpit typo, leaves synthetic-id t
 #4 → make `flatten_position` also defer to a live envelope working order for the symbol. Awaiting
 Ameen: full R2 migration now vs the lighter interim vs schedule R2 as its own WO.
 
+## R2 DESIGN — finalized after full investigation (2026-07-15)
+
+The pre-build Fable GATE investigation (lifecycle map + the `sell_intent_is_active`
+and flatten-deferral seams) changed the recommended mechanism. Key findings:
+
+1. **The WO's "Recommended" option 1 (transition intent → ORDERED at activation) is
+   flawed.** `sell_intent_is_active` (core.py:794) keys an `ORDERED` intent's
+   activeness on its ONE linked order: `if order is None or order.status in
+   _TERMINAL: return False`. An envelope has NO single durable order (it mints a
+   sequence across reprices, with gaps). So transitioning the backing intent to
+   `ORDERED` with `order_id=None` makes `sell_intent_is_active` return **False while
+   the envelope is very much ACTIVE** — the incoherence the WO wanted to fix gets
+   WORSE, and the legacy `create_order_for_sell_intent` idempotency guard
+   ("ORDERED but has no linked order", memory.py:1548) becomes a latent trap.
+
+2. **Migration surface is MUCH smaller than the ~73/~91 estimate:** approve is called
+   from 45 sites/15 files, but only **~25 sites across 4 files** carry synthetic
+   `sell_intent_id`s (`test_wo0017_envelope_approval.py` ~12, `test_wo0032` 6,
+   `test_wo0017_precedence.py` 5, `test_wo0035_root_causes.py` 2). The other 11 files
+   already back drafts with a real `create_sell_intent` id. `SELL_INTENT_TRANSITIONS`
+   (app/transitions.py): PENDING→{APPROVED,REJECTED,EXPIRED}, APPROVED→{ORDERED,EXPIRED}.
+
+3. **`create_sell_intent` single-flight dedup is per-symbol.** Two real same-symbol
+   intents CANNOT coexist — so `test_wo0032`'s two synthetic same-symbol intents
+   can't be literally migrated; the per-symbol ENVELOPE guard test is reframed (the
+   intent layer now structurally blocks the second same-symbol intent; INV-087 stays
+   the defense-in-depth backstop, tested directly via same-intent / hand-set draft).
+
+**CHOSEN mechanism — "Option A+" (close-side spare + terminal propagation, NO ORDERED
+overloading):**
+- `approve_envelope_activation` (both stores): LOAD the backing SellIntent; validate it
+  exists, its symbol matches, and it is non-terminal (PENDING/APPROVED, not ORDERED/
+  terminal). Normalize PENDING→APPROVED (the envelope approval IS the human approval).
+  Leave it APPROVED for the envelope's life → `sell_intent_is_active`=True (coherent,
+  unchanged predicate). Closes #8 (typo/mismatch mints an owner-less mandate).
+- `close_session` (both stores): exclude from `open_sell_intents` any intent backing a
+  NON-terminal envelope → the P0 orphan is never minted. (Gated session-close event
+  truth.)
+- `transition_envelope` → a FINAL terminal state (COMPLETED/EXPIRED/EXHAUSTED/BREACHED/
+  CANCELLED, NOT SUPERSEDED — the successor keeps the intent) expires the backing intent
+  when no other non-terminal envelope backs it → releases the symbol for fresh
+  protection (no stale-mandate lingering-APPROVED hole).
+- `plan_flatten_position` / flatten (#4): defer to a LIVE envelope working order for the
+  symbol (not just the intent's single `active_order`, which is None for an
+  envelope-backed intent) → a manual flatten never double-books a live envelope child.
+
+Rationale vs option 1: A+ keeps `sell_intent_is_active` coherent WITHOUT overloading
+ORDERED or rippling a new param through every dedup caller; the intent lifecycle mirrors
+the envelope's (in-flight while non-terminal, released at terminal). **This diverges from
+the WO's stated recommendation → flagged for Ameen's ratification at the REV gate (gated
+event-truth semantics; the ADR-010 amendment records the decision).**
+
 ## Independent confirmation + 2 new P1s — Codex PR #8 review (2026-07-15)
 
 The GitHub Codex bot reviewed PR #8 (8 inline findings, commit ac73ad5). SIX

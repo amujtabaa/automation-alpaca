@@ -145,3 +145,41 @@ def test_deviation_yields_to_floor_breach_never_silence():
     d = decide(env, tape, now=NOW, history=[])
     assert isinstance(d, BreachSignal), f"got {type(d).__name__}: {d}"
     assert d.rail == "floor_price"
+
+
+def _snap_split(sec, last, bid, vol):
+    """A snapshot whose last_price and bid can diverge (the healthy-quote /
+    phantom-last case ``_snap`` cannot express, since it pins bid=last-0.01)."""
+    return SimpleNamespace(
+        updated_at=START + timedelta(seconds=sec),
+        last_price=last,
+        volume=vol,
+        bid=bid,
+        ask=bid + 0.02,
+        stale=False,
+    )
+
+
+def test_suspect_below_floor_last_with_healthy_bid_still_fails_closed():
+    """Codex PR#8 P1 (policy.py:356): a deviation-suspect LATEST print BELOW the
+    floor must fail closed EVEN WHEN the bid is still above the floor. The old
+    `pass` fell through to the stop-trigger, which keys on the phantom
+    ``latest.last_price`` and then prices the order off the healthy bid — so
+    ``validate_action`` (which checks the bid-priced LIMIT vs the floor) saw no
+    breach, and a phantom below-floor last drove a real SELL. Invalid market
+    data must never drive a submission (safety rail); below the floor that is a
+    BreachSignal, never an order, never silence."""
+
+    from app.sellside.types import BreachSignal
+
+    tape = _tape(120)  # ~10.0-10.12, floor 8.00
+    # Phantom LATEST: last crashes to 1.00 (below the 8.00 floor, a >25% step
+    # deviation) while the quote stays healthy at 9.50 (ABOVE the floor).
+    tape.append(_snap_split(1200, last=1.00, bid=9.50, vol=3000.0))
+    env = envelope()
+    d = decide(env, tape, now=NOW, history=[])
+    assert isinstance(d, BreachSignal), (
+        f"a suspect below-floor last with a healthy bid must fail closed, "
+        f"got {type(d).__name__}: {d}"
+    )
+    assert d.rail == "floor_price"
