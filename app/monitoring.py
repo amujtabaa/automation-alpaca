@@ -106,6 +106,7 @@ from app.store.base import (
     StateStore,
     UnknownEntityError,
 )
+from app.store.core import EnvelopeActionPausedError
 
 _log = logging.getLogger(__name__)
 
@@ -631,6 +632,21 @@ async def _run_envelopes(
                 snap_memo=snap_memo,
                 now=ts,
             )
+        except EnvelopeActionPausedError:
+            # Codex PR#8 F4: a child in TIMEOUT_QUARANTINE PAUSES the envelope —
+            # no action may be planned/written until ADR-002 targeted
+            # reconciliation resolves the ambiguity. That is an EXPECTED transient
+            # wait, NOT a policy crash: leave the envelope ACTIVE (skip this
+            # tick's action) so it resumes automatically once the quarantine
+            # clears. Freezing here (the broad handler below) would force a manual
+            # human resume after a recoverable submit/replace timeout.
+            _log.info(
+                "envelope %s (%s): paused this tick (child in TIMEOUT_QUARANTINE); "
+                "left ACTIVE for reconciliation to resolve",
+                envelope.id,
+                envelope.symbol,
+            )
+            continue
         except Exception as exc:  # noqa: BLE001 — isolate per envelope
             _log.exception(
                 "envelope %s (%s): pass failed; freezing that envelope only",

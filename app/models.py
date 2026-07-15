@@ -638,9 +638,10 @@ class ExecutionEnvelope(_Entity):
     ``BREACHED``) or a *soft bound* (policy output clamped + logged); see the
     ADR-010 §2 table. Bounds are validated at construction and NEVER mutate —
     no store exposes a bound-update path; amendment is a new envelope via
-    supersession. Only ``status``, ``remaining_quantity``, ``replaces_used``,
-    supersession linkage, and timestamps change after creation, each through
-    a dedicated audited store operation.
+    supersession. Only ``status``, ``remaining_quantity``, supersession
+    linkage, and timestamps change after creation, each through a dedicated
+    audited store operation. (``replaces_used`` is NOT a stored-and-written
+    field — see its declaration below.)
 
     ``remaining_quantity`` is a read-model counter: it starts at
     ``qty_ceiling`` and is decremented ONLY by deduped fill events
@@ -671,7 +672,14 @@ class ExecutionEnvelope(_Entity):
     # --- Rate (hard rails) -------------------------------------------------- #
     cooldown_floor_ms: int  # min ms between reprices
     cancel_replace_budget: int  # lifetime budget; exhaustion → EXHAUSTED
-    replaces_used: int = 0  # read-model counter (engine seam increments)
+    # Budget consumption is DERIVED from the ENVELOPE_ACTION event log (the count
+    # of reprice/cancel actions — the SAME source the policy's cancel_replace
+    # budget rail enforces on, `app.sellside.policy._replaces_used`). No writer
+    # maintains this stored field today, so it stays 0; making the read-model /
+    # cockpit project it from the event log (via one shared counter used by both
+    # enforcement and display, to avoid a display/enforcement drift) is tracked
+    # in WO-0029 (Codex PR#8 F5). Do NOT add a second stored writer here.
+    replaces_used: int = 0
     max_outstanding_children: int = 1  # v1: 1
 
     # --- Time / data (hard rails) -------------------------------------------#
@@ -772,6 +780,13 @@ class ExecutionEnvelope(_Entity):
             )
         if not self.allowed_session_phases:
             raise ValueError("allowed_session_phases must be non-empty")
+        # Codex PR#8 F6: the TTL rail must be timezone-aware. A naive expires_at
+        # would pass approval, then TypeError against the aware injected `now` in
+        # decide()/validate_action() on tick 1 and freeze the mandate. Fail
+        # closed at construction so a malformed TTL is a 422, never an ACTIVE
+        # mandate that self-destructs on its first tick.
+        if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
+            raise ValueError("expires_at must be timezone-aware")
         if self.supersedes_id == self.id and self.supersedes_id is not None:
             raise ValueError("an envelope cannot supersede itself")
         if self.superseded_by_id == self.id and self.superseded_by_id is not None:

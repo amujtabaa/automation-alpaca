@@ -225,6 +225,39 @@ async def test_c1b_stale_submitting_redrive_skips_envelope_orders(any_store):
     )
 
 
+# Codex PR#8 round-2 F3 (P2), sqlite-specific (memory already returns on NOOP
+# before any session work) — a NOOP ACTIVE->ACTIVE transition must NOT call the
+# session bootstrap. The sqlite twin ran `_ensure_current_session_locked` before
+# the in-tx NOOP early-return, so on a DATE ROLLOVER (today has no session yet)
+# an idempotent re-activation minted a spurious session/`session_opened`. Forced
+# here by ageing the current session's date so today has none.
+async def test_c_f3_noop_active_transition_does_not_mint_a_session_on_rollover(
+    tmp_path,
+):
+    from app.models import EnvelopeStatus
+    from app.store.sqlite import SqliteStateStore
+
+    store = SqliteStateStore(tmp_path / "f3.db")
+    try:
+        env = await _active_env(store)  # initialize + ACTIVE envelope (today)
+        # Rollover: age the only session so `today` has none -> the buggy
+        # bootstrap WOULD mint a fresh session on the NOOP.
+        store._conn.execute("UPDATE sessions SET session_date = '2000-01-01'")
+        store._conn.commit()
+        before = len(await store.list_sessions())
+        out = await store.transition_envelope(
+            env.id, EnvelopeStatus.ACTIVE, actor="op"
+        )
+        assert out.status is EnvelopeStatus.ACTIVE  # idempotent NOOP
+        assert len(await store.list_sessions()) == before, (
+            "NOOP ACTIVE minted a session on a date rollover (parity break)"
+        )
+    finally:
+        if store._conn is not None:
+            store._conn.close()
+            store._conn = None
+
+
 # Codex #7 (P2) — reconciliation-inferred envelope fills must carry SYNTHETIC/
 # RECONCILIATION provenance on the sole durable FILL event (the record-first
 # bridge writes it; append_fill's shadow dedupes to it), not the broker default.

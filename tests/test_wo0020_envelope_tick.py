@@ -252,6 +252,66 @@ async def test_policy_exception_freezes_only_that_envelope(any_store, monkeypatc
     assert len(msft_sells) == 1  # B's stop-exit went through this same tick
 
 
+async def test_quarantined_child_pauses_not_freezes_the_envelope(any_store):
+    """Codex PR#8 F4: a working child in TIMEOUT_QUARANTINE PAUSES the envelope
+    (``stage_envelope_action`` raises ``EnvelopeActionPausedError``) until
+    ADR-002 targeted reconciliation resolves the ambiguity — an EXPECTED
+    transient wait, not a policy crash. The per-envelope handler must leave the
+    envelope ACTIVE (skip this tick), never FREEZE it as ``policy_error`` —
+    otherwise a recoverable submit timeout demands a manual human resume even
+    after the quarantine cleanly resolves."""
+
+    from app.sellside.types import ActionKind, PlannedAction
+
+    await any_store.initialize()
+    await _hold(any_store, "AAPL", 100)
+    env = await _active_envelope(any_store, symbol="AAPL", cooldown_floor_ms=1)
+
+    # Stage a SUBMIT, claim it to SUBMITTING, then quarantine it (the ADR-002
+    # ambiguous-submit pause posture) so it is the live-but-paused working order.
+    action = PlannedAction(
+        kind=ActionKind.SUBMIT,
+        limit_price=9.9,
+        quantity=10,
+        regime=None,
+        urgency=0.0,
+        working_stop=9.5,
+        atr=0.05,
+        tranche=False,
+        stop_triggered=False,
+        clamps=(),
+    )
+    staged = await any_store.stage_envelope_action(
+        env.id, action, snapshot_fingerprint="fp-f4", now=NOW
+    )
+    await any_store.claim_order_for_submission(staged.order.id)
+    await any_store.quarantine_timed_out_order(
+        staged.order.id, reason="submit_timeout"
+    )
+    assert (
+        await any_store.get_order(staged.order.id)
+    ).status is OrderStatus.TIMEOUT_QUARANTINE
+
+    # The crash continues, so the policy wants to reprice the (paused) working
+    # order -> staging raises EnvelopeActionPausedError. Drive the pass directly
+    # with an injected `now` past the cooldown.
+    adapter = MockBrokerAdapter()
+    md, tapes = _wired(crash_tape())
+    await monitoring._run_envelopes(
+        any_store,
+        adapter,
+        md,
+        settings(),
+        tapes=tapes,
+        now=NOW + timedelta(seconds=120),
+    )
+
+    after = await any_store.get_envelope(env.id)
+    assert after.status is S.ACTIVE, (
+        f"quarantine pause froze the envelope instead of pausing it: {after.status}"
+    )
+
+
 async def test_expiry_disposition_cancel_and_return(any_store):
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)

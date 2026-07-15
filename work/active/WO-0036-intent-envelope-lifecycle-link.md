@@ -78,6 +78,37 @@ exists with a MISMATCHED symbol (catches the cockpit typo, leaves synthetic-id t
 #4 → make `flatten_position` also defer to a live envelope working order for the symbol. Awaiting
 Ameen: full R2 migration now vs the lighter interim vs schedule R2 as its own WO.
 
+## Codex PR #8 SECOND review round (commit 15fa484) — all 7 verified REAL, dispositioned
+
+An independent adversarial verification confirmed all 6 inline findings + the floor-precedence
+P1 as REAL at tip. Dispositions (2026-07-15):
+
+- **P1 policy.py floor precedence** — FIXED (cluster 3). A deviation-suspect below-floor latest
+  print with a healthy bid drove a full-size SELL; now an explicit floor BreachSignal (root-cause
+  hole in the WO-0035/INV-088 fix). Pin: `test_puremath0_deviation_band.py::
+  test_suspect_below_floor_last_with_healthy_bid_still_fails_closed`.
+- **F1 P1 stale-SUBMITTING redrive** — FIXED (cluster 3). Envelope-minted orders excluded from
+  `_redrive_stale_submitting`'s blind submit; routed to TIMEOUT_QUARANTINE for ADR-002 targeted
+  reconciliation (the venue's atomic replace keeps A/B consistent). Pin: `test_wo0036_execution_safety.py::
+  test_c1b_stale_submitting_redrive_skips_envelope_orders` (both stores).
+- **F2 P2 supersedes_id on fresh draft** — FIXED (cluster 4). `envelope_draft_reason` now rejects
+  BOTH supersession link fields. Pin: `test_wo0016_envelope_supersede.py::
+  test_fresh_draft_cannot_predeclare_supersedes_id` (both stores).
+- **F3 P2 sqlite NOOP ACTIVE session bootstrap** — FIXED (cluster 4). NOOP early-returns before the
+  session bootstrap (memory parity + matches its own comment). Pin (sqlite-specific, rollover-forced):
+  `test_wo0036_execution_safety.py::test_c_f3_noop_active_transition_does_not_mint_a_session_on_rollover`.
+- **F4 P2 quarantine pause → FROZEN** (= WO-0029 SPEC-08) — FIXED (cluster 4). The tick catches
+  `EnvelopeActionPausedError` separately, leaving the envelope ACTIVE/paused. Pin:
+  `test_wo0020_envelope_tick.py::test_quarantined_child_pauses_not_freezes_the_envelope` (both stores).
+  WO-0029 SPEC-08 marked DONE.
+- **F5 P2 replaces_used stale read-model** (= WO-0029 CC-05) — PARTIAL (cluster 4). The false
+  models.py comment (claimed a writer) is corrected; the read-model/cockpit projection stays in
+  WO-0029 (recommended: one shared event-log counter for BOTH enforcement + display, no second
+  stored writer). WO-0029 CC-05 marked PARTIAL.
+- **F6 P2 naive expires_at → TypeError freeze** (= WO-0029 SPEC-10) — FIXED (cluster 4).
+  `_hard_rails` rejects a naive `expires_at`. Pin: `test_wo0016_envelope_model.py::
+  test_expires_at_must_be_timezone_aware`. WO-0029 SPEC-10 marked DONE.
+
 ## R2 DESIGN — finalized after full investigation (2026-07-15)
 
 The pre-build Fable GATE investigation (lifecycle map + the `sell_intent_is_active`

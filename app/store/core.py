@@ -2316,6 +2316,13 @@ def envelope_draft_reason(envelope: ExecutionEnvelope) -> Optional[str]:
         return "a new envelope's replaces_used must be 0"
     if envelope.superseded_by_id is not None:
         return "a new envelope cannot already be superseded"
+    # Codex PR#8 F2: a fresh draft must not pre-declare EITHER supersession link.
+    # `supersedes_id` set on an ordinary approve/create would activate a mandate
+    # that LOOKS like an amendment without any of the atomic supersede op's
+    # guarantees (predecessor validated + quantity-conserved + marked SUPERSEDED)
+    # — amendments must route through `supersede_envelope`.
+    if envelope.supersedes_id is not None:
+        return "a new envelope cannot pre-declare supersession (use supersede)"
     return None
 
 

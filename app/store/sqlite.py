@@ -1925,6 +1925,13 @@ class SqliteStateStore(StateStore):
             if pre_plan.outcome == ENVELOPE_TRANSITION_REJECT:
                 assert pre_plan.error is not None
                 raise pre_plan.error
+            # Codex PR#8 F3: return a same-status NOOP BEFORE the session
+            # bootstrap, mirroring InMemoryStateStore (and the comment above). A
+            # NOOP ACTIVE->ACTIVE must have no session side effect — otherwise a
+            # date rollover mints a spurious session/`session_opened` for an
+            # idempotent re-activation.
+            if pre_plan.outcome == ENVELOPE_TRANSITION_NOOP:
+                return self._envelope(pre_row)
             session = (
                 self._ensure_current_session_locked()
                 if new_status is EnvelopeStatus.ACTIVE

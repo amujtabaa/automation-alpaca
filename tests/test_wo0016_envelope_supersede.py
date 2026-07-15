@@ -160,6 +160,24 @@ async def test_supersede_rejects_non_pending_or_prelinked_drafts(any_store):
         await any_store.supersede_envelope("nope", make_draft())
 
 
+async def test_fresh_draft_cannot_predeclare_supersedes_id(any_store):
+    """Codex PR#8 F2: ``envelope_draft_reason`` rejected a fresh draft that
+    pre-declared ``superseded_by_id`` but NOT one that pre-declared
+    ``supersedes_id`` — so a client could POST a draft with a foreign
+    ``supersedes_id`` and have it go ACTIVE as an ORDINARY envelope, bypassing
+    the atomic supersede op (which validates the predecessor is ACTIVE + same
+    intent/symbol, conserves ``successor.qty_ceiling <= old.remaining``, and
+    marks the predecessor SUPERSEDED). Both link fields are now rejected on a
+    fresh draft; amendments must route through ``supersede_envelope``."""
+
+    await any_store.initialize()
+    prelinked = make_draft().model_copy(update={"supersedes_id": "env-ghost"})
+    with pytest.raises(InvalidOrderError):
+        await any_store.create_envelope(prelinked)
+    with pytest.raises(InvalidOrderError):
+        await any_store.approve_envelope_activation(prelinked, actor="op")
+
+
 async def test_second_activation_for_same_intent_is_blocked(any_store):
     """Single-ACTIVE-per-intent holds outside supersession too: a second
     envelope activated directly (not via supersede) is refused while the

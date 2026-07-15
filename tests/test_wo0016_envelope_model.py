@@ -11,7 +11,7 @@ Pure model tests — no store, no IO (Rule 9).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -175,6 +175,20 @@ def test_max_outstanding_children_must_be_at_least_one(n):
 def test_expires_at_is_required():
     with pytest.raises(ValidationError):
         make_envelope(expires_at=None)
+
+
+def test_expires_at_must_be_timezone_aware():
+    # Codex PR#8 F6: a NAIVE expires_at used to pass create/approve, then the
+    # first tick compares the aware injected `now` against it and raises
+    # TypeError -> the mandate freezes as policy_error on tick 1 despite being
+    # "accepted". Reject the naive TTL at construction (fail-closed -> 422).
+    with pytest.raises(ValidationError):
+        make_envelope(expires_at=datetime(2026, 7, 15, 20, 0, 0))  # no tzinfo
+    # An aware TTL still constructs fine.
+    ok = make_envelope(
+        expires_at=datetime(2026, 7, 15, 20, 0, 0, tzinfo=timezone.utc)
+    )
+    assert ok.expires_at.tzinfo is not None
 
 
 def test_allowed_session_phases_must_be_nonempty():
