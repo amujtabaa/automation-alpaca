@@ -12,8 +12,10 @@ here but never logged; ``.env`` (gitignored) holds the real values.
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -24,6 +26,26 @@ from typing import Optional
 STATE_STORE_ENV = "STATE_STORE"
 DB_PATH_ENV = "ALPACA_DB_PATH"
 DEV_ROUTES_ENV = "ENABLE_DEV_ROUTES"
+SIGNAL_SEAT_ENABLED_ENV = "SIGNAL_SEAT_ENABLED"
+# Signal Seat boundary + freshness + rails settings (ADR-009 A-1 / A-3 / A-4).
+SIGNAL_TRANSPORT_POLICY_ENV = "SIGNAL_TRANSPORT_POLICY"
+SIGNAL_INVALID_BUDGET_PER_EPOCH_ENV = "SIGNAL_INVALID_BUDGET_PER_EPOCH"
+SIGNAL_SERVER_MAX_TTL_SECONDS_ENV = "SIGNAL_SERVER_MAX_TTL_SECONDS"
+OPERATOR_API_KEY_ENV = "OPERATOR_API_KEY"
+SIGNAL_PRODUCER_KEYS_ENV = "SIGNAL_PRODUCER_KEYS"
+
+# ADR-009 A-3 hard architectural cap: no config may keep a thesis approvable
+# longer than this, mirroring the range guard so "finite and small" can't be
+# configured away.
+SIGNAL_SERVER_MAX_TTL_HARD_CAP = 86400
+DEFAULT_SIGNAL_SERVER_MAX_TTL_SECONDS = 3600
+# ADR-009 A-4 §1a hard cap on the non-refilling per-producer invalid/conflict
+# budget: [1, 1000], startup fails outside.
+DEFAULT_SIGNAL_INVALID_BUDGET_PER_EPOCH = 50
+SIGNAL_INVALID_BUDGET_HARD_CAP = 1000
+# Valid transport policies (ADR-009 A-1). Both keep the backend listener
+# proxy-private; the difference is only how external exposure is fronted.
+SIGNAL_TRANSPORT_POLICIES = frozenset({"loopback", "tls_proxy"})
 
 # Phase 4 — Alpaca Paper Adapter + monitoring loop.
 # Credentials are PAPER ONLY (Rules 1-3). There is intentionally no live-key
@@ -142,6 +164,33 @@ class Settings:
     # route stays useful for hand-testing an exact symbol/price/quantity the
     # strategy wouldn't naturally produce — it doesn't remove the need for it.
     enable_dev_routes: bool = True
+
+    # --- Signal Seat (ADR-009, WO-0102) ---------------------------------- #
+    # Master feature flag for the external-signal-producer seat. Default OFF: the
+    # signal routers are not mounted, no auth surface, no store writes possible.
+    # When ON, the app may be built ONLY through the backend-owned launcher's
+    # construction capability (ADR-009 A-1 clause 6) AND requires the full
+    # per-producer rails to be wired (A-4 rails-presence guard) — so it is
+    # structurally un-enable-able until WO-0104 lands. Never enable in a real
+    # environment before that.
+    signal_seat_enabled: bool = False
+
+    # ADR-009 A-1 transport policy: "loopback" (beta default) or "tls_proxy".
+    # Under BOTH the backend listener stays proxy-private (loopback/socket); the
+    # backend-owned launcher (app/server.py) re-validates the bind against this.
+    signal_transport_policy: str = "loopback"
+    # ADR-009 A-4 §1a: non-refilling per-producer invalid/conflict budget. Bounds
+    # append-only storage under paced hostility; range [1, 1000] (WO-0104 debits it).
+    signal_invalid_budget_per_epoch: int = DEFAULT_SIGNAL_INVALID_BUDGET_PER_EPOCH
+    # ADR-009 A-3: server-owned max TTL (seconds). A producer can never keep a
+    # thesis approvable longer than this; hard cap 86400 s that no config exceeds.
+    signal_server_max_ttl_seconds: int = DEFAULT_SIGNAL_SERVER_MAX_TTL_SECONDS
+    # ADR-009 A-1 credentials — env-injected secrets. ``repr=False`` keeps them
+    # out of any ``repr(settings)``/log line (defense-in-depth; never logged).
+    # ``operator_api_key`` authenticates every sensitive route when the flag is on;
+    # ``signal_producer_keys`` maps a producer key -> producer_id (ingestion-scoped).
+    operator_api_key: Optional[str] = field(default=None, repr=False)
+    signal_producer_keys: dict[str, str] = field(default_factory=dict, repr=False)
 
     # --- Phase 4: broker + monitoring loop ------------------------------- #
     # Paper-only credentials. ``None`` when unset (dev/CI). ``repr=False`` keeps
@@ -277,6 +326,130 @@ def _env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
     return int(value)
 
 
+def _parse_producer_keys(raw: Optional[str]) -> dict[str, str]:
+    """Parse ``SIGNAL_PRODUCER_KEYS`` — a JSON object mapping each producer
+    API key to its ``producer_id`` (ADR-009 A-1). Unset/blank ⇒ empty map.
+
+    Rejects (``ValueError``, startup-fail) non-JSON, a non-object top level, or
+    any non-string key/value — the credential map is security-critical, so a
+    malformed value must fail loudly at load, never silently admit garbage.
+    """
+
+    if raw is None or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"{SIGNAL_PRODUCER_KEYS_ENV} must be a JSON object "
+            f'{{"key": "producer_id"}}, got unparseable JSON'
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"{SIGNAL_PRODUCER_KEYS_ENV} must be a JSON object, got "
+            f"{type(parsed).__name__}"
+        )
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} keys and values must be strings "
+                f"(key -> producer_id)"
+            )
+        # Auto-reviewer P1 #1: a blank/whitespace-only producer KEY must be
+        # rejected — a configured "" key would let ANY request that sends no
+        # `X-Producer-Key` value (or an empty one) authenticate, since an
+        # unconfigured/blank credential must never be a valid match. A
+        # blank/whitespace producer ID is equally rejected: it would silently
+        # attribute every ingest from that key to an unnamed/unauditable
+        # producer, defeating per-producer dedupe/rate/quarantine namespacing.
+        if not key.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} keys must be non-blank (a blank "
+                f"producer key would authenticate an empty X-Producer-Key)"
+            )
+        if not value.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} values (producer ids) must be "
+                f"non-blank"
+            )
+    return dict(parsed)
+
+
+def operator_producer_key_overlap(
+    operator_api_key: Optional[str], signal_producer_keys: dict[str, str]
+) -> bool:
+    """True iff the operator credential equals any configured producer key
+    (ADR-009 A-1 role separation). Constant-time over the WHOLE map (never
+    short-circuited, so no timing signal about which key collides) and byte-safe
+    (UTF-8 bytes, so a non-ASCII secret does not raise). Shared by ``load_settings``
+    AND the ``create_app`` flag-on guard so an INJECTED ``Settings`` (bypassing
+    ``load_settings``) cannot skip the role-separation invariant (auto-review
+    round 10)."""
+
+    if not operator_api_key:
+        return False
+    operator_key_bytes = operator_api_key.encode("utf-8")
+    overlap = False
+    for producer_key in signal_producer_keys:
+        if secrets.compare_digest(operator_key_bytes, producer_key.encode("utf-8")):
+            overlap = True
+    return overlap
+
+
+def validate_signal_seat_settings(settings: "Settings") -> None:
+    """Enforce the ADR-009 signal-seat invariants on a Settings OBJECT (raises
+    ``ValueError``; no-op when the flag is off).
+
+    The ROOT fix for a recurring class (rounds 10 + 13): every check below also
+    lived inline in ``load_settings``' env parsing, so an INJECTED ``Settings``
+    built directly — ``create_app(settings=Settings(...))`` — bypassed all of them
+    (blank/whitespace credentials becoming valid, operator==producer role-separation
+    breach, out-of-range invalid-budget/server-TTL disabling the A-3/A-4 caps).
+    Both ``load_settings`` and the ``create_app`` flag-on guard call this, so no
+    construction path can skip the invariants."""
+
+    if not settings.signal_seat_enabled:
+        return
+    operator_api_key = settings.operator_api_key
+    if not operator_api_key or not operator_api_key.strip():
+        raise ValueError(
+            f"{OPERATOR_API_KEY_ENV} must be a non-blank credential when "
+            "signal_seat_enabled"
+        )
+    if not settings.signal_producer_keys:
+        raise ValueError(
+            f"{SIGNAL_PRODUCER_KEYS_ENV} must be a non-empty map when "
+            "signal_seat_enabled"
+        )
+    for key, producer_id in settings.signal_producer_keys.items():
+        if not key or not key.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} keys must be non-blank (a blank key "
+                "would let an unconfigured credential authenticate)"
+            )
+        if not producer_id or not producer_id.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} producer ids must be non-blank"
+            )
+    if operator_producer_key_overlap(operator_api_key, settings.signal_producer_keys):
+        raise ValueError(
+            f"{OPERATOR_API_KEY_ENV} must not equal any key in "
+            f"{SIGNAL_PRODUCER_KEYS_ENV} (ADR-009 A-1 role separation)"
+        )
+    budget = settings.signal_invalid_budget_per_epoch
+    if not 1 <= budget <= SIGNAL_INVALID_BUDGET_HARD_CAP:
+        raise ValueError(
+            f"signal_invalid_budget_per_epoch must be in "
+            f"[1, {SIGNAL_INVALID_BUDGET_HARD_CAP}] (ADR-009 A-4), got {budget}"
+        )
+    ttl_cap = settings.signal_server_max_ttl_seconds
+    if not 1 <= ttl_cap <= SIGNAL_SERVER_MAX_TTL_HARD_CAP:
+        raise ValueError(
+            f"signal_server_max_ttl_seconds must be in "
+            f"[1, {SIGNAL_SERVER_MAX_TTL_HARD_CAP}] (ADR-009 A-3), got {ttl_cap}"
+        )
+
+
 def load_settings() -> Settings:
     """Build :class:`Settings` from the current environment.
 
@@ -310,6 +483,70 @@ def load_settings() -> Settings:
         enable_dev_routes = not has_creds
     else:
         enable_dev_routes = dev_raw.strip().lower() not in _FALSEY
+
+    # Signal Seat master flag (ADR-009 / WO-0102). Default OFF; explicit truthy
+    # SIGNAL_SEAT_ENABLED turns it on. Unset/empty/WHITESPACE/falsey ⇒ False
+    # (slice-1 bug: "   " was truthy and not in _FALSEY, so it flipped the flag ON
+    # — strip first, then require a non-blank non-falsey token).
+    _signal_seat_raw = os.environ.get(SIGNAL_SEAT_ENABLED_ENV, "").strip().lower()
+    signal_seat_enabled = bool(_signal_seat_raw) and _signal_seat_raw not in _FALSEY
+
+    # ADR-009 A-1 transport policy (validated closed set).
+    signal_transport_policy = (
+        os.environ.get(SIGNAL_TRANSPORT_POLICY_ENV, "loopback").strip().lower()
+        or "loopback"
+    )
+    if signal_transport_policy not in SIGNAL_TRANSPORT_POLICIES:
+        raise ValueError(
+            f"{SIGNAL_TRANSPORT_POLICY_ENV} must be one of "
+            f"{sorted(SIGNAL_TRANSPORT_POLICIES)}, got {signal_transport_policy!r}"
+        )
+    # ADR-009 A-4 §1a: [1, 1000], startup fails outside (cap can't be configured away).
+    signal_invalid_budget_per_epoch = _env_int(
+        SIGNAL_INVALID_BUDGET_PER_EPOCH_ENV,
+        DEFAULT_SIGNAL_INVALID_BUDGET_PER_EPOCH,
+        minimum=1,
+    )
+    if signal_invalid_budget_per_epoch > SIGNAL_INVALID_BUDGET_HARD_CAP:
+        raise ValueError(
+            f"{SIGNAL_INVALID_BUDGET_PER_EPOCH_ENV} must be in "
+            f"[1, {SIGNAL_INVALID_BUDGET_HARD_CAP}], got "
+            f"{signal_invalid_budget_per_epoch}"
+        )
+    # ADR-009 A-3: [1, 86400], startup fails outside the hard cap.
+    signal_server_max_ttl_seconds = _env_int(
+        SIGNAL_SERVER_MAX_TTL_SECONDS_ENV,
+        DEFAULT_SIGNAL_SERVER_MAX_TTL_SECONDS,
+        minimum=1,
+    )
+    if signal_server_max_ttl_seconds > SIGNAL_SERVER_MAX_TTL_HARD_CAP:
+        raise ValueError(
+            f"{SIGNAL_SERVER_MAX_TTL_SECONDS_ENV} must be in "
+            f"[1, {SIGNAL_SERVER_MAX_TTL_HARD_CAP}], got "
+            f"{signal_server_max_ttl_seconds}"
+        )
+    # ADR-009 A-1 credentials — env-injected secrets, never committed/logged.
+    operator_api_key = _clean(OPERATOR_API_KEY_ENV)
+    signal_producer_keys = _parse_producer_keys(
+        os.environ.get(SIGNAL_PRODUCER_KEYS_ENV)
+    )
+    # Auto-reviewer P1 #4 — role-separation guard: the operator credential must
+    # never equal any producer key, or that producer could present its own key
+    # as X-Operator-Key and pass every operator-only route (ADR-009 A-1 role
+    # separation: a producer key authorizes POST /api/signals ONLY). Compared
+    # constant-time against every configured producer key — never short-circuited
+    # on the first mismatch, so this check itself leaks no timing signal about
+    # which producer key (if any) collides. UTF-8 bytes are compared (not the
+    # bare str) so a non-ASCII configured secret does not raise TypeError from
+    # secrets.compare_digest and crash settings load before the intended
+    # credential diagnostics — consistent with the request-time byte-safe compare
+    # (auto-review round 8).
+    if operator_producer_key_overlap(operator_api_key, signal_producer_keys):
+        raise ValueError(
+            f"{OPERATOR_API_KEY_ENV} must not equal any key in "
+            f"{SIGNAL_PRODUCER_KEYS_ENV} (ADR-009 A-1 role separation — a "
+            f"producer key must never also authenticate as the operator)"
+        )
 
     broker_adapter = os.environ.get(BROKER_ENV, "auto").strip().lower()
     if broker_adapter not in {"auto", "mock", "alpaca"}:
@@ -483,6 +720,12 @@ def load_settings() -> Settings:
         state_store=state_store,
         db_path=db_path,
         enable_dev_routes=enable_dev_routes,
+        signal_seat_enabled=signal_seat_enabled,
+        signal_transport_policy=signal_transport_policy,
+        signal_invalid_budget_per_epoch=signal_invalid_budget_per_epoch,
+        signal_server_max_ttl_seconds=signal_server_max_ttl_seconds,
+        operator_api_key=operator_api_key,
+        signal_producer_keys=signal_producer_keys,
         alpaca_api_key=alpaca_api_key,
         alpaca_api_secret=alpaca_api_secret,
         broker_adapter=broker_adapter,

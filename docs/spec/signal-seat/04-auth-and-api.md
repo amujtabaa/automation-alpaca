@@ -20,16 +20,19 @@ the CLI, outside the app, and the ASGI lifespan scope never carries the listener
 backend owns its launch path: an entrypoint `app/server.py::run()` (invoked as `python -m app`, the
 sole documented start command for an enabled seat) starts Uvicorn **programmatically** with the bind
 derived from and re-validated against `signal_transport_policy`, exiting non-zero before serving on
-any non-loopback/non-socket bind; and it sets an `app.state` launch-provenance sentinel enforced
-**at both lifespan startup and request time** when `signal_seat_enabled` is on. The request-time
-enforcement is a **fail-closed ASGI guard** that rejects every request (503) when the sentinel is
-absent — necessary because a direct `uvicorn app.main:app --host 0.0.0.0 --lifespan off` **skips
-lifespan** and would otherwise dodge a startup-only guard (REV-0024-F P1); the request guard runs
-regardless of `--lifespan`, so a bare `uvicorn app.main:app` (with or without `--lifespan off`)
-serves nothing for the flag-on seat. The direct path is deprecated **and non-functional** when the
-seat is enabled; flag off ⇒ it keeps working (beta dev command unchanged). WO-0102 proves it via a
-subprocess test covering both `--lifespan on` (startup fails) and `--lifespan off` (every request
-503) — nothing reachable on the network bind either way.
+any non-loopback/non-socket bind. **The bind guarantee is enforced at app construction/import, not
+at request time** (ADR-009 A-1 clause 6, REV-0025-F-001): a request-time 503 is insufficient because
+`uvicorn app.main:app --host 0.0.0.0 --lifespan off` still **accepts TCP and serves 503 on the
+forbidden port** — reachable is not proxy-private. So the sanctioned launcher mints an **opaque
+one-shot code-owned capability** (not env/config/importable) and passes it to the construction
+factory; with `signal_seat_enabled` on, **building the app without it raises**, so the module-level
+`app` import target is removed/refuses under the flag and a bare `uvicorn app.main:app` fails at
+**import** — Uvicorn opens **no listener** (connection refused, true pre-serve failure). A
+fail-closed ASGI request guard remains as **defense-in-depth**, not the primary control. Flag off ⇒
+construction is unrestricted (beta dev command unchanged). WO-0102 proves it with a mutation-sensitive
+subprocess test: hostile bare-uvicorn (both `--lifespan` modes) → **no accepting listener**; a
+same-config sanctioned-loopback **positive control** → ready listener; the non-loopback launcher →
+exit non-zero with the **exact A-1 bind-policy reason**.
 
 **Credential-presence startup guard** (ADR-009 A-1): with the flag on, startup **fails fast** unless
 `OPERATOR_API_KEY` is set non-blank AND the producer key map is loaded — otherwise every sensitive
@@ -73,6 +76,7 @@ Every router `create_app` (`app/main.py`) mounts, classified. With `signal_seat_
 |---|---|
 | `GET /api/health` (`routes_system`) | **public** (liveness only — no state) |
 | session reads (`routes_system`) | operator-only |
+| `POST /api/session/close` (`routes_system`) | **operator-only** — a mutating command (expires candidates, cancels CREATED orders, snapshots positions, closes the session); explicitly classified, not a read (REV-0025-F-007) |
 | `routes_watchlist` (all) | operator-only |
 | `routes_candidates` (all) | operator-only |
 | `routes_trading` (all — orders, positions, flatten) | operator-only |
@@ -86,9 +90,18 @@ Every router `create_app` (`app/main.py`) mounts, classified. With `signal_seat_
 | `/openapi.json`, `/docs`, `/redoc`, `/docs/oauth2-redirect` (FastAPI auto) | **disabled under the flag** (or operator-only if a deployment needs them) — never public; classified + tested (Codex rev-3) |
 
 **Fail-closed enforcement (WO-0102 test):** a parameterized test introspects the real mounted
-app's route table at runtime; any route not present in this classification is a test FAILURE, and
-each classified route is asserted against {none, invalid, producer-key, operator-key}. A route
-added later cannot ship unclassified.
+app's route table at runtime. Routes carry one of two obligations, so the disabled-docs option does
+not collide with the existence assertion (REV-0025-F P2):
+- **Required-present routes** (every operator-only sensitive route + the producer route + public
+  health): asserted to **EXIST** and behave per {none, invalid, producer-key, operator-key} — a
+  required route silently unmounted FAILS (not merely "classify whatever is mounted", REV-0025-F-005/F-007).
+- **Auto-docs routes** (`/openapi.json`, `/docs`, `/redoc`, `/docs/oauth2-redirect`): asserted
+  **ABSENT under the disabled option**, OR present-and-operator-only under the deployment option —
+  **never required to exist and never public**. The implementer may take the safer disabled option
+  without re-enabling docs just to satisfy an existence check.
+
+Any route present but **not** in this classification is a test FAILURE — a route added later cannot
+ship unclassified.
 
 ## 2. Endpoints (OpenAPI fragment)
 

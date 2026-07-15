@@ -165,6 +165,36 @@ class SellIntentStatus(str, Enum):
     ORDERED = "ordered"
 
 
+class SignalStatus(str, Enum):
+    """External-producer signal lifecycle (ADR-009 / spec 02-lifecycle §1).
+
+    Its own monotonic state machine (RECEIVED → one terminal), entirely separate
+    from the candidate/order machinery — a signal carries ZERO execution authority
+    (INV-6). ``QUARANTINED`` is terminal (validation failure or producer-quarantine
+    sweep); duplicate-conflicts are audit-only and never set this. ``EXPIRED`` is
+    terminal (TTL lapse or implausible ``issued_at``). ``REJECTED``/``APPROVED`` are
+    operator-terminal (approval is atomic with conversion — WO-0103).
+    """
+
+    RECEIVED = "received"
+    QUARANTINED = "quarantined"
+    EXPIRED = "expired"
+    REJECTED = "rejected"
+    APPROVED = "approved"
+
+
+# Signal ingest outcome vocabulary (ADR-009 / WO-0102). Returned by
+# ``StateStore.ingest_signal`` and mapped to an HTTP status by the route. Declared
+# on the leaf model kernel so BOTH the store (below the API) and the route (which
+# must not import ``app.store`` — import-linter contract 5) can share them.
+SIGNAL_RECEIVED_OK = "received"                          # 201, RECEIVED
+SIGNAL_EXPIRED_AT_INGEST = "expired"                     # 201, terminal EXPIRED (DOA)
+SIGNAL_QUARANTINED_VALIDATION = "quarantined_validation"  # 422, malformed shape
+SIGNAL_QUARANTINED_FRESHNESS = "quarantined_freshness"   # 201, skew/ttl terminal
+SIGNAL_REPLAYED = "replayed"                             # 200, idempotent replay
+SIGNAL_CONFLICT = "conflict"                             # 409, different payload, same id
+
+
 class OrderStatus(str, Enum):
     """Broker-order lifecycle. ``submitted`` != ``filled`` (Rule 6).
 
@@ -394,6 +424,22 @@ class ExecutionEventType(str, Enum):
     EMERGENCY_REDUCE_OVERRIDE = "emergency_reduce_override"
     EMERGENCY_REDUCE_OVERRIDE_RESOLVED = "emergency_reduce_override_resolved"
 
+    # Signal Seat (ADR-009 / WO-0102, spec 02-lifecycle §2) — ADDITIVE event-log
+    # vocabulary for external-producer signal provenance. These are event-type
+    # ADDITIONS, not mutations of existing truth; position projection still folds
+    # ONLY FILL (INV-1), so SIGNAL_*/PRODUCER_* are structurally invisible to the
+    # Position Service. The per-record lifecycle transitions carry the record key
+    # (producer_id, signal_id) + record_id so the projector folds exactly one
+    # record; SIGNAL_DUPLICATE_CONFLICT is audit-only and EXCLUDED from the fold.
+    SIGNAL_RECEIVED = "signal_received"
+    SIGNAL_QUARANTINED = "signal_quarantined"
+    SIGNAL_EXPIRED = "signal_expired"
+    SIGNAL_DUPLICATE_CONFLICT = "signal_duplicate_conflict"
+    SIGNAL_REJECTED = "signal_rejected"
+    SIGNAL_APPROVED = "signal_approved"
+    PRODUCER_QUARANTINED = "producer_quarantined"
+    PRODUCER_RELEASED = "producer_released"
+
 
 class EventSource(str, Enum):
     """Where an ``ExecutionEvent`` originated (provenance for reconciliation).
@@ -560,6 +606,67 @@ class SellIntent(_Entity):
     rejected_at: Optional[datetime] = None
     expired_at: Optional[datetime] = None
     ordered_at: Optional[datetime] = None
+
+
+class SignalRecord(_Entity):
+    """A stored external-producer signal (ADR-009 / spec 01-schema §2, both stores).
+
+    Identified for dedupe by **``(producer_id, signal_id)``** — never the bare
+    ``signal_id`` (a producer is untrusted; one reusing another's id must not
+    collide). ``id`` is a distinct server id, NOT the dedupe key. ``producer_id``
+    is credential-derived, never body-trusted.
+
+    The freshness fields (``issued_at``/``ttl_seconds``/``expires_at``) are nullable
+    ONLY for a terminal validation-quarantine ON that field (missing/naive
+    ``issued_at`` or out-of-range ``ttl_seconds``): the raw offender is preserved
+    verbatim in ``raw_fields`` so the terminal record is representable and
+    replay-exact, never sentinel-invented (REV-0025-F P1). A RECEIVED/valid record
+    has all freshness fields non-null. ``received_at`` is ALWAYS present (the A-3
+    anchor: injected server clock at ingest). ``payload_hash`` is the sha256 of the
+    canonical proposal JSON, used for idempotent-replay vs duplicate-conflict
+    detection.
+
+    Signal state is a pure fold over the ``SIGNAL_*`` events (event-truth); this
+    row is a co-written read model reconstructable by replay, exactly as
+    ``orders.status`` is.
+    """
+
+    id: str = Field(default_factory=new_id)
+    producer_id: str
+    signal_id: str
+    status: SignalStatus = SignalStatus.RECEIVED
+    symbol: str
+    direction: str  # "buy" | "sell"
+
+    # Nullable ONLY for a validation-quarantine ON the field itself (see docstring).
+    issued_at: Optional[datetime] = None
+    ttl_seconds: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    received_at: datetime
+    # The raw offending input for a validation-quarantine (verbatim, never
+    # sentinel-invented). None for a RECEIVED/valid record.
+    raw_fields: Optional[dict[str, str]] = None
+
+    # Advisory, display-only — never flows into any order field (05-conversion §2).
+    suggested_quantity: Optional[int] = None
+    suggested_limit_price: ResponseSafeFloat = None
+    thesis: str
+    provenance: dict[str, str] = Field(default_factory=dict)
+
+    payload_hash: str
+    quarantine_reason: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    approved_at: Optional[datetime] = None
+    rejected_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    quarantined_at: Optional[datetime] = None
+
+    # Correlation (set on approval; 05-conversion §4 / WO-0103).
+    converted_kind: Optional[str] = None  # "candidate" | "sell_intent"
+    converted_id: Optional[str] = None
+    approved_by: Optional[str] = None
 
 
 class Fill(_Entity):

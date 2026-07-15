@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
@@ -43,6 +43,8 @@ from app.models import (
     SellReason,
     SessionRecord,
     SessionStatus,
+    SignalRecord,
+    SignalStatus,
     SubmitRecoveryRecord,
     TradingMode,
     TradingState,
@@ -71,6 +73,7 @@ from app.store.base import (
     CandidateTransitionError,
     EmergencyReduceBlockedError,
     FillAppendResult,
+    SignalIngestResult,
     FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
@@ -108,6 +111,9 @@ from app.store.core import (
     plan_reconcile_resolve_order,
     plan_resolve_timeout_quarantine,
     plan_transition_order,
+    build_signal_proposal_payload,
+    plan_signal_ingest,
+    signal_canonical_hash,
     reconcile_trading_state_event,
     trading_state_change_event,
     emergency_reduce_override_event,
@@ -153,6 +159,10 @@ class InMemoryStateStore(StateStore):
         # O(1) INV-5 idempotency without scanning the log.
         self._execution_events: list[ExecutionEvent] = []
         self._execution_event_dedupe: dict[str, ExecutionEvent] = {}
+        # Signal Seat (ADR-009 / WO-0102): the SignalRecord read model, keyed by
+        # the dedupe key (producer_id, signal_id) — a co-written read model
+        # reconstructable purely from the SIGNAL_* events (event-truth).
+        self._signals: dict[tuple[str, str], SignalRecord] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -285,6 +295,9 @@ class InMemoryStateStore(StateStore):
         # a shallow list copy + dict copy of the dedupe index restores fully.
         saved_execution_events = list(self._execution_events)
         saved_execution_dedupe = dict(self._execution_event_dedupe)
+        # Signal records are append-then-replace (never mutated in place — a fresh
+        # SignalRecord is installed), so a shallow dict snapshot restores fully.
+        saved_signals = dict(self._signals)
         try:
             yield
         except BaseException:
@@ -300,6 +313,7 @@ class InMemoryStateStore(StateStore):
             self._position_snapshots = saved_snapshots
             self._execution_events = saved_execution_events
             self._execution_event_dedupe = saved_execution_dedupe
+            self._signals = saved_signals
             raise
 
     def _append_event_unlocked(
@@ -2005,6 +2019,109 @@ class InMemoryStateStore(StateStore):
                 if self._execution_events
                 else 0
             )
+
+    # ------------------------------------------------------------------ #
+    # Signal Seat (ADR-009 / WO-0102)
+    # ------------------------------------------------------------------ #
+    async def ingest_signal(
+        self,
+        *,
+        producer_id: str,
+        signal_id: str,
+        symbol: str,
+        direction: str,
+        issued_at: Optional[datetime] = None,
+        ttl_seconds: Optional[int] = None,
+        suggested_quantity: Optional[int] = None,
+        suggested_limit_price: Optional[float] = None,
+        thesis: str,
+        provenance: dict[str, str],
+        server_max_ttl_seconds: int,
+        cycle_budget_limit: int,
+        validation_failed: bool = False,
+        raw_fields: Optional[dict[str, str]] = None,
+        received_at: Optional[datetime] = None,
+    ) -> SignalIngestResult:
+        received_at = received_at or utcnow()
+        canonical = build_signal_proposal_payload(
+            signal_id=signal_id,
+            symbol=symbol,
+            direction=direction,
+            issued_at=issued_at,
+            ttl_seconds=ttl_seconds,
+            suggested_quantity=suggested_quantity,
+            suggested_limit_price=suggested_limit_price,
+            thesis=thesis,
+            provenance=provenance,
+            # P1 #1: fold the raw offending content into the hash so distinct
+            # malformed bodies with the same signal_id never hash identically.
+            raw_fields=raw_fields,
+        )
+        payload_hash = signal_canonical_hash(canonical)
+        async with self._lock:
+            with self._atomic():
+                existing = self._signals.get((producer_id, signal_id))
+                plan = plan_signal_ingest(
+                    existing=existing,
+                    producer_id=producer_id,
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    direction=direction,
+                    issued_at=issued_at,
+                    ttl_seconds=ttl_seconds,
+                    suggested_quantity=suggested_quantity,
+                    suggested_limit_price=suggested_limit_price,
+                    thesis=thesis,
+                    provenance=provenance,
+                    payload_hash=payload_hash,
+                    canonical_proposal=canonical,
+                    validation_failed=validation_failed,
+                    raw_fields=raw_fields,
+                    received_at=received_at,
+                    server_max_ttl_seconds=server_max_ttl_seconds,
+                    cycle_budget_limit=cycle_budget_limit,
+                )
+                if plan.event is not None:
+                    self._append_execution_event_unlocked(plan.event)
+                if plan.record is not None:
+                    self._signals[(producer_id, signal_id)] = plan.record
+                return SignalIngestResult(
+                    outcome=plan.outcome,
+                    record=plan.result_record.model_copy(deep=True),
+                )
+
+    async def get_signal(
+        self, producer_id: str, signal_id: str
+    ) -> Optional[SignalRecord]:
+        async with self._lock:
+            rec = self._signals.get((producer_id, signal_id))
+            return rec.model_copy(deep=True) if rec is not None else None
+
+    async def list_signals(
+        self,
+        *,
+        status: Optional[SignalStatus] = None,
+        symbol: Optional[str] = None,
+        producer_id: Optional[str] = None,
+    ) -> list[SignalRecord]:
+        norm_symbol = normalize_symbol(symbol) if symbol is not None else None
+        if status is not None:
+            # Dual-store parity (AIR-009): the SQLite path validates the status
+            # filter via require_status_enum; the memory path must reject a raw
+            # non-enum status too, not silently return zero rows because an
+            # enum `is not` a bare string (auto-review round 6).
+            require_status_enum(status, SignalStatus, field="status filter")
+        async with self._lock:
+            out = []
+            for rec in self._signals.values():
+                if status is not None and rec.status is not status:
+                    continue
+                if norm_symbol is not None and rec.symbol != norm_symbol:
+                    continue
+                if producer_id is not None and rec.producer_id != producer_id:
+                    continue
+                out.append(rec.model_copy(deep=True))
+            return out
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

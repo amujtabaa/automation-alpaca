@@ -45,7 +45,7 @@ self-decide if they judge otherwise:
 | `SIGNAL_DUPLICATE_CONFLICT` | **audit-only, excluded from the lifecycle fold**: a different-payload replay of an existing `(producer_id, signal_id)` — the original record's state is untouched (live path AND replay) | conflicting proposal, both hashes, original record id |
 | `SIGNAL_EXPIRED` | sweep, lazy-expiry, or dead-on-arrival at ingest | **`producer_id`, `signal_id`, server `record_id`** (REQUIRED — the projector must know which record to transition; with several RECEIVED signals expiring together, timing metadata alone is ambiguous, REV-0024-F P1), `received_at`, `expires_at`, `detected_by: "sweep" | "read" | "ingest"` (`"ingest"` = dead-on-arrival `expires_at ≤ received_at`, §3; debits the §1a budget per `03-rails.md`) |
 | `SIGNAL_REJECTED` | operator reject | **`producer_id`, `signal_id`, `record_id`** (per-record fold target), `actor`, optional `reason` |
-| `SIGNAL_APPROVED` | operator approve, atomically with conversion | `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id`, `producer_id`, `signal_id` |
+| `SIGNAL_APPROVED` | operator approve, atomically with conversion | `producer_id`, `signal_id`, **`record_id`** (per-record fold target — matches the §4 universal-identity rule, REV-0025 inline), `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id` |
 | `PRODUCER_QUARANTINED` | rate-bucket breach **or** non-refilling invalid/conflict budget exhaustion (`03-rails.md §1a`) — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach trigger + counters, epoch start |
 | `PRODUCER_RELEASED` | operator release — closes the epoch, **resets both the §1 rate bucket and the §1a non-refilling invalid/conflict budget** (`03-rails.md §5`; else the producer re-quarantines on its next ingest) | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log) |
 
@@ -55,6 +55,19 @@ fields are valid enough to compute it** (A-3 formula). A validation-quarantine f
 `issued_at` or non-integer `ttl_seconds` cannot compute a deadline — it carries `received_at` + the
 raw offending fields and `expires_at: null`; the record is terminal QUARANTINED and never approvable,
 so it needs none. Replay is exact either way — the payload determines the record (Codex rev-3).
+
+Every **attributable-terminal-at-ingest-rejection** event carries **`cycle_budget_limit`** — the
+non-refilling invalid-budget limit pinned for the producer's current cycle (`03-rails.md §1a`,
+REV-0025-F P1) — so the budget is reconstructable from the event log alone. This set is precisely:
+a **validation/skew** `SIGNAL_QUARANTINED` (`quarantine_reason ∈ {validation, issued_at_future,
+issued_at_stale, ttl_out_of_range}`), a novel-hash `SIGNAL_DUPLICATE_CONFLICT`, and a dead-on-arrival
+`SIGNAL_EXPIRED`. It **EXCLUDES the producer-sweep `SIGNAL_QUARANTINED`** (`quarantine_reason =
+producer_sweep`, §3) — those fire *after* an epoch already opened, are not ingest rejections, do
+**not** debit the budget, and carry **no** `cycle_budget_limit` (REV-0025-F P1: folding sweep
+quarantines as budget consumption would let accepted traffic consume the invalid budget and diverge
+replay from live). The event that consumes the last slot
+**co-appends the single `PRODUCER_QUARANTINED`** epoch-opener in the same atomic op (§4; Ameen
+2026-07-14) — no zero-budget gap.
 
 Provenance: all signal events are `EventSource.ENGINE` (or an `OPERATOR`-flavored source if the
 implementer prefers a new member — either way `EventAuthority.LOCAL`; nothing here is
@@ -92,7 +105,15 @@ exactly once).
 
 `SignalRecord` state and producer quarantine state are pure folds over the `SIGNAL_*` /
 `PRODUCER_*` events: replaying the event log from empty reconstructs byte-identical signal and
-producer read-models in both stores. **Every per-record lifecycle-transition event
+producer read-models in both stores. **The producer rail state (pinned invalid-budget limit
++ consumed/remaining count) is reconstructed from the event log alone** (`03-rails.md §1a`,
+REV-0025-F-004/F P1): each attributable terminal-at-ingest event (a **validation/skew**
+`SIGNAL_QUARANTINED` — **not** the `producer_sweep` one — / novel `SIGNAL_DUPLICATE_CONFLICT` /
+dead-on-arrival `SIGNAL_EXPIRED`) carries **`cycle_budget_limit`**; the consumed count folds as the
+number of such events since the last `PRODUCER_RELEASED`, and the limit is read from the cycle's first
+such event — so a restart/replay restores the same binding remaining budget (a side table is a cache,
+not the source of truth) and cannot silently grant a fresh one. Producer-sweep `SIGNAL_QUARANTINED`
+events are excluded from this fold (§2). **Every per-record lifecycle-transition event
 (`SIGNAL_QUARANTINED`, `SIGNAL_EXPIRED`, `SIGNAL_REJECTED`, `SIGNAL_APPROVED`) carries the record key
 `(producer_id, signal_id)` (and server `record_id`)** so the fold targets exactly one record —
 timing/actor metadata alone is ambiguous when several records transition together (REV-0024-F P1).

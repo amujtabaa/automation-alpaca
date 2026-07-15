@@ -1,6 +1,9 @@
 # ADR-009: Signal Seat — External Agentic Signal Producers as Bounded Intent Sources
 
-**Status:** **Proposed** — acceptance of 2026-07-12 **RESCINDED 2026-07-14**: the formal REV-0022
+**Status:** **ACCEPTED 2026-07-14** (Ameen). History — the 2026-07-12 acceptance was **RESCINDED
+2026-07-14**, remediated across three staged review packets (REV-0022, REV-0024, REV-0025 — REV-0023
+belongs to a separate review line, not this chain), and re-accepted 2026-07-14 after the spec
+was locked (details below): the formal REV-0022
 packet (frozen `25590a7`) returned **BLOCK** with four P1 findings (credential/transport boundary,
 non-atomic approval→intent conversion, unbounded/underspecified TTL + classification semantics,
 unbounded audit growth). Amendments A-1..A-4 were drafted; the **REV-0024** re-review (frozen
@@ -8,10 +11,32 @@ unbounded audit growth). Amendments A-1..A-4 were drafted; the **REV-0024** re-r
 but **A-1/A-4 NOT** — the bind guard was unenforceable through the ASGI seam (F-001) and a
 refilling-bucket-only audit was unbounded under paced hostility (F-004). Both were re-remediated
 2026-07-14 per Ameen's decisions (A-1 clause 6 backend-owned launch; A-4 non-refilling invalid
-budget + rails-presence enablement gate). Not acceptable until **REV-0025** clears the
-re-remediation. Full record: `work/review/REV-0022/`, `work/review/REV-0024/`, `work/review/REV-0025/`.
-**Date:** 2026-07-11 (drafted); accepted 2026-07-12; rescinded 2026-07-14
-**Deciders:** Ameen (human gate). Queues for independent cross-model review before acceptance (ADR amendment per review policy).
+budget + rails-presence enablement gate). **REV-0025** (frozen `209496d`) returned **BLOCK** (7 P1s,
+no A-2/A-3 regression); Ameen decided its two forks (D-1 construction-time bind refusal; D-2
+release/deployment gate) and, on 2026-07-14, **LOCKED the specification** — the three staged packets
+(REV-0022, REV-0024, REV-0025) exhaustively hardened the amendment design, and the remaining items are
+implementation-semantic (atomic epoch-open, local order states, multi-exit single-flight), decided
+and documented as **WO-time contracts** to be resolved against real code + TDD rather than in further
+spec-only review rounds.
+**STATUS: ACCEPTED (Ameen, 2026-07-14).** The spec is LOCKED and implementation-ready; the two open
+behavior forks are decided (see "Locked open-items" below). Ameen performed the explicit human-gated
+Proposed→Accepted flip and **unfroze WO-0102..0104** for implementation (order-submission surface —
+accepted deliberately after three staged review packets). Live enablement remains the joint
+WO-0102+WO-0103+WO-0104 milestone; each WO's implementation gets its own independent CODE review; the
+`CLAUDE.md` safety core and human-gated surfaces continue to apply per-action. Full record:
+`work/review/REV-0022/`, `REV-0024/`, `REV-0025/` (REV-0026 withdrawn — spec locked instead of a
+fifth spec-only round).
+
+### Locked open-items (Ameen decisions 2026-07-14 — implement + test in the named WO, do not re-litigate)
+- **Zero-budget epoch-open (REV-0025-F P1, WO-0104):** the invalid-budget-exhausting terminal append
+  **co-opens the `PRODUCER_QUARANTINED` epoch in the same atomic op** (supersedes "epoch opens on the
+  next ingest") — no gap where an exhausted producer's RECEIVED signals stay approvable.
+- **Multi-exit (REV-0025-F P1, WO-0103):** signal sells are **not** single-flight-refused; concurrent
+  signal exits are allowed, bounded only by the combined-exposure ceiling (which counts every
+  non-terminal **local** SELL order, `CREATED`/`ORDERED`-pre-submit included), proven no-oversell in
+  both stores.
+**Date:** 2026-07-11 (drafted); accepted 2026-07-12; rescinded 2026-07-14; re-accepted 2026-07-14 (post-lock)
+**Deciders:** Ameen (human gate). Independent cross-model review completed (three packets: REV-0022, REV-0024, REV-0025; REV-0023 is a separate review line); accepted after spec lock per review policy.
 **Number:** ADR-009 (renumbered on install from planning-seat draft "ADR-010"; 009 is the next free slot after ADR-008).
 
 > **Install note (2026-07-11).** Installed from the Fable-5 planning-seat handoff. Two of the
@@ -27,9 +52,9 @@ re-remediation. Full record: `work/review/REV-0022/`, `work/review/REV-0024/`, `
 >    independent review dispositioned RESOLVED (REV-0003, ACCEPT-WITH-CHANGES). The migration
 >    is substantially terminal; the only known deferral is `filled_quantity` event-sourcing
 >    (status-only flip; separate follow-up), which the signal WOs do not depend on.
-> 3. **Acceptance** — OPEN (rescinded 2026-07-14): REV-0022's formal run returned BLOCK; this
->    document remains Proposed until F-001..F-004 are remediated and the re-review is
->    dispositioned ACCEPT / ACCEPT-WITH-CHANGES.
+> 3. **Acceptance** — **CLEARED 2026-07-14**: the 2026-07-12 acceptance was rescinded after REV-0022's
+>    BLOCK, then F-001..F-004 (and REV-0025's F-001..F-007) were remediated across REV-0022/0024/0025;
+>    Ameen re-accepted ADR-009 post spec-lock (REV-0026 withdrawn — see Status). Not Proposed.
 
 ## Context
 
@@ -84,7 +109,7 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 | INV-8 completion | Signals cannot mark primaries complete; no `SIGNAL_*` event reaches primary/spawn projections. |
 | INV-9 position ≠ acks | The Position Service consumes only deduped fill events; the new `SIGNAL_*` event family is structurally invisible to it, exactly as `SUBMITTED`/`ACCEPTED` are. |
 
-*INV-1..9 rows drafted line-by-line against `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §5` on install (2026-07-11, implementer seat) — to be confirmed by the human + independent review before acceptance.*
+*INV-1..9 rows drafted line-by-line against `docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §5` on install (2026-07-11, implementer seat); confirmed by the human + independent review (REV-0022/0024/0025) prior to the 2026-07-14 acceptance.*
 
 ## Options Considered
 
@@ -101,11 +126,12 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 Easier: adding/swapping producers (any agent that can POST JSON); auditing exactly what influenced trading (provenance in the event log); later trust-ladder promotion as a pure policy change behind a stable contract. Harder: the integration is deliberately shallow; every signal costs a human approval in beta (accepted — that *is* the design); one new API surface + event types to test on both storage paths. Revisit: L1 promotion criteria after beta produces approval-volume data.
 
 
-## Amendments — REV-0022 remediation (2026-07-14, PROPOSED, pending human acceptance + re-review)
+## Amendments — REV-0022 remediation (ACCEPTED 2026-07-14, binding ADR text)
 
-Each amendment below remediates one BLOCK finding and is **binding ADR text** once this document
-is accepted — implementation WOs tune numbers only, never semantics. Drafted by the implementer
-seat; nothing here is in force until Ameen accepts and the re-review clears.
+Each amendment below remediates one BLOCK finding and is **binding ADR text** — **in force as of the
+2026-07-14 acceptance** (spec LOCKED; REV-0022/0024/0025 concluded, REV-0026 withdrawn). Implementation
+WOs tune numbers only, never semantics. (Historical: drafted by the implementer seat; the acceptance
+gate that once conditioned these amendments has since cleared — see Status.)
 
 > **Re-remediation (2026-07-14, post-REV-0024).** REV-0024 confirmed **A-2 and A-3 CLOSE** their
 > findings but **A-1 and A-4 did not**: the bind guard was unenforceable through the ASGI seam
@@ -171,27 +197,40 @@ seat; nothing here is in force until Ameen accepts and the re-review clears.
      uds=…)`) with the bind derived from — and re-validated against — that setting. With
      `signal_seat_enabled`, the entrypoint **refuses to start** (process exits non-zero, before any
      socket serves) on any non-loopback/non-socket bind, under both transport policies.
-   - **A launch-provenance guard enforced at BOTH lifespan startup AND request time**: the
-     entrypoint sets an in-process sentinel (`app.state`-carried, not an env var an attacker
-     controls) marking the app as started through the sanctioned launcher. With `signal_seat_enabled`
-     on: (i) lifespan startup **fails fast unless the sentinel is present** (loud, early failure); and
-     (ii) — because a direct launch can **skip lifespan entirely** (`uvicorn app.main:app --host
-     0.0.0.0 --lifespan off`, which uvicorn supports, would otherwise dodge the startup guard,
-     REV-0024-F P1) — an ASGI-level **fail-closed request guard** rejects **every** request
-     (503/refused, no route work) whenever the sentinel is absent. The request guard runs regardless
-     of `--lifespan`, so even a lifespan-off direct launch serves nothing. A bare
-     `uvicorn app.main:app` (with or without `--lifespan off`) imports the module-level `app` without
-     the launcher, cannot set the sentinel, and is therefore inert for the flag-on seat. (Flag off ⇒
-     the sentinel is not required; beta's current `uvicorn app.main:app` dev command works unchanged.)
-   - **The direct `uvicorn app.main:app` invocation is deprecated AND non-functional when the seat is
-     enabled** (the request guard makes it serve nothing, not merely discouraged); the README
-     documents `python -m app` as the sole sanctioned start command for an enabled seat.
-   - **Proof (WO-0102 subprocess tests):** (a) the launcher invoked with a non-loopback bind and the
-     flag on exits non-zero before serving; (b) `uvicorn app.main:app --host 0.0.0.0` with the flag on
-     — **both with and without `--lifespan off`** — serves no request (lifespan-on fails at startup;
-     lifespan-off starts but every request is 503/refused by the request guard, so nothing is
-     reachable on the network bind). An app-setting-only or lifespan-only assertion does not satisfy
-     this clause.
+   - **Construction-time launch-provenance capability — no listener without the launcher** (Ameen
+     decision 2026-07-14 D-1, remediates REV-0024-F-001 / REV-0025-F-001). A request-time 503 guard
+     is **insufficient**: it still lets a bare `uvicorn app.main:app --host 0.0.0.0 --lifespan off`
+     **accept TCP connections and serve `HTTP 503` on the forbidden non-loopback port** (Codex
+     REV-0025 live-reproduced this) — reachable is not proxy-private, and A-1's invariant demands
+     failure **before any socket accepts**. So the guarantee is enforced at **app construction /
+     import**, before Uvicorn can open a listener: the sanctioned launcher mints an **opaque,
+     one-shot, code-owned capability** (an in-process token created in `app/server.py::run()`,
+     **not** an env var, config value, or anything an operator/attacker can set) and passes it to a
+     construction factory; with `signal_seat_enabled` on, **building the app without that capability
+     raises** (`create_app`/the factory refuses). Constraints on the capability: **no environment
+     switch, no importable pre-authorized `app` object, and no zero-argument authorized factory** may
+     mint it — otherwise the bare-uvicorn path could re-acquire it. Consequently the module-level
+     `app = create_app()` import target is **removed (or itself refuses) under the flag**: a bare
+     `uvicorn app.main:app` fails at **import**, Uvicorn never receives an app, and **no listener is
+     ever opened** — true pre-serve failure, connection refused, nothing on the network port.
+   - **A fail-closed ASGI request guard remains as defense-in-depth** (not the primary control): if
+     any future path constructs a flag-on app without the capability, every request is refused. But
+     the *binding* guarantee is the construction refusal above — the request guard is the backstop,
+     not the boundary.
+   - **The direct `uvicorn app.main:app` invocation is unsupported when the seat is enabled** (it
+     fails at import — no listener); the README documents `python -m app` as the sole sanctioned start
+     command for an enabled seat. (Flag off ⇒ construction is unrestricted; beta's current
+     `uvicorn app.main:app` dev command works unchanged.)
+   - **Proof (WO-0102 subprocess tests, mutation-sensitive — REV-0025-F-002):** with `OPERATOR_API_KEY`
+     + producer map + rails all present (so no *unrelated* startup guard supplies the failure): (a)
+     `uvicorn app.main:app --host 0.0.0.0` with the flag on, **both `--lifespan on` and `--lifespan
+     off`**, fails to open an accepting listener — the hostile client gets **connection refused / no
+     listener**, asserted at the socket level, not an HTTP 503; (b) a **same-config positive control**
+     — the sanctioned `python -m app` launcher on the policy-valid loopback bind — reaches a **ready
+     listener** serving `GET /api/health`; (c) the launcher with a non-loopback bind + flag on exits
+     non-zero before serving, asserting the **exact A-1 bind-policy failure reason** (not a generic
+     pre-serve error). Removing/mutating any single A-1 check must make its own assertion fail; an
+     app-setting-only, lifespan-only, or reachable-503 assertion does not satisfy this clause.
 
 ### A-2 (remediates F-002) — Atomic conversion contract
 
@@ -251,10 +290,14 @@ Approval→intent conversion is **one atomic store command** in both stores:
   signal is risk-reducing iff `direction == sell` AND
   `operator_qty ≤ (live derived position − outstanding committed sell exposure)`, both terms
   read under the A-2 lock; `outstanding committed sell exposure` = Σ `target_quantity` of sell
-  intents pending/approved but **not yet `ORDERED`** + Σ remaining quantity of open SELL orders —
+  intents pending/approved but **not yet `ORDERED`** + Σ remaining quantity of **every non-terminal
+  LOCAL SELL order — committed-in-the-store, not broker-open only: `CREATED`/`ORDERED`-before-submit
+  count, since a local order the broker has not yet seen still holds its shares** (REV-0025-F P1) —
   each commitment counted **once**, never an `ORDERED` intent's target AND its order's remaining
   (`SellIntentStatus.ORDERED` is non-terminal, so a 50-share ordered sell counts as 50, not 100;
-  Codex rev-3). Two signal sells can therefore never jointly oversell via classification. Refusals carry stable reason
+  Codex rev-3). **Multi-exit is allowed (Ameen 2026-07-14): concurrent signal exits are permitted so
+  long as their summed exposure never exceeds the position — the single-flight-per-symbol behavior is
+  deliberately relaxed for signal sells, proven no-oversell in both stores (WO-0103).** Refusals carry stable reason
   codes (`TRADING_STATE_REDUCING`, `POSITION_CHANGED`, `TRADING_HALTED`, `KILL_SWITCH`),
   operator-visible, never silent — the recorded INV-7 asymmetry decision stands (conservative
   toward convertibility; the quantity-aware risk gate remains the binding check).
@@ -272,12 +315,15 @@ body read) → **(2) rails check** (quarantine epoch, refilling rate bucket; no 
 qualifier) → **(3) bounded body read** (`Content-Length` capped at **64 KiB**, streamed reject
 beyond) → **(4) parse + field-validate** (thesis ≤ 4000 chars, provenance ≤ 20 keys × 500 chars).
 The non-refilling invalid/conflict budget is debited at step 4 when an attributable-rejection event
-is appended, and its exhaustion opens the epoch at step 2 on the next ingest. Steps 1–2 reject with
-zero store writes and zero body processing — with **exactly one carve-out**: the single request
-that first crosses **either** breach threshold — rate-bucket empty **or** invalid/conflict budget
-exhausted — performs the epoch-opening `PRODUCER_QUARANTINED` append (once per epoch, by
-definition); every subsequent step-1/step-2 reject in that epoch is write-free (Codex rev-2 finding:
-without the carve-out the breach path is unimplementable as written).
+is appended; **the append that consumes the last slot co-appends the `PRODUCER_QUARANTINED`
+epoch-opener in the same atomic op** (Ameen decision 2026-07-14, REV-0025-F P1 — supersedes the
+earlier "epoch opens on the next ingest," which left a zero-budget-but-un-quarantined gap where an
+exhausted producer's RECEIVED signals were still approvable). Steps 1–2 reject with zero store writes
+and zero body processing — with **exactly one carve-out**: the single request that first crosses
+**either** breach threshold — rate-bucket empty (opens on that request) **or** invalid/conflict
+budget exhausted (co-opened by the exhausting step-4 append) — performs the epoch-opening
+`PRODUCER_QUARANTINED` append (once per epoch, by definition); every subsequent reject in that epoch
+is write-free.
 
 Audit bounds (replacing the draft's "periodic rejected-count record", which the reviewer
 correctly showed is unbounded over indefinite hostility):
@@ -297,19 +343,28 @@ correctly showed is unbounded over indefinite hostility):
   hard architectural cap of **1000** that no config may exceed — startup **fails fast** on a value
   outside the range, mirroring `server_max_ttl`'s cap so the "finite and small" property cannot be
   configured away, REV-0024-F P2). It is debited by **every attributable terminal-at-ingest append**
-  — one that authenticates, embeds the proposal, and grows the log: validation `SIGNAL_QUARANTINED`,
+  — one that authenticates, embeds the proposal, and grows the log: validation/skew `SIGNAL_QUARANTINED` (NOT the `producer_sweep` quarantine — that does not debit),
   each novel-hash `SIGNAL_DUPLICATE_CONFLICT`, **and** each dead-on-arrival `SIGNAL_EXPIRED`
   (`expires_at ≤ received_at`, or a skew-based `issued_at_future`/`issued_at_stale` terminal quarantine)
   — so a producer cannot evade the budget by pacing unique just-expired proposals (REV-0024-F P1). It
   does **not** refill while the producer is un-quarantined; on exhaustion the producer is
   **quarantined** (`PRODUCER_QUARANTINED` opens the epoch), after which ingress is write-free per the
   epoch rule; the budget **resets only on human release** (`PRODUCER_RELEASED` — clause below).
-  Therefore
-  the append-only attributable-rejection volume per producer per cycle is **≤ `invalid_budget`
-  events + the rate-bucket-bounded accepted signals + 2 rail events**, and every *further* cycle
-  requires a human `PRODUCER_RELEASED` — indefinitely-paced invalid/conflict hostility can no longer
-  append forever, because it exhausts the non-refilling budget and stops at quarantine until a human
-  chooses to re-open the producer.
+  **The check-reserve-debit and the terminal event append are one linearizable store operation**
+  (one memory lock / one SQLite transaction — REV-0025-F-003): a request that cleared the pre-body
+  step-2 rails check re-checks-and-debits atomically at step 4, so with one slot left, concurrent or
+  slow-streamed-body requests cannot each append — exactly one consumes the slot, the rest are
+  post-exhaustion; a crash leaves either the whole {debit + event} or neither, both stores.
+  **Both the pinned per-cycle limit AND the consumed/remaining count are durable producer-rail state**
+  restored **before serving** and updated atomically with each terminal append (REV-0025-F-004): a
+  restart cannot reset consumed slots to zero (which would grant a fresh budget without a human
+  release); replay reconstructs both the historical limit and the consumed count in both stores.
+  The **constant storage bound is on attributable-rejection traffic only**: per cycle **≤
+  `invalid_budget` terminal-at-ingest events + 2 rail events**, and every *further* cycle requires a
+  human `PRODUCER_RELEASED` — so indefinitely-paced invalid/conflict/expiry hostility can no longer
+  append forever. (Legitimately *accepted* signals are separately **rate-bounded, not part of this
+  constant** — see the Option-E scope note in A-2: their volume is finite per window but not over
+  indefinite time, by design.)
 - **At most ONE `PRODUCER_QUARANTINED` event per quarantine epoch** (epoch = quarantine →
   release), opened by **either** trigger — rate-bucket breach **or** invalid/conflict-budget
   exhaustion. Post-quarantine ingress appends **nothing**.
@@ -318,10 +373,12 @@ correctly showed is unbounded over indefinite hostility):
 - **One summary on epoch close:** `PRODUCER_RELEASED` carries the saturated rejected-count and
   epoch window, and **resets BOTH rails — the §1 refilling bucket AND the §1a non-refilling
   invalid/conflict budget** (REV-0024-F P1: releasing without resetting the budget re-quarantines the
-  producer on its very next ingest, making the human release control inert). Total signal-rail event
-  volume per producer per epoch is therefore a constant (≤ 2 rail events + the ≤ `invalid_budget`
-  attributable-rejection events accrued before the epoch opened + the pre-quarantine accepted
-  signals, themselves rate-limited).
+  producer on its very next ingest, making the human release control inert). The **constant** bound
+  covers only attributable-rejection + rail traffic: ≤ 2 rail events + ≤ `invalid_budget`
+  attributable-rejection events per cycle. **Legitimately accepted signals are NOT part of this
+  constant** — they are rate-bounded only and may continue indefinitely in an epoch that never
+  quarantines (the Option-E scope note; REV-0025-F P2). Flood/Option-E acceptance tests must assert
+  the constant bound over attributable-rejection traffic, never over accepted traffic.
 - Test contract: model-based/long-duration tests assert **constant event-row count** and bounded
   storage under sustained hostile flood — paced at or below the refill rate over arbitrarily many
   windows, not merely a burst that eventually exceeds the rate limit — in both stores.
@@ -331,26 +388,34 @@ correctly showed is unbounded over indefinite hostility):
 ceiling* in WO-0102 ahead of the full rails, on the theory that a counting-only ceiling kept an
 enabled endpoint from ever being unrailed. REV-0024 showed that ceiling was rate-bounded, not
 storage-bounded, so it left exactly the paced-flood hole above. It is **removed**, not tuned.
-In its place, `signal_seat_enabled` gains a **rails-presence startup guard**, exactly parallel to
-clause A-1.4's credential-presence guard: **with the flag on, startup fails fast unless the full
-per-producer rails are wired** — the refilling rate bucket, the non-refilling invalid/conflict
-budget, the producer-quarantine epoch machinery, and the human `PRODUCER_RELEASED` path. There is
-therefore **no window in which an enabled endpoint runs without finite-audit flood protection**, and
-no interim ceiling to reason about. Consequence for sequencing: the endpoint's **live enablement is
-the joint WO-0102 + WO-0103 + WO-0104 milestone** — WO-0102 ships the ingestion endpoint and the
-A-1 boundary; **WO-0103 owns the A-2 atomic approval→conversion** (the human-gated order-submission
-surface — it is NOT WO-0102's, and enabling the seat without it would either pull that surface into
-the medium-risk ingestion WO or falsely imply the F-002 conversion gate landed, REV-0024-F P1); and
-WO-0104 lands the full rails. The flag is **structurally un-enable-able** until WO-0104's rails
-satisfy the rails-presence guard, and an enabled seat whose approval path cannot atomically convert
-is incoherent (re-opening F-002), so **all three** must land before live enablement. WO-0104 lands
-the rails and lifts the guard; the flag-on integration suite (route-authorization matrix at the
-mounted app, constant-event-row flood tests) is authored across the WOs and runs green at that
-joint milestone — never against a half-railed or conversion-less app.
+In its place, `signal_seat_enabled` gains a **permanent rails-presence startup guard**, exactly
+parallel to clause A-1.4's credential-presence guard: **with the flag on, startup fails fast unless
+the full per-producer rails are wired** — the refilling rate bucket, the non-refilling invalid/conflict
+budget, the producer-quarantine epoch machinery, and the human `PRODUCER_RELEASED` path. The guard is
+**never removed** — it is a standing invariant that WO-0104 **satisfies** by wiring the real provider,
+**not** a scaffold that WO-0104 deletes (REV-0025-F-005). A *Protocol-presence* check alone cannot
+tell a real rails provider from a permissive no-op fake, so: **the production entrypoint is proven to
+construct the real WO-0104 provider, and any fake/permissive provider is confined to a test-only
+construction path that production config/environment cannot select** (the sole distinction is
+enforced, not merely labelled "never a production default"). There is therefore **no window in which
+an enabled endpoint runs without finite-audit flood protection**, and no interim ceiling to reason
+about.
+
+Consequence for sequencing: the endpoint's **live enablement is the joint WO-0102 + WO-0103 + WO-0104
+milestone** — WO-0102 ships the ingestion endpoint and the A-1 boundary; **WO-0103 owns the A-2
+atomic approval→conversion** (the human-gated order-submission surface — NOT WO-0102's); and WO-0104
+lands the full rails and satisfies the rails guard. **The WO-0103 half is enforced as a
+release/deployment gate + test, not a new runtime startup check** (Ameen decision 2026-07-14 D-2):
+the sequencing dependency is binding, and the **joint mounted-app integration suite proves
+ingest → operator approval → exactly one atomically-linked intent** against the real rails, alongside
+the route-authorization matrix and constant-event-row flood tests. The **route matrix asserts the
+required sensitive routes EXIST** (not merely classifies whatever happens to be mounted, REV-0025-F-005/
+F-007). All three WOs must land before live enablement; the suite runs green at that joint milestone —
+never against a half-railed or conversion-less app.
 
 ## Action Items
 
 1. [x] Renumber on install (ADR-010 draft → ADR-009) and clear install-verification + WO-0001-disposition gates — done 2026-07-11, evidence in the install note above.
 2. [x] Human review — INV-7 asymmetry decision (2026-07-11); the 2026-07-12 acceptance was rescinded (see Status).
-3. [ ] Independent cross-model review — **REV-0022 BLOCK** (frozen `25590a7`) → A-1..A-4 → **REV-0024 BLOCK** (frozen `413da38`: A-2/A-3 CLOSED, A-1/A-4 not) → re-remediated (A-1 clause 6 + A-4 invalid budget/rails gate) → **REV-0025 queued** (`work/review/REV-0025/request.md`). Gate clears only on REV-0025 ACCEPT / ACCEPT-WITH-CHANGES.
-4. [ ] WO-0101..0104: RE-GATED 2026-07-14 pending REV-0025. Live enablement is the joint WO-0102+WO-0103+WO-0104 milestone (ingest + atomic conversion + rails; A-4 rails-presence gate enforces the 0104 half). WO-0101's spec output stands as draft input to the remediation.
+3. [x] Independent cross-model review — **REV-0022 BLOCK** → A-1..A-4 → **REV-0024 BLOCK** (A-2/A-3 CLOSED) → re-remediated → **REV-0025 BLOCK** (7 P1s, no A-2/A-3 regression) → Ameen decided D-1/D-2 and **LOCKED the spec 2026-07-14**; remaining items are documented WO-time contracts (see Status). Four staged rounds constitute the independent-review record for the amendment design; REV-0026 withdrawn.
+4. [x] **Human-gated flip — DONE (Ameen, 2026-07-14):** ADR-009 marked **Accepted** and WO-0102..0104 **unfrozen** for implementation (order-submission surface). Sequencing: WO-0102 first, then WO-0103 ∥ WO-0104; live enablement is the joint milestone. Each WO's implementation still gets its own independent (code) review, and the `CLAUDE.md` safety core / human-gated surfaces apply per-action.

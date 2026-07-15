@@ -59,6 +59,8 @@ from app.models import (
     SellReason,
     SessionRecord,
     SessionStatus,
+    SignalRecord,
+    SignalStatus,
     SubmitRecoveryRecord,
     TradingMode,
     TradingState,
@@ -92,6 +94,7 @@ from app.store.base import (
     InvalidOrderError,
     ProtectionHaltedError,
     RiskLimits,
+    SignalIngestResult,
     SellIntentTransitionError,
     SessionAlreadyClosedError,
     SessionClosedError,
@@ -124,6 +127,9 @@ from app.store.core import (
     plan_reconcile_resolve_order,
     plan_resolve_timeout_quarantine,
     plan_transition_order,
+    build_signal_proposal_payload,
+    plan_signal_ingest,
+    signal_canonical_hash,
     reconcile_trading_state_event,
     trading_state_change_event,
     emergency_reduce_override_event,
@@ -336,6 +342,44 @@ CREATE TABLE IF NOT EXISTS execution_events (
     correlation_id  TEXT,
     payload         TEXT NOT NULL DEFAULT '{}'
 );
+
+-- Signal Seat (ADR-009 / WO-0102): external-producer signal read model. ADDITIVE,
+-- NULL-default; no existing row is rewritten. Dedupe is the composite UNIQUE
+-- (producer_id, signal_id) — never bare signal_id (cross-producer ids are
+-- distinct). Freshness fields are nullable ONLY for a validation-quarantine ON
+-- that field (raw offender kept in raw_fields); received_at is always present.
+-- State is event-truth (SIGNAL_* events) — this table is a co-written read model.
+CREATE TABLE IF NOT EXISTS signal_records (
+    id                    TEXT PRIMARY KEY,
+    producer_id           TEXT NOT NULL,
+    signal_id             TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    symbol                TEXT NOT NULL,
+    direction             TEXT NOT NULL,
+    issued_at             TEXT,
+    ttl_seconds           INTEGER,
+    expires_at            TEXT,
+    received_at           TEXT NOT NULL,
+    raw_fields            TEXT,
+    suggested_quantity    INTEGER,
+    suggested_limit_price REAL,
+    thesis                TEXT NOT NULL,
+    provenance            TEXT NOT NULL DEFAULT '{}',
+    payload_hash          TEXT NOT NULL,
+    quarantine_reason     TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    approved_at           TEXT,
+    rejected_at           TEXT,
+    expired_at            TEXT,
+    quarantined_at        TEXT,
+    converted_kind        TEXT,
+    converted_id          TEXT,
+    approved_by           TEXT,
+    UNIQUE (producer_id, signal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_records_status ON signal_records(status);
+CREATE INDEX IF NOT EXISTS idx_signal_records_symbol ON signal_records(symbol);
 """
 
 
@@ -807,6 +851,37 @@ class SqliteStateStore(StateStore):
             session_id=row["session_id"],
             correlation_id=row["correlation_id"],
             payload=json.loads(row["payload"]) if row["payload"] else {},
+        )
+
+    @staticmethod
+    def _signal_record(row: sqlite3.Row) -> SignalRecord:
+        return SignalRecord(
+            id=row["id"],
+            producer_id=row["producer_id"],
+            signal_id=row["signal_id"],
+            status=row["status"],
+            symbol=row["symbol"],
+            direction=row["direction"],
+            issued_at=row["issued_at"],
+            ttl_seconds=row["ttl_seconds"],
+            expires_at=row["expires_at"],
+            received_at=row["received_at"],
+            raw_fields=json.loads(row["raw_fields"]) if row["raw_fields"] else None,
+            suggested_quantity=row["suggested_quantity"],
+            suggested_limit_price=row["suggested_limit_price"],
+            thesis=row["thesis"],
+            provenance=json.loads(row["provenance"]) if row["provenance"] else {},
+            payload_hash=row["payload_hash"],
+            quarantine_reason=row["quarantine_reason"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            approved_at=row["approved_at"],
+            rejected_at=row["rejected_at"],
+            expired_at=row["expired_at"],
+            quarantined_at=row["quarantined_at"],
+            converted_kind=row["converted_kind"],
+            converted_id=row["converted_id"],
+            approved_by=row["approved_by"],
         )
 
     @staticmethod
@@ -3039,6 +3114,156 @@ class SqliteStateStore(StateStore):
                 "SELECT MAX(sequence) AS m FROM execution_events", ()
             )
             return (row["m"] if row is not None else 0) or 0
+
+    # ------------------------------------------------------------------ #
+    # Signal Seat (ADR-009 / WO-0102)
+    # ------------------------------------------------------------------ #
+    def _insert_signal_record(self, cur: sqlite3.Cursor, r: SignalRecord) -> None:
+        cur.execute(
+            """INSERT INTO signal_records
+               (id, producer_id, signal_id, status, symbol, direction,
+                issued_at, ttl_seconds, expires_at, received_at, raw_fields,
+                suggested_quantity, suggested_limit_price, thesis, provenance,
+                payload_hash, quarantine_reason, created_at, updated_at,
+                approved_at, rejected_at, expired_at, quarantined_at,
+                converted_kind, converted_id, approved_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                r.id,
+                r.producer_id,
+                r.signal_id,
+                r.status.value,
+                r.symbol,
+                r.direction,
+                _dt(r.issued_at),
+                r.ttl_seconds,
+                _dt(r.expires_at),
+                _dt(r.received_at),
+                json.dumps(r.raw_fields) if r.raw_fields is not None else None,
+                r.suggested_quantity,
+                r.suggested_limit_price,
+                r.thesis,
+                json.dumps(r.provenance),
+                r.payload_hash,
+                r.quarantine_reason,
+                _dt(r.created_at),
+                _dt(r.updated_at),
+                _dt(r.approved_at),
+                _dt(r.rejected_at),
+                _dt(r.expired_at),
+                _dt(r.quarantined_at),
+                r.converted_kind,
+                r.converted_id,
+                r.approved_by,
+            ),
+        )
+
+    async def ingest_signal(
+        self,
+        *,
+        producer_id: str,
+        signal_id: str,
+        symbol: str,
+        direction: str,
+        issued_at: Optional[datetime] = None,
+        ttl_seconds: Optional[int] = None,
+        suggested_quantity: Optional[int] = None,
+        suggested_limit_price: Optional[float] = None,
+        thesis: str,
+        provenance: dict[str, str],
+        server_max_ttl_seconds: int,
+        cycle_budget_limit: int,
+        validation_failed: bool = False,
+        raw_fields: Optional[dict[str, str]] = None,
+        received_at: Optional[datetime] = None,
+    ) -> SignalIngestResult:
+        received_at = received_at or utcnow()
+        canonical = build_signal_proposal_payload(
+            signal_id=signal_id,
+            symbol=symbol,
+            direction=direction,
+            issued_at=issued_at,
+            ttl_seconds=ttl_seconds,
+            suggested_quantity=suggested_quantity,
+            suggested_limit_price=suggested_limit_price,
+            thesis=thesis,
+            provenance=provenance,
+            # P1 #1: fold the raw offending content into the hash so distinct
+            # malformed bodies with the same signal_id never hash identically.
+            raw_fields=raw_fields,
+        )
+        payload_hash = signal_canonical_hash(canonical)
+        async with self._lock:
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM signal_records WHERE producer_id=? AND "
+                    "signal_id=?",
+                    (producer_id, signal_id),
+                ).fetchone()
+                existing = self._signal_record(row) if row is not None else None
+                plan = plan_signal_ingest(
+                    existing=existing,
+                    producer_id=producer_id,
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    direction=direction,
+                    issued_at=issued_at,
+                    ttl_seconds=ttl_seconds,
+                    suggested_quantity=suggested_quantity,
+                    suggested_limit_price=suggested_limit_price,
+                    thesis=thesis,
+                    provenance=provenance,
+                    payload_hash=payload_hash,
+                    canonical_proposal=canonical,
+                    validation_failed=validation_failed,
+                    raw_fields=raw_fields,
+                    received_at=received_at,
+                    server_max_ttl_seconds=server_max_ttl_seconds,
+                    cycle_budget_limit=cycle_budget_limit,
+                )
+                if plan.event is not None:
+                    self._insert_execution_event(cur, plan.event)
+                if plan.record is not None:
+                    self._insert_signal_record(cur, plan.record)
+                return SignalIngestResult(
+                    outcome=plan.outcome, record=plan.result_record
+                )
+
+    async def get_signal(
+        self, producer_id: str, signal_id: str
+    ) -> Optional[SignalRecord]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM signal_records WHERE producer_id=? AND signal_id=?",
+                (producer_id, signal_id),
+            )
+            return self._signal_record(row) if row is not None else None
+
+    async def list_signals(
+        self,
+        *,
+        status: Optional[SignalStatus] = None,
+        symbol: Optional[str] = None,
+        producer_id: Optional[str] = None,
+    ) -> list[SignalRecord]:
+        clauses, params = [], []
+        if status is not None:
+            require_status_enum(status, SignalStatus, field="status filter")
+            clauses.append("status = ?")
+            params.append(status.value)
+        if symbol is not None:
+            clauses.append("symbol = ?")
+            params.append(normalize_symbol(symbol))
+        if producer_id is not None:
+            clauses.append("producer_id = ?")
+            params.append(producer_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with self._lock:
+            rows = self._read_all(
+                f"SELECT * FROM signal_records{where} ORDER BY rowid",
+                tuple(params),
+            )
+            return [self._signal_record(r) for r in rows]
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

@@ -40,6 +40,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api import (
@@ -48,32 +49,103 @@ from app.api import (
     routes_dev,
     routes_marketdata,
     routes_review,
+    routes_signals,
     routes_system,
     routes_trading,
     routes_watchlist,
 )
+from app.api.deps import (
+    DEFAULT_ACTOR,
+    OPERATOR_KEY_HEADER,
+    PRODUCER_KEY_HEADER,
+    operator_key_valid,
+    producer_key_valid,
+)
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
-from app.config import load_settings
+from app.config import Settings, load_settings, validate_signal_seat_settings
+from app.facade.signal_rails import is_conforming_rails
+from app.launch_guard import is_sanctioned
 from app.marketdata.factory import create_market_data_service
 from app.monitoring import monitoring_loop, run_startup_reconcile
 from app.store import create_state_store
 from app.store.base import StateStore
 from app.strategy_loop import strategy_loop
 
+# Sensitive-route auth exemptions when the Signal Seat flag is on (ADR-009 A-1a):
+# health is the only public route; the producer route enforces its own producer
+# credential via route deps, so the operator-enforcement middleware skips it.
+_PUBLIC_PATHS = frozenset({"/api/health"})
+# The producer ingest route is EXACTLY POST /api/signals — the only route the
+# operator-enforcement middleware skips (producer-credentialed). Everything else
+# under /api/signals* (the GET list, WO-0103's approve/reject) is operator-only
+# and must pass through the middleware so authenticated_actor is stamped.
+_PRODUCER_INGEST_PATH = "/api/signals"
+
 _log = logging.getLogger(__name__)
 
 
-def create_app(store: Optional[StateStore] = None) -> FastAPI:
+def create_app(
+    store: Optional[StateStore] = None,
+    *,
+    settings: Optional[Settings] = None,
+    launch_capability: object = None,
+    signal_rails: object = None,
+) -> FastAPI:
     """Build the FastAPI app.
 
     If ``store`` is provided (tests), it is used as-is; otherwise the configured
     implementation is built from the environment. A store we create is closed on
-    shutdown; an injected one is left to its owner.
+    shutdown; an injected one is left to its owner. ``settings`` may be injected
+    (tests); otherwise it is loaded from the environment.
+
+    **ADR-009 A-1 clause 6 (REV-0025-F-001) — construction-time bind boundary.**
+    With ``signal_seat_enabled`` on, the app may be built ONLY through the
+    backend-owned launcher (``app/server.py`` / ``python -m app``), which mints a
+    launch-provenance capability and passes it here. Constructing without that
+    capability RAISES — so a bare ``uvicorn app.main:app`` (which imports the
+    module-level ``app`` with no capability) fails at import and never opens a
+    listener. This is the primary control; the request-time 503 guard is
+    defense-in-depth. Flag OFF ⇒ construction is unrestricted (unchanged beta).
     """
 
     owns_store = store is None
-    settings = load_settings()
+    if settings is None:
+        settings = load_settings()
+
+    # ADR-009 A-1/A-4 construction-time guards, in force ONLY when the flag is on.
+    # These are STANDING invariants: the seat is structurally un-enable-able until
+    # the launcher (capability), the operator+producer credentials, and WO-0104's
+    # real rails are ALL wired. Flag off ⇒ none apply (beta dev unchanged).
+    sanctioned = is_sanctioned(launch_capability)
+    if settings.signal_seat_enabled:
+        # (1) A-1 clause 6 — no listener without the backend-owned launcher.
+        if not sanctioned:
+            raise RuntimeError(
+                "signal_seat_enabled requires the backend-owned launcher "
+                "(`python -m app`); constructing the app without a launch "
+                "capability is unsupported for the enabled seat, so a bare "
+                "`uvicorn app.main:app` cannot serve it (ADR-009 A-1 clause 6)."
+            )
+        # (2) A-1/A-3/A-4 settings invariants — re-checked HERE via the SAME
+        # object-level validator load_settings uses, so an INJECTED Settings
+        # (constructed directly, bypassing load_settings' env parsing) cannot ship
+        # blank/whitespace credentials, an operator key equal to a producer key
+        # (role-separation breach), or an out-of-range invalid-budget / server-TTL
+        # that would disable the A-3/A-4 caps (rounds 10 + 13). One consolidated
+        # check replaces the earlier per-invariant guards.
+        try:
+            validate_signal_seat_settings(settings)
+        except ValueError as exc:
+            raise RuntimeError(f"signal_seat_enabled: {exc}") from exc
+        # (3) A-4 rails-presence — the seat cannot run without finite-audit flood
+        # protection. WO-0104 SATISFIES this by wiring the real provider; a fake
+        # is confined to a test-only construction path production cannot select.
+        if not is_conforming_rails(signal_rails):
+            raise RuntimeError(
+                "signal_seat_enabled requires a conforming signal rails provider "
+                "(ADR-009 A-4 rails-presence guard); WO-0104 wires the real one."
+            )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -81,6 +153,9 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
         await active_store.initialize()
         app.state.store = active_store
         app.state.settings = settings
+        # Signal Seat rails seam (ADR-009 A-4). None when the flag is off; the
+        # rails-presence guard above guarantees a conforming provider when on.
+        app.state.signal_rails = signal_rails
         app.state.approval_gate = HumanApprovalGate(active_store)
         app.state.broker_adapter = create_broker_adapter(settings)
         app.state.market_data = create_market_data_service(settings)
@@ -143,12 +218,84 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
             if owns_store:
                 await active_store.close()
 
+    # ADR-009 A-1.5: with the flag on, FastAPI's auto-docs routes are DISABLED —
+    # they disclose the API surface to reachable producers (never public). Flag
+    # off keeps FastAPI's defaults.
+    docs_on = not settings.signal_seat_enabled
     app = FastAPI(
         title="Alpaca Clean-Sheet CAPI Option 2.5 — Backend",
         version=__version__,
         summary="Paper-first durable engine. Alpaca paper only — no live trading.",
         lifespan=lifespan,
+        docs_url="/docs" if docs_on else None,
+        redoc_url="/redoc" if docs_on else None,
+        openapi_url="/openapi.json" if docs_on else None,
     )
+
+    if settings.signal_seat_enabled:
+        # ADR-009 A-1 fail-closed request guard (defense-in-depth, runs regardless
+        # of --lifespan): if a flag-on app were ever constructed without the launch
+        # capability, every request is refused. The construction refusal above is
+        # the PRIMARY control; this is the backstop.
+        @app.middleware("http")
+        async def _fail_closed_launch_guard(request, call_next):
+            if not sanctioned:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "signal seat not sanctioned (A-1)"},
+                )
+            return await call_next(request)
+
+        # ADR-009 A-1a: with the flag on, EVERY sensitive route — reads included —
+        # requires the operator credential, EXCEPT public health and the producer
+        # route (which enforces its own producer credential via route deps). This
+        # is the auth flip that lands WITH the flag; the cockpit sends
+        # X-Operator-Key from the same change so the operator is never locked out.
+        @app.middleware("http")
+        async def _operator_enforcement(request, call_next):
+            path = request.url.path
+            # Skip ONLY the exact producer ingest route (POST /api/signals), which
+            # carries its own producer credential — NOT the whole /api/signals*
+            # subtree. A broad startswith() skip would leave WO-0103's operator-only
+            # POST /api/signals/{producer}/{signal}/approve|reject unauthenticated
+            # by this middleware AND, worse, never stamp request.state.authenticated_actor
+            # — so get_actor would fall back to the caller-controlled X-Actor and the
+            # approval audit (who authorized a real order) would be spoofable, exactly
+            # the round-5 hole. GET /api/signals + the future approve/reject routes go
+            # through the operator branch below (independent review F-1).
+            is_producer_ingest = request.method == "POST" and path == _PRODUCER_INGEST_PATH
+            if path in _PUBLIC_PATHS or is_producer_ingest:
+                return await call_next(request)
+            if path.startswith("/api"):
+                if operator_key_valid(
+                    request.headers.get(OPERATOR_KEY_HEADER), settings
+                ):
+                    # A-1: the audited actor derives from the authenticated
+                    # principal, not a caller-controlled X-Actor header. Stamp it
+                    # so get_actor binds kill-switch/flatten/etc. audit to the
+                    # operator and demotes X-Actor to an optional sub-label
+                    # (auto-review round 5 P1).
+                    request.state.authenticated_actor = DEFAULT_ACTOR
+                    return await call_next(request)
+                # A VALID producer key on an operator route is the wrong-role
+                # 403; an unknown/garbage X-Producer-Key is an unrecognized
+                # credential -> 401 (A-1 matrix: invalid credentials are 401,
+                # not 403). Presence alone must NOT earn a 403.
+                if producer_key_valid(
+                    request.headers.get(PRODUCER_KEY_HEADER), settings
+                ):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": "producer credential is not valid for this "
+                            "operator route"
+                        },
+                    )
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "operator credential required"},
+                )
+            return await call_next(request)
 
     app.include_router(routes_system.router)
     app.include_router(routes_watchlist.router)
@@ -157,6 +304,10 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
     app.include_router(routes_controls.router)
     app.include_router(routes_review.router)
     app.include_router(routes_marketdata.router)
+    # Signal Seat routes — mounted ONLY when the flag is on (flag off ⇒ 404, no
+    # auth surface, no store writes possible).
+    if settings.signal_seat_enabled:
+        app.include_router(routes_signals.router)
     # DEV/MOCK scaffolding — mounted only when enabled (default on in beta so the
     # candidate flow is exercisable; ENABLE_DEV_ROUTES=false keeps it off).
     if settings.enable_dev_routes:
@@ -165,5 +316,24 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
     return app
 
 
-# Module-level app for `uvicorn app.main:app`.
-app = create_app()
+# Module-level app for the bare `uvicorn app.main:app` dev command (ADR-009 A-1
+# clause 6 / slice-1 bug fix). Importing this module (and ``create_app``) must NOT
+# raise under the flag — the backend-owned launcher (`app/server.py`) needs to
+# import ``create_app`` to build its OWN capability-bearing app. So:
+#   * flag OFF  → define the module-level ``app`` (bare uvicorn works unchanged);
+#   * flag ON   → do NOT define ``app`` at all (no assignment, not even ``None``).
+#     Setting it to ``None`` is INSUFFICIENT (auto-reviewer P1 #7, empirically
+#     reproduced): uvicorn's ``getattr(module, "app")`` would happily return
+#     ``None``, pass Config.load()'s `self.loaded_app = self.loaded_app()` /
+#     ASGI-interface checks in a way that still lets the server bind a socket and
+#     report "startup complete" while erroring per-request — the forbidden port
+#     stays reachable (TCP accepts). Leaving the name UNDEFINED makes
+#     ``uvicorn.importer.import_from_string``'s ``getattr(instance, attr_str)``
+#     raise ``AttributeError`` -> ``ImportFromStringError`` inside
+#     ``Config.load()``, which runs synchronously BEFORE ``Server._serve``/
+#     ``startup()`` ever binds a listening socket — true pre-serve failure,
+#     connection refused, nothing on the network port (REV-0025-F-002).
+#     ``python -m app`` (the sanctioned launcher) never references this module
+#     attribute — it calls ``create_app()`` directly with its own capability.
+if not load_settings().signal_seat_enabled:
+    app = create_app()

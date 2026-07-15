@@ -2,11 +2,19 @@
 type: Review Disposition
 rev_id: REV-0022
 verdict_received: BLOCK
-disposition_status: REMEDIATION_OPEN
+disposition_status: SUPERSEDED   # gate resolved — see resolution banner; ADR-009 ACCEPTED 2026-07-14
+superseded_by: [REV-0024, REV-0025]
 date: 2026-07-14
 ---
 
 # Disposition — REV-0022 (ADR-009 Signal Seat acceptance review)
+
+> **RESOLVED / SUPERSEDED (2026-07-14).** This packet's BLOCK gate is **closed** — do not treat it as
+> open. Its four P1s were remediated across REV-0024 → REV-0025 (both BLOCK, each fully remediated per
+> Ameen's decisions), the spec was **LOCKED**, and **ADR-009 was ACCEPTED by Ameen on 2026-07-14** with
+> WO-0102..0104 unfrozen (REV-0026 withdrawn — no fifth spec-only round). Current gate authority:
+> `work/review/REV-0025/disposition.md` + the ADR-009 Status block. The text below is the original
+> 2026-07-14 disposition, retained as history.
 
 **Verdict: BLOCK** (GPT-5/Codex, formal packet run by Ameen on frozen commit `25590a7`,
 result dated 2026-07-11 — `result.md`). Four P1 findings, none yet remediated:

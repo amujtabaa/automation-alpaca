@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Iterable, Literal, Optional
 
 from app.models import (
@@ -44,6 +44,8 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    SignalRecord,
+    SignalStatus,
     SubmitRecoveryRecord,
     TradingState,
     WatchlistSymbol,
@@ -262,6 +264,21 @@ class FillAppendResult:
     status: Literal["appended", "duplicate"]
     fill: Optional[Fill]
     event: Event
+
+
+@dataclass(frozen=True)
+class SignalIngestResult:
+    """Outcome of :meth:`StateStore.ingest_signal` (ADR-009 / WO-0102).
+
+    ``outcome`` is one of the ``SIGNAL_*`` string constants in ``app.store.core``
+    (``received`` / ``expired`` / ``quarantined_validation`` /
+    ``quarantined_freshness`` / ``replayed`` / ``conflict``). ``record`` is the
+    resulting (new) or pre-existing (replay/conflict) :class:`SignalRecord`. The
+    facade maps ``outcome`` to an HTTP status (201/200/409/422).
+    """
+
+    outcome: str
+    record: SignalRecord
 
 
 @dataclass(frozen=True)
@@ -1110,6 +1127,63 @@ class StateStore(ABC):
     @abstractmethod
     async def get_max_execution_sequence(self) -> int:
         """The highest assigned ``sequence`` in the log, or ``0`` if empty."""
+
+    # ------------------------------------------------------------------ #
+    # Signal Seat (ADR-009 / WO-0102) — external-producer signal ingestion.
+    # Additive; a signal carries ZERO execution authority and no SIGNAL_* event
+    # touches position/order/fill state (INV-1/INV-9). State is event-truth: the
+    # SignalRecord row is a co-written read model reconstructable purely from the
+    # SIGNAL_* events (spec 02-lifecycle §4). Both stores are atomic per op.
+    # ------------------------------------------------------------------ #
+    @abstractmethod
+    async def ingest_signal(
+        self,
+        *,
+        producer_id: str,
+        signal_id: str,
+        symbol: str,
+        direction: str,
+        issued_at: Optional[datetime] = None,
+        ttl_seconds: Optional[int] = None,
+        suggested_quantity: Optional[int] = None,
+        suggested_limit_price: Optional[float] = None,
+        thesis: str,
+        provenance: dict[str, str],
+        server_max_ttl_seconds: int,
+        cycle_budget_limit: int,
+        validation_failed: bool = False,
+        raw_fields: Optional[dict[str, str]] = None,
+        received_at: Optional[datetime] = None,
+    ) -> SignalIngestResult:
+        """Ingest one external-producer signal, atomically + event-truth.
+
+        ``producer_id`` is credential-derived (never body-trusted). Dedupe is on
+        **``(producer_id, signal_id)``** (never bare ``signal_id``): an identical
+        ``payload_hash`` replay is an idempotent no-op (``replayed``, no new
+        event); a different payload is an audit-only ``SIGNAL_DUPLICATE_CONFLICT``
+        (``conflict``, no second row, original untouched). A new signal with
+        ``validation_failed`` is a terminal validation-quarantine (raw offender in
+        ``raw_fields``); otherwise A-3 freshness (``received_at`` = injected server
+        clock, defaulting to now) classifies it RECEIVED / skew|ttl-QUARANTINED /
+        dead-on-arrival EXPIRED. Every write is one ``SIGNAL_*`` append + the
+        co-written ``SignalRecord`` row, in one lock hold / transaction.
+        """
+
+    @abstractmethod
+    async def get_signal(
+        self, producer_id: str, signal_id: str
+    ) -> Optional[SignalRecord]:
+        """The stored signal for ``(producer_id, signal_id)``, or ``None``."""
+
+    @abstractmethod
+    async def list_signals(
+        self,
+        *,
+        status: Optional[SignalStatus] = None,
+        symbol: Optional[str] = None,
+        producer_id: Optional[str] = None,
+    ) -> list[SignalRecord]:
+        """Stored signals, optionally filtered (operator read surface)."""
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

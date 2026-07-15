@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Signal approval surface (Streamlit) + conversion gate
-status: draft
+status: ready   # UNFROZEN 2026-07-14 (ADR-009 accepted); sequence-gated — start after WO-0102 completes
 work_order_id: WO-0103
 wave: W4-signal-seat
 model_tier: strong
@@ -14,10 +14,8 @@ created: 2026-07-11
 
 # Work Order: Approval surface (Streamlit) + conversion gate
 
-> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, then WO-0102 (this WO's own independent review requirement also stands). NOTE F-002 lands here hardest: conversion must be one dual-store atomic command with crash/interleaving tests
-> and WO-0102 is complete. **Approval = order submission trigger ⇒ human-gated surface ⇒
-> Complex classification regardless of size; queues for independent cross-model review before
-> any beta milestone relies on it.** Runs after 0102; may run in parallel with 0104.
+> **UNFROZEN — ADR-009 ACCEPTED 2026-07-14; sequence-gated: START AFTER WO-0102 completes** (then ∥ WO-0104). REV-0022/0024/0025 hardened the design; the spec is LOCKED. This WO's own independent CODE review requirement stands (approval = order-submission = human-gated, Complex regardless of size). NOTE F-002 lands here hardest: conversion must be one dual-store atomic command with crash/interleaving tests. **This WO owns the #5 multi-exit relaxation + local-order exposure decisions (implement + test in code).**
+> **This WO owns the A-2 atomic approval→conversion — the WO-0103 half of the joint enablement milestone** (ADR-009 A-4, REV-0025-F-005): live enablement is the joint WO-0102+WO-0103+WO-0104 milestone, and the joint mounted-app suite proves **ingest → operator approval → exactly one atomically-linked intent** against the real rails. Enforced as a release/deployment gate + that conversion oracle (Ameen D-2), not a new runtime startup check. **Approval = order submission trigger ⇒ human-gated surface ⇒ Complex classification regardless of size; queues for independent cross-model review before any beta milestone relies on it.** Runs after 0102; may run in parallel with 0104.
 
 ## Goal
 
@@ -66,6 +64,8 @@ forbidden_paths:
 - [ ] **Positive path (human decision, ADR-009 INV-7 row):** a genuine protective sell IS convertible in `Reducing` (test) — the classification must not silently block real exits; a blocked conversion in `Reducing` must be operator-visible, never silent.
 - [ ] **Sell-direction conversion uses the origin WO-0101 specifies** (e.g. `SellReason.SIGNAL` on the `SellIntent` machinery) — never misrouted through the buy path or `manual_flatten` (Codex PR #5 round-3 P1); the `Reducing` protective-sell test exercises this real sell route end-to-end, both stores.
 - [ ] Approving twice is idempotent (test). Expired signal unapprovable (test).
+- [ ] **Exposure-aware ceiling counts LOCAL non-terminal sell orders** (REV-0025-F P1): the `05-conversion.md §3a` exposure sum includes every `CREATED`/`ORDERED`-before-submit local SELL order's remaining qty (not broker-open only) — test: a signal sell whose unsubmitted first order holds shares refuses a second approval that would oversell, both stores.
+- [ ] **Multi-exit relaxation** (Ameen decision 2026-07-14, REV-0025-F P1): signal sells are NOT single-flight-refused; N concurrent signal exits on one symbol are permitted so long as summed committed exposure ≤ live position. Test (both stores): N concurrent approvals never jointly oversell (each ≤ position − Σ other non-terminal exits), and the store's single-flight guard is relaxed for this path **without** corrupting manual/protection exit accounting.
 - [ ] **Conversion is the A-2 atomic command** (ADR-009 Amendment A-2): one lock/transaction, no await between checks and writes, memory `_atomic` snapshot includes signal state; crash-injection tests at every interleaving point + races vs expiry / producer quarantine-release / TradingState flips / duplicate approval — both stores. A consumed approval without an intent (or vice versa) must be unconstructible.
 
 ## Required tests
