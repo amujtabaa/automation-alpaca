@@ -163,7 +163,7 @@ _MALFORMED_CORPUS = [
     _m(suggested_quantity="5"), _m(suggested_quantity=10**20),
     _m(suggested_quantity=2**63), _m(suggested_limit_price=0),
     _m(suggested_limit_price=-1.5), _m(suggested_limit_price="1.0"),
-    _m(suggested_limit_price=1e308),
+    _m(suggested_limit_price=1e308), _m(suggested_limit_price=10**400),
     # thesis / provenance (incl. surrogates + oversize + bad types).
     _m(thesis=""), _m(thesis="\ud800"), _m(thesis="x" * 5000),
     _m(provenance={"\ud800": "v"}), _m(provenance={"k": "\ud800"}),

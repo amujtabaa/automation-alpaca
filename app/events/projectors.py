@@ -562,10 +562,23 @@ def project_signal_records(
         etype = event.event_type
         payload = event.payload or {}
         snapshot = payload.get("record")
-        if etype in _SIGNAL_CREATION_EVENT_TYPES and snapshot is not None:
+        if etype in _SIGNAL_CREATION_EVENT_TYPES and isinstance(snapshot, dict):
             record = SignalRecord.model_validate(snapshot)
             records[(record.producer_id, record.signal_id)] = record
             continue
+        # SIGNAL_RECEIVED is creation-ONLY (never a transition), so a snapshot-less
+        # one is a malformed event-log-truth record: FAIL FAST rather than silently
+        # skip (which would reconstruct no record while the live model has one),
+        # matching the transition-identity fail-fast contract (auto-review round
+        # 18). SIGNAL_QUARANTINED/SIGNAL_EXPIRED are DUAL-USE — with a snapshot they
+        # are terminal-at-ingest creations (installed above); WITHOUT one they are
+        # legitimate producer-sweep / lazy-expiry TRANSITIONS handled below — so
+        # the snapshot's presence disambiguates and only RECEIVED is unambiguous.
+        if etype is ExecutionEventType.SIGNAL_RECEIVED:
+            raise ProjectionError(
+                f"SIGNAL_RECEIVED creation event sequence={event.sequence} is "
+                "missing a record snapshot (payload['record'])"
+            )
         if etype is ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT:
             continue  # audit-only — never folds onto a record
         # Per-record TRANSITION of an already-installed record (WO-0103/0104):
@@ -578,14 +591,15 @@ def project_signal_records(
             continue
         producer_id = payload.get("producer_id")
         signal_id = payload.get("signal_id")
-        if producer_id is None or signal_id is None:
+        if not isinstance(producer_id, str) or not isinstance(signal_id, str):
             # A transition event (SIGNAL_EXPIRED/APPROVED/REJECTED/QUARANTINED)
-            # MUST carry its record identity (02-lifecycle §2). A missing key is a
-            # malformed event-log-truth record: FAIL FAST rather than silently
-            # skip — else the live single-writer could transition a record while
-            # replay drops the terminal event and reconstructs it as still
-            # RECEIVED, diverging replay from live (auto-review round 14). Same
-            # fail-fast contract as a malformed FILL (ProjectionError).
+            # MUST carry STRING record identity (02-lifecycle §2). A missing OR
+            # non-string producer_id/signal_id is a malformed event-log-truth
+            # record: FAIL FAST rather than silently skip — else the lookup misses
+            # and replay drops the terminal event, reconstructing the signal as
+            # still RECEIVED while the live single-writer transitioned it, diverging
+            # replay from live (auto-review round 14 + round 18). Same fail-fast
+            # contract as a malformed FILL (ProjectionError).
             raise ProjectionError(
                 f"{etype.value} event sequence={event.sequence} is missing "
                 "required record identity (producer_id/signal_id)"

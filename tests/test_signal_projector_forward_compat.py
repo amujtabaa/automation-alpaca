@@ -277,3 +277,38 @@ def test_transition_event_missing_identity_fails_fast():
     )
     with pytest.raises(ProjectionError, match="record identity|producer_id"):
         project_signal_records([_received_event(), bad])
+
+
+def test_signal_received_without_snapshot_fails_fast():
+    # Auto-review round 18: SIGNAL_RECEIVED is creation-only; a snapshot-less one
+    # is malformed event-log truth -> ProjectionError (not a silent skip).
+    from app.events.projectors import ProjectionError
+
+    bad = ExecutionEvent(
+        event_type=ExecutionEventType.SIGNAL_RECEIVED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        symbol="AAPL",
+        ts_init=_NOW,
+        payload={"producer_id": "vibe", "signal_id": "sig-1"},  # no "record"
+    )
+    with pytest.raises(ProjectionError, match="snapshot"):
+        project_signal_records([bad])
+
+
+def test_transition_non_string_identity_fails_fast():
+    # Auto-review round 18: a transition with a NON-STRING producer_id/signal_id
+    # (e.g. 123) also fails fast — the lookup would miss and replay drop the
+    # terminal event, reconstructing the signal as still RECEIVED.
+    from app.events.projectors import ProjectionError
+
+    bad = ExecutionEvent(
+        event_type=ExecutionEventType.SIGNAL_EXPIRED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        symbol="AAPL",
+        ts_init=_NOW,
+        payload={"producer_id": 123, "signal_id": "sig-1", "record_id": "r"},
+    )
+    with pytest.raises(ProjectionError, match="identity|producer_id"):
+        project_signal_records([_received_event(), bad])

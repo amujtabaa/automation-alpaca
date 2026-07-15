@@ -270,9 +270,16 @@ async def check_signal_rails(
             detail="signal rails returned a malformed decision",
         )
     if not allowed:
+        # A denial MUST surface as a client/server FAILURE status (auto-review
+        # round 18): a rails provider that denies with a 2xx/3xx (or a non-int)
+        # http_status would otherwise make the producer see SUCCESS even though the
+        # body was never read and nothing was recorded. Restrict to [400, 599];
+        # anything else falls back to 429 (the default over-limit reject).
+        denied_status = getattr(decision, "http_status", 0)
+        if not (isinstance(denied_status, int) and 400 <= denied_status <= 599):
+            denied_status = status.HTTP_429_TOO_MANY_REQUESTS
         raise HTTPException(
-            status_code=getattr(decision, "http_status", 0)
-            or status.HTTP_429_TOO_MANY_REQUESTS,
+            status_code=denied_status,
             detail=getattr(decision, "reason", "")
             or "signal ingest rejected by rails",
         )

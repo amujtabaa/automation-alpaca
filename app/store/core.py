@@ -2199,6 +2199,11 @@ SIGNAL_STALE_SECONDS = 24 * 3600
 SIGNAL_TTL_MIN_SECONDS = 30
 SIGNAL_TTL_MAX_SECONDS = 86400
 
+# The only convertible signal directions (the lifecycle/conversion path defines
+# buy/sell only). Enforced at the store boundary on the well-formed path so a
+# non-HTTP caller cannot create an unconvertible RECEIVED signal.
+_SIGNAL_DIRECTIONS = frozenset({"buy", "sell"})
+
 # SignalIngestResult.outcome values live on the leaf model kernel (app.models) so
 # the route can share them without importing app.store (import-linter contract 5);
 # re-exported here for the store/planner call sites.
@@ -2272,7 +2277,10 @@ def safe_advisory_price(value: object) -> Optional[float]:
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    numeric = float(value)
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return None  # a huge int overflows float() — treat as out-of-domain
     return numeric if math.isfinite(numeric) and numeric > 0 else None
 
 
@@ -2645,6 +2653,19 @@ def plan_signal_ingest(
         )
 
     assert issued_at is not None and ttl_seconds is not None
+    # Store-boundary domain enforcement for the well-formed (non-validation) path
+    # so a DIRECT/non-HTTP caller cannot persist an out-of-domain RECEIVED (or
+    # freshness-quarantine) signal the HTTP path would have rejected (auto-review
+    # round 18): normalize the symbol to the canonical ticker domain (findable by
+    # ?symbol=, replay-canonical — normalize_symbol raises on an invalid ticker),
+    # and require a convertible direction enum (the lifecycle/conversion path only
+    # defines buy/sell — an unconvertible RECEIVED signal must never be created).
+    symbol = normalize_symbol(symbol)
+    if direction not in _SIGNAL_DIRECTIONS:
+        raise ValueError(
+            f"signal direction must be one of {sorted(_SIGNAL_DIRECTIONS)}, "
+            f"got {direction!r}"
+        )
     fresh = classify_signal_freshness(
         issued_at=issued_at,
         ttl_seconds=ttl_seconds,

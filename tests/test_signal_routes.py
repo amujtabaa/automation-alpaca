@@ -476,6 +476,22 @@ def test_non_string_producer_id_is_recorded_quarantine_not_boundary_reject(clien
     )
 
 
+def test_rails_denial_with_non_failure_status_is_clamped():
+    # Auto-review round 18: a rails denial carrying a 2xx (or non-int) http_status
+    # must NOT make the producer see success — the status is clamped to a real
+    # failure code (429), since the body was never read and nothing was recorded.
+    from app.facade.signal_rails import RailsDecision
+
+    class OkStatusDenyRails:
+        async def check_ingest(self, producer_id: str) -> RailsDecision:
+            return RailsDecision(allowed=False, http_status=200, reason="nope")
+
+    app = build_flag_on_app(store=InMemoryStateStore(), rails=OkStatusDenyRails())
+    with TestClient(app) as c:
+        r = c.post("/api/signals", json=_proposal(), headers=_PROD_H)
+        assert r.status_code == 429  # clamped, never a 2xx success
+
+
 def test_malformed_rails_decision_is_503_not_500():
     # Auto-review round 16: a rails provider whose async check_ingest returns a
     # bool/dict (not a RailsDecision) passes the startup guard but must FAIL CLOSED

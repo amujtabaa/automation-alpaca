@@ -210,7 +210,13 @@ def _safe_optional_float(raw: dict, key: str) -> Optional[float]:
     value = raw.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    numeric = float(value)
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        # A huge int (e.g. 10**400) raises OverflowError on float() — treat it the
+        # same as non-finite/out-of-range so the quarantine record is still built
+        # (422) rather than 500-ing on the conversion (auto-review round 18 P1).
+        return None
     if not math.isfinite(numeric) or numeric <= 0:
         return None
     return numeric

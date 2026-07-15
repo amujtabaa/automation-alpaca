@@ -252,3 +252,23 @@ async def test_store_nulls_out_of_domain_advisory_both_stores(any_store):
     assert stored is not None
     assert stored.suggested_quantity is None
     assert stored.suggested_limit_price is None
+
+
+async def test_store_boundary_normalizes_symbol_and_validates_direction(any_store):
+    # Auto-review round 18: the STORE enforces the well-formed-path domain so a
+    # direct/non-HTTP caller cannot persist an out-of-domain RECEIVED signal.
+    await any_store.initialize()
+    ok = await any_store.ingest_signal(
+        producer_id="vibe", signal_id="lc", symbol="aapl", direction="buy",
+        issued_at=datetime.now(timezone.utc), ttl_seconds=300, thesis="x",
+        provenance={}, server_max_ttl_seconds=3600, cycle_budget_limit=50,
+    )
+    assert ok.record.symbol == "AAPL"  # normalized -> findable by ?symbol=AAPL
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="direction"):
+        await any_store.ingest_signal(
+            producer_id="vibe", signal_id="bad-dir", symbol="AAPL",
+            direction="hold",  # out-of-domain -> unconvertible RECEIVED signal
+            issued_at=datetime.now(timezone.utc), ttl_seconds=300, thesis="x",
+            provenance={}, server_max_ttl_seconds=3600, cycle_budget_limit=50,
+        )
