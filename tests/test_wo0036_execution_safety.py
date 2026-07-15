@@ -227,3 +227,64 @@ async def test_c7_inferred_envelope_fill_keeps_synthetic_provenance(any_store):
         f"inferred fill mis-stamped as {fills[0].authority}"
     )
     assert fills[0].source is EventSource.RECONCILIATION
+
+
+# Codex #5 (P1) — cancelling a FROZEN envelope with a LIVE child must be refused.
+async def test_c5_cancel_frozen_with_live_child_refused(any_store):
+    from app.reconciliation import ENVELOPE_EXEC_SUBMITTED, execute_envelope_action
+    from app.models import EnvelopeStatus
+    from app.store.base import EnvelopeTransitionError
+
+    env = await _active_env(any_store)
+    adapter = MockBrokerAdapter()
+    r = await execute_envelope_action(
+        any_store, adapter, env.id, _planned(), snapshot_fingerprint=FP, now=T
+    )
+    assert r.outcome == ENVELOPE_EXEC_SUBMITTED  # child now live at the venue
+    await any_store.transition_envelope(env.id, EnvelopeStatus.FROZEN, actor="op")
+
+    with pytest.raises(EnvelopeTransitionError, match="live at the venue"):
+        await any_store.transition_envelope(
+            env.id, EnvelopeStatus.CANCELLED, actor="op"
+        )
+    # Untouched: still FROZEN, child still live.
+    assert (await any_store.get_envelope(env.id)).status is EnvelopeStatus.FROZEN
+
+
+async def test_c5_cancel_frozen_without_live_child_allowed(any_store):
+    # A FROZEN envelope whose only child is terminal (or none) still cancels.
+    from app.models import EnvelopeStatus
+
+    env = await _active_env(any_store)
+    await any_store.transition_envelope(env.id, EnvelopeStatus.FROZEN, actor="op")
+    out = await any_store.transition_envelope(
+        env.id, EnvelopeStatus.CANCELLED, actor="op"
+    )
+    assert out.status is EnvelopeStatus.CANCELLED
+
+
+# Codex #3 (P1, R6) — a transient cancel failure on an EXPIRED CANCEL_AND_RETURN
+# envelope must be re-driven to convergence, not stranded live forever.
+async def test_c3_expired_cancel_converges_after_transient_failure(any_store):
+    from app.reconciliation import ENVELOPE_EXEC_SUBMITTED, execute_envelope_action
+    from app.models import EnvelopeStatus, OrderStatus
+    from app.monitoring import _converge_expired_envelope_cancels
+
+    env = await _active_env(any_store)
+    adapter = MockBrokerAdapter()
+    r = await execute_envelope_action(
+        any_store, adapter, env.id, _planned(), snapshot_fingerprint=FP, now=T
+    )
+    assert r.outcome == ENVELOPE_EXEC_SUBMITTED
+    order_id = r.order_id
+
+    # Post-transient-failure state: envelope EXPIRED (CANCEL_AND_RETURN default),
+    # working order STILL live at the venue (the one-shot cancel raised).
+    await any_store.transition_envelope(env.id, EnvelopeStatus.EXPIRED, actor="op")
+    assert (await any_store.get_order(order_id)).status is OrderStatus.SUBMITTED
+
+    # The convergence arm (working adapter now) re-drives the cancel.
+    await _converge_expired_envelope_cancels(any_store, MockBrokerAdapter())
+    assert (await any_store.get_order(order_id)).status is OrderStatus.CANCEL_PENDING, (
+        "expired-envelope working order was left live — cancel never re-driven"
+    )

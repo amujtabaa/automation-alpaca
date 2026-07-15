@@ -1968,6 +1968,22 @@ class SqliteStateStore(StateStore):
                             f"envelope {clash} is already ACTIVE for symbol "
                             f"{env.symbol} (per-symbol single-ACTIVE invariant)"
                         )
+                if new_status is EnvelopeStatus.CANCELLED:
+                    # Codex PR#8 #5 (twin of the in-memory guard): refuse a
+                    # store-only CANCELLED while a child order is live at the
+                    # venue — else a FROZEN mandate stops being monitored while
+                    # its submitted SELL keeps working. Quarantined = live.
+                    try:
+                        _, working = self._envelope_action_context_locked(cur, env)
+                        live_child = working is not None
+                    except EnvelopeActionPausedError:
+                        live_child = True
+                    if live_child:
+                        raise EnvelopeTransitionError(
+                            f"envelope {env.id} cannot be CANCELLED while a child "
+                            "order is live at the venue — wind it down first "
+                            "(flatten / kill switch), then cancel"
+                        )
                 stored = self._apply_envelope_transition_locked(cur, plan)
                 # A freeze is never exited by a fill: an envelope fully filled
                 # while FROZEN completes HERE, on resume, atomically with it.

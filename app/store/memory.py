@@ -1051,6 +1051,24 @@ class InMemoryStateStore(StateStore):
                         f"envelope {clash.id} is already ACTIVE for symbol "
                         f"{env.symbol} (per-symbol single-ACTIVE invariant)"
                     )
+            if new_status is EnvelopeStatus.CANCELLED:
+                # Codex PR#8 #5: a FROZEN envelope may still have a LIVE child at
+                # the venue (kill-switch froze a formerly-ACTIVE mandate whose
+                # submitted SELL is still working). A store-only CANCELLED would
+                # stop monitoring it while the order keeps working — refuse; the
+                # live order must be wound down first (flatten/kill precedence).
+                # A quarantined (ambiguous) child counts as live.
+                try:
+                    _, working = self._envelope_action_context_unlocked(env)
+                    live_child = working is not None
+                except EnvelopeActionPausedError:
+                    live_child = True
+                if live_child:
+                    raise EnvelopeTransitionError(
+                        f"envelope {env.id} cannot be CANCELLED while a child "
+                        "order is live at the venue — wind it down first "
+                        "(flatten / kill switch), then cancel"
+                    )
             with self._atomic():
                 stored = self._apply_envelope_transition_unlocked(plan)
                 # A freeze is never exited by a fill: an envelope fully filled

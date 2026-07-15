@@ -557,6 +557,43 @@ async def _cancel_envelope_working_order(
         )
 
 
+# Codex PR#8 #3 (R6): live-at-venue statuses whose envelope-cancel intent must
+# be re-driven to convergence. CANCEL_PENDING is excluded (the cancel already
+# reached the venue; the reconcile poll confirms it) as is TIMEOUT_QUARANTINE
+# (ambiguous — ADR-002 resolves it) and every terminal status.
+_RECANCEL_STATUSES = frozenset(
+    {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
+)
+
+
+async def _converge_expired_envelope_cancels(
+    store: StateStore, adapter: BrokerAdapter
+) -> None:
+    """R6 / Codex PR#8 #3: an EXPIRED ``CANCEL_AND_RETURN`` envelope's one-shot
+    working-order cancel can fail transiently (``BrokerError``), leaving the SELL
+    LIVE at the venue — and a terminal envelope is no longer visited by
+    ``_run_envelopes``, so the approved cancel disposition would never complete.
+    Re-drive the idempotent cancel each tick until the order converges (terminal
+    or CANCEL_PENDING, which the reconcile poll then confirms). Scoped to the ONE
+    terminal state carrying a cancel intent: REST_AT_FLOOR keeps its order by
+    design, and BREACHED/EXHAUSTED never cancelled one."""
+
+    try:
+        expired = await store.list_envelopes(status=EnvelopeStatus.EXPIRED)
+    except Exception:  # noqa: BLE001 — never crash the tick
+        _log.exception("envelope cancel-convergence: listing EXPIRED failed")
+        return
+    for env in expired:
+        if env.expiry_disposition is not EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
+            continue
+        try:
+            order = await _envelope_working_order(store, env.id)
+            if order is not None and order.status in _RECANCEL_STATUSES:
+                await _cancel_envelope_working_order(store, adapter, env)
+        except Exception:  # noqa: BLE001 — isolate per envelope
+            _log.exception("envelope %s: expiry cancel-convergence failed", env.id)
+
+
 async def _run_envelopes(
     store: StateStore,
     adapter: BrokerAdapter,
@@ -880,6 +917,10 @@ async def run_monitoring_tick(
         fairness=reconcile_fairness,
     )
     await _reconcile_open_orders(store, adapter, settings, market_data=market_data)
+    # Codex #3 (R6): re-drive any EXPIRED CANCEL_AND_RETURN envelope whose
+    # working-order cancel didn't complete — AFTER reconcile so a CANCEL_PENDING
+    # from a prior tick is confirmed first (and this arm no-ops once terminal).
+    await _converge_expired_envelope_cancels(store, adapter)
     await _recover_unpersisted_submits(store, adapter)
     # Phase 4 wave 4e: the ACTING §7 mass-report reconcile. Runs LAST so it sees the
     # fully-reconciled post-tick state — a divergence it acts on is then one the

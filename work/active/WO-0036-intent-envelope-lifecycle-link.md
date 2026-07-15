@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Link the SellIntent↔Envelope lifecycle + terminal-cancel convergence (treadmill roots R2 + R6)
-status: DRAFT — HUMAN APPROVAL REQUIRED (order-intent lifecycle + session-close truth + cancel surface)
+status: APPROVED (Ameen 2026-07-15 "Approve expanded WO-0036 — implement all 8") — IN PROGRESS
 work_order_id: WO-0036
 wave: W3 root-cause follow-up (quarantine-treadmill audit, 2026-07-15)
 model_tier: strong
@@ -54,6 +54,29 @@ treadmill traffic; SPEC-06's "stuck protective LIMIT can rest forever").
 working order is still live-at-venue and re-drive the cancel to convergence
 (bounded retries → recovery ledger escalation, mirroring the submit-recovery
 loop's shape). Cancel is a gated surface → this WO.
+
+## Implementation status (2026-07-15)
+
+DONE — 6 of 8 findings, each RED→GREEN, dual-store, mutation-checked where applicable
+(`tests/test_wo0036_execution_safety.py`), committed b174c5c (cluster 1) + cluster 2:
+- #6 (P1) `_live_working_order_id` tracks a live predecessor past a dead reprice replacement.
+- #1 (P1) generic submit sweep excludes envelope-minted orders (double-exposure closed).
+- #2 (P2) tick threads `now=` into the 4 envelope-terminal transitions.
+- #7 (P2) inferred-fill bridge carries RECONCILIATION/SYNTHETIC provenance.
+- #5 (P1) `transition_envelope`→CANCELLED refuses a FROZEN envelope with a live child (both stores).
+- #3 (P1, R6) `_converge_expired_envelope_cancels` tick arm re-drives an EXPIRED CANCEL_AND_RETURN
+  cancel to convergence (scoped to the one terminal state carrying a cancel intent).
+
+**[FABLE DEVIATION] #4 + #8 (the full R2 lifecycle link) DEFERRED to a dedicated pass** — not
+rushed at session tail. The correct fix (approve loads + validates + transitions the backing
+SellIntent APPROVED→ORDERED; close_session spares envelope-backed intents; flatten's deferral
+sees the envelope child) is a genuine architectural migration: ~73 approve/create test call
+sites + ~91 synthetic-`sell_intent_id` draft constructions would break (they use "si-1"-style
+ids with no real intent row), and it ships with an ADR-010 amendment + independent review. A
+lighter NON-breaking interim is available if wanted: #8 → reject only when a REAL intent row
+exists with a MISMATCHED symbol (catches the cockpit typo, leaves synthetic-id tests green);
+#4 → make `flatten_position` also defer to a live envelope working order for the symbol. Awaiting
+Ameen: full R2 migration now vs the lighter interim vs schedule R2 as its own WO.
 
 ## Independent confirmation + 2 new P1s — Codex PR #8 review (2026-07-15)
 
