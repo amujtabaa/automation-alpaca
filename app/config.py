@@ -396,6 +396,60 @@ def operator_producer_key_overlap(
     return overlap
 
 
+def validate_signal_seat_settings(settings: "Settings") -> None:
+    """Enforce the ADR-009 signal-seat invariants on a Settings OBJECT (raises
+    ``ValueError``; no-op when the flag is off).
+
+    The ROOT fix for a recurring class (rounds 10 + 13): every check below also
+    lived inline in ``load_settings``' env parsing, so an INJECTED ``Settings``
+    built directly — ``create_app(settings=Settings(...))`` — bypassed all of them
+    (blank/whitespace credentials becoming valid, operator==producer role-separation
+    breach, out-of-range invalid-budget/server-TTL disabling the A-3/A-4 caps).
+    Both ``load_settings`` and the ``create_app`` flag-on guard call this, so no
+    construction path can skip the invariants."""
+
+    if not settings.signal_seat_enabled:
+        return
+    operator_api_key = settings.operator_api_key
+    if not operator_api_key or not operator_api_key.strip():
+        raise ValueError(
+            f"{OPERATOR_API_KEY_ENV} must be a non-blank credential when "
+            "signal_seat_enabled"
+        )
+    if not settings.signal_producer_keys:
+        raise ValueError(
+            f"{SIGNAL_PRODUCER_KEYS_ENV} must be a non-empty map when "
+            "signal_seat_enabled"
+        )
+    for key, producer_id in settings.signal_producer_keys.items():
+        if not key or not key.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} keys must be non-blank (a blank key "
+                "would let an unconfigured credential authenticate)"
+            )
+        if not producer_id or not producer_id.strip():
+            raise ValueError(
+                f"{SIGNAL_PRODUCER_KEYS_ENV} producer ids must be non-blank"
+            )
+    if operator_producer_key_overlap(operator_api_key, settings.signal_producer_keys):
+        raise ValueError(
+            f"{OPERATOR_API_KEY_ENV} must not equal any key in "
+            f"{SIGNAL_PRODUCER_KEYS_ENV} (ADR-009 A-1 role separation)"
+        )
+    budget = settings.signal_invalid_budget_per_epoch
+    if not 1 <= budget <= SIGNAL_INVALID_BUDGET_HARD_CAP:
+        raise ValueError(
+            f"signal_invalid_budget_per_epoch must be in "
+            f"[1, {SIGNAL_INVALID_BUDGET_HARD_CAP}] (ADR-009 A-4), got {budget}"
+        )
+    ttl_cap = settings.signal_server_max_ttl_seconds
+    if not 1 <= ttl_cap <= SIGNAL_SERVER_MAX_TTL_HARD_CAP:
+        raise ValueError(
+            f"signal_server_max_ttl_seconds must be in "
+            f"[1, {SIGNAL_SERVER_MAX_TTL_HARD_CAP}] (ADR-009 A-3), got {ttl_cap}"
+        )
+
+
 def load_settings() -> Settings:
     """Build :class:`Settings` from the current environment.
 

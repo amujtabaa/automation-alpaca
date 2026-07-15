@@ -69,4 +69,12 @@ def is_conforming_rails(candidate: object) -> bool:
 
     if not isinstance(candidate, SignalRails):
         return False
-    return inspect.iscoroutinefunction(getattr(candidate, "check_ingest", None))
+    # Reject a CLASS object (round-13): `SomeRails` (the class, not an instance)
+    # satisfies the Protocol and its `check_ingest` is a coroutine function, but
+    # `await rails.check_ingest(pid)` would raise TypeError (missing self) on the
+    # first request. Require a real instance whose `check_ingest` is a BOUND async
+    # method, so a miswired provider fails at construction, not with a 500 later.
+    if isinstance(candidate, type):
+        return False
+    check = getattr(candidate, "check_ingest", None)
+    return inspect.iscoroutinefunction(check) and inspect.ismethod(check)

@@ -63,7 +63,7 @@ from app.api.deps import (
 )
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
-from app.config import Settings, load_settings, operator_producer_key_overlap
+from app.config import Settings, load_settings, validate_signal_seat_settings
 from app.facade.signal_rails import is_conforming_rails
 from app.launch_guard import is_sanctioned
 from app.marketdata.factory import create_market_data_service
@@ -127,25 +127,17 @@ def create_app(
                 "capability is unsupported for the enabled seat, so a bare "
                 "`uvicorn app.main:app` cannot serve it (ADR-009 A-1 clause 6)."
             )
-        # (2) A-1.4 credential-presence — else every sensitive route is a
-        # permanent 401 with no credential to supply (the lockout A-1 forbids).
-        if not settings.operator_api_key or not settings.signal_producer_keys:
-            raise RuntimeError(
-                "signal_seat_enabled requires OPERATOR_API_KEY and a non-empty "
-                "SIGNAL_PRODUCER_KEYS map (ADR-009 A-1 credential-presence guard)."
-            )
-        # (2b) A-1 role separation — re-checked HERE, not only in load_settings, so
-        # an INJECTED Settings (constructed directly, bypassing load_settings)
-        # cannot ship an operator key that equals a producer key. Otherwise that
-        # producer could present its own secret as X-Operator-Key and pass every
-        # operator-only route, defeating the producer/operator split (round 10).
-        if operator_producer_key_overlap(
-            settings.operator_api_key, settings.signal_producer_keys
-        ):
-            raise RuntimeError(
-                "signal_seat_enabled forbids OPERATOR_API_KEY equal to any "
-                "SIGNAL_PRODUCER_KEYS entry (ADR-009 A-1 role separation)."
-            )
+        # (2) A-1/A-3/A-4 settings invariants — re-checked HERE via the SAME
+        # object-level validator load_settings uses, so an INJECTED Settings
+        # (constructed directly, bypassing load_settings' env parsing) cannot ship
+        # blank/whitespace credentials, an operator key equal to a producer key
+        # (role-separation breach), or an out-of-range invalid-budget / server-TTL
+        # that would disable the A-3/A-4 caps (rounds 10 + 13). One consolidated
+        # check replaces the earlier per-invariant guards.
+        try:
+            validate_signal_seat_settings(settings)
+        except ValueError as exc:
+            raise RuntimeError(f"signal_seat_enabled: {exc}") from exc
         # (3) A-4 rails-presence — the seat cannot run without finite-audit flood
         # protection. WO-0104 SATISFIES this by wiring the real provider; a fake
         # is confined to a test-only construction path production cannot select.

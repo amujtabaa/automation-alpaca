@@ -131,3 +131,65 @@ def test_flag_on_injected_settings_with_overlapping_credentials_fails():
             ),
             signal_rails=PermissiveSignalRails(),
         )
+
+
+def test_is_conforming_rails_rejects_a_class_object():
+    # Round-13: a CLASS (not an instance) with an async check_ingest satisfies the
+    # Protocol + iscoroutinefunction, but `await Cls.check_ingest(pid)` would 500
+    # (missing self). The guard must require a bound-method instance.
+    from app.facade.signal_rails import RailsDecision, is_conforming_rails
+
+    class Rails:
+        async def check_ingest(self, producer_id: str) -> RailsDecision:
+            return RailsDecision(allowed=True)
+
+    assert is_conforming_rails(Rails) is False       # the class itself
+    assert is_conforming_rails(Rails()) is True       # a real instance
+
+
+def test_flag_on_injected_settings_out_of_range_budget_fails():
+    # Round-13: an injected Settings bypassing load_settings cannot ship an
+    # out-of-range signal_invalid_budget_per_epoch (A-4 cap) or server TTL (A-3).
+    from tests.signal_seat_helpers import PermissiveSignalRails
+
+    on = Settings(signal_seat_enabled=True)
+    for bad in (
+        {"signal_invalid_budget_per_epoch": 0},
+        {"signal_invalid_budget_per_epoch": 1001},
+        {"signal_server_max_ttl_seconds": 0},
+        {"signal_server_max_ttl_seconds": 999999},
+    ):
+        with pytest.raises(RuntimeError, match="budget|TTL|A-3|A-4"):
+            create_app(
+                settings=Settings(
+                    signal_seat_enabled=True,
+                    operator_api_key="op-key",
+                    signal_producer_keys={"prod-key": "vibe"},
+                    **bad,
+                ),
+                launch_capability=mint_launch_capability(
+                    host="127.0.0.1", uds=None, settings=on
+                ),
+                signal_rails=PermissiveSignalRails(),
+            )
+
+
+def test_flag_on_injected_settings_whitespace_credentials_fail():
+    # Round-13: whitespace-only operator key / blank producer key or id must be
+    # refused at construction even for an injected Settings.
+    from tests.signal_seat_helpers import PermissiveSignalRails
+
+    on = Settings(signal_seat_enabled=True)
+    for creds in (
+        {"operator_api_key": "   ", "signal_producer_keys": {"p": "vibe"}},
+        {"operator_api_key": "op", "signal_producer_keys": {"   ": "vibe"}},
+        {"operator_api_key": "op", "signal_producer_keys": {"p": "   "}},
+    ):
+        with pytest.raises(RuntimeError, match="non-blank|OPERATOR_API_KEY|PRODUCER"):
+            create_app(
+                settings=Settings(signal_seat_enabled=True, **creds),
+                launch_capability=mint_launch_capability(
+                    host="127.0.0.1", uds=None, settings=on
+                ),
+                signal_rails=PermissiveSignalRails(),
+            )

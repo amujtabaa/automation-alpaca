@@ -127,18 +127,6 @@ def _safe_welltyped_int(raw: dict, key: str) -> Optional[int]:
     return value
 
 
-def _safe_symbol(raw: dict) -> str:
-    """A findable, UTF-8-safe, ASCII-normalized symbol for a quarantine record —
-    ``"UNKNOWN"`` when absent/non-ASCII. Uppercases like the store's ?symbol=
-    filter, but ONLY for an ASCII value (round-12 B: a non-ASCII symbol must not
-    be upper-cased into a different ticker on the quarantine record either)."""
-
-    stripped = _raw_str(raw, "symbol", "").strip()
-    if stripped and stripped.isascii():
-        return stripped.upper()
-    return "UNKNOWN"
-
-
 def _safe_direction(raw: dict) -> str:
     """A valid enum direction (``buy``/``sell``), defaulting to ``buy`` — so a
     quarantine record never surfaces an out-of-domain typed ``direction`` like
@@ -358,23 +346,25 @@ async def ingest_signal(
         # SIGNAL_QUARANTINED record, silently losing a distinct attributable
         # fact. Strip before the presence decision AND use the stripped form as
         # the identity so " x " and "x" never fork either.
-        # Reuse the body's signal_id as the record identity ONLY if it is
-        # SCHEMA-VALID (matches the wire pattern) — an INVALID one (whitespace,
-        # or a value violating ^[A-Za-z0-9_-]{1,64}$, e.g. a forged "malformed:…")
-        # falls back to the content-hashed synthetic id. Otherwise a producer
-        # could send a no-signal_id body to learn its "malformed:<hash>", then a
-        # DIFFERENT malformed body carrying that value as signal_id, forcing a 409
-        # conflict that records no new SIGNAL_QUARANTINED fact (round-12 A).
-        signal_id = _raw_str(raw_dict, "signal_id", "").strip()
+        # Reuse the body's signal_id as the record identity ONLY if it is ALREADY
+        # SCHEMA-VALID (matches the wire pattern EXACTLY — NOT after stripping).
+        # An invalid one — whitespace-only, whitespace-PADDED (" sig-x "), or a
+        # value violating ^[A-Za-z0-9_-]{1,64}$ (e.g. a forged "malformed:…") —
+        # falls back to the content-hashed synthetic id. Stripping it to coerce
+        # validity would let a padded id squat the clean id's dedupe key, so a
+        # later well-formed "sig-x" 409-conflicts against the quarantine with no
+        # record of its own (round-12 A + round-13 :370).
+        signal_id = _raw_str(raw_dict, "signal_id", "")
         if not _WIRE_SIGNAL_ID_RE.fullmatch(signal_id):
             signal_id = _malformed_identity(raw)
         result = await facade.ingest_signal(
             producer_id=producer_id,
             signal_id=signal_id,
-            # Findable + ASCII-safe symbol on the quarantine record (F-2 + round-12
-            # B): normalized like the store's ?symbol= filter, never upper-cased
-            # from a non-ASCII value into a different ticker.
-            symbol=_safe_symbol(raw_dict),
+            # UTF-8-safe raw symbol; the STORE normalizes it to the ticker domain
+            # (or UNKNOWN) via safe_quarantine_symbol — the route cannot import the
+            # store's normalize_symbol (import-linter contract 5), and an
+            # ASCII-but-out-of-domain value must not be stored raw (round-13 :138).
+            symbol=_raw_str(raw_dict, "symbol", ""),
             # A valid enum direction only — never surface out-of-domain "hold" as
             # typed data on the record (round-12 D); offender stays in raw_fields.
             direction=_safe_direction(raw_dict),

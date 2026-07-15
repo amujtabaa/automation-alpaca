@@ -70,6 +70,7 @@ from app.store.base import (
     CLAIM_CLAIMED,
     CLAIM_SKIPPED,
     COMMAND_ACTOR_SYSTEM,
+    normalize_symbol,
     CandidateTransitionError,
     InvalidControlValueError,
     InvalidFillError,
@@ -2224,6 +2225,25 @@ def signal_dedupe_key(prefix: str, *parts: str) -> str:
     return f"{prefix}:{encoded}"
 
 
+def safe_quarantine_symbol(raw_symbol: str) -> str:
+    """A findable, ticker-domain symbol for a quarantine record, or ``"UNKNOWN"``.
+
+    The canonical ``normalize_symbol`` domain is the store's — a route cannot
+    import it (import-linter contract 5) — so the quarantine symbol is normalized
+    HERE (round-13). A non-ASCII value is never upper-cased into a different
+    ticker; an ASCII-but-out-of-domain value (``"."``, ``"$BAD"``, over-length)
+    that ``normalize_symbol`` rejects becomes ``"UNKNOWN"`` rather than being
+    stored as an instrument the ``?symbol=`` filter can never match."""
+
+    stripped = raw_symbol.strip()
+    if not stripped or not stripped.isascii():
+        return "UNKNOWN"
+    try:
+        return normalize_symbol(stripped)
+    except ValueError:
+        return "UNKNOWN"
+
+
 def signal_canonical_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 over the canonical proposal JSON (dedupe/conflict
     detection). Keys sorted, compact separators, datetimes as ISO-8601 — so an
@@ -2552,7 +2572,10 @@ def plan_signal_ingest(
             producer_id=producer_id,
             signal_id=signal_id,
             status=SignalStatus.QUARANTINED,
-            symbol=symbol,
+            # Normalize to the ticker domain (or UNKNOWN) so the quarantine record
+            # is findable by ?symbol= and never carries an impossible instrument
+            # (round-13 :138).
+            symbol=safe_quarantine_symbol(symbol),
             direction=direction,
             issued_at=issued_at,
             ttl_seconds=record_ttl,

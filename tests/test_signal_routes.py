@@ -478,6 +478,42 @@ def test_non_ascii_symbol_uppercasing_to_ascii_is_quarantined(client, bad_symbol
     assert r.json()["quarantine_reason"] == "validation"
 
 
+def test_ascii_invalid_domain_symbol_on_quarantine_is_unknown(client):
+    # Round-13 :138: an ASCII-but-out-of-domain symbol ('.') on a body quarantined
+    # for another field must be stored as the UNKNOWN sentinel (normalize_symbol
+    # domain), never as an impossible instrument the ?symbol= filter can't match.
+    r = _post_json_bytes(
+        client,
+        {
+            "signal_id": "sym-oor",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 300,
+            "symbol": ".",
+            "direction": "buy",
+            "thesis": "x",
+            "provenance": {"model": 1},  # the Pydantic offender
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["symbol"] == "UNKNOWN"
+
+
+def test_whitespace_padded_signal_id_falls_back_to_synthetic(client):
+    # Round-13 :370: a whitespace-PADDED signal_id (" sig-x ") is NOT schema-valid
+    # (the wire pattern has no spaces) and must NOT be stripped into "sig-x" to
+    # squat that dedupe key — it falls back to the synthetic id, so a later
+    # well-formed "sig-x" is recorded, not 409-conflicted against the quarantine.
+    r = _post_json_bytes(
+        client,
+        {"signal_id": " sig-x ", "foo": 1},  # padded id + unknown field -> malformed
+    )
+    assert r.status_code == 422
+    assert r.json()["signal_id"].startswith("malformed:")  # not reused as "sig-x"
+    # A later well-formed "sig-x" records cleanly (201), no conflict.
+    ok = client.post("/api/signals", json=_proposal(signal_id="sig-x"), headers=_PROD_H)
+    assert ok.status_code == 201
+
+
 @pytest.mark.parametrize("bad_symbol", [".", ".AAPL", "-X", "1AAPL"])
 def test_symbol_without_leading_letter_is_quarantined(client, bad_symbol):
     # Round-12 C: the wire symbol domain now matches the store's ?symbol= filter
