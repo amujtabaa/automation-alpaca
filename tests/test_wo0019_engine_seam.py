@@ -782,7 +782,9 @@ async def test_memory_envelope_fill_is_all_or_nothing_and_dedupe_unpoisoned(
     env = await active_envelope(store)
     original = _explode_on(monkeypatch, ExecutionEventType.FILL)
     with pytest.raises(RuntimeError):
-        await store.record_envelope_fill(env.id, quantity=30, dedupe_key="fill:o1:1")
+        await store.record_envelope_fill(
+            env.id, quantity=30, dedupe_key="fill:o1:1", price=9.9
+        )
 
     after_crash = await store.get_envelope(env.id)
     assert after_crash.remaining_quantity == 100  # decrement rolled back
@@ -793,7 +795,7 @@ async def test_memory_envelope_fill_is_all_or_nothing_and_dedupe_unpoisoned(
         InMemoryStateStore, "_append_execution_event_unlocked", original
     )
     retried = await store.record_envelope_fill(
-        env.id, quantity=30, dedupe_key="fill:o1:1"
+        env.id, quantity=30, dedupe_key="fill:o1:1", price=9.9
     )
     assert retried.remaining_quantity == 70
     assert len(await envelope_events(store, env.id, ExecutionEventType.FILL)) == 1

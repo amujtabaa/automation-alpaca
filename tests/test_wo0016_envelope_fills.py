@@ -88,10 +88,10 @@ async def test_duplicate_fill_is_counted_exactly_once(any_store):
     await activate(any_store, env)
 
     await any_store.record_envelope_fill(
-        env.id, quantity=30, dedupe_key="fill:o1:dup", order_id="o1"
+        env.id, quantity=30, dedupe_key="fill:o1:dup", order_id="o1", price=9.9
     )
     again = await any_store.record_envelope_fill(
-        env.id, quantity=30, dedupe_key="fill:o1:dup", order_id="o1"
+        env.id, quantity=30, dedupe_key="fill:o1:dup", order_id="o1", price=9.9
     )
     assert again.remaining_quantity == 70  # NOT 40 — replay is a no-op
 
@@ -114,7 +114,7 @@ async def test_overfill_of_the_hard_ceiling_breaches(any_store):
     await activate(any_store, env)
 
     after = await any_store.record_envelope_fill(
-        env.id, quantity=80, dedupe_key="fill:o1:over", order_id="o1"
+        env.id, quantity=80, dedupe_key="fill:o1:over", order_id="o1", price=9.9
     )
     assert after.remaining_quantity == 0
     assert after.status is S.BREACHED
@@ -137,7 +137,7 @@ async def test_fill_while_frozen_decrements_but_never_unfreezes(any_store):
     await any_store.transition_envelope(env.id, S.FROZEN)
 
     after = await any_store.record_envelope_fill(
-        env.id, quantity=100, dedupe_key="fill:o1:frozen", order_id="o1"
+        env.id, quantity=100, dedupe_key="fill:o1:frozen", order_id="o1", price=9.9
     )
     assert after.remaining_quantity == 0
     assert after.status is S.FROZEN  # a fill NEVER exits a freeze
@@ -161,7 +161,7 @@ async def test_late_fill_on_terminal_envelope_is_recorded_not_hidden(any_store):
     await any_store.transition_envelope(env.id, S.CANCELLED)
 
     after = await any_store.record_envelope_fill(
-        env.id, quantity=10, dedupe_key="fill:o1:late", order_id="o1"
+        env.id, quantity=10, dedupe_key="fill:o1:late", order_id="o1", price=9.9
     )
     assert after.status is S.CANCELLED  # terminal never changes
     assert after.remaining_quantity == 90
@@ -179,12 +179,12 @@ async def test_fill_before_activation_is_structurally_impossible(any_store):
     env = await any_store.create_envelope(make_draft())
     with pytest.raises(InvalidFillError):
         await any_store.record_envelope_fill(
-            env.id, quantity=10, dedupe_key="fill:o1:early"
+            env.id, quantity=10, dedupe_key="fill:o1:early", price=9.9
         )
     await any_store.transition_envelope(env.id, S.APPROVED)
     with pytest.raises(InvalidFillError):
         await any_store.record_envelope_fill(
-            env.id, quantity=10, dedupe_key="fill:o1:early2"
+            env.id, quantity=10, dedupe_key="fill:o1:early2", price=9.9
         )
     unchanged = await any_store.get_envelope(env.id)
     assert unchanged.remaining_quantity == 100
@@ -197,7 +197,7 @@ async def test_nonpositive_fill_quantity_rejected(any_store, qty):
     await activate(any_store, env)
     with pytest.raises(InvalidFillError):
         await any_store.record_envelope_fill(
-            env.id, quantity=qty, dedupe_key="fill:o1:bad"
+            env.id, quantity=qty, dedupe_key="fill:o1:bad", price=9.9
         )
 
 
@@ -205,7 +205,7 @@ async def test_unknown_envelope_fill_raises(any_store):
     await any_store.initialize()
     with pytest.raises(UnknownEntityError):
         await any_store.record_envelope_fill(
-            "nope", quantity=1, dedupe_key="fill:o1:none"
+            "nope", quantity=1, dedupe_key="fill:o1:none", price=9.9
         )
 
 

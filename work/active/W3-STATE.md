@@ -116,9 +116,14 @@ awaiting:
     rationale (NOT a fills-table mutator; the real forbidden-mutator + sqlite-source guards
     unchanged). Committed 8fa9331 on claude/new-session-gu0z6y. NO remaining approved
     implementation item.
-  - T5: ADR-010 Accepted + W3 merge — human only, after Phase B reconciliation. Remaining
-    blockers: the two prepared ADR text amendments + Phase B verdict. All P0/P1 code defects
-    are remediated and pinned at tip.
+  - T5 EXECUTED (2026-07-15, Ameen directive "Complete the T5 merge"): ADR-010 flipped to
+    **Accepted** (independent-review requirement satisfied by the REV-0023 packet — Codex
+    ACCEPT-WITH-CHANGES, Findings None, dispositioned RESOLVED); this branch merged into
+    feat/execution-envelope and pushed. The THREE deferred Phase-A2 items COMPLETED same day
+    (Ameen directive): completeness-1 (price REQUIRED end-to-end + D-019 value guard, INV-089),
+    pure-math-0 (MAX_STEP_DEVIATION=0.25 step-deviation band + latest-print fail-quiet, INV-088,
+    calibration reviewable), interface-lift-0 (facade envelope returns concretely typed;
+    drift-proof kills at deps.py DI seam). All pinned + mutation-checked.
 toolchain-incidents (must-read before any destructive git op; never pruned):
   - WO-0017 + WO-0028 (RECURRED 11 WOs apart): reflexive `git checkout <file>` wipes
     UNCOMMITTED WO work. Commit or stash BEFORE any mutation run; restore only committed code.
@@ -133,7 +138,17 @@ toolchain-incidents (must-read before any destructive git op; never pruned):
     pipeline's exit, not pytest's — a `pytest ... | tail` pipe masks pytest's real code.
     pytest here was RED (one failure) while the wrapper said exit 0. Capture the inner code
     explicitly (`echo EXIT=${PIPESTATUS[0]}`) and read the FAILED/summary line, never trust
-    the wrapper's exit for a piped test run.
+    the wrapper's exit for a piped test run. RECURRED (T5 batch, same session, by the same
+    author who recorded it): `pytest | tail -2; echo $?` printed EXIT=0 over a REAL failure.
+    Structural fix adopted: redirect pytest to a file (`pytest > out 2>&1; echo $?`) so $?
+    IS pytest's code — no pipe, nothing to remember.
+  - T5 batch (pure-math-0): a NEW safety rail suppressed an OLD one — the deviation band's
+    fail-quiet on a suspect LATEST print swallowed the floor-breach path for a genuine -31%
+    crash gap (test_gap_below_floor_is_a_breach_signal_never_a_submit went RED). Caught by
+    the existing WO-0021 pin, fixed by explicit precedence (floor rail outranks band below
+    the floor; pinned in test_puremath0_deviation_band.py). LESSON: any new fail-quiet/
+    fail-closed mechanism must state its ORDER against every existing hard rail it can
+    shadow, and the full suite must run BEFORE claiming the mechanism done.
 anchor-divergences:
   - W3-README branch naming `feat/execution-envelope/wo-00XX` impossible in git (ref namespace);
     using `feat/execution-envelope-wo-00XX`.

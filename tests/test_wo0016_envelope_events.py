@@ -143,7 +143,7 @@ async def test_envelope_survives_reopen_with_events_intact(tmp_path):
     await store.transition_envelope(env.id, S.APPROVED)
     await store.transition_envelope(env.id, S.ACTIVE)
     await store.record_envelope_fill(
-        env.id, quantity=25, dedupe_key="fill:o1:r1", order_id="o1"
+        env.id, quantity=25, dedupe_key="fill:o1:r1", order_id="o1", price=9.9
     )
     store._conn.close()
     store._conn = None
@@ -163,7 +163,7 @@ async def test_envelope_survives_reopen_with_events_intact(tmp_path):
 
     # Dedupe map survives restart: the same fill replayed is still a no-op.
     again = await reopened.record_envelope_fill(
-        env.id, quantity=25, dedupe_key="fill:o1:r1", order_id="o1"
+        env.id, quantity=25, dedupe_key="fill:o1:r1", order_id="o1", price=9.9
     )
     assert again.remaining_quantity == 75
 

@@ -2038,7 +2038,7 @@ class SqliteStateStore(StateStore):
         *,
         quantity: int,
         dedupe_key: str,
-        price: Optional[float] = None,
+        price: float,
         order_id: Optional[str] = None,
         session_id: Optional[str] = None,
         ts_event: Optional[datetime] = None,

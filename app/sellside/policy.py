@@ -57,6 +57,13 @@ BAR_INTERVAL = timedelta(seconds=30)
 PARTICIPATION_HORIZON = timedelta(minutes=5)
 # Time-to-close urgency ramp length.
 URGENCY_RAMP = timedelta(minutes=30)
+# pure-math-0 (REV-0023 Phase-A2): maximum per-step price deviation vs the
+# immediate raw predecessor before a print is screened as unprintable. 25% per
+# ~10-30s step is an order of magnitude outside LULD trading bands, so a
+# legitimately printable move never trips it while fat-finger/corrupt prints
+# (the probe's 500,000x) always do. Calibration recorded as a planning note in
+# INV-088 (Ameen directed completion 2026-07-15).
+MAX_STEP_DEVIATION = 0.25
 # Tranche trigger: extension above anchored VWAP, in trail-ATR multiples.
 TRANCHE_EXTENSION_MULT = 1.5
 # First-objective tranche fraction of the remaining quantity.
@@ -301,11 +308,54 @@ def decide(
     # just the latest — a stale/crossed/non-finite historical print must never
     # drive bars, ATR, VWAP, regime, or sizing. Invalid history is dropped
     # (the latest row already failed closed above via the disposition gate).
-    tape = [
+    #
+    # pure-math-0 (REV-0023 Phase-A2): a FINITE but absurd print passes every
+    # per-row screen yet would pin ref_high via the running max and hold the
+    # stop at the phantom level. Screen by STEP DEVIATION against the
+    # immediate RAW predecessor (> MAX_STEP_DEVIATION is not a printable
+    # move). Raw-predecessor comparison self-heals: an isolated phantom costs
+    # at most two rows, a genuine gap (halt reopen) at most one — the prints
+    # after a real gap agree with each other and pass.
+    active_window = [
         s
         for s in snapshots
-        if (envelope.activated_at is None or s.updated_at >= envelope.activated_at)
-        and not _snapshot_invalid_reasons(s)
+        if envelope.activated_at is None or s.updated_at >= envelope.activated_at
+    ]
+    suspect: set[int] = set()
+    for i in range(1, len(active_window)):
+        prev, cur = active_window[i - 1].last_price, active_window[i].last_price
+        if (
+            prev is not None
+            and cur is not None
+            and math.isfinite(prev)
+            and math.isfinite(cur)
+            and prev > 0
+            and abs(cur / prev - 1.0) > MAX_STEP_DEVIATION
+        ):
+            suspect.add(i)
+    if active_window and (len(active_window) - 1) in suspect:
+        latest_raw = active_window[-1].last_price
+        if latest_raw is not None and latest_raw <= envelope.floor_price:
+            # Deviation-suspect BUT at/below the floor: fail SAFE, not quiet.
+            # Fall through so the hard floor rail produces BreachSignal — a
+            # genuine crash gap gets immediate protection (the WO-0021 pin:
+            # gap below floor is a breach, never a submit, never silence),
+            # and a phantom here yields a spurious-but-frozen-for-human
+            # breach, never an order. The suspect print stays excluded from
+            # the feature tape either way.
+            pass
+        else:
+            # The LATEST print is deviation-suspect and above the floor:
+            # actions are priced off it, so fail quiet this tick — never
+            # size or submit against a phantom.
+            return StaleDataSignal(
+                disposition=envelope.stale_data_disposition,
+                reasons=("price_deviation",),
+            )
+    tape = [
+        s
+        for i, s in enumerate(active_window)
+        if i not in suspect and not _snapshot_invalid_reasons(s)
     ]
     bars = aggregate(tape, BAR_INTERVAL)
     if len(bars) < MIN_CLASSIFY_BARS:

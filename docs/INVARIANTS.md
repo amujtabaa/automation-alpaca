@@ -721,6 +721,43 @@ simply refused.
 activation) and `tests/test_wo0032_per_symbol_mandate.py` (direct guard +
 supersession still permitted).
 
+**INV-088 — An unprintable price never drives features, sizing, or pricing.**
+Beyond the per-row validity screens (INV-086 clause 3), every print in the
+active window is screened by STEP DEVIATION against its immediate raw
+predecessor: a move greater than ``MAX_STEP_DEVIATION`` (25% per ~10-30s step
+— an order of magnitude outside LULD trading bands; planning calibration,
+Ameen-directed completion 2026-07-15) is excluded from bars/ATR/VWAP/regime/
+stop math, and if the LATEST print is deviation-suspect the tick fails quiet
+(``StaleDataSignal(price_deviation)``) — actions are priced off the latest
+print, so a phantom is never sized or submitted against. PRECEDENCE: a
+deviation-suspect latest print AT/BELOW the floor falls through to the hard
+floor rail instead (BreachSignal, never silence) — fail-safe outranks
+fail-quiet below the floor, so a genuine crash gap gets immediate protection
+and a phantom yields at worst a spurious frozen-for-human breach, never an
+order and never a quiet tick. Raw-predecessor comparison makes the screen
+self-healing: an isolated fat-finger costs at most two rows, a genuine gap
+(halt reopen) at most one.
+*Why:* REV-0023 Phase-A2 pure-math-0 — one finite absurd print (500,000x)
+passed every screen, pinned ``ref_high`` via the running max, and held a
+perpetual phantom-level ``stop_triggered`` SUBMIT.
+*Pinned by:* `tests/test_puremath0_deviation_band.py` (defect pins + self-heal
++ inside-band guards; band and latest-gate mutation-checked separately).
+
+**INV-089 — An envelope fill fact always carries a valid price.**
+``record_envelope_fill``/``plan_envelope_fill`` take a REQUIRED ``price``
+(``float``, no ``None``), value-guarded by the shared D-019
+``fill_value_reason`` exactly like ``plan_append_fill`` — a non-finite or
+non-positive price rejects with ``InvalidFillError`` and writes nothing.
+*Why:* REV-0023 Phase-A2 completeness-1 — a ``price=None`` FILL event appended
+durably and then PERMANENTLY poisoned ``project_symbol_position`` for the
+symbol (``ProjectionError`` on every later ``get_position``/``close_session``).
+Both production fill sources (``BrokerFill``, ``InferredFill``) carry
+``price: float``, so the requirement is honest end-to-end (AIR-002 already
+forbids fabricating a $0 price).
+*Pinned by:* `tests/test_wo0033_phase_a2_fixes.py::test_completeness1_*`
+(both stores; TypeError on omission, InvalidFillError on 0/negative/NaN/Inf,
+projection stays healthy).
+
 ---
 
 ## Superseded / historical

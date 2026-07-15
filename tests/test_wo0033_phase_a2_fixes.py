@@ -243,3 +243,37 @@ async def test_mutation0_run_one_envelope_history_includes_order_terminals(any_s
         "forwarded to the policy — the WO-0025 own_order_ids union is not wired, "
         "so the working-order predicate can't see the order died"
     )
+
+
+# ------------------------------------------------------------------------- #
+# completeness-1 (P1/P2, deferred→completed) — a fill's price is REQUIRED and
+# value-guarded at the planner. A price=None FILL event used to append durably
+# and then permanently poison project_symbol_position for the symbol
+# (ProjectionError on every later get_position/close_session). Root form: the
+# signature no longer admits None (deferred-log planning item), and a
+# non-finite/non-positive price rejects exactly like plan_append_fill (D-019
+# shared guard), with nothing written.
+# ------------------------------------------------------------------------- #
+async def test_completeness1_envelope_fill_price_is_required(any_store):
+    env = await _active_envelope(any_store)
+    with pytest.raises(TypeError):
+        await any_store.record_envelope_fill(  # type: ignore[call-arg]
+            env.id, quantity=10, dedupe_key="fill:o1:nopx"
+        )
+    # nothing written: remaining untouched, position projection healthy
+    assert (await any_store.get_envelope(env.id)).remaining_quantity == 100
+    assert (await any_store.get_position("AAPL")).quantity == 100
+
+
+@pytest.mark.parametrize("bad_price", [0.0, -1.5, float("nan"), float("inf")])
+async def test_completeness1_envelope_fill_rejects_invalid_price(any_store, bad_price):
+    from app.store.base import InvalidFillError
+
+    env = await _active_envelope(any_store)
+    with pytest.raises(InvalidFillError):
+        await any_store.record_envelope_fill(
+            env.id, quantity=10, dedupe_key="fill:o1:badpx", price=bad_price
+        )
+    assert (await any_store.get_envelope(env.id)).remaining_quantity == 100
+    # the poison never lands: projection still folds cleanly
+    assert (await any_store.get_position("AAPL")).quantity == 100

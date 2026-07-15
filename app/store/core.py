@@ -2454,7 +2454,7 @@ def plan_envelope_fill(
     *,
     quantity: int,
     dedupe_key: str,
-    price: Optional[float] = None,
+    price: float,
     order_id: Optional[str] = None,
     session_id: Optional[str] = None,
     ts_event: Optional[datetime] = None,
@@ -2491,6 +2491,19 @@ def plan_envelope_fill(
             ENVELOPE_FILL_REJECT,
             error=InvalidFillError(
                 f"envelope fill needs a positive whole quantity, got {quantity!r}"
+            ),
+        )
+    # completeness-1 (REV-0023 Phase-A2): the shared D-019 value guard, exactly
+    # as plan_append_fill applies it — a non-finite/non-positive price would
+    # append a durable FILL event that permanently poisons
+    # project_symbol_position for the symbol (ProjectionError on every later
+    # get_position/close_session). Reject before anything is planned.
+    value_reason = fill_value_reason(quantity, price)
+    if value_reason is not None:
+        return EnvelopeFillPlan(
+            ENVELOPE_FILL_REJECT,
+            error=InvalidFillError(
+                f"invalid envelope fill for {envelope.symbol}: {value_reason}"
             ),
         )
     if envelope.status in (EnvelopeStatus.PENDING, EnvelopeStatus.APPROVED):

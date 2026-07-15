@@ -7,10 +7,16 @@
 
 ## Status
 
-**Proposed** (drafted 2026-07-11, planning seat, from the LASE integration design session; decisions
-D-1..D-4 taken by Ameen 2026-07-11). Amends human-gated-surface semantics → **queues for
-independent cross-model review** before any beta-relevant milestone relies on it, per CLAUDE.md
-review policy. Not accepted until Ameen marks it Accepted.
+**Accepted** (2026-07-15, Ameen — T5 directive "Complete the T5 merge", this session; drafted
+2026-07-11 by the planning seat from the LASE integration design session, decisions D-1..D-4 taken
+by Ameen 2026-07-11). The CLAUDE.md independent-review requirement for the human-gated-surface
+semantics is satisfied: REV-0023 (internal Phase A + the 26-agent Phase A2 adversarial pass, all
+findings remediated WO-0024..0034 + per-symbol INV-087) was independently reviewed by Codex with
+verdict **ACCEPT-WITH-CHANGES, Findings: None**, dispositioned RESOLVED in
+`work/review/REV-0023/disposition.md`. Amendment history: §3+§6 (WO-0016 ratified), §5
+working-order predicate (WO-0025), §3 supersession (WO-0027), FROZEN→BREACHED + stale-vs-defect
+split (WO-0029A, both text proposals accepted by Ameen 2026-07-12), INV-085 scope narrowed to
+ACTIVE/FROZEN (WO-0034, decision 3a).
 
 ## Context
 

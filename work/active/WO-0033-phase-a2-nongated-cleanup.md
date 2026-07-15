@@ -102,5 +102,23 @@ DEFERRED (visible deviation — recorded, not silently dropped):
   the concrete impl's return type + the route `response_model` + tests. Recommend
   leaving as-is unless the whole facade Protocol is hardened at once.
 
-## Status: PARTIAL-VERIFIED (3/5 done, 2 deferred with rationale)
+## Deferred items COMPLETED (2026-07-15, Ameen: "Complete... the three deferred items")
+
+- **completeness-1 DONE (root form).** ``price`` is now REQUIRED on
+  ``plan_envelope_fill``/``record_envelope_fill`` (planner + ABC + both stores —
+  the deferred-log planning item "make price required" executed, not just the
+  guard), plus the shared D-019 ``fill_value_reason`` guard exactly as
+  ``plan_append_fill`` applies it. The 13 test call sites that omitted price now
+  pass one (AST-patched; each still tests its original rejection reason).
+  INV-089 registered. Pins: ``test_completeness1_*`` (TypeError on omission,
+  InvalidFillError on 0/neg/NaN/Inf, projection stays healthy, both stores).
+- **interface-lift-0 DONE.** ``list_envelopes``/``approve_envelope``/
+  ``cancel_envelope`` concretely typed on the facade Protocols (deliberate,
+  documented divergence from the legacy provisional-vocabulary ``-> Any``
+  convention: the envelope surface is safety-adjacent). Drift-proof KILLED:
+  mutating the concrete facade's return to ``dict`` now fails ``mypy app/`` at
+  the DI seam (``app/api/deps.py:136 Incompatible return value``) — it passed
+  silently before.
+
+## Status: VERIFIED (5/5 — 3 delivered 2026-07-14, 2 completed 2026-07-15)
 Disposition: RESULT_SUMMARY_KEPT

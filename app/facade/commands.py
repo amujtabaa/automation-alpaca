@@ -127,7 +127,9 @@ class ExecutionCommandFacade(Protocol):
         """
         ...
 
-    async def approve_envelope(self, *, draft: ExecutionEnvelope, actor: str) -> Any:
+    async def approve_envelope(
+        self, *, draft: ExecutionEnvelope, actor: str
+    ) -> ExecutionEnvelope:
         """Approve + activate an execution envelope as ONE store-atomic unit
         (ADR-010 §1 / WO-0017) — THE human-gated approval surface for
         autonomous sell-side execution. ``POST /api/envelopes/approve``. 409
@@ -135,7 +137,9 @@ class ExecutionCommandFacade(Protocol):
         terminal / duplicate-ACTIVE conflict."""
         ...
 
-    async def cancel_envelope(self, *, envelope_id: str, actor: str) -> Any:
+    async def cancel_envelope(
+        self, *, envelope_id: str, actor: str
+    ) -> ExecutionEnvelope:
         """Withdraw a pre-activation envelope (PENDING/APPROVED/FROZEN →
         CANCELLED, the ADR-010 §3 escape edges; idempotent for already-
         CANCELLED). An ACTIVE mandate is deliberately NOT cancellable here

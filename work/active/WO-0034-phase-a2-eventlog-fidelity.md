@@ -82,3 +82,11 @@ Disposition: RESULT_SUMMARY_KEPT
   screening has no out-of-range/deviation band, so one finite absurd print pins
   ref_high → perpetual stop SUBMIT. Planning seat sets the band threshold before the
   guard is coded (a sizing/submission safety rail).
+  **→ COMPLETED 2026-07-15** per Ameen's directive ("Complete... the three deferred
+  items", superseding "leave as planning seat"). ``MAX_STEP_DEVIATION = 0.25`` per
+  ~10-30s step (calibration rationale in INV-088: an order of magnitude outside LULD
+  bands — printable moves never trip it, the probe's 500,000x always does); the LATEST
+  print failing the band fails quiet (``StaleDataSignal(price_deviation)``); the
+  screen self-heals via raw-predecessor comparison. Pinned + mutation-checked in
+  ``tests/test_puremath0_deviation_band.py``. The 0.25 calibration remains reviewable
+  by the planning seat — one constant, one pin to update.

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
+from app.models import ExecutionEnvelope
+
 __all__ = ["ExecutionQueryFacade"]
 
 
@@ -24,10 +26,16 @@ class ExecutionQueryFacade(Protocol):
         wired into ``GET /api/positions``."""
         ...
 
-    async def list_envelopes(self) -> Any:
+    async def list_envelopes(self) -> list[ExecutionEnvelope]:
         """Every execution envelope — read-only visibility for the cockpit
         Envelope Monitor (ADR-010 / WO-0020): status, bounds, remaining qty,
-        budget, dispositions. ``GET /api/envelopes``."""
+        budget, dispositions. ``GET /api/envelopes``.
+
+        Concretely typed (REV-0023 interface-lift-0): the envelope surface is
+        a safety-adjacent seam, so a return-type regression here must fail
+        ``mypy app/`` exactly as it does on the ``StateStore`` ABC — unlike
+        the legacy provisional-vocabulary methods above, which stay ``Any``
+        until their Spine v2 shapes exist."""
         ...
 
     async def list_watchlist(self) -> Any:
