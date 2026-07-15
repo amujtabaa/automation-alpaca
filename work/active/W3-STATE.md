@@ -193,6 +193,22 @@ REMEDIATION ✅ (0028 → 0024 → 0026 → 0025 → 0027; all pins green) → 0
 **Phase B Codex (T4, human)** → WO-0029 re-cut (planning seat) → T5 ADR-010 Accepted + merge
 (human only).
 
+## Codex PR #8 review (2026-07-15) — 8 inline findings, triaged into WO-0036
+The GitHub Codex bot reviewed PR #8 (execution-envelope → master, commit ac73ad5): 6×P1 + 2×P2
+on the envelope execution surface. Implementer-verified triage: SIX independently confirm my
+AUDIT-0001 roots / already-tracked items (#3,#5→R6; #4,#8→R2; #2→WO-0035 F1 tick tail;
+#7→small event-log provenance), and TWO are GENUINELY NEW P1s I missed, both verified real at
+tip: **#1** the generic `_submit_pending_orders` sweep claims EVERY CREATED order with no
+envelope exclusion → a transiently-released envelope reprice gets generically submit_order'd
+(not atomic-replaced) while its predecessor is live → double sell exposure; **#6**
+`_live_working_order_id` tracks only the newest action → misses a still-live predecessor when a
+reprice replacement is REJECTED → policy plans fresh SUBMIT, store refuses stale → envelope
+stuck. All 8 FOLDED INTO WO-0036 (scope expanded; allowed_paths widened to policy.py +
+store_backed.py). NONE auto-fixed — all touch human-gated surfaces (order submission, cancel,
+flatten, event-log truth). Awaiting Ameen: approve expanded WO-0036 + decide merge-now-with-
+tracked-followups vs hold-PR-for-WO-0036 (note: beta is PAPER; several are only reachable once
+the envelope-native creation flow is wired, which it isn't yet).
+
 ## Master reconciliation (2026-07-15, Ameen-directed start)
 origin/master (signal-seat lineage, 28 commits since merge-base 6595bba) MERGED INTO this branch.
 Survey (agent, implementer-verified): the ONLY textual conflict was work/ledger.jsonl
