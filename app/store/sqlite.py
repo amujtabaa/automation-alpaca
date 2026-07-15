@@ -131,6 +131,9 @@ from app.store.core import (
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
+    ENVELOPE_RELEASING_TERMINALS,
+    VENUE_LIVE_ORDER_STATUSES,
+    envelope_backing_intent_error,
     envelope_created_event,
     envelope_draft_reason,
     plan_envelope_fill,
@@ -1645,13 +1648,16 @@ class SqliteStateStore(StateStore):
         new_status: SellIntentStatus,
         *,
         order_id: Optional[str] = None,
+        reason: Optional[str] = None,
     ) -> bool:
         """Apply a sell-intent status transition in place + persist it (assumes
         the caller already holds ``self._lock`` and is inside a
         ``with self._tx() as cur:`` block). Returns ``False`` for a
         same-status no-op (nothing applied, no event written); ``True`` if it
         actually transitioned. Raises :class:`SellIntentTransitionError` for an
-        illegal transition (nothing mutated, nothing persisted)."""
+        illegal transition (nothing mutated, nothing persisted). ``reason``
+        (WO-0036 R2) lands in the event payload so an envelope-driven
+        transition is distinguishable from a legacy one."""
 
         current = intent.status
         if new_status is current:
@@ -1668,13 +1674,16 @@ class SqliteStateStore(StateStore):
         if new_status is SellIntentStatus.ORDERED and order_id is not None:
             intent.order_id = order_id
         self._update_sell_intent(cur, intent)
+        payload: dict = {"from": current.value, "to": new_status.value}
+        if reason is not None:
+            payload["reason"] = reason
         self._insert_event(
             cur,
             "sell_intent_transition",
             message=f"sell intent {current.value} -> {new_status.value}",
             symbol=intent.symbol,
             order_id=order_id,
-            payload={"from": current.value, "to": new_status.value},
+            payload=payload,
             session_id=intent.session_id,
             correlation_id=intent.id,
         )
@@ -1751,6 +1760,17 @@ class SqliteStateStore(StateStore):
             if row is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
             intent = self._sell_intent(row)
+            # WO-0036 R2 exclusive driver: while a LIVE envelope backs the
+            # intent, the envelope alone drives its lifecycle (activation
+            # normalizes it, terminal release expires it) — an out-of-band
+            # transition here would desync the two lifecycles.
+            live_env = self._live_envelope_for_intent_locked(intent_id)
+            if live_env is not None:
+                raise SellIntentTransitionError(
+                    f"sell intent {intent_id} is bound to live execution "
+                    f"envelope {live_env}; its lifecycle is driven by the "
+                    "envelope (WO-0036 R2 link)"
+                )
             with self._tx() as cur:
                 self._transition_sell_intent_locked(
                     cur, intent, new_status, order_id=order_id
@@ -1797,31 +1817,232 @@ class SqliteStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
-    def _other_active_envelope_for_symbol_locked(
+    def _other_live_envelope_for_symbol_locked(
         self, cur: sqlite3.Cursor, symbol: str, *, excluding: str
     ) -> Optional[str]:
-        """Id of any OTHER envelope for this SYMBOL currently ACTIVE (the
-        explicit twin of the idx_envelopes_one_active partial unique index,
-        checked first for a clean domain error instead of an IntegrityError).
+        """Id of any OTHER envelope for this SYMBOL currently LIVE — ACTIVE or
+        FROZEN (WO-0036 R2; the idx_envelopes_one_active partial unique index
+        stays the ACTIVE-level storage backstop, this explicit check gives the
+        clean domain error and extends the rail to FROZEN).
 
         Scoped to symbol, not sell_intent_id (WO-0032 / REV-0023 P0): at most
         one live selling mandate per symbol/position — see the InMemoryStateStore
-        twin ``_other_active_envelope_for_symbol_unlocked`` for the rationale
-        (INV-087)."""
+        twin ``_other_live_envelope_for_symbol_unlocked`` for the rationale
+        (INV-087; FROZEN counts because a kill-frozen mandate's child may still
+        rest at the venue)."""
 
         row = cur.execute(
-            "SELECT id FROM execution_envelopes WHERE symbol = ? "
-            "AND status = ? AND id != ? LIMIT 1",
-            (normalize_symbol(symbol), EnvelopeStatus.ACTIVE.value, excluding),
+            "SELECT id, status FROM execution_envelopes WHERE symbol = ? "
+            "AND status IN (?, ?) AND id != ? LIMIT 1",
+            (
+                normalize_symbol(symbol),
+                EnvelopeStatus.ACTIVE.value,
+                EnvelopeStatus.FROZEN.value,
+                excluding,
+            ),
         ).fetchone()
         return row["id"] if row is not None else None
+
+    def _live_envelope_for_intent_locked(
+        self, intent_id: str, cur: Optional[sqlite3.Cursor] = None
+    ) -> Optional[str]:
+        """Id of the LIVE (ACTIVE/FROZEN) envelope backing ``intent_id``, or
+        None — the R2 exclusive-driver predicate: while it exists, the envelope
+        alone drives the intent's lifecycle and dispatch. Works on an open
+        ``_tx`` cursor or (``cur=None``) as a plain locked read."""
+
+        sql = (
+            "SELECT id FROM execution_envelopes WHERE sell_intent_id = ? "
+            "AND status IN (?, ?) LIMIT 1"
+        )
+        params = (
+            intent_id,
+            EnvelopeStatus.ACTIVE.value,
+            EnvelopeStatus.FROZEN.value,
+        )
+        row = (
+            cur.execute(sql, params).fetchone()
+            if cur is not None
+            else self._read_one(sql, params)
+        )
+        return row["id"] if row is not None else None
+
+    def _validate_backing_intent_locked(
+        self, cur: sqlite3.Cursor, envelope: ExecutionEnvelope
+    ) -> SellIntent:
+        """Load + validate the backing intent for an activation (WO-0036 R2 /
+        Codex PR#8 #8) on the open transaction: it must exist, match the
+        symbol, and be PENDING or APPROVED. Returns the intent (the caller
+        normalizes PENDING→APPROVED via ``_link_backing_intent_locked``);
+        raises the shared planner error otherwise. Runs on EVERY entry into
+        ACTIVE — approve, generic transition, resume — mirroring
+        ``InMemoryStateStore._validate_backing_intent_unlocked``."""
+
+        row = cur.execute(
+            "SELECT * FROM sell_intents WHERE id = ?", (envelope.sell_intent_id,)
+        ).fetchone()
+        intent = self._sell_intent(row) if row is not None else None
+        error = envelope_backing_intent_error(
+            intent, symbol=envelope.symbol, envelope_id=envelope.id
+        )
+        if error is not None:
+            raise error
+        assert intent is not None  # narrowed by the validator
+        return intent
+
+    def _link_backing_intent_locked(
+        self, cur: sqlite3.Cursor, intent: SellIntent
+    ) -> None:
+        """Normalize a PENDING backing intent to APPROVED atomically with the
+        envelope's activation (the envelope approval IS the human approval of
+        the exit — WO-0036 R2); a no-op for an already-APPROVED intent."""
+
+        if intent.status is SellIntentStatus.PENDING:
+            self._transition_sell_intent_locked(
+                cur, intent, SellIntentStatus.APPROVED, reason="envelope_activation"
+            )
+
+    def _release_intent_for_terminal_envelope_locked(
+        self, cur: sqlite3.Cursor, envelope: ExecutionEnvelope
+    ) -> None:
+        """WO-0036 R2 terminal propagation: an envelope entering a RELEASING
+        terminal (COMPLETED/EXPIRED/EXHAUSTED/BREACHED/CANCELLED — never
+        SUPERSEDED, the successor keeps the intent) expires its backing intent
+        so the symbol becomes eligible for fresh protection. Runs inside the
+        SAME transaction as the envelope's own transition. Skips when: the
+        envelope never activated, the intent is already terminal/ORDERED, or
+        ANOTHER live envelope still carries the mandate, or a child of THIS
+        envelope may still be live at the venue. Mirrors
+        ``InMemoryStateStore._release_intent_for_terminal_envelope_unlocked``."""
+
+        if envelope.status not in ENVELOPE_RELEASING_TERMINALS:
+            return
+        if envelope.activated_at is None:
+            return  # never activated — it never owned the intent
+        row = cur.execute(
+            "SELECT * FROM sell_intents WHERE id = ?", (envelope.sell_intent_id,)
+        ).fetchone()
+        if row is None:
+            return
+        intent = self._sell_intent(row)
+        if intent.status not in (
+            SellIntentStatus.PENDING,
+            SellIntentStatus.APPROVED,
+        ):
+            return
+        other = cur.execute(
+            "SELECT id FROM execution_envelopes WHERE sell_intent_id = ? "
+            "AND status IN (?, ?) AND id != ? LIMIT 1",
+            (
+                envelope.sell_intent_id,
+                EnvelopeStatus.ACTIVE.value,
+                EnvelopeStatus.FROZEN.value,
+                envelope.id,
+            ),
+        ).fetchone()
+        if other is not None:
+            return  # the mandate lives on in another envelope
+        # BREACHED/EXHAUSTED/REST_AT_FLOOR (and an EXPIRED cancel mid-
+        # convergence) leave the working order RESTING at the venue: releasing
+        # the symbol then would let fresh protection double-book it. Defer to
+        # the child-terminal hook, which completes the release when that last
+        # obligation ends.
+        if self._envelope_has_live_child_locked(cur, envelope):
+            return  # a resting/ambiguous child is still a live obligation
+        self._transition_sell_intent_locked(
+            cur, intent, SellIntentStatus.EXPIRED, reason="envelope_terminal"
+        )
+
+    def _release_intent_for_terminal_child_locked(
+        self, cur: sqlite3.Cursor, order: Order
+    ) -> None:
+        """The child-terminal half of the R2 release: an envelope in a
+        releasing terminal may still hold the symbol through a RESTING child
+        (see above) — when that child reaches a venue terminal, re-run the
+        release against its envelope in the SAME transaction as the order
+        write. No-ops for non-envelope orders and for envelopes still live."""
+
+        if order.status not in (
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+        ):
+            return
+        row = cur.execute(
+            "SELECT envelope_id FROM execution_events WHERE order_id = ? "
+            "AND event_type = ? AND envelope_id IS NOT NULL LIMIT 1",
+            (order.id, ExecutionEventType.ENVELOPE_ACTION.value),
+        ).fetchone()
+        if row is None:
+            return
+        env_row = cur.execute(
+            "SELECT * FROM execution_envelopes WHERE id = ?", (row["envelope_id"],)
+        ).fetchone()
+        if env_row is None:
+            return
+        self._release_intent_for_terminal_envelope_locked(cur, self._envelope(env_row))
+
+    def _envelope_has_live_child_locked(
+        self, cur: sqlite3.Cursor, envelope: ExecutionEnvelope
+    ) -> bool:
+        """Whether the envelope's working order MAY be live at the venue
+        (CREATED is local-only staging; TIMEOUT_QUARANTINE IS live, ADR-002).
+        The flatten preemption's skip predicate — mirrors
+        ``InMemoryStateStore._envelope_has_live_child_unlocked``."""
+
+        try:
+            _, working = self._envelope_action_context_locked(cur, envelope)
+        except EnvelopeActionPausedError:
+            return True  # quarantined child — MAY be live
+        return working is not None and working.status is not OrderStatus.CREATED
+
+    def _live_envelope_exit_locked(
+        self, symbol: str
+    ) -> tuple[Optional[Order], Optional[SellIntent]]:
+        """(live-at-venue child order, its envelope's backing intent) for the
+        symbol's LIVE envelopes, or (None, None) — the flatten planner's R2
+        input (Codex PR#8 #4). The newest venue-live child wins (latest
+        ENVELOPE_ACTION sequence), mirroring the working-order convention."""
+
+        live_statuses = ",".join("?" for _ in VENUE_LIVE_ORDER_STATUSES)
+        row = self._read_one(
+            "SELECT o.*, env.sell_intent_id AS r2_owner_intent_id "
+            "FROM execution_events ev "
+            "JOIN execution_envelopes env ON env.id = ev.envelope_id "
+            "JOIN orders o ON o.id = ev.order_id "
+            "WHERE ev.event_type = ? AND env.symbol = ? "
+            "AND env.status IN (?, ?) "
+            f"AND o.status IN ({live_statuses}) "
+            "ORDER BY ev.sequence DESC LIMIT 1",
+            (
+                ExecutionEventType.ENVELOPE_ACTION.value,
+                symbol,
+                EnvelopeStatus.ACTIVE.value,
+                EnvelopeStatus.FROZEN.value,
+                *sorted(s.value for s in VENUE_LIVE_ORDER_STATUSES),
+            ),
+        )
+        if row is None:
+            return None, None
+        child = self._order(row)
+        intent_row = self._read_one(
+            "SELECT * FROM sell_intents WHERE id = ?", (row["r2_owner_intent_id"],)
+        )
+        intent = self._sell_intent(intent_row) if intent_row is not None else None
+        return child, intent
 
     def _apply_envelope_transition_locked(
         self, cur: sqlite3.Cursor, plan: EnvelopeTransitionPlan
     ) -> ExecutionEnvelope:
         """Persist an APPLY-outcome transition plan on an open ``_tx`` cursor.
         The caller has already dispatched NOOP/REJECT and run the
-        single-ACTIVE check where the target is ACTIVE."""
+        single-ACTIVE check where the target is ACTIVE.
+
+        WO-0036 R2: this is the ONE choke point every envelope status write
+        flows through (supersession excepted — SUPERSEDED transfers, never
+        releases), so the terminal propagation lives here: entering a
+        releasing terminal expires the backing intent in the SAME transaction,
+        sequenced after the envelope's own events."""
 
         assert plan.envelope is not None
         assert plan.execution_event is not None and plan.audit_event is not None
@@ -1830,6 +2051,7 @@ class SqliteStateStore(StateStore):
         self._insert_event(
             cur, plan.audit_event.event_type, **plan.audit_event.as_kwargs()
         )
+        self._release_intent_for_terminal_envelope_locked(cur, plan.envelope)
         return plan.envelope
 
     async def create_envelope(
@@ -1967,14 +2189,22 @@ class SqliteStateStore(StateStore):
                             f"envelope {env.id} cannot enter ACTIVE: trading "
                             "halted (kill switch engaged)"
                         )
-                    clash = self._other_active_envelope_for_symbol_locked(
+                    clash = self._other_live_envelope_for_symbol_locked(
                         cur, env.symbol, excluding=env.id
                     )
                     if clash is not None:
                         raise EnvelopeTransitionError(
-                            f"envelope {clash} is already ACTIVE for symbol "
-                            f"{env.symbol} (per-symbol single-ACTIVE invariant)"
+                            f"envelope {clash} is already live for symbol "
+                            f"{env.symbol} (per-symbol single-ACTIVE mandate, "
+                            "INV-087)"
                         )
+                    # WO-0036 R2: EVERY entry into ACTIVE (first activation
+                    # AND resume) validates the backing-intent link — this
+                    # generic edge must not be the one activation path with a
+                    # bypass. The PENDING→APPROVED normalization joins this
+                    # same transaction, before the envelope's own write.
+                    backing_intent = self._validate_backing_intent_locked(cur, env)
+                    self._link_backing_intent_locked(cur, backing_intent)
                 if new_status is EnvelopeStatus.CANCELLED:
                     # Codex PR#8 #5 (twin of the in-memory guard): refuse a
                     # store-only CANCELLED while a child order is live at the
@@ -2049,13 +2279,14 @@ class SqliteStateStore(StateStore):
                     assert plan.error is not None
                     raise plan.error
                 assert plan.old_envelope is not None and plan.new_envelope is not None
-                clash = self._other_active_envelope_for_symbol_locked(
+                clash = self._other_live_envelope_for_symbol_locked(
                     cur, old.symbol, excluding=old.id
                 )
                 if clash is not None:
                     raise EnvelopeTransitionError(
-                        f"envelope {clash} is already ACTIVE for symbol "
-                        f"{old.symbol} (per-symbol single-ACTIVE invariant)"
+                        f"envelope {clash} is already live for symbol "
+                        f"{old.symbol} (per-symbol single-ACTIVE mandate, "
+                        "INV-087)"
                     )
                 # One atomic unit: A leaves ACTIVE and B enters it in the same
                 # transaction — no two-ACTIVE window, and a concurrent second
@@ -2353,14 +2584,25 @@ class SqliteStateStore(StateStore):
                         "(kill switch engaged)"
                     )
                 symbol = (stored or draft).symbol
-                clash = self._other_active_envelope_for_symbol_locked(
+                clash = self._other_live_envelope_for_symbol_locked(
                     cur, symbol, excluding=draft.id
                 )
                 if clash is not None:
                     raise EnvelopeTransitionError(
-                        f"envelope {clash} is already ACTIVE for symbol "
-                        f"{symbol} (per-symbol single-ACTIVE invariant)"
+                        f"envelope {clash} is already live for symbol "
+                        f"{symbol} (per-symbol single-ACTIVE mandate, "
+                        "INV-087)"
                     )
+                # WO-0036 R2 (Codex PR#8 #8): LOAD + validate the backing
+                # intent before anything is minted — a typo'd sell_intent_id
+                # or symbol must never produce an owner-less ACTIVE mandate.
+                # A raise here rolls the transaction back: zero artifacts.
+                backing_intent = self._validate_backing_intent_locked(
+                    cur,
+                    (stored or draft).model_copy(
+                        update={"symbol": normalize_symbol(symbol)}
+                    ),
+                )
                 if stored is None:
                     key = normalize_symbol(draft.symbol)
                     stored = draft.model_copy(update={"symbol": key})
@@ -2377,6 +2619,9 @@ class SqliteStateStore(StateStore):
                         correlation_id=stored.sell_intent_id,
                         payload={"actor": actor, "envelope_id": stored.id},
                     )
+                # R2 link: the envelope approval IS the intent approval —
+                # normalized atomically with the activation chain below.
+                self._link_backing_intent_locked(cur, backing_intent)
                 current = stored
                 if current.status is EnvelopeStatus.PENDING:
                     plan = plan_envelope_transition(
@@ -2396,7 +2641,12 @@ class SqliteStateStore(StateStore):
         """ADR-010 §4 / D-2: cancel every non-terminal envelope for ``symbol``
         through legal edges (ACTIVE via FROZEN) on an open ``_tx`` cursor —
         the manual-flatten preemption, committing in the SAME transaction as
-        the flatten's own writes (mirrors InMemoryStateStore)."""
+        the flatten's own writes (mirrors InMemoryStateStore).
+
+        WO-0036 R2: an envelope whose child MAY be live at the venue is
+        SKIPPED (evented), never cancelled out from under it — the internal
+        twin of the public transition_envelope→CANCELLED live-child guard
+        (Codex PR#8 #5); see the InMemoryStateStore twin for the rationale."""
 
         rows = cur.execute(
             "SELECT * FROM execution_envelopes WHERE symbol = ?", (symbol,)
@@ -2406,6 +2656,25 @@ class SqliteStateStore(StateStore):
             env = self._envelope(row)
             if not ENVELOPE_TRANSITIONS.get(env.status):
                 continue  # terminal — nothing to preempt
+            if self._envelope_has_live_child_locked(cur, env):
+                self._insert_event(
+                    cur,
+                    "envelope_preemption_deferred",
+                    message=(
+                        f"envelope {env.id} preemption deferred: its child may "
+                        "be live at the venue (wind it down first)"
+                    ),
+                    symbol=symbol,
+                    payload={
+                        "envelope_id": env.id,
+                        "reason": "live_child_at_venue",
+                        "preemption_reason": reason,
+                        "actor": actor,
+                    },
+                    session_id=env.session_id,
+                    correlation_id=env.sell_intent_id,
+                )
+                continue
             current = env
             if current.status is EnvelopeStatus.ACTIVE:
                 plan = plan_envelope_transition(
@@ -2561,6 +2830,17 @@ class SqliteStateStore(StateStore):
             if row is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
             intent = self._sell_intent(row)
+            # WO-0036 R2 exclusive driver: an envelope-backed intent is
+            # dispatched ONLY by the envelope executor (staged, budgeted,
+            # write-time re-validated) — the legacy single-order handoff on
+            # top of it would be a second exit for the same mandate.
+            live_env = self._live_envelope_for_intent_locked(intent_id)
+            if live_env is not None:
+                raise SellIntentTransitionError(
+                    f"sell intent {intent_id} is bound to live execution "
+                    f"envelope {live_env}; the envelope drives its dispatch "
+                    "(WO-0036 R2 link)"
+                )
             # Idempotent: an intent already dispatched returns its existing order.
             if intent.status is SellIntentStatus.ORDERED:
                 if intent.order_id is None:
@@ -2702,6 +2982,11 @@ class SqliteStateStore(StateStore):
                     "SELECT * FROM orders WHERE id = ?", (active.order_id,)
                 )
                 active_order = self._order(order_row) if order_row is not None else None
+            # WO-0036 R2 (Codex PR#8 #4): an envelope-backed exit's live child
+            # is invisible on the intent (order_id=None) — read it via the
+            # envelope linkage under this SAME lock hold so the planner can
+            # defer to it instead of double-booking a second SELL.
+            envelope_child, envelope_intent = self._live_envelope_exit_locked(key)
 
             # ADR-003 / wave 3e: current session's §8 FSM + whether an
             # emergency-reduce override is active for this symbol, read under the
@@ -2717,6 +3002,8 @@ class SqliteStateStore(StateStore):
                 trading_state=trading_state,
                 override_active=override_active,
                 actor=actor,
+                envelope_child=envelope_child,
+                envelope_intent=envelope_intent,
             )
 
             if plan.outcome == FLATTEN_DENIED_HALTED:
@@ -2822,13 +3109,26 @@ class SqliteStateStore(StateStore):
                         self._insert_execution_event(cur, exec_event)
                     superseded = True
                 if plan.supersede_intent_expire is not None:
-                    self._update_sell_intent(cur, plan.supersede_intent_expire)
                     assert plan.supersede_expire_event is not None
-                    self._insert_event(
-                        cur,
-                        plan.supersede_expire_event.event_type,
-                        **plan.supersede_expire_event.as_kwargs(),
-                    )
+                    # WO-0036 R2: the envelope preemption above may have ALREADY
+                    # expired this intent (terminal propagation). Re-read the
+                    # live row and only apply the planner's expiry if it is
+                    # still pending/approved — the event log must carry exactly
+                    # ONE terminal transition per intent, never two.
+                    live_row = cur.execute(
+                        "SELECT status FROM sell_intents WHERE id = ?",
+                        (plan.supersede_intent_expire.id,),
+                    ).fetchone()
+                    if live_row is not None and live_row["status"] in (
+                        SellIntentStatus.PENDING.value,
+                        SellIntentStatus.APPROVED.value,
+                    ):
+                        self._update_sell_intent(cur, plan.supersede_intent_expire)
+                        self._insert_event(
+                            cur,
+                            plan.supersede_expire_event.event_type,
+                            **plan.supersede_expire_event.as_kwargs(),
+                        )
                     superseded = True
 
                 intent = self._insert_sell_intent_locked(
@@ -3547,6 +3847,10 @@ class SqliteStateStore(StateStore):
                 self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
                 if exec_event is not None:
                     self._insert_execution_event(cur, exec_event)
+                # WO-0036 R2: a venue-terminal envelope child may be its
+                # mandate's LAST live obligation — complete the intent release
+                # in the same transaction (no-op for non-envelope orders).
+                self._release_intent_for_terminal_child_locked(cur, updated)
             return updated
 
     # ------------------------------------------------------------------ #
@@ -3590,6 +3894,10 @@ class SqliteStateStore(StateStore):
                 cur, plan.audit_event.event_type, **plan.audit_event.as_kwargs()
             )
             self._insert_execution_event(cur, plan.execution_event)
+            # WO-0036 R2: same child-terminal release as transition_order —
+            # the evented paths (quarantine resolution, reconcile) are the
+            # other door a child takes to a venue terminal.
+            self._release_intent_for_terminal_child_locked(cur, updated)
         return updated
 
     async def quarantine_timed_out_order(
@@ -4379,19 +4687,45 @@ class SqliteStateStore(StateStore):
                     (session.id, OrderStatus.CREATED.value, OrderSide.BUY.value),
                 )
             ]
-            # PENDING/APPROVED sell intents expire at close, like candidates.
+            # PENDING/APPROVED sell intents expire at close, like candidates —
+            # EXCEPT one backed by a LIVE (ACTIVE/FROZEN) envelope (WO-0036
+            # R2): its mandate keeps working the exit across the boundary, so
+            # expiring it would orphan the envelope (the treadmill audit's
+            # P0). Spared intents are counted into the close event's payload.
             open_sell_intents = [
                 self._sell_intent(r)
                 for r in self._read_all(
                     "SELECT * FROM sell_intents WHERE session_id = ? "
-                    "AND status IN (?, ?) ORDER BY rowid",
+                    "AND status IN (?, ?) AND NOT EXISTS ("
+                    "  SELECT 1 FROM execution_envelopes e "
+                    "  WHERE e.sell_intent_id = sell_intents.id "
+                    "  AND e.status IN (?, ?)"
+                    ") ORDER BY rowid",
                     (
                         session.id,
                         SellIntentStatus.PENDING.value,
                         SellIntentStatus.APPROVED.value,
+                        EnvelopeStatus.ACTIVE.value,
+                        EnvelopeStatus.FROZEN.value,
                     ),
                 )
             ]
+            spared_row = self._read_one(
+                "SELECT COUNT(*) AS n FROM sell_intents WHERE session_id = ? "
+                "AND status IN (?, ?) AND EXISTS ("
+                "  SELECT 1 FROM execution_envelopes e "
+                "  WHERE e.sell_intent_id = sell_intents.id "
+                "  AND e.status IN (?, ?)"
+                ")",
+                (
+                    session.id,
+                    SellIntentStatus.PENDING.value,
+                    SellIntentStatus.APPROVED.value,
+                    EnvelopeStatus.ACTIVE.value,
+                    EnvelopeStatus.FROZEN.value,
+                ),
+            )
+            spared_sell_intents = int(spared_row["n"]) if spared_row else 0
             nonzero_positions = []
             # Enumerate symbols from the event log (Rule-7 truth), matching
             # memory + list_positions, so a FILL event with no fill row is
@@ -4412,6 +4746,7 @@ class SqliteStateStore(StateStore):
                 nonzero_positions=nonzero_positions,
                 now=now,
                 actor=actor,
+                spared_sell_intents=spared_sell_intents,
             )
 
             # Apply (read-then-write form): all UPDATEs/INSERTs commit together.

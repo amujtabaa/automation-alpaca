@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.store.core import EnvelopeTransitionError
 from app.transitions import ENVELOPE_TIMESTAMP, ENVELOPE_TRANSITIONS
+from tests.store_helpers import backing_intent_id
 
 pytestmark = pytest.mark.anyio
 
@@ -121,7 +122,10 @@ async def test_full_transition_matrix_both_stores(any_store, source, target):
     same-status re-request is an idempotent no-op."""
 
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    # WO-0036 R2: entry into ACTIVE validates the backing intent, so every
+    # activating walk needs a real one (activation normalizes it to APPROVED).
+    intent_id = await backing_intent_id(any_store)
+    env = await any_store.create_envelope(make_draft(intent_id))
     for step in PATH_TO[source]:
         env = await any_store.transition_envelope(env.id, step)
     assert env.status is source
@@ -146,7 +150,8 @@ async def test_full_transition_matrix_both_stores(any_store, source, target):
 
 async def test_resume_reenters_active_and_restamps_activation(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    intent_id = await backing_intent_id(any_store)
+    env = await any_store.create_envelope(make_draft(intent_id))
     await any_store.transition_envelope(env.id, S.APPROVED)
     active = await any_store.transition_envelope(env.id, S.ACTIVE)
     frozen = await any_store.transition_envelope(env.id, S.FROZEN)
@@ -171,7 +176,8 @@ async def test_transitions_emit_the_envelope_event_family(any_store):
     leaves a replayable ExecutionEvent trail (ADR-010 §6)."""
 
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    intent_id = await backing_intent_id(any_store)
+    env = await any_store.create_envelope(make_draft(intent_id))
     for step in (S.APPROVED, S.ACTIVE, S.FROZEN, S.ACTIVE, S.FROZEN, S.CANCELLED):
         await any_store.transition_envelope(env.id, step)
 
@@ -188,5 +194,5 @@ async def test_transitions_emit_the_envelope_event_family(any_store):
         ExecutionEventType.ENVELOPE_CANCELLED,
     ]
     # Every event correlates the owning intent (D-020 sell-side correlation).
-    assert all(e.correlation_id == "si-1" for e in mine)
+    assert all(e.correlation_id == intent_id for e in mine)
     assert all(e.symbol == "AAPL" for e in mine)

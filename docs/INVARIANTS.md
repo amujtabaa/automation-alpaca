@@ -698,28 +698,38 @@ mechanism mutation-checked — including the pin itself, whose first version
 was vacuously green below the floor and was caught by the R4 discovery
 sweep).
 
-**INV-087 — At most one ACTIVE execution envelope per SYMBOL.** The
-single-ACTIVE mandate is scoped per ``symbol``, not per ``sell_intent_id``:
+**INV-087 — At most one LIVE execution envelope per SYMBOL.** The
+single-mandate rail is scoped per ``symbol``, not per ``sell_intent_id``:
 activation (``approve_envelope_activation``), resume (``transition_envelope``
 → ACTIVE), and supersession all refuse if any OTHER envelope for the same
-symbol is already ACTIVE — enforced under the store lock/transaction in both
-stores (the SQLite twin is the partial unique index
-``idx_envelopes_one_active ON execution_envelopes(symbol) WHERE
-status='active'``).
+symbol is already LIVE — enforced under the store lock/transaction in both
+stores (the SQLite partial unique index ``idx_envelopes_one_active ON
+execution_envelopes(symbol) WHERE status='active'`` remains the ACTIVE-level
+storage backstop).
 *Why:* REV-0023 Phase-A2 P0. Scoping the guard per intent left a hole: a
 second sell_intent for the same symbol (e.g. across a session boundary that
 EXPIREd the first intent while its envelope stayed ACTIVE, since the envelope
-path never advances its backing intent past APPROVED) could activate a SECOND
+path never advanced its backing intent past APPROVED) could activate a SECOND
 envelope for the same symbol/position. Two ACTIVE mandates could then each
 stage a full-size SELL against one position — a broker-authoritative
 oversell / double-book the single-mandate design exists to prevent. The
 orphaned first envelope keeps working its exit; a redundant second mandate is
 simply refused.
+*Amended 2026-07-15 (WO-0036 R2):* LIVE = ACTIVE **or FROZEN**. A kill-frozen
+mandate's child may still rest at the venue, so approving a second mandate
+beside it is the same double-booking the ACTIVE clash forbids; a frozen
+mandate is replaced by resuming it, or by winding down its child and
+cancelling it — never by approving a sibling. With the R2 lifecycle link
+(INV-090) the session-boundary recipe above can no longer even reach this
+rail (the close SPARES a live mandate's intent; single-flight dedup blocks a
+second same-symbol intent) — INV-087 is the defense-in-depth backstop behind
+the link, no longer the only line.
 *Pinned by:*
 `tests/test_rev0023_phase_a2_pins.py::test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary`
 (both stores; the session-boundary reproduction now refuses the second
-activation) and `tests/test_wo0032_per_symbol_mandate.py` (direct guard +
-supersession still permitted).
+activation), `tests/test_wo0032_per_symbol_mandate.py` (direct guard, dedup
+layer, supersession still permitted, post-close boundary), and
+`tests/test_wo0036_r2_lifecycle_link.py::test_f1_second_mandate_refused_while_one_is_frozen`.
 
 **INV-088 — An unprintable price never drives features, sizing, or pricing.**
 Beyond the per-row validity screens (INV-086 clause 3), every print in the
@@ -757,6 +767,40 @@ forbids fabricating a $0 price).
 *Pinned by:* `tests/test_wo0033_phase_a2_fixes.py::test_completeness1_*`
 (both stores; TypeError on omission, InvalidFillError on 0/negative/NaN/Inf,
 projection stays healthy).
+
+**INV-090 — The SellIntent and Envelope lifecycles are structurally linked
+(one owner, one truth).** From first activation to its own terminal state, an
+envelope OWNS its backing intent: (a) every entry into ACTIVE — approve,
+generic transition, resume — validates that the backing intent exists,
+symbol-matches, and is PENDING/APPROVED, normalizing PENDING→APPROVED
+atomically with the activation (an owner-less or mismatched mandate is
+unrepresentable); (b) the backing intent expires when the mandate's LAST live
+obligation ends — at a releasing terminal (COMPLETED / EXPIRED / EXHAUSTED /
+BREACHED / CANCELLED — never SUPERSEDED, which transfers the mandate to the
+same-intent successor) when no other live envelope carries it AND no child
+may still rest at the venue, else at that child's own venue terminal (the
+child-terminal hook; a resting child under a breached/exhausted/rest-at-floor
+mandate keeps owning the symbol so fresh protection cannot double-book it);
+(c) session close SPARES an intent backed by a live
+(ACTIVE/FROZEN) envelope — the boundary can never orphan a working mandate —
+and the close event carries the spared count; (d) manual flatten DEFERS to a
+live/quarantined envelope child instead of double-booking it, and the
+preemption helper never CANCELs an envelope out from under a possibly-live
+child; (e) while a live envelope backs an intent, the legacy dispatch
+(``create_order_for_sell_intent``) and the public ``transition_sell_intent``
+refuse it — the envelope is the exclusive driver. Consequence:
+``sell_intent_is_active`` and the envelope lifecycle agree at every point of
+an envelope-backed exit's life, with no new stored counter (the link is
+enforced at existing write choke points).
+*Why:* AUDIT-0001 / WO-0036 R2 — the unlinked lifecycles were the structural
+root of the treadmill class: session close orphaned ACTIVE envelopes (the
+audit's P0), stale APPROVED intents blocked or double-armed re-protection,
+and the flatten planner double-booked live envelope children (Codex PR#8 #4,
+#8). ADR-010 §8 records the full semantics and the divergence from the WO's
+original ORDERED-at-activation recommendation.
+*Pinned by:* `tests/test_wo0036_r2_lifecycle_link.py` (both stores: A1-A6
+activation link, B1-B3 close spare, C1-C4 terminal release, D1-D3 flatten
+deferral, E1-E2 exclusive driver, F1 frozen clash).
 
 ---
 

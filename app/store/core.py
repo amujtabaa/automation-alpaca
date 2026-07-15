@@ -1008,6 +1008,8 @@ def plan_flatten_position(
     trading_state: TradingState = TradingState.ACTIVE,
     override_active: bool = False,
     actor: str = COMMAND_ACTOR_SYSTEM,
+    envelope_child: Optional[Order] = None,
+    envelope_intent: Optional[SellIntent] = None,
 ) -> FlattenPlan:
     """Decide the manual-flatten outcome for one symbol.
 
@@ -1034,6 +1036,16 @@ def plan_flatten_position(
     command actor and hands it in, and it is only stamped into the
     ``manual_flatten_deferred`` event's payload here — this planner never resolves
     identity itself, keeping it a pure function of its inputs.
+
+    WO-0036 R2 (Codex PR#8 #4): ``envelope_child`` is the symbol's live-at-venue
+    envelope child order (any ``VENUE_LIVE_ORDER_STATUSES`` order minted by a
+    LIVE envelope — quarantined included, it MAY be live per ADR-002), read by
+    the store under the SAME lock hold, or ``None``. An envelope-backed intent
+    carries ``order_id=None`` — the child is only discoverable through the
+    envelope's ENVELOPE_ACTION linkage, which is exactly why the pre-R2 planner
+    double-booked it. ``envelope_intent`` is that envelope's backing intent row
+    (normally ``active_intent`` itself; passed separately so a legacy orphan
+    still defers safely).
     """
 
     if position.quantity <= 0:
@@ -1041,6 +1053,40 @@ def plan_flatten_position(
 
     if trading_state is TradingState.HALTED and not override_active:
         return FlattenPlan(FLATTEN_DENIED_HALTED)
+
+    if envelope_child is not None:
+        # A live envelope child IS the exit, already working at the venue —
+        # the same INV-036 deferral as a live protection_floor order: never
+        # double-exit, never blind-cancel (ADR-002). The envelope stays the
+        # exclusive driver; the human's flatten is recorded, not lost.
+        deferred_intent = (
+            active_intent if active_intent is not None else envelope_intent
+        )
+        deferral_event = EventSpec(
+            EventType.MANUAL_FLATTEN_DEFERRED.value,
+            message=(
+                f"manual flatten for {position.symbol} deferred to the live "
+                f"execution-envelope child (order {envelope_child.status.value})"
+            ),
+            symbol=position.symbol,
+            order_id=envelope_child.id,
+            payload={
+                "reason": "deferred_to_live_envelope_child",
+                "order_status": envelope_child.status.value,
+                "deferred_intent_reason": (
+                    deferred_intent.reason.value if deferred_intent else None
+                ),
+                "actor": actor,
+            },
+            session_id=envelope_child.session_id,
+            correlation_id=deferred_intent.id if deferred_intent else None,
+        )
+        return FlattenPlan(
+            FLATTEN_EXISTING,
+            existing_intent=deferred_intent,
+            existing_order=envelope_child,
+            deferral_event=deferral_event,
+        )
 
     if active_intent is not None:
         if (
@@ -2097,6 +2143,7 @@ def plan_close_session(
     nonzero_positions: list[Position],
     now: datetime,
     actor: str = COMMAND_ACTOR_SYSTEM,
+    spared_sell_intents: int = 0,
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
@@ -2106,6 +2153,13 @@ def plan_close_session(
     PENDING/APPROVED sell intents (expired like candidates), and
     ``nonzero_positions`` every symbol with a nonzero derived position. The
     counts drive the summary event.
+
+    WO-0036 R2 (session-close event truth, gated): an intent backed by a LIVE
+    (ACTIVE/FROZEN) envelope is **spared** — the stores exclude it from
+    ``open_sell_intents`` BEFORE calling this planner, because expiring it
+    would orphan a still-working mandate (the audit's P0). ``spared_sell_intents``
+    is that excluded count, carried in the summary payload so the close event
+    stays a complete account of the boundary.
     """
 
     candidate_events = tuple(
@@ -2175,6 +2229,9 @@ def plan_close_session(
             "expired_candidates": len(open_candidates),
             "canceled_orders": len(created_orders),
             "expired_sell_intents": len(open_sell_intents),
+            # WO-0036 R2: intents backed by a live envelope survive the close
+            # (their mandate keeps working the exit across the boundary).
+            "spared_sell_intents": spared_sell_intents,
             "position_snapshots": len(snapshots),
             # W2-SESS (REV-0013): who closed the session — so the audit can
             # attribute a manual close to the operator (default "system" for an
@@ -2237,6 +2294,87 @@ _ENVELOPE_ONCE_ONLY: frozenset[EnvelopeStatus] = frozenset(
         EnvelopeStatus.CANCELLED,
     }
 )
+
+# --------------------------------------------------------------------------- #
+# WO-0036 R2 — the SellIntent↔Envelope lifecycle link (ADR-010 amendment)
+# --------------------------------------------------------------------------- #
+
+# A LIVE envelope is a standing mandate for its symbol/intent: ACTIVE (working)
+# or FROZEN (kill-paused, resumable — its child may still rest at the venue).
+# PENDING/APPROVED drafts are NOT live (they own nothing until first
+# activation); every terminal status is not live. This one predicate drives the
+# whole link: the per-symbol clash (INV-087), the session-close spare, the
+# terminal release, and the exclusive-driver guards all key on it.
+LIVE_ENVELOPE_STATUSES: frozenset[EnvelopeStatus] = frozenset(
+    {EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN}
+)
+
+# Terminal statuses that RELEASE the backing intent (the mandate is finished;
+# the symbol becomes eligible for fresh protection). SUPERSEDED is deliberately
+# absent: supersession transfers the mandate to the successor, which keeps the
+# intent (plan_supersede_envelope enforces same intent + symbol).
+ENVELOPE_RELEASING_TERMINALS: frozenset[EnvelopeStatus] = frozenset(
+    {
+        EnvelopeStatus.COMPLETED,
+        EnvelopeStatus.EXPIRED,
+        EnvelopeStatus.EXHAUSTED,
+        EnvelopeStatus.BREACHED,
+        EnvelopeStatus.CANCELLED,
+    }
+)
+
+# Order statuses that MAY be live at the venue (past CREATED, not terminal).
+# TIMEOUT_QUARANTINE is included on purpose: ADR-002 — an ambiguous submit MAY
+# be working, so every safe-side consumer (flatten deferral, preemption skip)
+# must treat it as live, never assume it is not.
+VENUE_LIVE_ORDER_STATUSES: frozenset[OrderStatus] = frozenset(
+    {
+        OrderStatus.SUBMITTING,
+        OrderStatus.SUBMITTED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.TIMEOUT_QUARANTINE,
+    }
+)
+
+
+def envelope_backing_intent_error(
+    intent: Optional[SellIntent], *, symbol: str, envelope_id: str
+) -> Optional[Exception]:
+    """Why an envelope may NOT enter ACTIVE for this backing intent, or None.
+
+    The R2 link's activation-side half, shared by BOTH stores and BOTH
+    activation paths (``approve_envelope_activation`` and the generic
+    ``transition_envelope`` → ACTIVE, first activation and resume): the
+    backing intent must exist (a typo'd ``sell_intent_id`` must never mint an
+    owner-less mandate — Codex PR#8 #8), its symbol must match, and it must be
+    PENDING/APPROVED — an ORDERED intent is owned by the legacy single-order
+    dispatch, and a terminal intent's mandate is finished. The store
+    normalizes a PENDING intent to APPROVED atomically with the activation
+    (the envelope approval IS the human approval of the exit).
+    """
+
+    if intent is None:
+        return InvalidOrderError(
+            f"envelope {envelope_id} references unknown sell intent — an "
+            "envelope must be backed by a real intent (R2 lifecycle link)"
+        )
+    if intent.symbol != symbol:
+        return InvalidOrderError(
+            f"envelope {envelope_id} symbol {symbol} does not match its "
+            f"backing sell intent's symbol {intent.symbol}"
+        )
+    if intent.status is SellIntentStatus.ORDERED:
+        return EnvelopeTransitionError(
+            f"sell intent {intent.id} is already ORDERED (legacy single-order "
+            "dispatch owns it); an envelope on top would double-book the exit"
+        )
+    if intent.status not in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
+        return EnvelopeTransitionError(
+            f"sell intent {intent.id} is {intent.status.value}; only a "
+            "pending/approved intent can back an envelope activation"
+        )
+    return None
 
 
 def _envelope_event(

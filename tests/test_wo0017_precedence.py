@@ -25,8 +25,6 @@ from app.models import (
     ExecutionEventType,
     OrderSide,
     OrderStatus,
-    OrderType,
-    SellIntentStatus,
     SellReason,
     SessionType,
     utcnow,
@@ -82,12 +80,16 @@ async def _protection_intent(store, symbol, qty):
 
 async def test_kill_freezes_every_active_envelope_atomically(any_store):
     await any_store.initialize()
+    si_a = await _protection_intent(any_store, "AAPL", 100)
+    si_b = await _protection_intent(any_store, "MSFT", 100)
     a = await any_store.approve_envelope_activation(
-        make_draft("si-1", "AAPL"), actor="operator-a"
+        make_draft(si_a.id, "AAPL"), actor="operator-a"
     )
     b = await any_store.approve_envelope_activation(
-        make_draft("si-2", "MSFT"), actor="operator-a"
+        make_draft(si_b.id, "MSFT"), actor="operator-a"
     )
+    # A never-activated draft may keep a synthetic id (R2 validates at
+    # activation, and this one structurally cannot activate while HALTED).
     pending = await any_store.create_envelope(make_draft("si-3", "NVDA"))
 
     await any_store.set_kill_switch(True, actor="operator-a")
@@ -109,8 +111,9 @@ async def test_kill_freezes_every_active_envelope_atomically(any_store):
 
 async def test_release_never_auto_resumes(any_store):
     await any_store.initialize()
+    si = await _protection_intent(any_store, "AAPL", 100)
     env = await any_store.approve_envelope_activation(
-        make_draft("si-1"), actor="operator-a"
+        make_draft(si.id), actor="operator-a"
     )
     await any_store.set_kill_switch(True, actor="operator-a")
     await any_store.set_kill_switch(False, actor="operator-a")
@@ -123,9 +126,12 @@ async def test_release_never_auto_resumes(any_store):
 
 async def test_resume_and_activation_are_refused_while_halted(any_store):
     await any_store.initialize()
+    si = await _protection_intent(any_store, "AAPL", 100)
     env = await any_store.approve_envelope_activation(
-        make_draft("si-1"), actor="operator-a"
+        make_draft(si.id), actor="operator-a"
     )
+    # The HALTED refusal fires before the R2 intent-link validation, so the
+    # never-activated MSFT draft can keep a synthetic id.
     pending = await any_store.create_envelope(make_draft("si-2", "MSFT"))
     await any_store.transition_envelope(pending.id, S.APPROVED)
     await any_store.set_kill_switch(True, actor="operator-a")
@@ -150,8 +156,9 @@ async def test_flatten_cancels_the_symbols_envelopes_before_proceeding(any_store
     env = await any_store.approve_envelope_activation(
         make_draft(si.id, "AAPL"), actor="operator-a"
     )
+    si_other = await _protection_intent(any_store, "MSFT", 100)
     other = await any_store.approve_envelope_activation(
-        make_draft("si-other", "MSFT"), actor="operator-a"
+        make_draft(si_other.id, "MSFT"), actor="operator-a"
     )
 
     result = await any_store.flatten_position("AAPL", actor="operator-ameen")
@@ -210,12 +217,23 @@ async def test_flatten_on_a_flat_position_still_cancels_stale_envelopes(any_stor
     assert (await any_store.get_envelope(env.id)).status is S.CANCELLED
 
 
-async def test_deferral_to_a_live_protection_exit_leaves_its_envelope_alone(
-    any_store,
-):
-    """ADR-003/WO-0015 unchanged: with the protection order in flight, the
-    flatten defers — and the envelope managing that live exit stays ACTIVE
-    (cancelling it would strand the very order the flatten defers to)."""
+async def test_deferral_to_a_live_exit_leaves_its_envelope_alone(any_store):
+    """ADR-003/WO-0015 posture unchanged: with the exit in flight at the
+    venue, the flatten defers — and the envelope managing that live exit
+    stays ACTIVE (cancelling it would strand the very order the flatten
+    defers to). Pre-R2 this scenario mixed an envelope with a LEGACY
+    ``create_order_for_sell_intent`` dispatch of the same intent; the R2 link
+    forbids that hybrid (the envelope is the exclusive dispatch driver —
+    pinned in test_wo0036_r2_lifecycle_link), so the live exit is now built
+    the only way it can exist: as the envelope's own staged+submitted child."""
+
+    from datetime import datetime, timezone
+
+    from app.sellside.types import ActionKind, PlannedAction
+
+    # Deterministic REGULAR-phase clock (engine discipline: the validation
+    # clock is injected, never wall time); the TTL anchors to the same clock.
+    now = datetime(2026, 7, 15, 14, 0, 0, tzinfo=timezone.utc)
 
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
@@ -223,13 +241,32 @@ async def test_deferral_to_a_live_protection_exit_leaves_its_envelope_alone(
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
     env = await any_store.approve_envelope_activation(
-        make_draft(si.id, "AAPL"), actor="operator-a"
+        make_draft(
+            si.id,
+            "AAPL",
+            floor_price=9.0,
+            cooldown_floor_ms=1,
+            expires_at=now + timedelta(hours=2),
+        ),
+        actor="operator-a",
     )
-    await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
-    order = await any_store.create_order_for_sell_intent(
-        si.id, order_type=OrderType.MARKET
+    action = PlannedAction(
+        kind=ActionKind.SUBMIT,
+        limit_price=9.9,
+        quantity=100,
+        regime=None,
+        urgency=0.0,
+        working_stop=9.5,
+        atr=0.05,
+        tranche=False,
+        stop_triggered=False,
+        clamps=(),
     )
-    claim = await any_store.claim_order_for_submission(order.id)
+    staged = await any_store.stage_envelope_action(
+        env.id, action, snapshot_fingerprint="fp-prec", actor="engine", now=now
+    )
+    assert staged.order is not None, f"stage refused: {staged.outcome}"
+    claim = await any_store.claim_order_for_submission(staged.order.id)
     await any_store.transition_order(
         claim.order.id, OrderStatus.SUBMITTED, broker_order_id="broker-x"
     )

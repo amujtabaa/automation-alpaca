@@ -339,6 +339,8 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         "expired_candidates": 2,
         "canceled_orders": 1,
         "expired_sell_intents": 1,
+        # WO-0036 R2: live-envelope-backed intents survive the close; none here.
+        "spared_sell_intents": 0,
         "position_snapshots": 1,
         # W2-SESS: the close is attributed; default "system" when no actor is passed.
         "actor": "system",

@@ -115,6 +115,10 @@ from app.store.core import (
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
+    ENVELOPE_RELEASING_TERMINALS,
+    LIVE_ENVELOPE_STATUSES,
+    VENUE_LIVE_ORDER_STATUSES,
+    envelope_backing_intent_error,
     envelope_created_event,
     envelope_draft_reason,
     plan_envelope_fill,
@@ -770,13 +774,15 @@ class InMemoryStateStore(StateStore):
         new_status: SellIntentStatus,
         *,
         order_id: Optional[str] = None,
+        reason: Optional[str] = None,
     ) -> bool:
         """Apply a sell-intent status transition in place (assumes the lock and
         an ``_atomic()`` block are already held by the caller). Returns
         ``False`` for a same-status no-op (nothing applied, no event written);
         ``True`` if it actually transitioned. Raises
         :class:`SellIntentTransitionError` for an illegal transition (nothing
-        mutated).
+        mutated). ``reason`` (WO-0036 R2) lands in the event payload so an
+        envelope-driven transition is distinguishable from a legacy one.
         """
 
         current = intent.status
@@ -793,12 +799,15 @@ class InMemoryStateStore(StateStore):
             setattr(intent, ts_field, utcnow())
         if new_status is SellIntentStatus.ORDERED and order_id is not None:
             intent.order_id = order_id
+        payload: dict = {"from": current.value, "to": new_status.value}
+        if reason is not None:
+            payload["reason"] = reason
         self._append_event_unlocked(
             "sell_intent_transition",
             message=f"sell intent {current.value} -> {new_status.value}",
             symbol=intent.symbol,
             order_id=order_id,
-            payload={"from": current.value, "to": new_status.value},
+            payload=payload,
             session_id=intent.session_id,
             correlation_id=intent.id,
         )
@@ -871,6 +880,17 @@ class InMemoryStateStore(StateStore):
             intent = self._sell_intents.get(intent_id)
             if intent is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
+            # WO-0036 R2 exclusive driver: while a LIVE envelope backs the
+            # intent, the envelope alone drives its lifecycle (activation
+            # normalizes it, terminal release expires it) — an out-of-band
+            # transition here would desync the two lifecycles.
+            live_env = self._live_envelope_for_intent_unlocked(intent_id)
+            if live_env is not None:
+                raise SellIntentTransitionError(
+                    f"sell intent {intent_id} is bound to live execution "
+                    f"envelope {live_env.id}; its lifecycle is driven by the "
+                    "envelope (WO-0036 R2 link)"
+                )
             with self._atomic():
                 self._transition_sell_intent_unlocked(
                     intent, new_status, order_id=order_id
@@ -913,36 +933,199 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
-    def _other_active_envelope_for_symbol_unlocked(
+    def _other_live_envelope_for_symbol_unlocked(
         self, symbol: str, *, excluding: str
     ) -> Optional[ExecutionEnvelope]:
-        """Any OTHER envelope for this SYMBOL currently ACTIVE — the per-symbol
-        single-ACTIVE mandate (WO-0032 / REV-0023 P0; the SQLite twin is a
-        partial unique index on ``symbol``).
+        """Any OTHER envelope for this SYMBOL currently LIVE (ACTIVE or
+        FROZEN) — the per-symbol single-mandate rail (WO-0032 / REV-0023 P0,
+        INV-087; the SQLite partial unique index on ACTIVE stays the storage
+        backstop).
 
         Scoped to symbol, NOT ``sell_intent_id``: at most one live selling
-        mandate per symbol/position. A second intent for the same symbol (e.g.
-        across a session boundary that EXPIREd the first intent while its
-        envelope stayed ACTIVE) must not be able to activate a second envelope
-        and double-book the exit — two ACTIVE mandates could each stage a
-        full-size SELL against one position (INV-087)."""
+        mandate per symbol/position — two mandates could each stage a
+        full-size SELL against one position. FROZEN counts as live (WO-0036
+        R2): a kill-frozen mandate's child may still rest at the venue, so
+        activating a SECOND envelope next to it is the same double-booking the
+        ACTIVE clash forbids — the frozen one must be resumed or wound down
+        (cancel refuses while its child is live) first."""
 
         key = normalize_symbol(symbol)
         for env in self._envelopes.values():
             if (
                 env.id != excluding
                 and env.symbol == key
-                and env.status is EnvelopeStatus.ACTIVE
+                and env.status in LIVE_ENVELOPE_STATUSES
             ):
                 return env
         return None
+
+    def _live_envelope_for_intent_unlocked(
+        self, intent_id: str
+    ) -> Optional[ExecutionEnvelope]:
+        """The LIVE (ACTIVE/FROZEN) envelope backing ``intent_id``, or None —
+        the R2 exclusive-driver predicate: while it exists, the envelope alone
+        drives the intent's lifecycle and dispatch."""
+
+        for env in self._envelopes.values():
+            if env.sell_intent_id == intent_id and env.status in LIVE_ENVELOPE_STATUSES:
+                return env
+        return None
+
+    def _validate_backing_intent_unlocked(
+        self, envelope: ExecutionEnvelope
+    ) -> SellIntent:
+        """Load + validate the backing intent for an activation (WO-0036 R2 /
+        Codex PR#8 #8): it must exist, match the symbol, and be PENDING or
+        APPROVED. Returns the LIVE intent object (the caller normalizes
+        PENDING→APPROVED inside its atomic block via
+        ``_link_backing_intent_unlocked``); raises the shared planner error
+        otherwise. Runs on EVERY entry into ACTIVE — approve, generic
+        transition, resume — so no activation path can mint an owner-less or
+        mismatched mandate."""
+
+        intent = self._sell_intents.get(envelope.sell_intent_id)
+        error = envelope_backing_intent_error(
+            intent, symbol=envelope.symbol, envelope_id=envelope.id
+        )
+        if error is not None:
+            raise error
+        assert intent is not None  # narrowed by the validator
+        return intent
+
+    def _link_backing_intent_unlocked(self, intent: SellIntent) -> None:
+        """Normalize a PENDING backing intent to APPROVED atomically with the
+        envelope's activation (the envelope approval IS the human approval of
+        the exit — WO-0036 R2). Assumes the lock and an ``_atomic()`` block are
+        held; a no-op for an already-APPROVED intent."""
+
+        if intent.status is SellIntentStatus.PENDING:
+            self._transition_sell_intent_unlocked(
+                intent, SellIntentStatus.APPROVED, reason="envelope_activation"
+            )
+
+    def _release_intent_for_terminal_envelope_unlocked(
+        self, envelope: ExecutionEnvelope
+    ) -> None:
+        """WO-0036 R2 terminal propagation: an envelope entering a RELEASING
+        terminal (COMPLETED/EXPIRED/EXHAUSTED/BREACHED/CANCELLED — never
+        SUPERSEDED, the successor keeps the intent) expires its backing intent
+        so the symbol becomes eligible for fresh protection. Assumes the lock
+        and an ``_atomic()`` block are held (runs inside the same atomic unit
+        as the envelope's own transition). Skips when: the envelope never
+        activated (a rejected/expired draft never owned the intent), the
+        intent is already terminal/ORDERED, ANOTHER live envelope still
+        carries the mandate, or a child of THIS envelope may still be live at
+        the venue — BREACHED/EXHAUSTED/REST_AT_FLOOR (and an EXPIRED cancel
+        mid-convergence) leave the working order resting, and releasing the
+        symbol then would let fresh protection double-book it; the
+        child-terminal hook below completes the release when that last
+        obligation ends."""
+
+        if envelope.status not in ENVELOPE_RELEASING_TERMINALS:
+            return
+        if envelope.activated_at is None:
+            return  # never activated — it never owned the intent
+        intent = self._sell_intents.get(envelope.sell_intent_id)
+        if intent is None or intent.status not in (
+            SellIntentStatus.PENDING,
+            SellIntentStatus.APPROVED,
+        ):
+            return
+        for other in self._envelopes.values():
+            if (
+                other.id != envelope.id
+                and other.sell_intent_id == envelope.sell_intent_id
+                and other.status in LIVE_ENVELOPE_STATUSES
+            ):
+                return  # the mandate lives on in another envelope
+        if self._envelope_has_live_child_unlocked(envelope):
+            return  # a resting/ambiguous child is still a live obligation
+        self._transition_sell_intent_unlocked(
+            intent, SellIntentStatus.EXPIRED, reason="envelope_terminal"
+        )
+
+    def _release_intent_for_terminal_child_unlocked(self, order: Order) -> None:
+        """The child-terminal half of the R2 release: an envelope in a
+        releasing terminal may still hold the symbol through a RESTING child
+        (see above) — when that child reaches a venue terminal, re-run the
+        release against its envelope in the SAME atomic unit as the order
+        write. No-ops for non-envelope orders and for envelopes still live."""
+
+        if order.status not in (
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+        ):
+            return
+        for event in self._execution_events:
+            if (
+                event.order_id == order.id
+                and event.event_type is ExecutionEventType.ENVELOPE_ACTION
+                and event.envelope_id is not None
+            ):
+                env = self._envelopes.get(event.envelope_id)
+                if env is not None:
+                    self._release_intent_for_terminal_envelope_unlocked(env)
+                return
+
+    def _envelope_has_live_child_unlocked(self, envelope: ExecutionEnvelope) -> bool:
+        """Whether the envelope's working order MAY be live at the venue.
+        CREATED is NOT live (local-only staging — the preemption sweep cancels
+        it atomically, WO-0024); TIMEOUT_QUARANTINE IS live (ADR-002: an
+        ambiguous submit may be working). Used by the flatten preemption so an
+        envelope is never CANCELLED out from under a possibly-live child (the
+        internal twin of the public transition_envelope→CANCELLED guard)."""
+
+        try:
+            _, working = self._envelope_action_context_unlocked(envelope)
+        except EnvelopeActionPausedError:
+            return True  # quarantined child — MAY be live
+        return working is not None and working.status is not OrderStatus.CREATED
+
+    def _live_envelope_exit_unlocked(
+        self, symbol: str
+    ) -> tuple[Optional[Order], Optional[SellIntent]]:
+        """(live-at-venue child order, its envelope's backing intent) for the
+        symbol's LIVE envelopes, or (None, None) — the flatten planner's R2
+        input (Codex PR#8 #4). The newest venue-live child wins, mirroring the
+        working-order convention (latest action sequence)."""
+
+        live_env_ids = {
+            env.id: env
+            for env in self._envelopes.values()
+            if env.symbol == symbol and env.status in LIVE_ENVELOPE_STATUSES
+        }
+        if not live_env_ids:
+            return None, None
+        child: Optional[Order] = None
+        owner: Optional[ExecutionEnvelope] = None
+        for event in self._execution_events:
+            if (
+                event.envelope_id not in live_env_ids
+                or event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+                or event.order_id is None
+            ):
+                continue
+            order = self._orders.get(event.order_id)
+            if order is not None and order.status in VENUE_LIVE_ORDER_STATUSES:
+                child = order
+                owner = live_env_ids[event.envelope_id]
+        if child is None or owner is None:
+            return None, None
+        return child, self._sell_intents.get(owner.sell_intent_id)
 
     def _apply_envelope_transition_unlocked(
         self, plan: EnvelopeTransitionPlan
     ) -> ExecutionEnvelope:
         """Persist an APPLY-outcome transition plan (assumes lock + _atomic).
         The caller has already dispatched NOOP/REJECT and run the
-        single-ACTIVE check where the target is ACTIVE."""
+        single-ACTIVE check where the target is ACTIVE.
+
+        WO-0036 R2: this is the ONE choke point every envelope status write
+        flows through (supersession excepted — SUPERSEDED transfers, never
+        releases), so the terminal propagation lives here: entering a
+        releasing terminal expires the backing intent in the SAME atomic unit,
+        sequenced after the envelope's own events."""
 
         assert plan.envelope is not None
         assert plan.execution_event is not None and plan.audit_event is not None
@@ -952,6 +1135,7 @@ class InMemoryStateStore(StateStore):
         self._append_event_unlocked(
             plan.audit_event.event_type, **plan.audit_event.as_kwargs()
         )
+        self._release_intent_for_terminal_envelope_unlocked(stored)
         return stored
 
     async def create_envelope(
@@ -1043,14 +1227,19 @@ class InMemoryStateStore(StateStore):
                         f"envelope {env.id} cannot enter ACTIVE: trading "
                         "halted (kill switch engaged)"
                     )
-                clash = self._other_active_envelope_for_symbol_unlocked(
+                clash = self._other_live_envelope_for_symbol_unlocked(
                     env.symbol, excluding=env.id
                 )
                 if clash is not None:
                     raise EnvelopeTransitionError(
-                        f"envelope {clash.id} is already ACTIVE for symbol "
-                        f"{env.symbol} (per-symbol single-ACTIVE invariant)"
+                        f"envelope {clash.id} is already live "
+                        f"({clash.status.value}) for symbol {env.symbol} "
+                        "(per-symbol single-ACTIVE mandate, INV-087)"
                     )
+                # WO-0036 R2: EVERY entry into ACTIVE (first activation AND
+                # resume) validates the backing-intent link — this generic
+                # edge must not be the one activation path with a bypass.
+                backing_intent = self._validate_backing_intent_unlocked(env)
             if new_status is EnvelopeStatus.CANCELLED:
                 # Codex PR#8 #5: a FROZEN envelope may still have a LIVE child at
                 # the venue (kill-switch froze a formerly-ACTIVE mandate whose
@@ -1070,6 +1259,10 @@ class InMemoryStateStore(StateStore):
                         "(flatten / kill switch), then cancel"
                     )
             with self._atomic():
+                if new_status is EnvelopeStatus.ACTIVE:
+                    # R2 link: the envelope approval IS the intent approval —
+                    # normalized atomically with the activation write.
+                    self._link_backing_intent_unlocked(backing_intent)
                 stored = self._apply_envelope_transition_unlocked(plan)
                 # A freeze is never exited by a fill: an envelope fully filled
                 # while FROZEN completes HERE, on resume, atomically with it.
@@ -1116,15 +1309,16 @@ class InMemoryStateStore(StateStore):
                 raise plan.error
             assert plan.old_envelope is not None and plan.new_envelope is not None
             # Belt over the planner's braces: no OTHER envelope for the symbol
-            # may be ACTIVE while the successor takes over (the old one is
+            # may be live while the successor takes over (the old one is
             # leaving ACTIVE inside this same atomic unit).
-            clash = self._other_active_envelope_for_symbol_unlocked(
+            clash = self._other_live_envelope_for_symbol_unlocked(
                 old.symbol, excluding=old.id
             )
             if clash is not None:
                 raise EnvelopeTransitionError(
-                    f"envelope {clash.id} is already ACTIVE for symbol "
-                    f"{old.symbol} (per-symbol single-ACTIVE invariant)"
+                    f"envelope {clash.id} is already live "
+                    f"({clash.status.value}) for symbol {old.symbol} "
+                    "(per-symbol single-ACTIVE mandate, INV-087)"
                 )
             with self._atomic():
                 self._envelopes[plan.old_envelope.id] = plan.old_envelope.model_copy(
@@ -1358,14 +1552,24 @@ class InMemoryStateStore(StateStore):
                     "envelope activation refused: trading halted (kill switch engaged)"
                 )
             symbol = (stored or draft).symbol
-            clash = self._other_active_envelope_for_symbol_unlocked(
+            clash = self._other_live_envelope_for_symbol_unlocked(
                 symbol, excluding=draft.id
             )
             if clash is not None:
                 raise EnvelopeTransitionError(
-                    f"envelope {clash.id} is already ACTIVE for symbol "
-                    f"{symbol} (per-symbol single-ACTIVE invariant)"
+                    f"envelope {clash.id} is already live "
+                    f"({clash.status.value}) for symbol {symbol} "
+                    "(per-symbol single-ACTIVE mandate, INV-087)"
                 )
+            # WO-0036 R2 (Codex PR#8 #8): LOAD + validate the backing intent
+            # before anything is minted — a typo'd sell_intent_id or symbol
+            # must never produce an owner-less ACTIVE mandate. Read-only here;
+            # the PENDING→APPROVED normalization joins the atomic block below.
+            backing_intent = self._validate_backing_intent_unlocked(
+                (stored or draft).model_copy(
+                    update={"symbol": normalize_symbol(symbol)}
+                )
+            )
             with self._atomic():
                 if stored is None:
                     key = normalize_symbol(draft.symbol)
@@ -1382,6 +1586,9 @@ class InMemoryStateStore(StateStore):
                         correlation_id=stored.sell_intent_id,
                         payload={"actor": actor, "envelope_id": stored.id},
                     )
+                # R2 link: the envelope approval IS the intent approval —
+                # normalized atomically with the activation chain below.
+                self._link_backing_intent_unlocked(backing_intent)
                 current = stored
                 if current.status is EnvelopeStatus.PENDING:
                     plan = plan_envelope_transition(
@@ -1403,7 +1610,15 @@ class InMemoryStateStore(StateStore):
         through legal edges (ACTIVE goes via FROZEN) — the manual-flatten
         preemption. Assumes the lock and an ``_atomic()`` block are held, so
         the preemption commits in the SAME atomic unit as the flatten's own
-        writes and its events sequence BEFORE them."""
+        writes and its events sequence BEFORE them.
+
+        WO-0036 R2: an envelope whose child MAY be live at the venue is
+        SKIPPED (evented), never cancelled out from under it — the internal
+        twin of the public transition_envelope→CANCELLED live-child guard
+        (Codex PR#8 #5). The flatten's own deferral makes this unreachable on
+        the create branch; it stands as the choke-point rule so the FLAT
+        branch (and any future caller) cannot strand a live order under a
+        terminal envelope either."""
 
         preempted: list[str] = []
         for env in list(self._envelopes.values()):
@@ -1411,6 +1626,24 @@ class InMemoryStateStore(StateStore):
                 continue
             if not ENVELOPE_TRANSITIONS.get(env.status):
                 continue  # terminal — nothing to preempt
+            if self._envelope_has_live_child_unlocked(env):
+                self._append_event_unlocked(
+                    "envelope_preemption_deferred",
+                    message=(
+                        f"envelope {env.id} preemption deferred: its child may "
+                        "be live at the venue (wind it down first)"
+                    ),
+                    symbol=symbol,
+                    payload={
+                        "envelope_id": env.id,
+                        "reason": "live_child_at_venue",
+                        "preemption_reason": reason,
+                        "actor": actor,
+                    },
+                    session_id=env.session_id,
+                    correlation_id=env.sell_intent_id,
+                )
+                continue
             current = env
             if current.status is EnvelopeStatus.ACTIVE:
                 plan = plan_envelope_transition(
@@ -1538,6 +1771,17 @@ class InMemoryStateStore(StateStore):
             intent = self._sell_intents.get(intent_id)
             if intent is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
+            # WO-0036 R2 exclusive driver: an envelope-backed intent is
+            # dispatched ONLY by the envelope executor (staged, budgeted,
+            # write-time re-validated) — the legacy single-order handoff on
+            # top of it would be a second exit for the same mandate.
+            live_env = self._live_envelope_for_intent_unlocked(intent_id)
+            if live_env is not None:
+                raise SellIntentTransitionError(
+                    f"sell intent {intent_id} is bound to live execution "
+                    f"envelope {live_env.id}; the envelope drives its dispatch "
+                    "(WO-0036 R2 link)"
+                )
             # Idempotent: an intent already dispatched returns its existing order.
             if intent.status is SellIntentStatus.ORDERED:
                 existing = (
@@ -1661,6 +1905,11 @@ class InMemoryStateStore(StateStore):
                 if active is not None and active.order_id is not None
                 else None
             )
+            # WO-0036 R2 (Codex PR#8 #4): an envelope-backed exit's live child
+            # is invisible on the intent (order_id=None) — read it via the
+            # envelope linkage under this SAME lock hold so the planner can
+            # defer to it instead of double-booking a second SELL.
+            envelope_child, envelope_intent = self._live_envelope_exit_unlocked(key)
             # ADR-003 / wave 3e: read the current session's §8 FSM + whether an
             # emergency-reduce override is active for this symbol, both under this
             # same lock so the deny decision can't straddle a concurrent control
@@ -1679,6 +1928,8 @@ class InMemoryStateStore(StateStore):
                 trading_state=trading_state,
                 override_active=override_active,
                 actor=actor,
+                envelope_child=envelope_child,
+                envelope_intent=envelope_intent,
             )
 
             if plan.outcome == FLATTEN_DENIED_HALTED:
@@ -1709,10 +1960,15 @@ class InMemoryStateStore(StateStore):
                     )
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
-                assert plan.existing_intent is not None
-                # Provenance for a deferral to a live PROTECTION_FLOOR exit
-                # (INV-036): record that a human flatten was received and deferred
-                # (no state mutated, one audit row), in the same lock hold.
+                # An intent is always present except on an envelope-child
+                # deferral over legacy pre-R2 data whose intent row is gone.
+                assert plan.existing_intent is not None or (
+                    plan.deferral_event is not None
+                )
+                # Provenance for a deferral to a live PROTECTION_FLOOR exit or
+                # a live envelope child (INV-036): record that a human flatten
+                # was received and deferred (no state mutated, one audit row),
+                # in the same lock hold.
                 if plan.deferral_event is not None:
                     with self._atomic():
                         self._append_event_unlocked(
@@ -1721,7 +1977,11 @@ class InMemoryStateStore(StateStore):
                         )
                 return FlattenResult(
                     FLATTEN_EXISTING,
-                    intent=plan.existing_intent.model_copy(deep=True),
+                    intent=(
+                        plan.existing_intent.model_copy(deep=True)
+                        if plan.existing_intent is not None
+                        else None
+                    ),
                     order=(
                         plan.existing_order.model_copy(deep=True)
                         if plan.existing_order is not None
@@ -1782,13 +2042,23 @@ class InMemoryStateStore(StateStore):
                     superseded = True
                 if plan.supersede_intent_expire is not None:
                     assert plan.supersede_expire_event is not None
-                    self._sell_intents[plan.supersede_intent_expire.id] = (
-                        plan.supersede_intent_expire
-                    )
-                    self._append_event_unlocked(
-                        plan.supersede_expire_event.event_type,
-                        **plan.supersede_expire_event.as_kwargs(),
-                    )
+                    # WO-0036 R2: the envelope preemption above may have ALREADY
+                    # expired this intent (terminal propagation). Re-read the
+                    # live row and only apply the planner's expiry if it is
+                    # still pending/approved — the event log must carry exactly
+                    # ONE terminal transition per intent, never two.
+                    live_row = self._sell_intents.get(plan.supersede_intent_expire.id)
+                    if live_row is not None and live_row.status in (
+                        SellIntentStatus.PENDING,
+                        SellIntentStatus.APPROVED,
+                    ):
+                        self._sell_intents[plan.supersede_intent_expire.id] = (
+                            plan.supersede_intent_expire
+                        )
+                        self._append_event_unlocked(
+                            plan.supersede_expire_event.event_type,
+                            **plan.supersede_expire_event.as_kwargs(),
+                        )
                     superseded = True
                 intent = self._insert_sell_intent_unlocked(
                     symbol=key,
@@ -2315,6 +2585,10 @@ class InMemoryStateStore(StateStore):
                 )
                 if exec_event is not None:
                     self._append_execution_event_unlocked(exec_event)
+                # WO-0036 R2: a venue-terminal envelope child may be its
+                # mandate's LAST live obligation — complete the intent release
+                # in the same atomic unit (no-op for non-envelope orders).
+                self._release_intent_for_terminal_child_unlocked(plan.order)
             return plan.order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #
@@ -2342,6 +2616,10 @@ class InMemoryStateStore(StateStore):
                 plan.audit_event.event_type, **plan.audit_event.as_kwargs()
             )
             self._append_execution_event_unlocked(plan.execution_event)
+            # WO-0036 R2: same child-terminal release as transition_order —
+            # the evented paths (quarantine resolution, reconcile) are the
+            # other door a child takes to a venue terminal.
+            self._release_intent_for_terminal_child_unlocked(plan.order)
         return plan.order.model_copy(deep=True)
 
     async def quarantine_timed_out_order(
@@ -2972,13 +3250,23 @@ class InMemoryStateStore(StateStore):
             and o.status is OrderStatus.CREATED
             and OrderSide(o.side) is OrderSide.BUY
         ]
-        # PENDING/APPROVED sell intents expire at close, like candidates.
-        open_sell_intents = [
-            si
-            for si in self._sell_intents.values()
-            if si.session_id == session.id
-            and si.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED)
-        ]
+        # PENDING/APPROVED sell intents expire at close, like candidates —
+        # EXCEPT one backed by a LIVE (ACTIVE/FROZEN) envelope (WO-0036 R2):
+        # its mandate keeps working the exit across the boundary, so expiring
+        # it would orphan the envelope (the treadmill audit's P0). Spared
+        # intents are counted into the close event's payload.
+        open_sell_intents = []
+        spared_sell_intents = 0
+        for si in self._sell_intents.values():
+            if si.session_id != session.id or si.status not in (
+                SellIntentStatus.PENDING,
+                SellIntentStatus.APPROVED,
+            ):
+                continue
+            if self._live_envelope_for_intent_unlocked(si.id) is not None:
+                spared_sell_intents += 1
+                continue
+            open_sell_intents.append(si)
         nonzero_positions = []
         # Enumerate position symbols from the event log (the Rule-7 truth), not
         # the fills read-model — so a FILL event with no fill row (reconciliation
@@ -2996,6 +3284,7 @@ class InMemoryStateStore(StateStore):
             nonzero_positions=nonzero_positions,
             now=now,
             actor=actor,
+            spared_sell_intents=spared_sell_intents,
         )
 
         # Apply (in-place mutation form). D-013a: expire open candidates, cancel

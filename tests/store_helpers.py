@@ -2,8 +2,23 @@
 
 from __future__ import annotations
 
-from app.models import OrderStatus
+from app.models import OrderStatus, SellReason
 from app.store.base import CLAIM_CLAIMED
+
+
+async def backing_intent_id(store, symbol: str = "AAPL", qty: int = 100) -> str:
+    """A REAL sell intent's id to back an envelope draft (WO-0036 R2: every
+    entry into ACTIVE validates that the backing intent exists, matches the
+    symbol, and is pending/approved — synthetic "si-1"-style ids no longer
+    activate). Single-flight dedup applies: a second call for the same symbol
+    returns the already-active intent's id. PROTECTION_FLOOR creation is
+    kill-switch-gated, so create the intent BEFORE engaging a kill switch in
+    tests that need both."""
+
+    intent = await store.create_sell_intent(
+        symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=qty
+    )
+    return intent.id
 
 
 async def submit_created_order(store, order_id, *, broker_order_id="broker-test"):

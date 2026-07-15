@@ -185,9 +185,7 @@ def test_expires_at_must_be_timezone_aware():
     with pytest.raises(ValidationError):
         make_envelope(expires_at=datetime(2026, 7, 15, 20, 0, 0))  # no tzinfo
     # An aware TTL still constructs fine.
-    ok = make_envelope(
-        expires_at=datetime(2026, 7, 15, 20, 0, 0, tzinfo=timezone.utc)
-    )
+    ok = make_envelope(expires_at=datetime(2026, 7, 15, 20, 0, 0, tzinfo=timezone.utc))
     assert ok.expires_at.tzinfo is not None
 
 

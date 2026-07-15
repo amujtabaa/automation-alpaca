@@ -27,6 +27,7 @@ from app.models import (
 )
 from app.store.base import OrderIntentBlockedError
 from app.store.core import EnvelopeTransitionError
+from tests.store_helpers import backing_intent_id
 
 pytestmark = pytest.mark.anyio
 
@@ -62,7 +63,7 @@ async def envelope_events(store, envelope_id):
 
 async def test_approve_activation_is_one_atomic_unit_with_full_trail(any_store):
     await any_store.initialize()
-    draft = make_draft()
+    draft = make_draft(intent_id=await backing_intent_id(any_store))
     active = await any_store.approve_envelope_activation(draft, actor="operator-ameen")
     assert active.status is S.ACTIVE
     assert active.approved_at is not None and active.activated_at is not None
@@ -82,7 +83,7 @@ async def test_approve_activation_is_one_atomic_unit_with_full_trail(any_store):
 
 async def test_reapprove_of_active_is_an_idempotent_noop(any_store):
     await any_store.initialize()
-    draft = make_draft()
+    draft = make_draft(intent_id=await backing_intent_id(any_store))
     first = await any_store.approve_envelope_activation(draft, actor="operator-a")
     before = len(await envelope_events(any_store, draft.id))
     again = await any_store.approve_envelope_activation(draft, actor="operator-a")
@@ -95,7 +96,7 @@ async def test_approve_of_a_preexisting_pending_draft_completes_the_chain(
     any_store,
 ):
     await any_store.initialize()
-    draft = make_draft()
+    draft = make_draft(intent_id=await backing_intent_id(any_store))
     await any_store.create_envelope(draft, actor="operator-a")
     active = await any_store.approve_envelope_activation(draft, actor="operator-a")
     assert active.status is S.ACTIVE
@@ -121,8 +122,11 @@ async def test_halted_blocks_approval_with_zero_artifacts(any_store):
     atomic with the would-be writes, so nothing exists afterwards."""
 
     await any_store.initialize()
+    # WO-0036 R2: mint the backing intent BEFORE the kill — PROTECTION_FLOOR
+    # intent creation is itself halt-gated; this test's claim is about the
+    # APPROVAL leaving zero ENVELOPE artifacts (the pre-existing intent is fine).
+    draft = make_draft(intent_id=await backing_intent_id(any_store))
     await any_store.set_kill_switch(True, actor="operator-a")
-    draft = make_draft()
     with pytest.raises(OrderIntentBlockedError):
         await any_store.approve_envelope_activation(draft, actor="operator-a")
     assert await any_store.get_envelope(draft.id) is None  # zero artifacts
@@ -145,7 +149,9 @@ async def test_kill_race_never_ends_with_an_active_envelope_under_halted(
     assertions fail loudly instead of silently passing.)"""
 
     await any_store.initialize()
-    draft = make_draft()
+    # WO-0036 R2: the backing intent must pre-exist BOTH racers (creation is
+    # halt-gated, and the approve-first arm must be able to reach ACTIVE).
+    draft = make_draft(intent_id=await backing_intent_id(any_store))
     kill = any_store.set_kill_switch(True, actor="operator-a")
     approve = any_store.approve_envelope_activation(draft, actor="operator-a")
     first, second = (kill, approve) if kill_first else (approve, kill)
@@ -171,7 +177,10 @@ async def test_kill_race_never_ends_with_an_active_envelope_under_halted(
 
 async def test_concurrent_approvals_of_one_intent_are_single_flight(any_store):
     await any_store.initialize()
-    drafts = [make_draft() for _ in range(5)]
+    # WO-0036 R2: five drafts, ONE real backing intent — the single-flight
+    # claim is per intent.
+    intent_id = await backing_intent_id(any_store)
+    drafts = [make_draft(intent_id=intent_id) for _ in range(5)]
     results = await asyncio.gather(
         *(any_store.approve_envelope_activation(d, actor="operator-a") for d in drafts),
         return_exceptions=True,
@@ -179,13 +188,13 @@ async def test_concurrent_approvals_of_one_intent_are_single_flight(any_store):
     winners = [r for r in results if isinstance(r, ExecutionEnvelope)]
     losers = [r for r in results if isinstance(r, EnvelopeTransitionError)]
     assert len(winners) == 1 and len(losers) == 4
-    active = await any_store.list_envelopes(sell_intent_id="si-1", status=S.ACTIVE)
+    active = await any_store.list_envelopes(sell_intent_id=intent_id, status=S.ACTIVE)
     assert [e.id for e in active] == [winners[0].id]
 
 
 async def test_concurrent_same_draft_approvals_yield_one_trail(any_store):
     await any_store.initialize()
-    draft = make_draft()
+    draft = make_draft(intent_id=await backing_intent_id(any_store))
     results = await asyncio.gather(
         *(
             any_store.approve_envelope_activation(draft, actor="operator-a")
@@ -232,7 +241,7 @@ def test_dispositions_are_structurally_mandatory_at_approval_time():
 async def test_envelope_gate_defers_evaluate_and_delegates_approve(any_store):
     await any_store.initialize()
     gate = EnvelopeApprovalGate(any_store)
-    draft = make_draft()
+    draft = make_draft(intent_id=await backing_intent_id(any_store))
     assert await gate.evaluate(draft) is GateDecision.DEFER
     active = await gate.approve(draft, actor="operator-ameen")
     assert active.status is S.ACTIVE
@@ -249,7 +258,9 @@ async def test_envelope_gate_reject_cancels_a_pending_draft(any_store):
     # a freeze/cancel through the precedence paths, not a gate rejection).
     again = await gate.reject(draft.id, actor="operator-a")
     assert again.status is S.CANCELLED
-    other = make_draft(intent_id="si-2")
+    # WO-0036 R2: the cancelled first draft is not live, so a fresh real AAPL
+    # intent backs this second approval without tripping the per-symbol clash.
+    other = make_draft(intent_id=await backing_intent_id(any_store))
     await any_store.approve_envelope_activation(other, actor="operator-a")
     with pytest.raises(EnvelopeTransitionError):
         await gate.reject(other.id, actor="operator-a")

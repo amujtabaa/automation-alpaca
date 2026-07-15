@@ -16,7 +16,10 @@ verdict **ACCEPT-WITH-CHANGES, Findings: None**, dispositioned RESOLVED in
 `work/review/REV-0023/disposition.md`. Amendment history: §3+§6 (WO-0016 ratified), §5
 working-order predicate (WO-0025), §3 supersession (WO-0027), FROZEN→BREACHED + stale-vs-defect
 split (WO-0029A, both text proposals accepted by Ameen 2026-07-12), INV-085 scope narrowed to
-ACTIVE/FROZEN (WO-0034, decision 3a).
+ACTIVE/FROZEN (WO-0034, decision 3a), §8 SellIntent↔Envelope lifecycle link + §4 flatten
+deferral-to-live-child (WO-0036 R2, 2026-07-15 — **queued for independent review**; the
+implemented mechanism diverges from the WO's original "intent → ORDERED at activation"
+recommendation for the reasons recorded in §8, flagged for Ameen's ratification at the REV gate).
 
 ## Context
 
@@ -115,6 +118,21 @@ amendment the code clamped, flagged in fine print, and terminated in the SUCCESS
   separate, dumber, direct path through session control. The backstop does not share machinery
   with the thing it backstops.
 
+  **Amended 2026-07-15 (WO-0036 R2, Codex PR#8 #4):** preemption yields to a **live venue
+  child**. An envelope child order that may rest at the venue (SUBMITTING / SUBMITTED /
+  PARTIALLY_FILLED / CANCEL_PENDING / TIMEOUT_QUARANTINE — the quarantined case *may* be live,
+  ADR-002) IS the exit already executing, and the store cannot venue-cancel; a flatten that
+  cancelled its envelope and minted a fresh MARKET sell would double-book the position and
+  strand the live order under a terminal, unmonitored envelope. So: the flatten **defers** to
+  the live child exactly like the pre-envelope deferral to a live protection order (INV-036 —
+  evented `manual_flatten_deferred`, reason `deferred_to_live_envelope_child`, no state
+  mutated), and the preemption helper itself refuses to CANCEL any envelope whose child may be
+  live (evented `envelope_preemption_deferred`) — the internal twin of the public
+  transition→CANCELLED live-child guard. Envelopes with only staged CREATED children (local
+  truth, swept atomically per WO-0024) are preempted exactly as before. "Never outlives the
+  backstop" is thereby refined: the backstop never *strands or double-books* a live venue
+  order; wind-down of a live child goes through the order-cancel path first.
+
 ### 5. Engine-seam divergence is a defect signal
 
 **D-3 (decided):** if the engine's write-time validation rejects an action the pure policy planned,
@@ -186,6 +204,82 @@ and `sell_side_v2.py` diverge by ~754 lines, own their state, and fall back to b
 time-to-close urgency ramp, reprice cooldown); the code is not ported. Each piece is rebuilt
 red-green with the clock injected from day one, urgency-ramp outputs clamped to envelope bounds,
 and fill-probability estimation failing closed on bad data.
+
+### 8. The SellIntent↔Envelope lifecycle link (WO-0036 R2 amendment, 2026-07-15)
+
+The quarantine-treadmill audit (AUDIT-0001) confirmed a structural root: **no envelope
+operation ever advanced its backing `SellIntent`**, so an envelope-backed intent sat APPROVED
+for the mandate's whole life, session close blindly expired it (orphaning a still-ACTIVE
+envelope — the audit's P0), and the flatten planner could not see an envelope's live child.
+Every lifecycle-inconsistency edge case at session boundaries, reprice, and quarantine was a
+sibling of this one unlinked seam. This section links the two lifecycles structurally; the
+per-symbol clash (INV-087) is demoted to defense-in-depth backstop.
+
+**Ownership semantics.** An envelope *owns* its backing intent from first activation to its
+own terminal state:
+
+1. **Activation links (every entry into ACTIVE).** `approve_envelope_activation` AND the
+   generic `transition_envelope → ACTIVE` (first activation *and* resume) load and validate
+   the backing intent: it must **exist**, its **symbol must match**, and it must be
+   **PENDING/APPROVED** — an ORDERED intent is owned by the legacy single-order dispatch, a
+   terminal intent's mandate is finished. A PENDING intent is normalized to APPROVED
+   atomically with the activation (the envelope approval IS the human approval of the exit;
+   evented `sell_intent_transition` with `reason=envelope_activation`). A typo'd
+   `sell_intent_id`/symbol can no longer mint an owner-less mandate (Codex PR#8 #8), on
+   either activation path. The intent then stays APPROVED for the envelope's life —
+   `sell_intent_is_active` keeps answering True with its existing, unmodified predicate, so
+   single-flight dedup structurally blocks a second same-symbol intent while the mandate
+   lives. (Drafts validate at activation, not creation: a PENDING draft with a bad reference
+   is inert — it can never become a mandate.)
+2. **Terminal release (two write choke points, one rule).** The rule: *the intent releases
+   when the mandate's LAST live obligation ends.* Every envelope status write flows through
+   the store's one apply-transition helper; on entering a **releasing terminal** —
+   COMPLETED / EXPIRED / EXHAUSTED / BREACHED / CANCELLED — the backing intent is expired in
+   the same atomic unit (`reason=envelope_terminal`) provided the envelope had actually
+   activated, no OTHER live envelope still carries the intent, **and no child of the
+   envelope may still be live at the venue**. That last condition matters:
+   BREACHED/EXHAUSTED/REST_AT_FLOOR (and an EXPIRED cancel mid-convergence) leave the
+   working order RESTING — releasing the symbol at that instant would let fresh protection
+   double-book the resting child. While it rests, the intent stays APPROVED (dedup keeps the
+   symbol owned by the still-working exit — truthful); when the child reaches a venue
+   terminal (FILLED/CANCELED/REJECTED, via the generic or evented order-transition choke
+   points), the **child-terminal hook** re-runs the same release in that same atomic unit.
+   The symbol is thereby released for fresh protection the moment its mandate truly ends —
+   no stale-mandate lingering-APPROVED hole, and no double-book window. **SUPERSEDED is not
+   releasing**: supersession transfers the mandate to the successor (same intent + symbol,
+   enforced by the supersede planner), which keeps the intent through to its own end.
+3. **Session close spares live mandates.** `close_session` excludes from expiry any
+   PENDING/APPROVED intent backed by a **live** (ACTIVE or FROZEN) envelope; the close event
+   payload carries the `spared_sell_intents` count (session-close event truth, gated). The
+   orphan is never minted at any boundary; a FROZEN (kill-paused) mandate's intent survives
+   to be resumed tomorrow. Intents backed only by pre-activation drafts expire as before —
+   and rule 1 then makes the leftover draft permanently un-activatable (fail-closed).
+4. **Exclusive driver.** While a live envelope backs an intent, the envelope alone drives its
+   lifecycle and dispatch: `create_order_for_sell_intent` (legacy single-order handoff) and
+   the public `transition_sell_intent` refuse it. No out-of-band writer can dispatch a second
+   exit for the mandate or desync the two lifecycles.
+5. **"Live" = ACTIVE ∪ FROZEN, uniformly.** The per-symbol clash (INV-087), the close-side
+   spare, the terminal-release "another envelope still carries it" check, and the
+   exclusive-driver guards all key on the same predicate. FROZEN counts as live everywhere:
+   a kill-frozen mandate's child may still rest at the venue, so activating a second mandate
+   beside it is the same double-booking the ACTIVE clash forbids — replace a frozen mandate
+   by resuming it, or by winding down its child and cancelling it (the live-child CANCELLED
+   guard enforces that order), never by approving a sibling.
+
+**Why not "activation transitions the intent to ORDERED" (the WO's original recommendation):**
+`sell_intent_is_active` keys an ORDERED intent's activeness on its ONE linked order, and an
+envelope has no single durable order (it mints a sequence across reprices, with gaps) — an
+ORDERED-with-no-order intent would read *inactive while the envelope works*, re-opening the
+symbol to duplicate protection and arming the legacy idempotency trap ("ORDERED but has no
+linked order"). Keeping the intent APPROVED-while-owned preserves the predicate untouched and
+makes the intent lifecycle mirror the envelope's: in flight while the mandate lives, released
+(EXPIRED) when it ends. The envelope's formally-bounded delegation property is unchanged —
+bounds stay immutable, amendment stays supersession-only, and no new stored counter exists:
+the link is enforced at write choke points over existing state.
+
+Pinned by `tests/test_wo0036_r2_lifecycle_link.py` (both stores: activation validation on
+both paths, normalization, close-side spare, terminal release incl. supersession transfer,
+flatten deferral to live/quarantined children, exclusive-driver guards, FROZEN clash).
 
 ## Consequences
 

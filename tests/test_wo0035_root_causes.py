@@ -119,12 +119,16 @@ async def test_F2_first_approval_of_a_new_day_does_not_crash(any_store):
     p1, p2 = _both_clocks(T_NOW)
     with p1, p2:
         await any_store.initialize()
+        # The backing intent is minted on DAY 1 (WO-0036 R2: activation
+        # validates it) — creating it on day 2 would itself bootstrap the new
+        # session and defeat this pin's "first call of the day" premise.
+        si = await any_store.create_sell_intent(
+            symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+        )
     # Next calendar day; NO other store call has bootstrapped the new session.
     p1, p2 = _both_clocks(NEXT_DAY)
     with p1, p2:
-        env = await any_store.approve_envelope_activation(
-            _draft("si-rollover"), actor="op"
-        )
+        env = await any_store.approve_envelope_activation(_draft(si.id), actor="op")
         assert env.status is EnvelopeStatus.ACTIVE
         # and the new day's session actually exists (created, not skipped)
         assert len(await any_store.list_sessions()) == 2
@@ -134,7 +138,10 @@ async def test_F2_first_resume_of_a_new_day_does_not_crash(any_store):
     p1, p2 = _both_clocks(T_NOW)
     with p1, p2:
         await any_store.initialize()
-        env = await any_store.approve_envelope_activation(_draft("si-fz"), actor="op")
+        si = await any_store.create_sell_intent(
+            symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+        )
+        env = await any_store.approve_envelope_activation(_draft(si.id), actor="op")
         await any_store.transition_envelope(env.id, EnvelopeStatus.FROZEN, actor="op")
     p1, p2 = _both_clocks(NEXT_DAY)
     with p1, p2:

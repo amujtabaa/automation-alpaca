@@ -285,9 +285,7 @@ async def test_quarantined_child_pauses_not_freezes_the_envelope(any_store):
         env.id, action, snapshot_fingerprint="fp-f4", now=NOW
     )
     await any_store.claim_order_for_submission(staged.order.id)
-    await any_store.quarantine_timed_out_order(
-        staged.order.id, reason="submit_timeout"
-    )
+    await any_store.quarantine_timed_out_order(staged.order.id, reason="submit_timeout")
     assert (
         await any_store.get_order(staged.order.id)
     ).status is OrderStatus.TIMEOUT_QUARANTINE

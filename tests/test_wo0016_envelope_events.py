@@ -27,6 +27,7 @@ from app.models import (
     utcnow,
 )
 from app.store.sqlite import SqliteStateStore
+from tests.store_helpers import backing_intent_id
 
 pytestmark = pytest.mark.anyio
 
@@ -87,7 +88,10 @@ async def test_created_event_snapshots_full_bounds_with_operator_actor(any_store
 
 async def test_lifecycle_provenance_and_expiry_disposition_round_trip(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft(), actor="operator-ameen")
+    # WO-0036 R2: activation validates the backing intent — a real one is
+    # required wherever the envelope enters ACTIVE.
+    intent_id = await backing_intent_id(any_store)
+    env = await any_store.create_envelope(make_draft(intent_id), actor="operator-ameen")
     await any_store.transition_envelope(env.id, S.APPROVED, actor="operator-ameen")
     await any_store.transition_envelope(env.id, S.ACTIVE)
     await any_store.transition_envelope(env.id, S.EXPIRED, reason="ttl lapsed")
@@ -114,7 +118,8 @@ async def test_lifecycle_provenance_and_expiry_disposition_round_trip(any_store)
 
 async def test_fill_events_stay_broker_authoritative(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    intent_id = await backing_intent_id(any_store)
+    env = await any_store.create_envelope(make_draft(intent_id))
     await any_store.transition_envelope(env.id, S.APPROVED)
     await any_store.transition_envelope(env.id, S.ACTIVE)
     await any_store.record_envelope_fill(
@@ -139,7 +144,8 @@ async def test_envelope_survives_reopen_with_events_intact(tmp_path):
     path = tmp_path / "envelopes.db"
     store = SqliteStateStore(path)
     await store.initialize()
-    env = await store.create_envelope(make_draft(), actor="operator-ameen")
+    intent_id = await backing_intent_id(store)
+    env = await store.create_envelope(make_draft(intent_id), actor="operator-ameen")
     await store.transition_envelope(env.id, S.APPROVED)
     await store.transition_envelope(env.id, S.ACTIVE)
     await store.record_envelope_fill(

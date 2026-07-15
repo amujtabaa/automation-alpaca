@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Link the SellIntent↔Envelope lifecycle + terminal-cancel convergence (treadmill roots R2 + R6)
-status: APPROVED (Ameen 2026-07-15 "Approve expanded WO-0036 — implement all 8") — IN PROGRESS
+status: REVIEW — all 8 findings + the full R2 link IMPLEMENTED (2026-07-15); independent cross-model review queued (REV-0024, gated surfaces + ADR-010 §8 amendment)
 work_order_id: WO-0036
 wave: W3 root-cause follow-up (quarantine-treadmill audit, 2026-07-15)
 model_tier: strong
@@ -67,16 +67,45 @@ DONE — 6 of 8 findings, each RED→GREEN, dual-store, mutation-checked where a
 - #3 (P1, R6) `_converge_expired_envelope_cancels` tick arm re-drives an EXPIRED CANCEL_AND_RETURN
   cancel to convergence (scoped to the one terminal state carrying a cancel intent).
 
-**[FABLE DEVIATION] #4 + #8 (the full R2 lifecycle link) DEFERRED to a dedicated pass** — not
-rushed at session tail. The correct fix (approve loads + validates + transitions the backing
-SellIntent APPROVED→ORDERED; close_session spares envelope-backed intents; flatten's deferral
-sees the envelope child) is a genuine architectural migration: ~73 approve/create test call
-sites + ~91 synthetic-`sell_intent_id` draft constructions would break (they use "si-1"-style
-ids with no real intent row), and it ships with an ADR-010 amendment + independent review. A
-lighter NON-breaking interim is available if wanted: #8 → reject only when a REAL intent row
-exists with a MISMATCHED symbol (catches the cockpit typo, leaves synthetic-id tests green);
-#4 → make `flatten_position` also defer to a live envelope working order for the symbol. Awaiting
-Ameen: full R2 migration now vs the lighter interim vs schedule R2 as its own WO.
+**R2 LANDED (2026-07-15, dedicated pass per Ameen's R2 directive)** — the deferral note below
+is retained as history; the FULL migration (not the lighter interim) shipped as "Option A+"
+per the finalized design section below, plus three sibling-closures the class analysis
+surfaced during the build:
+- **Activation link on BOTH paths** (`approve_envelope_activation` AND the generic
+  `transition_envelope → ACTIVE`, first activation and resume): backing intent must exist +
+  symbol-match + be PENDING/APPROVED; PENDING normalized to APPROVED atomically (closes #8 and
+  its generic-transition sibling). Shared pure validator `envelope_backing_intent_error`
+  (core.py).
+- **Terminal release at two choke points, one rule** (`_apply_envelope_transition_*` + the
+  order-transition apply points): the intent releases when the mandate's LAST live
+  obligation ends — at a releasing terminal (not SUPERSEDED) when no other live envelope
+  carries it AND no child may still rest at the venue, else at that child's venue terminal
+  (adversarial-self-review find: releasing at envelope-terminal alone would re-open the
+  symbol while a BREACHED/EXHAUSTED/REST_AT_FLOOR child still rests — fresh protection
+  could double-book it; pinned `test_c5`/`test_c6`).
+- **Close-side spare**: `close_session` spares intents backed by a live (ACTIVE/FROZEN)
+  envelope; close event payload gains `spared_sell_intents` (gated session-close event truth).
+- **Flatten link** (closes #4): the planner defers to a live/quarantined envelope child
+  (evented `manual_flatten_deferred`, `deferred_to_live_envelope_child`); the preemption
+  helper skips CANCELLING any envelope with a possibly-live child (evented
+  `envelope_preemption_deferred` — internal twin of the #5 guard); the plan's supersede-expire
+  write is skipped when the preemption's terminal release already expired the intent
+  (single-event truth).
+- **Exclusive-driver guards**: `create_order_for_sell_intent` and public
+  `transition_sell_intent` refuse a live-envelope-backed intent.
+- **INV-087 clash extended to FROZEN** (live = ACTIVE|FROZEN, uniform predicate everywhere).
+Migration surface (actual): ~9 test files re-fixtured to real backing intents (shared helper
+`tests/store_helpers.backing_intent_id`); wo0032 reframed per the design note; the
+wo0017-precedence hybrid deferral pin rebuilt on an envelope child (the R2-coherent
+construction). New pins: `tests/test_wo0036_r2_lifecycle_link.py` (19 × both stores). Docs:
+ADR-010 §8 + §4 amendment, INVARIANTS INV-090 (new) + INV-087 (amended). Divergence from this
+WO's original option-1 (ORDERED-at-activation) recorded in ADR-010 §8 and the design section
+below — flagged for Ameen's ratification at the REV-0024 gate.
+
+*(Historical deferral note, superseded by the pass above:)* the correct fix is a genuine
+architectural migration and ships with an ADR-010 amendment + independent review; the earlier
+estimate was ~73 approve/create sites + ~91 synthetic-id constructions (investigation revised
+this down; actuals above).
 
 ## Codex PR #8 SECOND review round (commit 15fa484) — all 7 verified REAL, dispositioned
 
@@ -216,17 +245,27 @@ allowed_paths: [app/store/core.py, app/store/memory.py, app/store/sqlite.py, app
 ```
 
 ## Done-when
-- [ ] No session boundary can orphan an envelope (chosen option pinned across the
-      store matrix; the WO-0032 pin extended to assert the intent's post-close state).
-- [ ] `sell_intent_is_active` and the envelope lifecycle agree at every point of an
-      envelope-backed exit's life (pinned).
-- [ ] A failed disposition-cancel converges (chaos test: cancel fails N times →
-      retried → escalates to recovery ledger; never silently stranded).
-- [ ] ADR-010 amendment recording the intent-lifecycle semantics ships WITH the code;
-      independent review queued (gated surfaces).
-- [ ] NEW #1: envelope-minted orders are excluded from the generic submit sweep
-      (pinned: a released envelope reprice is NOT independently submit_order'd; only
-      the envelope executor drives it).
-- [ ] NEW #6: `_live_working_order_id` returns a still-live predecessor when the
-      newest replacement is terminal (pinned; reprice-rejected-predecessor-live).
-- [ ] #7 provenance + #2 now=now folded in or explicitly split to a fast-follow WO.
+- [x] No session boundary can orphan an envelope — close spares live-envelope-backed
+      intents, both stores (`test_wo0036_r2_lifecycle_link.py::test_b1/b2/b3`); the
+      WO-0032 pin extended with the post-close intent state
+      (`test_wo0032_per_symbol_mandate.py::test_session_boundary_cannot_mint_a_second_mandate`).
+- [x] `sell_intent_is_active` and the envelope lifecycle agree at every point of an
+      envelope-backed exit's life — activation normalizes PENDING→APPROVED, terminal
+      release expires, dedup answers coherently throughout (a5, b1, c1-c4, e1-e2 pins).
+- [x] A failed disposition-cancel converges — R6 cluster 2:
+      `_converge_expired_envelope_cancels` re-drives the idempotent cancel EVERY tick
+      until the order converges (terminal or CANCEL_PENDING), pinned by
+      `test_wo0036_execution_safety.py::test_c3_expired_cancel_converges_after_transient_failure`
+      (both stores). NOTE vs the original wording: convergence is per-tick re-drive with
+      logged failures, not an N-retries→recovery-ledger escalation — the arm never stops
+      trying, so "never silently stranded" holds without a ledger hand-off; flagged for
+      the REV-0024 reviewer to confirm the mechanism is acceptable as-is.
+- [x] ADR-010 §8 (+§4) amendment ships WITH the code in this change; independent
+      review queued as REV-0024 (gated surfaces + the Option-A+ divergence for
+      Ameen's ratification).
+- [x] NEW #1: envelope-minted orders excluded from the generic submit sweep
+      (cluster 1; `test_c1_generic_sweep_skips_envelope_minted_orders`, both stores).
+- [x] NEW #6: `_live_working_order_id` returns a still-live predecessor when the
+      newest replacement is terminal (cluster 1; `test_c6_*` pins).
+- [x] #7 provenance + #2 now=now folded in (clusters 1-4; see the Codex round-2
+      disposition section above).

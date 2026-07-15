@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.store.base import InvalidOrderError, UnknownEntityError
 from app.store.core import EnvelopeTransitionError
+from tests.store_helpers import backing_intent_id
 
 pytestmark = pytest.mark.anyio
 
@@ -52,6 +53,12 @@ def make_draft(
 
 
 async def make_active(store, **kwargs) -> ExecutionEnvelope:
+    # WO-0036 R2: entry into ACTIVE validates the backing intent — mint a real
+    # one (synthetic "si-1"-style ids no longer activate).
+    if "intent_id" not in kwargs:
+        kwargs["intent_id"] = await backing_intent_id(
+            store, symbol=kwargs.get("symbol", "AAPL")
+        )
     env = await store.create_envelope(make_draft(**kwargs))
     await store.transition_envelope(env.id, S.APPROVED)
     return await store.transition_envelope(env.id, S.ACTIVE)
@@ -60,7 +67,8 @@ async def make_active(store, **kwargs) -> ExecutionEnvelope:
 async def test_supersede_swaps_active_atomically_and_links_both(any_store):
     await any_store.initialize()
     old = await make_active(any_store)
-    successor = make_draft(floor=9.75)  # the amendment: a tighter floor
+    # The amendment: a tighter floor — same intent (plan_supersede enforces it).
+    successor = make_draft(intent_id=old.sell_intent_id, floor=9.75)
 
     new = await any_store.supersede_envelope(
         old.id, successor, actor="operator-ameen", reason="tighten floor"
@@ -73,7 +81,9 @@ async def test_supersede_swaps_active_atomically_and_links_both(any_store):
     assert old_after.superseded_by_id == new.id
 
     # Exactly one ACTIVE envelope for the intent — before, during, after.
-    active = await any_store.list_envelopes(sell_intent_id="si-1", status=S.ACTIVE)
+    active = await any_store.list_envelopes(
+        sell_intent_id=old.sell_intent_id, status=S.ACTIVE
+    )
     assert [e.id for e in active] == [new.id]
 
     # Replayable trail: created(B), approved(B), superseded(A), activated(B).
@@ -110,7 +120,10 @@ async def test_concurrent_supersedes_yield_exactly_one_active_successor(any_stor
 
     await any_store.initialize()
     old = await make_active(any_store)
-    drafts = [make_draft(floor=9.50 + i / 100) for i in range(1, 6)]
+    drafts = [
+        make_draft(intent_id=old.sell_intent_id, floor=9.50 + i / 100)
+        for i in range(1, 6)
+    ]
 
     results = await asyncio.gather(
         *(any_store.supersede_envelope(old.id, d) for d in drafts),
@@ -121,7 +134,9 @@ async def test_concurrent_supersedes_yield_exactly_one_active_successor(any_stor
     assert len(winners) == 1
     assert len(losers) == len(drafts) - 1
 
-    active = await any_store.list_envelopes(sell_intent_id="si-1", status=S.ACTIVE)
+    active = await any_store.list_envelopes(
+        sell_intent_id=old.sell_intent_id, status=S.ACTIVE
+    )
     assert [e.id for e in active] == [winners[0].id]
     old_after = await any_store.get_envelope(old.id)
     assert old_after.status is S.SUPERSEDED
@@ -146,14 +161,20 @@ async def test_supersede_rejects_cross_intent_and_cross_symbol_successors(any_st
     with pytest.raises(InvalidOrderError):
         await any_store.supersede_envelope(old.id, make_draft(intent_id="si-OTHER"))
     with pytest.raises(InvalidOrderError):
-        await any_store.supersede_envelope(old.id, make_draft(symbol="MSFT"))
+        # Same real intent so the SYMBOL mismatch is the operative rejection.
+        await any_store.supersede_envelope(
+            old.id, make_draft(intent_id=old.sell_intent_id, symbol="MSFT")
+        )
     assert (await any_store.get_envelope(old.id)).status is S.ACTIVE
 
 
 async def test_supersede_rejects_non_pending_or_prelinked_drafts(any_store):
     await any_store.initialize()
     old = await make_active(any_store)
-    tampered = make_draft().model_copy(update={"status": S.APPROVED})
+    # Same real intent so the non-PENDING status is the operative rejection.
+    tampered = make_draft(intent_id=old.sell_intent_id).model_copy(
+        update={"status": S.APPROVED}
+    )
     with pytest.raises(InvalidOrderError):
         await any_store.supersede_envelope(old.id, tampered)
     with pytest.raises(UnknownEntityError):
@@ -181,16 +202,31 @@ async def test_fresh_draft_cannot_predeclare_supersedes_id(any_store):
 async def test_second_activation_for_same_intent_is_blocked(any_store):
     """Single-ACTIVE-per-intent holds outside supersession too: a second
     envelope activated directly (not via supersede) is refused while the
-    first is ACTIVE — and becomes activatable once it no longer is."""
+    first is ACTIVE — and the symbol becomes activatable once it no longer
+    is (via fresh protection; see the R2-CONFLICT note below)."""
 
     await any_store.initialize()
     first = await make_active(any_store)
-    second = await any_store.create_envelope(make_draft(floor=9.60))
+    second = await any_store.create_envelope(
+        make_draft(intent_id=first.sell_intent_id, floor=9.60)
+    )
     await any_store.transition_envelope(second.id, S.APPROVED)
     with pytest.raises(EnvelopeTransitionError):
         await any_store.transition_envelope(second.id, S.ACTIVE)
 
     await any_store.transition_envelope(first.id, S.FROZEN)
     await any_store.transition_envelope(first.id, S.CANCELLED)
-    activated = await any_store.transition_envelope(second.id, S.ACTIVE)
+    # R2-CONFLICT: pre-R2 the parked same-intent draft became activatable
+    # right here. WO-0036 R2 deliberately expires the backing intent when its
+    # last live envelope reaches a releasing terminal (the CANCELLED above),
+    # so the parked draft's owner is gone and its activation now refuses; the
+    # symbol is released for FRESH protection instead — a fresh intent + a
+    # fresh envelope is what activates now.
+    with pytest.raises(EnvelopeTransitionError):
+        await any_store.transition_envelope(second.id, S.ACTIVE)
+    replacement = await any_store.create_envelope(
+        make_draft(intent_id=await backing_intent_id(any_store), floor=9.60)
+    )
+    await any_store.transition_envelope(replacement.id, S.APPROVED)
+    activated = await any_store.transition_envelope(replacement.id, S.ACTIVE)
     assert activated.status is S.ACTIVE
