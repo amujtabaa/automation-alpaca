@@ -49,6 +49,25 @@ jobs:
         # tests/test_import_boundaries.py, so the gate holds even if this step is
         # ever removed).
         run: lint-imports
+      - name: Work-order and knowledge hygiene (AI-OS)
+        # CLAUDE.md close-out rule ("close-out ships with the work"): finished work
+        # must land WITH its disposition, ledger entry, and file move — stale
+        # bookkeeping (a CLOSED work order parked in work/queue|active|review, a
+        # bad ledger row, broken PKL frontmatter, an install drift) fails the
+        # build instead of rotting silently. The disposition checker only WARNS on
+        # parked-completed orders (OS-package behavior, kept unforked); this step
+        # promotes that warning to a failure, which is the repo's ratchet.
+        run: |
+          python .ai-os/scripts/check_install.py
+          python .ai-os/scripts/check_version_consistency.py
+          python .ai-os/scripts/check_ledger.py
+          python .ai-os/scripts/check_pkl.py pkl/
+          out=$(python .ai-os/scripts/check_work_order_disposition.py)
+          echo "$out"
+          if printf '%s\n' "$out" | grep -q '^WARNING'; then
+            echo "::error::Completed work order(s) parked in a live work/ folder — close-out must ship in the same commit as the work (CLAUDE.md close-out rule)."
+            exit 1
+          fi
       - name: Run tests with coverage
         # --cov-branch + the fail_under floor in pyproject [tool.coverage.report]
         # gate the build; a real coverage regression fails here.

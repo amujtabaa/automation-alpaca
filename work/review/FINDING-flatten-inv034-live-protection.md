@@ -1,12 +1,20 @@
 # FINDING — manual-flatten can hand back a live PROTECTION_FLOOR intent (INV-034 gap)
 
-- **Status:** ADDRESSED (human-authorized 2026-07-09) — the deep-dive corrected the original framing
-  (INV-036 makes deferral to a live protective order INTENTIONAL; the "cancel + re-mint" option would
-  have violated it and risked a double-sell). Applied the SAFE subset: (a) provenance event on the
-  deferral, (b) INV-034 + stateful-test reconciliation with INV-036. Deliberately did NOT tighten the
-  predicate (see "Predicate" below — it would be a blind-cancel hazard). Two follow-ups remain
-  (TIMEOUT_QUARANTINE messaging + actor threading). Still queues for **independent review** per Review
-  policy (manual-flatten surface). What shipped:
+- **Status:** RESOLVED (verified 2026-07-11; resolution ratified by Ameen via delegation the same day) —
+  every open thread of this finding is now closed with evidence:
+  - The A/B decision (human-authorized 2026-07-09): **(B)-with-teeth** — deferral to a *genuinely live*
+    `PROTECTION_FLOOR` exit is intentional (INV-036 is the safety-correct invariant; the (A) "cancel +
+    re-mint" fix would have been the ADR-002 blind-cancel). INV-034 amended with the explicit carve-out.
+  - The two follow-ups below (deferral messaging + actor threading): **shipped by WO-0015**
+    (`FlattenResult.deferred`/`deferred_order_status` + distinct cockpit message; actor threaded
+    route→facade→store), ledger commit `a7b012d`.
+  - Independent review (manual-flatten gated surface): **REV-0003** (targets WO-0013/WO-0015/ADR-008,
+    `manual-flatten` in `human_gated_surfaces`), verdict ACCEPT-WITH-CHANGES, disposition RESOLVED.
+  - Dependency pinning (Ask 2): **done** — `constraints.txt` pins the full closure; CI installs with
+    `-c constraints.txt`.
+  - The flaky `TestSqliteLifecycle` failure: gone — the lifecycle flatten rule was reconciled with the
+    carve-out (permits deferral only when the linked order is genuinely past CREATED).
+  Historical record of what shipped in the first (2026-07-09) pass:
   - New `manual_flatten_deferred` event (`app/models.py`) emitted by `plan_flatten_position` on the
     live-protection deferral and written by both stores in the same lock hold — closes the audit gap.
     Test: `tests/test_phase7_flatten_atomic.py::test_live_protection_floor_deferral_records_provenance`.

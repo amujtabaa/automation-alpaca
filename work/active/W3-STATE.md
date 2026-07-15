@@ -193,6 +193,22 @@ REMEDIATION ✅ (0028 → 0024 → 0026 → 0025 → 0027; all pins green) → 0
 **Phase B Codex (T4, human)** → WO-0029 re-cut (planning seat) → T5 ADR-010 Accepted + merge
 (human only).
 
+## Master reconciliation (2026-07-15, Ameen-directed start)
+origin/master (signal-seat lineage, 28 commits since merge-base 6595bba) MERGED INTO this branch.
+Survey (agent, implementer-verified): the ONLY textual conflict was work/ledger.jsonl
+(append-append; resolved as a disjoint union — ours 52 + master's 4 new ids
+{WO-0012, WO-0100, WO-0101, REV-0022} = 56, zero id overlap). Everything else auto-merged:
+ADR namespaces disjoint (ADR-009 signal-seat [Proposed, rescinded post-BLOCK] + ADR-010
+execution-envelope [Accepted] coexist), REV-0022 (signal-seat) + REV-0023 (ours) coexist,
+WO numbering deliberately disjoint (master renumbered its WO-0016→WO-0100), INVARIANTS.md
+untouched by master, app/ overlap = sim.py comment only. Master's WO-0012..0015
+queue→completed closures auto-applied via rename detection (our stale queue drafts gone).
+NOTE (wo-0001 branch): its REV-0023/result.md is byte-identical to ours (the Codex branch
+mix-up file we ingested); ours is the authoritative full packet.
+REMAINING FOR AMEEN: (1) PR this branch → master (recommended BEFORE merging PR#7, which
+carries heavy app/store/* changes that would otherwise collide with the envelope work);
+(2) after our merge lands, PR#7/wo-0001 needs a rebase + re-review against the new master.
+
 ## Branch note (this session)
 WO-0030 was developed on `claude/new-session-gu0z6y` (branched from the feat/execution-envelope
 tip 209709f, per the session's designated-branch instruction), tip commit 8fa9331. The W3

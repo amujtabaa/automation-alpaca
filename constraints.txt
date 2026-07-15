@@ -19,10 +19,12 @@
 #     # then emit "<name>==<version>" for every entry in report.json["install"]
 # and let the 3.11 + 3.12 CI matrix validate the new pins.
 #
-# NOTE: Hypothesis is pinned for REPRODUCIBILITY, not to suppress the flaky
-# TestSqliteLifecycle failure — that is a real latent INV-034 flatten bug tracked
-# in work/review/FINDING-flatten-inv034-live-protection.md and must be fixed on
-# its own merits, never hidden behind a version pin.
+# NOTE: Hypothesis is pinned for REPRODUCIBILITY only. (Historical: an earlier
+# flaky TestSqliteLifecycle failure exposed a real INV-034/INV-036 tension on the
+# flatten surface — since RESOLVED: carve-out decided 2026-07-09, WO-0015 shipped
+# the operator-visible deferral, REV-0003 cleared the review gate, and the
+# lifecycle test rule was reconciled. See
+# work/review/FINDING-flatten-inv034-live-protection.md.)
 
 alpaca-py==0.43.5
 altair==6.2.2
