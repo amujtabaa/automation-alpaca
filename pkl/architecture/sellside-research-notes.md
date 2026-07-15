@@ -1,3 +1,16 @@
+---
+type: Architecture Knowledge
+title: Sell-side policy research notes (mechanisms, not parameters)
+status: draft
+authority: low
+owner: planning-seat
+last_verified: 2026-07-11
+tags: [sellside, research, lase, w4-seed]
+source_refs: []
+supersedes: []
+superseded_by: null
+---
+
 # PKL — Sell-side policy research notes (mechanisms, not parameters)
 
 Distilled 2026-07-11 (planning seat) from external sources for the WO-0018 policy rebuild and the
