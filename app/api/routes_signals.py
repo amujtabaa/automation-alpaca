@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -101,6 +102,50 @@ def _as_dict(raw: object) -> dict[str, Any]:
     ``AttributeError`` on a bare ``.get()`` call (auto-reviewer P1 #2)."""
 
     return raw if isinstance(raw, dict) else {}
+
+
+# The wire signal_id domain (mirrors SignalProposal.signal_id). Used to decide
+# whether a malformed body's signal_id may be REUSED as the record identity, or
+# must fall back to the content-hashed synthetic id (round-12 A).
+_WIRE_SIGNAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# The only valid wire directions (mirrors SignalProposal.direction).
+_WIRE_DIRECTIONS = frozenset({"buy", "sell"})
+
+
+def _safe_welltyped_int(raw: dict, key: str) -> Optional[int]:
+    """A well-typed JSON integer (``bool`` excluded), or ``None`` — WITHOUT the
+    advisory positivity filter. Used for ``ttl_seconds`` so a non-positive or
+    out-of-range value reaches the store's range check, which nulls it AND records
+    it as an offender in ``raw_fields`` (round-12 F: ``ttl_seconds`` has no Pydantic
+    ``gt=0`` — its range is server-owned — so 0/negative must not be silently
+    dropped before the store can record it)."""
+
+    value = raw.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _safe_symbol(raw: dict) -> str:
+    """A findable, UTF-8-safe, ASCII-normalized symbol for a quarantine record —
+    ``"UNKNOWN"`` when absent/non-ASCII. Uppercases like the store's ?symbol=
+    filter, but ONLY for an ASCII value (round-12 B: a non-ASCII symbol must not
+    be upper-cased into a different ticker on the quarantine record either)."""
+
+    stripped = _raw_str(raw, "symbol", "").strip()
+    if stripped and stripped.isascii():
+        return stripped.upper()
+    return "UNKNOWN"
+
+
+def _safe_direction(raw: dict) -> str:
+    """A valid enum direction (``buy``/``sell``), defaulting to ``buy`` — so a
+    quarantine record never surfaces an out-of-domain typed ``direction`` like
+    ``"hold"`` (round-12 D). The offender is already preserved in ``raw_fields``."""
+
+    value = raw.get("direction")
+    return value if value in _WIRE_DIRECTIONS else "buy"
 
 
 def _is_utf8_safe(value: str) -> bool:
@@ -313,18 +358,26 @@ async def ingest_signal(
         # SIGNAL_QUARANTINED record, silently losing a distinct attributable
         # fact. Strip before the presence decision AND use the stripped form as
         # the identity so " x " and "x" never fork either.
+        # Reuse the body's signal_id as the record identity ONLY if it is
+        # SCHEMA-VALID (matches the wire pattern) — an INVALID one (whitespace,
+        # or a value violating ^[A-Za-z0-9_-]{1,64}$, e.g. a forged "malformed:…")
+        # falls back to the content-hashed synthetic id. Otherwise a producer
+        # could send a no-signal_id body to learn its "malformed:<hash>", then a
+        # DIFFERENT malformed body carrying that value as signal_id, forcing a 409
+        # conflict that records no new SIGNAL_QUARANTINED fact (round-12 A).
         signal_id = _raw_str(raw_dict, "signal_id", "").strip()
-        if not signal_id:
+        if not _WIRE_SIGNAL_ID_RE.fullmatch(signal_id):
             signal_id = _malformed_identity(raw)
         result = await facade.ingest_signal(
             producer_id=producer_id,
             signal_id=signal_id,
-            # Normalize (strip+upper) like the well-formed path and the store's
-            # symbol filter, so a quarantine record carrying "aapl" is still found
-            # by GET /api/signals?symbol=AAPL — the record-don't-reject principle is
-            # pointless if the record is unsearchable (independent review F-2).
-            symbol=(_raw_str(raw_dict, "symbol", "UNKNOWN").strip().upper() or "UNKNOWN"),
-            direction=_raw_str(raw_dict, "direction", "buy"),
+            # Findable + ASCII-safe symbol on the quarantine record (F-2 + round-12
+            # B): normalized like the store's ?symbol= filter, never upper-cased
+            # from a non-ASCII value into a different ticker.
+            symbol=_safe_symbol(raw_dict),
+            # A valid enum direction only — never surface out-of-domain "hold" as
+            # typed data on the record (round-12 D); offender stays in raw_fields.
+            direction=_safe_direction(raw_dict),
             # Preserve VALID parsed freshness fields on a quarantine caused by a
             # different field (auto-review round 8): the safe accessors return
             # None iff the field itself is malformed, so a valid issued_at/ttl is
@@ -332,7 +385,11 @@ async def ingest_signal(
             # differing only in a valid freshness field no longer collide as an
             # idempotent replay). The offenders remain verbatim in raw_fields.
             issued_at=_safe_optional_issued_at(raw_dict),
-            ttl_seconds=_safe_optional_int(raw_dict, "ttl_seconds"),
+            # Well-typed int WITHOUT a positivity filter: ttl_seconds has no wire
+            # gt=0 (its range is server-owned), so 0/negative must flow to the
+            # store's range check to be nulled AND recorded as an offender, not
+            # silently dropped by the advisory helper (round-12 F).
+            ttl_seconds=_safe_welltyped_int(raw_dict, "ttl_seconds"),
             suggested_quantity=_safe_optional_int(raw_dict, "suggested_quantity"),
             suggested_limit_price=_safe_optional_float(
                 raw_dict, "suggested_limit_price"

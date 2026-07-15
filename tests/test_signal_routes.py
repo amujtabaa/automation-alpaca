@@ -448,6 +448,125 @@ def test_synthetic_malformed_identity_is_colon_namespaced_and_unforgeable(client
     assert r2.status_code == 422  # ':' violates the wire pattern -> quarantined
 
 
+def test_invalid_wire_signal_id_falls_back_to_synthetic_identity(client):
+    # Round-12 A: a malformed body whose signal_id violates the wire pattern
+    # (e.g. a forged "malformed:<hash>") must NOT be reused as the record identity
+    # — it falls back to the content-hashed synthetic id, so a producer cannot
+    # collide a second distinct malformed fact into a 409 with no new record.
+    no_id = client.post("/api/signals", json={"foo": 1}, headers=_PROD_H)
+    assert no_id.status_code == 422
+    forged = no_id.json()["signal_id"]  # "malformed:<hash>"
+    assert forged.startswith("malformed:")
+    # A DIFFERENT malformed body carrying that value as signal_id must record its
+    # OWN quarantine (distinct synthetic id), not 409-conflict onto the first.
+    r = client.post(
+        "/api/signals", json={"bar": 2, "signal_id": forged}, headers=_PROD_H
+    )
+    assert r.status_code == 422
+    assert r.json()["signal_id"] != forged  # fell back to its own content hash
+
+
+@pytest.mark.parametrize("bad_symbol", ["ß", "ı", "Å", "ＡＡＰＬ"])
+def test_non_ascii_symbol_uppercasing_to_ascii_is_quarantined(client, bad_symbol):
+    # Round-12 B: a Unicode symbol whose upper-case form is ASCII ('ß'->'SS',
+    # 'ı'->'I') must be quarantined, NOT silently rewritten into a different
+    # real ticker as a RECEIVED signal.
+    r = client.post(
+        "/api/signals", json=_proposal(symbol=bad_symbol), headers=_PROD_H
+    )
+    assert r.status_code == 422
+    assert r.json()["quarantine_reason"] == "validation"
+
+
+@pytest.mark.parametrize("bad_symbol", [".", ".AAPL", "-X", "1AAPL"])
+def test_symbol_without_leading_letter_is_quarantined(client, bad_symbol):
+    # Round-12 C: the wire symbol domain now matches the store's ?symbol= filter
+    # (leading letter required), so an impossible instrument like "." is
+    # quarantined, not stored RECEIVED and then unfilterable.
+    r = client.post(
+        "/api/signals", json=_proposal(symbol=bad_symbol), headers=_PROD_H
+    )
+    assert r.status_code == 422
+    assert r.json()["quarantine_reason"] == "validation"
+
+
+def test_valid_ticker_with_digits_or_dot_still_accepted(client):
+    # Regression guard: real tickers with digits/'.'/'-' (BRK.B) are accepted.
+    r = client.post("/api/signals", json=_proposal(symbol="BRK.B"), headers=_PROD_H)
+    assert r.status_code == 201
+    assert r.json()["symbol"] == "BRK.B"
+
+
+def test_invalid_direction_is_not_surfaced_as_typed_data(client):
+    # Round-12 D: a quarantine caused by an invalid direction must not surface the
+    # out-of-domain value ("hold") as the record's typed direction.
+    r = _post_json_bytes(
+        client,
+        {
+            "signal_id": "dir-bad",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 300,
+            "symbol": "AAPL",
+            "direction": "hold",
+            "thesis": "x",
+            "provenance": {},
+        },
+    )
+    assert r.status_code == 422
+    body = r.json()
+    assert body["status"] == "quarantined"
+    assert body["direction"] in ("buy", "sell")  # a representable enum value
+    assert any("direction" in k for k in body["raw_fields"])  # offender kept
+
+
+def test_surrogate_provenance_key_is_quarantined(client):
+    # Round-12 E: a surrogate in a provenance KEY (not just a value) must take the
+    # validation-quarantine path, not land as a RECEIVED signal that later 500s.
+    r = _post_json_bytes(
+        client,
+        {
+            "signal_id": "prov-key",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 300,
+            "symbol": "AAPL",
+            "direction": "buy",
+            "thesis": "x",
+            "provenance": {"\ud800": "v"},
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["status"] == "quarantined"
+    assert (
+        client.get(
+            "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+        ).status_code
+        == 200
+    )
+
+
+def test_non_positive_ttl_on_combined_malformed_is_recorded(client):
+    # Round-12 F: ttl_seconds has no wire gt=0 (range is server-owned), so a
+    # non-positive ttl (0/negative) on a body quarantined for another field must
+    # be nulled AND recorded as an offender — not silently dropped.
+    r = _post_json_bytes(
+        client,
+        {
+            "signal_id": "ttl-zero",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "symbol": "AAPL",
+            "direction": "buy",
+            "thesis": "x",
+            "provenance": {"model": 1},  # the Pydantic offender
+        },
+    )
+    assert r.status_code == 422
+    body = r.json()
+    assert body["status"] == "quarantined"
+    assert body["ttl_seconds"] is None
+    assert any("ttl_seconds" in k for k in body["raw_fields"])  # 0 recorded
+
+
 def test_valid_operator_with_stale_producer_header_is_403_not_401(client):
     # Auto-review round 6 (P2): a VALID operator key on the producer route is the
     # wrong-role 403 even when a stale/invalid X-Producer-Key is ALSO present —

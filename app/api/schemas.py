@@ -27,11 +27,13 @@ from app.models import (
     SellIntent,
     SessionRecord,
 )
-
-# ASCII-only ticker domain for SignalProposal.symbol (auto-reviewer P2 #7):
-# str.isalpha() is Unicode-aware and would accept full-width/accented letters
-# that are not in the documented [A-Z.]+ domain (01-schema §1).
-_ASCII_SYMBOL_RE = re.compile(r"[A-Z.]+")
+# The store's canonical ticker normalizer is the ONE symbol-domain authority
+# (leading letter, then A-Z/0-9/'.'/'-', 1-10). SignalProposal.symbol delegates
+# to it so a RECEIVED signal's symbol is exactly what the GET ?symbol= filter
+# normalizes to (no drift, no impossible-instrument acceptance). schemas.py is
+# NOT an import-linter contract-5 route module, so importing store.base here is
+# allowed (deps.py imports it the same way).
+from app.store.base import normalize_symbol
 
 # A bare numeric token (optionally signed/decimal) — auto-reviewer P2 #4 (round
 # 3): pydantic's lax datetime parser accepts a digit-only STRING as a Unix
@@ -222,16 +224,20 @@ class SignalProposal(BaseModel):
     @field_validator("symbol")
     @classmethod
     def _symbol_domain(cls, value: str) -> str:
-        # auto-reviewer P2 #7: str.isalpha() is Unicode-aware — it accepts
-        # full-width ('ＡＡＰＬ') and accented ('Å') letters, which are NOT in
-        # the documented ASCII [A-Z.]+ domain (01-schema §1) and would otherwise
-        # slip through ingest validation to be caught (or silently mangled) only
-        # later at the conversion normalization path. An explicit ASCII regex
-        # after uppercasing closes that gap.
-        upper = value.strip().upper()
-        if not upper or not _ASCII_SYMBOL_RE.fullmatch(upper):
-            raise ValueError("symbol must be 1-10 ASCII chars of A-Z and '.'")
-        return upper
+        # ASCII FIRST, before any uppercasing (round-12 B): 'ß'.upper() == 'SS'
+        # and 'ı'.upper() == 'I', so a Unicode symbol whose upper-case form is
+        # ASCII would otherwise be silently rewritten into a DIFFERENT real
+        # ticker. Reject non-ASCII outright so it is quarantined, not mutated.
+        stripped = value.strip()
+        if not stripped.isascii():
+            raise ValueError(
+                "symbol must be ASCII (A-Z, digits, '.', '-'), not Unicode"
+            )
+        # Then delegate to the store's canonical normalizer (round-12 C): it
+        # requires a LEADING LETTER (so '.' / '-only' are rejected, not stored as
+        # an impossible instrument the ?symbol= filter can never match) and is the
+        # exact domain the filter uses. Its ValueError becomes a quarantine.
+        return normalize_symbol(stripped)
 
     @field_validator("provenance")
     @classmethod
@@ -239,6 +245,20 @@ class SignalProposal(BaseModel):
         if len(value) > 20:
             raise ValueError("provenance may carry at most 20 keys")
         for key, val in value.items():
+            # UTF-8 safety (round-12 E): pydantic's per-value str check catches a
+            # surrogate in a VALUE, but a surrogate in a KEY slips through and
+            # would poison operator responses with a 500 on serialization. Reject
+            # any non-UTF-8-safe key OR value so it takes the validation-quarantine
+            # path (where the route's _utf8_escape neutralizes it) instead of
+            # landing as a RECEIVED signal.
+            for part, label in ((key, "key"), (val, "value")):
+                try:
+                    part.encode("utf-8")
+                except UnicodeEncodeError:
+                    raise ValueError(
+                        f"provenance {label} contains invalid Unicode "
+                        "(unpaired surrogate)"
+                    )
             if len(val) > 500:
                 raise ValueError(f"provenance value for {key!r} exceeds 500 chars")
         return value
