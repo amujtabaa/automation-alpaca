@@ -193,6 +193,24 @@ REMEDIATION ✅ (0028 → 0024 → 0026 → 0025 → 0027; all pins green) → 0
 **Phase B Codex (T4, human)** → WO-0029 re-cut (planning seat) → T5 ADR-010 Accepted + merge
 (human only).
 
+## WO-0036 R2 landed (2026-07-15) — the SellIntent↔Envelope lifecycle link (commit f022f59)
+The final structural root from AUDIT-0001 is closed: activation validates + links the backing
+intent on BOTH activation paths (PENDING normalized to APPROVED; owner-less/mismatched
+mandates unrepresentable — closes Codex #8 + its generic-transition sibling); the intent
+releases when the mandate's LAST live obligation ends (releasing terminal + no live envelope
++ no possibly-live child, else at the child's venue terminal — the adversarial self-review
+caught that envelope-terminal-only release would re-open the symbol while a BREACHED/
+EXHAUSTED/REST_AT_FLOOR child still rests); session close SPARES live-mandate intents
+(spared_sell_intents in the close event); flatten defers to a live/quarantined envelope
+child (closes Codex #4) and preemption never CANCELs an envelope under a possibly-live
+child; legacy dispatch + public intent transition refuse live-envelope-backed intents;
+INV-087's clash extended to FROZEN. New INV-090; ADR-010 §8 + §4 amendment shipped WITH the
+code. 21 new pins × both stores (test_wo0036_r2_lifecycle_link.py); ~10 test files
+re-fixtured to real backing intents. Full gate green (ruff/mypy/import-linter/pytest exit 0,
+cov 94.91%). GATED: independent cross-model review queued as REV-0024 (request.md carries
+the Option-A+ divergence + R6-wording decisions for Ameen). WO-0036 status → REVIEW; the
+review gate clears only on an ACCEPT/ACCEPT-WITH-CHANGES disposition.
+
 ## Codex PR #8 review (2026-07-15) — 8 inline findings, triaged into WO-0036
 The GitHub Codex bot reviewed PR #8 (execution-envelope → master, commit ac73ad5): 6×P1 + 2×P2
 on the envelope execution surface. Implementer-verified triage: SIX independently confirm my
