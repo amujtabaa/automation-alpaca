@@ -61,13 +61,14 @@ awaiting:
     spec-0 (ADR/INV text). Non-gated (may pin+fix under a WO): parity-0, mutation-0, completeness-1,
     parity-1, interface-lift-0. Nine non-P0 pins queued for the remediation WO (not yet written —
     several are gated/decision-gaps and must not be pinned directionally).
-    INDEPENDENT REVIEW (REV-0023 Phase-A2, Codex "extra high effort"): reported **Findings: None**
-    per Ameen's screenshot — commit b3b7005 "REV-0023 Phase-A2 independent review", result at
-    work/review/REV-0023/result.md (scope: phase-a2.md + the four remediation test files + the
-    implicated store/monitoring/invariant files), PR opened. Clears the human-gated-surface review
-    gate for WO-0032 (order-intent) + WO-0034 (event-log). CAVEAT: b3b7005 + that PR are NOT yet in
-    origin amujtabaa/automation-alpaca (6 branches, none has it) — the Codex session pushed to its
-    own env/fork. Ameen to merge/push it here; then ingest result.md + write REV-0023 disposition.
+    INDEPENDENT REVIEW (REV-0023 Phase-A2, Codex) — INGESTED + DISPOSITIONED. Verdict
+    **ACCEPT-WITH-CHANGES, Findings: None** (work/review/REV-0023/result.md — Codex authored it on
+    the wo-0001 branch by mix-up; Ameen pushed it; ingested here verbatim onto this lineage). The two
+    required changes are SATISFIED (deferred completeness-1/interface-lift-0 in WO-0033 + pure-math-0
+    planning-seat per Ameen; human-approval trail = Ameen "Go ahead" for WO-0032/0034), recorded in
+    work/review/REV-0023/disposition.md. The reviewer's "could not verify" (full gate + first-principles)
+    is covered by the author's full green gate + the 26-agent internal Phase-A2 pass. GATE CLEARED for
+    the human-gated surfaces WO-0032 (order-intent) + WO-0034 (event-log truth).
     REMEDIATION WOs DRAFTED (await human approval; nothing implemented):
       - WO-0032 (P0 single-mandate-per-symbol) — DONE (Ameen "go ahead", direction 2a). Per-symbol
         single-ACTIVE guard in BOTH stores (predicate + explicit check + partial unique index moved
