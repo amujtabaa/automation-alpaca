@@ -39,12 +39,21 @@ _OP_H = {"X-Operator-Key": OPERATOR_KEY}
 # The totality invariant must hold identically on both.
 @pytest.fixture(params=["memory", "sqlite"])
 def client(request, tmp_path):
-    if request.param == "memory":
-        store = InMemoryStateStore()
-    else:
-        store = SqliteStateStore(tmp_path / "totality.db")
+    store = (
+        InMemoryStateStore()
+        if request.param == "memory"
+        else SqliteStateStore(tmp_path / "totality.db")
+    )
     with TestClient(build_flag_on_app(store=store)) as c:
         yield c
+    # create_app treats an INJECTED store as externally owned, so the TestClient
+    # lifespan does not close it — close the sqlite connection here (mirrors the
+    # any_store fixture, F-008) or its unclosed-connection ResourceWarning is
+    # promoted to an error by pyproject's filterwarnings (auto-review round 16 P1).
+    conn = getattr(store, "_conn", None)
+    if conn is not None:
+        conn.close()
+        store._conn = None
 
 
 def _post(client, body):

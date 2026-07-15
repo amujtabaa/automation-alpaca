@@ -312,13 +312,17 @@ async def ingest_signal(
             status_code=status.HTTP_400_BAD_REQUEST, detail="body is not valid JSON"
         ) from exc
 
-    # Identity binding: producer_id is NEVER body-trusted. A body-supplied
+    # Identity binding: producer_id is NEVER body-trusted. A body-supplied STRING
     # producer_id that mismatches the credential-derived id is a boundary reject
-    # (spoof attempt); a matching one is silently ignored (tolerant clients).
-    # `_as_dict` guards a non-object `raw` (list/null/bare scalar), which has no
-    # "body producer_id" to compare at all.
+    # (a spoof attempt targeting another producer); a matching one is silently
+    # ignored (tolerant clients). A NON-STRING producer_id (e.g. 123, []) is NOT a
+    # spoof of a specific producer — it is a malformed field, so it is NOT rejected
+    # here: it flows to SignalProposal validation and becomes a recorded
+    # validation-quarantine (offender in raw_fields, budget accounted), per the
+    # "malformed-but-attributable is recorded, not reject-and-forget" contract
+    # (auto-review round 16). `_as_dict` guards a non-object `raw`.
     body_producer = _as_dict(raw).get("producer_id")
-    if body_producer is not None and body_producer != producer_id:
+    if isinstance(body_producer, str) and body_producer != producer_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="body producer_id does not match the authenticated producer",

@@ -202,6 +202,22 @@ def test_non_ascii_secrets_do_not_crash_overlap_guard(monkeypatch):
     assert s.signal_producer_keys == {"prödücer-key": "vibe-trading"}
 
 
+def test_validate_rejects_surrogate_producer_id():
+    # Auto-review round 16: a producer_id with an unpaired surrogate is copied onto
+    # every SignalRecord and would 500 on response serialization — reject it at
+    # STARTUP (the object-level validator), on both env-loaded and injected paths.
+    from app.config import Settings, validate_signal_seat_settings
+
+    with pytest.raises(ValueError, match="Unicode|surrogate"):
+        validate_signal_seat_settings(
+            Settings(
+                signal_seat_enabled=True,
+                operator_api_key="op",
+                signal_producer_keys={"k": "\ud800"},
+            )
+        )
+
+
 def test_non_ascii_operator_equal_to_producer_still_detected(monkeypatch):
     # ...and an ACTUAL overlap of identical non-ASCII keys is still caught (the
     # byte-safe compare is correct, not merely non-throwing).

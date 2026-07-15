@@ -437,6 +437,61 @@ def test_full_mounted_route_table_auth_matrix():
     assert checked > 20  # sanity: the whole table (31 leaf routes) was enumerated
 
 
+def test_non_string_producer_id_is_recorded_quarantine_not_boundary_reject(client):
+    # Auto-review round 16: a non-string producer_id (123) is a malformed FIELD,
+    # not a spoof of a specific producer — it must be a RECORDED validation
+    # quarantine (offender in raw_fields, budget accounted), not a 422
+    # boundary-reject-and-forget.
+    r = client.post(
+        "/api/signals",
+        json={**_proposal(signal_id="pid-bad"), "producer_id": 123},
+        headers=_PROD_H,
+    )
+    assert r.status_code == 422
+    assert r.json()["status"] == "quarantined"
+    assert any("producer_id" in k for k in r.json()["raw_fields"])
+    assert (
+        len(
+            client.get(
+                "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+            ).json()
+        )
+        == 1
+    )
+    # A STRING producer_id targeting ANOTHER producer is still the spoof boundary
+    # reject — no record written.
+    r2 = client.post(
+        "/api/signals",
+        json={**_proposal(signal_id="spoof"), "producer_id": "some-other-producer"},
+        headers=_PROD_H,
+    )
+    assert r2.status_code == 422
+    assert (
+        len(
+            client.get(
+                "/api/signals", params={"status": "quarantined"}, headers=_OP_H
+            ).json()
+        )
+        == 1  # unchanged — the spoof reject wrote nothing
+    )
+
+
+def test_malformed_rails_decision_is_503_not_500():
+    # Auto-review round 16: a rails provider whose async check_ingest returns a
+    # bool/dict (not a RailsDecision) passes the startup guard but must FAIL CLOSED
+    # (503) at request time, never AttributeError -> 500.
+    from app.facade.signal_rails import RailsDecision  # noqa: F401
+
+    class BoolRails:
+        async def check_ingest(self, producer_id: str):
+            return True  # NOT a RailsDecision
+
+    app = build_flag_on_app(store=InMemoryStateStore(), rails=BoolRails())
+    with TestClient(app) as c:
+        r = c.post("/api/signals", json=_proposal(), headers=_PROD_H)
+        assert r.status_code == 503
+
+
 def test_non_api_path_is_denied_by_default(client):
     # Proactive review P2-1: the operator-enforcement middleware is DENY-by-default
     # — a path outside the public/producer allowlist requires the operator

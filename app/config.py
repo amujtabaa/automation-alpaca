@@ -431,6 +431,20 @@ def validate_signal_seat_settings(settings: "Settings") -> None:
             raise ValueError(
                 f"{SIGNAL_PRODUCER_KEYS_ENV} producer ids must be non-blank"
             )
+        # UTF-8 safety (auto-review round 16): the credential-derived producer_id
+        # is copied onto every SignalRecord, so an unpaired-surrogate id would
+        # raise UnicodeEncodeError while serializing a normal POST /api/signals
+        # response (500) and poison operator reads. Fail fast at STARTUP instead.
+        # The key is byte-compared (compare_digest is byte-safe) but validated too
+        # for a clean startup diagnostic.
+        for part, label in ((key, "key"), (producer_id, "producer id")):
+            try:
+                part.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(
+                    f"{SIGNAL_PRODUCER_KEYS_ENV} {label} contains invalid Unicode "
+                    "(unpaired surrogate)"
+                )
     if operator_producer_key_overlap(operator_api_key, settings.signal_producer_keys):
         raise ValueError(
             f"{OPERATOR_API_KEY_ENV} must not equal any key in "

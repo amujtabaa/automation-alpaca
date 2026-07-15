@@ -258,10 +258,23 @@ async def check_signal_rails(
             detail="signal rails not wired",
         )
     decision = await rails.check_ingest(producer_id)
-    if not decision.allowed:
+    # FAIL CLOSED on a malformed decision (auto-review round 16): the startup guard
+    # cannot verify what an async check_ingest RETURNS without calling it, so a
+    # provider that returns a bool/dict/None instead of a RailsDecision would reach
+    # `decision.allowed` and raise AttributeError -> 500. Treat a non-conforming
+    # decision as a denial (503), never an accidental admit.
+    allowed = getattr(decision, "allowed", None)
+    if not isinstance(allowed, bool):
         raise HTTPException(
-            status_code=decision.http_status or status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=decision.reason or "signal ingest rejected by rails",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="signal rails returned a malformed decision",
+        )
+    if not allowed:
+        raise HTTPException(
+            status_code=getattr(decision, "http_status", 0)
+            or status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=getattr(decision, "reason", "")
+            or "signal ingest rejected by rails",
         )
     return producer_id
 
