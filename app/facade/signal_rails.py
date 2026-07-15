@@ -77,4 +77,14 @@ def is_conforming_rails(candidate: object) -> bool:
     if isinstance(candidate, type):
         return False
     check = getattr(candidate, "check_ingest", None)
-    return inspect.iscoroutinefunction(check) and inspect.ismethod(check)
+    if not (inspect.iscoroutinefunction(check) and inspect.ismethod(check)):
+        return False
+    # Arity: the bound method must accept the single producer_id argument, else
+    # `await rails.check_ingest(pid)` raises TypeError (500) on the first request
+    # (proactive review P3-1). A bound method hides `self`, so exactly one
+    # remaining positional-capable parameter is required.
+    try:
+        inspect.signature(check).bind("probe-producer-id")
+    except TypeError:
+        return False
+    return True

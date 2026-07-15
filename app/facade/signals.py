@@ -11,7 +11,8 @@ and maps outcomes to status codes.
 
 from __future__ import annotations
 
-from typing import Optional, Protocol, runtime_checkable
+from datetime import datetime
+from typing import Callable, Optional, Protocol, runtime_checkable
 
 from app.config import Settings
 from app.facade.errors import InvalidInputError
@@ -63,9 +64,20 @@ class StoreBackedSignalFacade:
     from ``Settings`` so the store's freshness + budget accounting is driven by the
     validated config the app started with — never a route-supplied value."""
 
-    def __init__(self, store: StateStore, settings: Settings) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        settings: Settings,
+        *,
+        clock: Optional[Callable[[], datetime]] = None,
+    ) -> None:
         self._store = store
         self._settings = settings
+        # Injected clock for the lazy-expiry read seam (A-3/A4 mandate injected
+        # clocks in lifecycle logic; proactive review C-P3-1). Defaults to real
+        # wall-clock in production; a test can pin it to make the RECEIVED↔EXPIRED
+        # boundary deterministic instead of relying on a backdated record.
+        self._now = clock or utcnow
 
     async def ingest_signal(
         self,
@@ -106,7 +118,7 @@ class StoreBackedSignalFacade:
         # this, a resubmission of an already-expired signal would respond
         # status:"received" while GET /api/signals already excludes it —
         # exactly the inconsistency the read-path fix closed, reopened here.
-        now = utcnow()
+        now = self._now()
         return SignalIngestResult(
             outcome=result.outcome,
             record=result.record.model_copy(
@@ -140,7 +152,7 @@ class StoreBackedSignalFacade:
             )
         except ValueError as exc:
             raise InvalidInputError(str(exc)) from exc
-        now = utcnow()
+        now = self._now()
         effective = [
             record.model_copy(
                 update={"status": effective_signal_status(record, now=now)}
@@ -157,7 +169,7 @@ class StoreBackedSignalFacade:
         record = await self._store.get_signal(producer_id, signal_id)
         if record is None:
             return None
-        now = utcnow()
+        now = self._now()
         return record.model_copy(
             update={"status": effective_signal_status(record, now=now)}
         )

@@ -129,6 +129,21 @@ def test_get_actor_binds_authenticated_principal_over_x_actor():
     assert get_actor(request=None, x_actor=None) == DEFAULT_ACTOR
 
 
+def test_get_actor_strips_control_chars_from_sublabel():
+    # Proactive review P3-4: a control char (newline/CR/tab) in X-Actor must not
+    # reach a line-oriented audit sink — the sub-label is sanitized to printable
+    # chars while the code-owned principal prefix is untouched.
+    from types import SimpleNamespace
+
+    authed = SimpleNamespace(state=SimpleNamespace(authenticated_actor="operator"))
+    assert get_actor(request=authed, x_actor="desk\n3\r\tX") == "operator:desk3X"
+    # A label that is ENTIRELY control chars collapses to just the principal.
+    assert get_actor(request=authed, x_actor="\n\r\t") == "operator"
+    # Flag-off path sanitizes too (no principal → the sanitized label or default).
+    unauthed = SimpleNamespace(state=SimpleNamespace())
+    assert get_actor(request=unauthed, x_actor="a\nb") == "ab"
+
+
 # --------------------------------------------------------------------------- #
 # Facade constructors accept the Phase-6 injected collaborators (keyword-only,
 # optional — a store-only construction still works).

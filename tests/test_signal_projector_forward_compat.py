@@ -259,3 +259,21 @@ def test_terminal_quarantine_not_overwritten_by_later_approval():
     rec = project_signal_records(events)[("vibe", "sig-1")]
     assert rec.status is SignalStatus.QUARANTINED
     assert rec.approved_at is None
+
+
+def test_transition_event_missing_identity_fails_fast():
+    # Auto-review round 14: a transition event without producer_id/signal_id is a
+    # malformed event-log-truth record — the projector must FAIL FAST, not
+    # silently skip (which would let live transition while replay stays RECEIVED).
+    from app.events.projectors import ProjectionError
+
+    bad = ExecutionEvent(
+        event_type=ExecutionEventType.SIGNAL_EXPIRED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        symbol="AAPL",
+        ts_init=_NOW,
+        payload={"signal_id": "sig-1"},  # missing producer_id
+    )
+    with pytest.raises(ProjectionError, match="record identity|producer_id"):
+        project_signal_records([_received_event(), bad])

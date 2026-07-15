@@ -200,3 +200,55 @@ async def test_list_signals_raw_string_status_rejected_on_both_stores(any_store)
     await any_store.initialize()
     with pytest.raises(InvalidStatusError):
         await any_store.list_signals(status="received")  # raw string, not enum
+
+
+async def test_facade_injected_clock_makes_expiry_boundary_deterministic(any_store):
+    # Proactive review C-P3-1: the lazy-expiry read seam now takes an injected
+    # clock, so the RECEIVED<->EXPIRED boundary is deterministically testable
+    # (exactly at expires_at -> EXPIRED; one tick before -> RECEIVED) rather than
+    # depending on a backdated record + real wall-clock.
+    await any_store.initialize()
+    ingested = await _ingest_fresh_received(any_store, signal_id="clk")
+    exp = ingested.record.expires_at
+    assert exp is not None
+
+    before = StoreBackedSignalFacade(
+        any_store, Settings(state_store="memory"),
+        clock=lambda: exp - timedelta(seconds=1),
+    )
+    r = await before.get_signal(producer_id="vibe", signal_id="clk")
+    assert r is not None and r.status is SignalStatus.RECEIVED
+
+    at_exp = StoreBackedSignalFacade(
+        any_store, Settings(state_store="memory"), clock=lambda: exp,
+    )
+    r2 = await at_exp.get_signal(producer_id="vibe", signal_id="clk")
+    assert r2 is not None and r2.status is SignalStatus.EXPIRED
+
+
+async def test_store_nulls_out_of_domain_advisory_both_stores(any_store):
+    # Auto-review round 14: the STORE is the advisory-domain authority — a direct
+    # (non-HTTP) caller passing a non-finite price or an out-of-range quantity
+    # must be nulled, not persisted (memory kept NaN while SQLite read it back as
+    # NULL — a parity break). Both stores must null + read back identically.
+    await any_store.initialize()
+    result = await any_store.ingest_signal(
+        producer_id="vibe",
+        signal_id="adv",
+        symbol="AAPL",
+        direction="buy",
+        issued_at=datetime.now(timezone.utc),
+        ttl_seconds=300,
+        suggested_quantity=10**25,  # above SQLite's signed-64-bit range
+        suggested_limit_price=float("nan"),
+        thesis="x",
+        provenance={},
+        server_max_ttl_seconds=3600,
+        cycle_budget_limit=50,
+    )
+    assert result.record.suggested_quantity is None
+    assert result.record.suggested_limit_price is None
+    stored = await any_store.get_signal("vibe", "adv")
+    assert stored is not None
+    assert stored.suggested_quantity is None
+    assert stored.suggested_limit_price is None

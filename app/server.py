@@ -15,9 +15,11 @@ backend owns its launch path:
 * it wires WO-0104's REAL rails provider (never a fake — the test-only fake lives
   in ``tests/`` and production config/environment cannot select it).
 
-A bare ``uvicorn app.main:app`` imports the module-level ``app`` (``None`` under
-the flag) and fails to serve — no listener. This launcher is the only path that
-produces a servable enabled app.
+A bare ``uvicorn app.main:app`` imports the module-level ``app``, which is left
+**undefined** under the flag (NOT ``None`` — ``None`` was proven insufficient,
+REV-0025-F-002: Uvicorn's ``getattr`` raises ``AttributeError`` before it binds),
+so it fails to serve — no listener. This launcher is the only path that produces
+a servable enabled app.
 """
 
 from __future__ import annotations

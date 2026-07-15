@@ -3246,6 +3246,10 @@ class SqliteStateStore(StateStore):
         symbol: Optional[str] = None,
         producer_id: Optional[str] = None,
     ) -> list[SignalRecord]:
+        # NOTE (review C-P3-2): ``status`` filters the DURABLE stored status, not
+        # the lazy-expiry EFFECTIVE status — same contract as the memory store.
+        # The SignalFacade owns effective-status (rule A4) filtering; a direct
+        # store read here is durable-truth only, by design.
         clauses, params = [], []
         if status is not None:
             require_status_enum(status, SignalStatus, field="status filter")

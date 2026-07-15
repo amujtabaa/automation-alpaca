@@ -266,36 +266,36 @@ def create_app(
             is_producer_ingest = request.method == "POST" and path == _PRODUCER_INGEST_PATH
             if path in _PUBLIC_PATHS or is_producer_ingest:
                 return await call_next(request)
-            if path.startswith("/api"):
-                if operator_key_valid(
-                    request.headers.get(OPERATOR_KEY_HEADER), settings
-                ):
-                    # A-1: the audited actor derives from the authenticated
-                    # principal, not a caller-controlled X-Actor header. Stamp it
-                    # so get_actor binds kill-switch/flatten/etc. audit to the
-                    # operator and demotes X-Actor to an optional sub-label
-                    # (auto-review round 5 P1).
-                    request.state.authenticated_actor = DEFAULT_ACTOR
-                    return await call_next(request)
-                # A VALID producer key on an operator route is the wrong-role
-                # 403; an unknown/garbage X-Producer-Key is an unrecognized
-                # credential -> 401 (A-1 matrix: invalid credentials are 401,
-                # not 403). Presence alone must NOT earn a 403.
-                if producer_key_valid(
-                    request.headers.get(PRODUCER_KEY_HEADER), settings
-                ):
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "detail": "producer credential is not valid for this "
-                            "operator route"
-                        },
-                    )
+            # DENY BY DEFAULT (proactive review P2-1): EVERY other path requires
+            # the operator credential — regardless of prefix. The earlier
+            # `if path.startswith("/api")` gate was fail-OPEN: any non-/api route
+            # (a future /metrics, /internal/*) would pass through unauthenticated,
+            # and safety would rest on the unenforced convention that every router
+            # stays /api-prefixed. Deny-by-default means a new route is protected
+            # unless it is explicitly added to the public/producer allowlist above.
+            if operator_key_valid(request.headers.get(OPERATOR_KEY_HEADER), settings):
+                # A-1: the audited actor derives from the authenticated principal,
+                # not a caller-controlled X-Actor header. Stamp it so get_actor
+                # binds kill-switch/flatten/etc. audit to the operator and demotes
+                # X-Actor to an optional sub-label (auto-review round 5 P1).
+                request.state.authenticated_actor = DEFAULT_ACTOR
+                return await call_next(request)
+            # A VALID producer key on an operator route is the wrong-role 403; an
+            # unknown/garbage X-Producer-Key is an unrecognized credential -> 401
+            # (A-1 matrix: invalid credentials are 401, not 403). Presence alone
+            # must NOT earn a 403.
+            if producer_key_valid(request.headers.get(PRODUCER_KEY_HEADER), settings):
                 return JSONResponse(
-                    status_code=401,
-                    content={"detail": "operator credential required"},
+                    status_code=403,
+                    content={
+                        "detail": "producer credential is not valid for this "
+                        "operator route"
+                    },
                 )
-            return await call_next(request)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "operator credential required"},
+            )
 
     app.include_router(routes_system.router)
     app.include_router(routes_watchlist.router)

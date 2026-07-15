@@ -448,6 +448,12 @@ def validate_signal_seat_settings(settings: "Settings") -> None:
             f"signal_server_max_ttl_seconds must be in "
             f"[1, {SIGNAL_SERVER_MAX_TTL_HARD_CAP}] (ADR-009 A-3), got {ttl_cap}"
         )
+    if settings.signal_transport_policy not in SIGNAL_TRANSPORT_POLICIES:
+        raise ValueError(
+            f"signal_transport_policy must be one of "
+            f"{sorted(SIGNAL_TRANSPORT_POLICIES)} (ADR-009 A-1), got "
+            f"{settings.signal_transport_policy!r}"
+        )
 
 
 def load_settings() -> Settings:

@@ -117,7 +117,12 @@ def get_actor(
       header falls back rather than recording an empty actor.
     """
 
-    label = x_actor.strip() if x_actor and x_actor.strip() else None
+    # Drop control characters (newlines/tabs/etc.) from the sub-label so an
+    # authenticated operator cannot inject line breaks into a line-oriented audit
+    # log sink via X-Actor (proactive review P3-4). The authenticated principal
+    # prefix is code-owned and unaffected; only the optional label is sanitized.
+    raw_label = x_actor.strip() if x_actor else ""
+    label = "".join(ch for ch in raw_label if ch.isprintable()) or None
     principal = (
         getattr(request.state, "authenticated_actor", None)
         if request is not None

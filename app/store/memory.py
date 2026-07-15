@@ -2104,6 +2104,13 @@ class InMemoryStateStore(StateStore):
         symbol: Optional[str] = None,
         producer_id: Optional[str] = None,
     ) -> list[SignalRecord]:
+        # NOTE (review C-P3-2): ``status`` filters the DURABLE stored status —
+        # NOT the lazy-expiry EFFECTIVE status. A RECEIVED row past its expires_at
+        # is still returned under ``status=RECEIVED`` here. Effective-status
+        # filtering (rule A4) is the SignalFacade's job — it queries this WITHOUT
+        # a status and reclassifies in Python. Callers needing the actionable
+        # queue must go through the facade (import-linter keeps it the only seam);
+        # a direct store-status read is durable-truth only, by design.
         norm_symbol = normalize_symbol(symbol) if symbol is not None else None
         if status is not None:
             # Dual-store parity (AIR-009): the SQLite path validates the status

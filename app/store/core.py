@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from app.models import (
+    SQLITE_MAX_SIGNED_INT,
     Candidate,
     CandidateStatus,
     EventAuthority,
@@ -2244,6 +2246,36 @@ def safe_quarantine_symbol(raw_symbol: str) -> str:
         return "UNKNOWN"
 
 
+def safe_advisory_quantity(value: object) -> Optional[int]:
+    """A well-typed, in-range, strictly-positive advisory quantity, else ``None``.
+    Enforced at the STORE boundary (review round 14) so ANY caller — the HTTP
+    route OR a direct/non-HTTP facade caller — cannot persist an out-of-domain
+    value: ``bool``, non-int, ``<= 0``, or an int above SQLite's signed-64-bit
+    range (which would OverflowError on SQLite while memory accepts it — a parity
+    break + 500). The advisory contract is finite ``> 0`` (01-schema §1)."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 < value <= SQLITE_MAX_SIGNED_INT
+    ):
+        return None
+    return value
+
+
+def safe_advisory_price(value: object) -> Optional[float]:
+    """A well-typed, FINITE, strictly-positive advisory price, else ``None`` —
+    enforced at the store boundary. A non-finite ``NaN``/``Inf`` diverges the
+    stores (memory keeps ``NaN``; SQLite reads it back as ``NULL``) and breaks
+    the finite ``> 0`` contract, so it is nulled here regardless of caller
+    (review round 14)."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) and numeric > 0 else None
+
+
 def signal_canonical_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 over the canonical proposal JSON (dedupe/conflict
     detection). Keys sorted, compact separators, datetimes as ISO-8601 — so an
@@ -2526,6 +2558,15 @@ def plan_signal_ingest(
     * new + well-formed → A-3 freshness classification (RECEIVED / skew|ttl
       QUARANTINED / DOA EXPIRED).
     """
+
+    # Store-boundary advisory domain enforcement (review round 14): null any
+    # out-of-domain advisory value (non-finite / non-positive / int out of the
+    # SQLite range) BEFORE it can reach a record, so a direct/non-HTTP caller
+    # cannot persist a value that diverges the stores or violates the finite >0
+    # contract. The HTTP path already filters these; this makes the store the
+    # authority regardless of caller.
+    suggested_quantity = safe_advisory_quantity(suggested_quantity)
+    suggested_limit_price = safe_advisory_price(suggested_limit_price)
 
     if existing is not None:
         if existing.payload_hash == payload_hash:

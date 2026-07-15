@@ -388,6 +388,69 @@ def test_invalid_operator_key_on_producer_route_is_401_not_403(client):
     assert r2.status_code == 403
 
 
+def test_full_mounted_route_table_auth_matrix():
+    # ADR-009 A-1 §1a route-authorization matrix (auto-review round 14 P1): rather
+    # than sampling a few routes, INTROSPECT the actual mounted route table of a
+    # flag-on app and assert EVERY route is classified — either allowlisted (public
+    # health / producer ingest) or refused without the operator credential. With
+    # deny-by-default enforcement, a new route added outside the middleware's
+    # assumptions (a /metrics, a POST /api/session/close, a dev route) is caught
+    # HERE, unauthenticated, instead of silently shipping open while CI stays green.
+    import re as _re
+
+    def _leaf_routes(routes):
+        # The repo wraps routers in a custom _IncludedRouter whose real routes
+        # live under `.original_router.routes`; recurse to reach every leaf.
+        leaves = []
+        for r in routes:
+            path, methods = getattr(r, "path", None), getattr(r, "methods", None)
+            if path and methods:
+                leaves.append((path, methods))
+            nested = getattr(r, "routes", None)
+            inner = getattr(r, "original_router", None)
+            if inner is not None:
+                nested = getattr(inner, "routes", None)
+            if nested:
+                leaves.extend(_leaf_routes(nested))
+        return leaves
+
+    app = build_flag_on_app(store=InMemoryStateStore())
+    routes = _leaf_routes(app.routes)
+    checked = 0
+    with TestClient(app) as c:
+        for path, methods in routes:
+            concrete = _re.sub(r"\{[^}]+\}", "x", path)
+            for method in sorted(methods - {"HEAD", "OPTIONS"}):
+                checked += 1
+                if concrete == "/api/health":
+                    assert c.request(method, concrete).status_code == 200  # public
+                    continue
+                # Every other route — producer ingest included — must refuse an
+                # UNAUTHENTICATED request (producer route: no producer key -> 401;
+                # all others: operator middleware -> 401). Nothing is reachable
+                # without a credential.
+                resp = c.request(method, concrete)
+                assert resp.status_code == 401, (
+                    f"UNAUTHENTICATED {method} {concrete} -> {resp.status_code} "
+                    "(route reachable without a credential!)"
+                )
+    assert checked > 20  # sanity: the whole table (31 leaf routes) was enumerated
+
+
+def test_non_api_path_is_denied_by_default(client):
+    # Proactive review P2-1: the operator-enforcement middleware is DENY-by-default
+    # — a path outside the public/producer allowlist requires the operator
+    # credential REGARDLESS of prefix, so a future non-/api route (/metrics,
+    # /internal/*) can't silently ship unauthenticated. The middleware answers
+    # before routing, so a no-cred request is 401, not a passed-through 404.
+    assert client.get("/metrics").status_code == 401
+    assert client.get("/internal/positions").status_code == 401
+    assert client.post("/anything").status_code == 401
+    # The allowlist still works: health is public, producer ingest is producer-authed.
+    assert client.get("/api/health").status_code == 200
+    assert client.post("/api/signals", json=_proposal(), headers=_PROD_H).status_code == 201
+
+
 def test_operator_middleware_covers_signals_subroutes_not_just_ingest(client):
     # Independent review F-1: the middleware skip is the EXACT producer ingest
     # (POST /api/signals) ONLY — not the whole /api/signals* subtree. A sub-path
@@ -823,8 +886,15 @@ def test_get_signals_invalid_status_value_rejected(client):
 
 
 def test_docs_disabled_under_flag(client):
-    assert client.get("/openapi.json").status_code == 404
-    assert client.get("/docs").status_code == 404
+    # Docs are not served under the flag (surface not disclosed). With
+    # deny-by-default enforcement, an UNAUTHENTICATED request is refused by the
+    # middleware (401) before routing; presenting the operator credential then
+    # reveals the routes are genuinely absent (404 — docs_url/openapi_url=None).
+    # Either way the OpenAPI surface is never disclosed.
+    assert client.get("/openapi.json").status_code == 401
+    assert client.get("/docs").status_code == 401
+    assert client.get("/openapi.json", headers=_OP_H).status_code == 404
+    assert client.get("/docs", headers=_OP_H).status_code == 404
 
 
 # --------------------------------------------------------------------------- #

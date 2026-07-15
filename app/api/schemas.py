@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 # dependency direction (ADR-005 / Phase 5 import boundaries).
 from app.facade.dtos import ExternalOrderView, PositionMismatchView
 from app.models import (
+    SQLITE_MAX_SIGNED_INT,
     Candidate,
     Event,
     Fill,
@@ -175,7 +176,9 @@ class SignalProposal(BaseModel):
     # value (`True` -> `1`, `"12.5"` -> `12.5`) before the operator ever sees
     # the raw offender. Mirrors ``MockCandidateCreate``'s identical strict
     # convention elsewhere in this file.
-    suggested_quantity: Optional[int] = Field(default=None, gt=0, strict=True)
+    suggested_quantity: Optional[int] = Field(
+        default=None, gt=0, le=SQLITE_MAX_SIGNED_INT, strict=True
+    )
     suggested_limit_price: Optional[float] = Field(
         default=None, gt=0, allow_inf_nan=False, strict=True
     )

@@ -3,7 +3,8 @@
 The sole sanctioned start command for an enabled Signal Seat. It defers to
 :func:`app.server.run`, which validates the proxy-private bind, mints the launch
 capability, and serves uvicorn programmatically. A bare ``uvicorn app.main:app``
-is unsupported when the flag is on (the module-level ``app`` is ``None`` — no
+is unsupported when the flag is on (the module-level ``app`` is left UNDEFINED —
+Uvicorn's getattr raises before binding; ``None`` was proven insufficient — no
 listener).
 """
 

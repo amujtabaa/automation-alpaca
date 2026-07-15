@@ -32,6 +32,7 @@ from app.models import (
     SIGNAL_CONFLICT,
     SIGNAL_QUARANTINED_VALIDATION,
     SIGNAL_REPLAYED,
+    SQLITE_MAX_SIGNED_INT,
     SignalStatus,
 )
 
@@ -130,10 +131,14 @@ def _safe_welltyped_int(raw: dict, key: str) -> Optional[int]:
 def _safe_direction(raw: dict) -> str:
     """A valid enum direction (``buy``/``sell``), defaulting to ``buy`` — so a
     quarantine record never surfaces an out-of-domain typed ``direction`` like
-    ``"hold"`` (round-12 D). The offender is already preserved in ``raw_fields``."""
+    ``"hold"`` (round-12 D). The ``isinstance`` guard is REQUIRED, not just tidy:
+    a bare ``value in _WIRE_DIRECTIONS`` HASHES ``value``, so an UNHASHABLE
+    ``direction`` (a JSON array/object, e.g. ``["buy"]``) would raise ``TypeError``
+    and turn the quarantine into an uncaught 500 (proactive review P1-1). The
+    offender is already preserved in ``raw_fields``."""
 
     value = raw.get("direction")
-    return value if value in _WIRE_DIRECTIONS else "buy"
+    return value if isinstance(value, str) and value in _WIRE_DIRECTIONS else "buy"
 
 
 def _is_utf8_safe(value: str) -> bool:
@@ -180,10 +185,16 @@ def _safe_optional_int(raw: dict, key: str) -> Optional[int]:
     must be stored as ``None`` on the quarantine record — the offending value is
     already preserved verbatim in ``raw_fields``, so surfacing it here as
     normalized typed data would contradict the field's own contract (auto-review
-    round 6)."""
+    round 6). An int above ``SQLITE_MAX_SIGNED_INT`` is also nulled: it would
+    overflow the SQLite bind (500) while the memory store accepts it — a parity
+    break + uncaught 500 (proactive review P1-2)."""
 
     value = raw.get(key)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 < value <= SQLITE_MAX_SIGNED_INT
+    ):
         return None
     return value
 

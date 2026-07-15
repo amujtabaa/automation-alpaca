@@ -187,6 +187,12 @@ class SignalStatus(str, Enum):
 # ``StateStore.ingest_signal`` and mapped to an HTTP status by the route. Declared
 # on the leaf model kernel so BOTH the store (below the API) and the route (which
 # must not import ``app.store`` — import-linter contract 5) can share them.
+# The largest integer SQLite can store in a signed-64-bit INTEGER column. A
+# producer-supplied integer above this overflows the SQLite bind (OverflowError →
+# 500) while the in-memory store accepts it — a dual-store parity break AND an
+# uncaught 500. Both the wire model and the quarantine-path accessor bound to it.
+SQLITE_MAX_SIGNED_INT = 2**63 - 1
+
 SIGNAL_RECEIVED_OK = "received"                          # 201, RECEIVED
 SIGNAL_EXPIRED_AT_INGEST = "expired"                     # 201, terminal EXPIRED (DOA)
 SIGNAL_QUARANTINED_VALIDATION = "quarantined_validation"  # 422, malformed shape

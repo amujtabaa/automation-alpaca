@@ -193,3 +193,37 @@ def test_flag_on_injected_settings_whitespace_credentials_fail():
                 ),
                 signal_rails=PermissiveSignalRails(),
             )
+
+
+def test_is_conforming_rails_rejects_wrong_arity():
+    # Proactive review P3-1: an async check_ingest with the wrong arity (no
+    # producer_id) passes the Protocol + coroutine checks but would 500 on the
+    # first request. The guard probes the signature.
+    from app.facade.signal_rails import RailsDecision, is_conforming_rails
+
+    class NoArg:
+        async def check_ingest(self):  # missing producer_id
+            return RailsDecision(allowed=True)
+
+    assert is_conforming_rails(NoArg()) is False
+
+
+def test_flag_on_injected_settings_bad_transport_policy_fails():
+    # Proactive review P3-2: an injected Settings cannot ship a transport policy
+    # outside the closed set (the validator now checks it too).
+    from tests.signal_seat_helpers import PermissiveSignalRails
+
+    on = Settings(signal_seat_enabled=True)
+    with pytest.raises(RuntimeError, match="transport_policy"):
+        create_app(
+            settings=Settings(
+                signal_seat_enabled=True,
+                operator_api_key="op",
+                signal_producer_keys={"p": "vibe"},
+                signal_transport_policy="garbage-EVIL",
+            ),
+            launch_capability=mint_launch_capability(
+                host="127.0.0.1", uds=None, settings=on
+            ),
+            signal_rails=PermissiveSignalRails(),
+        )

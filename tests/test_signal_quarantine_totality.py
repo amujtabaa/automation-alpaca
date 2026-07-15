@@ -27,15 +27,23 @@ from fastapi.testclient import TestClient
 from app.store.base import _SYMBOL_RE
 from app.store.core import SIGNAL_TTL_MAX_SECONDS, SIGNAL_TTL_MIN_SECONDS
 from app.store.memory import InMemoryStateStore
+from app.store.sqlite import SqliteStateStore
 from tests.signal_seat_helpers import OPERATOR_KEY, PRODUCER_KEY, build_flag_on_app
 
 _PROD_H = {"X-Producer-Key": PRODUCER_KEY}
 _OP_H = {"X-Operator-Key": OPERATOR_KEY}
 
 
-@pytest.fixture
-def client():
-    with TestClient(build_flag_on_app(store=InMemoryStateStore())) as c:
+# BOTH stores (proactive review P1-2): the SQLite quarantine path overflowed on a
+# huge int while memory accepted it — a parity break the memory-only test missed.
+# The totality invariant must hold identically on both.
+@pytest.fixture(params=["memory", "sqlite"])
+def client(request, tmp_path):
+    if request.param == "memory":
+        store = InMemoryStateStore()
+    else:
+        store = SqliteStateStore(tmp_path / "totality.db")
+    with TestClient(build_flag_on_app(store=store)) as c:
         yield c
 
 
@@ -130,8 +138,9 @@ _MALFORMED_CORPUS = [
     _m(symbol="aapl"), _m(symbol="."), _m(symbol="$BAD"), _m(symbol="1X"),
     _m(symbol="TOOLONGSYMBOL"), _m(symbol="ß"), _m(symbol="ı"), _m(symbol="Å"),
     _m(symbol="ＡＡＰＬ"), _m(symbol=""), _m(symbol=42),
-    # direction.
+    # direction — incl. UNHASHABLE types (must not TypeError->500, review P1-1).
     _m(direction="hold"), _m(direction=""), _m(direction=1), _m(direction=None),
+    _m(direction=["buy"]), _m(direction={"buy": 1}),
     # issued_at.
     _m(issued_at=1752505200), _m(issued_at="1784059129"),
     _m(issued_at="2026-07-14T15:00:00"), _m(issued_at="not-a-date"),
@@ -139,10 +148,13 @@ _MALFORMED_CORPUS = [
     # ttl.
     _m(ttl_seconds=0), _m(ttl_seconds=-5), _m(ttl_seconds=5),
     _m(ttl_seconds=999999), _m(ttl_seconds="300"), _m(ttl_seconds=True),
-    # advisory.
+    # advisory — incl. an int ABOVE SQLite's signed-64-bit range (must not
+    # OverflowError->500 on sqlite / diverge from memory, review P1-2).
     _m(suggested_quantity=0), _m(suggested_quantity=-1), _m(suggested_quantity=True),
-    _m(suggested_quantity="5"), _m(suggested_limit_price=0),
+    _m(suggested_quantity="5"), _m(suggested_quantity=10**20),
+    _m(suggested_quantity=2**63), _m(suggested_limit_price=0),
     _m(suggested_limit_price=-1.5), _m(suggested_limit_price="1.0"),
+    _m(suggested_limit_price=1e308),
     # thesis / provenance (incl. surrogates + oversize + bad types).
     _m(thesis=""), _m(thesis="\ud800"), _m(thesis="x" * 5000),
     _m(provenance={"\ud800": "v"}), _m(provenance={"k": "\ud800"}),

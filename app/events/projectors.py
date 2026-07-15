@@ -579,7 +579,17 @@ def project_signal_records(
         producer_id = payload.get("producer_id")
         signal_id = payload.get("signal_id")
         if producer_id is None or signal_id is None:
-            continue
+            # A transition event (SIGNAL_EXPIRED/APPROVED/REJECTED/QUARANTINED)
+            # MUST carry its record identity (02-lifecycle §2). A missing key is a
+            # malformed event-log-truth record: FAIL FAST rather than silently
+            # skip — else the live single-writer could transition a record while
+            # replay drops the terminal event and reconstructs it as still
+            # RECEIVED, diverging replay from live (auto-review round 14). Same
+            # fail-fast contract as a malformed FILL (ProjectionError).
+            raise ProjectionError(
+                f"{etype.value} event sequence={event.sequence} is missing "
+                "required record identity (producer_id/signal_id)"
+            )
         existing = records.get((producer_id, signal_id))
         if existing is None:
             continue
