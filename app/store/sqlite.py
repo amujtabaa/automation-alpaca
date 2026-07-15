@@ -1904,9 +1904,32 @@ class SqliteStateStore(StateStore):
         *,
         actor: str = COMMAND_ACTOR_SYSTEM,
         reason: Optional[str] = None,
+        now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         require_status_enum(new_status, EnvelopeStatus, field="new_status")
         async with self._lock:
+            # F2 (WO-0035): pre-transaction read-only validation + session
+            # bootstrap — _ensure_current_session_locked opens its OWN
+            # transaction on a date rollover and crashed the first
+            # FROZEN->ACTIVE resume of a new day when nested in the tx below.
+            # Ordering mirrors InMemoryStateStore (unknown-id / reject / noop
+            # paths have NO session side effect); the lock is held throughout.
+            pre_row = self._read_one(
+                "SELECT * FROM execution_envelopes WHERE id = ?", (envelope_id,)
+            )
+            if pre_row is None:
+                raise UnknownEntityError(f"envelope {envelope_id} not found")
+            pre_plan = plan_envelope_transition(
+                self._envelope(pre_row), new_status, actor=actor, reason=reason, now=now
+            )
+            if pre_plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                assert pre_plan.error is not None
+                raise pre_plan.error
+            session = (
+                self._ensure_current_session_locked()
+                if new_status is EnvelopeStatus.ACTIVE
+                else None
+            )
             with self._tx() as cur:
                 row = cur.execute(
                     "SELECT * FROM execution_envelopes WHERE id = ?",
@@ -1916,7 +1939,7 @@ class SqliteStateStore(StateStore):
                     raise UnknownEntityError(f"envelope {envelope_id} not found")
                 env = self._envelope(row)
                 plan = plan_envelope_transition(
-                    env, new_status, actor=actor, reason=reason
+                    env, new_status, actor=actor, reason=reason, now=now
                 )
                 if plan.outcome == ENVELOPE_TRANSITION_REJECT:
                     assert plan.error is not None
@@ -1928,7 +1951,7 @@ class SqliteStateStore(StateStore):
                     # standing order intent — refused while HALTED, checked
                     # inside the SAME transaction as the write (resume after
                     # release is explicit human action, never automatic).
-                    session = self._ensure_current_session_locked()
+                    assert session is not None  # ensured pre-tx (F2)
                     if (
                         self._current_trading_state_locked(session.id)
                         is TradingState.HALTED
@@ -1957,6 +1980,7 @@ class SqliteStateStore(StateStore):
                         EnvelopeStatus.COMPLETED,
                         actor="engine",
                         reason="fully filled while frozen; completed on resume",
+                        now=now,
                     )
                     assert chain.outcome == ENVELOPE_TRANSITION_APPLY
                     stored = self._apply_envelope_transition_locked(cur, chain)
@@ -2044,6 +2068,7 @@ class SqliteStateStore(StateStore):
         ts_event: Optional[datetime] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY remaining_quantity writer.
         A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
@@ -2068,6 +2093,7 @@ class SqliteStateStore(StateStore):
                     ts_event=ts_event,
                     source=source,
                     authority=authority,
+                    now=now,
                 )
                 if plan.outcome == ENVELOPE_FILL_REJECT:
                     assert plan.error is not None
@@ -2244,6 +2270,34 @@ class SqliteStateStore(StateStore):
         write); re-approving an ACTIVE envelope is an idempotent no-op."""
 
         async with self._lock:
+            # F2 (WO-0035): read-only validation + session bootstrap BEFORE the
+            # main transaction. _ensure_current_session_locked opens its OWN
+            # transaction on a date rollover, so nesting it inside the tx below
+            # crashed the FIRST approval of a new calendar day ("cannot start a
+            # transaction within a transaction"). Ordering mirrors
+            # InMemoryStateStore exactly: status/draft rejects leave NO side
+            # effect; the session bootstrap runs only once they pass. The lock
+            # is held throughout, so the authoritative re-read inside the
+            # transaction cannot observe different state.
+            pre_row = self._read_one(
+                "SELECT * FROM execution_envelopes WHERE id = ?", (draft.id,)
+            )
+            pre = self._envelope(pre_row) if pre_row is not None else None
+            if pre is not None:
+                if pre.status is EnvelopeStatus.ACTIVE:
+                    return pre  # idempotent re-approve
+                if pre.status not in (
+                    EnvelopeStatus.PENDING,
+                    EnvelopeStatus.APPROVED,
+                ):
+                    raise EnvelopeTransitionError(
+                        f"cannot approve envelope {draft.id}: it is {pre.status.value}"
+                    )
+            else:
+                bad = envelope_draft_reason(draft)
+                if bad is not None:
+                    raise InvalidOrderError(bad)
+            session = self._ensure_current_session_locked()
             with self._tx() as cur:
                 row = cur.execute(
                     "SELECT * FROM execution_envelopes WHERE id = ?",
@@ -2267,7 +2321,6 @@ class SqliteStateStore(StateStore):
                         raise InvalidOrderError(bad)
                 # INV-060: the kill switch blocks NEW standing order intent —
                 # checked inside the SAME transaction as every write below.
-                session = self._ensure_current_session_locked()
                 if (
                     self._current_trading_state_locked(session.id)
                     is TradingState.HALTED
@@ -3597,7 +3650,6 @@ class SqliteStateStore(StateStore):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
-        prior_position: Optional[int] = None,
     ) -> FillAppendResult:
         key = normalize_symbol(symbol)
         side = OrderSide(side)
@@ -3622,13 +3674,27 @@ class SqliteStateStore(StateStore):
                     )
                     is not None
                 )
-            current = self._position_locked(key)
-            # concurrency-0: overfill check uses the PRE-fill position when the
-            # caller supplies it (the envelope bridge record-first folded this
-            # fill already); otherwise the live derived position. Fold unaffected.
-            overfill_position = (
-                prior_position if prior_position is not None else current.quantity
+            # concurrency-0 ROOT form (WO-0035): overfill judged against the
+            # position EXCLUDING this fill's own event — the record-first
+            # envelope bridge may have already folded THIS fill under the same
+            # canonical dedupe identity. Self-derived here (no caller-supplied
+            # prior_position), so no call site can reintroduce the phantom
+            # fill_overfill_quarantined by forgetting a parameter. NULL-safe:
+            # dedupe_key IS NULL rows must stay in the fold.
+            self_key = (
+                f"fill:{order_id}:{source_fill_id}"
+                if source_fill_id is not None
+                else ""
             )
+            pos_rows = self._read_all(
+                "SELECT * FROM execution_events "
+                "WHERE symbol = ? AND event_type = 'fill' "
+                "AND (dedupe_key IS NULL OR dedupe_key != ?) ORDER BY sequence",
+                (key, self_key),
+            )
+            overfill_position = project_symbol_position(
+                [self._execution_event(r) for r in pos_rows], key
+            ).quantity
             plan = plan_append_fill(
                 order_id=order_id,
                 order=order,

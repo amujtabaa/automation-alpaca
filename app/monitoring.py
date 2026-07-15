@@ -1839,15 +1839,12 @@ async def _apply_update(
     envelope_id = await _envelope_id_for_order(store, order.id)
     rejected: list[dict[str, Any]] = []
     for bf in update.fills:
-        # concurrency-0 (REV-0023 Phase-A2): the bridge record-first FOLDS the
-        # fill via record_envelope_fill, so by the time append_fill runs the
-        # derived position already reflects it. Capture the PRE-fill position
-        # here and hand it to append_fill so its broker-overfill check compares
-        # against the true prior position (not the post-fold one — which fired a
-        # spurious fill_overfill_quarantined event on every clean exit).
-        bridged_prior: Optional[int] = None
+        # concurrency-0 root form (WO-0035): append_fill SELF-derives the
+        # pre-fill position by excluding this fill's own dedupe identity from
+        # the fold, so the record-first bridge below needs no prior-position
+        # bookkeeping here (and no call site can fabricate the phantom
+        # fill_overfill_quarantined by forgetting it).
         if envelope_id is not None and bf.source_fill_id is not None:
-            bridged_prior = (await store.get_position(order.symbol)).quantity
             try:
                 await store.record_envelope_fill(
                     envelope_id,
@@ -1875,7 +1872,6 @@ async def _apply_update(
                 source_fill_id=bf.source_fill_id,
                 filled_at=bf.filled_at,
                 session_id=order.session_id,
-                prior_position=bridged_prior,
             )
         except _FILL_ERRORS as exc:
             _log.warning(

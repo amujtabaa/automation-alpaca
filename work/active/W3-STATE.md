@@ -104,6 +104,14 @@ awaiting:
     (yes/no gate).
   - WO-0031 DONE (Sol's two P0s vs the incumbent closed: lifetime-monotone stop INV-086,
     whole-tape screening; probe reported + upsize per adjudication; tranche latch fixed).
+  - AUDIT-0001 (quarantine-treadmill root-cause audit, Ameen-directed) DONE — packet at
+    work/review/AUDIT-0001-quarantine-treadmill.md. Verdicts: every symptom-class fix from this
+    session either root-fixed NOW (WO-0035: F2 nested-tx CRASH on day-rollover approve/resume
+    [reproduced!], F3 append_fill self-derived overfill position [prior_position param deleted],
+    F1 clock params on transition/record + lifecycle-event ts, S1 venue rejection reasons evented)
+    or routed to the gated WO-0036 (R2 intent↔envelope lifecycle, R6 cancel convergence). The
+    opus agent's R1 "dominant root" claim was CORRECTED against tip (stale Phase-A doc; livelock
+    already fixed by WO-0025). Meta-root recorded: same truth derived twice then defended.
   - WO-0030 DONE (interface lift): the full envelope API is on the StateStore ABC + facade
     Protocols; EnvelopeTransitionError relocated to base.py (compat re-export from core.py);
     the four structural Protocols (_EnvelopeStore/_EnvelopeSeamStore/_EnvelopeStoreOps/

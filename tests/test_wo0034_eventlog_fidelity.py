@@ -2,9 +2,12 @@
 
 - concurrency-0 (P1): the envelope fill bridge record-first FOLDS the fill, so
   append_fill's broker-overfill check must evaluate against the PRE-fill
-  position (passed as ``prior_position``) — otherwise it fabricates a
-  ``fill_overfill_quarantined`` event on every clean exit. A REAL overfill still
-  quarantines.
+  position — otherwise it fabricates a ``fill_overfill_quarantined`` event on
+  every clean exit. A REAL overfill still quarantines. (Mechanism upgraded by
+  WO-0035 to the root form: append_fill SELF-derives the pre-fill position by
+  excluding its own dedupe identity; the interim caller-supplied
+  ``prior_position`` parameter is gone. These pins assert the SEMANTIC, which
+  is mechanism-independent.)
 - spec-1 (P1): a redrive rail refusal (incl. reduce_only) writes a durable
   ``envelope_redrive_refused`` audit event carrying the rail + detail.
 - spec-0 (P1): a late fill on an ALREADY-terminal envelope is recorded, not

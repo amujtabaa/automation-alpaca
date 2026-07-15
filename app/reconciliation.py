@@ -501,6 +501,7 @@ async def _drive_staged_order(
     order: Order,
     kind: ActionKind,
     working_order: Optional[Order],
+    envelope_id: Optional[str] = None,
 ) -> EnvelopeExecutionResult:
     """The venue leg for one already-staged order (fresh or redriven)."""
 
@@ -531,6 +532,22 @@ async def _drive_staged_order(
         await store.quarantine_timed_out_order(order.id)
         return EnvelopeExecutionResult(ENVELOPE_EXEC_QUARANTINED, order_id=order.id)
     except TerminalBrokerError as exc:
+        # S1 (WO-0035, extends the WO-0034 spec-1 pattern to the venue leg): a
+        # broker-authoritative rejection REASON is recorded, never hidden — the
+        # bare transition_order(REJECTED) row carries no detail and the caller
+        # used to drop the result entirely.
+        await store.append_event(
+            "envelope_venue_rejected",
+            message=f"venue rejected {kind.value}: {exc}",
+            symbol=order.symbol,
+            order_id=order.id,
+            payload={
+                "detail": str(exc),
+                "envelope_id": envelope_id,
+                "kind": kind.value,
+            },
+            session_id=order.session_id,
+        )
         await store.transition_order(order.id, OrderStatus.REJECTED)
         return EnvelopeExecutionResult(
             ENVELOPE_EXEC_REJECTED, order_id=order.id, detail=str(exc)
@@ -538,6 +555,20 @@ async def _drive_staged_order(
     except BrokerError as exc:
         # Provably-pre-flight transient: release the claim; the SAME staged
         # order (and its already-committed budget accounting) redrives later.
+        # S1: the release reason is evented so a repeatedly-releasing order's
+        # history is reconstructible from the durable log alone.
+        await store.append_event(
+            "envelope_venue_released",
+            message=f"venue call failed pre-flight; released for redrive: {exc}",
+            symbol=order.symbol,
+            order_id=order.id,
+            payload={
+                "detail": str(exc),
+                "envelope_id": envelope_id,
+                "kind": kind.value,
+            },
+            session_id=order.session_id,
+        )
         await store.transition_order(order.id, OrderStatus.CREATED)
         return EnvelopeExecutionResult(
             ENVELOPE_EXEC_RELEASED, order_id=order.id, detail=str(exc)
@@ -601,6 +632,7 @@ async def execute_envelope_action(
         order=staged.order,
         kind=action.kind,
         working_order=staged.working_order,
+        envelope_id=envelope_id,
     )
 
 
@@ -736,5 +768,10 @@ async def redrive_staged_envelope_action(
     if kind is ActionKind.REPRICE and order.replaces_order_id is not None:
         working_order = await store.get_order(order.replaces_order_id)
     return await _drive_staged_order(
-        store, adapter, order=order, kind=kind, working_order=working_order
+        store,
+        adapter,
+        order=order,
+        kind=kind,
+        working_order=working_order,
+        envelope_id=envelope_id,
     )

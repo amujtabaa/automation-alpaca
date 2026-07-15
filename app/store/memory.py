@@ -1014,13 +1014,16 @@ class InMemoryStateStore(StateStore):
         *,
         actor: str = COMMAND_ACTOR_SYSTEM,
         reason: Optional[str] = None,
+        now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         require_status_enum(new_status, EnvelopeStatus, field="new_status")
         async with self._lock:
             env = self._envelopes.get(envelope_id)
             if env is None:
                 raise UnknownEntityError(f"envelope {envelope_id} not found")
-            plan = plan_envelope_transition(env, new_status, actor=actor, reason=reason)
+            plan = plan_envelope_transition(
+                env, new_status, actor=actor, reason=reason, now=now
+            )
             if plan.outcome == ENVELOPE_TRANSITION_REJECT:
                 assert plan.error is not None
                 raise plan.error
@@ -1061,6 +1064,7 @@ class InMemoryStateStore(StateStore):
                         EnvelopeStatus.COMPLETED,
                         actor="engine",
                         reason="fully filled while frozen; completed on resume",
+                        now=now,
                     )
                     assert chain.outcome == ENVELOPE_TRANSITION_APPLY
                     stored = self._apply_envelope_transition_unlocked(chain)
@@ -1137,6 +1141,7 @@ class InMemoryStateStore(StateStore):
         ts_event: Optional[datetime] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY remaining_quantity writer.
         A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
@@ -1156,6 +1161,7 @@ class InMemoryStateStore(StateStore):
                 ts_event=ts_event,
                 source=source,
                 authority=authority,
+                now=now,
             )
             if plan.outcome == ENVELOPE_FILL_REJECT:
                 assert plan.error is not None
@@ -2386,7 +2392,6 @@ class InMemoryStateStore(StateStore):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
-        prior_position: Optional[int] = None,
     ) -> FillAppendResult:
         key = normalize_symbol(symbol)
         side = OrderSide(side)
@@ -2402,14 +2407,28 @@ class InMemoryStateStore(StateStore):
                 source_fill_id is not None
                 and (order_id, source_fill_id) in self._fill_source_ids
             )
-            current = self._position_unlocked(key)
-            # concurrency-0: the overfill check evaluates against the PRE-fill
-            # position when the caller supplies it (the envelope bridge, which
-            # record-first folded this fill already); otherwise the live derived
-            # position. The fold itself is unaffected (event-log derived).
-            overfill_position = (
-                prior_position if prior_position is not None else current.quantity
+            # concurrency-0 ROOT form (WO-0035): the overfill check evaluates
+            # against the position EXCLUDING this fill's own event — the
+            # record-first envelope bridge may have already folded THIS fill
+            # (same canonical dedupe identity), and comparing the incoming
+            # quantity against the post-fold position fabricated
+            # fill_overfill_quarantined on every clean bridged exit. Deriving
+            # the exclusion HERE (instead of a caller-supplied prior_position)
+            # kills the forget-the-param bug class: with no bridged event the
+            # exclusion is a no-op and this equals the live position.
+            self_key = (
+                f"fill:{order_id}:{source_fill_id}"
+                if source_fill_id is not None
+                else None
             )
+            overfill_position = project_symbol_position(
+                [
+                    e
+                    for e in self._execution_events
+                    if self_key is None or e.dedupe_key != self_key
+                ],
+                key,
+            ).quantity
             plan = plan_append_fill(
                 order_id=order_id,
                 order=order,

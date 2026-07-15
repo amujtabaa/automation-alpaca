@@ -2245,6 +2245,7 @@ def _envelope_event(
     *,
     dedupe_key: Optional[str],
     payload: dict[str, Any],
+    ts_event: Optional[datetime] = None,
 ) -> ExecutionEvent:
     """An envelope lifecycle ExecutionEvent. Every envelope lifecycle fact is a
     local single-writer engine decision — never a broker report — so provenance
@@ -2256,6 +2257,7 @@ def _envelope_event(
         source=EventSource.ENGINE,
         authority=EventAuthority.LOCAL,
         dedupe_key=dedupe_key,
+        ts_event=ts_event,
         symbol=envelope.symbol,
         side=OrderSide.SELL,
         envelope_id=envelope.id,
@@ -2402,8 +2404,11 @@ def plan_envelope_transition(
     if new_status is EnvelopeStatus.SUPERSEDED and superseded_by_id is not None:
         payload["superseded_by_id"] = superseded_by_id
 
+    # F1 (WO-0035): the lifecycle event carries the transition's clock —
+    # injected when the caller ticks, so BREACHED/EXPIRED/FROZEN stamps are
+    # deterministic under replay instead of falling back to ts_init wall time.
     execution_event = _envelope_event(
-        updated, event_type, dedupe_key=dedupe_key, payload=payload
+        updated, event_type, dedupe_key=dedupe_key, payload=payload, ts_event=ts
     )
     audit_event = EventSpec(
         "envelope_transition",
@@ -2540,7 +2545,9 @@ def plan_envelope_fill(
         source=source,
         authority=authority,
         dedupe_key=dedupe_key,
-        ts_event=ts_event,
+        # F1 (WO-0035): an explicit broker fill time wins; otherwise stamp the
+        # injected clock (``ts``), never a divergent bare wall read here.
+        ts_event=ts_event if ts_event is not None else ts,
         symbol=envelope.symbol,
         side=OrderSide.SELL,
         quantity=quantity,

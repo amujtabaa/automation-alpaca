@@ -984,7 +984,6 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
-        prior_position: Optional[int] = None,
     ) -> FillAppendResult:
         """Append a fill atomically (append + dedup check + audit event).
 
@@ -993,17 +992,20 @@ class StateStore(ABC):
         provenance only — dedup/position semantics are unchanged, so a synthetic
         fill dedups against the real observation of the same execution (INV-5).
 
-        ``prior_position`` (REV-0023 Phase-A2 concurrency-0) overrides the position
-        the broker-overfill check evaluates against — it must be the symbol's
-        quantity BEFORE this fill is reflected. The default (``None``) uses the
-        current derived position, correct for every ordinary caller. The envelope
-        fill bridge passes it because it record-first FOLDS the fill (via
-        ``record_envelope_fill``) *before* calling ``append_fill``, so by then the
-        derived position already includes this fill; without the pre-fill value the
-        overfill check would compare the fill against a position that already
-        reflects it and fabricate a ``fill_overfill_quarantined`` event on every
-        clean exit. It affects ONLY the overfill DECISION/event — never the fold
-        (position derives from the deduped FILL event log regardless).
+        **Overfill self-derivation (WO-0035, root form of REV-0023
+        concurrency-0).** The broker-overfill check evaluates against the
+        position EXCLUDING this fill's own event (dedupe identity
+        ``fill:{order_id}:{source_fill_id}``): the envelope bridge record-first
+        FOLDS the fill via ``record_envelope_fill`` before calling here, and
+        comparing the incoming quantity against the post-fold position
+        fabricated a ``fill_overfill_quarantined`` event on every clean bridged
+        exit. Both implementations derive the exclusion INTERNALLY — there is
+        deliberately no caller-supplied prior-position parameter, so no call
+        site (streamed, inferred, or future) can reintroduce the phantom by
+        forgetting one. With no bridged event present the exclusion is a no-op
+        and the check equals the live derived position. It affects ONLY the
+        overfill DECISION/event — never the fold (position derives from the
+        deduped FILL event log regardless).
 
         * If ``source_fill_id`` duplicates an existing fill: no row is written,
           position is untouched, a duplicate-ignored event is recorded, and the
@@ -1183,6 +1185,7 @@ class StateStore(ABC):
         *,
         actor: str = COMMAND_ACTOR_SYSTEM,
         reason: Optional[str] = None,
+        now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Atomically transition an envelope's status and write its audit +
         lifecycle execution events (ADR-010 §3). ``new_status`` is typed
@@ -1228,6 +1231,7 @@ class StateStore(ABC):
         ts_event: Optional[datetime] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY ``remaining_quantity`` writer.
         A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
