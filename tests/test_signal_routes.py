@@ -388,6 +388,66 @@ def test_invalid_operator_key_on_producer_route_is_401_not_403(client):
     assert r2.status_code == 403
 
 
+def test_operator_middleware_covers_signals_subroutes_not_just_ingest(client):
+    # Independent review F-1: the middleware skip is the EXACT producer ingest
+    # (POST /api/signals) ONLY — not the whole /api/signals* subtree. A sub-path
+    # (WO-0103's future approve/reject) must pass through operator enforcement so
+    # authenticated_actor is stamped and the approval audit can't be X-Actor
+    # spoofed. Proven via a nonexistent sub-path: the middleware answers before
+    # routing, so no-auth is 401 (not a skipped-through 404).
+    assert (
+        client.post("/api/signals", json=_proposal(), headers=_PROD_H).status_code
+        == 201  # the exact producer ingest is still skipped + producer-authed
+    )
+    assert client.get("/api/signals/vibe/sig-1/whatever").status_code == 401
+    assert (
+        client.get(
+            "/api/signals/vibe/sig-1/whatever", headers=_PROD_H
+        ).status_code
+        == 403  # a producer key on an operator sub-route is the wrong-role 403
+    )
+
+
+def test_quarantine_symbol_is_normalized_and_findable(client):
+    # Independent review F-2: a quarantine record's symbol is normalized (strip
+    # +upper) like the well-formed path + the store filter, so it is findable by
+    # GET /api/signals?symbol=AAPL rather than stored un-normalized as "aapl".
+    r = client.post(
+        "/api/signals",
+        json={
+            "signal_id": "sym-norm",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 300,
+            "symbol": "aapl",
+            "direction": "buy",
+            "thesis": "x",
+            "provenance": {"model": 1},  # the offender
+        },
+        headers=_PROD_H,
+    )
+    assert r.status_code == 422
+    assert r.json()["symbol"] == "AAPL"
+    found = client.get(
+        "/api/signals",
+        params={"status": "quarantined", "symbol": "AAPL"},
+        headers=_OP_H,
+    ).json()
+    assert any(rec["signal_id"] == "sym-norm" for rec in found)
+
+
+def test_synthetic_malformed_identity_is_colon_namespaced_and_unforgeable(client):
+    # Independent review F-3: a no-signal_id malformed body gets a "malformed:"
+    # identity, and the wire signal_id pattern (^[A-Za-z0-9_-]+$) forbids ':',
+    # so a producer can never supply a well-formed signal_id that collides.
+    r = client.post("/api/signals", json={"foo": 1}, headers=_PROD_H)
+    assert r.status_code == 422
+    assert r.json()["signal_id"].startswith("malformed:")
+    r2 = client.post(
+        "/api/signals", json=_proposal(signal_id="malformed:forged"), headers=_PROD_H
+    )
+    assert r2.status_code == 422  # ':' violates the wire pattern -> quarantined
+
+
 def test_valid_operator_with_stale_producer_header_is_403_not_401(client):
     # Auto-review round 6 (P2): a VALID operator key on the producer route is the
     # wrong-role 403 even when a stale/invalid X-Producer-Key is ALSO present —

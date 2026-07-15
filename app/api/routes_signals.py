@@ -240,7 +240,10 @@ def _malformed_identity(raw: object) -> str:
 
     canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return f"malformed-{digest}"
+    # `:` separator, NOT `-`: the wire signal_id pattern is ^[A-Za-z0-9_-]+$ (no
+    # colon), so a producer can never supply a well-formed signal_id that collides
+    # with a synthetic malformed identity (independent review F-3).
+    return f"malformed:{digest}"
 
 
 @router.post("/signals")
@@ -316,7 +319,11 @@ async def ingest_signal(
         result = await facade.ingest_signal(
             producer_id=producer_id,
             signal_id=signal_id,
-            symbol=_raw_str(raw_dict, "symbol", "UNKNOWN"),
+            # Normalize (strip+upper) like the well-formed path and the store's
+            # symbol filter, so a quarantine record carrying "aapl" is still found
+            # by GET /api/signals?symbol=AAPL — the record-don't-reject principle is
+            # pointless if the record is unsearchable (independent review F-2).
+            symbol=(_raw_str(raw_dict, "symbol", "UNKNOWN").strip().upper() or "UNKNOWN"),
             direction=_raw_str(raw_dict, "direction", "buy"),
             # Preserve VALID parsed freshness fields on a quarantine caused by a
             # different field (auto-review round 8): the safe accessors return

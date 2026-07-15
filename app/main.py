@@ -76,7 +76,11 @@ from app.strategy_loop import strategy_loop
 # health is the only public route; the producer route enforces its own producer
 # credential via route deps, so the operator-enforcement middleware skips it.
 _PUBLIC_PATHS = frozenset({"/api/health"})
-_PRODUCER_ROUTE_PREFIX = "/api/signals"
+# The producer ingest route is EXACTLY POST /api/signals — the only route the
+# operator-enforcement middleware skips (producer-credentialed). Everything else
+# under /api/signals* (the GET list, WO-0103's approve/reject) is operator-only
+# and must pass through the middleware so authenticated_actor is stamped.
+_PRODUCER_INGEST_PATH = "/api/signals"
 
 _log = logging.getLogger(__name__)
 
@@ -258,7 +262,17 @@ def create_app(
         @app.middleware("http")
         async def _operator_enforcement(request, call_next):
             path = request.url.path
-            if path in _PUBLIC_PATHS or path.startswith(_PRODUCER_ROUTE_PREFIX):
+            # Skip ONLY the exact producer ingest route (POST /api/signals), which
+            # carries its own producer credential — NOT the whole /api/signals*
+            # subtree. A broad startswith() skip would leave WO-0103's operator-only
+            # POST /api/signals/{producer}/{signal}/approve|reject unauthenticated
+            # by this middleware AND, worse, never stamp request.state.authenticated_actor
+            # — so get_actor would fall back to the caller-controlled X-Actor and the
+            # approval audit (who authorized a real order) would be spoofable, exactly
+            # the round-5 hole. GET /api/signals + the future approve/reject routes go
+            # through the operator branch below (independent review F-1).
+            is_producer_ingest = request.method == "POST" and path == _PRODUCER_INGEST_PATH
+            if path in _PUBLIC_PATHS or is_producer_ingest:
                 return await call_next(request)
             if path.startswith("/api"):
                 if operator_key_valid(
