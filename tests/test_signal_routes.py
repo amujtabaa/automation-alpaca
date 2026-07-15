@@ -492,6 +492,22 @@ def test_rails_denial_with_non_failure_status_is_clamped():
         assert r.status_code == 429  # clamped, never a 2xx success
 
 
+def test_rails_denial_with_non_string_reason_is_not_500():
+    # Auto-review round 19: a denial reason that is not a JSON-serializable string
+    # must not make FastAPI 500 while encoding HTTPException.detail — the denial
+    # still surfaces (429), with the default reason text.
+    from app.facade.signal_rails import RailsDecision
+
+    class BadReasonRails:
+        async def check_ingest(self, producer_id: str) -> RailsDecision:
+            return RailsDecision(allowed=False, http_status=429, reason=object())
+
+    app = build_flag_on_app(store=InMemoryStateStore(), rails=BadReasonRails())
+    with TestClient(app) as c:
+        r = c.post("/api/signals", json=_proposal(), headers=_PROD_H)
+        assert r.status_code == 429  # fail-closed denial, not a 500
+
+
 def test_malformed_rails_decision_is_503_not_500():
     # Auto-review round 16: a rails provider whose async check_ingest returns a
     # bool/dict (not a RailsDecision) passes the startup guard but must FAIL CLOSED

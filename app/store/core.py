@@ -2284,6 +2284,81 @@ def safe_advisory_price(value: object) -> Optional[float]:
     return numeric if math.isfinite(numeric) and numeric > 0 else None
 
 
+def _utf8_escape_text(value: object) -> str:
+    """A UTF-8-serializable string: ``value`` if it round-trips through UTF-8,
+    else a backslash-escaped ASCII form (unpaired surrogates become ``\\udXXX``
+    text). Keeps a record representable — memory keeps a raw surrogate while
+    SQLite raises ``UnicodeEncodeError`` on insert, so an un-escaped surrogate is
+    both a 500 and a dual-store parity break (review round 19)."""
+
+    text = value if isinstance(value, str) else str(value)
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "backslashreplace").decode("ascii")
+
+
+def normalize_signal_ingest_fields(
+    *,
+    validation_failed: bool,
+    symbol: str,
+    direction: str,
+    thesis: str,
+    provenance: dict[str, str],
+    suggested_quantity: Optional[int],
+    suggested_limit_price: Optional[float],
+) -> tuple[str, str, str, dict[str, str], Optional[int], Optional[float]]:
+    """Normalize/sanitize the stored representation of a signal ONCE, at the store
+    boundary, so (a) EVERY caller — the HTTP route AND a direct/non-HTTP facade
+    caller — persists a domain-safe, representable record, and (b) the dedup hash
+    (built from these values) reflects what is actually stored, so ``symbol="aapl"``
+    and ``symbol="AAPL"`` idempotently replay instead of forking a spurious
+    ``SIGNAL_DUPLICATE_CONFLICT`` (review round 19). Idempotent — re-applying it in
+    ``plan_signal_ingest`` is a no-op.
+
+    - thesis + provenance keys/values: UTF-8-escaped (never a surrogate on the record).
+    - advisory qty/price: finite, positive, in-range, else NULL.
+    - symbol: the quarantine path tolerates a bad ticker (→ ``UNKNOWN``); the
+      well-formed path requires an ASCII, canonical ticker (raises otherwise — a
+      non-ASCII symbol must NOT be upper-cased into a different instrument, and an
+      invalid ticker must not become a RECEIVED signal).
+    - direction: the well-formed path requires a convertible buy/sell (raises
+      otherwise); the quarantine path defaults a bad value to ``buy`` (offender is
+      already in raw_fields)."""
+
+    thesis = _utf8_escape_text(thesis)
+    provenance = {
+        _utf8_escape_text(key): _utf8_escape_text(val)
+        for key, val in provenance.items()
+    }
+    suggested_quantity = safe_advisory_quantity(suggested_quantity)
+    suggested_limit_price = safe_advisory_price(suggested_limit_price)
+    if validation_failed:
+        symbol = safe_quarantine_symbol(symbol)
+        direction = direction if direction in _SIGNAL_DIRECTIONS else "buy"
+    else:
+        stripped = symbol.strip()
+        if not stripped.isascii():
+            raise ValueError(
+                f"signal symbol must be ASCII (A-Z, digits, '.', '-'), got {symbol!r}"
+            )
+        symbol = normalize_symbol(stripped)
+        if direction not in _SIGNAL_DIRECTIONS:
+            raise ValueError(
+                f"signal direction must be one of {sorted(_SIGNAL_DIRECTIONS)}, "
+                f"got {direction!r}"
+            )
+    return (
+        symbol,
+        direction,
+        thesis,
+        provenance,
+        suggested_quantity,
+        suggested_limit_price,
+    )
+
+
 def signal_canonical_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 over the canonical proposal JSON (dedupe/conflict
     detection). Keys sorted, compact separators, datetimes as ISO-8601 — so an
@@ -2469,7 +2544,18 @@ def signal_record_event(
     attributable-terminal-at-ingest rejection (spec 02-lifecycle §2) so the
     non-refilling budget is reconstructable from the log alone (WO-0104 folds it)."""
 
-    payload: dict[str, Any] = {"record": record.model_dump(mode="json")}
+    # Identity at the payload TOP LEVEL, not only nested in ["record"] (auto-review
+    # round 19): the locked 02-lifecycle §2 vocabulary lists producer_id/signal_id/
+    # record_id as minimum payload fields, and a budget/replay fold that groups
+    # attributable terminal events by payload["producer_id"] (WO-0104) would
+    # otherwise miss validation/DOA creation events while conflict events already
+    # carry top-level identity. The nested snapshot is kept for byte-exact replay.
+    payload: dict[str, Any] = {
+        "producer_id": record.producer_id,
+        "signal_id": record.signal_id,
+        "record_id": record.id,
+        "record": record.model_dump(mode="json"),
+    }
     if cycle_budget_limit is not None:
         payload["cycle_budget_limit"] = cycle_budget_limit
     if detected_by is not None:

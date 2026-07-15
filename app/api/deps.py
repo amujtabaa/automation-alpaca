@@ -278,10 +278,16 @@ async def check_signal_rails(
         denied_status = getattr(decision, "http_status", 0)
         if not (isinstance(denied_status, int) and 400 <= denied_status <= 599):
             denied_status = status.HTTP_429_TOO_MANY_REQUESTS
+        # The reason becomes HTTPException.detail, which FastAPI JSON-encodes — a
+        # non-string reason (e.g. an arbitrary object) would fail encoding and 500
+        # instead of the intended fail-closed denial (auto-review round 19). Use it
+        # only if it is a non-empty string; otherwise the default text.
+        reason = getattr(decision, "reason", "")
         raise HTTPException(
             status_code=denied_status,
-            detail=getattr(decision, "reason", "")
-            or "signal ingest rejected by rails",
+            detail=reason
+            if isinstance(reason, str) and reason
+            else "signal ingest rejected by rails",
         )
     return producer_id
 

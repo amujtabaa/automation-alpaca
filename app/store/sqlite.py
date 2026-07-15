@@ -128,6 +128,7 @@ from app.store.core import (
     plan_resolve_timeout_quarantine,
     plan_transition_order,
     build_signal_proposal_payload,
+    normalize_signal_ingest_fields,
     plan_signal_ingest,
     signal_canonical_hash,
     reconcile_trading_state_event,
@@ -3178,6 +3179,25 @@ class SqliteStateStore(StateStore):
         received_at: Optional[datetime] = None,
     ) -> SignalIngestResult:
         received_at = received_at or utcnow()
+        # Normalize the stored representation ONCE, at the boundary (review round
+        # 19), identically to the memory store — the hash reflects what is stored
+        # and every field is domain-safe for any caller. Idempotent in plan.
+        (
+            symbol,
+            direction,
+            thesis,
+            provenance,
+            suggested_quantity,
+            suggested_limit_price,
+        ) = normalize_signal_ingest_fields(
+            validation_failed=validation_failed,
+            symbol=symbol,
+            direction=direction,
+            thesis=thesis,
+            provenance=provenance,
+            suggested_quantity=suggested_quantity,
+            suggested_limit_price=suggested_limit_price,
+        )
         canonical = build_signal_proposal_payload(
             signal_id=signal_id,
             symbol=symbol,

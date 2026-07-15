@@ -272,3 +272,68 @@ async def test_store_boundary_normalizes_symbol_and_validates_direction(any_stor
             issued_at=datetime.now(timezone.utc), ttl_seconds=300, thesis="x",
             provenance={}, server_max_ttl_seconds=3600, cycle_budget_limit=50,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Auto-review round 19 — store-boundary normalization for ANY caller + hash.
+# --------------------------------------------------------------------------- #
+async def test_store_hash_uses_normalized_symbol_idempotent(any_store):
+    # symbol="aapl" then "AAPL" (same signal_id, else identical) is the SAME
+    # normalized record -> idempotent replay, not a spurious DUPLICATE_CONFLICT.
+    from app.models import SIGNAL_REPLAYED
+
+    await any_store.initialize()
+    iat = datetime.now(timezone.utc)
+    common = dict(
+        producer_id="vibe", signal_id="norm", direction="buy", issued_at=iat,
+        ttl_seconds=300, thesis="x", provenance={}, server_max_ttl_seconds=3600,
+        cycle_budget_limit=50,
+    )
+    r1 = await any_store.ingest_signal(symbol="aapl", **common)
+    r2 = await any_store.ingest_signal(symbol="AAPL", **common)
+    assert r1.record.symbol == "AAPL"
+    assert r2.outcome == SIGNAL_REPLAYED  # NOT a conflict
+
+
+async def test_store_escapes_surrogate_text_both_stores(any_store):
+    # A direct caller's surrogate thesis / provenance is escaped at the store
+    # boundary (memory kept the raw surrogate; sqlite raised UnicodeEncodeError).
+    await any_store.initialize()
+    await any_store.ingest_signal(
+        producer_id="vibe", signal_id="surr", symbol="AAPL", direction="buy",
+        issued_at=datetime.now(timezone.utc), ttl_seconds=300, thesis="\ud800",
+        provenance={"\ud800": "v"}, server_max_ttl_seconds=3600, cycle_budget_limit=50,
+    )
+    stored = await any_store.get_signal("vibe", "surr")
+    assert stored is not None
+    stored.thesis.encode("utf-8")  # no UnicodeEncodeError
+    for k, v in stored.provenance.items():
+        k.encode("utf-8")
+        v.encode("utf-8")
+
+
+async def test_store_rejects_non_ascii_symbol_on_received_path(any_store):
+    # A non-ASCII symbol on the well-formed path must NOT be upper-cased into a
+    # different instrument (ß->SS) — the store boundary rejects it.
+    await any_store.initialize()
+    with pytest.raises(ValueError, match="ASCII"):
+        await any_store.ingest_signal(
+            producer_id="vibe", signal_id="x", symbol="ß", direction="buy",
+            issued_at=datetime.now(timezone.utc), ttl_seconds=300, thesis="t",
+            provenance={}, server_max_ttl_seconds=3600, cycle_budget_limit=50,
+        )
+
+
+async def test_creation_event_carries_top_level_identity(any_store):
+    # The locked vocab requires producer_id/signal_id/record_id at the payload TOP
+    # LEVEL (not only nested in ["record"]) so a budget/replay fold can group them.
+    from app.models import ExecutionEventType
+
+    await any_store.initialize()
+    await _ingest_fresh_received(any_store, signal_id="tli")
+    events = await any_store.get_execution_events()
+    recv = [e for e in events if e.event_type is ExecutionEventType.SIGNAL_RECEIVED][-1]
+    assert recv.payload["producer_id"] == "vibe"
+    assert recv.payload["signal_id"] == "tli"
+    assert recv.payload["record_id"]
+    assert recv.payload["record"]["signal_id"] == "tli"  # snapshot still nested
