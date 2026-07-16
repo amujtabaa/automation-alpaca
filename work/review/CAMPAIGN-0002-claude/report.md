@@ -682,5 +682,201 @@ highest-severity, most actionable finding in this section.
 
 ---
 
-*(§D Performance, §E Cross-Verification, §F Mechanism Decision, §G Deconfliction, §H
-Consolidation Program, §I Human Decisions, §J full Evidence Appendix: in progress.)*
+## §D Performance Findings + Budget Verdict
+
+### D.1 Budget assumption (stated, per charter §5)
+
+`app/monitoring.py`'s tick cadence defaults to **`DEFAULT_POLL_CADENCE_SECONDS = 15.0`**
+(`app/config.py:87`). `_run_envelopes` (`app/monitoring.py:598-670`) iterates every ACTIVE
+envelope once per tick; whatever a mechanism does to determine ownership/liveness on that hot
+path runs inside this loop, once per envelope, every 15 seconds. **Stated budget**: the envelope
+pass across all active envelopes, at realistic beta scale (tens of symbols, low hundreds of
+envelope-with-history rows, thousands of events accumulated over a trading day), should complete
+in well under 1–2 seconds — comfortably inside the 15s cadence — so it never crowds out the rest
+of the tick (protection pass, submit sweep, reconciliation) or causes tick-to-tick backlog. A
+mechanism whose per-tick cost scales with the *total* system event/envelope history rather than
+the relevant symbol's own slice is the specific risk this budget exists to catch, since that count
+grows unboundedly across a trading day (and across the system's lifetime).
+
+This concern is not hypothetical for this codebase: independent of either R2 attempt,
+`app/reconciliation.py:671`'s `redrive_staged_envelope_action` calls `store.get_execution_events()`
+with **zero filter arguments** — `get_execution_events(self, *, after_sequence: int = 0, limit:
+Optional[int] = None)` (`app/store/base.py:1122`) defaults to the entire unfiltered global event
+log, filtered down to one envelope's events in Python afterward. This is pre-existing (predates
+both R2 attempts, confirmed present on the shared base `22617f4`) and runs potentially once per
+active envelope with a staged-but-unexecuted action, every tick. Neither R2 attempt's diff touches
+this function (confirmed: `git diff 22617f4 <either tip> -- app/reconciliation.py` shows no hits
+inside `redrive_staged_envelope_action`'s body). This is flagged as a pre-existing, shared
+architectural risk **not attributable to either attempt**, but directly relevant context for
+judging whether the consolidation should introduce the memoized/indexed projection the charter's
+§5 asks about.
+
+### D.2 Methodology
+
+Sol's own `tests/performance/r2_scaling_gate.py` (charter-named artifact, confirmed present per
+§A.7's file inventory) measures, for `SqliteStateStore` only, at increasing synthetic scale
+(SMALL: 1 symbol; STARTUP-SMALL: 10 symbols×10 generations; REALISTIC: 100 symbols×10
+generations; STRESS: 1,000 symbols, opt-in): (1) **runtime** cost of `active_sell_intent_for`
+(the hot-path read both mechanisms rely on for ownership) — SELECT count per call, p50/p95/p99
+latency, and `EXPLAIN QUERY PLAN` scan-type inspection; (2) **startup** cost of `initialize()` —
+SELECT count and elapsed time. It was run unmodified against Sol's own worktree, then **ported**
+(minimal changes — confirmed portable: identical internal store helpers, zero schema drift, and a
+byte-identical `execution_events` table definition between both attempts' branches) to run the
+same measurement against Claude R2 (`tests/performance/r2_scaling_gate_claude_ported.py`,
+committed this branch; drops Sol's `project_envelope_obligation`-specific memory gate, since
+Claude's mechanism has no equivalent in-memory projection function to measure — itself a
+comparison-relevant fact). STRESS scale (1,000 symbols) was **not run**, for time budget reasons
+— the REALISTIC-scale result below is already decisive; this is a stated scope limit, not a
+silently dropped data point.
+
+### D.3 Results
+
+**Sol R2 — its own gate, against its own code, run unmodified: 3 of 6 gates FAIL.**
+
+| Metric (REALISTIC: 100 symbols, 1001 envelopes, 10002 events) | Value | Gate |
+|---|---|---|
+| SELECTs per `active_sell_intent_for` call | **42** | — |
+| p95 latency, SMALL → REALISTIC | 2.20ms → **129.84ms** (**58.9× growth**) | **FAIL** (limit 3×) |
+| Query plan | 3 unindexed-scan offenders: `execution_envelopes`, `execution_events`, `submit_recoveries` | **FAIL** |
+| Startup elapsed, STARTUP-SMALL → REALISTIC | 137.8ms → **6,727.1ms** (**48.8× growth**) | **FAIL** (limit 12×) |
+| Startup SELECT count growth | 8.6× | PASS |
+| SELECT count independent of unrelated scale | constant (42) | PASS |
+| Projection peak memory | 307,728 bytes | PASS (limit 2 MiB) |
+
+**Claude R2 — the ported equivalent: 4 of 5 applicable gates PASS, and by a wide margin where it
+matters most.**
+
+| Metric (REALISTIC: 100 symbols, 1001 envelopes, 10002 events) | Value | Gate |
+|---|---|---|
+| SELECTs per `active_sell_intent_for` call | **1** | — |
+| p95 latency, SMALL → REALISTIC | 0.033ms → **0.029ms** (**0.89×**, essentially flat) | **PASS** (limit 3×) |
+| Query plan | **zero** unindexed-scan offenders | **PASS** |
+| Startup elapsed, STARTUP-SMALL → REALISTIC | 26.9ms → **625.7ms** (**23.3× growth**) | **FAIL** (limit 12×) |
+| Startup SELECT count growth | **1.0×** (constant, 7 selects always) | PASS |
+| SELECT count independent of unrelated scale | constant (1) | PASS |
+
+**Head-to-head at the same REALISTIC scale**: Claude's runtime hot-path operation is **~4,460×
+faster** (0.029ms vs. 129.84ms p95) and uses **42× fewer SELECT statements per call** (1 vs. 42).
+This is the operation that runs inside the 15-second tick, per active envelope, every cycle — the
+dimension the stated budget (§D.1) most directly targets — and Sol's own gate documents that its
+own implementation misses that budget by a wide, measured margin, while Claude's clears it with
+large headroom.
+
+### D.4 Explaining the one shared gate failure, and the one that isn't shared
+
+**Both attempts fail `startup_elapsed_growth_le_12x`, but for different, precisely identified
+reasons — investigated rather than left as a coincidence.**
+
+Claude's `initialize()` (`app/store/sqlite.py:461+`) is, on inspection, **unchanged by either R2
+attempt** — it runs the schema script plus seven `CREATE INDEX IF NOT EXISTS` statements. On an
+already-populated table, building/verifying an index costs `O(rows)` in SQLite regardless of
+mechanism — this is why Claude's startup elapsed time still grows with data scale even though its
+*SELECT count* (which the trace only captures for `SELECT`-prefixed statements) stays exactly
+flat. **This part of the cost is pre-existing, shared architecture, not attributable to either R2
+mechanism.**
+
+Sol's much larger *absolute* startup cost (6.7s vs. 625.7ms at the same scale — Sol is **~10.75×
+slower in absolute terms**, not just in growth ratio) has a distinct, additional, R2-specific
+cause, found by reading `initialize()` directly on Sol's branch: a startup reconciliation block
+absent from Claude's `initialize()` entirely —
+
+```python
+with self._tx() as cur:
+    now = utcnow()
+    rows = cur.execute(
+        "SELECT DISTINCT sell_intent_id FROM execution_envelopes ORDER BY sell_intent_id"
+    ).fetchall()
+    for row in rows:
+        self._reconcile_envelope_owner_locked(cur, row["sell_intent_id"], now=now)
+    self._reconcile_envelope_symbol_conflicts_locked(cur, now=now)
+```
+
+This is Sol's startup re-projection, confirmed precisely. **And it directly closes the pre-R2
+data migration gap §C.1.4 found open in Claude's attempt.** Reading `_reconcile_envelope_owner_locked`
+(`app/store/sqlite.py:2214-2260` on Sol's branch) directly:
+
+```python
+if retains:
+    if intent.status is SellIntentStatus.PENDING:
+        ... transition to APPROVED, reason="envelope_delegation_linked"
+    elif intent.status is SellIntentStatus.EXPIRED:
+        ... transition to APPROVED, reason="envelope_delegation_restored",
+            allow_envelope_restore=True   # <- a deliberate, named exception
+                                           #    to the normal transition FSM
+```
+
+For exactly the shape AUDIT-0001/§C.1.4 identified as the unmigrated risk — an intent already
+`EXPIRED` while its envelope still needs it (`retains=True`) — Sol's startup pass **explicitly
+restores it to `APPROVED`**, via a named, deliberately-flagged exception to the ordinary
+transition rules (`allow_envelope_restore=True`), not an accidental side effect. The mirror case
+(`retains=False`, intent still PENDING/APPROVED) is explicitly released. This is a real,
+considered fix for the exact double-exposure scenario reproduced empirically in §C.1.4 — this
+investigator finds it credible on direct reading, not merely because Sol's own docstrings claim
+it (independent verification of Sol's own claims, per this campaign's cross-model discipline, is
+still owed in §C.2/§E — this reading is this investigator's own, not yet cross-checked against
+Sol's own test suite for the restore path specifically).
+
+**The consequential, quantified trade-off for §F:** Sol pays for correct pre-existing-data
+migration with a real, measured startup cost — but it is a **one-time-at-process-start** cost
+(`run_startup_reconcile` is called once at app lifespan start per `app/monitoring.py:829-847`,
+confirmed pre-existing/shared infrastructure), not a per-15-second-tick recurring cost. Claude
+pays nothing extra at startup but requires an explicit backfill step for pre-existing orphans if
+adopted as-is. Separately, Sol's startup cost has its own unbounded-growth concern worth flagging
+on its own terms: `SELECT DISTINCT sell_intent_id FROM execution_envelopes` scans **every
+envelope the system has ever created**, not a bounded recent window — so this one-time cost will
+keep growing across the system's operating lifetime, not just with same-day activity, unless
+scoped. This is a second, independent instance of the "grows unbounded, needs an indexed/memoized
+bound" pattern the charter's §5 anticipates — at startup instead of per-tick.
+
+### D.5 Verdict
+
+- **Runtime (per-tick, recurring) hot path: Claude R2 is decisively cheaper** — by roughly three
+  orders of magnitude at measured scale, with zero query-plan concerns. This is the dimension the
+  stated 15-second budget most directly protects, since it recurs every cycle for every active
+  envelope.
+- **Startup (one-time, at process start) cost: Sol R2 is more expensive, but for a real reason**
+  — it is buying correctness for pre-existing data that Claude's attempt does not provide. Sol's
+  own gate correctly flags this as exceeding its own stated tolerance; the tolerance itself may
+  simply be miscalibrated for what a correctness-preserving reconciliation genuinely costs, rather
+  than the reconciliation being unnecessary.
+- **Recommendation to the synthesis (§F/§H), stated concretely per the charter's ask**: the
+  consolidation should introduce an **indexed/memoized per-symbol live-child/live-envelope
+  projection that neither attempt shipped**, specifically to (a) bound Sol's startup reconciliation
+  to a scoped/recent window rather than the full historical `execution_envelopes` table, and (b)
+  address the pre-existing, shared `redrive_staged_envelope_action` unfiltered-event-log read
+  (§D.1) that both attempts inherit unmodified. Whichever mechanism (or synthesis) is chosen,
+  Claude's runtime-hot-path approach (a single indexed, stored-field read) is the better model for
+  anything that must run inside the 15-second tick; Sol's restore-on-startup logic is the better
+  model for anything that must repair pre-existing data — these are not mutually exclusive, and
+  §F should weigh grafting Sol's specific `_reconcile_envelope_owner_locked` restore logic onto
+  Claude's cheaper steady-state mechanism as one concrete synthesis candidate.
+
+### D.6 Evidence appendix (condensed)
+
+```
+$ (Sol worktree) python -m tests.performance.r2_scaling_gate   -> exit 1
+  gates: FAIL runtime_has_no_unrelated_full_scan, FAIL runtime_p95_large_over_small_le_3x,
+         FAIL startup_elapsed_growth_for_10x_facts_le_12x; PASS the other 3
+  realistic: selects_per_call=42 p95=129.8418ms unrelated_scans=[3 offenders]
+             startup: selects=3359 elapsed_ms=6727.0669
+  small:     selects_per_call=42 p95=2.2049ms
+             startup: selects=74 elapsed_ms=15.3306
+
+$ (Claude worktree, ported) python r2_scaling_gate_claude_ported.py   -> exit 1
+  gates: FAIL startup_elapsed_growth_for_10x_facts_le_12x only; PASS the other 4
+  realistic: selects_per_call=1 p95=0.0291ms unrelated_scans=[]
+             startup: selects=7 elapsed_ms=625.7223
+  small:     selects_per_call=1 p95=0.0326ms
+             startup: selects=7 elapsed_ms=11.1421
+
+$ git diff 22617f4 <claude-r2-tip> -- app/store/sqlite.py | grep "async def initialize" -A5
+  (no hits inside a diff hunk -- initialize() itself is untouched by Claude R2)
+
+$ git show <sol-r2-tip>:app/store/sqlite.py | sed -n '/async def initialize/,/^    async def /p'
+  (shows the SELECT DISTINCT sell_intent_id ... reconciliation loop, quoted in full above)
+```
+
+---
+
+*(§E Cross-Verification, §F Mechanism Decision, §G Deconfliction, §H Consolidation Program, §I
+Human Decisions, §J full Evidence Appendix: in progress.)*
