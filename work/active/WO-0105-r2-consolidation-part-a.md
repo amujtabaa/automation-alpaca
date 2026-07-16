@@ -142,6 +142,15 @@ either (a) proceeds into Part B under this same id, using the pre-declared Part 
 above, or (b) is superseded/re-scoped/abandoned per the human's own decision on §I — this
 investigator does not presume which.
 
+**RATIFICATION RECEIVED 2026-07-16** (Ameen, in-chat; recorded at
+`work/review/CAMPAIGN-0002-claude/RATIFICATION-part-a.md`). Decisions §I.1–§I.5 and §I.7 ratified
+as recommended; §I.6 (Repro 2 severity) resolved conditionally — delegated to Sol in Part B and
+classified non-blocking *provided* Part B confirms it is theoretical/paperwork-only, else it
+escalates back to a beta blocker. The Part A hard stop is **cleared**; this WO now advances into
+**Part B**, which proceeds gate-by-gate through report §H.2's `STOP-FOR-HUMAN` checkpoints (the
+first — the order-intent-lifecycle change — is a human-gated surface and pauses for the operator).
+Part B has not begun as of this record.
+
 - [x] RESULT_SUMMARY_KEPT (Part A report is the durable record)
 
 ## Distillation checklist
