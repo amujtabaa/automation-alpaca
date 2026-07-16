@@ -678,7 +678,199 @@ highest-severity, most actionable finding in this section.
 
 ### §C.2 Sol R2 — Mechanism & Obligations
 
-*(Pending — characterization in progress.)*
+**Attempt:** `codex/r2-lifecycle-link-sol-impl`, tip `353ef1c` ("dev", single commit, no
+descriptive body), forked from `22617f4`. 26 files, **10,853 insertions(+), 389 deletions(-)**
+(exact match to §A.6). Investigated in the shared scratch worktree `…/scratchpad/wt-sol-r2`
+(reused directly for §B's oracle run and §D's performance harness).
+
+#### C.2.1 Mechanism
+
+**VERIFIED.** "Delegation projection" on one shared, pure function, `project_envelope_obligation`
+(`app/store/core.py:1026-1501`, backed by `EnvelopeObligationProjection`), whose own docstring
+states the single-source claim: *"Both stores call this exact function for single-flight
+eligibility, session close, flatten deferral, legacy-dispatch exclusion, and terminal release...
+no consumer gets to invent a neighboring definition of 'live envelope.'"* `app/monitoring.py`'s
+own envelope-lineage choke points wrap the same function, extending the single-source property
+across the store/monitoring boundary. `LIVE = {APPROVED, ACTIVE, FROZEN}` confirmed exactly
+(`_ENVELOPE_DELEGATING_STATUSES`, core.py:769). Activation validates the same scope Claude's
+mechanism does (existence, symbol, session, reason, qty ceiling, status) via
+`envelope_owner_scope_reason`, closing WO-0036 P1 #8 identically.
+
+**Correction to the charter's one-line gloss, found independently and precisely, converging with
+this investigator's own §D reading:** Sol's mechanism is **not purely a read-time derivation** —
+there is a real, guarded write-back. Three reconciliation writers
+(`_reconcile_envelope_owner_*`, `_reconcile_envelope_symbol_conflicts_*`,
+`_reconcile_envelope_owners_for_order_*`, mirrored exactly across both stores) keep the intent's
+*actual* `SellIntentStatus` column converged to the projection, including a narrowly-scoped,
+explicitly-flagged bypass of the normal transition table (`allow_envelope_restore=True`, reachable
+**only** from the reconcile internals, never a public API) for the one edge the FSM otherwise
+forbids: `EXPIRED → APPROVED`. This write-back fires broadly — every envelope transition, every
+linked order-lifecycle event, every store startup — so the stored column is a near-real-time
+converged cache, not a static column left to drift. It matters because at least one consumer
+(`plan_create_order_for_sell_intent`) reads `intent.status` directly without going through the
+projection; the write-back is closing a real gap for that consumer, not decorative. Crucially, the
+one read path that actually decides single-flight dedup eligibility
+(`sell_intent_is_active`'s new `envelope_obligation`/`envelope_linked` parameters, core.py:1662)
+**never trusts the cached column** — it returns the projection's answer unconditionally when the
+projection has an opinion, so correctness never depends on the write-back having already run. This
+resolves the ambiguity §C.1.2 flagged from Claude's side about how literally to read "derives
+activeness at read time": the honest answer is "derives it at read time, AND keeps a cache
+converged as a belt-and-suspenders for the other consumer that doesn't go through the projection."
+
+**Session-close and flatten deferral, verified structurally similar in shape to Claude's fix**:
+`close_session` filters candidate intents by `retains_intent` before invoking the (unchanged)
+planner — the same "filter before, don't change the planner" shape both attempts converged on
+independently. `flatten_position` rebinds to the envelope's own live order when the projection
+finds `venue_orders` non-empty, raising `FlattenBlockedError` rather than guessing on ambiguity
+(multiple venue orders / conflicting owners) — a more conservative failure mode than simply
+deferring, worth checking in §E against Claude's exact behavior on the same ambiguous input.
+
+#### C.2.2 The startup re-projection — verified in both directions, with cited passing tests
+
+**VERIFIED, both stores, both directions — this is the section's most consequential finding, and
+it directly resolves the open question §C.1.4/§D.4 flagged from Claude's side.** `initialize()`
+(called once, at FastAPI lifespan start) unconditionally runs: `SELECT DISTINCT sell_intent_id
+FROM execution_envelopes` → reconcile each owner → a symbol-conflict sweep. Two dedicated tests,
+both constructing genuinely pre-R2-shaped data via raw internal-state writes (bypassing the
+validated API, exactly as real historical data would predate the guards):
+
+- **Release direction** (`test_initialize_converges_a_pre_r2_released_owner`,
+  `tests/test_wo0036_r2_lifecycle_link.py:536-559`): envelope forced to a terminal status, intent
+  forced back to APPROVED with `expired_at=None` → after `initialize()`, `get_sell_intent(...).status
+  is EXPIRED`.
+- **Restore direction** (`test_startup_restores_every_stale_retained_owner_state`,
+  `tests/test_wo0036_r2_hostile_closure.py:1061-1076`, parametrized `stale_status ∈ {PENDING,
+  EXPIRED}`): envelope still ACTIVE, intent force-set to the stale status → after `initialize()`,
+  `status is APPROVED`, `expired_at is None`, and `active_sell_intent_for("AAPL")` resolves to it.
+
+This is the exact orphan shape (`intent EXPIRED`, envelope still needing it) that §C.1.4 reproduced
+as an open, unmigrated defect in Claude's attempt — here it is not just claimed but pinned by a
+real, passing test on both stores. Combined with this investigator's own direct code-level
+verification in §D.4 (finding the identical `allow_envelope_restore` mechanism independently,
+before this characterization landed), this is now corroborated by two independent readings plus a
+cited, executable pin.
+
+#### C.2.3 Parity obligation
+
+**VERIFIED — a stronger technique than Claude's side, with one precisely named gap in the same
+place.** Beyond the standard `any_store`-parametrized functions (matching Claude's style),
+`tests/test_wo0036_r2_assurance.py` (992 lines, 6 functions) uses a **materially stronger**
+technique this investigator's own §C.1.2 flagged as *absent* from Claude's suite: exact
+byte-for-byte cross-store snapshot equality after every step of three scripted lifecycle
+sequences, both stores built fresh and driven under a monkeypatched deterministic clock/ID
+environment, diffed with a `_first_difference` localizer — plus Hypothesis property-based fuzzing
+directly against `project_envelope_obligation` (store-agnostic, so it catches a bug shape a
+naive store-vs-store diff would miss if identically present in both). This is the repo's own
+"sequence parity" gold-standard idiom (§C.1.2), correctly applied to the R2 surface, which
+Claude's attempt does not do.
+
+**The named gap, precisely**: this exact-snapshot technique is never applied *across a restart* —
+none of the three assurance scripts calls `.initialize()` mid-sequence. A separate test
+(`test_every_observed_r2_write_boundary_rolls_back_and_retries`) does restart mid-test, but to
+prove write-atomicity survives a restart, not to prove the two stores' startup re-projections
+converge to *identical* structure relative to each other. **Verdict**: both directions of startup
+re-projection are VERIFIED to reach the same *correct outcome* on both stores (§C.2.2, via
+`any_store`); UNVERIFIED (absence of a test, not a failure) that the two stores' re-projection is
+byte-exact across a restart to the standard this suite otherwise holds itself to.
+
+#### C.2.4 No-second-stored-truth
+
+**VERIFIED at the schema level** (`app/models.py` and `sqlite.py` DDL both zero-diff — no new
+column, no new field). **Nuanced but sound at the mechanism level**: the write-back (§C.2.1) only
+ever writes the *pre-existing* `SellIntent.status`/`.approved_at`/`.expired_at` fields through the
+*pre-existing* evented-transition mechanism — it is a converged cache of the one true projection,
+not a second independent value, and the one decision that matters most for INV-032/INV-090
+(single-flight dedup) bypasses the cache entirely and computes from first principles at read time.
+ADR-010's own claim ("no second stored source of derived truth") holds at the level the charter's
+phrasing targets.
+
+#### C.2.5 Governance + migration completeness
+
+**"Zero `work/` artifacts" — VERIFIED, triple-confirmed, literally zero** (empty `git diff
+--name-only ... | grep '^work/'`; `WO-0036-...md` byte-identical to base; no ledger entry). Real
+governance gap regardless of code quality, exactly as the charter flags.
+
+**ADR-010 — the §8 correction independently re-confirmed.** This branch's ADR-010 has **no §8
+section at all** — sections run 1 through 7 then straight to "Consequences." The amendment instead
+lands as three dated "Amended 2026-07-15 (WO-0036 R2)" blocks inserted into the *existing* §3
+(the bulk of the mechanism prose, including the explicit pre-R2 both-directions startup claim),
+§4 (the flatten-deferral bullet), and §6 (the eventing/no-second-column claim) — independently
+matching this investigator's own §G.1/§G.3 finding exactly, now doubly corroborated by two
+separate readings of the same diff.
+
+**INV-090 — exact text confirmed** (quoted in full at §G.3's doc-variant matrix). Additionally:
+five *other* pre-existing invariants (INV-032, the INV-031-area R2 carve-out note, INV-036,
+INV-080, INV-081, INV-087) were amended in place to cross-reference INV-090 — a broader documentation
+footprint than this investigator had independently checked; INV-087's own "why" text was rewritten
+to describe the per-symbol guard as now "an independent structural backstop... no longer the
+primary lifecycle mechanism," consistent with Claude's side using near-identical language for the
+same demotion.
+
+#### C.2.6 Native gate
+
+```
+$ ruff check .              -> All checks passed!
+$ ruff format --check .     -> 2 files would reformat (BOTH confirmed byte-identical to base --
+                                pre-existing drift, not introduced by this diff)
+$ mypy app/                 -> Success: no issues found in 64 source files
+$ lint-imports               -> Contracts: 6 kept, 0 broken.
+$ pytest -q                 -> 2974 passed, 5 skipped, 1 xfailed, 12 warnings, exit 0 (186.37s)
+$ pytest -q --cov=app --cov-branch -> same pass/skip/xfail counts, coverage 93.59% (floor 93%), exit 0
+```
+Run at **11:29:53–11:37:51 UTC, 2026-07-16** — naturally past the charter's documented red
+timestamp (09:41 UTC, same day), not artificially timed. **Transparency note, handled correctly by
+the characterization agent and worth recording here as-is**: an intermediate run showed 20
+failures, all in `tests/test_r2_conformance_oracle_claude.py` — this file is not part of Sol's
+tree (confirmed via `git ls-files`) and its presence was a transient artifact of this
+investigator's own concurrent use of the same shared worktree for §B/§D verification earlier in
+this session (the file was copied in, used, then removed — §B.5/§D.6). The agent correctly
+diagnosed this as foreign contamination rather than a Sol defect, re-confirmed a clean tree, and
+re-ran to the authoritative result above. Noted here in the interest of full transparency about
+how the shared worktrees were used across this investigation, not because it affected any
+conclusion.
+
+**Tape-clock flake — root cause identified precisely, and NOT fixed by either attempt.**
+`app/sellside/policy.py`'s real tape filter (`active_window`) excludes any snapshot before
+`envelope.activated_at`, and `approve_envelope_activation` has **no injectable `now=` parameter on
+either branch** — it always stamps `activated_at` from real `utcnow()`. This is the structural
+root of the whole flake class; both attempts patch around it only in the specific files each
+happens to touch (Sol independently pins `activated_at` in the three files exposed to it, via a
+different but equivalent workaround to Claude's `activate_envelope_at` helper — commented, deliberate,
+confirmed working by a clean run past the flake window) rather than fixing
+`approve_envelope_activation` itself. **Residual risk for the consolidation**: whichever mechanism
+is chosen should add the injectable clock at the root, not rely on both attempts' independently-arrived-at
+per-file workarounds continuing to cover every future test that activates an envelope.
+
+#### C.2.7 Test corpus inventory
+
+19 files changed in `tests/`, 6,274 insertions / 154 deletions. New: the 559-line link suite
+(exact charter match), the 3,414-line hostile-closure suite (70 functions — pure-function
+`project_envelope_obligation` fuzzing, ambiguity/fail-closed checks, claim/recovery races, reprice
+predecessor races, supersession atomicity, and the two startup-convergence tests), the 992-line
+assurance suite (exact cross-store snapshot + Hypothesis, §C.2.3), the 325-line parity-adversarial
+suite (7 functions), and the 527-line performance harness (§D). Charter's "~10 re-fixtured files"
+corrected to **14** (exact list: `test_phase7_flatten_atomic.py`, `test_rev0023_phase_a2_pins.py`,
+five `test_wo0016_envelope_*.py` files, `test_wo0017_envelope_approval.py`,
+`test_wo0017_precedence.py`, `test_wo0019_engine_seam.py`, `test_wo0020_envelope_tick.py`,
+`test_wo0021_envelope_chaos.py`, `test_wo0025_multileg.py`, `test_wo0032_per_symbol_mandate.py`,
+`test_wo0035_root_causes.py`).
+
+**Independent re-confirmation of §D's performance finding**: the characterization agent
+independently ran `tests/performance/r2_scaling_gate.py` itself (before this investigator's own
+§D run) and got the same structural result with expected run-to-run absolute variance on a shared
+container: 3/6 gates fail (unindexed scans on `execution_envelopes`/`execution_events`/
+`submit_recoveries`; p95 growth 71.98× and 55× across two of its own runs vs. this report's 58.9×;
+startup elapsed growth 37.16× vs. this report's 48.8×) — same three gates fail every time, by a
+wide margin each time, across three independent runs total (two by the characterization agent, one
+by this investigator). This is now a well-corroborated, not a one-off, finding.
+
+**Evidentiary status**: mechanism (including the write-back correction), the dual-direction
+startup migration claim, parity's stronger-technique-plus-named-gap, no-second-stored-truth, and
+governance are all VERIFIED by direct file/test reading, independently converging with this
+investigator's own §D findings on the startup mechanism specifically. The native gate is VERIFIED
+clean with a transparently-recorded, correctly-diagnosed transient contamination note. The
+tape-clock structural root cause (missing injectable clock on activation) is a genuine residual
+risk shared by both attempts, not previously surfaced this precisely.
 
 ---
 
