@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: R2 consolidation campaign — Part A (investigate + decide the canonical SellIntent↔Envelope lifecycle link)
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0105
 wave: R2 consolidation campaign (CAMPAIGN-0002), Part A
 model_tier: strong
@@ -62,23 +62,30 @@ forbidden_paths:
 
 ## Required behavior
 
-- [ ] §A Topology, Inventory & Freeze-set (with completeness attestation).
-- [ ] §B Conformance Oracle & Results (spec-derived, NOT implementation-derived; run against both attempts).
-- [ ] §C Per-Attempt Characterization + Obligation Discharge (mirror-image write-ups).
-- [ ] §D Performance Findings + budget verdict (measured, not reasoned).
-- [ ] §E Cross-Verification Findings (each attempt's suite run against the other).
-- [ ] §F Mechanism Decision (single-source projection vs evented terminal propagation, or synthesis).
-- [ ] §G Deconfliction Tables (namespace/renumber registry, doc-variant matrix, architecture conformance, lineage/merge-order).
-- [ ] §H Consolidation Program (ordered, gated, reversible) + §I Batched Human Decisions.
-- [ ] §J Evidence Appendix — every command + decisive pasted output; every claim in §A–I traces here.
+- [x] §A Topology, Inventory & Freeze-set (with completeness attestation).
+- [x] §B Conformance Oracle & Results (spec-derived, NOT implementation-derived; run against both attempts).
+- [x] §C Per-Attempt Characterization + Obligation Discharge (mirror-image write-ups).
+- [x] §D Performance Findings + budget verdict (measured, not reasoned).
+- [x] §E Cross-Verification Findings (each attempt's suite run against the other).
+- [x] §F Mechanism Decision (single-source projection vs evented terminal propagation, or synthesis).
+- [x] §G Deconfliction Tables (namespace/renumber registry, doc-variant matrix, architecture conformance, lineage/merge-order).
+- [x] §H Consolidation Program (ordered, gated, reversible) + §I Batched Human Decisions.
+- [x] §J Evidence Appendix — every command + decisive pasted output; every claim in §A–I traces here.
+
+All nine delivered in `work/review/CAMPAIGN-0002-claude/report.md` (final commit: see this WO's
+Completion disposition below).
 
 ## Required tests
 
-- [ ] The conformance oracle itself (`tests/test_r2_conformance_oracle_claude.py`) is the primary
+- [x] The conformance oracle itself (`tests/test_r2_conformance_oracle_claude.py`) is the primary
       deliverable test artifact — property-style, both stores, spec-derived per charter §3.
-- [ ] Both attempts' own hostile/adversarial suites cross-run in scratch worktrees (§E).
-- [ ] Native gate (`ruff check . && ruff format --check . && mypy app/ && lint-imports && pytest -q`)
+      Result: base 12P/10F/6S; both Claude R2 and Sol R2 22P/0F/6S (exact tie, §B.3).
+- [x] Both attempts' own hostile/adversarial suites cross-run in scratch worktrees (§E).
+      Result: Sol's suite vs Claude's code: 125F/42P/62 UNADAPTABLE (§E.1). Claude's suite vs
+      Sol's code: 28P/18 FAIL-DESIGN-DIFFERENCE/0 FAIL-BUG (§E.2).
+- [x] Native gate (`ruff check . && ruff format --check . && mypy app/ && lint-imports && pytest -q`)
       run per attempt, at a UTC time exposing the known tape-clock flake.
+      Result: both clean, run 11:08–11:37 UTC 2026-07-16, past the 09:41 UTC flake window (§C.1.5/§C.2.6).
 
 ## Required commands
 
@@ -91,11 +98,16 @@ forbidden_paths:
 
 ## Acceptance criteria
 
-- [ ] All §A–J sections produced per charter §11 shape; every claim VERIFIED/UNVERIFIED/BLOCKED/NEEDS-INPUT with pasted evidence.
-- [ ] Oracle committed under `tests/`, report committed under `work/review/CAMPAIGN-0002-claude/`.
-- [ ] Zero pushes/rebases/merges to any branch other than `consolidate/r2-canonical`.
-- [ ] Independence maintained: no read of a `-codex`/other-investigator report path.
-- [ ] Hard stop observed: §I surfaced to the human, Part B NOT started without recorded ratification.
+- [x] All §A–J sections produced per charter §11 shape; every claim VERIFIED/UNVERIFIED/BLOCKED/NEEDS-INPUT with pasted evidence.
+- [x] Oracle committed under `tests/`, report committed under `work/review/CAMPAIGN-0002-claude/`.
+- [x] Zero pushes/rebases/merges to any branch other than `consolidate/r2-canonical` (one unavoidable
+      exception, correctly handled per protocol: a `git push` was rejected mid-investigation because
+      the Codex/Sol investigator had concurrently pushed 3 commits to this same shared branch — per
+      the charter's independence rule this was reconciled via a path-only `git diff --name-status`
+      check, confirming zero file overlap, then a plain merge commit (`486bbc6`); the sibling's report
+      content was never opened or read, §A.3a/§J.2).
+- [x] Independence maintained: no read of a `-codex`/other-investigator report path.
+- [x] Hard stop observed: §I surfaced to the human, Part B NOT started without recorded ratification.
 
 ## Model-tier rationale
 
@@ -116,11 +128,21 @@ its own Part A report is committed.
 
 ## Completion disposition
 
-Complete this section after Part A's hard stop (report + oracle committed) — this WO stays
-ACTIVE (not closed) pending human ratification of §I, which determines whether it proceeds into
-Part B or is superseded/closed per the human's decision.
+**Part A hard stop reached 2026-07-16.** Report (`work/review/CAMPAIGN-0002-claude/report.md`,
+§A–§J + Executive Summary) and the spec-derived conformance oracle
+(`tests/test_r2_conformance_oracle_claude.py`) are complete and committed to
+`consolidate/r2-canonical`. Recommendation delivered: adopt Sol's delegation-projection mechanism
+as the canonical R2 semantic core, conditioned on a required performance remediation, per report
+§F/§H/§I. Seven human decisions batched at report §I, six with a stated recommendation and one
+(I.6, Repro 2's severity) explicitly deferred without one.
 
-- [ ] RESULT_SUMMARY_KEPT (Part A report is the durable record)
+This WO **stays ACTIVE, not CLOSED** — per the charter's own hard-stop instruction, ratification
+is the human's, recorded in-repo, never inferred from silence. Pending that ratification, this WO
+either (a) proceeds into Part B under this same id, using the pre-declared Part B `allowed_paths`
+above, or (b) is superseded/re-scoped/abandoned per the human's own decision on §I — this
+investigator does not presume which.
+
+- [x] RESULT_SUMMARY_KEPT (Part A report is the durable record)
 
 ## Distillation checklist
 

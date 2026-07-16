@@ -1,21 +1,82 @@
 # CAMPAIGN-0002 — R2 Consolidation Campaign, Part A Report (Claude investigator)
 
-> **Status: IN PROGRESS.** This report is being assembled incrementally as each phase of
-> `CONSOLIDATION-CHARTER.md` completes, and committed progressively to `consolidate/r2-canonical`
-> so no work is lost across a long-running investigation. Sections are added/finalized in place;
-> nothing here should be read as final until the Executive Summary and §J are both present and
-> this status line is removed. Work order: `work/active/WO-0105-r2-consolidation-part-a.md`.
-> Independence: this is the **Claude** investigator's report; per the charter's independence rule
-> a possible Codex/Sol investigator's report lives at a separate path (`CAMPAIGN-0002-codex/` or
-> similar) and has not been read by this investigator.
+> **Status: PART A COMPLETE — HARD STOP. AWAITING HUMAN RATIFICATION OF §I.** All sections (§A–§J)
+> plus the Executive Summary are final as of the commit that removed this line's "IN PROGRESS"
+> wording. Per `CONSOLIDATION-CHARTER.md`'s explicit instruction, this investigator does **not**
+> proceed to Part B under any circumstance without the human's recorded, in-repo ratification —
+> ratification is never inferred from silence, elapsed time, or absence of objection. No `app/`
+> code was touched to produce this report; only this report, its work order, and the spec-derived
+> conformance oracle + performance harness under `tests/` were added. Work order:
+> `work/active/WO-0105-r2-consolidation-part-a.md`.
+> Independence: this is the **Claude** investigator's report. Per the charter's independence rule,
+> this investigator has not read — and will not read — the Codex/Sol investigator's report
+> (confirmed to exist at `work/review/CONSOLIDATION-R2-PARTA-CODEX/report-codex.md`, per WO-0106,
+> merged into this branch at `486bbc6` — its *path* was necessarily seen while reconciling a git
+> push collision, §A.3a/§J.4, but its *content* was not opened, read, or incorporated anywhere in
+> this document). The human reconciles the two reports; this document is one independent input to
+> that reconciliation, not a synthesis of both.
 
 ---
 
 ## Executive Summary
 
-*(To be written last, once §F's mechanism decision and §I's batched human decisions are final.
-Placeholder per charter §11: "Lead with a ½-page executive summary: the recommended canonical R2
-+ mechanism, the merge order, and the top 3 human decisions.")*
+Two independent AI attempts (Claude, Sol) each implemented WO-0036 "R2" — the fix linking a
+SellIntent's lifecycle to its backing Execution Envelope — on the same base commit `22617f4`.
+This investigation built a spec-derived conformance oracle (implementation-independent, never
+read either diff), ran it against both: **exact tie, 22/22 applicable properties pass, zero
+regressions, for both** (§B). The mechanism decision therefore rests on four other dimensions,
+each investigated with pasted, independently-reverified evidence rather than either attempt's own
+claims: performance, migration safety for pre-existing data, and — decisively — adversarial
+cross-verification.
+
+**Recommended canonical R2 + mechanism**: **Sol's delegation-projection mechanism** (one shared,
+full-lineage `project_envelope_obligation` function deriving ownership at read time, backed by a
+guarded write-back and a startup re-projection), **conditioned on a required precondition**:
+its performance-critical read path must be reimplemented with an indexed/memoized projection
+before any Part B code lands — Sol's own performance gate currently fails itself by 20–70× on the
+exact hot path the 15-second monitoring tick exercises every cycle (§D), while Claude's mechanism
+clears the same budget with three orders of magnitude to spare. This is not a coin-flip between
+two roughly-equal designs: running Sol's own 3,414-line hostile-closure suite against Claude's
+code surfaced **125 failures**, including two independently-reverified real defects (a second
+envelope can activate past a BREACHED sibling's still-live child; `flatten_position` can return
+FLAT before an order's own status reflects a just-recorded fill) — while running Claude's suite
+against Sol's code found **zero real defects** (§E.1/§E.2). Separately, Claude's mechanism has
+**no migration path for pre-existing orphaned data** and was shown, via a reproduced call through
+the real production monitoring path, to permit a genuine double-exposure the moment an ordinary
+protection-floor breach recurs on an affected symbol (§C.1.4); Sol's mechanism closes this via a
+tested, bidirectional startup re-projection (§C.2.2/§D.4). Per CLAUDE.md's own ranking — "safety
+and correctness outrank velocity" — a fixable performance gap does not outweigh an adversarially-
+demonstrated correctness and migration-safety asymmetry of this size. The recommendation is an
+explicit **synthesis**, not "ship Sol's diff verbatim": Claude's masked-predecessor regression
+pins, its `spared_sell_intents`-style audit counter, and its more granular audit-reason vocabulary
+graft onto Sol's core; a handful of mechanism-agnostic defects (Theme D's `broker_order_id`
+mutability, Sol's own R6 silent-fail-closed gap) are fixed regardless of which side "wins" (§F.2).
+
+**Merge order**: PR #8 (the envelope wave) merged into `master` during this investigation
+(2026-07-16T10:40:55Z) — the charter's anticipated fold target no longer exists. The consolidated
+R2 lands as a **fresh, stacked PR onto current `master` (`2aa377a`)**, built in this order:
+port Sol's projection core → **replace its query implementation with an indexed/memoized
+projection first, as a build-order precondition, not a follow-up** → port Sol's
+`monitoring.py`/`reconciliation.py` rework with the R6 logging fix folded in → graft Claude's
+pins and audit improvements → fix the mechanism-agnostic defects → merge both attempts' test
+files into one, at the path they both already collide on → run a pre-cutover backfill
+verification pass against real (not just synthetic) pre-existing data before production reliance
+(§H.1). PR #7 (signal-seat, unrelated to R2) rebases onto post-consolidation `master` afterward,
+as its own merged description already anticipated (§G.5).
+
+**Top human decisions** (of seven batched in §I; full detail there): **(I.1)** ratify Sol's
+mechanism, conditioned on the performance remediation, as the canonical R2 — the recommendation
+above. **(I.2)** ratify that the performance remediation is a *precondition* for Part B, not a
+fast-follow — Sol's current implementation misses its own stated gate by a wide, three-times-
+reproduced margin on a path that runs every 15 seconds in production. **(I.6)** rule on Repro 2's
+severity (§E.1) — whether a window where `flatten_position` can return FLAT before an order's
+`.status` column reflects a just-recorded fill is a beta blocker or an already-bounded,
+already-documented race; **this investigation could not resolve that question with confidence and
+makes no recommendation on it**, stated as such rather than manufacturing false certainty.
+
+This report and its spec-derived oracle are the complete Part A deliverable. **No `app/` code has
+been changed.** Per the charter's hard stop, this investigator now waits for the human's recorded,
+in-repo ratification of §I before any Part B work begins.
 
 ---
 
@@ -1716,4 +1777,206 @@ lifecycle and event-log-truth surfaces, which CLAUDE.md's own review rule exempt
 
 ---
 
-*(§J full Evidence Appendix and the Executive Summary: assembling now, from everything above.)*
+## §J Evidence Appendix
+
+### J.0 Evidence discipline (how to read this appendix)
+
+Per charter §11, every claim in §A–§I must trace to §J. This report's evidence architecture keeps
+decisive pasted command output **inline at the point of claim** throughout §A–§I (a freeze-set
+table sits next to the `git rev-parse` commands that produced it; a native-gate result sits next
+to the `pytest`/`ruff`/`mypy` invocation that produced it), rather than deferring all evidence to
+one undifferentiated block at the end — a raw re-paste of every command this investigation ran
+would run to tens of thousands of lines (§C.1.5/§C.2.6's full-suite runs alone are 2,750–2,974
+test results each) and would bury the decisive lines rather than surface them. §J's job is
+therefore threefold, not a duplicate transcript: **(1)** an explicit traceability index below
+(§J.3) pointing every major claim to where its evidence already lives — inline section, commit
+SHA, or named file; **(2)** the residual raw evidence that is foundational or cross-cutting enough
+that it has no single natural point-of-claim (environment/toolchain, full commit provenance,
+reproducibility commands); **(3)** a consolidated list of this report's own stated scope limits,
+cross-referenced rather than re-argued. This mirrors the discipline already stated explicitly at
+§B.5 and §D.6 ("not reproduced in full here for length... preserved in this branch's commit
+history") and is not a new standard introduced only for §J.
+
+### J.1 Environment & toolchain — freshly re-verified for this appendix, not merely quoted from earlier
+
+```
+$ ~/venv/bin/python --version        -> Python 3.12.3
+$ ~/venv/bin/pytest --version        -> pytest 9.1.1
+$ ~/venv/bin/ruff --version          -> ruff 0.15.20
+$ ~/venv/bin/mypy --version          -> mypy 2.2.0 (compiled: yes)
+$ ~/venv/bin/lint-imports --version  -> import-linter 2.13
+$ ls requirements.txt constraints.txt -> both present, unchanged since §0a bootstrap
+```
+Matches exactly what §C.1.5/§C.2.6 report inline — re-run fresh at report-close time (2026-07-16,
+this commit) rather than assumed stable across the investigation's multi-hour span, since a
+silent toolchain drift mid-investigation would have invalidated cross-run comparisons.
+
+### J.2 This investigation's own deliverable footprint — exact, self-scoped
+
+```
+$ git diff --stat b64918e..474ccd0 -- work/active/WO-0105-r2-consolidation-part-a.md \
+    tests/test_r2_conformance_oracle_claude.py \
+    tests/performance/r2_scaling_gate_claude_ported.py \
+    work/review/CAMPAIGN-0002-claude/
+ tests/performance/r2_scaling_gate_claude_ported.py |  457 ++++++
+ tests/test_r2_conformance_oracle_claude.py         |  628 +++++++
+ work/review/CAMPAIGN-0002-claude/report.md         | 1719 ++++++++++++++++++++
+ 3 files changed, 2804 insertions(+)
+```
+This is the complete, exact set of files this investigator authored: the oracle (628 lines), the
+ported performance harness (457 lines), and this report. `CONSOLIDATION-CHARTER.md` itself is
+**not** this investigator's work — confirmed via `git log --follow -- CONSOLIDATION-CHARTER.md`,
+one commit, `accfc20`, authored by the human operator (`amujtabaa`) at the branch seed, before
+either investigator began. The Codex/Sol investigator's own files
+(`tests/r2_conformance_oracle.py`, `work/active/WO-0106-*.md`,
+`work/review/CONSOLIDATION-R2-PARTA-CODEX/report-codex.md`) arrived via the merge at `486bbc6`
+(parents `3566186` this investigator's own tip at merge time, `f15f344` the Codex branch tip) and
+are disjoint from the above by path — re-confirmed here via `git show --stat 486bbc6` showing a
+standard two-parent merge with no conflicted paths.
+
+### J.3 Section-by-section claim → evidence traceability index
+
+| Report section | Core claim(s) | Evidence location |
+|---|---|---|
+| §A.1 Freeze-set | 4 freeze refs unmoved | Inline `git rev-parse` block, §A.1 |
+| §A.2 Branch/ref/tag/stash/worktree inventory | 13 branches, 0 tags, 0 stashes (container-scoped), 3 worktrees, 1 local-only branch, 0 bundle files | Inline tables + caveats, §A.2; underlying commands in §J.5 |
+| §A.3 Sibling investigation branch | `consolidate/r2-canonical-codex` = seed commit exactly, re-checked 3× | Inline SHA comparison, §A.3; independently reconfirmed at merge time, §J.2 above |
+| §A.4 PR inventory | 8 PRs, PR#8 merged 2026-07-16T10:40:55Z, one `merged:false`/`merged_at` API quirk resolved | Inline table + `pull_request_read`/git merge-commit cross-check, §A.4 |
+| §A.5 Shared base | `22617f4` is merge-base for all six pairwise checks | Inline 6-line `merge-base` block, §A.5 |
+| §A.6 Commit/diff quantification | Claude 6 commits/+2194-205; Sol 1 commit/+10853-389; charter's counts corrected | Inline `--stat`/`--numstat` tables, §A.6 |
+| §A.7 Full file inventory | Exact file lists, both attempts | Inline enumerated lists, §A.7 |
+| §A.8 WO-0036 status drift | Path present/absent across 9 branches | Inline table, §A.8 |
+| §A.9 REV namespace | REV-0028 renumbered clean; REV-0023 anomaly flagged NEEDS-INPUT | Inline, §A.9; carried to §G.1 |
+| §A.10 The two "Sol"s | `collab/sol-0001` unrelated, zero R2 content | Inline `git ls-tree`/merge-base evidence, §A.10 |
+| §A.11 `codex/rev-0022` | Fully absorbed, zero unique content | Inline merge-base, §A.11 |
+| §A.12 Next-free ids | WO-0106, REV-0029 | Inline 9-branch scan table, §A.12; re-confirmed §G.1 |
+| §A.13 True ancestry | `feat/execution-envelope` structurally disjoint from `80250e0` | Inline `merge-base` exit-code evidence, §A.13 |
+| §A.14 Topology diagram | — | Mermaid graph, §A.14, synthesizes §A.1–§A.13 |
+| §A.15 Completeness attestation | Enumerates exactly what was and wasn't checked | Prose, §A.15 |
+| §B.1–§B.2 Oracle derivation + self-verification | Derived from spec docs only; 2 fixture bugs caught and fixed before trusted | Prose + fix commits `21bb5da`→`30cfd87`, §B.2 |
+| §B.3 Truth table | Base 12P/10F/6S; Claude R2 22P/0F/6S; Sol R2 22P/0F/6S | Inline table §B.3; **re-confirmed fresh this session** — `/tmp/claude-r2-run-v2.txt` and `/tmp/sol-r2-run-v2.txt` both read verbatim into this conversation immediately before §J was written, both showing `22 passed, 6 skipped` — the oracle result is not stale |
+| §B.4 Deferred items | 3 NEEDS-INPUT skip stubs, named with rationale | Inline list, §B.4 |
+| §B.5 Oracle evidence | Condensed run transcripts, lint/type-check clean | Inline block, §B.5; full tracebacks in commit history (`21bb5da`, `30cfd87`) + session transcript |
+| §C.1 Claude mechanism | `LIVE={ACTIVE,FROZEN}`, choke-point table, migration gap repro | Inline code quotes + file:line citations throughout §C.1; migration repro output inline §C.1.4 (script family: `repro_preexisting_orphan*.py`, scratchpad, container-local) |
+| §C.1.5 Claude native gate | 2750 passed/5 skipped/1 xfailed, 94.92% coverage, clean lint/type/import | Inline block, §C.1.5; toolchain re-verified §J.1 |
+| §C.2 Sol mechanism | `project_envelope_obligation`, write-back correction, startup re-projection both directions | Inline code quotes + cited test names/line numbers, §C.2.1–§C.2.2 |
+| §C.2.6 Sol native gate | 2974 passed/5 skipped/1 xfailed, 93.59% coverage; one transient-contamination note correctly diagnosed | Inline block, §C.2.6 |
+| §D.1 Budget assumption | 15s tick cadence; pre-existing unfiltered `get_execution_events()` call flagged | `app/config.py:87`, `app/monitoring.py:598-670`, `app/reconciliation.py:671`, `app/store/base.py:1122` cited inline, §D.1 |
+| §D.3 Performance results | Sol 3/6 gates FAIL (58.9×/48.8× growth); Claude 4/5 applicable PASS (0.89×, 1 SELECT) | Inline tables, §D.3; raw gate output condensed §D.6, full logs `perf_gate.log`/`ported_run1-3.log` (scratchpad, container-local, reproducible per §J.5) |
+| §D.4 Startup-cost explanation | Index-build cost shared/pre-existing; Sol's extra cost = its own reconciliation block, quoted | Inline code quote + `sqlite.py:461+`/`sqlite.py:2214-2260` citations, §D.4 |
+| §D.5 Verdict | Runtime: Claude wins; startup: Sol's cost buys real correctness; indexed projection recommended | Prose synthesis, §D.5, drawing on §D.3/§D.4 |
+| §E.1 Hostile suite vs. Claude | 125F/42P/62 UNADAPTABLE; Repro 1 + Repro 2 independently reverified | Inline repro transcripts, §E.1 (both re-run by this investigator from fresh, minimal, public-API-only scripts in a clean worktree — since committed to nothing, per charter's "report only" scope, and cleaned up after use; exact repro shape matches the family of scripts named in §J.2/§C.1.4) |
+| §E.2 Claude pins vs. Sol | 28P/18 FAIL-DESIGN-DIFFERENCE/0 FAIL-BUG; masked-predecessor closes structurally | Inline code quote (`core.py:1110-1179`) + per-case accounting, §E.2 |
+| §E.3 REV-0028 items vs. Sol | 3 close, 1 (R6) has a novel silent gap | Inline code citations (`monitoring.py:624-671` etc.), §E.3.1–§E.3.4 |
+| §E cross-pollination targets | 10 items, numbered | Prose list, end of §E, synthesizing E.1–E.3 |
+| §F.1 Criteria table | 8 criteria scored | Inline table, §F.1, each cell citing back to its source section |
+| §F.2 Decision + synthesis | Sol's mechanism, conditioned; explicit KEEP/NEW/GRAFT/FIX/NOT-CARRIED lists | Prose, §F.2 |
+| §F.3 Falsifiability | Named conditions that would reverse the recommendation | Prose, §F.3 |
+| §G.1 Namespace collisions | REV-0024 resolved; INV-090 unresolved; ADR-010 §8 structural difference; test-file path collision; WO/REV next-free ids | Inline table, §G.1, each row citing its own §A/§C evidence |
+| §G.2 Ledger/work-state | Sol zero `work/` touch; Claude WO-0036 still `status: REVIEW` | Cross-references §A.7/§A.8/§C.1.4, §G.2 |
+| §G.3 Doc-vs-code | Doc-variant matrix; `close_session` docstring gap found pre-existing | Inline table + `app/store/base.py:1392-1422` citation, §G.3 |
+| §G.4 Architecture conformance | Both clean on `lint-imports` and WO-scope checker | Inline command blocks, §G.4 |
+| §G.5 Lineage/PR reconciliation | PR#8 merged, fold option resolved to stacked-PR | Cross-references §A.4/§A.13, §G.5 |
+| §H.1–§H.5 Consolidation program | Build order, topology, governance, acceptance gate, risk register | Prose + mermaid, §H, synthesizing §F/§G; not executed by this investigator (Part A produces a plan, not code) |
+| §I.1–§I.7 Batched human decisions | 7 either/or decisions, 6 with a recommendation, 1 (I.6) explicitly without | Prose, §I, each citing its supporting section |
+| Executive Summary | Top-line synthesis of §F/§H/§I | Prose, top of report; every factual claim in it restates a number already sourced above (§B.3, §D.3, §E.1, §G.5) |
+
+### J.4 Commit-by-commit provenance (this branch, `22617f4..HEAD`)
+
+```
+474ccd0 Report §H/§I: consolidation program and batched human decisions
+89b48aa Report §F: mechanism decision -- Sol's projection, with required performance remediation
+19cc3f6 Report §E.1: Sol's hostile suites cross-run onto Claude's code -- the decisive finding of this campaign
+638ed15 Report §E.3: the four REV-0028 items probed against Sol's design
+486bbc6 Merge Codex investigator's Part A work (independent, disjoint paths)
+   |-- 3566186 (this investigator's tip pre-merge)   f15f344 (Codex branch tip, not read)
+3566186 Report §E.2: Claude's fresh-eyes pins cross-run onto Sol's code
+f15f344 docs: complete Codex R2 consolidation Part A                    [sibling; path-only per independence rule]
+820f0d0 docs: activate WO-0106 Part A investigation                     [sibling; path-only per independence rule]
+6a7316a docs: draft WO-0106 R2 consolidation Part A                     [sibling; path-only per independence rule]
+a7fb631 Report §C.2: Sol R2 mechanism + obligations characterization
+0325daa Report §G: four-plane deconfliction (namespace, docs, architecture, lineage)
+4427db5 Report §D: performance findings + budget verdict
+9b40a92 Add performance scaling harness ported for Claude R2 (Phase 3, §D)
+6ebce00 Report §C.1: Claude R2 mechanism + obligations characterization
+c463f28 Report §A (topology/inventory) and §B (conformance oracle results)
+30cfd87 Fix oracle fixture gap: envelope drafts must carry session_id too
+21bb5da Add spec-derived R2 conformance oracle (CAMPAIGN-0002, Claude investigator)
+b64918e Charter WO-0105: R2 consolidation campaign Part A (Claude investigator)
+accfc20 Seed the R2 consolidation campaign (human-authored, both investigators' common root)
+```
+Every section of this report was introduced in an identifiable commit; nothing in §A–§J was
+written, then silently rewritten to fit a later finding without a corresponding commit showing
+the correction (the two oracle fixture fixes, §B.2, are the one case where an earlier result was
+revised, and both the bug and the fix are separately committed and narrated rather than silently
+folded together).
+
+### J.5 Reproducibility cookbook — exact commands to regenerate this report's load-bearing tables
+
+```bash
+# Freeze-set + shared base (§A.1, §A.5)
+git rev-parse origin/freeze/20260715-master-preconsolidation origin/freeze/20260715-pr8-head \
+  origin/freeze/20260715-r2-claude origin/freeze/20260715-r2-sol
+git merge-base origin/claude/sellintent-envelope-linking-h2z7i7 origin/codex/r2-lifecycle-link-sol-impl
+
+# Branch/tag/stash/worktree inventory (§A.2)
+git branch -r ; git tag -l ; git ls-remote --tags origin ; git stash list ; git worktree list
+comm -23 <(git branch --format='%(refname:short)' | sort) <(git branch -r --format='%(refname:short)' | sed 's#origin/##' | sort)
+
+# Diff quantification (§A.6)
+git diff --stat 22617f4 origin/claude/sellintent-envelope-linking-h2z7i7
+git diff --stat 22617f4 origin/codex/r2-lifecycle-link-sol-impl
+git diff --numstat 22617f4 <tip> -- 'app/**'
+
+# Oracle, both attempts (§B.3) -- run from each attempt's own worktree
+~/venv/bin/pytest -v --no-header tests/test_r2_conformance_oracle_claude.py
+
+# Native gate, either worktree (§C.1.5 / §C.2.6)
+~/venv/bin/ruff check . && ~/venv/bin/ruff format --check . && ~/venv/bin/mypy app/ \
+  && ~/venv/bin/lint-imports && ~/venv/bin/pytest -q --cov=app --cov-branch
+
+# Performance harness (§D.2-D.3) -- Sol's own gate, and the Claude-ported equivalent
+~/venv/bin/python -m tests.performance.r2_scaling_gate                         # Sol worktree
+~/venv/bin/python tests/performance/r2_scaling_gate_claude_ported.py           # Claude worktree
+
+# WO scope compliance (§G.4)
+git diff --name-only 22617f4...<tip> | python .ai-os/scripts/check_work_order_scope.py \
+  work/active/WO-0036-intent-envelope-lifecycle-link.md
+
+# Architecture conformance (§G.4)
+~/venv/bin/lint-imports
+```
+Every command above was actually run at least once during this investigation with its output
+pasted at the cited section; none are hypothetical or "should work" — this list exists so a human
+or a Part B agent can re-derive the same tables independently rather than trusting this report's
+prose transcription of them.
+
+### J.6 Residual scope limits (consolidated, cross-referenced only — not re-argued here)
+
+- **This container's git visibility is bounded to one `origin` remote.** Truly private, never-pushed
+  work on the human operator's own machine is categorically invisible to every check in this report
+  (§A.15).
+- **Three oracle classes deferred to each attempt's own tick-level tests, not store-level.** Stale
+  SUBMITTING redrive, claim/venue crash recovery, monitoring newest-wins convergence (§B.4) — §E.3
+  substitutes targeted code-reading against Sol's design for these; a full tick-level oracle was out
+  of this investigation's time budget.
+- **Cross-store event-sequence parity** is asserted by construction for Claude's mechanism but not
+  exact-diffed (§C.1.2); asserted and mostly exact-diffed for Sol's, except across a restart
+  boundary specifically (§C.2.3).
+- **Repro 2's severity (§E.1/§I.6) is the one open question this investigation could not close** —
+  stated as NEEDS-INPUT rather than resolved either direction, and the one item §I makes no
+  recommendation on.
+- **REV-0023's presence on PR #7 despite no ancestry path to explain it** (§A.9) is flagged, not
+  resolved — handed to §G.1's registry rather than investigated further, since it sits outside this
+  campaign's R2 scope.
+- **STRESS-scale (1,000 symbols) performance was not run** (§D.2) — the REALISTIC-scale result was
+  already decisive enough to not warrant the added time cost; stated as a scope limit, not a
+  silently dropped data point.
+- **Who or what operates the sibling `consolidate/r2-canonical-codex`/Codex investigation is
+  unverifiable from this side** (§A.3) — only its observable git state was checked.
+
+---
+
+*(End of report. §A–§J and the Executive Summary above are the complete Part A deliverable per
+`CONSOLIDATION-CHARTER.md`. This investigator now stops and awaits the human's recorded
+ratification of §I before any Part B work begins.)*
