@@ -72,9 +72,38 @@ erroneous exposure (a real double-sell, a mis-sized order, or a position-quantit
 (PAPER) or any later live/shadow mode. **The condition is load-bearing, not a formality:** if the
 Part B investigation finds Repro 2 *is* reachable with real consequence (not merely a transient
 stale read the surrounding logic already tolerates), it escalates back to a **beta blocker** and
-returns to the operator before any beta-relevant reliance. Discharging this condition (a focused
-reachability/consequence analysis of the flatten-vs-fill ordering against INV-001/INV-004) is a
-named Part B acceptance item.
+returns to the operator before any beta-relevant reliance.
+
+**CONDITION DISCHARGED 2026-07-16 (Opus recheck) — theoretical/paperwork-only CONFIRMED; remains
+non-blocking.** A focused reachability/consequence analysis (public-API repro + code trace against
+both attempts, INV-001/INV-004) established:
+
+1. **Pre-existing base behavior, not introduced by R2.** The `if position.quantity <= 0: return
+   FlattenPlan(FLATTEN_FLAT)` short-circuit lives in `plan_flatten_position` on the shared base
+   commit `22617f4` (core.py:1039) and is **untouched by both R2 attempts** (empty diff on that
+   gate for both). Repro 2 is not an R2 defect; it is the base flatten contract.
+2. **The `flat` answer is correct, and mints nothing.** `position.quantity` is the fill-derived
+   exposure truth (INV-001); when it is 0 there is genuinely nothing to flatten. The `FLATTEN_FLAT`
+   path creates **no order** (`memory.py:1986` returns the result with no mint) and surfaces a 409
+   "no open position" to the operator. No double-sell, no mis-sized order, no exposure — verified
+   empirically (position `0` throughout; the single 100-share sell fully filled the 100-share long;
+   fills dedupe by `source_fill_id`, so the order cannot sell more than its quantity).
+3. **The only anomaly is an INV-004-documented transient.** The order's `.status`/`.filled_quantity`
+   columns advance in a *separate* atomic step from `append_fill` (INV-004, base behavior); the
+   momentary staleness self-resolves — after `transition_order(FILLED)`, `status=filled`,
+   `position=0`, verified.
+4. **On the mechanism that actually ships (Sol's, per I.1), it is even safer.** Sol's
+   `flatten_position` does **not** silently return `flat` in this window — it **fail-closed
+   BLOCKS** with `FlattenBlockedError: "position is flat but envelope order … may still be live"`,
+   surfacing the stale window loudly rather than under-reporting. No order minted, no exposure; the
+   block is transient and self-clears once the reconcile tick advances the order status.
+
+**Residual Part B item (tidy-up, NOT a blocker):** Sol's fail-closed block, while strictly safe,
+is a mild operator-UX wrinkle (a genuinely-flat position briefly returns "blocked" instead of
+"nothing to flatten"). Part B should smooth this — e.g. treat position-0-with-fully-filled-in-fill-
+table as `flat` rather than `blocked`, and/or ensure the transient never persists past one
+reconcile tick (this depends on the I.5 R6-logging fix landing, since a silently-stranded lineage
+could otherwise prolong the block). Recorded as a Part B acceptance nicety, not a gate.
 
 ### I.7 — Independent review dispatch · **RATIFIED as recommended**
 Queue the **REV-0029** independent cross-model review packet **immediately upon Part B
