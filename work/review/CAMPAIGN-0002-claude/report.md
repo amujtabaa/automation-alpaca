@@ -1127,21 +1127,99 @@ sits APPROVED waiting for a later check to catch it), and one exception-message 
 mismatch from reusing one general rail instead of two overlapping ones (`test_f1`, also arguably
 a simplification) accounted for all 18. **Zero of the 18 argue for a defect in Sol's mechanism.**
 
-### E.1 Sol's hostile/assurance/parity-adversarial suites ported onto Claude's code — *in progress*
+### E.1 Sol's hostile/assurance/parity-adversarial suites ported onto Claude's code — **VERIFIED, complete — the decisive finding of this campaign**
 
-Interim status (not final — no finding below is treated as established until the complete,
-verified report lands with file:line citations, per this campaign's evidence discipline):
-`test_wo0036_r2_parity_adversarial.py` and `test_wo0036_r2_assurance.py` are done (3/14 pass +
-11 root-caused failures on the parity-adversarial file, including one **candidate** FAIL-BUG —
-a possible double-book exposure window when a second envelope activates for a symbol while an
-old BREACHED envelope's child order is still live at the venue, since Claude's per-symbol clash
-guard is scoped to `LIVE_ENVELOPE_STATUSES={ACTIVE,FROZEN}` and BREACHED is outside that set; and
-one candidate memory-vs-sqlite parity divergence in active-intent selection order; 23/33 pass +
-10 correctly-classified UNADAPTABLE on the assurance file). The large hostile-closure suite
-(3,414 lines, 60 functions, 182 parametrized cases) is still being triaged. **This will be added
-to the report, with full evidence, once it completes** — flagged here only so the pending item is
-visible, not silently dropped, per the charter's own discipline about not hiding an in-progress
-gap.
+**Result: 125 failed, 42 passed, 62 skipped (UNADAPTABLE — no Claude equivalent to compare
+against), out of 229 collected across the three files.** This is dramatically asymmetric with
+§E.2 (0 real defects found running Claude's suite against Sol). Given the stakes, **this
+investigator independently re-verified the two most severe findings from scratch**, writing
+fresh, minimal, 100%-public-API repro scripts in a clean worktree rather than accepting the
+dispatched agent's self-report at face value — both reproduced exactly as described.
+
+**Independently VERIFIED, Repro 1 — a second envelope can activate on the same intent while a
+terminal sibling's live child still rests at the venue (genuine double-exposure, no forced state
+corruption):**
+```
+A activated: active
+child order status after submit: submitted
+A now: breached                                    # transition_envelope(A, BREACHED) -- a real public API call
+intent after A breached (child still SUBMITTED): approved   # correctly deferred, matches Claude's own test_c5
+
+--- attempting to activate envelope B on the SAME intent ---
+!!! B ACTIVATED: active -- BUG CONFIRMED (double exposure possible)
+    meanwhile A's original child order ... is still: submitted
+```
+Root cause (confirmed by this investigator's own reading, matching the dispatched agent's):
+`approve_envelope_activation`'s per-symbol clash check (`_other_live_envelope_for_symbol_*`) is
+scoped to `LIVE_ENVELOPE_STATUSES = {ACTIVE, FROZEN}` — BREACHED is a "releasing terminal" for the
+*intent-release* logic (§C.1.1) but is invisible to *this specific* clash check, which only asks
+"is any other envelope currently ACTIVE/FROZEN," never "does any other envelope's lineage still
+have a live child resting at the venue." Sol's design cannot have this defect by construction: its
+per-symbol clash check (`retains_intent`, the same full-lineage aggregation used everywhere else
+in its mechanism) is the same check regardless of the blocking envelope's own status.
+
+**Independently VERIFIED (mechanically), Repro 2 — `flatten_position` returns FLAT while the order
+that just filled hasn't had its own status column advanced — real, but with a severity nuance
+worth stating precisely:**
+```
+child order status before fill: submitted
+child order status AFTER a 100-share fill was recorded: submitted   # append_fill doesn't touch order.status
+position after fill: 0
+flatten_position outcome: flat
+```
+This reproduces exactly as described. **Severity nuance, on this investigator's own reflection,
+not fully resolved either way**: `position.quantity <= 0` firing before the envelope-child check
+in `plan_flatten_position` means position (correctly fill-derived, INV-001) says "nothing to
+flatten," which is arguably *correct* — there is nothing left to sell. The order's own `.status`
+column staying `SUBMITTED` after `append_fill` matches INV-004's own documented design ("`append_fill`
+and the later `transition_order(filled_quantity=...)` call are two separate atomic operations" —
+a caller reading the field *between* them sees a stale value by acknowledged design, not a novel
+R2 defect). Whether this is a genuinely dangerous window or an already-bounded, already-understood
+race the rest of the system already handles correctly by not trusting `order.status` during it
+was **not fully resolved by this investigation** — flagged as NEEDS-INPUT for human/Part-B
+judgment rather than asserted as catastrophic, in the interest of not overclaiming a repro's
+severity just because its mechanics reproduce.
+
+**The remaining findings (not independently re-verified by this investigator beyond the two
+above, but methodologically credible)**: the dispatched agent's report shows the same discipline
+this campaign has relied on throughout — careful reachability distinctions (forced-corruption
+scenarios are explicitly labeled FAIL-DESIGN-DIFFERENCE, not FAIL-BUG), honest admission of
+incomplete root-causing on ~2 cases rather than guessing, and a self-consistent theming structure.
+The dominant theme by far:
+
+**Theme A (~45 of the 125 failures) — Claude's choke points validate only their own local
+condition; Sol's full-lineage aggregation catches cross-choke-point ambiguity and corrupted/legacy
+data that Claude's mechanism has no equivalent defense against.** This is the same architectural
+asymmetry already established independently in §C.1.4/§D.4 (the pre-existing-orphan migration
+gap) and §C.1.2 (the weaker parity-testing technique) — Theme A generalizes it across many more
+choke points (claim, mint, flatten, supersede, stage), most confirmed reachable via the public API
+(not just forced corruption), a few requiring an already-corrupted precursor state.
+
+**Other confirmed themes, briefly** (full detail in the dispatched agent's transcript; summarized
+here for the mechanism decision): **Theme B** — `transition_envelope` called directly can produce
+a fabricated COMPLETED (0 shares sold) or SUPERSEDED-to-nowhere envelope, because Claude's planner
+special-cases only the ACTIVE/CANCELLED edges, not COMPLETED/SUPERSEDED — reachable only by
+calling a low-level public method directly rather than through the dedicated atomic paths (record_envelope_fill/supersede_envelope), so likely not reachable through any current production code
+path, but a real defense-in-depth gap against API misuse or a future caller. **Theme C** —
+`claim_order_for_submission` doesn't re-validate staging-time conditions (expiry, session phase,
+remaining quantity, reduce-only) the way `redrive_staged_envelope_action` does — the agent states
+this is "reachable in real operation... whenever a claim isn't routed through the redrive gate,"
+not just a hostile-test construction. **Theme D** — `broker_order_id` is not actually write-once
+as CLAUDE.md's own safety rail implies; confirmed R2-independent (doesn't depend on the mechanism
+question at all), a standalone defect worth fixing regardless of §F's outcome. **Theme H** — no
+startup reconciliation (already fully covered in §C.1.4/§D.4, re-confirmed via an independent test
+angle here). **Theme J** — a broker-accepted-then-local-persistence-race propagates as an
+exception rather than a targeted recovery record, though the agent notes Claude's monitoring loop
+does catch this at a higher level (freezes the envelope rather than crashing) — "a real but
+blunter safety net," not a silent failure. **Theme K** — BREACHED/EXPIRED/EXHAUSTED (unlike
+CANCELLED) don't sweep their staged/CREATED children, connecting back to Theme B.
+
+**What this changes for §F**: cross-verification was explicitly designed by the charter to find
+exactly this kind of asymmetry ("the Claude attempt shipped with a real masked-predecessor bug
+that only a fresh-eyes pass caught" — the charter's own stated reason cross-model review is
+mandatory). It has now done so again, at meaningfully larger scale than the single
+masked-predecessor class §E.2 ruled out for Sol. This is the single most decision-relevant finding
+in the entire investigation and is weighted accordingly in §F.
 
 ### E.3 The four REV-0028 items probed against Sol's design — **VERIFIED, complete**
 
@@ -1210,27 +1288,50 @@ Sol's harder block-on-ambiguity stance for its own (currently theoretical) multi
 | Monitoring newest-wins convergence | Closes — more strongly than Claude's own accepted position |
 | HALTED emergency-reduce deferral | Closes — different route, one minor legibility regression |
 
-### Cross-pollination targets (E.2 + E.3; E.1's will be added when it lands)
+### Cross-pollination targets (E.1 + E.2 + E.3, complete)
 
-1. **Sol's full-child-scan projection is demonstrably immune to the masked-predecessor class by
-   construction** (E.2) — should be the trunk's structural model regardless of which mechanism's
-   surface API wins.
-2. **The `_envelope_action_context_*` landmine (E.2)** — a "latest wins" construct that would be
+1. **Sol's full-lineage-aggregation projection (`project_envelope_obligation`) should be the
+   trunk's structural model.** This is now the central conclusion of §E as a whole, not just the
+   masked-predecessor class: E.1 found ~45 failures tracing to the same root shape (Claude's
+   choke points check only their own local condition; Sol's aggregation catches cross-choke-point
+   ambiguity and corrupted/legacy data) across claim, mint, flatten, supersede, and stage — not
+   just terminal release. E.2 showed the same pattern for masked predecessors specifically. E.3.1
+   showed Sol's core activation-linking answer is independently convergent with Claude's own. The
+   weight of evidence across all three directions points the same way.
+2. **Two independently-verified, genuine Claude-side defects, priority order**: (a) **Repro 1**
+   (§E.1) — a second envelope can activate on an intent while a terminal (BREACHED) sibling's
+   child still rests live at the venue, because the per-symbol clash check is scoped to
+   `{ACTIVE,FROZEN}` rather than "any live child anywhere in the lineage." This must be fixed
+   before Claude's mechanism (if chosen, or if grafted into a synthesis) reaches beta. (b) **Repro
+   2** (§E.1) — `flatten_position` returns FLAT immediately after a fill without checking the
+   order's own reconciliation state; mechanically confirmed, severity NEEDS-INPUT (may be an
+   already-bounded, already-documented race window rather than a novel gap — §I should ask the
+   human to weigh in rather than this report asserting a severity it isn't certain of).
+3. **Theme B (§E.1)**: `transition_envelope` should refuse COMPLETED/SUPERSEDED outside their
+   dedicated atomic paths (`record_envelope_fill`/`supersede_envelope`), the way Sol's planner
+   does — defense-in-depth against API misuse, likely not reachable via current production code
+   paths but cheap to close.
+4. **Theme C (§E.1)**: `claim_order_for_submission` should re-validate staging-time conditions
+   (expiry, session phase, remaining quantity, reduce-only) the way `redrive_staged_envelope_action`
+   already does, rather than only the redrive path getting that protection — stated by the
+   investigating agent as reachable in real operation, not just a hostile-test construction.
+5. **Theme D (§E.1)**: `broker_order_id` write-once immutability should be enforced — confirmed
+   R2-independent, applies regardless of §F's outcome.
+6. **The `_envelope_action_context_*` landmine (E.2)** — a "latest wins" construct that would be
    maskable in isolation but is currently unreachable — should be removed or pinned against
    reintroduction in the consolidated code.
-3. **Sol's R6 silent-gap (E.3.2) needs a fix** — either adopt Claude's simpler unconditional-retry
-   arm, or add logging/alerting to Sol's fail-closed branches. This is the one concrete
-   confirmed-defect-class finding from cross-verification so far (pending E.1's completion, which
-   may add more).
-4. **Sol's CREATED-excluded-from-venue_orders framing (E.3.3) and its full-set (not single-pick)
+7. **Sol's R6 silent-gap (E.3.2) needs a fix** — either adopt Claude's simpler unconditional-retry
+   arm, or add logging/alerting to Sol's fail-closed branches.
+8. **Sol's CREATED-excluded-from-venue_orders framing (E.3.3) and its full-set (not single-pick)
    cancellation approach** are worth adopting in the consolidated ADR text/mechanism regardless of
    which surface wins.
-5. **Audit-payload/reason-string vocabulary should be standardized** across both the
-   masked-predecessor case (E.2) and the emergency-reduce-deferral case (E.3.4) as part of the
-   merged R2 test file / event taxonomy — mechanical Part-B cleanup, not a design decision.
-6. **Consider Sol's `spared_sell_intents`-style observability counter** (E.2) and Sol's
-   harder block-on-ambiguity stance for flatten with multiple live children (E.3.4), independent
-   of the mechanism decision itself.
+9. **Audit-payload/reason-string vocabulary should be standardized** across the
+   masked-predecessor case (E.2), the emergency-reduce-deferral case (E.3.4), and the terminal
+   release case (E.2) as part of the merged R2 test file / event taxonomy — mechanical Part-B
+   cleanup, not a design decision.
+10. **Consider Sol's `spared_sell_intents`-style observability counter** (E.2) and Sol's harder
+    block-on-ambiguity stance for flatten with multiple live children (E.3.4), independent of the
+    mechanism decision itself.
 
 ---
 
