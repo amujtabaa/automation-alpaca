@@ -95,10 +95,13 @@ T_NOW = datetime(2026, 7, 15, 14, 0, 0, tzinfo=timezone.utc)  # Wed 10:00 ET, RE
 # --------------------------------------------------------------------------- #
 
 
-def make_draft(intent_id: str, symbol: str = "AAPL", **overrides) -> ExecutionEnvelope:
+def make_draft(
+    intent_id: str, symbol: str = "AAPL", *, session_id: str | None = None, **overrides
+) -> ExecutionEnvelope:
     base = dict(
         sell_intent_id=intent_id,
         symbol=symbol,
+        session_id=session_id,
         qty_ceiling=100,
         floor_price=9.00,
         trail_distance_min=1.0,
@@ -154,8 +157,12 @@ async def open_mandate(
     construction -- W3-STATE.md records that `create_sell_intent` does NOT
     auto-stamp `session_id`, so an oracle that omits it would never actually
     reach `close_session`'s per-session expiry sweep and would silently produce
-    false passes), and a human-approved+activated envelope linked to it.
-    Returns (SellIntent, ExecutionEnvelope)."""
+    false passes), and a human-approved+activated envelope SESSION-STAMPED TO
+    MATCH IT (confirmed empirically: Sol's `envelope_owner_scope_reason`,
+    app/store/core.py, requires `envelope.session_id == intent.session_id` as
+    part of its owner-binding validation -- an envelope draft that omits it,
+    same as the intent gap above, would misrepresent a correct implementation
+    as broken). Returns (SellIntent, ExecutionEnvelope)."""
 
     await seed_position(store, symbol, quantity)
     session = await store.get_current_session()
@@ -165,6 +172,7 @@ async def open_mandate(
         target_quantity=quantity,
         session_id=session.id,
     )
+    draft_overrides.setdefault("session_id", session.id)
     envelope = await store.approve_envelope_activation(
         make_draft(intent.id, symbol=symbol, qty_ceiling=quantity, **draft_overrides),
         actor="operator-a",
@@ -261,7 +269,8 @@ async def test_activation_links_validates_and_normalizes_the_backing_intent(any_
     assert intent.status.value == "pending"
 
     await any_store.approve_envelope_activation(
-        make_draft(intent.id, symbol="AAPL", qty_ceiling=100), actor="operator-a"
+        make_draft(intent.id, symbol="AAPL", qty_ceiling=100, session_id=session.id),
+        actor="operator-a",
     )
 
     normalized = await any_store.get_sell_intent(intent.id)
@@ -283,12 +292,22 @@ async def test_activation_links_validates_and_normalizes_the_backing_intent(any_
     )
     with pytest.raises(Exception):
         await any_store.approve_envelope_activation(
-            make_draft(other_symbol_intent.id, symbol="AAPL", qty_ceiling=100),
+            make_draft(
+                other_symbol_intent.id,
+                symbol="AAPL",
+                qty_ceiling=100,
+                session_id=session.id,
+            ),
             actor="operator-a",
         )
     with pytest.raises(Exception):
         await any_store.approve_envelope_activation(
-            make_draft("no-such-intent-id", symbol="AAPL", qty_ceiling=100),
+            make_draft(
+                "no-such-intent-id",
+                symbol="AAPL",
+                qty_ceiling=100,
+                session_id=session.id,
+            ),
             actor="operator-a",
         )
 
@@ -383,7 +402,9 @@ async def test_supersession_does_not_release_the_intent(any_store):
     await any_store.initialize()
     intent, env1 = await open_mandate(any_store, quantity=100)
 
-    successor = make_draft(intent.id, symbol="AAPL", qty_ceiling=90)
+    successor = make_draft(
+        intent.id, symbol="AAPL", qty_ceiling=90, session_id=env1.session_id
+    )
     env2 = await any_store.supersede_envelope(
         env1.id, successor, actor="operator-a", reason="amendment"
     )
@@ -518,11 +539,16 @@ async def test_inv087_still_at_most_one_active_envelope_per_symbol(any_store):
 
     await any_store.initialize()
     await seed_position(any_store, "AAPL", 100)
+    session = await any_store.get_current_session()
     intent_a = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=50
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=50,
+        session_id=session.id,
     )
     await any_store.approve_envelope_activation(
-        make_draft(intent_a.id, symbol="AAPL", qty_ceiling=50), actor="operator-a"
+        make_draft(intent_a.id, symbol="AAPL", qty_ceiling=50, session_id=session.id),
+        actor="operator-a",
     )
     active = [
         e for e in await any_store.list_envelopes(symbol="AAPL") if e.status is S.ACTIVE
