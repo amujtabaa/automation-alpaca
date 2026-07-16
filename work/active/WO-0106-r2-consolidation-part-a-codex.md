@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: R2 consolidation investigation and decision package (Codex seat)
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0106
 wave: W3
 model_tier: strong
@@ -151,6 +151,9 @@ fable_gate:
     - "Execution stops before Part B"
   blast_radius: "Part A writes only its work-order, report, and tests; future Part B would touch human-gated order-intent and event-truth surfaces and remains blocked."
 ```
+
+The human activated Part A by directing Codex on 2026-07-16 to execute the attached
+`PARTAKICKOFF.md`; this is not ratification of Section I and does not activate Part B.
 
 Identifier inventory before drafting found WO-0001..WO-0036 and WO-0100..WO-0105
 claimed across refs; WO-0106 was the next unused work-order id. No REV id is claimed
