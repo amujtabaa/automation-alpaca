@@ -19,6 +19,7 @@ from app.models import (
     EnvelopeStatus,
     ExecutionEnvelope,
     ExecutionEventType,
+    SellReason,
     SessionType,
     utcnow,
 )
@@ -97,6 +98,18 @@ def make_draft(intent_id: str = "si-1", symbol: str = "AAPL") -> ExecutionEnvelo
     )
 
 
+async def create_owned_draft(store, *, symbol: str = "AAPL"):
+    session = await store.get_current_session()
+    owner = await store.create_sell_intent(
+        symbol=symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    draft = make_draft(owner.id, symbol).model_copy(update={"session_id": session.id})
+    return owner, draft
+
+
 # Paths that drive an envelope from PENDING into each source status using only
 # legal edges (so the matrix test can start anywhere).
 PATH_TO: dict[EnvelopeStatus, list[EnvelopeStatus]] = {
@@ -104,11 +117,14 @@ PATH_TO: dict[EnvelopeStatus, list[EnvelopeStatus]] = {
     S.APPROVED: [S.APPROVED],
     S.ACTIVE: [S.APPROVED, S.ACTIVE],
     S.FROZEN: [S.APPROVED, S.ACTIVE, S.FROZEN],
-    S.COMPLETED: [S.APPROVED, S.ACTIVE, S.COMPLETED],
+    # ACTIVE -> COMPLETED is fill-driven, not a generic status command.
+    S.COMPLETED: [S.APPROVED, S.ACTIVE],
     S.EXPIRED: [S.EXPIRED],
     S.EXHAUSTED: [S.APPROVED, S.ACTIVE, S.EXHAUSTED],
     S.BREACHED: [S.APPROVED, S.ACTIVE, S.BREACHED],
-    S.SUPERSEDED: [S.APPROVED, S.ACTIVE, S.SUPERSEDED],
+    # ACTIVE -> SUPERSEDED is a legal state-machine edge but is reachable only
+    # through the atomic supersede operation, never generic transition_envelope.
+    S.SUPERSEDED: [S.APPROVED, S.ACTIVE],
     S.CANCELLED: [S.CANCELLED],
 }
 
@@ -121,9 +137,27 @@ async def test_full_transition_matrix_both_stores(any_store, source, target):
     same-status re-request is an idempotent no-op."""
 
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    _, draft = await create_owned_draft(any_store)
+    env = await any_store.create_envelope(draft)
     for step in PATH_TO[source]:
         env = await any_store.transition_envelope(env.id, step)
+    if source is S.COMPLETED:
+        await any_store.record_envelope_fill(
+            env.id,
+            quantity=env.remaining_quantity or 0,
+            dedupe_key=f"matrix-complete:{env.id}",
+            price=10.0,
+        )
+        env = await any_store.get_envelope(env.id)
+        assert env is not None
+    elif source is S.SUPERSEDED:
+        old_id = env.id
+        successor = make_draft(env.sell_intent_id).model_copy(
+            update={"session_id": env.session_id}
+        )
+        await any_store.supersede_envelope(old_id, successor, actor="operator-a")
+        env = await any_store.get_envelope(old_id)
+        assert env is not None
     assert env.status is source
 
     if target is source:
@@ -131,7 +165,15 @@ async def test_full_transition_matrix_both_stores(any_store, source, target):
         assert again.status is source
         return
 
-    if target in ENVELOPE_TRANSITIONS[source]:
+    if target in (S.COMPLETED, S.SUPERSEDED):
+        # These are causal edges with dedicated atomic writers: fill-driven
+        # completion and predecessor+successor supersession. The generic seam
+        # must never fabricate either terminal state.
+        with pytest.raises(EnvelopeTransitionError):
+            await any_store.transition_envelope(env.id, target)
+        unchanged = await any_store.get_envelope(env.id)
+        assert unchanged is not None and unchanged.status is source
+    elif target in ENVELOPE_TRANSITIONS[source]:
         moved = await any_store.transition_envelope(env.id, target)
         assert moved.status is target
         ts_field = ENVELOPE_TIMESTAMP[target]
@@ -146,7 +188,8 @@ async def test_full_transition_matrix_both_stores(any_store, source, target):
 
 async def test_resume_reenters_active_and_restamps_activation(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    _, draft = await create_owned_draft(any_store)
+    env = await any_store.create_envelope(draft)
     await any_store.transition_envelope(env.id, S.APPROVED)
     active = await any_store.transition_envelope(env.id, S.ACTIVE)
     frozen = await any_store.transition_envelope(env.id, S.FROZEN)
@@ -171,7 +214,8 @@ async def test_transitions_emit_the_envelope_event_family(any_store):
     leaves a replayable ExecutionEvent trail (ADR-010 §6)."""
 
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    owner, draft = await create_owned_draft(any_store)
+    env = await any_store.create_envelope(draft)
     for step in (S.APPROVED, S.ACTIVE, S.FROZEN, S.ACTIVE, S.FROZEN, S.CANCELLED):
         await any_store.transition_envelope(env.id, step)
 
@@ -188,5 +232,5 @@ async def test_transitions_emit_the_envelope_event_family(any_store):
         ExecutionEventType.ENVELOPE_CANCELLED,
     ]
     # Every event correlates the owning intent (D-020 sell-side correlation).
-    assert all(e.correlation_id == "si-1" for e in mine)
+    assert all(e.correlation_id == owner.id for e in mine)
     assert all(e.symbol == "AAPL" for e in mine)

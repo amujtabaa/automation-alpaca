@@ -23,6 +23,7 @@ from app.models import (
     EventSource,
     ExecutionEnvelope,
     ExecutionEventType,
+    SellReason,
     SessionType,
     utcnow,
 )
@@ -50,6 +51,19 @@ def make_draft(intent_id: str = "si-1") -> ExecutionEnvelope:
         expiry_disposition=EnvelopeExpiryDisposition.REST_AT_FLOOR,
         stale_data_disposition=EnvelopeStaleDataDisposition.LEAVE_RESTING,
         session_id="sess-1",
+    )
+
+
+async def create_owned_envelope(store, *, actor: str = "system"):
+    draft = make_draft()
+    owner = await store.create_sell_intent(
+        symbol=draft.symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=draft.qty_ceiling,
+        session_id=draft.session_id,
+    )
+    return await store.create_envelope(
+        draft.model_copy(update={"sell_intent_id": owner.id}), actor=actor
     )
 
 
@@ -87,7 +101,7 @@ async def test_created_event_snapshots_full_bounds_with_operator_actor(any_store
 
 async def test_lifecycle_provenance_and_expiry_disposition_round_trip(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft(), actor="operator-ameen")
+    env = await create_owned_envelope(any_store, actor="operator-ameen")
     await any_store.transition_envelope(env.id, S.APPROVED, actor="operator-ameen")
     await any_store.transition_envelope(env.id, S.ACTIVE)
     await any_store.transition_envelope(env.id, S.EXPIRED, reason="ttl lapsed")
@@ -114,7 +128,7 @@ async def test_lifecycle_provenance_and_expiry_disposition_round_trip(any_store)
 
 async def test_fill_events_stay_broker_authoritative(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await any_store.transition_envelope(env.id, S.APPROVED)
     await any_store.transition_envelope(env.id, S.ACTIVE)
     await any_store.record_envelope_fill(
@@ -139,7 +153,7 @@ async def test_envelope_survives_reopen_with_events_intact(tmp_path):
     path = tmp_path / "envelopes.db"
     store = SqliteStateStore(path)
     await store.initialize()
-    env = await store.create_envelope(make_draft(), actor="operator-ameen")
+    env = await create_owned_envelope(store, actor="operator-ameen")
     await store.transition_envelope(env.id, S.APPROVED)
     await store.transition_envelope(env.id, S.ACTIVE)
     await store.record_envelope_fill(

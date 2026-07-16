@@ -180,11 +180,15 @@ must see and reuse the first's.
 *Pinned by:* `tests/test_phase7_sell_intents.py::test_create_sell_intent_single_flight_dedup`,
 the three concurrent race tests in `tests/test_phase7_flatten_atomic.py`.
 
-**INV-032 — The ONE canonical definition of "active" sell-intent:** a
-`pending`/`approved` intent, OR an `ordered` intent whose order is
+**INV-032 — The ONE canonical definition of "active" sell-intent:** an
+Envelope-backed intent while the shared INV-090 delegation projection is
+outstanding; otherwise a `pending`/`approved` intent, OR an `ordered` intent whose order is
 non-terminal **and does not have an OPEN `needs_review` recovery record**
 (`unresolved` still counts as active — only `needs_review` frees the symbol).
-This definition lives in exactly one place
+For an Envelope-linked `PENDING`/`APPROVED` owner the projection, not the bare
+status, decides activeness: this fails safe for a pre-R2 EXPIRED owner with a
+possibly-live child and releases a stale APPROVED owner whose complete lineage
+is terminal. This definition lives in exactly one place
 (`app.store.core.sell_intent_is_active`, called from both stores'
 `active_sell_intent_for`) — no second reimplementation is permitted anywhere
 (routes, protection engine, cockpit).
@@ -205,6 +209,11 @@ raise-without-expiring.
 *Why (X-002):* an intent stuck `APPROVED` with no order poisons INV-031's
 single-flight dedup forever — no fresh protective (or manual) intent could
 ever be created for that symbol again.
+*R2 carve-out:* an APPROVED owner with no single `order_id` is the intentional,
+only legal shape while an Execution Envelope delegation is outstanding. It is
+not stranded: INV-090 derives its complete multi-order obligation and expires
+the owner when that obligation releases. The legacy one-order dispatch path is
+structurally unavailable for such an owner.
 *Pinned by:* `tests/test_phase7_sell_intents.py::test_no_sell_intent_stranded_approved_after_any_rejection`,
 `tests/test_store_core.py::TestPlanCreateOrderForSellIntentSelfHeal`.
 
@@ -288,8 +297,13 @@ just because the thing it's superseding never got as far as having an order.
 `tests/test_phase7_flatten_atomic.py::test_supersedes_stranded_intent_with_no_order`.
 
 **INV-036 — A genuinely LIVE protective order (already submitted to the
-broker) is left alone by a flatten request, not double-exited.** The human is
-told the position is already exiting.
+broker or possibly live in a claim/quarantine window) is left alone by a flatten
+request, not double-exited.** This includes an Envelope child even though the
+owner intentionally has no single `order_id`. Flatten projects every action-linked
+child across the symbol's complete Envelope lineage; a newer CREATED replacement
+cannot hide an older venue-exposed predecessor. One exposure defers explicitly;
+multiple or missing exposures block rather than guess. The human is told the
+position is already exiting.
 *Pinned by:* `tests/test_phase7_routes.py::test_flatten_leaves_live_protection_order_alone`,
 `tests/test_phase7_flatten_atomic.py::test_live_protection_floor_order_is_left_alone`.
 
@@ -522,6 +536,12 @@ leaves an ACTIVE envelope that the kill hook freezes in the SAME atomic unit
 as the control change. Any `→ ACTIVE` transition (first activation OR resume)
 is refused while HALTED; releasing the kill NEVER auto-resumes a frozen
 envelope — resume is an explicit human action.
+R2 adds the other half of the same atomic boundary: every approval/ACTIVE ingress
+first loads one real `PROTECTION_FLOOR` owner, validates matching symbol/session
+and `qty_ceiling <= target_quantity`, rejects terminal/ORDERED owners, and
+normalizes `PENDING -> APPROVED` in the activation transaction. Idempotent ACTIVE
+re-approval validates the binding before its no-op and cannot bootstrap a rollover
+session on failure.
 *Why:* invariant 10 (kill blocks new order intent) — an ACTIVE envelope IS
 standing, pre-approved order intent; any window or auto-resume would let
 autonomous submissions restart without the human who stopped them.
@@ -541,6 +561,10 @@ DEFERS to an in-flight PROTECTION_FLOOR exit (ADR-003/WO-0015 semantics,
 unchanged), that exit's envelope is deliberately left alone: it is the live
 order's manager, and cancelling it would strand the very exit the flatten
 defers to.
+R2 defines that deferral through INV-090's full-lineage projection rather than
+the SellIntent's legacy single `order_id`. CREATED-only children are locally
+cancelled during preemption; every SUBMITTING/SUBMITTED/PARTIALLY_FILLED/
+CANCEL_PENDING/TIMEOUT_QUARANTINE predecessor is treated as possibly live.
 *Why:* the backstop must dominate its dependents without destroying the
 mechanism executing the exit the human already has in flight.
 *Amended (WO-0024 / REV-0023 F3):* preemption extends to the preempted
@@ -706,19 +730,16 @@ symbol is already ACTIVE — enforced under the store lock/transaction in both
 stores (the SQLite twin is the partial unique index
 ``idx_envelopes_one_active ON execution_envelopes(symbol) WHERE
 status='active'``).
-*Why:* REV-0023 Phase-A2 P0. Scoping the guard per intent left a hole: a
-second sell_intent for the same symbol (e.g. across a session boundary that
-EXPIREd the first intent while its envelope stayed ACTIVE, since the envelope
-path never advances its backing intent past APPROVED) could activate a SECOND
-envelope for the same symbol/position. Two ACTIVE mandates could then each
-stage a full-size SELL against one position — a broker-authoritative
-oversell / double-book the single-mandate design exists to prevent. The
-orphaned first envelope keeps working its exit; a redundant second mandate is
-simply refused.
+*Why:* REV-0023 Phase-A2 P0. Before R2, a session close could EXPIRE an owner
+while its Envelope stayed ACTIVE, freeing a second intent and mandate for the
+same position. INV-090 now closes that orphan at the root by retaining the
+owner through every outstanding delegation/child window. This per-symbol guard
+remains an independent structural backstop against corrupt legacy state and
+future ingress mistakes; it is no longer the primary lifecycle mechanism.
 *Pinned by:*
 `tests/test_rev0023_phase_a2_pins.py::test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary`
-(both stores; the session-boundary reproduction now refuses the second
-activation) and `tests/test_wo0032_per_symbol_mandate.py` (direct guard +
+(both stores; the session-boundary reproduction now keeps the original owner
+active, so no second intent is minted) and `tests/test_wo0032_per_symbol_mandate.py` (direct guard +
 supersession still permitted).
 
 **INV-088 — An unprintable price never drives features, sizing, or pricing.**
@@ -757,6 +778,78 @@ forbids fabricating a $0 price).
 *Pinned by:* `tests/test_wo0033_phase_a2_fixes.py::test_completeness1_*`
 (both stores; TypeError on omission, InvalidFillError on 0/negative/NaN/Inf,
 projection stays healthy).
+
+**INV-090 — SellIntent and Execution Envelope are one structurally linked
+lifecycle.** An Envelope may enter approved/delegating execution only for one
+real, matching, nonterminal `PROTECTION_FLOOR` owner whose authorized quantity
+and session bound the mandate. Approval atomically normalizes that owner to
+APPROVED. Once delegated, legacy single-order dispatch and direct status escape
+are unavailable.
+
+The ONE delegation-obligation projection lives in
+`app.store.core.project_envelope_obligation` and is consumed by both stores.
+It retains the owner while any lineage member is `APPROVED|ACTIVE|FROZEN` or
+any `ENVELOPE_ACTION` child is unresolved; missing child rows fail closed.
+Missing parent rows, malformed immutable owner scope, malformed action/order correlation, and
+children outside the approved SELL/LIMIT/session/floor/quantity bounds also fail closed. Scope is
+resolved from the parent, action, **and referenced order**: a corrupt MSFT action cannot hide a
+possibly-live AAPL order from AAPL's mint/flatten/claim rails. Duplicate action facts must be
+bit-identical in scope, provenance, event time, and payload. An action is an `ENGINE|LOCAL`
+`submit` or `reprice`; submit has no predecessor, while reprice names the exact earlier,
+broker-confirmed child in the same acyclic lineage. A child is always bound to the Envelope's
+immutable session (including `None`), never whichever session happens to be current when staging
+runs.
+`SUPERSEDED` is valid only as a reciprocal same-owner/symbol/session pair
+(`old.superseded_by_id == new.id` and `new.supersedes_id == old.id`), and
+`COMPLETED` is valid only with zero remaining quantity. Missing, dangling,
+cross-scope, or pre-fix fabricated terminal rows remain retained on replay;
+generic status transition cannot create either causal terminal.
+Terminal/SUPERSEDED Envelope status alone is never proof that venue exposure
+ended. Projection uses event-truth order status and scans every predecessor,
+so stale SUBMITTING claims, REST_AT_FLOOR/failed-cancel windows,
+PARTIALLY_FILLED/CANCEL_PENDING, mid-reprice children, and
+TIMEOUT_QUARANTINE all retain the same owner. Session close spares retained
+owners. When the last child reaches `FILLED|CANCELED|REJECTED`, the stores
+atomically expire a PENDING/APPROVED owner; startup performs the same
+idempotent convergence for pre-R2 data, including restoring a valid retained
+PENDING/EXPIRED owner. `SUBMIT_PENDING` and open recovery are occurrence-aware
+possibly-live facts: local terminal state cannot release them, and broker-confirmed
+recovery resolution contributes the source-faithful broker `CANCELED` or `REJECTED` closing event
+for that exact occurrence. Claim occurrences are unique and gapless; releases name an open
+occurrence; lifecycle event types accept only their producible local/broker provenance pair.
+Broker/fill truth is written first and
+is never rolled back because a legacy owner is missing or malformed.
+
+Every symbol-level mint and venue choke point consumes this projection. A retained foreign
+lineage blocks approval/activation, stage, legacy dispatch, direct protection creation, and final
+claim; only atomic supersession transfers the delegation. The final claim replays the shared hard
+rails from current state under the store boundary: Envelope ACTIVE/owner APPROVED, exact child and
+predecessor shape, TTL, session phase, staged-action age, floor, current remaining quantity, and
+live reduce-only position. A fresh submit must be the sole unresolved child; a reprice may coexist
+only with its exact broker-working predecessor. A venue acceptance that cannot be persisted as
+`SUBMITTED` is represented by the durable recovery ledger before the executor returns.
+The first nonblank `broker_order_id` is immutable; a replacement is a new linked local Order,
+never a retargeting of an existing venue identity.
+Flatten refuses ambiguous owners,
+missing/malformed lineage, multiple venue children, a possibly-live child over a flat position,
+or an unresolved direct SELL/recovery sibling. Only a scope-valid Envelope action removes an order
+from that direct-exposure projection. Terminal local CREATED children are cancelled across the full symbol
+lineage before the manual path may create another order. A CANCEL disposition targets every
+projection-valid venue child independently, allowing a legacy multi-child lineage to converge
+without guessing through malformed or recovery-owned state.
+
+*Why:* WO-0036 R2. Independent SellIntent and Envelope state machines created
+the whole orphan/double-submit class at close, terminal transitions, reprices,
+quarantine, and claim windows. A status-only or close-only patch leaves sibling
+paths open; the shared persisted-data projection closes the class at ingress,
+eligibility, preemption, close, and release without adding a second stored
+source of derived truth.
+*Pinned by:* `tests/test_wo0036_r2_lifecycle_link.py`,
+`tests/test_wo0036_r2_parity_adversarial.py`, and
+`tests/test_wo0036_r2_hostile_closure.py` (both stores, all
+unresolved/terminal child states, event-truth corruption, restart convergence,
+legacy dispatch exclusion, close, supersession, flatten, and broker-truth
+survival) plus the session-boundary pin in `tests/test_rev0023_phase_a2_pins.py`.
 
 ---
 

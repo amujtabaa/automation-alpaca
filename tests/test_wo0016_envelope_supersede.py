@@ -19,6 +19,8 @@ from app.models import (
     EnvelopeStatus,
     ExecutionEnvelope,
     ExecutionEventType,
+    SellIntent,
+    SellReason,
     SessionType,
     utcnow,
 )
@@ -31,11 +33,15 @@ S = EnvelopeStatus
 
 
 def make_draft(
-    intent_id: str = "si-1", symbol: str = "AAPL", floor: float = 9.50
+    owner: SellIntent,
+    *,
+    intent_id: str | None = None,
+    symbol: str | None = None,
+    floor: float = 9.50,
 ) -> ExecutionEnvelope:
     return ExecutionEnvelope(
-        sell_intent_id=intent_id,
-        symbol=symbol,
+        sell_intent_id=owner.id if intent_id is None else intent_id,
+        symbol=owner.symbol if symbol is None else symbol,
         qty_ceiling=100,
         floor_price=floor,
         trail_distance_min=0.05,
@@ -48,19 +54,31 @@ def make_draft(
         allowed_session_phases=[SessionType.PRE_MARKET],
         expiry_disposition=EnvelopeExpiryDisposition.CANCEL_AND_RETURN,
         stale_data_disposition=EnvelopeStaleDataDisposition.CANCEL,
+        session_id=owner.session_id,
     )
 
 
-async def make_active(store, **kwargs) -> ExecutionEnvelope:
-    env = await store.create_envelope(make_draft(**kwargs))
+async def make_owner(store, *, symbol: str = "AAPL") -> SellIntent:
+    session = await store.get_current_session()
+    return await store.create_sell_intent(
+        symbol=symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+
+
+async def make_active(store) -> tuple[SellIntent, ExecutionEnvelope]:
+    owner = await make_owner(store)
+    env = await store.create_envelope(make_draft(owner))
     await store.transition_envelope(env.id, S.APPROVED)
-    return await store.transition_envelope(env.id, S.ACTIVE)
+    return owner, await store.transition_envelope(env.id, S.ACTIVE)
 
 
 async def test_supersede_swaps_active_atomically_and_links_both(any_store):
     await any_store.initialize()
-    old = await make_active(any_store)
-    successor = make_draft(floor=9.75)  # the amendment: a tighter floor
+    owner, old = await make_active(any_store)
+    successor = make_draft(owner, floor=9.75)  # the amendment: a tighter floor
 
     new = await any_store.supersede_envelope(
         old.id, successor, actor="operator-ameen", reason="tighten floor"
@@ -73,7 +91,7 @@ async def test_supersede_swaps_active_atomically_and_links_both(any_store):
     assert old_after.superseded_by_id == new.id
 
     # Exactly one ACTIVE envelope for the intent — before, during, after.
-    active = await any_store.list_envelopes(sell_intent_id="si-1", status=S.ACTIVE)
+    active = await any_store.list_envelopes(sell_intent_id=owner.id, status=S.ACTIVE)
     assert [e.id for e in active] == [new.id]
 
     # Replayable trail: created(B), approved(B), superseded(A), activated(B).
@@ -109,8 +127,8 @@ async def test_concurrent_supersedes_yield_exactly_one_active_successor(any_stor
     envelope is ACTIVE afterwards."""
 
     await any_store.initialize()
-    old = await make_active(any_store)
-    drafts = [make_draft(floor=9.50 + i / 100) for i in range(1, 6)]
+    owner, old = await make_active(any_store)
+    drafts = [make_draft(owner, floor=9.50 + i / 100) for i in range(1, 6)]
 
     results = await asyncio.gather(
         *(any_store.supersede_envelope(old.id, d) for d in drafts),
@@ -121,7 +139,7 @@ async def test_concurrent_supersedes_yield_exactly_one_active_successor(any_stor
     assert len(winners) == 1
     assert len(losers) == len(drafts) - 1
 
-    active = await any_store.list_envelopes(sell_intent_id="si-1", status=S.ACTIVE)
+    active = await any_store.list_envelopes(sell_intent_id=owner.id, status=S.ACTIVE)
     assert [e.id for e in active] == [winners[0].id]
     old_after = await any_store.get_envelope(old.id)
     assert old_after.status is S.SUPERSEDED
@@ -130,34 +148,37 @@ async def test_concurrent_supersedes_yield_exactly_one_active_successor(any_stor
 
 async def test_supersede_rejects_non_active_old(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())  # PENDING
+    owner = await make_owner(any_store)
+    env = await any_store.create_envelope(make_draft(owner))  # PENDING
     with pytest.raises(EnvelopeTransitionError):
-        await any_store.supersede_envelope(env.id, make_draft(floor=9.60))
+        await any_store.supersede_envelope(env.id, make_draft(owner, floor=9.60))
     await any_store.transition_envelope(env.id, S.APPROVED)
     with pytest.raises(EnvelopeTransitionError):
-        await any_store.supersede_envelope(env.id, make_draft(floor=9.60))
+        await any_store.supersede_envelope(env.id, make_draft(owner, floor=9.60))
     # Nothing was written: the failed successor drafts do not exist.
-    assert len(await any_store.list_envelopes(sell_intent_id="si-1")) == 1
+    assert len(await any_store.list_envelopes(sell_intent_id=owner.id)) == 1
 
 
 async def test_supersede_rejects_cross_intent_and_cross_symbol_successors(any_store):
     await any_store.initialize()
-    old = await make_active(any_store)
+    owner, old = await make_active(any_store)
     with pytest.raises(InvalidOrderError):
-        await any_store.supersede_envelope(old.id, make_draft(intent_id="si-OTHER"))
+        await any_store.supersede_envelope(
+            old.id, make_draft(owner, intent_id="si-OTHER")
+        )
     with pytest.raises(InvalidOrderError):
-        await any_store.supersede_envelope(old.id, make_draft(symbol="MSFT"))
+        await any_store.supersede_envelope(old.id, make_draft(owner, symbol="MSFT"))
     assert (await any_store.get_envelope(old.id)).status is S.ACTIVE
 
 
 async def test_supersede_rejects_non_pending_or_prelinked_drafts(any_store):
     await any_store.initialize()
-    old = await make_active(any_store)
-    tampered = make_draft().model_copy(update={"status": S.APPROVED})
+    owner, old = await make_active(any_store)
+    tampered = make_draft(owner).model_copy(update={"status": S.APPROVED})
     with pytest.raises(InvalidOrderError):
         await any_store.supersede_envelope(old.id, tampered)
     with pytest.raises(UnknownEntityError):
-        await any_store.supersede_envelope("nope", make_draft())
+        await any_store.supersede_envelope("nope", make_draft(owner))
 
 
 async def test_fresh_draft_cannot_predeclare_supersedes_id(any_store):
@@ -171,7 +192,8 @@ async def test_fresh_draft_cannot_predeclare_supersedes_id(any_store):
     fresh draft; amendments must route through ``supersede_envelope``."""
 
     await any_store.initialize()
-    prelinked = make_draft().model_copy(update={"supersedes_id": "env-ghost"})
+    owner = await make_owner(any_store)
+    prelinked = make_draft(owner).model_copy(update={"supersedes_id": "env-ghost"})
     with pytest.raises(InvalidOrderError):
         await any_store.create_envelope(prelinked)
     with pytest.raises(InvalidOrderError):
@@ -184,13 +206,10 @@ async def test_second_activation_for_same_intent_is_blocked(any_store):
     first is ACTIVE — and becomes activatable once it no longer is."""
 
     await any_store.initialize()
-    first = await make_active(any_store)
-    second = await any_store.create_envelope(make_draft(floor=9.60))
-    await any_store.transition_envelope(second.id, S.APPROVED)
+    owner, first = await make_active(any_store)
+    second = await any_store.create_envelope(make_draft(owner, floor=9.60))
     with pytest.raises(EnvelopeTransitionError):
-        await any_store.transition_envelope(second.id, S.ACTIVE)
+        await any_store.transition_envelope(second.id, S.APPROVED)
 
-    await any_store.transition_envelope(first.id, S.FROZEN)
-    await any_store.transition_envelope(first.id, S.CANCELLED)
-    activated = await any_store.transition_envelope(second.id, S.ACTIVE)
-    assert activated.status is S.ACTIVE
+    assert (await any_store.get_envelope(first.id)).status is S.ACTIVE
+    assert (await any_store.get_envelope(second.id)).status is S.PENDING

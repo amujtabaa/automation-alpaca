@@ -50,6 +50,7 @@ from app.broker.adapter import (
 from app.marketdata.service import MarketSnapshot
 from app.models import (
     EnvelopeStatus,
+    ExecutionEventType,
     Order,
     OrderSide,
     OrderStatus,
@@ -60,8 +61,10 @@ from app.sellside.policy import validate_action
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import CLAIM_CLAIMED, StateStore
 from app.store.core import (
+    ENVELOPE_MAX_STAGED_AGE_S,
     STAGE_DIVERGENCE,
     STAGE_REFUSED_STALE,
+    envelope_claim_hard_rail_reason,
 )
 
 # Local order statuses that are "open at the venue" and therefore reconcilable
@@ -462,7 +465,7 @@ ENVELOPE_EXEC_CANCELLED = "cancelled"  # redrive refusal: staged order locally
 # current data instead. Two 30s ticks + slack. (WO-0024 / REV-0023 F3 — the
 # tape itself is monitoring-owned; this age bound subsumes the
 # restart-with-empty-tape scenario at the executor seam.)
-REDRIVE_MAX_STAGED_AGE_S = 120.0
+REDRIVE_MAX_STAGED_AGE_S = ENVELOPE_MAX_STAGED_AGE_S
 
 
 @dataclass(frozen=True)
@@ -471,6 +474,95 @@ class EnvelopeExecutionResult:
     order_id: Optional[str] = None
     broker_order_id: Optional[str] = None
     detail: str = ""
+
+
+async def _persist_or_recover_envelope_venue_order(
+    store: StateStore,
+    *,
+    order: Order,
+    broker_order_id: str,
+    envelope_id: Optional[str],
+    kind: ActionKind,
+    exc: Exception,
+) -> bool:
+    """Make a broker-accepted Envelope order durably visible.
+
+    Returns ``True`` when a retry persisted the normal ``SUBMITTED`` state.
+    Returns ``False`` when an unresolved recovery record now owns cleanup of
+    the venue order.  A failure to persist *either* representation is raised:
+    after venue acceptance, silently continuing without durable truth would be
+    an invisible live-order orphan.
+    """
+
+    try:
+        await store.append_event(
+            "order_submit_unpersisted",
+            message=(
+                f"envelope order {order.symbol} accepted by broker as "
+                f"{broker_order_id} but could not be marked SUBMITTED"
+            ),
+            symbol=order.symbol,
+            order_id=order.id,
+            payload={
+                "broker_order_id": broker_order_id,
+                "envelope_id": envelope_id,
+                "kind": kind.value,
+                "error": str(exc),
+            },
+            session_id=order.session_id,
+            correlation_id=order.sell_intent_id,
+        )
+    except Exception:  # noqa: BLE001 - recovery ledger below is authoritative
+        pass
+
+    try:
+        current = await store.get_order(order.id)
+    except Exception:  # noqa: BLE001 - still attempt the durable recovery write
+        current = None
+    if current is not None:
+        if current.broker_order_id == broker_order_id and current.status in (
+            OrderStatus.SUBMITTED,
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.CANCEL_PENDING,
+            OrderStatus.FILLED,
+        ):
+            return True
+        if current.status is OrderStatus.SUBMITTING:
+            try:
+                await store.transition_order(
+                    order.id,
+                    OrderStatus.SUBMITTED,
+                    broker_order_id=broker_order_id,
+                )
+                return True
+            except Exception:  # noqa: BLE001 - recovery is the required fallback
+                pass
+
+    try:
+        await store.create_submit_recovery(
+            local_order_id=order.id,
+            broker_order_id=broker_order_id,
+            client_order_id=order.id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            failure_reason=str(exc),
+            session_id=order.session_id,
+            candidate_id=order.candidate_id,
+            extra_payload={
+                "envelope_id": envelope_id,
+                "action_kind": kind.value,
+                "replaces_order_id": order.replaces_order_id,
+            },
+        )
+    except Exception as recovery_exc:  # noqa: BLE001 - fail loudly, never mask orphan
+        raise RuntimeError(
+            f"broker accepted envelope order {order.id} as {broker_order_id}, "
+            "but neither local submission state nor durable recovery could be "
+            "persisted"
+        ) from recovery_exc
+    return False
 
 
 def market_snapshot_fingerprint(snapshot: MarketSnapshot) -> str:
@@ -494,6 +586,49 @@ def market_snapshot_fingerprint(snapshot: MarketSnapshot) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+async def _explicit_envelope_claim_rail_reason(
+    store: StateStore,
+    *,
+    order: Order,
+    envelope_id: Optional[str],
+    now: datetime,
+) -> Optional[str]:
+    """Replay the shared rails for an explicitly injected executor clock.
+
+    Structural identity remains store-authoritative at the atomic claim.  This
+    preflight only preserves deterministic/replay clocks for the same hard-rail
+    function; current quantity and position are checked again under the store
+    claim, so this read cannot authorize a race.
+    """
+
+    events = await store.get_execution_events()
+    actions = [
+        event
+        for event in events
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.order_id == order.id
+    ]
+    parent_ids = {event.envelope_id for event in actions}
+    if not actions or None in parent_ids or len(parent_ids) != 1:
+        return None
+    parent_id = next(iter(parent_ids))
+    assert parent_id is not None
+    if envelope_id is not None and parent_id != envelope_id:
+        return None
+    envelope = await store.get_envelope(parent_id)
+    if envelope is None:
+        return None
+    position = await store.get_position(order.symbol)
+    return envelope_claim_hard_rail_reason(
+        envelope=envelope,
+        order=order,
+        action_event=actions[0],
+        history=events,
+        current_position=position.quantity,
+        now=now,
+    )
+
+
 async def _drive_staged_order(
     store: StateStore,
     adapter: BrokerAdapter,
@@ -502,9 +637,23 @@ async def _drive_staged_order(
     kind: ActionKind,
     working_order: Optional[Order],
     envelope_id: Optional[str] = None,
+    now: Optional[datetime] = None,
 ) -> EnvelopeExecutionResult:
     """The venue leg for one already-staged order (fresh or redriven)."""
 
+    if now is not None:
+        explicit_rail = await _explicit_envelope_claim_rail_reason(
+            store,
+            order=order,
+            envelope_id=envelope_id,
+            now=now,
+        )
+        if explicit_rail is not None:
+            return EnvelopeExecutionResult(
+                ENVELOPE_EXEC_BLOCKED,
+                order_id=order.id,
+                detail="envelope hard rail changed after staging: " + explicit_rail,
+            )
     claim = await store.claim_order_for_submission(order.id)
     if claim.outcome != CLAIM_CLAIMED:
         return EnvelopeExecutionResult(
@@ -512,6 +661,34 @@ async def _drive_staged_order(
             order_id=order.id,
             detail=claim.reason or claim.outcome,
         )
+    assert claim.order is not None
+    # The final claim authorized one persisted action/order edge.  Derive the
+    # venue operation and predecessor from that claimed row; ``kind`` and
+    # ``working_order`` are plan-time conveniences, never a second authority.
+    order = claim.order
+    kind = (
+        ActionKind.REPRICE if order.replaces_order_id is not None else ActionKind.SUBMIT
+    )
+    if kind is ActionKind.REPRICE:
+        assert order.replaces_order_id is not None
+        working_order = await store.get_order(order.replaces_order_id)
+        if (
+            working_order is None
+            or working_order.broker_order_id is None
+            or working_order.status
+            not in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+        ):
+            # The predecessor changed after the atomic claim but before the
+            # venue call. No broker request has occurred, so release this exact
+            # claim for a fresh policy decision instead of guessing.
+            await store.transition_order(order.id, OrderStatus.CREATED)
+            return EnvelopeExecutionResult(
+                ENVELOPE_EXEC_RELEASED,
+                order_id=order.id,
+                detail="reprice predecessor changed after claim; released",
+            )
+    else:
+        working_order = None
     try:
         if kind is ActionKind.REPRICE:
             assert working_order is not None
@@ -523,8 +700,7 @@ async def _drive_staged_order(
                 quantity=order.quantity,
             )
         else:
-            assert claim.order is not None  # CLAIM_CLAIMED carries the order
-            new_broker_id = await adapter.submit_order(claim.order)
+            new_broker_id = await adapter.submit_order(order)
     except AmbiguousBrokerError:
         # The venue MAY have the replacement/submission. Quarantine; the
         # targeted client_order_id query resolves it; the envelope pauses
@@ -574,9 +750,29 @@ async def _drive_staged_order(
             ENVELOPE_EXEC_RELEASED, order_id=order.id, detail=str(exc)
         )
 
-    await store.transition_order(
-        order.id, OrderStatus.SUBMITTED, broker_order_id=new_broker_id
-    )
+    try:
+        await store.transition_order(
+            order.id, OrderStatus.SUBMITTED, broker_order_id=new_broker_id
+        )
+    except Exception as exc:  # noqa: BLE001 - venue accepted; recovery is mandatory
+        tracked = await _persist_or_recover_envelope_venue_order(
+            store,
+            order=order,
+            broker_order_id=new_broker_id,
+            envelope_id=envelope_id,
+            kind=kind,
+            exc=exc,
+        )
+        if not tracked:
+            return EnvelopeExecutionResult(
+                ENVELOPE_EXEC_QUARANTINED,
+                order_id=order.id,
+                broker_order_id=new_broker_id,
+                detail=(
+                    "venue accepted order but local transition failed; durable "
+                    "recovery owns cleanup"
+                ),
+            )
     if kind is ActionKind.REPRICE:
         assert working_order is not None
         # The venue's replace terminated the old order (broker-confirmed fact;
@@ -633,6 +829,7 @@ async def execute_envelope_action(
         kind=action.kind,
         working_order=staged.working_order,
         envelope_id=envelope_id,
+        now=now,
     )
 
 
@@ -701,7 +898,10 @@ async def redrive_staged_envelope_action(
     else:
         staged_at = last.ts_event or last.ts_init
         age = (ts - staged_at).total_seconds()
-        if age > REDRIVE_MAX_STAGED_AGE_S:
+        if age < 0:
+            rail = "staleness"
+            refusal = f"staged action is {-age:.0f}s in the future"
+        elif age > REDRIVE_MAX_STAGED_AGE_S:
             rail = "staleness"
             refusal = (
                 f"staged action is {age:.0f}s old "
@@ -774,4 +974,5 @@ async def redrive_staged_envelope_action(
         kind=kind,
         working_order=working_order,
         envelope_id=envelope_id,
+        now=ts,
     )
