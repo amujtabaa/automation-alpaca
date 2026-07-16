@@ -1070,6 +1070,83 @@ $ git show <sol-r2-tip>:app/store/sqlite.py | sed -n '/async def initialize/,/^ 
 
 ---
 
+## §E Cross-Verification Findings
+
+*Dispatched as one investigation with three directions (charter §6): E.1 runs Sol's hostile/
+assurance/parity-adversarial suites against Claude's code; E.2 runs Claude's fresh-eyes pins
+against Sol's code; E.3 probes the four items named in Claude's REV-0028 packet against Sol's
+design. E.2 has landed in full; E.1/E.3 are still in progress as of this commit and will be added
+when they land.*
+
+### E.2 Claude's fresh-eyes pins (46 cases) ported onto Sol's code — **VERIFIED, complete**
+
+**Collection**: zero import changes needed — `app/store/base.py`, `app/models.py`,
+`app/sellside/types.py`, and root `conftest.py` are byte-identical across both worktrees
+(re-verified by diff before adaptation). **Fixture adaptation** (not behavioral weakening) was
+needed: Sol's owner-binding validator legitimately checks `envelope.session_id == intent.session_id`
+(the same fixture gap this investigator's own oracle hit and fixed in §B.2) — Claude's local test
+helpers never set it. Fixed at 8 call sites, plus one incidental confound (a qty_ceiling default
+that exceeded the test's own intent's target_quantity, tripping Sol's stricter owner-scope check
+before the test's actual assertion). **Result after the fixture-only fix: 28 PASS / 18
+FAIL-DESIGN-DIFFERENCE / 0 FAIL-BUG / 0 UNADAPTABLE.**
+
+**Headline result: the two masked-predecessor pins (`test_c7`, `test_c8`) both PASS on Sol's code,
+on both stores, and the reason is structural, not coincidental.** Sol's `project_envelope_obligation`
+walks *every* `ENVELOPE_ACTION` event tied to an envelope's lineage and accumulates *every*
+distinct order id — there is no "keep only the newest" step anywhere in the accumulation
+(`core.py:1110-1179`); `retains_intent` is true if *any* accumulated child is unresolved
+(`core.py:1481-1488`). With predecessor A `SUBMITTED` and a staged reprice B `CREATED`, both land
+in `unresolved_order_ids`; A alone keeps `retains_intent` true regardless of B, so B cannot mask A
+at either terminal-release (`_reconcile_envelope_owner_*`) or supersede
+(`supersede_envelope` rejects up-front on `len(unresolved_order_ids) > 1` or non-empty
+`venue_orders`, before anything else runs).
+
+**A genuine nuance worth carrying into §H, not a live bug**: a second, narrower helper
+(`_envelope_action_context_*`, comment: "sequence order: latest live order wins") *would* be
+maskable in isolation — it overwrites `working` on every non-terminal order it sees, including
+`CREATED`, so B could mask A there. But its only two call sites (`supersede_envelope`,
+`stage_envelope_action`) both run the full-scan gate first and always raise before reaching this
+helper in any state where masking could matter — **provably unreachable given the current call
+graph, but a maintainability landmine**: a future refactor that reorders these checks could
+silently reintroduce the exact bug Claude's fresh-eyes pass fixed. Recommend the consolidation
+either remove this dead-in-practice helper or add a regression test pinning the call-order
+dependency explicitly. Separately, `app/monitoring.py`'s `_envelope_working_order` (the function
+the charter named for comparison) is confirmed **dead code** — zero callers anywhere in the repo —
+and would not have masked correctly anyway (fail-closed on ambiguity, returns the sole
+`venue_orders` entry, which excludes `CREATED`).
+
+**All 18 FAIL-DESIGN-DIFFERENCE cases, verified zero safety impact**: in every one, the
+safety-relevant assertion(s) in the same test body passed; only exception-class taxonomy
+(`InvalidOrderError` vs `EnvelopeTransitionError` — 3 cases), audit-payload string vocabulary
+(`envelope_activation`→`envelope_delegation_linked` etc. — 3 cases), one missing telemetry
+counter (`spared_sell_intents` — Sol filters intents out of the close-event's candidate list
+before building the payload rather than counting them, so nothing is wrong, just less observable
+— 1 case), a stricter activation-time check firing one step earlier than the test's pinned
+boundary (`test_a6` — **arguably an improvement**: no window exists where a broken-link envelope
+sits APPROVED waiting for a later check to catch it), and one exception-message substring
+mismatch from reusing one general rail instead of two overlapping ones (`test_f1`, also arguably
+a simplification) accounted for all 18. **Zero of the 18 argue for a defect in Sol's mechanism.**
+
+### E.1 Sol's hostile/assurance/parity-adversarial suites ported onto Claude's code — *pending*
+
+### E.3 The four REV-0028 items probed against Sol's design — *pending*
+
+### Cross-pollination targets identified so far (from E.2; to be extended once E.1/E.3 land)
+
+1. **Sol's `test_c7`/`test_c8`-equivalent structural guarantee should be the trunk's model** — its
+   full-child-scan projection is demonstrably immune to the masked-predecessor class by
+   construction, not by a pin catching one instance of it.
+2. **The `_envelope_action_context_*` landmine (E.2) should be resolved explicitly in the
+   consolidated code**, regardless of which mechanism wins, if any construct with "latest wins"
+   semantics survives the merge.
+3. **Audit-payload vocabulary should be standardized** (`envelope_delegation_linked` vs
+   `envelope_activation`-style naming) as part of the merged R2 test file / event taxonomy — a
+   Part-B mechanical cleanup, not a design decision.
+4. **Consider adding Sol's `spared_sell_intents`-style observability counter** to whichever
+   mechanism is chosen, independent of the mechanism decision itself.
+
+---
+
 ## §G Deconfliction Tables (code · planning · documentation · architecture)
 
 *Assembled ahead of §E/§F landing, since it draws mainly on facts already gathered in §A/§C.1 plus
