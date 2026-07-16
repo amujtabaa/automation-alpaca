@@ -1335,6 +1335,114 @@ Sol's harder block-on-ambiguity stance for its own (currently theoretical) multi
 
 ---
 
+## §F Mechanism Decision
+
+### F.1 Criteria table
+
+| Criterion | Claude R2 (evented terminal propagation) | Sol R2 (delegation projection) | Verdict |
+|---|---|---|---|
+| **Correctness under adversarial/edge-case scrutiny** | 22/22 oracle properties pass (§B); but §E.1 found **125/229 failures** when Sol's hostile suite ran against it, including two independently-reverified genuine defects (a real double-exposure window past a BREACHED sibling; a flatten/fill-race gap of disputed severity) | 22/22 oracle properties pass (§B); §E.2 found **zero real defects** running Claude's suite against it (masked-predecessor class closed by construction); §E.3 closes 3 of 4 named REV-0028 items, with one narrower silent-gap of its own (R6 logging) | **Sol, decisively** |
+| **Parity fidelity (memory vs. sqlite)** | "Parallel-assertion" style only; one named, unverified cross-store event-sequence drift risk (§C.1.2) | Exact cross-store snapshot equality + Hypothesis fuzzing — the repo's own gold-standard idiom, correctly applied to R2 (§C.2.3); one narrower, less severe gap (doesn't cross an actual restart boundary, though same-store restart correctness is independently verified) | **Sol** |
+| **Performance at scale (recurring, per-tick hot path)** | ~4,460× faster; 1 SELECT/call vs. 42; zero unindexed scans; essentially flat growth (§D) | Fails its own stated gate by a wide, reproduced-three-times margin (58.9–72×) on this exact path | **Claude, decisively** |
+| **Performance at scale (one-time startup cost)** | Near-zero incremental cost (flat SELECT count) | Real, measured cost (6.7s @ 100 symbols) — but buys real correctness (below); has its own unbounded-growth risk (scans ALL envelopes ever, unscoped) worth fixing regardless (§D.4) | **Claude** on raw cost; **the cost is doing necessary work** |
+| **Minimality / blast radius / reviewability** | 3 files, +884/−73 lines, store-only | 5 files (+`monitoring.py`+`reconciliation.py`), +4,392/−218 lines | **Claude** in isolation — but §E shows Claude's smaller footprint is under-scoped relative to what correctness actually requires, not simply "leaner" |
+| **Migration safety for pre-existing data** | **None.** Confirmed, reproduced against both stores and the real production `open_protection_exit` call path (§C.1.4) | Real, tested both directions (release + restore), confirmed by two independent readings plus dedicated passing tests (§C.2.2) | **Sol, decisively — a beta-blocking gap for Claude as-is** |
+| **No-second-stored-truth alignment** | VERIFIED — exclusive-driver guard makes the write path a genuine single-writer while live | VERIFIED — the one decision that matters (dedup) never trusts the cached write | **Tie**, slight edge to Sol's more defensive posture (correctness never depends on the write-back having run) |
+| **Long-term maintainability** | Simpler mental model, but correctness depends on *every* choke point (present and future) being independently, exhaustively gotten right — §E.1's Theme A is exactly this assumption failing in practice, at scale | More complex locally, but the "is this globally correct" burden concentrates into one heavily-tested function rather than distributing across many independently-maintained sites | **Sol** |
+
+### F.2 Decision
+
+**Recommendation: adopt Sol's mechanism (delegation projection via one shared, full-lineage
+`project_envelope_obligation`) as the canonical R2 semantic core, on the condition — not
+optional, a precondition for beta reliance — that its performance-critical read path is
+reimplemented with an indexed/memoized projection before merge, plus the specific grafts and
+fixes below.** This is not a close call on the evidence gathered: safety-critical correctness
+under adversarial conditions (§E.1's 125 findings, two independently reverified) and pre-existing-data
+migration safety (§C.1.4/§C.2.2, a confirmed, reachable double-exposure gap in Claude's mechanism
+via the real production monitoring path) are the criteria CLAUDE.md itself ranks above velocity
+("Safety and correctness outrank velocity"). Claude's mechanism's one decisive advantage —
+performance on the recurring per-tick hot path — is a **fixable implementation detail** (Sol's own
+query pattern is unindexed; §D already diagnosed the exact fix), not a structural limitation of the
+projection approach itself. Patching Claude's distributed-choke-point design point-by-point to
+close §E.1's ~45 Theme-A findings, by contrast, would risk becoming exactly the kind of
+symptom-patching AUDIT-0001's own meta-lesson warns against ("the same truth derived independently
+in two places, then defended when the derivations disagree") — just spread across more than two
+places. A single, well-tested, shared projection is the more structurally sound foundation for a
+system where CLAUDE.md's safety core is non-negotiable.
+
+**This is explicitly a synthesis, not "ship Sol's diff verbatim"** — concretely, file by file:
+
+**KEEP (Sol's core, as the semantic foundation):**
+- `app/store/core.py`: `project_envelope_obligation`, `EnvelopeObligationProjection`,
+  `_ENVELOPE_DELEGATING_STATUSES`, `envelope_owner_scope_reason`/`envelope_owner_binding_reason` —
+  semantics kept, **query implementation must be rewritten** (see below).
+- `app/store/{memory,sqlite}.py`: the reconcile write-back trio
+  (`_reconcile_envelope_owner_*`/`_reconcile_envelope_symbol_conflicts_*`/
+  `_reconcile_envelope_owners_for_order_*`), the `allow_envelope_restore` guarded bypass, the
+  startup re-projection call in `initialize()`.
+- `app/monitoring.py` + `app/reconciliation.py`: Sol's envelope-lineage-aware rework
+  (`_validated_envelope_lineage`, the projection-driven `_cancel_envelope_working_order`, the
+  CREATED-excluded-from-`venue_orders` framing that closed E.3.3) — **with E.3.2's fix applied**
+  (add logging/alerting to the silent fail-closed branches).
+- Sol's `tests/test_wo0036_r2_hostile_closure.py` + `test_wo0036_r2_assurance.py` +
+  `test_wo0036_r2_parity_adversarial.py` — these travel to the merged R2 test file as the primary
+  regression corpus (they are what found and will keep finding this class of defect).
+
+**NEW WORK (required, not optional — this is the central Part-B engineering task if this
+recommendation is ratified):**
+- An indexed/memoized per-symbol live-child/live-envelope projection closing §D's performance
+  gap — the charter's own §5 anticipated this need; §D's own evidence confirms neither attempt
+  shipped it. Target: match or approach Claude's demonstrated ~0.03ms/1-query performance on the
+  recurring hot path while preserving Sol's full-lineage correctness semantics.
+- Bound Sol's startup reconciliation to a scoped/recent window rather than an unfiltered
+  `SELECT DISTINCT ... FROM execution_envelopes` over the system's entire history (§D.4's
+  unbounded-growth flag).
+- A pre-cutover backfill verification pass: confirm the startup re-projection behaves correctly
+  against the *actual* shape of any pre-existing production/paper data, not just synthetic test
+  rows, before relying on it.
+
+**GRAFT FROM CLAUDE:**
+- `tests/test_wo0036_r2_lifecycle_link.py`'s masked-predecessor pins (`test_c7`/`test_c8`) —
+  already passing on Sol's mechanism (§E.2); carry forward as permanent, explicit regression
+  pins for this specific historically-real defect class.
+- The `spared_sell_intents`-style observability counter idea (§E.2's `b1` finding) — a small,
+  cheap audit-trail improvement.
+- Claude's more granular audit-reason-string vocabulary (e.g. a distinct
+  `deferred_to_live_envelope_child` reason, rather than Sol's reused `deferred_to_live_protection`
+  — §E.3.4) for audit-trail legibility.
+- This investigator's own `tests/test_r2_conformance_oracle_claude.py` (§B) — implementation-independent,
+  spec-derived, already proven against both attempts; keep as a permanent regression suite
+  alongside Sol's hostile corpus.
+
+**FIX REGARDLESS OF MECHANISM (not specific to either attempt):**
+- Theme D (§E.1): `broker_order_id` write-once immutability is not actually enforced — confirmed
+  R2-independent (pre-existing, likely base-commit), a real gap against CLAUDE.md's own
+  deterministic-reconciliation-key safety rail.
+
+**EXPLICITLY NOT CARRIED FORWARD:**
+- Claude's evented-terminal-propagation mechanism as the *primary* correctness architecture —
+  superseded by the projection approach for the reasons in F.1/F.2. (Its *write-time* discipline
+  is not wasted, however: Sol's own write-back is philosophically adjacent — eager writes kept
+  converged, with the projection as a correctness backstop — so this is a change of primary
+  authority, not a wholesale rejection of writing proactively.)
+- Claude's weaker "parallel-assertion" parity-testing style for any *new* test surface going
+  forward — Sol's exact-cross-store-snapshot technique is the better model (§C.1.2/§C.2.3).
+
+### F.3 What would change this recommendation
+
+Stated explicitly, per the discipline of an auditable decision: if Repro 2's severity (§E.1)
+turns out, on human/Part-B investigation, to be a non-issue (fully covered by the existing
+reconcile-tick within a bounded, acceptable window) **and** Repro 1 turns out to have an equally
+narrow, easy, symptom-level fix (e.g., simply widening the per-symbol clash check's status set)
+**and** the performance gap turns out to be non-trivial to close without compromising Sol's
+correctness guarantees, the balance would shift back toward a lighter patch of Claude's mechanism.
+This investigator's own reading of the evidence gathered does not expect that outcome (Theme A's
+~45 findings are broader than either single repro, and §D already sketches a concrete performance
+fix), but it is recorded here so the human's ratification is against a falsifiable claim, not an
+unfalsifiable one.
+
+---
+
 ## §G Deconfliction Tables (code · planning · documentation · architecture)
 
 *Assembled ahead of §E/§F landing, since it draws mainly on facts already gathered in §A/§C.1 plus
