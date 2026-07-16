@@ -207,7 +207,7 @@ child; legacy dispatch + public intent transition refuse live-envelope-backed in
 INV-087's clash extended to FROZEN. New INV-090; ADR-010 §8 + §4 amendment shipped WITH the
 code. 21 new pins × both stores (test_wo0036_r2_lifecycle_link.py); ~10 test files
 re-fixtured to real backing intents. Full gate green (ruff/mypy/import-linter/pytest exit 0,
-cov 94.91%). GATED: independent cross-model review queued as REV-0024 (request.md carries
+cov 94.91%). GATED: independent cross-model review queued as REV-0028 (request.md carries
 the Option-A+ divergence + R6-wording decisions for Ameen). WO-0036 status → REVIEW; the
 review gate clears only on an ACCEPT/ACCEPT-WITH-CHANGES disposition.
 
@@ -221,7 +221,7 @@ wo0025 activated envelopes with wall-clock activated_at while feeding NOW-anchor
 INV-086's since-activation window empties once wall UTC passes the tape anchors, so 12
 tests were green mornings, permanently red after 2026-07-15 ~13:20 UTC (verified failing at
 pre-R2 base 22617f4); fixtures now activate via now=-threaded transitions
-(store_helpers.activate_envelope_at), fully injected-clock. REV-0024 decisions resolved per
+(store_helpers.activate_envelope_at), fully injected-clock. REV-0028 decisions resolved per
 Ameen's session delegation (Option-A+ RATIFIED; R6 per-tick re-drive ACCEPTED); the request
 packet carries them as verify-items plus the disclosed accepted behaviors. Full gate green
 at 17:2x UTC (past the former flake boundary): ruff/mypy/import-linter clean, pytest rc 0,

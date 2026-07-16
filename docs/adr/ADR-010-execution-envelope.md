@@ -17,10 +17,10 @@ verdict **ACCEPT-WITH-CHANGES, Findings: None**, dispositioned RESOLVED in
 working-order predicate (WO-0025), §3 supersession (WO-0027), FROZEN→BREACHED + stale-vs-defect
 split (WO-0029A, both text proposals accepted by Ameen 2026-07-12), INV-085 scope narrowed to
 ACTIVE/FROZEN (WO-0034, decision 3a), §8 SellIntent↔Envelope lifecycle link + §4 flatten
-deferral-to-live-child (WO-0036 R2, 2026-07-15 — **queued for independent review**, REV-0024).
+deferral-to-live-child (WO-0036 R2, 2026-07-15 — **queued for independent review**, REV-0028).
 The R2 mechanism diverges from the WO's original "intent → ORDERED at activation"
 recommendation for the reasons recorded in §8; **ratified by Ameen 2026-07-15** (session
-directive delegating the REV-0024 decisions to the author's recommendation), with the
+directive delegating the REV-0028 decisions to the author's recommendation), with the
 independent reviewer asked to verify the rationale rather than re-decide it.
 
 ## Context

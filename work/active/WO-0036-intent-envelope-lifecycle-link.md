@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: Link the SellIntent↔Envelope lifecycle + terminal-cancel convergence (treadmill roots R2 + R6)
-status: REVIEW — all 8 findings + the full R2 link IMPLEMENTED (2026-07-15); independent cross-model review queued (REV-0024, gated surfaces + ADR-010 §8 amendment)
+status: REVIEW — all 8 findings + the full R2 link IMPLEMENTED (2026-07-15); independent cross-model review queued (REV-0028, gated surfaces + ADR-010 §8 amendment)
 work_order_id: WO-0036
 wave: W3 root-cause follow-up (quarantine-treadmill audit, 2026-07-15)
 model_tier: strong
@@ -104,7 +104,7 @@ ADR-010 §3 amended). Plus F-3, a pre-existing suite time bomb OUTSIDE the R2 ch
 tape-driven test files mixed wall-clock `activated_at` with NOW-anchored tapes, so 12 tests
 were green mornings and permanently red after 2026-07-15 ~13:20 UTC (fails at pre-R2 base
 22617f4); fixtures now activate via the `now=`-threaded transitions
-(`store_helpers.activate_envelope_at`). REV-0024 decisions resolved per Ameen's session
+(`store_helpers.activate_envelope_at`). REV-0028 decisions resolved per Ameen's session
 delegation: Option-A+ divergence RATIFIED; R6 per-tick re-drive ACCEPTED as satisfying the
 convergence done-when (reviewer verifies both).
 Migration surface (actual): ~9 test files re-fixtured to real backing intents (shared helper
@@ -113,7 +113,7 @@ wo0017-precedence hybrid deferral pin rebuilt on an envelope child (the R2-coher
 construction). New pins: `tests/test_wo0036_r2_lifecycle_link.py` (19 × both stores). Docs:
 ADR-010 §8 + §4 amendment, INVARIANTS INV-090 (new) + INV-087 (amended). Divergence from this
 WO's original option-1 (ORDERED-at-activation) recorded in ADR-010 §8 and the design section
-below — flagged for Ameen's ratification at the REV-0024 gate.
+below — flagged for Ameen's ratification at the REV-0028 gate.
 
 *(Historical deferral note, superseded by the pass above:)* the correct fix is a genuine
 architectural migration and ships with an ADR-010 amendment + independent review; the earlier
@@ -272,9 +272,9 @@ allowed_paths: [app/store/core.py, app/store/memory.py, app/store/sqlite.py, app
       (both stores). NOTE vs the original wording: convergence is per-tick re-drive with
       logged failures, not an N-retries→recovery-ledger escalation — the arm never stops
       trying, so "never silently stranded" holds without a ledger hand-off; flagged for
-      the REV-0024 reviewer to confirm the mechanism is acceptable as-is.
+      the REV-0028 reviewer to confirm the mechanism is acceptable as-is.
 - [x] ADR-010 §8 (+§4) amendment ships WITH the code in this change; independent
-      review queued as REV-0024 (gated surfaces + the Option-A+ divergence for
+      review queued as REV-0028 (gated surfaces + the Option-A+ divergence for
       Ameen's ratification).
 - [x] NEW #1: envelope-minted orders excluded from the generic submit sweep
       (cluster 1; `test_c1_generic_sweep_skips_envelope_minted_orders`, both stores).

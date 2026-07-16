@@ -1,6 +1,6 @@
 ---
 type: Review Request
-rev_id: REV-0024
+rev_id: REV-0028
 title: WO-0036 R2 — SellIntent↔Envelope structural lifecycle link (gated surfaces + ADR-010 §8 amendment)
 status: AWAITING_REVIEW
 targets: [WO-0036]
@@ -12,7 +12,7 @@ env: python 3.12                 # ruff/mypy/pytest pinned by constraints.txt
 created: 2026-07-15
 ---
 
-# Review Request REV-0024 — the SellIntent↔Envelope lifecycle link (WO-0036 R2)
+# Review Request REV-0028 — the SellIntent↔Envelope lifecycle link (WO-0036 R2)
 
 ## Your role
 Independent review seat (a different model from the author). Re-derive from the code,
@@ -47,7 +47,7 @@ Mechanism summary (full semantics in `docs/adr/ADR-010-execution-envelope.md` §
 
 ## Decisions at this gate — RESOLVED
 
-Resolved by Ameen 2026-07-15 (session directive delegating the REV-0024 decisions to the
+Resolved by Ameen 2026-07-15 (session directive delegating the REV-0028 decisions to the
 author's recommendation). The reviewer VERIFIES these, it does not re-decide them:
 
 - **Option-A+ divergence — RATIFIED.** The WO's original recommendation was "activation
