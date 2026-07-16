@@ -878,5 +878,110 @@ $ git show <sol-r2-tip>:app/store/sqlite.py | sed -n '/async def initialize/,/^ 
 
 ---
 
-*(§E Cross-Verification, §F Mechanism Decision, §G Deconfliction, §H Consolidation Program, §I
-Human Decisions, §J full Evidence Appendix: in progress.)*
+## §G Deconfliction Tables (code · planning · documentation · architecture)
+
+*Assembled ahead of §E/§F landing, since it draws mainly on facts already gathered in §A/§C.1 plus
+targeted direct verification below; will be cross-checked against §C.2/§E when they land.*
+
+### G.1 (§8a) Namespace & identifier collision registry
+
+| Id / file | Claimants | Resolution |
+|---|---|---|
+| `REV-0024` | Claude R2 branch (original) vs PR #7 branch (`work/review/REV-0024/`, complete request+result+disposition) | **RESOLVED.** Renumbered to `REV-0028` on the Claude R2 branch (`ba1cea7`), zero stale text references remain (VERIFIED, §A.9). PR #7's REV-0024 is a different, non-colliding claim (never shares a tree with the R2 branch). **Residual gap**: REV-0028 itself is incomplete — request.md only, `status: AWAITING_REVIEW`, no ledger entry (§C.1.4) — a namespace fix, not a review completion. |
+| `INV-090` | Claude R2 vs Sol R2, both new, **still live** | **UNRESOLVED — needs a §H decision.** Two substantial, non-overlapping, well-written texts (both quoted in full, §G.2 below); both correctly state the core property (including the "child may still rest at venue" second disjunct) and a no-second-stored-truth claim. Consolidation must produce ONE canonical INV-090 — likely a synthesis rather than picking one verbatim, since each names implementation details (`app.store.core.project_envelope_obligation` for Sol; the specific choke-point list for Claude) that only apply to whichever mechanism §F selects. |
+| ADR-010 "§8" | Claude R2 (new §8 section) vs Sol R2 (**no §8 at all**) | **CORRECTS the charter's framing.** VERIFIED via full diff read (§G.3): Claude adds a genuinely new top-level `### 8.` section (`docs/adr/ADR-010-execution-envelope.md:217-289`). Sol's diff on the *same file* (confirmed touched per §A.7's file inventory) instead inserts **inline, dated "Amended 2026-07-15 (WO-0036 R2)" paragraphs into the existing §3 (State machine), §4 (Precedence/TradingState), and §6 (Eventing/provenance)** — following the file's own pre-existing amendment convention (e.g. the already-present "Amended 2026-07-12 (WO-0025 / REV-0023 F4)" paragraph in §5). There is no literal "different text, same section" collision to merge — it's a **structural/convention choice**: one consolidated new section vs. distributed inline amendments. §H should decide which convention the merged ADR follows; arguably Sol's distributed style is *more* consistent with the file's own established pattern. |
+| `tests/test_wo0036_r2_lifecycle_link.py` | Both attempts create this **exact path**, different content (Claude 589 ln / 23 functions / 46 cases; Sol 559 ln) | **Literal file-path collision — must be resolved in Part B**, not just a namespace-registry note: consolidation cannot ship two files at the same path. Charter §H3 already calls for "one merged R2 test file"; this is the concrete instance. |
+| `WO-*` ids | — | **No open collision found.** Renumber history reconstructed and confirmed clean: ADR-009→ADR-010 (envelope branch, 2026-07-12, per the ADR's own header note) and master's WO-0016→WO-0100 (signal-seat lineage, to avoid colliding with the envelope lineage's own, still-valid WO-0016 — confirmed by finding `work/completed/keep/WO-0016-envelope-entity-events-persistence/` genuinely belongs to the envelope lineage, not a stale reference). Swept both branches for stale pre-renumber references (`git grep`); every hit resolved to a legitimate, current use, not a stale one. Next free id across all branches, re-confirmed: **WO-0106** (this investigation's own WO-0105 is the current high-water mark). |
+| `REV-*` next free | — | **`REV-0029`** (global max is the still-incomplete REV-0028; §A.12). |
+
+### G.2 (§8a) Ledger & work-state coherence
+
+Confirmed (§A.8): `WO-0036` sits in `work/queue/` on `feat/execution-envelope` (pre-promotion) and
+`work/active/` everywhere downstream — expected drift given branch age, not a live conflict since
+no merge between those states is pending. **Sol's governance gap, precisely re-confirmed**: Sol's
+commit touches **zero** `work/` paths (§A.7's direct file-list enumeration, not just a `--stat`
+absence) — no WO status flip, no ledger entry, no REV packet. Per CLAUDE.md's close-out rule this
+is a real gap regardless of code quality, and per charter §8a/§H3 the consolidation must author
+the missing planning-plane record for whichever mechanism (or graft) is chosen, crediting Sol's
+actual contribution. Claude's own WO-0036 ledger entry (`status: "REVIEW"`, `disposition: []`,
+quoted in full at §C.1.4) is itself not closed — consistent with REV-0028 being unreviewed.
+
+### G.3 (§8b) Documentation-vs-code coherence
+
+**Doc-variant matrix — the two live INV-090 / ADR-010 texts**, both VERIFIED by direct reading
+against their own branch's code (Claude's by the dispatched characterization agent + this
+investigator's independent spot-checks; Sol's INV-090 claims cross-checked directly by this
+investigator against `_reconcile_envelope_owner_locked`'s actual behavior, §D.4, and found to
+match precisely — the ADR/INV text is not overclaiming there):
+
+| Claim | Claude's text | Sol's text | Match to code? |
+|---|---|---|---|
+| Core "one owner" property | "an envelope OWNS its backing intent... expires when the mandate's LAST live obligation ends" | "one shared persisted-data projection... true while any Envelope in the owner's lineage is APPROVED/ACTIVE/FROZEN, or while any action-linked child remains unresolved" | Both VERIFIED against code (§C.1, §D.4) |
+| No second stored truth | "no new stored counter (the link is enforced at existing write choke points)" | "not a second stored flag... The ONE delegation-obligation projection lives in `app.store.core.project_envelope_obligation`" | Claude VERIFIED (§C.1.3, no schema/model diff). Sol's specific function-name claim independently confirmed to exist at the stated location (§D's performance harness imports and exercises it directly) |
+| Pre-existing data | *(not addressed — no migration claim made, consistent with §C.1.4's finding that none exists)* | "startup performs the same idempotent convergence for pre-R2 data, including restoring a valid retained PENDING/EXPIRED owner" | Sol's claim VERIFIED against `_reconcile_envelope_owner_locked`'s actual `EXPIRED→APPROVED` restore branch, read directly (§D.4) — the doc is not overclaiming |
+
+**Doc-vs-code mismatch found, pre-existing, NOT fixed by either attempt**: `StateStore.close_session`'s
+docstring (`app/store/base.py:1392-1422`, both R2 branches — VERIFIED unchanged on Claude R2's tip,
+byte-for-byte identical to base) enumerates 5 atomic steps and **never mentions sell-intent
+expiry**, even though `plan_close_session` (`app/store/core.py`) has always unconditionally built
+`sell_intent_events` expiring every open sell intent — the exact mechanism the R2 orphan bug
+depends on, and the exact mechanism Claude's fix modifies (to *spare* certain intents). Claude R2
+changes the underlying *behavior* here but does not update this docstring to describe it — a real,
+if minor, documentation-plane gap, findable only by comparing the docstring's own enumerated list
+against the code it describes (exactly the discipline charter §8b asks for). Flagged as a Part-B
+cleanup item regardless of which mechanism §F selects — whichever wins should update this
+docstring as part of its own change, not leave it for a future reader to rediscover.
+
+**Test-name pins in docs**: both INV-090 texts' implicit pin references (Claude cites its own
+23-function suite by group letter in the ADR §8; Sol's ADR prose doesn't name specific test
+functions but its INVARIANTS.md entry is pinned by file, unread in full here — flag for §C.2 to
+confirm the named pins exist and pass, mirroring what this investigator already confirmed for
+Claude's side in §C.1.6).
+
+### G.4 (§8c) Architecture-plane conformance — **VERIFIED, both clean**
+
+```
+$ (Sol worktree) lint-imports  ->  Analyzed 91 files, 440 dependencies. Contracts: 6 kept, 0 broken.
+$ (Claude worktree) lint-imports (per §C.1.5)  ->  Contracts: 6 kept, 0 broken.
+```
+Both attempts stay within the approved import seams — Sol's `app/monitoring.py` +
+`app/reconciliation.py` rework does **not** introduce a layer violation (confirmed mechanically,
+not assumed).
+
+**WO scope compliance — VERIFIED, both pass, the charter's specific ask resolved:**
+```
+$ git diff --name-only 22617f4...origin/claude/sellintent-envelope-linking-h2z7i7 \
+    | python .ai-os/scripts/check_work_order_scope.py work/active/WO-0036-intent-envelope-lifecycle-link.md
+SCOPE CHECK PASSED
+
+$ git diff --name-only 22617f4...origin/codex/r2-lifecycle-link-sol-impl \
+    | python .ai-os/scripts/check_work_order_scope.py work/active/WO-0036-intent-envelope-lifecycle-link.md
+SCOPE CHECK PASSED
+```
+Confirms, rather than assumes, the charter's note that Sol's `app/reconciliation.py` touch is
+within WO-0036's declared `allowed_paths`.
+
+### G.5 (§8d) Lineage collision & PR reconciliation
+
+Per §A.4/§A.13 (already VERIFIED there): **PR #8 (envelope wave) is already merged** into master
+(2026-07-16T10:40:55Z) — the charter's own recommended "envelope-first" sequencing already
+happened, resolving what was an open question at charter-seeding time. **PR #7 (signal-seat,
+`claude/wo-0001-install-checks-2x5ys8`) remains OPEN**, based off the pre-merge `80250e0` — it
+will need a rebase onto current `master` (`2aa377a`) before it can land, exactly as PR #8's own
+description anticipated ("After this merges, PR #7 rebases and re-reviews against the new
+master"). The two lineages' `app/store/*.py` collision surface is therefore now a **PR #7 vs.
+current-master** rebase question, not a PR #7 vs. PR #8 merge-order question — simpler than the
+charter's framing anticipated, because one side of that question already resolved itself.
+
+**How the consolidated R2 reaches master**: since PR #8 is closed/merged (not an open PR to fold
+into), the consolidated R2 result — built on `consolidate/r2-canonical`, itself forked from
+`22617f4` (an ancestor of current `master`) — will need a **fresh, stacked PR against current
+`master`**, not a fold-in. This is a §I decision to surface explicitly (charter names this exact
+either/or: "PR-fold vs stacked" — the "fold" option no longer exists since PR #8 already merged,
+so this is effectively resolved to "stacked PR," pending human ratification). The `freeze/*` refs
+(§A.1) remain the correct rollback anchors regardless.
+
+---
+
+*(§E Cross-Verification, §F Mechanism Decision, §H Consolidation Program, §I Human Decisions, §J
+full Evidence Appendix: in progress.)*
