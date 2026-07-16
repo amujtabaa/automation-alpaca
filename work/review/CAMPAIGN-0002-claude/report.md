@@ -423,6 +423,264 @@ in the session transcript; not reproduced in full here for length.
 
 ---
 
-*(§C Per-Attempt Characterization, §D Performance, §E Cross-Verification, §F Mechanism Decision,
-§G Deconfliction, §H Consolidation Program, §I Human Decisions, §J full Evidence Appendix: in
-progress.)*
+## §C Per-Attempt Characterization + Obligation Discharge
+
+### §C.1 Claude R2 — Mechanism & Obligations
+
+**Attempt:** `claude/sellintent-envelope-linking-h2z7i7`, tip `a6ab844`, forked from `22617f4`
+(VERIFIED via `merge-base`). 6 commits, `git diff --stat 22617f4 a6ab844`: **25 files changed,
+2194 insertions(+), 205 deletions(-)**, store-only (`app/store/{core,memory,sqlite}.py` +
+`docs/` + `tests/` + `work/`) — **zero** touch to `app/monitoring.py`, `app/reconciliation.py`,
+`app/sellside/policy.py`, `app/facade/store_backed.py` (VERIFIED, empty diff on those paths,
+independently re-confirmed by this report's author). Investigated in the shared scratch worktree
+`…/scratchpad/wt-claude-r2` (left in place, reused directly for §B's oracle run).
+
+Commit timeline (VERIFIED): `f022f59` (R2 structural link, both stores) → `d04d71c` (close-out +
+REV-0024 queued) → `bedf7e4` (fresh-eyes pass: masked-predecessor class closed + F-3 fix) →
+`5f33ad5` (close-out update) → `ba1cea7` (REV-0024→REV-0028 renumber) → `a6ab844` (F-3 sibling
+tape-clock fix).
+
+#### C.1.1 Mechanism
+
+**VERIFIED.** "Evented terminal propagation" built on one predicate defined once in
+`app/store/core.py` and imported identically by both stores:
+
+```python
+LIVE_ENVELOPE_STATUSES: frozenset[EnvelopeStatus] = frozenset({ACTIVE, FROZEN})            # core.py:2308
+ENVELOPE_RELEASING_TERMINALS = {COMPLETED, EXPIRED, EXHAUSTED, BREACHED, CANCELLED}          # core.py:2316 (SUPERSEDED excluded)
+VENUE_LIVE_ORDER_STATUSES = {SUBMITTING, SUBMITTED, PARTIALLY_FILLED, CANCEL_PENDING,
+                              TIMEOUT_QUARANTINE}                                             # core.py:2330 (CREATED excluded)
+```
+The charter's `LIVE = {ACTIVE, FROZEN}` claim is **VERIFIED exactly** — no consumer redefines it
+locally.
+
+**Choke points (file:line, both stores' equivalents), verified by direct reading:**
+
+| Concern | Function |
+|---|---|
+| Activation validate+link | `approve_envelope_activation`, `transition_envelope`→ACTIVE branch |
+| Validate backing intent | `_validate_backing_intent_{unlocked,locked}` |
+| Normalize PENDING→APPROVED | `_link_backing_intent_{unlocked,locked}` |
+| The one write choke point for every status transition (supersession excepted) | `_apply_envelope_transition_{unlocked,locked}` |
+| Terminal release (envelope side / child-terminal hook) | `_release_intent_for_terminal_{envelope,child}_{unlocked,locked}` |
+| Any-child-live scan (masked-predecessor belt) | `_envelope_has_live_child_{unlocked,locked}` |
+| Per-symbol clash (INV-087) | `_other_live_envelope_for_symbol_{unlocked,locked}` |
+| Exclusive-driver predicate + guard sites | `_live_envelope_for_intent_*`; guarded in `transition_sell_intent`, `create_order_for_sell_intent` |
+| Flatten's live-child lookup | `_live_envelope_exit_{unlocked,locked}`, `plan_flatten_position` (core.py:1003) |
+| Session-close spare | inline in `close_session`, `plan_close_session`'s new `spared_sell_intents` param (core.py:2137) |
+
+**Activation linking:** both activation paths (first activation and resume) validate the backing
+intent exists, symbol-matches, and is PENDING/APPROVED (`envelope_backing_intent_error`,
+core.py:2341) before the atomic write; PENDING normalizes to APPROVED atomically — **the intent
+never transitions to ORDERED**, confirming "Option A+" (not the WO's original "Option 1"
+recommendation) shipped as designed. Pinned `test_a1`-`test_a6`.
+
+**Supersession is a verified, provably-safe exception, not an unguarded hole:** the successor's
+ACTIVE entry does not re-invoke backing-intent validation, but `plan_supersede_envelope`
+structurally requires `successor.sell_intent_id == old.sell_intent_id` and matching symbol, and
+`old` was already validated when it activated — re-validation would be redundant by construction.
+
+**Terminal release — verified by direct code trace and pins `test_c1`-`test_c8`:** a no-op unless
+entering a `ENVELOPE_RELEASING_TERMINALS` state, the intent is still PENDING/APPROVED, no *other*
+live envelope backs it, AND `_envelope_has_live_child_*` returns False. If a child may still be
+venue-live (BREACHED/EXHAUSTED/REST_AT_FLOOR can leave a resting order), release **defers** until
+that child resolves — re-checked from `transition_order`'s own choke point. `test_c3` confirms
+SUPERSEDED does not release (the successor inherits ownership) — directly matching WO-0036's
+explicit "NOT SUPERSEDED" clause.
+
+**Masked-predecessor belt (fresh-eyes pass `bedf7e4`) — same bug *class* as WO-0036 finding #6,
+different code, precisely characterized.** Finding #6 (`_live_working_order_id`,
+`app/sellside/policy.py`) is untouched by this diff — it was already fixed in an earlier, non-R2
+cluster. The R2 fresh-eyes fix targets an *independent* instance of the identical "newest order
+masks a live predecessor" flaw, this time in the store layer's own `_envelope_action_context_*`
+helper: rather than fixing that helper directly (other callers legitimately want "current order
+to reprice from"), the fix adds an additive every-child venue-liveness scan
+(`_envelope_has_live_child_*`), used specifically at the R2 release/preemption logic and the new
+supersession live-order refusal (WO-0027 rule (i)). Pinned `test_c7`/`test_c8`.
+
+**Session-close handling:** excludes from expiry any PENDING/APPROVED intent backed by a live
+envelope, threading a `spared_sell_intents` count into the close summary. Pinned `test_b1`-`b3`,
+including day-2 dedup coherence.
+
+**Flatten deferral (closes Codex PR#8 #4):** `plan_flatten_position` reads live-child state under
+the same lock hold as the rest of the decision; a live-at-venue child defers the plan
+(`manual_flatten_deferred`) rather than minting a second SELL. The preemption helper
+independently refuses to CANCEL an envelope with a possibly-live child (`envelope_preemption_deferred`)
+— the internal twin of the CANCELLED live-child guard (Codex PR#8 #5). Pinned `test_d1`-`d3`.
+
+**Exclusive-driver guard:** `transition_sell_intent` and `create_order_for_sell_intent` both
+refuse while `_live_envelope_for_intent_*` finds a live envelope. Pinned `test_e1`/`test_e2`.
+
+**The mechanism's invariant** (characterization agent's own words after reading the code): *an
+envelope, from the atomic instant it first enters ACTIVE, becomes the sole permitted writer of
+its backing intent's status — every other writer is fenced off — and it keeps that intent parked
+at APPROVED for as long as the envelope (or any child order it minted) could still be working the
+position, releasing it to EXPIRED in the same atomic unit as whichever write extinguishes the
+last such obligation.*
+
+#### C.1.2 Parity obligation
+
+**VERIFIED structural parity by shared-logic construction, with one UNVERIFIED residual
+drift-risk class.** Every new predicate is defined once in `core.py`, imported unmodified by both
+stores; all 23 new test functions (46 cases) run against both engines via the repo's `any_store`
+fixture — isolated re-run by this investigator: `pytest -q tests/test_wo0036_r2_lifecycle_link.py`
+→ **46/46 passed**.
+
+**The gap, precisely:** this attempt does not extend the repo's own *stronger* parity idiom
+(`tests/test_wo0007a_stage4_dual_store_parity.py` — one script driving both `InMemoryStateStore`
+and `SqliteStateStore` in the *same* test, cross-diffing `get_execution_events()` streams for
+identical event-type/dedupe-key sequence) to the R2 surface. The new suite's style is "same
+assertions, run twice, once per store" (parallel-assertion parity) — proves each store
+individually satisfies the outcome contract, but does not prove the two stores emit the *same
+event order* for the *same script*. Named, unverified (not reproduced-failing) drift risks:
+`_live_envelope_exit_*`'s Python linear-scan vs. SQL `ORDER BY sequence DESC LIMIT 1`, and
+`_envelope_has_live_child_*`'s equivalent Python-loop-vs-SQL-JOIN pair — both intend the same
+"newest/any live child" semantics with no direct cross-diff test proving they agree.
+
+**Projection-vs-stored reads:** no startup re-projection path exists to assess — the intent's
+`status` column is the stored truth read directly; there is no separate projector to drift from
+the write path. This narrows (but does not eliminate) the parity risk surface.
+
+#### C.1.3 No-second-stored-truth
+
+**VERIFIED — no new model field, no new DB column.** `git diff --stat ... -- app/models.py` is
+empty; no `ALTER TABLE`/`CREATE TABLE`/`ADD COLUMN` anywhere in the sqlite diff. The only "new
+fields" anywhere are function parameters (`envelope_child`, `spared_sell_intents`, `reason`) —
+none persisted.
+
+**Independent judgment:** the mechanism reuses the intent's *pre-existing* `status` field and
+transition machinery — it does not invent a new derived-truth channel. What's new is *who* may
+drive a write into that field and *when*. This is legitimate structural closure, not a second
+source of truth, because the **exclusive-driver guard** makes the write path a genuine
+single-writer while an envelope is live: `transition_sell_intent` and
+`create_order_for_sell_intent` both refuse to touch the intent while a live envelope owns it, so
+no window exists where two independent code paths could race to write conflicting status. The
+EXPIRED write is delegated ownership of an existing field, sequenced atomically with the event
+that justifies it.
+
+#### C.1.4 Governance + migration completeness
+
+**ADR-010 §8 — VERIFIED, complete.** New section (`docs/adr/ADR-010-execution-envelope.md:217-289`),
+five numbered ownership-semantics clauses + a "why not Option 1" rationale + a pin-list. The
+ADR's own Status block discloses §8 is "queued for independent review" (self-consistent with the
+REV-0028 packet's actual incomplete state, below) — not overclaimed.
+
+**INV-090 — VERIFIED, new, complete.** `docs/INVARIANTS.md:771-800`, five-clause statement
+matching the code exactly, citing AUDIT-0001/WO-0036 R2. **INV-087 amended in place**
+(`docs/INVARIANTS.md:698-728`) to extend the per-symbol clash from ACTIVE-only to `LIVE`,
+explicitly demoted to "defense-in-depth backstop behind the link."
+
+**Ledger — VERIFIED, found and quoted.** `work/ledger.jsonl`, `id: "WO-0036"`, **`status:
+"REVIEW"`, `disposition: []`** (still open, not closed) — self-consistent with REV-0028's
+incomplete state. Prose confirms "21 pins" is stale bookkeeping (the fresh-eyes pass added 2 more
+functions after that line was written; current tip has 23 functions/46 cases, confirmed by direct
+count) — a minor, cosmetic drift, not a functional gap.
+
+**REV-0028 — VERIFIED, genuinely incomplete.** `work/review/REV-0028/` contains only
+`request.md` (`status: AWAITING_REVIEW`); no `result.md`/`disposition.md`. Well-formed as a
+request, but **independent review has not occurred** — per CLAUDE.md's own rule this WO cannot be
+considered gate-cleared yet. Zero stale `REV-0024` references anywhere on the branch.
+
+**Pre-R2 data migration — VERIFIED, and the single most consequential finding in this
+section.** This attempt does **not** migrate, backfill, or re-project pre-existing orphaned data
+(no backfill machinery anywhere in the diff — confirmed by search and by this investigator's own
+independent re-check that `app/monitoring.py` has zero diff from base). The characterization
+agent built and ran a direct repro (both stores) simulating a row already sitting in the
+pre-fix-incoherent shape (intent EXPIRED, envelope still ACTIVE — exactly AUDIT-0001's P0 shape)
+when this code starts running, via direct internal-state mutation (the only way to construct it
+now, since the new guards refuse to create it through their own API going forward):
+
+```
+SIMULATED PRE-EXISTING ORPHAN: intent.status=expired, envelope.status=active
+Q2 fresh intent while orphan envelope ACTIVE: created=True, intent2.status=pending
+Q3 SECOND envelope activation: REFUSED -- EnvelopeTransitionError (INV-087 holds)
+Q4 legacy dispatch for intent2: SUCCEEDED -- a REAL second order was minted for AAPL
+   while the orphaned envelope still independently owns the same symbol -- DOUBLE EXPOSURE
+```
+
+Critically, this was **not** left as a legacy-API edge case: the agent traced the actual
+production caller (`app/monitoring.py`'s `_run_protection` → `_open_protective_exit` →
+`store.open_protection_exit`, the call the always-on monitoring loop's protection tick makes
+*every cycle* for every breaching position) and reproduced the identical double-exposure through
+that exact path, in both stores. This investigator independently re-confirmed the structural
+premise: `app/monitoring.py` and `open_protection_exit` are both untouched by this diff (zero
+lines changed), and `open_protection_exit`'s dedup gate (`sell_intent_is_active`-keyed) was not
+modified by R2 either — so the logical mechanism behind the reported gap is sound, not merely
+asserted.
+
+**Root cause:** the dedup gate both `create_sell_intent` and `open_protection_exit` use is, and
+remains, purely `sell_intent_is_active`-keyed. For *new* activity the fix is airtight (an intent
+backed by a live envelope can never reach EXPIRED, so the gate can't be fooled). For a row
+*already* `EXPIRED`+live-envelope from before this fix deploys, the gate sees "no active intent,"
+lets a fresh intent through, and — because that fresh intent has no envelope of its own — the
+exclusive-driver guard (keyed per-intent-id, not per-symbol) doesn't catch the collision either.
+INV-087 correctly blocks a second *envelope* activation (defense-in-depth holds), but the
+legacy/protection dispatch path bypasses envelope activation entirely and is unguarded against a
+symbol-level collision.
+
+**Verdict:** Claude R2 only affects NEW activity going forward. A pre-existing orphaned row is a
+**live, reachable double-exposure trigger** the moment the ordinary, expected event of a
+protection-floor breach recurs on that symbol — via the routine automated monitoring tick, not an
+exotic operator action. This is a material asymmetry to weigh explicitly against Sol's reported
+startup re-projection in §F, and — if this investigation's read holds — a **required
+pre-cutover backfill/reconciliation step** regardless of which mechanism the consolidation
+chooses.
+
+#### C.1.5 Native gate
+
+Toolchain: shared venv, Python 3.12.3/pytest 9.1.1/ruff 0.15.20/mypy 2.2.0/import-linter 2.13;
+dependency diff vs. base empty (safe to reuse without reinstalling).
+
+```
+$ ruff check .                    -> All checks passed!
+$ ruff format --check .           -> 230 files already formatted
+$ mypy app/                       -> Success: no issues found in 64 source files
+$ lint-imports                    -> Contracts: 6 kept, 0 broken.
+$ pytest -q --cov=app --cov-branch   (11:19:26-11:26:03 UTC, 2026-07-16)
+   2750 passed, 5 skipped, 1 xfailed, 0 failed, 0 errors
+   TOTAL coverage 94.92%, floor 93% -- cleared
+$ pytest -q tests/test_wo0036_r2_lifecycle_link.py  -> 46/46 passed
+```
+
+**Tape-clock flake class, specifically investigated.** `a6ab844` fixed a *sibling* instance
+(comparison-form: `assert expires_at > utcnow()` at check-time, rather than a fixture stamping
+wall-clock `activated_at`) of the same delayed-fuse class the earlier `bedf7e4` fresh-eyes pass
+had already fixed via a shared `activate_envelope_at` helper (injects `now=` into activation
+transitions) across three test files. A repo-wide sweep for the exact assertion shape and for
+bare `utcnow()`/`datetime.now()`/`date.today()` in every file this branch touched returned **zero
+remaining instances**; the new R2 suite itself is fully injected-clock throughout. Both full-suite
+runs above executed at 11:08–11:27 UTC 2026-07-16 — *after* the charter's documented red timestamp
+(09:41 UTC, same day) — and came back clean. **Verified empirically at a time that would expose
+the flake, not merely by code inspection.**
+
+#### C.1.6 Test corpus inventory
+
+"One link suite (589 ln)" — **VERIFIED exactly**. "Re-fixtured ~10 files" — **correctable to
+precision**: 9 files materially re-fixture to real backing intents or injected-clock activation
+(matching the WO's own "~9 files" close-out claim); 5 more carry only trivial (2-15 line)
+mechanical updates. New suite structure: A1-A6 activation validate+link, B1-B3 session-close
+spare, C1-C8 terminal release (incl. supersession-keeps-intent and the two masked-predecessor
+pins), D1-D3 flatten deferral, E1-E2 exclusive-driver refusals, F1 FROZEN-counts-as-live. "21
+pins" in the ledger is stale bookkeeping (current tip: 23 functions / 46 cases, confirmed by
+direct count both by the characterization agent and this investigator's own isolated re-run).
+`tests/store_helpers.py` gained `activate_envelope_at` (the F-3 fix vehicle) and
+`backing_intent_id` (the migration vehicle — mints a real `SellIntent` for envelope-draft
+fixtures).
+
+**Evidentiary status:** mechanism, parity-by-construction, no-second-stored-truth, ADR/INV/ledger/
+REV-0028 content, and the native gate are all VERIFIED by direct file reading and pasted command
+output (both by the dispatched characterization agent and, for the highest-stakes claims,
+independently re-checked by this investigator). The cross-store event-sequence drift risk is
+explicitly UNVERIFIED (absence of a test, not a proven divergence). The pre-R2 migration gap and
+its double-exposure consequence are VERIFIED by empirical repro against both stores and the real
+production call path, with this investigator's own independent structural corroboration — the
+highest-severity, most actionable finding in this section.
+
+### §C.2 Sol R2 — Mechanism & Obligations
+
+*(Pending — characterization in progress.)*
+
+---
+
+*(§D Performance, §E Cross-Verification, §F Mechanism Decision, §G Deconfliction, §H
+Consolidation Program, §I Human Decisions, §J full Evidence Appendix: in progress.)*
