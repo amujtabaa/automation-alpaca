@@ -1127,23 +1127,110 @@ sits APPROVED waiting for a later check to catch it), and one exception-message 
 mismatch from reusing one general rail instead of two overlapping ones (`test_f1`, also arguably
 a simplification) accounted for all 18. **Zero of the 18 argue for a defect in Sol's mechanism.**
 
-### E.1 Sol's hostile/assurance/parity-adversarial suites ported onto Claude's code — *pending*
+### E.1 Sol's hostile/assurance/parity-adversarial suites ported onto Claude's code — *in progress*
 
-### E.3 The four REV-0028 items probed against Sol's design — *pending*
+Interim status (not final — no finding below is treated as established until the complete,
+verified report lands with file:line citations, per this campaign's evidence discipline):
+`test_wo0036_r2_parity_adversarial.py` and `test_wo0036_r2_assurance.py` are done (3/14 pass +
+11 root-caused failures on the parity-adversarial file, including one **candidate** FAIL-BUG —
+a possible double-book exposure window when a second envelope activates for a symbol while an
+old BREACHED envelope's child order is still live at the venue, since Claude's per-symbol clash
+guard is scoped to `LIVE_ENVELOPE_STATUSES={ACTIVE,FROZEN}` and BREACHED is outside that set; and
+one candidate memory-vs-sqlite parity divergence in active-intent selection order; 23/33 pass +
+10 correctly-classified UNADAPTABLE on the assurance file). The large hostile-closure suite
+(3,414 lines, 60 functions, 182 parametrized cases) is still being triaged. **This will be added
+to the report, with full evidence, once it completes** — flagged here only so the pending item is
+visible, not silently dropped, per the charter's own discipline about not hiding an in-progress
+gap.
 
-### Cross-pollination targets identified so far (from E.2; to be extended once E.1/E.3 land)
+### E.3 The four REV-0028 items probed against Sol's design — **VERIFIED, complete**
 
-1. **Sol's `test_c7`/`test_c8`-equivalent structural guarantee should be the trunk's model** — its
-   full-child-scan projection is demonstrably immune to the masked-predecessor class by
-   construction, not by a pin catching one instance of it.
-2. **The `_envelope_action_context_*` landmine (E.2) should be resolved explicitly in the
-   consolidated code**, regardless of which mechanism wins, if any construct with "latest wins"
-   semantics survives the merge.
-3. **Audit-payload vocabulary should be standardized** (`envelope_delegation_linked` vs
-   `envelope_activation`-style naming) as part of the merged R2 test file / event taxonomy — a
-   Part-B mechanical cleanup, not a design decision.
-4. **Consider adding Sol's `spared_sell_intents`-style observability counter** to whichever
-   mechanism is chosen, independent of the mechanism decision itself.
+Method: code-reading plus reasoning against `work/review/REV-0028/request.md` (read fresh, quoted
+verbatim below per item), not a pytest run, matching the charter's own framing for this probe.
+
+**E.3.1 — "Option-A+ divergence" (APPROVED-while-owned vs. the WO's original ORDERED
+recommendation) — Sol closes it, independently and convergently.** Sol's mechanism never writes
+`SellIntentStatus.ORDERED` for an envelope-owned intent either; tracing the actual choke point
+(`_apply_envelope_transition_unlocked` → `_reconcile_envelope_owner_unlocked`,
+`app/store/memory.py:1354-1376,1209-1249`, `sqlite.py:2352-2366,2214`) shows Sol performs the
+**same eager PENDING→APPROVED write at the same choke point** Claude's `_link_backing_intent_*`
+does — plus an `EXPIRED→APPROVED` self-heal Claude's mechanism has no equivalent of, plus the
+read-time projection fallback, plus the startup sweep. **Two independently-written implementations
+converging on the identical answer to "what should the field say" is itself strong evidence the
+ADR-010 §8 rationale is sound** — the strongest form this probe could have produced.
+
+**E.3.2 — "R6 per-tick re-drive" — a genuine silent gap, novel to Sol's `monitoring.py`
+rework, not present in Claude or in base.** Claude's R2 attempt makes zero changes to
+`app/monitoring.py` (confirmed, §C.1), so this item is trivially satisfied on Claude's side —
+identical to pre-existing base behavior, which has no fail-closed early return. Sol's rework of
+`_cancel_envelope_working_order` (`app/monitoring.py:624-671`) added a guard
+(`missing_envelope_ids or missing_order_ids or invalid_order_ids`, line ~641-644) that returns
+**silently — no log, no alert, no recovery-ledger entry** — contrasted directly against a nearby
+`except` branch in the same function that does log a warning. A malformed/legacy-corrupt envelope
+lineage (plausible, not contrived — exactly the class of data Sol's own reconciliation exists to
+repair) causes this cancel-convergence arm to permanently no-op for that lineage, silently, every
+tick — precisely the "silently stranded" failure R6's original wording was written to prevent.
+Even Sol's own 3,414-line hostile-closure suite has no pin for this exact branch (checked directly
+— its three calls to this function all cover the positive path). **Cross-pollination target**:
+graft Claude's simpler unconditional-retry R6 arm, or add a warning/alert to Sol's fail-closed
+branches to match the logging discipline already present a few lines away in the same function.
+
+**E.3.3 — "monitoring newest-wins convergence" — Sol closes it, more strongly than Claude's own
+accepted position.** Claude's REV-0028 packet explicitly *discloses and accepts* a known one-tick
+imprecision in its monitoring layer, on the grounds that the store-side rail (which scans every
+child) is what actually prevents exposure. Sol's mechanism doesn't need to make that argument: its
+`EnvelopeObligationProjection.venue_orders` **structurally excludes CREATED orders by
+definition**, so a staged CREATED reprice-replacement can never enter the same candidate set as a
+genuinely-live predecessor in the first place — no newest-wins tiebreak exists to get wrong. The
+function that actually drives convergence (`_cancel_envelope_working_order`) iterates the *entire*
+`venue_orders` set, not a single newest pick. **Cross-pollination target**: this reasoning (exclude
+CREATED from "venue order" at the projection/definition level, act on the full set rather than a
+single pick) is worth citing in the consolidated ADR text regardless of which mechanism wins
+structurally.
+
+**E.3.4 — "HALTED emergency-reduce deferral" — both close it, via different routes; one minor
+Sol-side audit-trail regression.** Claude adds dedicated envelope-aware parameters directly to
+`plan_flatten_position` with a distinct deferral reason string. Sol's planner is **completely
+unmodified** by R2 — instead, `flatten_position`'s orchestration resolves the envelope obligation
+*before* calling the unmodified planner, substituting the envelope's owner/order onto the
+pre-existing single-order deferral branch (safe because envelope owners are structurally
+guaranteed `reason=PROTECTION_FLOOR`, checked and confirmed reachable-safe). Same safety outcome,
+different structural route; Sol also fails closed harder on true ambiguity (blocks outright if
+more than one venue order could be live, where Claude's equivalent path would pick the newest).
+The one real regression: Sol reuses the same `"deferred_to_live_protection"` reason string for
+both plain-protection and envelope-backed deferrals, losing Claude's audit-trail distinction
+between the two cases — a small, cheap fix, not a safety gap. **Cross-pollination target**: Sol
+should adopt a distinct reason label for the envelope case; Claude's flatten path could adopt
+Sol's harder block-on-ambiguity stance for its own (currently theoretical) multi-live-child case.
+
+| Item | Verdict |
+|---|---|
+| Option-A+ divergence | Closes — independently convergent (strongest validation this probe could produce) |
+| R6 per-tick re-drive | **Silent gap, novel to Sol's rework** — needs a log/alert or should adopt Claude's simpler arm |
+| Monitoring newest-wins convergence | Closes — more strongly than Claude's own accepted position |
+| HALTED emergency-reduce deferral | Closes — different route, one minor legibility regression |
+
+### Cross-pollination targets (E.2 + E.3; E.1's will be added when it lands)
+
+1. **Sol's full-child-scan projection is demonstrably immune to the masked-predecessor class by
+   construction** (E.2) — should be the trunk's structural model regardless of which mechanism's
+   surface API wins.
+2. **The `_envelope_action_context_*` landmine (E.2)** — a "latest wins" construct that would be
+   maskable in isolation but is currently unreachable — should be removed or pinned against
+   reintroduction in the consolidated code.
+3. **Sol's R6 silent-gap (E.3.2) needs a fix** — either adopt Claude's simpler unconditional-retry
+   arm, or add logging/alerting to Sol's fail-closed branches. This is the one concrete
+   confirmed-defect-class finding from cross-verification so far (pending E.1's completion, which
+   may add more).
+4. **Sol's CREATED-excluded-from-venue_orders framing (E.3.3) and its full-set (not single-pick)
+   cancellation approach** are worth adopting in the consolidated ADR text/mechanism regardless of
+   which surface wins.
+5. **Audit-payload/reason-string vocabulary should be standardized** across both the
+   masked-predecessor case (E.2) and the emergency-reduce-deferral case (E.3.4) as part of the
+   merged R2 test file / event taxonomy — mechanical Part-B cleanup, not a design decision.
+6. **Consider Sol's `spared_sell_intents`-style observability counter** (E.2) and Sol's
+   harder block-on-ambiguity stance for flatten with multiple live children (E.3.4), independent
+   of the mechanism decision itself.
 
 ---
 
