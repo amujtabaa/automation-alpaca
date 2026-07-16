@@ -50,10 +50,17 @@ async def _submitted_buy(store, *, symbol="AAPL", qty=100):
 async def test_synthetic_fill_position_replays_from_the_event_log(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [BrokerOrderReport(
-            adapter.broker_id_for(order.id), order.id, "AAPL", OrderSide.BUY,
-            OrderStatus.PARTIALLY_FILLED, 40, fills=[BrokerFill("ex-1", 40, 2.0, utcnow())],
-        )]
+        [
+            BrokerOrderReport(
+                adapter.broker_id_for(order.id),
+                order.id,
+                "AAPL",
+                OrderSide.BUY,
+                OrderStatus.PARTIALLY_FILLED,
+                40,
+                fills=[BrokerFill("ex-1", 40, 2.0, utcnow())],
+            )
+        ]
     )
     await _run_reconciliation(any_store, adapter, _NO_RECENT)
 
@@ -66,7 +73,9 @@ async def test_synthetic_fill_position_replays_from_the_event_log(any_store):
     assert live.quantity == replay.positions["AAPL"].quantity
 
 
-async def test_not_found_reject_first_durable_write_is_a_broker_authoritative_event(any_store):
+async def test_not_found_reject_first_durable_write_is_a_broker_authoritative_event(
+    any_store,
+):
     # A locally-SUBMITTED order the reconcile adapter never minted (submitted via a
     # throwaway) is confirmed-absent → REJECTED, whose durable truth is a
     # BROKER_AUTHORITATIVE REJECTED ExecutionEvent (the order row is a co-written
@@ -77,17 +86,23 @@ async def test_not_found_reject_first_durable_write_is_a_broker_authoritative_ev
     )
     await any_store.transition_candidate(cand.id, CandidateStatus.APPROVED)
     order = await any_store.create_order_for_candidate(cand.id)
-    await _submit_pending_orders(any_store, MockBrokerAdapter())  # throwaway owns the id
+    await _submit_pending_orders(
+        any_store, MockBrokerAdapter()
+    )  # throwaway owns the id
 
     adapter = MockBrokerAdapter()  # fresh: doesn't know the order → confirmed absent
     await _run_reconciliation(
-        any_store, adapter,
-        Settings(reconcile_recent_threshold_ms=0, reconcile_open_check_missing_retries=1),
+        any_store,
+        adapter,
+        Settings(
+            reconcile_recent_threshold_ms=0, reconcile_open_check_missing_retries=1
+        ),
     )
 
     assert (await any_store.get_order(order.id)).status is OrderStatus.REJECTED
     rejects = [
-        e for e in await any_store.get_execution_events()
+        e
+        for e in await any_store.get_execution_events()
         if e.order_id == order.id and e.event_type is ExecutionEventType.REJECTED
     ]
     assert len(rejects) == 1

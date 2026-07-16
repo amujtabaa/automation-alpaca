@@ -60,7 +60,9 @@ def _order_view(order, operational_status, reason=None, cancelable=True, stale=F
     }
 
 
-def _recovery_view(operational_status="broker_submission_failed", reason=None, **record):
+def _recovery_view(
+    operational_status="broker_submission_failed", reason=None, **record
+):
     base = {
         "id": "r1",
         "local_order_id": "o9",
@@ -81,6 +83,7 @@ def _operator(orders=None, recoveries=None):
 # Helper: wire up mocks and navigate to Position Monitor
 # --------------------------------------------------------------------------- #
 
+
 def _run(monkeypatch, positions, operator, recorder, protection=None) -> AppTest:
     """Patch api_client, boot AppTest, navigate to Position Monitor, return it.
 
@@ -92,15 +95,19 @@ def _run(monkeypatch, positions, operator, recorder, protection=None) -> AppTest
     monkeypatch.setattr(api_client, "list_positions", lambda: list(positions))
     monkeypatch.setattr(api_client, "list_operator_orders", lambda: operator)
 
-    prot = protection if protection is not None else {
-        "config": {
-            "enabled": True,
-            "stop_loss_pct": 0.08,
-            "limit_buffer_pct": 0.005,
-            "protection_active": True,
-        },
-        "positions": [],
-    }
+    prot = (
+        protection
+        if protection is not None
+        else {
+            "config": {
+                "enabled": True,
+                "stop_loss_pct": 0.08,
+                "limit_buffer_pct": 0.005,
+                "protection_active": True,
+            },
+            "positions": [],
+        }
+    )
     monkeypatch.setattr(api_client, "get_protection", lambda: prot)
 
     def fake_cancel(order_id: str) -> dict:
@@ -111,7 +118,10 @@ def _run(monkeypatch, positions, operator, recorder, protection=None) -> AppTest
 
     def fake_flatten(symbol: str) -> dict:
         recorder.append(("flatten", symbol))
-        return {"intent": {"id": "si1", "reason": "manual_flatten"}, "order": {"id": "o9"}}
+        return {
+            "intent": {"id": "si1", "reason": "manual_flatten"},
+            "order": {"id": "o9"},
+        }
 
     monkeypatch.setattr(api_client, "flatten_position", fake_flatten)
 
@@ -122,8 +132,7 @@ def _run(monkeypatch, positions, operator, recorder, protection=None) -> AppTest
 
 def _screen_text(at) -> str:
     return " ".join(
-        getattr(el, "value", "") or ""
-        for el in (list(at.markdown) + list(at.caption))
+        getattr(el, "value", "") or "" for el in (list(at.markdown) + list(at.caption))
     )
 
 
@@ -135,6 +144,7 @@ def _toast_text(at) -> str:
 # Tests
 # --------------------------------------------------------------------------- #
 
+
 def test_empty_positions_and_orders_shows_info(monkeypatch):
     at = _run(monkeypatch, positions=[], operator=_operator(), recorder=[])
     assert not at.exception
@@ -143,7 +153,9 @@ def test_empty_positions_and_orders_shows_info(monkeypatch):
 
 
 def test_position_present_no_fabricated_pl(monkeypatch):
-    at = _run(monkeypatch, positions=[SAMPLE_POSITION], operator=_operator(), recorder=[])
+    at = _run(
+        monkeypatch, positions=[SAMPLE_POSITION], operator=_operator(), recorder=[]
+    )
     assert not at.exception
     assert "Phase 5" in _screen_text(at)
 
@@ -357,7 +369,14 @@ def test_held_created_order_is_shown_with_reason_and_cancel(monkeypatch):
     the backend's classified label + reason, and offers a cancel (never-submitted
     orders cancel locally). The cockpit renders the label; it does not derive it."""
 
-    held = _order("o2", "MSFT", status="created", broker_order_id=None, quantity=5, limit_price=2.0)
+    held = _order(
+        "o2",
+        "MSFT",
+        status="created",
+        broker_order_id=None,
+        quantity=5,
+        limit_price=2.0,
+    )
     at = _run(
         monkeypatch,
         positions=[],

@@ -62,7 +62,9 @@ async def test_direct_store_kill_switch_accepts_explicit_actor():
     store = InMemoryStateStore()
     await store.initialize()
     await store.set_kill_switch(True, actor="alice")
-    assert (await _latest_payload(store, EventType.KILL_SWITCH_ENGAGED))["actor"] == "alice"
+    assert (await _latest_payload(store, EventType.KILL_SWITCH_ENGAGED))[
+        "actor"
+    ] == "alice"
     await store.set_buys_paused(True, actor="bob")
     assert (await _latest_payload(store, EventType.BUYS_PAUSED))["actor"] == "bob"
 
@@ -86,7 +88,9 @@ async def test_kill_switch_route_persists_x_actor_header():
             "/api/controls/kill-switch", headers={"X-Actor": "carol"}
         )
     assert resp.status_code == 200
-    assert (await _latest_payload(store, EventType.KILL_SWITCH_ENGAGED))["actor"] == "carol"
+    assert (await _latest_payload(store, EventType.KILL_SWITCH_ENGAGED))[
+        "actor"
+    ] == "carol"
 
 
 async def test_pause_and_resume_routes_persist_x_actor():

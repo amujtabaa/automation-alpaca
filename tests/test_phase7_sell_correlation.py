@@ -62,7 +62,9 @@ async def test_full_protective_exit_lifecycle_shares_correlation_id(
 
     # created -> approved -> ordered.
     intent = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)

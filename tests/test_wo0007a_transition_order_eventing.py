@@ -135,7 +135,9 @@ async def test_transition_to_filled_from_submitted_emits_event(any_store):
 
 async def test_transition_to_filled_from_partially_filled_emits_event(any_store):
     order = await _submitted_order(any_store, quantity=10)
-    await any_store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4)
+    await any_store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=4
+    )
 
     updated = await any_store.transition_order(
         order.id, OrderStatus.FILLED, filled_quantity=10
@@ -215,11 +217,17 @@ async def test_repeated_partial_fills_produce_distinct_dedupe_keyed_events(any_s
     order = await _submitted_order(any_store, quantity=20)
 
     # First entry into PARTIALLY_FILLED (status-changed branch).
-    await any_store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=5)
+    await any_store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=5
+    )
     # Two further partial fills — the same-status self-loop, each strictly
     # increasing filled_quantity (monotonic, bound-checked upstream).
-    await any_store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=9)
-    await any_store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=14)
+    await any_store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=9
+    )
+    await any_store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=14
+    )
 
     events = await any_store.get_execution_events()
     partial = _events_of(events, ExecutionEventType.PARTIALLY_FILLED)
@@ -244,7 +252,9 @@ async def test_repeated_partial_fills_produce_distinct_dedupe_keyed_events(any_s
 # TQ order, the helper's assertion must fire loudly rather than silently
 # constructing a colliding shared-format key.
 # --------------------------------------------------------------------------- #
-async def test_routine_submitted_on_timeout_quarantine_order_raises_not_silently_drops(any_store):
+async def test_routine_submitted_on_timeout_quarantine_order_raises_not_silently_drops(
+    any_store,
+):
     order = await _submitting_order(any_store)
     await any_store.quarantine_timed_out_order(order.id)
 
@@ -285,9 +295,15 @@ async def test_dual_store_transition_order_eventing_parity(tmp_path):
     try:
         for store in (memory, sqlite):
             order = await _submitted_order(store, quantity=20)
-            await store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=5)
-            await store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=12)
-            await store.transition_order(order.id, OrderStatus.FILLED, filled_quantity=20)
+            await store.transition_order(
+                order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=5
+            )
+            await store.transition_order(
+                order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=12
+            )
+            await store.transition_order(
+                order.id, OrderStatus.FILLED, filled_quantity=20
+            )
 
         for store, label in ((memory, "memory"), (sqlite, "sqlite")):
             events = await store.get_execution_events()

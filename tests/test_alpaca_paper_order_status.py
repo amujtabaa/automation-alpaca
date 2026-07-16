@@ -32,7 +32,9 @@ def _adapter() -> AlpacaPaperAdapter:
 
 
 def _alpaca_order(**kw):
-    defaults = dict(status="new", filled_qty="0", filled_avg_price=None, limit_price=2.0)
+    defaults = dict(
+        status="new", filled_qty="0", filled_avg_price=None, limit_price=2.0
+    )
     defaults.update(kw)
     return SimpleNamespace(**defaults)
 
@@ -73,17 +75,23 @@ class TestGetOrderStatus:
     async def test_includes_delta_fill_via_get_fills(self):
         adapter = _adapter()
         adapter._client.get_order_by_id = Mock(
-            return_value=_alpaca_order(status="filled", filled_qty="100", filled_avg_price=2.0)
+            return_value=_alpaca_order(
+                status="filled", filled_qty="100", filled_avg_price=2.0
+            )
         )
 
         update = await adapter.get_order_status("b1", recorded_quantity=40)
 
-        assert [(f.source_fill_id, f.quantity) for f in update.fills] == [("b1:100", 60)]
+        assert [(f.source_fill_id, f.quantity) for f in update.fills] == [
+            ("b1:100", 60)
+        ]
 
     async def test_already_recorded_quantity_yields_no_new_fills(self):
         adapter = _adapter()
         adapter._client.get_order_by_id = Mock(
-            return_value=_alpaca_order(status="filled", filled_qty="100", filled_avg_price=2.0)
+            return_value=_alpaca_order(
+                status="filled", filled_qty="100", filled_avg_price=2.0
+            )
         )
 
         update = await adapter.get_order_status("b1", recorded_quantity=100)

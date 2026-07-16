@@ -37,8 +37,7 @@ async def test_duplicate_source_fill_id_is_ignored(store):
 
     # Exactly one duplicate-ignored audit event.
     dup_events = [
-        e for e in await store.list_events()
-        if e.event_type == "fill_duplicate_ignored"
+        e for e in await store.list_events() if e.event_type == "fill_duplicate_ignored"
     ]
     assert len(dup_events) == 1
     assert dup_events[0].payload.get("source_fill_id") == "exec-1"
@@ -49,8 +48,12 @@ async def test_distinct_source_fill_ids_both_append(store):
     # Order is sized for both fills (cumulative 200) so the distinct-id check is
     # what's exercised, not the cumulative-quantity guard (D-010).
     order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 200)
-    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="a")
-    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="b")
+    await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="a"
+    )
+    await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="b"
+    )
     assert len(await store.list_fills(symbol="AAPL")) == 2
 
 

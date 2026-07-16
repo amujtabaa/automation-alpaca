@@ -92,7 +92,9 @@ async def strategy_loop(
     while True:
         try:
             await asyncio.sleep(settings.strategy_decision_cadence_seconds)
-            await run_strategy_tick(store, market_data, settings, stale_state=stale_state)
+            await run_strategy_tick(
+                store, market_data, settings, stale_state=stale_state
+            )
         except asyncio.CancelledError:
             _log.info("strategy loop cancelled; shutting down")
             raise
@@ -206,7 +208,9 @@ async def _open_candidate_symbols(store: StateStore, session_id: str) -> set[str
 
     open_symbols: set[str] = set()
     for status in _OPEN_CANDIDATE_STATUSES:
-        for candidate in await store.list_candidates(session_id=session_id, status=status):
+        for candidate in await store.list_candidates(
+            session_id=session_id, status=status
+        ):
             open_symbols.add(candidate.symbol)
     return open_symbols
 
@@ -250,7 +254,9 @@ async def _surface_market_data_staleness(
         return
 
     if stale_state is None:
-        previously_stale: dict[str, bool] = await _last_known_stale_state(store, symbols)
+        previously_stale: dict[str, bool] = await _last_known_stale_state(
+            store, symbols
+        )
     else:
         previously_stale = stale_state
         # Seed any symbol the in-memory cache hasn't observed yet from the
@@ -312,7 +318,10 @@ async def _last_known_stale_state(
 
     state: dict[str, bool] = {}
     for event in await store.list_events():
-        if event.event_type not in _STALENESS_EVENT_TYPES or event.symbol not in symbols:
+        if (
+            event.event_type not in _STALENESS_EVENT_TYPES
+            or event.symbol not in symbols
+        ):
             continue
         state[event.symbol] = event.event_type == EventType.MARKET_DATA_STALE.value
     return state

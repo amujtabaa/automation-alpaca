@@ -38,7 +38,9 @@ async def _hold(store, symbol: str, qty: int, *, avg: float = 10.0) -> None:
     buy = await store.create_order_for_test(
         cand.id, symbol, OrderSide.BUY, qty, session_id=session.id
     )
-    await store.append_fill(buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id)
+    await store.append_fill(
+        buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id
+    )
     await store.transition_order(buy.id, OrderStatus.CANCELED)
 
 
@@ -241,7 +243,7 @@ async def test_ambiguous_timeout_quarantine_blocks_emergency_reduce(any_store):
         cand.id, "AAPL", OrderSide.BUY, 10, session_id=session.id
     )
     claim = await any_store.claim_order_for_submission(order.id)  # -> SUBMITTING
-    await any_store.quarantine_timed_out_order(claim.order.id)   # -> TIMEOUT_QUARANTINE
+    await any_store.quarantine_timed_out_order(claim.order.id)  # -> TIMEOUT_QUARANTINE
 
     await any_store.set_kill_switch(True)
     with pytest.raises(EmergencyReduceBlockedError):

@@ -94,7 +94,9 @@ class TestExistingExposureInvariants:
         """Only non-terminal orders count — swap every order to FILLED
         (terminal) and exposure must drop to exactly the position total."""
 
-        terminal_orders = [o.model_copy(update={"status": OrderStatus.FILLED}) for o in open_orders]
+        terminal_orders = [
+            o.model_copy(update={"status": OrderStatus.FILLED}) for o in open_orders
+        ]
         position_only = sum(p.cost_basis for p in positions)
         assert existing_exposure(positions, terminal_orders) == position_only
 
@@ -191,7 +193,12 @@ class TestRiskLimitReasonInvariants:
             min_value=0.01, max_value=100_000_000, allow_nan=False, allow_infinity=False
         ),
     )
-    @example(symbol="AAPL", order_quantity=100, order_limit_price=5.0, max_notional_per_order=500.0)
+    @example(
+        symbol="AAPL",
+        order_quantity=100,
+        order_limit_price=5.0,
+        max_notional_per_order=500.0,
+    )
     @settings(max_examples=300)
     def test_max_notional_per_order_is_a_hard_iff_cap(
         self, symbol, order_quantity, order_limit_price, max_notional_per_order

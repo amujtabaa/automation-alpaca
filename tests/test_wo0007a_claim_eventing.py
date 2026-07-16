@@ -86,7 +86,9 @@ def test_helper_returns_none_for_a_status_it_does_not_instrument_yet():
     # returns None so the store can call this unconditionally.
     order = _created_order()
     order.status = OrderStatus.CREATED
-    assert execution_event_for_routine_transition(order, OrderStatus.CREATED, None) is None
+    assert (
+        execution_event_for_routine_transition(order, OrderStatus.CREATED, None) is None
+    )
 
 
 def test_helper_guard_rejects_shared_format_key_from_timeout_quarantine():
@@ -112,7 +114,9 @@ async def _created_buy_order(store):
     return sess, order
 
 
-async def test_claim_emits_exactly_one_submit_pending_event_at_occurrence_zero(any_store):
+async def test_claim_emits_exactly_one_submit_pending_event_at_occurrence_zero(
+    any_store,
+):
     _, order = await _created_buy_order(any_store)
     claim = await any_store.claim_order_for_submission(order.id)
     assert claim.outcome == "claimed"
@@ -209,12 +213,10 @@ async def test_dual_store_claim_release_reclaim_parity(tmp_path):
             for e in (*mem_events, *sql_events)
         )
         mem_shape = [
-            (e.event_type.value, e.source.value, e.authority.value)
-            for e in mem_events
+            (e.event_type.value, e.source.value, e.authority.value) for e in mem_events
         ]
         sql_shape = [
-            (e.event_type.value, e.source.value, e.authority.value)
-            for e in sql_events
+            (e.event_type.value, e.source.value, e.authority.value) for e in sql_events
         ]
         assert mem_shape == sql_shape
     finally:

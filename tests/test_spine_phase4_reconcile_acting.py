@@ -81,8 +81,11 @@ async def test_empty_broker_reports_surface_nothing(any_store):
 async def test_disabled_makes_no_report_calls(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [BrokerOrderReport("venueX", None, "TSLA", OrderSide.SELL,
-                           OrderStatus.SUBMITTED, 0)]
+        [
+            BrokerOrderReport(
+                "venueX", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            )
+        ]
     )
     await run_monitoring_tick(any_store, adapter, _off())
     assert adapter.open_order_report_queries == 0
@@ -96,11 +99,20 @@ async def test_disabled_makes_no_report_calls(any_store):
 async def test_external_order_surfaced_without_absorbing(any_store):
     order, adapter = await _submitted_buy(any_store, symbol="AAPL")
     managed = BrokerOrderReport(
-        adapter.broker_id_for(order.id), order.id, "AAPL",
-        OrderSide.BUY, OrderStatus.SUBMITTED, 0,
+        adapter.broker_id_for(order.id),
+        order.id,
+        "AAPL",
+        OrderSide.BUY,
+        OrderStatus.SUBMITTED,
+        0,
     )
     external = BrokerOrderReport(
-        "venue-unmanaged", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0,
+        "venue-unmanaged",
+        None,
+        "TSLA",
+        OrderSide.SELL,
+        OrderStatus.SUBMITTED,
+        0,
     )
     adapter.seed_open_orders([managed, external])
 
@@ -123,24 +135,37 @@ async def test_venue_order_matching_a_known_terminal_order_is_not_external(any_s
     # managed, not external — never surfaced.
     order, adapter = await _submitted_buy(any_store)
     adapter.make_fill(
-        order.id, status=OrderStatus.FILLED, filled_quantity=100,
+        order.id,
+        status=OrderStatus.FILLED,
+        filled_quantity=100,
         fills=[BrokerFill("e-1", 100, 2.0, utcnow())],
     )
-    await run_monitoring_tick(any_store, adapter, Settings())   # order → FILLED locally
+    await run_monitoring_tick(any_store, adapter, Settings())  # order → FILLED locally
     # The venue report STILL lists it (a broker id we own).
-    adapter.seed_open_orders([
-        BrokerOrderReport(adapter.broker_id_for(order.id), order.id, "AAPL",
-                          OrderSide.BUY, OrderStatus.SUBMITTED, 0)
-    ])
+    adapter.seed_open_orders(
+        [
+            BrokerOrderReport(
+                adapter.broker_id_for(order.id),
+                order.id,
+                "AAPL",
+                OrderSide.BUY,
+                OrderStatus.SUBMITTED,
+                0,
+            )
+        ]
+    )
     await run_monitoring_tick(any_store, adapter, Settings())
-    assert await _external_events(any_store) == []             # not flagged external
+    assert await _external_events(any_store) == []  # not flagged external
 
 
 async def test_external_order_deduped_by_broker_id_across_ticks(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [BrokerOrderReport("venue-A", None, "TSLA", OrderSide.SELL,
-                           OrderStatus.SUBMITTED, 0)]
+        [
+            BrokerOrderReport(
+                "venue-A", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            )
+        ]
     )
     for _ in range(3):
         await run_monitoring_tick(any_store, adapter, Settings())
@@ -149,14 +174,18 @@ async def test_external_order_deduped_by_broker_id_across_ticks(any_store):
     # A NEW external order surfaces its own record; the first is not re-logged.
     adapter.seed_open_orders(
         [
-            BrokerOrderReport("venue-A", None, "TSLA", OrderSide.SELL,
-                              OrderStatus.SUBMITTED, 0),
-            BrokerOrderReport("venue-B", None, "NVDA", OrderSide.SELL,
-                              OrderStatus.SUBMITTED, 0),
+            BrokerOrderReport(
+                "venue-A", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            ),
+            BrokerOrderReport(
+                "venue-B", None, "NVDA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            ),
         ]
     )
     await run_monitoring_tick(any_store, adapter, Settings())
-    ids = sorted(e.payload["broker_order_id"] for e in await _external_events(any_store))
+    ids = sorted(
+        e.payload["broker_order_id"] for e in await _external_events(any_store)
+    )
     assert ids == ["venue-A", "venue-B"]
 
 
@@ -166,7 +195,9 @@ async def test_external_order_deduped_by_broker_id_across_ticks(any_store):
 async def test_reconcile_does_not_change_legacy_fill_outcome(any_store):
     order, adapter = await _submitted_buy(any_store, qty=100, limit=2.0)
     adapter.make_fill(
-        order.id, status=OrderStatus.FILLED, filled_quantity=100,
+        order.id,
+        status=OrderStatus.FILLED,
+        filled_quantity=100,
         fills=[BrokerFill("exec-1", 100, 2.0, utcnow())],
     )
     # A matching mass report (the managed order is terminal after the poll → venue
@@ -188,7 +219,9 @@ async def test_reconcile_does_not_change_legacy_fill_outcome(any_store):
 async def test_report_failure_skips_reconcile_not_tick(any_store):
     order, adapter = await _submitted_buy(any_store, qty=100, limit=2.0)
     adapter.make_fill(
-        order.id, status=OrderStatus.FILLED, filled_quantity=100,
+        order.id,
+        status=OrderStatus.FILLED,
+        filled_quantity=100,
         fills=[BrokerFill("exec-1", 100, 2.0, utcnow())],
     )
     adapter.fail_next_open_orders(BrokerError("mass report down"))
@@ -201,8 +234,11 @@ async def test_report_failure_skips_reconcile_not_tick(any_store):
 async def test_position_report_failure_skips_reconcile(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [BrokerOrderReport("venue-X", None, "TSLA", OrderSide.SELL,
-                           OrderStatus.SUBMITTED, 0)]
+        [
+            BrokerOrderReport(
+                "venue-X", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            )
+        ]
     )
     adapter.fail_next_positions(BrokerError("positions down"))
     await run_monitoring_tick(any_store, adapter, Settings())
@@ -214,8 +250,11 @@ async def test_position_report_failure_skips_reconcile(any_store):
 async def test_run_reconciliation_returns_plan_for_observability(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [BrokerOrderReport("venue-Z", None, "TSLA", OrderSide.SELL,
-                           OrderStatus.SUBMITTED, 0)]
+        [
+            BrokerOrderReport(
+                "venue-Z", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            )
+        ]
     )
     plan = await _run_reconciliation(any_store, adapter, Settings())
     assert plan is not None

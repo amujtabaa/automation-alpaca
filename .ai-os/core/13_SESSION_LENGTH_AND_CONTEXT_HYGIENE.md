@@ -188,3 +188,11 @@ Solve it by:
 - distilling useful state
 - deleting low-value prompts
 - re-running verification
+
+## Incident carry-forward (PROC-0001 #1, accepted 2026-07-12)
+
+At every WO close-out: if the WO's `fable-done.md` contains an `## Incidents (visible)`
+section, copy its substance verbatim into the active state file's `toolchain-incidents`
+field (a permanent, never-pruned list) BEFORE merge. Rationale: the git-checkout wipe
+recurred 11 WOs apart because the lesson lived only in one closing file — incident
+knowledge must transfer structurally, not by memory.

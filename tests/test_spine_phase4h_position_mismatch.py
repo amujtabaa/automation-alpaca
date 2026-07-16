@@ -47,7 +47,9 @@ async def _held(store, adapter, *, symbol="AAPL", qty=100, price=2.0):
     order = await store.create_order_for_candidate(cand.id)
     await _submit_pending_orders(store, adapter)
     adapter.make_fill(
-        order.id, status=OrderStatus.FILLED, filled_quantity=qty,
+        order.id,
+        status=OrderStatus.FILLED,
+        filled_quantity=qty,
         fills=[BrokerFill("exec-hold", qty, price, utcnow())],
     )
     await run_monitoring_tick(store, adapter, Settings())  # legacy poll lands the fill
@@ -67,7 +69,9 @@ async def test_quantity_drift_surfaced_and_position_not_overwritten(any_store):
     # Broker says 150 — a quantity drift the local fill-derived 100 can't explain.
     adapter.seed_positions([BrokerPositionReport("AAPL", 150, 2.0)])
 
-    await run_monitoring_tick(any_store, adapter, Settings(), drive_reconcile_state=True)
+    await run_monitoring_tick(
+        any_store, adapter, Settings(), drive_reconcile_state=True
+    )
 
     events = await _mismatch_events(any_store)
     assert len(events) == 1
@@ -88,7 +92,9 @@ async def test_avg_price_drift_surfaced_as_avg_price_kind(any_store):
     # Same qty, but avg price far outside the 0.01% tolerance → avg_price kind.
     adapter.seed_positions([BrokerPositionReport("AAPL", 100, 2.50)])
 
-    await run_monitoring_tick(any_store, adapter, Settings(), drive_reconcile_state=True)
+    await run_monitoring_tick(
+        any_store, adapter, Settings(), drive_reconcile_state=True
+    )
 
     events = await _mismatch_events(any_store)
     assert len(events) == 1
@@ -115,7 +121,9 @@ async def test_matching_positions_surface_nothing(any_store):
     adapter = MockBrokerAdapter()
     await _held(any_store, adapter, symbol="AAPL", qty=100, price=2.0)
     adapter.seed_positions([BrokerPositionReport("AAPL", 100, 2.0)])  # agrees
-    await run_monitoring_tick(any_store, adapter, Settings(), drive_reconcile_state=True)
+    await run_monitoring_tick(
+        any_store, adapter, Settings(), drive_reconcile_state=True
+    )
     assert await _mismatch_events(any_store) == []
     assert await any_store.current_trading_state() is A  # parity → Active
 

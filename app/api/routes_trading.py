@@ -22,14 +22,19 @@ from app.facade.dtos import (
 )
 from app.facade.errors import FacadeError
 from app.facade.http_mapping import facade_error_to_http
+
 from app.facade.queries import ExecutionQueryFacade
+
+
 from app.models import (
+    ExecutionEnvelope,
     Event,
     Order,
     Position,
     SellIntent,
     SubmitRecoveryRecord,
 )
+
 
 router = APIRouter(prefix="/api", tags=["trading"])
 
@@ -164,7 +169,9 @@ async def list_sell_intents(
     ``session_id`` / ``symbol`` filters mirror the store method."""
 
     try:
-        return await query_facade.list_sell_intents(session_id=session_id, symbol=symbol)
+        return await query_facade.list_sell_intents(
+            session_id=session_id, symbol=symbol
+        )
     except FacadeError as exc:
         raise facade_error_to_http(exc) from exc
 
@@ -277,3 +284,50 @@ async def list_events(
     return await query_facade.list_events(
         limit=limit, event_type=event_type, correlation_id=correlation_id
     )
+
+
+@router.get("/envelopes", response_model=list[ExecutionEnvelope])
+async def list_envelopes(
+    query_facade: ExecutionQueryFacade = Depends(get_query_facade),
+) -> list[ExecutionEnvelope]:
+    """Read-only envelope visibility (ADR-010 / WO-0020): status, bounds,
+    remaining qty, budget, dispositions — everything the cockpit renders
+    derives from this payload; the UI holds no envelope state."""
+    return await query_facade.list_envelopes()
+
+
+@router.post("/envelopes/approve", response_model=ExecutionEnvelope)
+async def approve_envelope(
+    draft: ExecutionEnvelope,
+    command_facade: ExecutionCommandFacade = Depends(get_command_facade),
+    actor: str = Depends(get_actor),
+) -> ExecutionEnvelope:
+    """Approve + activate an execution envelope — THE human-gated approval
+    surface for autonomous sell-side execution (ADR-010 §1). The request
+    model is the envelope itself, so the mandatory approval-time choices
+    (expiry + stale-data dispositions, TTL) are structurally unvoidable:
+    a draft missing any of them fails validation (422) before any code runs.
+    409 while HALTED (kill switch blocks new standing order intent) or when
+    another envelope is ACTIVE for the intent."""
+    try:
+        return await command_facade.approve_envelope(draft=draft, actor=actor)
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
+
+
+@router.post("/envelopes/{envelope_id}/cancel", response_model=ExecutionEnvelope)
+async def cancel_envelope(
+    envelope_id: str,
+    command_facade: ExecutionCommandFacade = Depends(get_command_facade),
+    actor: str = Depends(get_actor),
+) -> ExecutionEnvelope:
+    """Withdraw a pre-activation envelope (PENDING/APPROVED/FROZEN →
+    CANCELLED, the §3 escape edges). An ACTIVE mandate is deliberately NOT
+    cancellable here (409): stopping a live mandate is the kill switch's or
+    the flatten's job, never a quiet route call."""
+    try:
+        return await command_facade.cancel_envelope(
+            envelope_id=envelope_id, actor=actor
+        )
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc

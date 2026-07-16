@@ -78,7 +78,9 @@ class TestMarketDataFeed:
 
 
 class TestEnableStrategyEngine:
-    @pytest.mark.parametrize("value,expected", [("true", True), ("false", False), ("0", False), ("1", True)])
+    @pytest.mark.parametrize(
+        "value,expected", [("true", True), ("false", False), ("0", False), ("1", True)]
+    )
     def test_parses_bool(self, monkeypatch, value, expected):
         _clear(monkeypatch)
         monkeypatch.setenv(ENABLE_STRATEGY_ENGINE_ENV, value)

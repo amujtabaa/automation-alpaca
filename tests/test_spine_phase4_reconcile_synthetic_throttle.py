@@ -87,13 +87,17 @@ async def test_inferred_priced_fill_moves_position_marked_synthetic(any_store):
 
 async def test_synthetic_then_real_same_execution_dedups_no_double_count(any_store):
     order, adapter = await _submitted_buy(any_store)
-    adapter.seed_open_orders([_priced_report(adapter, order, filled=40, exec_id="ex-9")])
-    await _run_reconciliation(any_store, adapter, _NO_RECENT)   # synthetic 40
+    adapter.seed_open_orders(
+        [_priced_report(adapter, order, filled=40, exec_id="ex-9")]
+    )
+    await _run_reconciliation(any_store, adapter, _NO_RECENT)  # synthetic 40
     assert (await any_store.get_position("AAPL")).quantity == 40
 
     # The per-order poll later observes the SAME execution (same source_fill_id).
     adapter.make_fill(
-        order.id, status=OrderStatus.PARTIALLY_FILLED, filled_quantity=40,
+        order.id,
+        status=OrderStatus.PARTIALLY_FILLED,
+        filled_quantity=40,
         fills=[BrokerFill("ex-9", 40, 2.0, utcnow())],
     )
     await _reconcile_open_orders(any_store, adapter, _LEGACY)
@@ -108,13 +112,19 @@ async def test_priced_fill_without_source_id_is_not_inferred(any_store):
     # the targeted poll (which dedups by its own key) instead. Here the venue still
     # has the order, so nothing resolves and position is unmoved.
     order, adapter = await _submitted_buy(any_store)
-    adapter.seed_open_orders([
-        BrokerOrderReport(
-            adapter.broker_id_for(order.id), order.id, "AAPL", OrderSide.BUY,
-            OrderStatus.PARTIALLY_FILLED, 40,
-            fills=[BrokerFill("", 40, 2.0, utcnow())],   # priced, but no source id
-        )
-    ])
+    adapter.seed_open_orders(
+        [
+            BrokerOrderReport(
+                adapter.broker_id_for(order.id),
+                order.id,
+                "AAPL",
+                OrderSide.BUY,
+                OrderStatus.PARTIALLY_FILLED,
+                40,
+                fills=[BrokerFill("", 40, 2.0, utcnow())],  # priced, but no source id
+            )
+        ]
+    )
     await _run_reconciliation(any_store, adapter, _NO_RECENT)
     assert (await any_store.get_position("AAPL")).quantity == 0
     assert _fill_events(await any_store.get_execution_events()) == []
@@ -135,17 +145,21 @@ async def test_no_synthetic_fill_from_an_empty_derived_report(any_store):
 async def test_exhausted_budget_skips_the_whole_cycle(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [BrokerOrderReport("venueX", None, "TSLA", OrderSide.SELL,
-                           OrderStatus.SUBMITTED, 0)]
+        [
+            BrokerOrderReport(
+                "venueX", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            )
+        ]
     )
-    budget = ReconcileQueryBudget(1)   # can't cover the 2 mass-report calls
+    budget = ReconcileQueryBudget(1)  # can't cover the 2 mass-report calls
     plan = await _run_reconciliation(any_store, adapter, Settings(), budget=budget)
 
-    assert plan is None                                  # cycle skipped
-    assert adapter.open_order_report_queries == 0        # never even polled
+    assert plan is None  # cycle skipped
+    assert adapter.open_order_report_queries == 0  # never even polled
     assert adapter.position_report_queries == 0
     external = [
-        e for e in await any_store.list_events()
+        e
+        for e in await any_store.list_events()
         if e.event_type == "reconcile_external_order"
     ]
     assert external == []
@@ -154,8 +168,11 @@ async def test_exhausted_budget_skips_the_whole_cycle(any_store):
 async def test_budget_covers_a_normal_cycle(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [BrokerOrderReport("venueZ", None, "TSLA", OrderSide.SELL,
-                           OrderStatus.SUBMITTED, 0)]
+        [
+            BrokerOrderReport(
+                "venueZ", None, "TSLA", OrderSide.SELL, OrderStatus.SUBMITTED, 0
+            )
+        ]
     )
     budget = ReconcileQueryBudget(200)
     plan = await _run_reconciliation(any_store, adapter, Settings(), budget=budget)
@@ -163,7 +180,8 @@ async def test_budget_covers_a_normal_cycle(any_store):
     assert plan is not None
     assert adapter.open_order_report_queries == 1
     external = [
-        e for e in await any_store.list_events()
+        e
+        for e in await any_store.list_events()
         if e.event_type == "reconcile_external_order"
     ]
     assert len(external) == 1
@@ -180,13 +198,16 @@ async def test_targeted_query_throttle_defers_when_budget_only_covers_mass(any_s
     await any_store.transition_candidate(cand.id, CandidateStatus.APPROVED)
     order = await any_store.create_order_for_candidate(cand.id)
     throwaway = MockBrokerAdapter()
-    await _submit_pending_orders(any_store, throwaway)   # SUBMITTED, broker id it owns
+    await _submit_pending_orders(any_store, throwaway)  # SUBMITTED, broker id it owns
 
-    adapter = MockBrokerAdapter()                         # fresh: doesn't know the order
+    adapter = MockBrokerAdapter()  # fresh: doesn't know the order
     budget = ReconcileQueryBudget(2)
     await _run_reconciliation(
-        any_store, adapter,
-        Settings(reconcile_recent_threshold_ms=0, reconcile_open_check_missing_retries=1),
+        any_store,
+        adapter,
+        Settings(
+            reconcile_recent_threshold_ms=0, reconcile_open_check_missing_retries=1
+        ),
         budget=budget,
     )
     # Mass reports consumed both tokens → the targeted query was skipped, so the order

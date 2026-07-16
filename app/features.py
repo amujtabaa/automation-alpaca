@@ -34,6 +34,7 @@ def _finite(value: Optional[float]) -> TypeGuard[float]:
 
     return market_data_field_reason(value) is None
 
+
 # Public (not underscore-prefixed): app/marketdata/alpaca_stream.py's
 # day-boundary reseed logic imports this too, so trading-day/session-boundary
 # timezone handling has exactly one source instead of a second copy that
@@ -49,7 +50,9 @@ _REGULAR_END = time(16, 0)
 _AFTER_HOURS_END = time(20, 0)
 
 
-def pct_move(last_price: Optional[float], prev_close: Optional[float]) -> Optional[float]:
+def pct_move(
+    last_price: Optional[float], prev_close: Optional[float]
+) -> Optional[float]:
     """Percent move of ``last_price`` versus ``prev_close`` (e.g. ``3.2`` = +3.2%).
 
     ``None`` if either input is missing, non-finite, or ``prev_close`` is

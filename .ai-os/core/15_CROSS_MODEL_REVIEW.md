@@ -41,3 +41,14 @@ If the first result feels weak, the author may create a short critique and ask f
 - Works alongside (does not replace) Fable in-flight review.
 
 See `work/review/README.md` and the templates in `.ai-os/templates/` for concrete examples.
+
+## New-invariant probe obligation (PROC-0001 #3, accepted 2026-07-12)
+
+Every review packet lists the `INV-*` entries ADDED or AMENDED since the last review
+milestone, and each must have >= 1 fresh-probe line IN THE PACKET — a new scenario tested
+against the invariant statement, NOT a rerun of its own pinning test and NOT a bare citation
+(the self-citation trap: a document that mentions an ID makes naive coverage scans read
+clean). Before any beta-relevant milestone, the gate check is: every defined INV id appears
+in `work/review/` with probe evidence; uncovered ids block the gate for those ids
+specifically. First application: INV-078/079/080/085 are due in the REV-0023 Phase B
+reconciliation packet.

@@ -87,7 +87,8 @@ def test_session_resolution_passes_a_real_session():
     # A kill-switched but resolvable session resolves here (resolution != control
     # block — the control block is a separate, later predicate).
     stopped = SessionRecord(
-        session_date="2026-07-03", kill_switch=True,
+        session_date="2026-07-03",
+        kill_switch=True,
         trading_state=TradingState.HALTED,
     )
     assert order_session_resolution_reason(stopped) is None

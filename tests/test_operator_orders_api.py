@@ -234,7 +234,9 @@ async def test_recovery_records_classified_and_surfaced():
     assert recs[needs.id]["operational_status"] == "recovery_required"
 
     # A cleanly-resolved record drops out of the operator view (open-only).
-    await store.update_submit_recovery(unresolved.id, cleanup_status="resolved_canceled")
+    await store.update_submit_recovery(
+        unresolved.id, cleanup_status="resolved_canceled"
+    )
     async with _client(app) as client:
         body = await _operator_orders(client)
     assert unresolved.id not in {r["record"]["id"] for r in body["recoveries"]}

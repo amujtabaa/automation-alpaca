@@ -62,7 +62,11 @@ async def test_fairness_cursor_prevents_starvation_across_ticks(any_store):
     # budget per tick models the token bucket refilling between cadences.
     for _ in range(2):
         await _resolve_timeout_quarantine(
-            any_store, adapter, Settings(), budget=ReconcileQueryBudget(2), fairness=cursor
+            any_store,
+            adapter,
+            Settings(),
+            budget=ReconcileQueryBudget(2),
+            fairness=cursor,
         )
 
     assert set(adapter.queried) == set(ids), (

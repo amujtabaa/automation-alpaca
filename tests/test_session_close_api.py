@@ -48,8 +48,9 @@ async def test_review_closed_returns_snapshot_active_returns_live():
         order = await store.create_order_for_test(
             candidate.id, "AAPL", OrderSide.BUY, 200, session_id=session.id
         )
-        await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,
-                                session_id=session.id)
+        await store.append_fill(
+            order.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id
+        )
 
         date = session.session_date
 
@@ -60,8 +61,9 @@ async def test_review_closed_returns_snapshot_active_returns_live():
 
         # Close, then add another fill that moves the LIVE fold to 200.
         assert (await client.post("/api/session/close")).status_code == 200
-        await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,
-                                session_id=session.id)
+        await store.append_fill(
+            order.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id
+        )
 
         closed = (await client.get("/api/review", params={"date": date})).json()
         assert closed["session"]["status"] == "closed"
@@ -88,8 +90,9 @@ async def test_get_session_between_close_and_review_keeps_snapshots_visible():
         order = await store.create_order_for_test(
             candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
         )
-        await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0,
-                                session_id=session.id)
+        await store.append_fill(
+            order.id, "AAPL", OrderSide.BUY, 100, 1.0, session_id=session.id
+        )
         date = session.session_date
 
         assert (await client.post("/api/session/close")).status_code == 200

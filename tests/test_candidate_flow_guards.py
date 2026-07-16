@@ -45,9 +45,7 @@ async def test_approve_non_dispatchable_candidate_422_and_recoverable():
     candidate = await store.create_candidate("AAPL")  # no suggested_quantity
     assert candidate.suggested_quantity is None
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://t"
-    ) as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         # Up-front rejection — not approved into a dead end.
         resp = await ac.post(f"/api/candidates/{candidate.id}/approve")
         assert resp.status_code == 422
@@ -56,7 +54,9 @@ async def test_approve_non_dispatchable_candidate_422_and_recoverable():
         got = await ac.get(f"/api/candidates/{candidate.id}")
         assert got.json()["status"] == "pending"
         # ... and is therefore still rejectable (the strand is gone).
-        assert (await ac.post(f"/api/candidates/{candidate.id}/reject")).status_code == 200
+        assert (
+            await ac.post(f"/api/candidates/{candidate.id}/reject")
+        ).status_code == 200
         # No order was ever created.
         assert (await ac.get("/api/orders")).json() == []
 
@@ -70,7 +70,10 @@ def test_dev_routes_present_by_default():
     app = create_app(InMemoryStateStore())
     with TestClient(app) as client:
         # Default beta config mounts the dev router.
-        assert client.post("/api/dev/candidates", json={"symbol": "AAPL"}).status_code == 201
+        assert (
+            client.post("/api/dev/candidates", json={"symbol": "AAPL"}).status_code
+            == 201
+        )
 
 
 def test_dev_routes_can_be_disabled(monkeypatch):
@@ -78,7 +81,10 @@ def test_dev_routes_can_be_disabled(monkeypatch):
     app = create_app(InMemoryStateStore())
     with TestClient(app) as client:
         # With dev routes off, the path is simply not mounted -> 404.
-        assert client.post("/api/dev/candidates", json={"symbol": "AAPL"}).status_code == 404
+        assert (
+            client.post("/api/dev/candidates", json={"symbol": "AAPL"}).status_code
+            == 404
+        )
         # The real candidate endpoints are unaffected.
         assert client.get("/api/candidates").status_code == 200
 
@@ -92,7 +98,10 @@ def test_dev_inject_refused_after_session_close():
     app = create_app(InMemoryStateStore())
     with TestClient(app) as client:
         # Injecting into the active session is fine ...
-        assert client.post("/api/dev/candidates", json={"symbol": "AAPL"}).status_code == 201
+        assert (
+            client.post("/api/dev/candidates", json={"symbol": "AAPL"}).status_code
+            == 201
+        )
         # ... but once the session is closed, injection is refused.
         assert client.post("/api/session/close").status_code == 200
         resp = client.post("/api/dev/candidates", json={"symbol": "MSFT"})

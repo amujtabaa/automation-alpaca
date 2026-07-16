@@ -56,7 +56,9 @@ async def test_duplicate_fill_protection_in_sqlite(tmp_path):
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
     order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
-    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="x")
+    await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="x"
+    )
     dup = await store.append_fill(
         order.id, "AAPL", OrderSide.BUY, 100, 9.0, source_fill_id="x"
     )
@@ -71,15 +73,20 @@ async def test_broker_overfill_recorded_and_quarantined_in_sqlite(tmp_path):
     # not reject-and-dropped — same as the in-memory store.
     store = await _fresh(tmp_path)
     candidate = await store.create_candidate("AAPL")
-    buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
+    buy_order = await store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 100
+    )
     await store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.0)
-    sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
+    sell_order = await store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.SELL, 200
+    )
     result = await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 200, 1.0)
     assert result.status == "appended"
     assert (await store.get_position("AAPL")).quantity == -100
     assert "AAPL" in await store.list_quarantined_symbols()
     quarantines = [
-        e for e in await store.list_events()
+        e
+        for e in await store.list_events()
         if e.event_type == "fill_overfill_quarantined"
     ]
     assert len(quarantines) == 1
@@ -117,8 +124,9 @@ async def test_position_snapshots_survive_restart(tmp_path):
     order = await store.create_order_for_test(
         candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
     )
-    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 100, 1.5,
-                            session_id=session.id)
+    await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 100, 1.5, session_id=session.id
+    )
     await store.close_session()
     await store.close()
 
@@ -174,8 +182,9 @@ async def test_migration_adds_fills_session_id_to_old_db(tmp_path):
     await store.initialize()  # _migrate must ALTER fills to add session_id
     candidate = await store.create_candidate("AAPL")
     order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 10)
-    await store.append_fill(order.id, "AAPL", OrderSide.BUY, 10, 1.0,
-                            session_id="sess-x")
+    await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 10, 1.0, session_id="sess-x"
+    )
     fills = await store.list_fills(symbol="AAPL")
     assert fills[0].session_id == "sess-x"
     await store.close()

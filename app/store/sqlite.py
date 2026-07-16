@@ -41,10 +41,12 @@ from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_UNRESOLVED,
     Candidate,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     CandidateStatus,
     Event,
+    ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
     Fill,
@@ -90,6 +92,7 @@ from app.store.base import (
     FlattenBlockedError,
     FlattenResult,
     InvalidOrderError,
+    OrderIntentBlockedError,
     ProtectionHaltedError,
     RiskLimits,
     SellIntentTransitionError,
@@ -111,9 +114,28 @@ from app.store.core import (
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
+    ENVELOPE_FILL_REJECT,
+    ENVELOPE_TRANSITION_APPLY,
+    STAGE_DIVERGENCE,
+    STAGE_REFUSED_STALE,
+    STAGE_STAGED,
+    EnvelopeActionPausedError,
+    EnvelopeActionStageResult,
+    PlannedAction,
+    plan_stage_envelope_action,
+    ENVELOPE_TRANSITION_NOOP,
+    ENVELOPE_TRANSITION_REJECT,
+    EnvelopeTransitionError,
+    EnvelopeTransitionPlan,
+    ORDER_TRANSITION_APPLY,
     ORDER_TRANSITION_NOOP,
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
+    envelope_created_event,
+    envelope_draft_reason,
+    plan_envelope_fill,
+    plan_envelope_transition,
+    plan_supersede_envelope,
     plan_append_fill,
     plan_claim_order_for_submission,
     plan_close_session,
@@ -134,6 +156,7 @@ from app.store.core import (
     sell_intent_is_active,
 )
 from app.transitions import (
+    ENVELOPE_TRANSITIONS,
     CANDIDATE_TIMESTAMP,
     CANDIDATE_TRANSITIONS,
     SELL_INTENT_TIMESTAMP,
@@ -330,12 +353,62 @@ CREATE TABLE IF NOT EXISTS execution_events (
     quantity        INTEGER,
     price           REAL,
     order_id        TEXT,
+    envelope_id     TEXT,
     primary_id      TEXT,
     spawn_id        TEXT,
     session_id      TEXT,
     correlation_id  TEXT,
     payload         TEXT NOT NULL DEFAULT '{}'
 );
+
+-- Execution envelopes (ADR-010 / WO-0016): the pre-approved, immutable,
+-- bounded mandate for one sell intent. Bounds NEVER update in place —
+-- amendment is a new row via the atomic supersede operation. Only status,
+-- remaining_quantity (deduped-fill decrements ONLY), replaces_used,
+-- supersession linkage, and timestamps change after insert. The
+-- single-ACTIVE-per-intent partial unique index is created in initialize()
+-- (after _migrate, matching the fills-index pattern).
+CREATE TABLE IF NOT EXISTS execution_envelopes (
+    id                       TEXT PRIMARY KEY,
+    sell_intent_id           TEXT NOT NULL,
+    symbol                   TEXT NOT NULL,
+    side                     TEXT NOT NULL,
+    reduce_only              INTEGER NOT NULL DEFAULT 1,
+    qty_ceiling              INTEGER NOT NULL,
+    remaining_quantity       INTEGER NOT NULL,
+    floor_price              REAL NOT NULL,
+    trail_distance_min       REAL NOT NULL,
+    trail_distance_max       REAL NOT NULL,
+    participation_rate_cap   REAL NOT NULL,
+    aggressiveness           TEXT NOT NULL DEFAULT '[]',
+    cooldown_floor_ms        INTEGER NOT NULL,
+    cancel_replace_budget    INTEGER NOT NULL,
+    replaces_used            INTEGER NOT NULL DEFAULT 0,
+    max_outstanding_children INTEGER NOT NULL DEFAULT 1,
+    expires_at               TEXT NOT NULL,
+    allowed_session_phases   TEXT NOT NULL,
+    expiry_disposition       TEXT NOT NULL,
+    stale_data_disposition   TEXT NOT NULL,
+    status                   TEXT NOT NULL,
+    supersedes_id            TEXT,
+    superseded_by_id         TEXT,
+    session_id               TEXT,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL,
+    approved_at              TEXT,
+    activated_at             TEXT,
+    frozen_at                TEXT,
+    completed_at             TEXT,
+    expired_at               TEXT,
+    exhausted_at             TEXT,
+    breached_at              TEXT,
+    superseded_at            TEXT,
+    cancelled_at             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_envelopes_intent
+    ON execution_envelopes(sell_intent_id);
+CREATE INDEX IF NOT EXISTS idx_envelopes_symbol
+    ON execution_envelopes(symbol);
 """
 
 
@@ -359,9 +432,7 @@ class SqliteStateStore(StateStore):
     def _connect(self) -> sqlite3.Connection:
         if self._conn is None:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(
-                str(self._db_path), check_same_thread=False
-            )
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.isolation_level = None  # autocommit; we manage BEGIN/COMMIT
             self._conn = conn
@@ -391,12 +462,9 @@ class SqliteStateStore(StateStore):
             self._migrate(conn)
             # Created after migration so they work on databases migrated from
             # older schemas (a fills-table rebuild drops the table's indexes).
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol)")
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fills_session "
-                "ON fills(session_id)"
+                "CREATE INDEX IF NOT EXISTS idx_fills_session ON fills(session_id)"
             )
             # Per-(order_id, source_fill_id) dedup (Item 5). Partial index so the
             # uniqueness applies only when source_fill_id is present. This CREATE
@@ -423,6 +491,24 @@ class SqliteStateStore(StateStore):
                 "CREATE INDEX IF NOT EXISTS idx_exec_events_order "
                 "ON execution_events(order_id)"
             )
+            # ADR-010 (WO-0016): per-envelope event queries (replay/audit of one
+            # mandate) and the structural single-ACTIVE-per-intent invariant —
+            # the DB-level twin of the in-memory store's under-lock check.
+            # Created here (after _migrate) so they exist on migrated DBs too.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_events_envelope "
+                "ON execution_events(envelope_id)"
+            )
+            # WO-0032 / REV-0023 P0: the single-ACTIVE mandate is per SYMBOL, not
+            # per sell_intent_id (a second intent for the same symbol — e.g.
+            # across a session boundary that expired the first intent — must not
+            # be able to double-book the exit). Drop the old intent-scoped index
+            # first so a re-init/migrated DB adopts the symbol-scoped one.
+            conn.execute("DROP INDEX IF EXISTS idx_envelopes_one_active")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_envelopes_one_active "
+                "ON execution_envelopes(symbol) WHERE status = 'active'"
+            )
             self._backfill_fill_events_locked()
             self._backfill_trading_state_events_locked()
             self._backfill_order_status_events_locked()
@@ -440,9 +526,7 @@ class SqliteStateStore(StateStore):
         order_rows = self._read_all("SELECT * FROM orders")
         if not order_rows:
             return
-        event_rows = self._read_all(
-            "SELECT * FROM execution_events ORDER BY sequence"
-        )
+        event_rows = self._read_all("SELECT * FROM execution_events ORDER BY sequence")
         events = [self._execution_event(r) for r in event_rows]
         with self._tx() as cur:
             for row in order_rows:
@@ -487,9 +571,11 @@ class SqliteStateStore(StateStore):
                 control_prior = control_trading_state(tsc_events, session.id)
                 if control_prior is not new_control:
                     event = trading_state_change_event(
-                        session.id, prior_control=control_prior,
+                        session.id,
+                        prior_control=control_prior,
                         kill_switch=session.kill_switch,
-                        buys_paused=session.buys_paused, reason="backfill",
+                        buys_paused=session.buys_paused,
+                        reason="backfill",
                     )
                     if event is not None:
                         self._insert_execution_event(cur, event)
@@ -623,6 +709,17 @@ class SqliteStateStore(StateStore):
             # (backfill not required). Fresh DBs already get it from SCHEMA.
             conn.execute("ALTER TABLE events ADD COLUMN correlation_id TEXT")
 
+        exec_event_cols = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(execution_events)").fetchall()
+        }
+        if "envelope_id" not in exec_event_cols:  # added in W3 (ADR-010 / WO-0016)
+            # The owning execution envelope. Additive + nullable: pre-envelope
+            # events simply have NULL, replay stays valid within schema_version 1
+            # (no bump — the version marks INCOMPATIBLE shape changes). Fresh DBs
+            # get it from SCHEMA; its index is created in initialize().
+            conn.execute("ALTER TABLE execution_events ADD COLUMN envelope_id TEXT")
+
         # Item 5 / F1: dedup moved from a column-level UNIQUE on source_fill_id to
         # a composite (order_id, source_fill_id) index. SQLite can't ALTER away a
         # column constraint, so a DB created with the old `source_fill_id TEXT
@@ -719,6 +816,46 @@ class SqliteStateStore(StateStore):
         )
 
     @staticmethod
+    def _envelope(row: sqlite3.Row) -> ExecutionEnvelope:
+        return ExecutionEnvelope(
+            id=row["id"],
+            sell_intent_id=row["sell_intent_id"],
+            symbol=row["symbol"],
+            side=row["side"],
+            reduce_only=bool(row["reduce_only"]),
+            qty_ceiling=row["qty_ceiling"],
+            remaining_quantity=row["remaining_quantity"],
+            floor_price=row["floor_price"],
+            trail_distance_min=row["trail_distance_min"],
+            trail_distance_max=row["trail_distance_max"],
+            participation_rate_cap=row["participation_rate_cap"],
+            aggressiveness=json.loads(row["aggressiveness"]),
+            cooldown_floor_ms=row["cooldown_floor_ms"],
+            cancel_replace_budget=row["cancel_replace_budget"],
+            replaces_used=row["replaces_used"],
+            max_outstanding_children=row["max_outstanding_children"],
+            expires_at=row["expires_at"],
+            allowed_session_phases=json.loads(row["allowed_session_phases"]),
+            expiry_disposition=row["expiry_disposition"],
+            stale_data_disposition=row["stale_data_disposition"],
+            status=row["status"],
+            supersedes_id=row["supersedes_id"],
+            superseded_by_id=row["superseded_by_id"],
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            approved_at=row["approved_at"],
+            activated_at=row["activated_at"],
+            frozen_at=row["frozen_at"],
+            completed_at=row["completed_at"],
+            expired_at=row["expired_at"],
+            exhausted_at=row["exhausted_at"],
+            breached_at=row["breached_at"],
+            superseded_at=row["superseded_at"],
+            cancelled_at=row["cancelled_at"],
+        )
+
+    @staticmethod
     def _order(row: sqlite3.Row) -> Order:
         return Order(
             id=row["id"],
@@ -802,6 +939,7 @@ class SqliteStateStore(StateStore):
             quantity=row["quantity"],
             price=row["price"],
             order_id=row["order_id"],
+            envelope_id=row["envelope_id"],
             primary_id=row["primary_id"],
             spawn_id=row["spawn_id"],
             session_id=row["session_id"],
@@ -911,8 +1049,7 @@ class SqliteStateStore(StateStore):
         # ends the trading day until a genuinely new one starts.
         today = utcnow().date().isoformat()
         row = self._read_one(
-            "SELECT * FROM sessions WHERE session_date = ? "
-            "ORDER BY rowid DESC LIMIT 1",
+            "SELECT * FROM sessions WHERE session_date = ? ORDER BY rowid DESC LIMIT 1",
             (today,),
         )
         if row is not None:
@@ -1333,6 +1470,92 @@ class SqliteStateStore(StateStore):
             ),
         )
 
+    def _insert_envelope(self, cur: sqlite3.Cursor, env: ExecutionEnvelope) -> None:
+        cur.execute(
+            """INSERT INTO execution_envelopes
+               (id, sell_intent_id, symbol, side, reduce_only, qty_ceiling,
+                remaining_quantity, floor_price, trail_distance_min,
+                trail_distance_max, participation_rate_cap, aggressiveness,
+                cooldown_floor_ms, cancel_replace_budget, replaces_used,
+                max_outstanding_children, expires_at, allowed_session_phases,
+                expiry_disposition, stale_data_disposition, status,
+                supersedes_id, superseded_by_id, session_id, created_at,
+                updated_at, approved_at, activated_at, frozen_at, completed_at,
+                expired_at, exhausted_at, breached_at, superseded_at,
+                cancelled_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                       ?,?,?,?,?,?,?,?,?)""",
+            (
+                env.id,
+                env.sell_intent_id,
+                env.symbol,
+                env.side.value,
+                _bit(env.reduce_only),
+                env.qty_ceiling,
+                env.remaining_quantity,
+                env.floor_price,
+                env.trail_distance_min,
+                env.trail_distance_max,
+                env.participation_rate_cap,
+                json.dumps(list(env.aggressiveness)),
+                env.cooldown_floor_ms,
+                env.cancel_replace_budget,
+                env.replaces_used,
+                env.max_outstanding_children,
+                _dt(env.expires_at),
+                json.dumps([p.value for p in env.allowed_session_phases]),
+                env.expiry_disposition.value,
+                env.stale_data_disposition.value,
+                env.status.value,
+                env.supersedes_id,
+                env.superseded_by_id,
+                env.session_id,
+                _dt(env.created_at),
+                _dt(env.updated_at),
+                _dt(env.approved_at),
+                _dt(env.activated_at),
+                _dt(env.frozen_at),
+                _dt(env.completed_at),
+                _dt(env.expired_at),
+                _dt(env.exhausted_at),
+                _dt(env.breached_at),
+                _dt(env.superseded_at),
+                _dt(env.cancelled_at),
+            ),
+        )
+
+    def _update_envelope(self, cur: sqlite3.Cursor, env: ExecutionEnvelope) -> None:
+        """Persist the MUTABLE surface only. Bounds are deliberately absent
+        from this UPDATE — the storage layer structurally cannot amend them
+        (ADR-010: amendment is by supersession, never in place)."""
+
+        cur.execute(
+            """UPDATE execution_envelopes SET status=?, remaining_quantity=?,
+               replaces_used=?, supersedes_id=?, superseded_by_id=?,
+               updated_at=?, approved_at=?, activated_at=?, frozen_at=?,
+               completed_at=?, expired_at=?, exhausted_at=?, breached_at=?,
+               superseded_at=?, cancelled_at=?
+               WHERE id=?""",
+            (
+                env.status.value,
+                env.remaining_quantity,
+                env.replaces_used,
+                env.supersedes_id,
+                env.superseded_by_id,
+                _dt(env.updated_at),
+                _dt(env.approved_at),
+                _dt(env.activated_at),
+                _dt(env.frozen_at),
+                _dt(env.completed_at),
+                _dt(env.expired_at),
+                _dt(env.exhausted_at),
+                _dt(env.breached_at),
+                _dt(env.superseded_at),
+                _dt(env.cancelled_at),
+                env.id,
+            ),
+        )
+
     def _order_needs_review_locked(self, order_id: str) -> bool:
         """X-003: whether ``order_id`` currently carries an OPEN
         ``needs_review`` broker-submit recovery record (D-017). See
@@ -1361,8 +1584,8 @@ class SqliteStateStore(StateStore):
                     "SELECT * FROM orders WHERE id = ?", (si.order_id,)
                 )
                 order = self._order(order_row) if order_row is not None else None
-            needs_review = (
-                order is not None and self._order_needs_review_locked(order.id)
+            needs_review = order is not None and self._order_needs_review_locked(
+                order.id
             )
             if sell_intent_is_active(si, order, order_needs_review=needs_review):
                 return si
@@ -1435,8 +1658,7 @@ class SqliteStateStore(StateStore):
             return False
         if new_status not in SELL_INTENT_TRANSITIONS.get(current, set()):
             raise SellIntentTransitionError(
-                f"illegal sell intent transition {current.value} -> "
-                f"{new_status.value}"
+                f"illegal sell intent transition {current.value} -> {new_status.value}"
             )
         intent.status = new_status
         intent.updated_at = utcnow()
@@ -1572,6 +1794,689 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             return self._active_sell_intent_locked(key)
 
+    # ------------------------------------------------------------------ #
+    # Execution envelopes (ADR-010 / WO-0016)
+    # ------------------------------------------------------------------ #
+    def _other_active_envelope_for_symbol_locked(
+        self, cur: sqlite3.Cursor, symbol: str, *, excluding: str
+    ) -> Optional[str]:
+        """Id of any OTHER envelope for this SYMBOL currently ACTIVE (the
+        explicit twin of the idx_envelopes_one_active partial unique index,
+        checked first for a clean domain error instead of an IntegrityError).
+
+        Scoped to symbol, not sell_intent_id (WO-0032 / REV-0023 P0): at most
+        one live selling mandate per symbol/position — see the InMemoryStateStore
+        twin ``_other_active_envelope_for_symbol_unlocked`` for the rationale
+        (INV-087)."""
+
+        row = cur.execute(
+            "SELECT id FROM execution_envelopes WHERE symbol = ? "
+            "AND status = ? AND id != ? LIMIT 1",
+            (normalize_symbol(symbol), EnvelopeStatus.ACTIVE.value, excluding),
+        ).fetchone()
+        return row["id"] if row is not None else None
+
+    def _apply_envelope_transition_locked(
+        self, cur: sqlite3.Cursor, plan: EnvelopeTransitionPlan
+    ) -> ExecutionEnvelope:
+        """Persist an APPLY-outcome transition plan on an open ``_tx`` cursor.
+        The caller has already dispatched NOOP/REJECT and run the
+        single-ACTIVE check where the target is ACTIVE."""
+
+        assert plan.envelope is not None
+        assert plan.execution_event is not None and plan.audit_event is not None
+        self._update_envelope(cur, plan.envelope)
+        self._insert_execution_event(cur, plan.execution_event)
+        self._insert_event(
+            cur, plan.audit_event.event_type, **plan.audit_event.as_kwargs()
+        )
+        return plan.envelope
+
+    async def create_envelope(
+        self,
+        envelope: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        bad = envelope_draft_reason(envelope)
+        if bad is not None:
+            raise InvalidOrderError(bad)
+        key = normalize_symbol(envelope.symbol)
+        async with self._lock:
+            with self._tx() as cur:
+                existing = cur.execute(
+                    "SELECT 1 FROM execution_envelopes WHERE id = ?",
+                    (envelope.id,),
+                ).fetchone()
+                if existing is not None:
+                    raise InvalidOrderError(f"envelope {envelope.id} already exists")
+                stored = envelope.model_copy(update={"symbol": key})
+                self._insert_envelope(cur, stored)
+                self._insert_execution_event(
+                    cur, envelope_created_event(stored, actor=actor)
+                )
+                self._insert_event(
+                    cur,
+                    "envelope_created",
+                    message=f"execution envelope created for {key}",
+                    symbol=key,
+                    session_id=stored.session_id,
+                    correlation_id=stored.sell_intent_id,
+                    payload={"actor": actor, "envelope_id": stored.id},
+                )
+                return stored
+
+    async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM execution_envelopes WHERE id = ?", (envelope_id,)
+            )
+            return self._envelope(row) if row is not None else None
+
+    async def list_envelopes(
+        self,
+        *,
+        sell_intent_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        status: Optional[EnvelopeStatus] = None,
+    ) -> list[ExecutionEnvelope]:
+        if status is not None:
+            require_status_enum(status, EnvelopeStatus, field="status filter")
+        sql = "SELECT * FROM execution_envelopes WHERE 1=1"
+        params: list[Any] = []
+        if sell_intent_id is not None:
+            sql += " AND sell_intent_id = ?"
+            params.append(sell_intent_id)
+        if symbol is not None:
+            sql += " AND symbol = ?"
+            params.append(normalize_symbol(symbol))
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status.value)
+        async with self._lock:
+            rows = self._read_all(sql, tuple(params))
+            return [self._envelope(r) for r in rows]
+
+    async def transition_envelope(
+        self,
+        envelope_id: str,
+        new_status: EnvelopeStatus,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> ExecutionEnvelope:
+        require_status_enum(new_status, EnvelopeStatus, field="new_status")
+        async with self._lock:
+            # F2 (WO-0035): pre-transaction read-only validation + session
+            # bootstrap — _ensure_current_session_locked opens its OWN
+            # transaction on a date rollover and crashed the first
+            # FROZEN->ACTIVE resume of a new day when nested in the tx below.
+            # Ordering mirrors InMemoryStateStore (unknown-id / reject / noop
+            # paths have NO session side effect); the lock is held throughout.
+            pre_row = self._read_one(
+                "SELECT * FROM execution_envelopes WHERE id = ?", (envelope_id,)
+            )
+            if pre_row is None:
+                raise UnknownEntityError(f"envelope {envelope_id} not found")
+            pre_plan = plan_envelope_transition(
+                self._envelope(pre_row), new_status, actor=actor, reason=reason, now=now
+            )
+            if pre_plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                assert pre_plan.error is not None
+                raise pre_plan.error
+            # Codex PR#8 F3: return a same-status NOOP BEFORE the session
+            # bootstrap, mirroring InMemoryStateStore (and the comment above). A
+            # NOOP ACTIVE->ACTIVE must have no session side effect — otherwise a
+            # date rollover mints a spurious session/`session_opened` for an
+            # idempotent re-activation.
+            if pre_plan.outcome == ENVELOPE_TRANSITION_NOOP:
+                return self._envelope(pre_row)
+            session = (
+                self._ensure_current_session_locked()
+                if new_status is EnvelopeStatus.ACTIVE
+                else None
+            )
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {envelope_id} not found")
+                env = self._envelope(row)
+                plan = plan_envelope_transition(
+                    env, new_status, actor=actor, reason=reason, now=now
+                )
+                if plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                    assert plan.error is not None
+                    raise plan.error
+                if plan.outcome == ENVELOPE_TRANSITION_NOOP:
+                    return env
+                if new_status is EnvelopeStatus.ACTIVE:
+                    # ADR-010 §4 / INV-060: activation OR resume is new
+                    # standing order intent — refused while HALTED, checked
+                    # inside the SAME transaction as the write (resume after
+                    # release is explicit human action, never automatic).
+                    assert session is not None  # ensured pre-tx (F2)
+                    if (
+                        self._current_trading_state_locked(session.id)
+                        is TradingState.HALTED
+                    ):
+                        raise OrderIntentBlockedError(
+                            f"envelope {env.id} cannot enter ACTIVE: trading "
+                            "halted (kill switch engaged)"
+                        )
+                    clash = self._other_active_envelope_for_symbol_locked(
+                        cur, env.symbol, excluding=env.id
+                    )
+                    if clash is not None:
+                        raise EnvelopeTransitionError(
+                            f"envelope {clash} is already ACTIVE for symbol "
+                            f"{env.symbol} (per-symbol single-ACTIVE invariant)"
+                        )
+                if new_status is EnvelopeStatus.CANCELLED:
+                    # Codex PR#8 #5 (twin of the in-memory guard): refuse a
+                    # store-only CANCELLED while a child order is live at the
+                    # venue — else a FROZEN mandate stops being monitored while
+                    # its submitted SELL keeps working. Quarantined = live.
+                    try:
+                        _, working = self._envelope_action_context_locked(cur, env)
+                        live_child = working is not None
+                    except EnvelopeActionPausedError:
+                        live_child = True
+                    if live_child:
+                        raise EnvelopeTransitionError(
+                            f"envelope {env.id} cannot be CANCELLED while a child "
+                            "order is live at the venue — wind it down first "
+                            "(flatten / kill switch), then cancel"
+                        )
+                stored = self._apply_envelope_transition_locked(cur, plan)
+                # A freeze is never exited by a fill: an envelope fully filled
+                # while FROZEN completes HERE, on resume, atomically with it.
+                if (
+                    stored.status is EnvelopeStatus.ACTIVE
+                    and (stored.remaining_quantity or 0) == 0
+                ):
+                    chain = plan_envelope_transition(
+                        stored,
+                        EnvelopeStatus.COMPLETED,
+                        actor="engine",
+                        reason="fully filled while frozen; completed on resume",
+                        now=now,
+                    )
+                    assert chain.outcome == ENVELOPE_TRANSITION_APPLY
+                    stored = self._apply_envelope_transition_locked(cur, chain)
+                return stored
+
+    async def supersede_envelope(
+        self,
+        old_envelope_id: str,
+        successor: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        async with self._lock:
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (old_envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {old_envelope_id} not found")
+                old = self._envelope(row)
+                dup = cur.execute(
+                    "SELECT 1 FROM execution_envelopes WHERE id = ?",
+                    (successor.id,),
+                ).fetchone()
+                if dup is not None:
+                    raise InvalidOrderError(
+                        f"successor envelope {successor.id} already exists"
+                    )
+                normalized = successor.model_copy(
+                    update={"symbol": normalize_symbol(successor.symbol)}
+                )
+                _, working = self._envelope_action_context_locked(cur, old)
+                plan = plan_supersede_envelope(
+                    old,
+                    normalized,
+                    actor=actor,
+                    reason=reason,
+                    working_order=working,
+                )
+                if plan.outcome == ENVELOPE_TRANSITION_REJECT:
+                    assert plan.error is not None
+                    raise plan.error
+                assert plan.old_envelope is not None and plan.new_envelope is not None
+                clash = self._other_active_envelope_for_symbol_locked(
+                    cur, old.symbol, excluding=old.id
+                )
+                if clash is not None:
+                    raise EnvelopeTransitionError(
+                        f"envelope {clash} is already ACTIVE for symbol "
+                        f"{old.symbol} (per-symbol single-ACTIVE invariant)"
+                    )
+                # One atomic unit: A leaves ACTIVE and B enters it in the same
+                # transaction — no two-ACTIVE window, and a concurrent second
+                # supersede loses at "old is no longer ACTIVE".
+                self._update_envelope(cur, plan.old_envelope)
+                self._insert_envelope(cur, plan.new_envelope)
+                for event in plan.execution_events:
+                    self._insert_execution_event(cur, event)
+                assert plan.audit_event is not None
+                self._insert_event(
+                    cur,
+                    plan.audit_event.event_type,
+                    **plan.audit_event.as_kwargs(),
+                )
+                # WO-0027: the superseded mandate's staged CREATED orders die
+                # with it, in the SAME transaction (live venue orders were
+                # refused by the planner — nothing of the old mandate
+                # survives).
+                self._cancel_staged_envelope_orders_locked(
+                    cur, [plan.old_envelope.id], actor=actor
+                )
+                return plan.new_envelope
+
+    async def record_envelope_fill(
+        self,
+        envelope_id: str,
+        *,
+        quantity: int,
+        dedupe_key: str,
+        price: float,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        ts_event: Optional[datetime] = None,
+        source: EventSource = EventSource.BROKER_REST,
+        authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        now: Optional[datetime] = None,
+    ) -> ExecutionEnvelope:
+        """Apply one deduped fill fact — the ONLY remaining_quantity writer.
+        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
+        that fill was already counted (exactly-once, INV-5)."""
+
+        async with self._lock:
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {envelope_id} not found")
+                env = self._envelope(row)
+                plan = plan_envelope_fill(
+                    env,
+                    quantity=quantity,
+                    dedupe_key=dedupe_key,
+                    price=price,
+                    order_id=order_id,
+                    session_id=session_id,
+                    ts_event=ts_event,
+                    source=source,
+                    authority=authority,
+                    now=now,
+                )
+                if plan.outcome == ENVELOPE_FILL_REJECT:
+                    assert plan.error is not None
+                    raise plan.error
+                assert plan.envelope is not None and plan.fill_event is not None
+                already = cur.execute(
+                    "SELECT 1 FROM execution_events WHERE dedupe_key = ?",
+                    (dedupe_key,),
+                ).fetchone()
+                if already is not None:
+                    return env
+                self._insert_execution_event(cur, plan.fill_event)
+                self._update_envelope(cur, plan.envelope)
+                stored = plan.envelope
+                if plan.transition is not None:
+                    assert plan.transition.outcome == ENVELOPE_TRANSITION_APPLY
+                    stored = self._apply_envelope_transition_locked(
+                        cur, plan.transition
+                    )
+                return stored
+
+    def _envelope_action_context_locked(
+        self, cur: sqlite3.Cursor, envelope: ExecutionEnvelope
+    ) -> tuple[list[ExecutionEvent], Optional[Order]]:
+        """(action events, current working order) for one envelope, read on an
+        open ``_tx`` cursor. Raises :class:`EnvelopeActionPausedError` if any
+        of the envelope's orders is in TIMEOUT_QUARANTINE (ADR-002 pause).
+        Mirrors ``InMemoryStateStore._envelope_action_context_unlocked``."""
+
+        rows = cur.execute(
+            "SELECT * FROM execution_events WHERE envelope_id = ? AND "
+            "event_type = ? ORDER BY sequence",
+            (envelope.id, ExecutionEventType.ENVELOPE_ACTION.value),
+        ).fetchall()
+        actions = [self._execution_event(r) for r in rows]
+        working: Optional[Order] = None
+        for event in actions:
+            if event.order_id is None:
+                continue
+            order_row = cur.execute(
+                "SELECT * FROM orders WHERE id = ?", (event.order_id,)
+            ).fetchone()
+            if order_row is None:
+                continue
+            order = self._order(order_row)
+            if order.status is OrderStatus.TIMEOUT_QUARANTINE:
+                raise EnvelopeActionPausedError(
+                    f"envelope {envelope.id} is paused: order {order.id} is in "
+                    "timeout quarantine (resolve it before any further action)"
+                )
+            if order.status not in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+            ):
+                working = order
+        return actions, working
+
+    async def stage_envelope_action(
+        self,
+        envelope_id: str,
+        action: PlannedAction,
+        *,
+        snapshot_fingerprint: str,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        session_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> EnvelopeActionStageResult:
+        """WO-0019: the write-time half of D-3, one lock hold + ONE SQL
+        transaction (a failure anywhere rolls back the order row AND the
+        accounting event together). See
+        :func:`app.store.core.plan_stage_envelope_action`."""
+
+        async with self._lock:
+            # Validate the envelope EXISTS before ensuring the session (parity-1 /
+            # REV-0023): _ensure_current_session_locked runs its OWN committed tx,
+            # so on a date rollover it would otherwise leak a new session row +
+            # session_opened event for a stage that only ever raises
+            # UnknownEntityError — a divergence from InMemoryStateStore, which
+            # checks the envelope first. Both stores now have no session side
+            # effect on an unknown-id stage.
+            if (
+                self._read_one(
+                    "SELECT 1 FROM execution_envelopes WHERE id = ?", (envelope_id,)
+                )
+                is None
+            ):
+                raise UnknownEntityError(f"envelope {envelope_id} not found")
+            session = self._ensure_current_session_locked()
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (envelope_id,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownEntityError(f"envelope {envelope_id} not found")
+                env = self._envelope(row)
+                # INV-060: staging is new order intent — refused while HALTED,
+                # checked inside the SAME transaction as the writes below.
+                if (
+                    self._current_trading_state_locked(session.id)
+                    is TradingState.HALTED
+                ):
+                    raise OrderIntentBlockedError(
+                        "envelope action refused: trading halted (kill switch engaged)"
+                    )
+                actions, working = self._envelope_action_context_locked(cur, env)
+                sid = session_id if session_id is not None else session.id
+                plan = plan_stage_envelope_action(
+                    env,
+                    action,
+                    history=actions,
+                    working_order=working,
+                    session_id=sid,
+                    snapshot_fingerprint=snapshot_fingerprint,
+                    actor=actor,
+                    now=now,
+                    # WO-0026: live fill-derived position, read inside the
+                    # SAME transaction — the reduce-only hard rail's truth.
+                    current_position=self._position_locked(env.symbol).quantity,
+                )
+                if plan.error is not None:
+                    raise plan.error
+                if plan.outcome == STAGE_DIVERGENCE:
+                    assert plan.freeze is not None
+                    frozen = self._apply_envelope_transition_locked(cur, plan.freeze)
+                    assert plan.divergence_event is not None
+                    assert plan.audit_event is not None
+                    self._insert_execution_event(cur, plan.divergence_event)
+                    self._insert_event(
+                        cur,
+                        plan.audit_event.event_type,
+                        **plan.audit_event.as_kwargs(),
+                    )
+                    return EnvelopeActionStageResult(STAGE_DIVERGENCE, envelope=frozen)
+                if plan.outcome == STAGE_REFUSED_STALE:
+                    # WO-0029A: benign stale-plan refusal — evented, envelope
+                    # untouched, no order, zero venue calls.
+                    assert plan.action_event is not None
+                    assert plan.audit_event is not None
+                    self._insert_execution_event(cur, plan.action_event)
+                    self._insert_event(
+                        cur,
+                        plan.audit_event.event_type,
+                        **plan.audit_event.as_kwargs(),
+                    )
+                    return EnvelopeActionStageResult(STAGE_REFUSED_STALE, envelope=env)
+                assert plan.order is not None and plan.action_event is not None
+                assert plan.audit_event is not None
+                self._insert_order(cur, plan.order)
+                self._insert_execution_event(cur, plan.action_event)
+                self._insert_event(
+                    cur,
+                    plan.audit_event.event_type,
+                    **plan.audit_event.as_kwargs(),
+                )
+                return EnvelopeActionStageResult(
+                    STAGE_STAGED,
+                    envelope=env,
+                    order=plan.order,
+                    working_order=working,
+                )
+
+    async def approve_envelope_activation(
+        self,
+        draft: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        """The WO-0017 approval surface: dedup/idempotency → HALTED check →
+        create → approve → activate → events, ONE lock hold + ONE transaction
+        (ENG-001 shape; mirrors InMemoryStateStore). A kill that lands first
+        blocks the op with ZERO artifacts (the transaction never opens a
+        write); re-approving an ACTIVE envelope is an idempotent no-op."""
+
+        async with self._lock:
+            # F2 (WO-0035): read-only validation + session bootstrap BEFORE the
+            # main transaction. _ensure_current_session_locked opens its OWN
+            # transaction on a date rollover, so nesting it inside the tx below
+            # crashed the FIRST approval of a new calendar day ("cannot start a
+            # transaction within a transaction"). Ordering mirrors
+            # InMemoryStateStore exactly: status/draft rejects leave NO side
+            # effect; the session bootstrap runs only once they pass. The lock
+            # is held throughout, so the authoritative re-read inside the
+            # transaction cannot observe different state.
+            pre_row = self._read_one(
+                "SELECT * FROM execution_envelopes WHERE id = ?", (draft.id,)
+            )
+            pre = self._envelope(pre_row) if pre_row is not None else None
+            if pre is not None:
+                if pre.status is EnvelopeStatus.ACTIVE:
+                    return pre  # idempotent re-approve
+                if pre.status not in (
+                    EnvelopeStatus.PENDING,
+                    EnvelopeStatus.APPROVED,
+                ):
+                    raise EnvelopeTransitionError(
+                        f"cannot approve envelope {draft.id}: it is {pre.status.value}"
+                    )
+            else:
+                bad = envelope_draft_reason(draft)
+                if bad is not None:
+                    raise InvalidOrderError(bad)
+            session = self._ensure_current_session_locked()
+            with self._tx() as cur:
+                row = cur.execute(
+                    "SELECT * FROM execution_envelopes WHERE id = ?",
+                    (draft.id,),
+                ).fetchone()
+                stored = self._envelope(row) if row is not None else None
+                if stored is not None:
+                    if stored.status is EnvelopeStatus.ACTIVE:
+                        return stored  # idempotent re-approve
+                    if stored.status not in (
+                        EnvelopeStatus.PENDING,
+                        EnvelopeStatus.APPROVED,
+                    ):
+                        raise EnvelopeTransitionError(
+                            f"cannot approve envelope {draft.id}: it is "
+                            f"{stored.status.value}"
+                        )
+                else:
+                    bad = envelope_draft_reason(draft)
+                    if bad is not None:
+                        raise InvalidOrderError(bad)
+                # INV-060: the kill switch blocks NEW standing order intent —
+                # checked inside the SAME transaction as every write below.
+                if (
+                    self._current_trading_state_locked(session.id)
+                    is TradingState.HALTED
+                ):
+                    raise OrderIntentBlockedError(
+                        "envelope activation refused: trading halted "
+                        "(kill switch engaged)"
+                    )
+                symbol = (stored or draft).symbol
+                clash = self._other_active_envelope_for_symbol_locked(
+                    cur, symbol, excluding=draft.id
+                )
+                if clash is not None:
+                    raise EnvelopeTransitionError(
+                        f"envelope {clash} is already ACTIVE for symbol "
+                        f"{symbol} (per-symbol single-ACTIVE invariant)"
+                    )
+                if stored is None:
+                    key = normalize_symbol(draft.symbol)
+                    stored = draft.model_copy(update={"symbol": key})
+                    self._insert_envelope(cur, stored)
+                    self._insert_execution_event(
+                        cur, envelope_created_event(stored, actor=actor)
+                    )
+                    self._insert_event(
+                        cur,
+                        "envelope_created",
+                        message=(f"execution envelope created for {stored.symbol}"),
+                        symbol=stored.symbol,
+                        session_id=stored.session_id,
+                        correlation_id=stored.sell_intent_id,
+                        payload={"actor": actor, "envelope_id": stored.id},
+                    )
+                current = stored
+                if current.status is EnvelopeStatus.PENDING:
+                    plan = plan_envelope_transition(
+                        current, EnvelopeStatus.APPROVED, actor=actor
+                    )
+                    assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                    current = self._apply_envelope_transition_locked(cur, plan)
+                plan = plan_envelope_transition(
+                    current, EnvelopeStatus.ACTIVE, actor=actor
+                )
+                assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                return self._apply_envelope_transition_locked(cur, plan)
+
+    def _cancel_symbol_envelopes_locked(
+        self, cur: sqlite3.Cursor, symbol: str, *, actor: str, reason: str
+    ) -> None:
+        """ADR-010 §4 / D-2: cancel every non-terminal envelope for ``symbol``
+        through legal edges (ACTIVE via FROZEN) on an open ``_tx`` cursor —
+        the manual-flatten preemption, committing in the SAME transaction as
+        the flatten's own writes (mirrors InMemoryStateStore)."""
+
+        rows = cur.execute(
+            "SELECT * FROM execution_envelopes WHERE symbol = ?", (symbol,)
+        ).fetchall()
+        preempted: list[str] = []
+        for row in rows:
+            env = self._envelope(row)
+            if not ENVELOPE_TRANSITIONS.get(env.status):
+                continue  # terminal — nothing to preempt
+            current = env
+            if current.status is EnvelopeStatus.ACTIVE:
+                plan = plan_envelope_transition(
+                    current, EnvelopeStatus.FROZEN, actor=actor, reason=reason
+                )
+                assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                current = self._apply_envelope_transition_locked(cur, plan)
+            plan = plan_envelope_transition(
+                current, EnvelopeStatus.CANCELLED, actor=actor, reason=reason
+            )
+            assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+            self._apply_envelope_transition_locked(cur, plan)
+            preempted.append(env.id)
+        # WO-0024: a preempted mandate's obligations die with it — its staged
+        # CREATED orders are cancelled in the SAME transaction, sequenced
+        # AFTER the envelope cancellation events
+        # (FINDING-W3-staged-order-outlives-preemption).
+        self._cancel_staged_envelope_orders_locked(cur, preempted, actor=actor)
+
+    def _cancel_staged_envelope_orders_locked(
+        self, cur: sqlite3.Cursor, envelope_ids: list[str], *, actor: str
+    ) -> None:
+        """Locally CANCEL every CREATED order staged by the given envelopes
+        (WO-0024), on the caller's open transaction. CREATED means never
+        venue-submitted, so this is a pure local-truth write — no venue call
+        belongs here. SUBMITTING/SUBMITTED orders are untouched: venue-side
+        wind-down stays with the monitoring loop."""
+
+        if not envelope_ids:
+            return
+        marks = ",".join("?" for _ in envelope_ids)
+        rows = cur.execute(
+            "SELECT DISTINCT order_id FROM execution_events "
+            f"WHERE envelope_id IN ({marks}) AND event_type = ? "
+            "AND order_id IS NOT NULL",
+            (*envelope_ids, ExecutionEventType.ENVELOPE_ACTION.value),
+        ).fetchall()
+        for (order_id,) in rows:
+            order_row = cur.execute(
+                "SELECT * FROM orders WHERE id = ?", (order_id,)
+            ).fetchone()
+            if order_row is None:
+                continue
+            order = self._order(order_row)
+            if order.status is not OrderStatus.CREATED:
+                continue
+            plan = plan_transition_order(
+                order=order,
+                new_status=OrderStatus.CANCELED,
+                filled_quantity=None,
+                broker_order_id=None,
+                actor=actor,
+            )
+            assert plan.outcome == ORDER_TRANSITION_APPLY
+            assert plan.order is not None and plan.event is not None
+            cur.execute(
+                "UPDATE orders SET status=?, canceled_at=?, updated_at=? WHERE id=?",
+                (
+                    OrderStatus.CANCELED.value,
+                    _dt(plan.order.canceled_at),
+                    _dt(plan.order.updated_at),
+                    plan.order.id,
+                ),
+            )
+            self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
+            exec_event = execution_event_for_routine_transition(
+                order, plan.order.status, plan.order.filled_quantity
+            )
+            if exec_event is not None:
+                self._insert_execution_event(cur, exec_event)
+
     def _dispatch_order_for_sell_intent_locked(
         self,
         intent: SellIntent,
@@ -1611,7 +2516,7 @@ class SqliteStateStore(StateStore):
         )
         if plan.outcome == CREATE_ORDER_REJECT:
             if plan.reject_event is not None or plan.expire_intent is not None:
-                with (nullcontext(cur) if cur is not None else self._tx()) as c:
+                with nullcontext(cur) if cur is not None else self._tx() as c:
                     if plan.reject_event is not None:
                         self._insert_event(
                             c,
@@ -1635,7 +2540,7 @@ class SqliteStateStore(StateStore):
         intent.order_id = order.id
         intent.ordered_at = now
         intent.updated_at = now
-        with (nullcontext(cur) if cur is not None else self._tx()) as c:
+        with nullcontext(cur) if cur is not None else self._tx() as c:
             self._insert_order(c, order)
             self._update_sell_intent(c, intent)
             for event in plan.events:
@@ -1806,8 +2711,11 @@ class SqliteStateStore(StateStore):
             override_active = key in self._active_overrides_locked(current_session.id)
 
             plan = plan_flatten_position(
-                position=position, active_intent=active, active_order=active_order,
-                trading_state=trading_state, override_active=override_active,
+                position=position,
+                active_intent=active,
+                active_order=active_order,
+                trading_state=trading_state,
+                override_active=override_active,
                 actor=actor,
             )
 
@@ -1827,6 +2735,12 @@ class SqliteStateStore(StateStore):
                 )
 
             if plan.outcome == _PLAN_FLATTEN_FLAT:
+                # ADR-010 §4 / D-2: even with nothing to exit, a stale envelope
+                # must never outlive the human's direct backstop.
+                with self._tx() as cur:
+                    self._cancel_symbol_envelopes_locked(
+                        cur, key, actor=actor, reason="manual_flatten_preemption"
+                    )
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 # Provenance for a deferral to a live PROTECTION_FLOOR exit
@@ -1864,10 +2778,19 @@ class SqliteStateStore(StateStore):
             # (X-001) still provides the concurrency guarantee independently.
             superseded = False
             with self._tx() as cur:
+                # ADR-010 §4: envelope preemption FIRST, same transaction —
+                # the preemption events sequence before the flatten's own
+                # supersede/create writes (asserted by WO-0017 tests).
+                self._cancel_symbol_envelopes_locked(
+                    cur, key, actor=actor, reason="manual_flatten_preemption"
+                )
                 if plan.supersede_order_cancel is not None:
                     # A supersede-cancel implies the stranded active_order exists
                     # and the planner produced its cancel audit event (narrows both).
-                    assert active_order is not None and plan.supersede_cancel_event is not None
+                    assert (
+                        active_order is not None
+                        and plan.supersede_cancel_event is not None
+                    )
                     cur.execute(
                         "UPDATE orders SET status=?, canceled_at=?, updated_at=? "
                         "WHERE id=?",
@@ -2014,7 +2937,9 @@ class SqliteStateStore(StateStore):
         # derives each order's actual filled quantity from these directly
         # (see its docstring: Order.filled_quantity can lag a just-appended
         # fill by one transition_order call during reconciliation).
-        fills = [self._fill(r) for r in self._read_all("SELECT * FROM fills ORDER BY rowid")]
+        fills = [
+            self._fill(r) for r in self._read_all("SELECT * FROM fills ORDER BY rowid")
+        ]
         return existing_exposure(positions, open_orders, fills)
 
     async def current_exposure(self) -> float:
@@ -2157,7 +3082,9 @@ class SqliteStateStore(StateStore):
                     "SELECT reason FROM sell_intents WHERE id = ?",
                     (order.sell_intent_id,),
                 )
-                sell_reason = SellReason(si_row["reason"]) if si_row is not None else None
+                sell_reason = (
+                    SellReason(si_row["reason"]) if si_row is not None else None
+                )
             # ADR-001 (wave 3b): hold an autonomous BUY whose symbol is quarantined
             # by a broker overfill (derived from the event log under this lock).
             quarantined = False
@@ -2179,7 +3106,11 @@ class SqliteStateStore(StateStore):
             if plan.outcome == CLAIM_CLAIMED:
                 # CLAIM_CLAIMED guarantees a claimable order + its plan artifacts
                 # (narrows the Optionals mypy can't infer from the outcome).
-                assert order is not None and plan.order is not None and plan.event is not None
+                assert (
+                    order is not None
+                    and plan.order is not None
+                    and plan.event is not None
+                )
                 updated = plan.order
                 with self._tx() as cur:
                     cur.execute(
@@ -2324,9 +3255,7 @@ class SqliteStateStore(StateStore):
         wanted = None if statuses is None else list(statuses)
         async with self._lock:
             if wanted is None:
-                rows = self._read_all(
-                    "SELECT * FROM submit_recoveries ORDER BY rowid"
-                )
+                rows = self._read_all("SELECT * FROM submit_recoveries ORDER BY rowid")
             elif not wanted:
                 return []
             else:
@@ -2350,9 +3279,7 @@ class SqliteStateStore(StateStore):
                 "SELECT * FROM submit_recoveries WHERE id = ?", (recovery_id,)
             )
             if row is None:
-                raise UnknownEntityError(
-                    f"submit recovery {recovery_id} not found"
-                )
+                raise UnknownEntityError(f"submit recovery {recovery_id} not found")
             record = self._submit_recovery(row)
             terminal_event = recovery_status_event(
                 record.cleanup_status, cleanup_status
@@ -2583,7 +3510,10 @@ class SqliteStateStore(StateStore):
                     )
                     occurrence = crow["n"] if crow else 0
                 exec_event = execution_event_for_routine_transition(
-                    order, updated.status, updated.filled_quantity, occurrence=occurrence
+                    order,
+                    updated.status,
+                    updated.filled_quantity,
+                    occurrence=occurrence,
                 )
             elif (
                 plan.event.event_type == "order_fill_progress"
@@ -2718,8 +3648,10 @@ class SqliteStateStore(StateStore):
             )
             if not ids:
                 return []
-            order_rows = self._read_all("SELECT * FROM orders WHERE id IN (%s)"
-                % ",".join("?" * len(ids)), tuple(sorted(ids)))
+            order_rows = self._read_all(
+                "SELECT * FROM orders WHERE id IN (%s)" % ",".join("?" * len(ids)),
+                tuple(sorted(ids)),
+            )
             return sorted(
                 (self._project_order_locked(self._order(r)) for r in order_rows),
                 key=lambda o: o.id,
@@ -2748,9 +3680,7 @@ class SqliteStateStore(StateStore):
             # Fetch the state the shared planner decides over (SQL form), then
             # apply its plan. Decision logic lives once in app/store/core.py; only
             # the fetch + the write primitive are store-specific here.
-            order_row = self._read_one(
-                "SELECT * FROM orders WHERE id = ?", (order_id,)
-            )
+            order_row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
             order = self._order(order_row) if order_row is not None else None
             prior_row = self._read_one(
                 "SELECT COALESCE(SUM(quantity), 0) AS total FROM fills "
@@ -2767,12 +3697,32 @@ class SqliteStateStore(StateStore):
                     )
                     is not None
                 )
-            current = self._position_locked(key)
+            # concurrency-0 ROOT form (WO-0035): overfill judged against the
+            # position EXCLUDING this fill's own event — the record-first
+            # envelope bridge may have already folded THIS fill under the same
+            # canonical dedupe identity. Self-derived here (no caller-supplied
+            # prior_position), so no call site can reintroduce the phantom
+            # fill_overfill_quarantined by forgetting a parameter. NULL-safe:
+            # dedupe_key IS NULL rows must stay in the fold.
+            self_key = (
+                f"fill:{order_id}:{source_fill_id}"
+                if source_fill_id is not None
+                else ""
+            )
+            pos_rows = self._read_all(
+                "SELECT * FROM execution_events "
+                "WHERE symbol = ? AND event_type = 'fill' "
+                "AND (dedupe_key IS NULL OR dedupe_key != ?) ORDER BY sequence",
+                (key, self_key),
+            )
+            overfill_position = project_symbol_position(
+                [self._execution_event(r) for r in pos_rows], key
+            ).quantity
             plan = plan_append_fill(
                 order_id=order_id,
                 order=order,
                 prior_filled=prior_filled,
-                current_quantity=current.quantity,
+                current_quantity=overfill_position,
                 is_duplicate=is_duplicate,
                 symbol=key,
                 side=side,
@@ -2868,9 +3818,7 @@ class SqliteStateStore(StateStore):
             "WHERE symbol = ? AND event_type = 'fill' ORDER BY sequence",
             (symbol,),
         )
-        return project_symbol_position(
-            [self._execution_event(r) for r in rows], symbol
-        )
+        return project_symbol_position([self._execution_event(r) for r in rows], symbol)
 
     async def get_position(self, symbol: str) -> Position:
         key = normalize_symbol(symbol)
@@ -2982,9 +3930,9 @@ class SqliteStateStore(StateStore):
             """INSERT INTO execution_events
                (id, sequence, schema_version, event_type, source,
                 authority, dedupe_key, ts_event, ts_init, symbol, side,
-                quantity, price, order_id, primary_id, spawn_id,
+                quantity, price, order_id, envelope_id, primary_id, spawn_id,
                 session_id, correlation_id, payload)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 stored.id,
                 stored.sequence,
@@ -3000,6 +3948,7 @@ class SqliteStateStore(StateStore):
                 stored.quantity,
                 stored.price,
                 stored.order_id,
+                stored.envelope_id,
                 stored.primary_id,
                 stored.spawn_id,
                 stored.session_id,
@@ -3022,9 +3971,7 @@ class SqliteStateStore(StateStore):
         # slice (dual-store parity, see base.py).
         if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
-        sql = (
-            "SELECT * FROM execution_events WHERE sequence > ? ORDER BY sequence"
-        )
+        sql = "SELECT * FROM execution_events WHERE sequence > ? ORDER BY sequence"
         params: tuple = (after_sequence,)
         if limit is not None:
             sql += " LIMIT ?"
@@ -3035,9 +3982,7 @@ class SqliteStateStore(StateStore):
 
     async def get_max_execution_sequence(self) -> int:
         async with self._lock:
-            row = self._read_one(
-                "SELECT MAX(sequence) AS m FROM execution_events", ()
-            )
+            row = self._read_one("SELECT MAX(sequence) AS m FROM execution_events", ())
             return (row["m"] if row is not None else 0) or 0
 
     # ------------------------------------------------------------------ #
@@ -3059,9 +4004,7 @@ class SqliteStateStore(StateStore):
 
     async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
         async with self._lock:
-            row = self._read_one(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            )
+            row = self._read_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
             return self._session(row) if row else None
 
     async def list_sessions(self) -> list[SessionRecord]:
@@ -3088,8 +4031,11 @@ class SqliteStateStore(StateStore):
         tsc_events = self._trading_state_events_locked()
         prior_control = control_trading_state(tsc_events, session.id)
         exec_event = trading_state_change_event(
-            session.id, prior_control=prior_control, kill_switch=kill_switch,
-            buys_paused=buys_paused, reason=reason,
+            session.id,
+            prior_control=prior_control,
+            kill_switch=kill_switch,
+            buys_paused=buys_paused,
+            reason=reason,
         )
         session.kill_switch = kill_switch
         session.buys_paused = buys_paused
@@ -3113,7 +4059,10 @@ class SqliteStateStore(StateStore):
             ),
         )
         self._insert_event(
-            cur, audit_event_type, message=audit_message, session_id=session.id,
+            cur,
+            audit_event_type,
+            message=audit_message,
+            session_id=session.id,
             payload=audit_payload,
         )
         if exec_event is not None:
@@ -3130,8 +4079,12 @@ class SqliteStateStore(StateStore):
         return [self._execution_event(r) for r in rows]
 
     def _apply_reconcile_state_locked(
-        self, cur: sqlite3.Cursor, session: SessionRecord, *,
-        to: TradingState, reason: str,
+        self,
+        cur: sqlite3.Cursor,
+        session: SessionRecord,
+        *,
+        to: TradingState,
+        reason: str,
     ) -> None:
         """Co-write a RECONCILE-driver TradingState change (wave 4f / R2): the
         composed effective ``trading_state`` column + a ``driver="reconcile"``
@@ -3140,7 +4093,10 @@ class SqliteStateStore(StateStore):
         tsc_events = self._trading_state_events_locked()
         prior_reconcile = reconcile_trading_state(tsc_events, session.id)
         exec_event = reconcile_trading_state_event(
-            session.id, prior_reconcile=prior_reconcile, to=to, reason=reason,
+            session.id,
+            prior_reconcile=prior_reconcile,
+            to=to,
+            reason=reason,
         )
         if exec_event is None:
             # Reconcile driver already at `to` — a no-op re-assert. The loop drives
@@ -3159,9 +4115,11 @@ class SqliteStateStore(StateStore):
             (session.trading_state.value, _dt(session.updated_at), session.id),
         )
         self._insert_event(
-            cur, "trading_state_reconcile",
+            cur,
+            "trading_state_reconcile",
             message=f"reconcile-driven trading state -> {to.value} ({reason})",
-            session_id=session.id, payload={"to": to.value, "reason": reason},
+            session_id=session.id,
+            payload={"to": to.value, "reason": reason},
         )
         self._insert_execution_event(cur, exec_event)
 
@@ -3173,11 +4131,42 @@ class SqliteStateStore(StateStore):
             session = self._ensure_current_session_locked()
             with self._tx() as cur:
                 self._apply_control_change_locked(
-                    cur, session, kill_switch=engaged, buys_paused=session.buys_paused,
-                    audit_event_type="kill_switch_engaged" if engaged else "kill_switch_released",
+                    cur,
+                    session,
+                    kill_switch=engaged,
+                    buys_paused=session.buys_paused,
+                    audit_event_type="kill_switch_engaged"
+                    if engaged
+                    else "kill_switch_released",
                     audit_message=f"kill switch {'engaged' if engaged else 'released'}",
-                    audit_payload={"kill_switch": engaged, "actor": actor}, reason="kill_switch",
+                    audit_payload={"kill_switch": engaged, "actor": actor},
+                    reason="kill_switch",
                 )
+                if engaged:
+                    # ADR-010 §4: the kill freezes every ACTIVE envelope in
+                    # the SAME transaction as the control change. Release
+                    # never auto-resumes (FROZEN -> ACTIVE is an explicit
+                    # human action, itself refused while HALTED).
+                    rows = cur.execute(
+                        "SELECT * FROM execution_envelopes WHERE status = ?",
+                        (EnvelopeStatus.ACTIVE.value,),
+                    ).fetchall()
+                    frozen: list[str] = []
+                    for row in rows:
+                        env = self._envelope(row)
+                        plan = plan_envelope_transition(
+                            env,
+                            EnvelopeStatus.FROZEN,
+                            actor=actor,
+                            reason="kill_switch",
+                        )
+                        assert plan.outcome == ENVELOPE_TRANSITION_APPLY
+                        self._apply_envelope_transition_locked(cur, plan)
+                        frozen.append(env.id)
+                    # WO-0024: the kill blocks new order intent (INV-060) — a
+                    # staged CREATED order IS pending order intent, so it dies
+                    # in the same transaction as the freeze.
+                    self._cancel_staged_envelope_orders_locked(cur, frozen, actor=actor)
             return session
 
     async def set_buys_paused(
@@ -3188,10 +4177,14 @@ class SqliteStateStore(StateStore):
             session = self._ensure_current_session_locked()
             with self._tx() as cur:
                 self._apply_control_change_locked(
-                    cur, session, kill_switch=session.kill_switch, buys_paused=paused,
+                    cur,
+                    session,
+                    kill_switch=session.kill_switch,
+                    buys_paused=paused,
                     audit_event_type="buys_paused" if paused else "buys_resumed",
                     audit_message=f"buys {'paused' if paused else 'resumed'}",
-                    audit_payload={"buys_paused": paused, "actor": actor}, reason="buys_paused",
+                    audit_payload={"buys_paused": paused, "actor": actor},
+                    reason="buys_paused",
                 )
             return session
 
@@ -3203,9 +4196,7 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             session = self._ensure_current_session_locked()
             with self._tx() as cur:
-                self._apply_reconcile_state_locked(
-                    cur, session, to=to, reason=reason
-                )
+                self._apply_reconcile_state_locked(cur, session, to=to, reason=reason)
             return session
 
     def _current_trading_state_locked(self, session_id: str) -> TradingState:
@@ -3237,19 +4228,25 @@ class SqliteStateStore(StateStore):
     ) -> None:
         session = self._ensure_current_session_locked()
         event = emergency_reduce_override_event(
-            session.id, symbol, actor=actor, reason=reason, resolved=resolved,
+            session.id,
+            symbol,
+            actor=actor,
+            reason=reason,
+            resolved=resolved,
         )
         with self._tx() as cur:
             self._insert_execution_event(cur, event)
             self._insert_event(
                 cur,
-                "emergency_reduce_override_resolved" if resolved
+                "emergency_reduce_override_resolved"
+                if resolved
                 else "emergency_reduce_override_granted",
                 message=(
                     f"emergency reduce override {'resolved' if resolved else 'granted'} "
                     f"for {symbol} by {actor}"
                 ),
-                symbol=symbol, session_id=session.id,
+                symbol=symbol,
+                session_id=session.id,
                 payload={"actor": actor, "reason": reason},
             )
 
@@ -3280,7 +4277,10 @@ class SqliteStateStore(StateStore):
         key = normalize_symbol(symbol)
         async with self._lock:
             session = self._ensure_current_session_locked()
-            if self._current_trading_state_locked(session.id) is not TradingState.HALTED:
+            if (
+                self._current_trading_state_locked(session.id)
+                is not TradingState.HALTED
+            ):
                 raise EmergencyReduceBlockedError(
                     f"emergency reduce of {key} refused: session is not halted "
                     "(use an ordinary flatten)"
@@ -3499,13 +4499,10 @@ class SqliteStateStore(StateStore):
             session.updated_at = now
             return session
 
-    async def list_position_snapshots(
-        self, session_id: str
-    ) -> list[PositionSnapshot]:
+    async def list_position_snapshots(self, session_id: str) -> list[PositionSnapshot]:
         async with self._lock:
             rows = self._read_all(
-                "SELECT * FROM position_snapshots WHERE session_id = ? "
-                "ORDER BY rowid",
+                "SELECT * FROM position_snapshots WHERE session_id = ? ORDER BY rowid",
                 (session_id,),
             )
             return [self._snapshot(r) for r in rows]

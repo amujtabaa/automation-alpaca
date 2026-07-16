@@ -58,7 +58,9 @@ class TestStopLossRange:
         monkeypatch.setenv(PROTECTION_STOP_LOSS_PCT_ENV, "0.15")
         assert load_settings().protection_stop_loss_pct == pytest.approx(0.15)
 
-    @pytest.mark.parametrize("bad", ["0", "0.0", "-0.1", "1", "1.0", "2", "nan", "inf", "abc"])
+    @pytest.mark.parametrize(
+        "bad", ["0", "0.0", "-0.1", "1", "1.0", "2", "nan", "inf", "abc"]
+    )
     def test_out_of_range_or_nonfinite_rejected(self, monkeypatch, bad):
         _clear(monkeypatch)
         monkeypatch.setenv(PROTECTION_STOP_LOSS_PCT_ENV, bad)

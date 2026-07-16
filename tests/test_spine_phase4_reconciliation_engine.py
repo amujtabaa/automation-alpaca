@@ -24,9 +24,16 @@ _OLD = _NOW - timedelta(hours=1)  # well outside recent-order protection
 
 def _order(**kw) -> Order:
     defaults = dict(
-        id="o1", candidate_id="c1", sell_intent_id=None, symbol="AAPL",
-        side=OrderSide.BUY, quantity=100, status=OrderStatus.SUBMITTED,
-        filled_quantity=0, broker_order_id="b1", updated_at=_OLD,
+        id="o1",
+        candidate_id="c1",
+        sell_intent_id=None,
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        quantity=100,
+        status=OrderStatus.SUBMITTED,
+        filled_quantity=0,
+        broker_order_id="b1",
+        updated_at=_OLD,
     )
     defaults.update(kw)
     return Order(**defaults)
@@ -34,8 +41,12 @@ def _order(**kw) -> Order:
 
 def _report(**kw) -> BrokerOrderReport:
     defaults = dict(
-        broker_order_id="b1", client_order_id="o1", symbol="AAPL",
-        side=OrderSide.BUY, status=OrderStatus.SUBMITTED, filled_quantity=0,
+        broker_order_id="b1",
+        client_order_id="o1",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        status=OrderStatus.SUBMITTED,
+        filled_quantity=0,
         fills=[],
     )
     defaults.update(kw)
@@ -128,8 +139,11 @@ def test_our_order_is_never_external():
 # --------------------------------------------------------------------------- #
 def test_inferred_fill_from_priced_report_fill():
     report = _report(
-        status=OrderStatus.PARTIALLY_FILLED, filled_quantity=40,
-        fills=[BrokerFill(source_fill_id="b1:40", quantity=40, price=9.5, filled_at=_NOW)],
+        status=OrderStatus.PARTIALLY_FILLED,
+        filled_quantity=40,
+        fills=[
+            BrokerFill(source_fill_id="b1:40", quantity=40, price=9.5, filled_at=_NOW)
+        ],
     )
     plan = _plan([_order()], breports=[report])
     assert len(plan.inferred_fills) == 1
@@ -154,8 +168,11 @@ def test_inferred_fill_identity_matches_real_poll_identity():
     # what a real get_order_status poll would carry (alpaca_paper: {broker_id}:{cum}).
     # So both derive the SAME fill-event dedup key and collapse to one (no double-count).
     report = _report(
-        status=OrderStatus.PARTIALLY_FILLED, filled_quantity=40,
-        fills=[BrokerFill(source_fill_id="b1:40", quantity=40, price=9.5, filled_at=_NOW)],
+        status=OrderStatus.PARTIALLY_FILLED,
+        filled_quantity=40,
+        fills=[
+            BrokerFill(source_fill_id="b1:40", quantity=40, price=9.5, filled_at=_NOW)
+        ],
     )
     inferred = _plan([_order()], breports=[report]).inferred_fills[0]
     real_poll_source_fill_id = "b1:40"  # {broker_order_id}:{cumulative}
@@ -168,7 +185,9 @@ def test_inferred_fill_identity_matches_real_poll_identity():
 def test_position_quantity_mismatch_surfaced():
     plan = _plan(
         positions=[Position(symbol="AAPL", quantity=100, average_price=10.0)],
-        bpositions=[BrokerPositionReport(symbol="AAPL", quantity=90, average_price=10.0)],
+        bpositions=[
+            BrokerPositionReport(symbol="AAPL", quantity=90, average_price=10.0)
+        ],
     )
     assert len(plan.position_mismatches) == 1
     m = plan.position_mismatches[0]
@@ -179,7 +198,9 @@ def test_position_avg_within_tolerance_is_ok():
     # 0.01% tolerance: 10.00 vs 10.0009 is within.
     plan = _plan(
         positions=[Position(symbol="AAPL", quantity=100, average_price=10.0)],
-        bpositions=[BrokerPositionReport(symbol="AAPL", quantity=100, average_price=10.0009)],
+        bpositions=[
+            BrokerPositionReport(symbol="AAPL", quantity=100, average_price=10.0009)
+        ],
     )
     assert plan.position_mismatches == []
 
@@ -187,7 +208,9 @@ def test_position_avg_within_tolerance_is_ok():
 def test_position_avg_beyond_tolerance_surfaced():
     plan = _plan(
         positions=[Position(symbol="AAPL", quantity=100, average_price=10.0)],
-        bpositions=[BrokerPositionReport(symbol="AAPL", quantity=100, average_price=10.5)],
+        bpositions=[
+            BrokerPositionReport(symbol="AAPL", quantity=100, average_price=10.5)
+        ],
     )
     assert plan.position_mismatches[0].kind == "avg_price"
 

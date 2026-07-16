@@ -22,16 +22,18 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import date
-from typing import Any, Iterable, Literal, Optional
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional
 
 from app.models import (
     RECOVERY_UNRESOLVED,
     Candidate,
     CandidateStatus,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     Event,
+    ExecutionEnvelope,
     ExecutionEvent,
     Fill,
     Order,
@@ -48,6 +50,15 @@ from app.models import (
     TradingState,
     WatchlistSymbol,
 )
+
+if TYPE_CHECKING:
+    # These live in modules that import ``app.store.base`` (``core`` re-imports
+    # this ABC; ``sellside.types`` is pulled in transitively), so importing them
+    # at runtime here would cycle. They appear only in method annotations, which
+    # ``from __future__ import annotations`` keeps as strings — a TYPE_CHECKING
+    # import is all mypy needs to bind them.
+    from app.sellside.types import PlannedAction
+    from app.store.core import EnvelopeActionStageResult
 
 
 # A bounded ticker domain: a leading letter then up to nine more of
@@ -248,6 +259,18 @@ class ProtectionHaltedError(StoreError):
     """
 
 
+class EnvelopeTransitionError(ValueError):
+    """An illegal envelope status transition, or an activation that would
+    violate the single-ACTIVE-per-intent invariant (ADR-010 §3).
+
+    Relocated here from ``app.store.core`` by WO-0030 so it sits alongside the
+    ``StateStore`` envelope API it is raised by; ``app.store.core`` re-exports
+    it for compatibility. Kept a plain :class:`ValueError` subclass (not
+    :class:`StoreError`) — reparenting it would widen every ``except
+    StoreError`` and change catch behavior; a relocation must not.
+    """
+
+
 @dataclass(frozen=True)
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.
@@ -291,9 +314,9 @@ class RiskLimits:
 
 
 # SubmissionClaim.outcome values (D-017). The monitoring loop dispatches on these:
-CLAIM_CLAIMED = "claimed"   # order transitioned CREATED -> SUBMITTING; submit it
-CLAIM_BLOCKED = "blocked"   # a control blocks submission; no state change, reason set
-CLAIM_SKIPPED = "skipped"   # order was no longer CREATED (already claimed/cancelled)
+CLAIM_CLAIMED = "claimed"  # order transitioned CREATED -> SUBMITTING; submit it
+CLAIM_BLOCKED = "blocked"  # a control blocks submission; no state change, reason set
+CLAIM_SKIPPED = "skipped"  # order was no longer CREATED (already claimed/cancelled)
 
 
 @dataclass(frozen=True)
@@ -315,13 +338,13 @@ class SubmissionClaim:
 
 
 # FlattenResult.outcome values (X-001). The route dispatches on these:
-FLATTEN_FLAT = "flat"        # no open position; route surfaces 409
+FLATTEN_FLAT = "flat"  # no open position; route surfaces 409
 FLATTEN_EXISTING = "existing"  # an existing intent returned as-is (idempotent
-                               # own manual_flatten, or a genuinely-live
-                               # protection_floor exit left untouched)
+# own manual_flatten, or a genuinely-live
+# protection_floor exit left untouched)
 FLATTEN_CREATED = "created"  # a fresh manual_flatten intent was created + ordered
-                             # (superseding a non-live protection_floor exit first,
-                             # if one was active)
+# (superseding a non-live protection_floor exit first,
+# if one was active)
 
 # P6-C minimal actor-audit: the default ``actor`` stamped on a control-command
 # audit event (kill switch / pause-buys — the sensitive ``/api/controls/*`` surface)
@@ -389,17 +412,13 @@ class StateStore(ABC):
         """Add a symbol (idempotent: returns the existing row if present)."""
 
     @abstractmethod
-    async def list_watchlist(self) -> list[WatchlistSymbol]:
-        ...
+    async def list_watchlist(self) -> list[WatchlistSymbol]: ...
 
     @abstractmethod
-    async def get_watchlist_symbol(self, symbol: str) -> Optional[WatchlistSymbol]:
-        ...
+    async def get_watchlist_symbol(self, symbol: str) -> Optional[WatchlistSymbol]: ...
 
     @abstractmethod
-    async def set_watchlist_armed(
-        self, symbol: str, armed: bool
-    ) -> WatchlistSymbol:
+    async def set_watchlist_armed(self, symbol: str, armed: bool) -> WatchlistSymbol:
         """Arm/disarm a symbol. Raises :class:`UnknownEntityError` if absent."""
 
     @abstractmethod
@@ -441,12 +460,10 @@ class StateStore(ABC):
         *,
         session_id: Optional[str] = None,
         status: Optional[CandidateStatus] = None,
-    ) -> list[Candidate]:
-        ...
+    ) -> list[Candidate]: ...
 
     @abstractmethod
-    async def get_candidate(self, candidate_id: str) -> Optional[Candidate]:
-        ...
+    async def get_candidate(self, candidate_id: str) -> Optional[Candidate]: ...
 
     @abstractmethod
     async def transition_candidate(
@@ -513,8 +530,7 @@ class StateStore(ABC):
         ever left stranded ``approved`` with no order."""
 
     @abstractmethod
-    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]:
-        ...
+    async def get_sell_intent(self, intent_id: str) -> Optional[SellIntent]: ...
 
     @abstractmethod
     async def list_sell_intents(
@@ -523,8 +539,7 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
         status: Optional[SellIntentStatus] = None,
         symbol: Optional[str] = None,
-    ) -> list[SellIntent]:
-        ...
+    ) -> list[SellIntent]: ...
 
     @abstractmethod
     async def active_sell_intent_for(self, symbol: str) -> Optional[SellIntent]:
@@ -866,12 +881,10 @@ class StateStore(ABC):
         *,
         session_id: Optional[str] = None,
         candidate_id: Optional[str] = None,
-    ) -> list[Order]:
-        ...
+    ) -> list[Order]: ...
 
     @abstractmethod
-    async def get_order(self, order_id: str) -> Optional[Order]:
-        ...
+    async def get_order(self, order_id: str) -> Optional[Order]: ...
 
     @abstractmethod
     async def transition_order(
@@ -979,6 +992,21 @@ class StateStore(ABC):
         provenance only — dedup/position semantics are unchanged, so a synthetic
         fill dedups against the real observation of the same execution (INV-5).
 
+        **Overfill self-derivation (WO-0035, root form of REV-0023
+        concurrency-0).** The broker-overfill check evaluates against the
+        position EXCLUDING this fill's own event (dedupe identity
+        ``fill:{order_id}:{source_fill_id}``): the envelope bridge record-first
+        FOLDS the fill via ``record_envelope_fill`` before calling here, and
+        comparing the incoming quantity against the post-fold position
+        fabricated a ``fill_overfill_quarantined`` event on every clean bridged
+        exit. Both implementations derive the exclusion INTERNALLY — there is
+        deliberately no caller-supplied prior-position parameter, so no call
+        site (streamed, inferred, or future) can reintroduce the phantom by
+        forgetting one. With no bridged event present the exclusion is a no-op
+        and the check equals the live derived position. It affects ONLY the
+        overfill DECISION/event — never the fold (position derives from the
+        deduped FILL event log regardless).
+
         * If ``source_fill_id`` duplicates an existing fill: no row is written,
           position is untouched, a duplicate-ignored event is recorded, and the
           result's ``status`` is ``"duplicate"``.
@@ -995,8 +1023,7 @@ class StateStore(ABC):
         symbol: Optional[str] = None,
         order_id: Optional[str] = None,
         session_id: Optional[str] = None,
-    ) -> list[Fill]:
-        ...
+    ) -> list[Fill]: ...
 
     # ------------------------------------------------------------------ #
     # Positions (derived, read-only — folded from fills)
@@ -1112,6 +1139,148 @@ class StateStore(ABC):
         """The highest assigned ``sequence`` in the log, or ``0`` if empty."""
 
     # ------------------------------------------------------------------ #
+    # Execution envelopes (Spine v2 / ADR-010 — the autonomous sell-side
+    # execution mandate: a human-approved standing order with bounds the
+    # engine reprices within).
+    #
+    # WO-0030 lifted this API onto the ABC. Before, each method was reachable
+    # only through a per-caller structural ``Protocol`` + ``cast`` (the
+    # approval gate, the reconciliation executor, the monitoring tick, the
+    # trading routes' facade) — so ``mypy`` verified NOTHING at exactly these
+    # seams. Declared here, the seams are typed against BOTH concrete stores:
+    # a dropped or mistyped envelope method now fails ``mypy app/`` at the
+    # store, not silently at a cast.
+    # ------------------------------------------------------------------ #
+    @abstractmethod
+    async def create_envelope(
+        self,
+        envelope: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        """Persist a draft envelope (validated + audited) atomically, writing
+        its ``envelope_created`` execution + audit events. Raises
+        :class:`InvalidOrderError` for a malformed draft or a duplicate id."""
+
+    @abstractmethod
+    async def get_envelope(self, envelope_id: str) -> Optional[ExecutionEnvelope]:
+        """The envelope with this id, or ``None``."""
+
+    @abstractmethod
+    async def list_envelopes(
+        self,
+        *,
+        sell_intent_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        status: Optional[EnvelopeStatus] = None,
+    ) -> list[ExecutionEnvelope]:
+        """Envelopes, optionally filtered by originating intent / symbol /
+        status. ``status`` is validated as a real :class:`EnvelopeStatus`."""
+
+    @abstractmethod
+    async def transition_envelope(
+        self,
+        envelope_id: str,
+        new_status: EnvelopeStatus,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> ExecutionEnvelope:
+        """Atomically transition an envelope's status and write its audit +
+        lifecycle execution events (ADR-010 §3). ``new_status`` is typed
+        :class:`EnvelopeStatus`, so a non-envelope state cannot be passed.
+
+        Entering ``ACTIVE`` (activation OR resume from FROZEN) is new standing
+        order intent — refused while ``HALTED``
+        (:class:`OrderIntentBlockedError`) and subject to the
+        single-ACTIVE-per-intent invariant (:class:`EnvelopeTransitionError`),
+        both checked under the same lock/transaction as the write. A
+        same-status request is an idempotent no-op. An envelope fully filled
+        while FROZEN completes atomically on resume. Raises
+        :class:`UnknownEntityError` for an unknown id."""
+
+    @abstractmethod
+    async def supersede_envelope(
+        self,
+        old_envelope_id: str,
+        successor: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        reason: Optional[str] = None,
+    ) -> ExecutionEnvelope:
+        """Atomically retire ``old_envelope_id`` and install ``successor`` as
+        the intent's new mandate (ADR-010 §3), conserving remaining quantity.
+        Refused while a live venue order is working on the old mandate
+        (WO-0027); on success it sweeps the old mandate's staged ``CREATED``
+        orders in the SAME atomic unit, and enforces that no OTHER envelope of
+        the intent is ACTIVE (:class:`EnvelopeTransitionError`). Raises
+        :class:`UnknownEntityError` (unknown old id) / :class:`InvalidOrderError`
+        (duplicate successor id)."""
+
+    @abstractmethod
+    async def record_envelope_fill(
+        self,
+        envelope_id: str,
+        *,
+        quantity: int,
+        dedupe_key: str,
+        price: float,
+        order_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        ts_event: Optional[datetime] = None,
+        source: EventSource = EventSource.BROKER_REST,
+        authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        now: Optional[datetime] = None,
+    ) -> ExecutionEnvelope:
+        """Apply one deduped fill fact — the ONLY ``remaining_quantity`` writer.
+        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
+        that fill was already counted (exactly-once, INV-5). Appends the FILL
+        execution event and, if the fill exhausts the mandate, chains the
+        terminal transition, atomically. Raises :class:`UnknownEntityError` for
+        an unknown id."""
+
+    @abstractmethod
+    async def stage_envelope_action(
+        self,
+        envelope_id: str,
+        action: "PlannedAction",
+        *,
+        snapshot_fingerprint: str,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+        session_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> "EnvelopeActionStageResult":
+        """The write-time half of D-3 (WO-0019): re-validate the planned
+        ``action`` against the envelope's bounds under ONE lock/transaction,
+        then either stage its ``CREATED`` order + accounting event, freeze the
+        envelope on a deterministic-rail divergence
+        (``ENVELOPE_PLAN_DIVERGENCE``, WO-0029A), or benignly refuse a
+        state-stale plan (``STAGE_REFUSED_STALE`` — evented, envelope
+        untouched, no order, zero venue calls). Staging is new order intent,
+        refused while ``HALTED`` (:class:`OrderIntentBlockedError`). ``now`` is
+        the injected validation clock (engine discipline — cooldown math never
+        reads a bare wall clock). See
+        :func:`app.store.core.plan_stage_envelope_action`."""
+
+    @abstractmethod
+    async def approve_envelope_activation(
+        self,
+        draft: ExecutionEnvelope,
+        *,
+        actor: str = COMMAND_ACTOR_SYSTEM,
+    ) -> ExecutionEnvelope:
+        """The WO-0017 approval surface — the human-gated activation of an
+        autonomous sell-side mandate: dedup/idempotency → HALTED check →
+        create → approve → activate → events, as ONE store-atomic unit
+        (ENG-001 shape). A kill that lands first blocks the op with ZERO
+        artifacts; re-approving an already-``ACTIVE`` envelope is an idempotent
+        no-op; the single-ACTIVE-per-intent invariant is enforced
+        (:class:`EnvelopeTransitionError`). Raises
+        :class:`OrderIntentBlockedError` while ``HALTED`` and
+        :class:`InvalidOrderError` for a malformed new draft."""
+
+    # ------------------------------------------------------------------ #
     # Sessions / control flags
     # ------------------------------------------------------------------ #
     @abstractmethod
@@ -1119,8 +1288,7 @@ class StateStore(ABC):
         """The active session (creating today's if none is active)."""
 
     @abstractmethod
-    async def get_session_by_date(self, day: date) -> Optional[SessionRecord]:
-        ...
+    async def get_session_by_date(self, day: date) -> Optional[SessionRecord]: ...
 
     @abstractmethod
     async def get_session_by_id(self, session_id: str) -> Optional[SessionRecord]:
@@ -1132,8 +1300,7 @@ class StateStore(ABC):
         """
 
     @abstractmethod
-    async def list_sessions(self) -> list[SessionRecord]:
-        ...
+    async def list_sessions(self) -> list[SessionRecord]: ...
 
     @abstractmethod
     async def set_kill_switch(
@@ -1255,7 +1422,5 @@ class StateStore(ABC):
         """
 
     @abstractmethod
-    async def list_position_snapshots(
-        self, session_id: str
-    ) -> list[PositionSnapshot]:
+    async def list_position_snapshots(self, session_id: str) -> list[PositionSnapshot]:
         """The position snapshots captured when ``session_id`` was closed."""

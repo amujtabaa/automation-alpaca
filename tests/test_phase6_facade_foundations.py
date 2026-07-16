@@ -58,7 +58,9 @@ _CASES = [
 
 
 @pytest.mark.parametrize("store_error, facade_type, http_status", _CASES)
-def test_store_error_translates_to_expected_status(store_error, facade_type, http_status):
+def test_store_error_translates_to_expected_status(
+    store_error, facade_type, http_status
+):
     with pytest.raises(FacadeError) as caught:
         with _translate_store_errors():
             raise store_error
@@ -118,8 +120,11 @@ def test_facades_construct_store_only_and_with_injected_deps():
     # with injected collaborators (sentinels stand in for the real ports)
     q = StoreBackedQueryFacade(store, market_data=object())
     c = StoreBackedCommandFacade(
-        store, broker=object(), market_data=object(),
-        approval_gate=object(), settings=object(),
+        store,
+        broker=object(),
+        market_data=object(),
+        approval_gate=object(),
+        settings=object(),
     )
     assert q._market_data is not None
     assert c._broker is not None and c._approval_gate is not None

@@ -47,7 +47,9 @@ async def _protective_floor_order(store, symbol, qty, *, session_id=None):
     if session_id is None:
         session_id = (await store.get_current_session()).id
     si = await store.create_sell_intent(
-        symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=qty,
+        symbol=symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=qty,
         session_id=session_id,
     )
     await store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
@@ -148,7 +150,9 @@ async def test_stranded_manual_flatten_with_no_order_self_heals(any_store):
     await _hold(any_store, "AAPL", 100)
     session = await any_store.get_current_session()
     stranded = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.MANUAL_FLATTEN,
+        target_quantity=100,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(stranded.id, SellIntentStatus.APPROVED)
@@ -162,7 +166,9 @@ async def test_stranded_manual_flatten_with_no_order_self_heals(any_store):
     assert result.intent.id != stranded.id
     assert result.order is not None
     assert result.order.status is OrderStatus.CREATED
-    assert (await any_store.get_sell_intent(stranded.id)).status is SellIntentStatus.EXPIRED
+    assert (
+        await any_store.get_sell_intent(stranded.id)
+    ).status is SellIntentStatus.EXPIRED
     # A THIRD call is idempotent against the freshly-created (real) exit —
     # not against the now-expired stranded one.
     third = await any_store.flatten_position("AAPL")
@@ -192,8 +198,8 @@ async def test_flatten_dispatch_crash_leaves_no_partial(any_store, monkeypatch):
 
     patched = False
     for name in (
-        "_dispatch_order_for_sell_intent_locked",     # sqlite
-        "_dispatch_order_for_sell_intent_unlocked",   # memory
+        "_dispatch_order_for_sell_intent_locked",  # sqlite
+        "_dispatch_order_for_sell_intent_unlocked",  # memory
     ):
         if hasattr(any_store, name):
             monkeypatch.setattr(any_store, name, _crash)
@@ -247,7 +253,9 @@ async def test_supersedes_stranded_intent_with_no_order(any_store):
     await _hold(any_store, "AAPL", 100)
     session = await any_store.get_current_session()
     stranded = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
         session_id=session.id,
     )
     await any_store.transition_sell_intent(stranded.id, SellIntentStatus.APPROVED)
@@ -259,7 +267,9 @@ async def test_supersedes_stranded_intent_with_no_order(any_store):
     assert result.superseded is True
     assert result.intent.reason is SellReason.MANUAL_FLATTEN
     assert result.intent.id != stranded.id
-    assert (await any_store.get_sell_intent(stranded.id)).status is SellIntentStatus.EXPIRED
+    assert (
+        await any_store.get_sell_intent(stranded.id)
+    ).status is SellIntentStatus.EXPIRED
 
 
 # ---- a genuinely LIVE protection_floor exit is left alone ----------------- #
@@ -425,7 +435,11 @@ async def test_flat_after_all_exits_terminal_returns_flat_not_stale(any_store):
     result = await any_store.flatten_position("AAPL")
     # Fully fill the flatten sell -> position goes flat.
     await any_store.append_fill(
-        result.order.id, "AAPL", OrderSide.SELL, 100, 9.0,
+        result.order.id,
+        "AAPL",
+        OrderSide.SELL,
+        100,
+        9.0,
         session_id=result.intent.session_id,
     )
     second = await any_store.flatten_position("AAPL")

@@ -46,6 +46,8 @@ class MockBrokerAdapter(BrokerAdapter):
         self.status_queries: list[str] = []
         self.canceled: list[str] = []
         self.client_queries: list[str] = []  # get_order_by_client_order_id calls
+        # replace_order calls: (old_broker_id, client_order_id, limit, qty).
+        self.replaced: list[tuple[str, str, Optional[float], Optional[int]]] = []
 
         # broker_order_id -> the update get_order_status will return.
         self._responses: dict[str, BrokerOrderUpdate] = {}
@@ -70,9 +72,11 @@ class MockBrokerAdapter(BrokerAdapter):
         self.open_order_report_queries: int = 0
         self.position_report_queries: int = 0
 
-        # When set, the next submit/cancel/client-query/report raises this and clears.
+        # When set, the next submit/cancel/replace/client-query/report raises
+        # this and clears.
         self._submit_error: Optional[BaseException] = None
         self._cancel_error: Optional[BaseException] = None
+        self._replace_error: Optional[BaseException] = None
         self._client_query_error: Optional[BaseException] = None
         self._open_orders_error: Optional[BaseException] = None
         self._positions_error: Optional[BaseException] = None
@@ -120,6 +124,36 @@ class MockBrokerAdapter(BrokerAdapter):
         self._responses[broker_order_id] = BrokerOrderUpdate(
             OrderStatus.CANCELED, filled, fills
         )
+
+    async def replace_order(
+        self,
+        broker_order_id: str,
+        *,
+        client_order_id: str,
+        limit_price: Optional[float] = None,
+        quantity: Optional[int] = None,
+    ) -> str:
+        # WO-0019a: deterministic venue-side replace. The old order goes
+        # terminal (Alpaca marks it "replaced"; our OrderStatus vocabulary maps
+        # that to CANCELED) with its observed fills preserved; the replacement
+        # gets the deterministic ``broker-<client_order_id>`` id and is
+        # discoverable by client id (the ADR-002 ambiguous-replace recovery).
+        self.replaced.append((broker_order_id, client_order_id, limit_price, quantity))
+        if self._replace_error is not None:
+            err, self._replace_error = self._replace_error, None
+            raise err
+        prior = self._responses.get(broker_order_id)
+        filled = prior.filled_quantity if prior else 0
+        fills = prior.fills if prior else []
+        self._responses[broker_order_id] = BrokerOrderUpdate(
+            OrderStatus.CANCELED, filled, fills
+        )
+        new_broker_id = _broker_id(client_order_id)
+        self._broker_ids[client_order_id] = new_broker_id
+        self._responses.setdefault(
+            new_broker_id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])
+        )
+        return new_broker_id
 
     async def get_order_by_client_order_id(
         self, client_order_id: str
@@ -257,9 +291,7 @@ class MockBrokerAdapter(BrokerAdapter):
             order_id, BrokerOrderUpdate(status, filled_quantity, fills)
         )
 
-    def seed_venue_order(
-        self, client_order_id: str, update: BrokerOrderUpdate
-    ) -> None:
+    def seed_venue_order(self, client_order_id: str, update: BrokerOrderUpdate) -> None:
         """Simulate that the venue HAS an order under ``client_order_id`` (ADR-002)
         — e.g. an ambiguous submit that actually reached Alpaca even though
         ``submit_order`` raised. Independent of the submit path, so a test can set
@@ -276,6 +308,13 @@ class MockBrokerAdapter(BrokerAdapter):
 
     def fail_next_cancel(self, exc: BaseException) -> None:
         self._cancel_error = exc
+
+    def fail_next_replace(self, exc: BaseException) -> None:
+        """Make the next ``replace_order`` raise ``exc`` (then clear) — e.g. an
+        :class:`AmbiguousBrokerError` to exercise the quarantine-not-blind-
+        re-replace path."""
+
+        self._replace_error = exc
 
     def fail_next_client_query(self, exc: BaseException) -> None:
         """Make the next ``get_order_by_client_order_id`` raise ``exc`` (a query

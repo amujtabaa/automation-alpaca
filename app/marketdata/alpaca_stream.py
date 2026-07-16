@@ -108,7 +108,9 @@ def _trading_day(dt: datetime) -> date:
     return dt.astimezone(EASTERN).date()
 
 
-def _seed_from_snapshot(raw) -> tuple[
+def _seed_from_snapshot(
+    raw,
+) -> tuple[
     Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]
 ]:
     """Extract ``(last_price, bid, ask, volume, prev_close)`` from an Alpaca
@@ -339,7 +341,13 @@ class AlpacaMarketDataStream(MarketDataService):
 
     def _fetch_seed(
         self, symbol: str
-    ) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+    ) -> tuple[
+        Optional[float],
+        Optional[float],
+        Optional[float],
+        Optional[float],
+        Optional[float],
+    ]:
         """REST-seed one symbol's snapshot fields (sync; called via to_thread).
 
         One symbol at a time, not a batched multi-symbol request: a batch
@@ -357,7 +365,9 @@ class AlpacaMarketDataStream(MarketDataService):
                 return None, None, None, None, None
             return _seed_from_snapshot(raw)
         except Exception:
-            _log.exception("failed to seed snapshot for %s; proceeding with nulls", symbol)
+            _log.exception(
+                "failed to seed snapshot for %s; proceeding with nulls", symbol
+            )
             return None, None, None, None, None
 
     async def _reseed_symbol(self, symbol: str, now: datetime) -> None:
@@ -404,7 +414,9 @@ class AlpacaMarketDataStream(MarketDataService):
                 return  # unsubscribed while the REST call was in flight
             self._snapshots[symbol] = dataclasses.replace(
                 existing,
-                prev_close=prev_close if prev_close is not None else existing.prev_close,
+                prev_close=prev_close
+                if prev_close is not None
+                else existing.prev_close,
                 volume=volume,
             )
             self._seeded_on[symbol] = _trading_day(now)

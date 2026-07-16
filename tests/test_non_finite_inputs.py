@@ -71,4 +71,9 @@ def test_schema_rejects_non_finite_limit_price():
         with pytest.raises(ValidationError):
             MockCandidateCreate(symbol="AAPL", suggested_limit_price=bad)
     # A finite positive price is still accepted.
-    assert MockCandidateCreate(symbol="AAPL", suggested_limit_price=1.5).suggested_limit_price == 1.5
+    assert (
+        MockCandidateCreate(
+            symbol="AAPL", suggested_limit_price=1.5
+        ).suggested_limit_price
+        == 1.5
+    )

@@ -52,8 +52,14 @@ async def _hold(store, symbol: str, qty: int, *, avg: float = 10.0) -> str:
         cand.id, symbol, OrderSide.BUY, qty, session_id=session.id
     )
     await store.append_fill(
-        buy.id, symbol, OrderSide.BUY, qty, avg,
-        source_fill_id=f"hold-{symbol}", filled_at=_TS, session_id=session.id,
+        buy.id,
+        symbol,
+        OrderSide.BUY,
+        qty,
+        avg,
+        source_fill_id=f"hold-{symbol}",
+        filled_at=_TS,
+        session_id=session.id,
     )
     await store.transition_order(buy.id, OrderStatus.CANCELED)
     return buy.id
@@ -80,16 +86,28 @@ async def _overfill(store, symbol: str) -> None:
         cand.id, symbol, OrderSide.BUY, 100, session_id=session.id
     )
     await store.append_fill(
-        buy.id, symbol, OrderSide.BUY, 100, 1.0,
-        source_fill_id=f"of-buy-{symbol}", filled_at=_TS, session_id=session.id,
+        buy.id,
+        symbol,
+        OrderSide.BUY,
+        100,
+        1.0,
+        source_fill_id=f"of-buy-{symbol}",
+        filled_at=_TS,
+        session_id=session.id,
     )
     sell = await store.create_order_for_test(
         cand.id, symbol, OrderSide.SELL, 150, session_id=session.id
     )
     # 150 > 100 held: a broker-authoritative overfill -> recorded short + quarantine.
     await store.append_fill(
-        sell.id, symbol, OrderSide.SELL, 150, 9.0,
-        source_fill_id=f"of-sell-{symbol}", filled_at=_TS, session_id=session.id,
+        sell.id,
+        symbol,
+        OrderSide.SELL,
+        150,
+        9.0,
+        source_fill_id=f"of-sell-{symbol}",
+        filled_at=_TS,
+        session_id=session.id,
     )
 
 

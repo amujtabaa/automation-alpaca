@@ -15,15 +15,28 @@ pytestmark = pytest.mark.anyio
 
 
 def test_interface_has_no_fill_mutators():
-    # The only fill-writing method is append_fill.
+    # The only writer of the append-only FILLS TABLE is append_fill (list_fills
+    # is its read side). ``record_envelope_fill`` also matches the "fill"
+    # substring — WO-0030 lifted the envelope API onto this ABC, making it
+    # visible to ``dir`` — but it is NOT a fills-table mutator: it records an
+    # execution-fill FACT into the event log and decrements an envelope's
+    # remaining_quantity; it never inserts/updates/deletes a fills row. So it is
+    # enumerated here for honesty but is neither append_fill's peer nor a
+    # forbidden mutator (asserted disjoint below and by the SQLite-source test).
     fill_methods = {
         name
         for name in dir(StateStore)
         if "fill" in name.lower() and not name.startswith("__")
     }
-    assert fill_methods == {"append_fill", "list_fills"}
-    forbidden = {"update_fill", "delete_fill", "remove_fill", "edit_fill",
-                 "set_fill", "mutate_fill"}
+    assert fill_methods == {"append_fill", "list_fills", "record_envelope_fill"}
+    forbidden = {
+        "update_fill",
+        "delete_fill",
+        "remove_fill",
+        "edit_fill",
+        "set_fill",
+        "mutate_fill",
+    }
     assert forbidden.isdisjoint(set(dir(StateStore)))
 
 

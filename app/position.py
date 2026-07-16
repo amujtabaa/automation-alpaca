@@ -34,7 +34,9 @@ class NegativePositionError(ValueError):
         )
 
 
-def apply_fill(position: Position, fill: Fill, *, allow_short: bool = False) -> Position:
+def apply_fill(
+    position: Position, fill: Fill, *, allow_short: bool = False
+) -> Position:
     """Apply a single fill to a running :class:`Position`, returning the next
     :class:`Position` (pure — no mutation of the input).
 

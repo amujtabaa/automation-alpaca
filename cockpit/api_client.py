@@ -90,16 +90,21 @@ def reject_candidate(candidate_id: str) -> dict:
     return _request("POST", f"/api/candidates/{candidate_id}/reject")
 
 
-def create_mock_candidate(symbol: str, suggested_quantity: int = 10,
-                          suggested_limit_price: float = 1.0) -> dict:
+def create_mock_candidate(
+    symbol: str, suggested_quantity: int = 10, suggested_limit_price: float = 1.0
+) -> dict:
     """DEV/MOCK scaffolding: hand-inject an exact candidate for manual testing.
     The real Strategy Engine (Phase 5) generates candidates independently;
     this remains useful for testing states it wouldn't naturally produce."""
-    return _request("POST", "/api/dev/candidates", json={
-        "symbol": symbol,
-        "suggested_quantity": suggested_quantity,
-        "suggested_limit_price": suggested_limit_price,
-    })
+    return _request(
+        "POST",
+        "/api/dev/candidates",
+        json={
+            "symbol": symbol,
+            "suggested_quantity": suggested_quantity,
+            "suggested_limit_price": suggested_limit_price,
+        },
+    )
 
 
 # --- Read-only trading views ---------------------------------------------- #
@@ -160,7 +165,9 @@ def list_operator_orders() -> dict:
     return _request("GET", "/api/operator/orders")
 
 
-def list_events(limit: Optional[int] = None, event_type: Optional[str] = None) -> list[dict]:
+def list_events(
+    limit: Optional[int] = None, event_type: Optional[str] = None
+) -> list[dict]:
     params: dict = {}
     if limit:
         params["limit"] = limit
@@ -175,6 +182,23 @@ def get_review(date: Optional[str] = None) -> dict:
 
 
 # --- Controls ------------------------------------------------------------- #
+def list_envelopes() -> list[dict]:
+    """GET /api/envelopes — read-only envelope visibility (ADR-010/WO-0020)."""
+    return _request("GET", "/api/envelopes")
+
+
+def approve_envelope(draft: dict) -> dict:
+    """POST /api/envelopes/approve — the envelope approval intent. The payload
+    IS the draft; the backend rejects it (422) unless BOTH approval-time
+    dispositions and the TTL are present."""
+    return _request("POST", "/api/envelopes/approve", json=draft)
+
+
+def cancel_envelope(envelope_id: str) -> dict:
+    """POST /api/envelopes/{id}/cancel — withdraw a pre-activation envelope."""
+    return _request("POST", f"/api/envelopes/{envelope_id}/cancel")
+
+
 def set_kill_switch(engaged: bool) -> dict:
     return _request("POST", "/api/controls/kill-switch", json={"engaged": engaged})
 

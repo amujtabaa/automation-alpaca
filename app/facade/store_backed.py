@@ -52,8 +52,10 @@ from app.models import (
     RECOVERY_OPEN_STATUSES,
     Candidate,
     CandidateStatus,
+    EnvelopeStatus,
     Event,
     EventType,
+    ExecutionEnvelope,
     Order,
     OrderStatus,
     Position,
@@ -82,6 +84,7 @@ from app.store.base import (
     FLATTEN_FLAT,
     CandidateTransitionError,
     EmergencyReduceBlockedError,
+    EnvelopeTransitionError,
     FlattenBlockedError,
     InvalidControlValueError,
     InvalidFillError,
@@ -106,7 +109,9 @@ _TERMINAL_ORDER_STATUSES = frozenset(
     {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
 
-if TYPE_CHECKING:  # annotations only — no runtime import edge added until a wave uses them
+if (
+    TYPE_CHECKING
+):  # annotations only — no runtime import edge added until a wave uses them
     from app.approval.gate import ApprovalGate
     from app.broker.adapter import BrokerAdapter
     from app.config import Settings
@@ -142,7 +147,9 @@ _APPROVE_MAPPED_ERRORS = (
 )
 
 
-def _facade_error_for(exc: Exception) -> "ConflictError | EntityNotFoundError | InvalidInputError":
+def _facade_error_for(
+    exc: Exception,
+) -> "ConflictError | EntityNotFoundError | InvalidInputError":
     """Map a known store ``StoreError`` (or ``normalize_symbol``'s ``ValueError``)
     to its status-carrying facade error, BY SEMANTIC KIND — the single source of
     truth for the 404/409/422 policy (see ``app.facade.errors``). Callers that
@@ -189,6 +196,7 @@ def _normalize_or_422(symbol: str) -> str:
         return normalize_symbol(symbol)
     except ValueError as exc:
         raise InvalidInputError(str(exc)) from exc
+
 
 # No auth/actor-tracking system exists yet (docs/MIGRATION_MATRIX.md: "Auth
 # for command endpoints: absent/limited"). The command Protocol's `actor`
@@ -477,9 +485,7 @@ class StoreBackedQueryFacade:
             avg = position.average_price
             floor = (
                 floor_price(avg, config.stop_loss_pct)
-                if avg is not None
-                and finite_number_reason(avg) is None
-                and avg > 0
+                if avg is not None and finite_number_reason(avg) is None and avg > 0
                 else None
             )
             observed = None
@@ -596,6 +602,13 @@ class StoreBackedQueryFacade:
                 )
             )
         return views
+
+    async def list_envelopes(self) -> list[ExecutionEnvelope]:
+        """``GET /api/envelopes`` (WO-0020): read-only envelope visibility.
+        The envelope API is now declared on ``StateStore`` (WO-0030), so this
+        is a direct typed passthrough."""
+
+        return await self._store.list_envelopes()
 
 
 class StoreBackedCommandFacade:
@@ -835,6 +848,50 @@ class StoreBackedCommandFacade:
             ),
         )
 
+    # ------------------------------------------------------------------ #
+    # Execution envelopes (ADR-010 / WO-0020) — thin, typed passthroughs.
+    # The envelope API is declared on ``StateStore`` (WO-0030), so these call
+    # the store directly; ``EnvelopeTransitionError`` is caught to map the
+    # illegal-transition edges to the facade's structured HTTP errors.
+    # ------------------------------------------------------------------ #
+    async def approve_envelope(
+        self, *, draft: ExecutionEnvelope, actor: str
+    ) -> ExecutionEnvelope:
+        """``POST /api/envelopes/approve``: create→approve→activate as ONE
+        store-atomic unit (WO-0017). The mandatory approval-time dispositions
+        are structurally enforced before this is even reachable (the route's
+        request model IS ExecutionEnvelope — a draft without them 422s at
+        parse time). 409 for kill-switch block / terminal or duplicate-ACTIVE
+        conflicts; the raw draft never touches the store on failure."""
+
+        try:
+            return await self._store.approve_envelope_activation(draft, actor=actor)
+        except OrderIntentBlockedError as exc:
+            raise ConflictError(str(exc)) from exc
+        except (EnvelopeTransitionError, InvalidOrderError) as exc:
+            raise ConflictError(str(exc)) from exc
+
+    async def cancel_envelope(
+        self, *, envelope_id: str, actor: str
+    ) -> ExecutionEnvelope:
+        """``POST /api/envelopes/{id}/cancel``: withdraw a PRE-ACTIVATION
+        envelope (the §3 escape edges; idempotent for already-CANCELLED). An
+        ACTIVE mandate is NOT cancellable here — stopping a live mandate goes
+        through the precedence paths (kill / flatten), so this maps the
+        illegal edge to 409. 404 for an unknown id."""
+
+        try:
+            return await self._store.transition_envelope(
+                envelope_id,
+                EnvelopeStatus.CANCELLED,
+                actor=actor,
+                reason="operator_cancel",
+            )
+        except UnknownEntityError as exc:
+            raise EntityNotFoundError(str(exc)) from exc
+        except (EnvelopeTransitionError, OrderIntentBlockedError) as exc:
+            raise ConflictError(str(exc)) from exc
+
     async def cancel(self, *, order_id: str, actor: str) -> Order:
         """``POST /api/orders/{order_id}/cancel`` (P6e): human-triggered manual
         cancel (D-011). Moved verbatim from the route. 404 if unknown; 409 if
@@ -887,9 +944,7 @@ class StoreBackedCommandFacade:
                 f"broker cancel failed; order unchanged: {exc}"
             ) from exc
         except Exception as exc:  # noqa: BLE001 - any adapter failure is upstream
-            raise BrokerGatewayError(
-                "broker cancel failed; order unchanged"
-            ) from exc
+            raise BrokerGatewayError("broker cancel failed; order unchanged") from exc
         # Move to cancel_pending; the loop reconciles it to terminal. If this races
         # a terminal (a fill landed first), the 409 is a transient-window response.
         return await self._cancel_transition(
@@ -906,9 +961,7 @@ class StoreBackedCommandFacade:
         threads the operator onto the cancel's ``order_transition`` audit event
         (UC-002)."""
         try:
-            return await self._store.transition_order(
-                order_id, new_status, actor=actor
-            )
+            return await self._store.transition_order(order_id, new_status, actor=actor)
         except UnknownEntityError as exc:  # pragma: no cover - fetched above
             raise EntityNotFoundError(str(exc)) from exc
         except OrderTransitionError as exc:

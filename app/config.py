@@ -119,11 +119,13 @@ DEFAULT_PROTECTION_LIMIT_BUFFER_PCT = 0.005
 
 # Phase 4 wave 4e — §7 verified reconciliation defaults (Nautilus
 # LiveExecEngineConfig, source-checked in docs/SPINE_EXECUTION_ARCHITECTURE_v2.md §7).
-DEFAULT_RECONCILE_RECENT_THRESHOLD_MS = 5000        # open_check_threshold_ms
-DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE = 0.0001      # 0.01% avg-px parity tolerance
-DEFAULT_RECONCILE_OPEN_CHECK_MISSING_RETRIES = 3    # confirms before not-found -> terminal
-DEFAULT_RECONCILE_QUERY_BUDGET_PER_MIN = 200        # §9 trading/query budget (200/min)
-DEFAULT_RECONCILE_STARTUP_DELAY_SECS = 10.0         # reconciliation_startup_delay_secs (4f)
+DEFAULT_RECONCILE_RECENT_THRESHOLD_MS = 5000  # open_check_threshold_ms
+DEFAULT_RECONCILE_AVG_PRICE_TOLERANCE = 0.0001  # 0.01% avg-px parity tolerance
+DEFAULT_RECONCILE_OPEN_CHECK_MISSING_RETRIES = (
+    3  # confirms before not-found -> terminal
+)
+DEFAULT_RECONCILE_QUERY_BUDGET_PER_MIN = 200  # §9 trading/query budget (200/min)
+DEFAULT_RECONCILE_STARTUP_DELAY_SECS = 10.0  # reconciliation_startup_delay_secs (4f)
 
 _FALSEY = {"false", "0", "no", "off"}
 
@@ -459,7 +461,9 @@ def load_settings() -> Settings:
     # [0, 1): 0 = price the protective limit exactly at the reference (still
     # marketable); >= 1 would price it at or below zero.
     protection_limit_buffer_pct = _env_float(
-        PROTECTION_LIMIT_BUFFER_PCT_ENV, DEFAULT_PROTECTION_LIMIT_BUFFER_PCT, minimum=0.0
+        PROTECTION_LIMIT_BUFFER_PCT_ENV,
+        DEFAULT_PROTECTION_LIMIT_BUFFER_PCT,
+        minimum=0.0,
     )
     if not (protection_limit_buffer_pct < 1.0):
         raise ValueError(

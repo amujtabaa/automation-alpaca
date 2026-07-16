@@ -31,10 +31,16 @@ async def test_create_candidate_dedups_same_symbol_session(any_store):
     first = await any_store.create_candidate("AAPL", session_id=session.id)
     again = await any_store.create_candidate("AAPL", session_id=session.id)
 
-    assert again.id == first.id, "second create must return the existing active candidate"
+    assert again.id == first.id, (
+        "second create must return the existing active candidate"
+    )
     cands = await any_store.list_candidates(session_id=session.id)
-    assert [c.id for c in cands] == [first.id], f"a duplicate candidate was inserted: {cands}"
-    assert len(_pending(await any_store.list_events())) == 1, "a second candidate_created event was written"
+    assert [c.id for c in cands] == [first.id], (
+        f"a duplicate candidate was inserted: {cands}"
+    )
+    assert len(_pending(await any_store.list_events())) == 1, (
+        "a second candidate_created event was written"
+    )
 
 
 async def test_create_candidate_distinct_symbols_not_deduped(any_store):

@@ -63,9 +63,7 @@ async def test_append_fill_rolls_back_and_does_not_poison_dedup(store):
     # No fill, no position change, no partial event.
     assert len(await store.list_fills()) == fills_before
     assert (await store.get_position("AAPL")).quantity == 0
-    assert not any(
-        e.event_type == "fill_appended" for e in await store.list_events()
-    )
+    assert not any(e.event_type == "fill_appended" for e in await store.list_events())
     # The dedup set was NOT poisoned: the same source_fill_id retries cleanly.
     result = await store.append_fill(
         order.id, "AAPL", OrderSide.BUY, 100, 2.0, source_fill_id="SRC-1"
@@ -125,9 +123,7 @@ async def test_transition_candidate_rolls_back_on_audit_failure(store):
     with pytest.raises(RuntimeError):
         await store.transition_candidate(candidate.id, CandidateStatus.APPROVED)
     restore()
-    assert (
-        await store.get_candidate(candidate.id)
-    ).status is CandidateStatus.PENDING
+    assert (await store.get_candidate(candidate.id)).status is CandidateStatus.PENDING
 
 
 async def test_ensure_session_autocreate_rolls_back_on_audit_failure(store):
@@ -161,8 +157,6 @@ async def test_close_session_rolls_back_on_audit_failure(store):
     restore()
 
     # Nothing applied: candidate not expired, no snapshot, session still active.
-    assert (
-        await store.get_candidate(pending.id)
-    ).status is CandidateStatus.PENDING
+    assert (await store.get_candidate(pending.id)).status is CandidateStatus.PENDING
     assert await store.list_position_snapshots(session.id) == []
     assert (await store.get_current_session()).status.value == "active"

@@ -37,8 +37,32 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-from app.broker.adapter import BrokerOrderReport, BrokerPositionReport
-from app.models import Order, OrderSide, OrderStatus, Position
+import hashlib
+
+from app.broker.adapter import (
+    AmbiguousBrokerError,
+    BrokerAdapter,
+    BrokerError,
+    BrokerOrderReport,
+    BrokerPositionReport,
+    TerminalBrokerError,
+)
+from app.marketdata.service import MarketSnapshot
+from app.models import (
+    EnvelopeStatus,
+    Order,
+    OrderSide,
+    OrderStatus,
+    Position,
+    utcnow,
+)
+from app.sellside.policy import validate_action
+from app.sellside.types import ActionKind, PlannedAction
+from app.store.base import CLAIM_CLAIMED, StateStore
+from app.store.core import (
+    STAGE_DIVERGENCE,
+    STAGE_REFUSED_STALE,
+)
 
 # Local order statuses that are "open at the venue" and therefore reconcilable
 # against the mass report (mirrors monitoring._OPEN_STATUSES). CANCEL_PENDING is
@@ -56,14 +80,12 @@ OPEN_STATUSES = frozenset(
 # releases the reservation. FILLED/PARTIALLY_FILLED are deliberately excluded —
 # those must flow through a fill (with a real price), never a bare status flip.
 # (OrderStatus has no EXPIRED — that is a candidate/sell-intent status.)
-_NON_POSITION_TERMINALS = frozenset(
-    {OrderStatus.CANCELED, OrderStatus.REJECTED}
-)
+_NON_POSITION_TERMINALS = frozenset({OrderStatus.CANCELED, OrderStatus.REJECTED})
 
 # Default parity/threshold values (the §7 verified defaults also land in config.py in
 # wave 4e; these keep the pure engine usable + testable standalone).
 DEFAULT_RECENT_ORDER_THRESHOLD_MS = 5000  # open_check_threshold_ms (§7)
-DEFAULT_AVG_PRICE_TOLERANCE = 0.0001      # 0.01% (§7)
+DEFAULT_AVG_PRICE_TOLERANCE = 0.0001  # 0.01% (§7)
 
 
 class ReconcileQueryBudget:
@@ -236,7 +258,9 @@ class ReconciliationPlan:
     skipped_recent: list[str] = field(default_factory=list)
 
 
-def _price_tolerance_ok(local: Optional[float], broker: Optional[float], tol: float) -> bool:
+def _price_tolerance_ok(
+    local: Optional[float], broker: Optional[float], tol: float
+) -> bool:
     if local is None or broker is None:
         return local is None and broker is None
     if local == 0:
@@ -333,10 +357,7 @@ def plan_reconciliation(
 
         # A non-position-affecting terminal the local order hasn't caught up to
         # (cancel/reject/expire). FILLED is never resolved by a bare status flip.
-        if (
-            report.status in _NON_POSITION_TERMINALS
-            and order.status != report.status
-        ):
+        if report.status in _NON_POSITION_TERMINALS and order.status != report.status:
             plan.resolutions.append(
                 OrderResolution(
                     order_id=order.id,
@@ -383,18 +404,374 @@ def plan_reconciliation(
         if local_qty != broker_qty:
             plan.position_mismatches.append(
                 PositionMismatch(
-                    symbol=symbol, kind="quantity",
-                    local_quantity=local_qty, broker_quantity=broker_qty,
-                    local_avg=local_avg, broker_avg=broker_avg,
+                    symbol=symbol,
+                    kind="quantity",
+                    local_quantity=local_qty,
+                    broker_quantity=broker_qty,
+                    local_avg=local_avg,
+                    broker_avg=broker_avg,
                 )
             )
         elif not _price_tolerance_ok(local_avg, broker_avg, avg_price_tolerance):
             plan.position_mismatches.append(
                 PositionMismatch(
-                    symbol=symbol, kind="avg_price",
-                    local_quantity=local_qty, broker_quantity=broker_qty,
-                    local_avg=local_avg, broker_avg=broker_avg,
+                    symbol=symbol,
+                    kind="avg_price",
+                    local_quantity=local_qty,
+                    broker_quantity=broker_qty,
+                    local_avg=local_avg,
+                    broker_avg=broker_avg,
                 )
             )
 
     return plan
+
+
+# --------------------------------------------------------------------------- #
+# Envelope executor — the venue leg of the engine seam (WO-0019, ADR-010 §1/§5)
+# --------------------------------------------------------------------------- #
+#
+# The DECISION half (write-time validation, order minting, budget accounting,
+# the ENVELOPE_PLAN_DIVERGENCE tripwire) lives in the stores'
+# ``stage_envelope_action`` — one lock/transaction, no await between the
+# control check and the durable writes. This module owns only the VENUE leg:
+# claim the staged order through the EXISTING submission claim (INV-021: the
+# claim stays the sole entry into SUBMITTING — the envelope path adds no back
+# door), call the abstract adapter (submit or the WO-0019a atomic replace),
+# and map the outcome through the same ADR-002 discipline as every other
+# submit: ambiguous → TIMEOUT_QUARANTINE (deterministic client_order_id = the
+# order id), transient → release for redrive, terminal → REJECTED.
+
+
+ENVELOPE_EXEC_SUBMITTED = "submitted"
+ENVELOPE_EXEC_REPRICED = "repriced"
+ENVELOPE_EXEC_DIVERGENCE = "divergence"  # frozen + event; zero venue calls
+ENVELOPE_EXEC_BLOCKED = "blocked"  # claim control gate held it; order stays CREATED
+ENVELOPE_EXEC_QUARANTINED = "quarantined"  # ambiguous venue outcome (ADR-002)
+ENVELOPE_EXEC_RELEASED = "released"  # transient failure; order back to CREATED
+ENVELOPE_EXEC_REJECTED = "rejected"  # definitive venue rejection
+ENVELOPE_EXEC_REFUSED_STALE = "refused_stale"  # WO-0029A: benign stale-plan
+# refusal at the write seam — evented, no freeze, policy replans next tick
+ENVELOPE_EXEC_CANCELLED = "cancelled"  # redrive refusal: staged order locally
+# CANCELED with zero venue calls (WO-0024 — non-ACTIVE envelope, stale staging,
+# or a rail the CURRENT state no longer satisfies)
+
+# A staged-but-undriven action is only redrivable while it is FRESH: past this
+# ceiling the decision that produced it is stale (crash-restart warm-up,
+# freeze->resume stretch, long outage) and the policy must re-decide from
+# current data instead. Two 30s ticks + slack. (WO-0024 / REV-0023 F3 — the
+# tape itself is monitoring-owned; this age bound subsumes the
+# restart-with-empty-tape scenario at the executor seam.)
+REDRIVE_MAX_STAGED_AGE_S = 120.0
+
+
+@dataclass(frozen=True)
+class EnvelopeExecutionResult:
+    outcome: str
+    order_id: Optional[str] = None
+    broker_order_id: Optional[str] = None
+    detail: str = ""
+
+
+def market_snapshot_fingerprint(snapshot: MarketSnapshot) -> str:
+    """Deterministic fingerprint of the snapshot a decision was made against —
+    stamped into every ENVELOPE_ACTION event (ADR-010 §6) so an action is
+    auditable against the exact market state that justified it."""
+
+    raw = "|".join(
+        str(part)
+        for part in (
+            snapshot.symbol,
+            snapshot.last_price,
+            snapshot.bid,
+            snapshot.ask,
+            snapshot.volume,
+            snapshot.prev_close,
+            snapshot.updated_at.isoformat(),
+            snapshot.stale,
+        )
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+async def _drive_staged_order(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    *,
+    order: Order,
+    kind: ActionKind,
+    working_order: Optional[Order],
+    envelope_id: Optional[str] = None,
+) -> EnvelopeExecutionResult:
+    """The venue leg for one already-staged order (fresh or redriven)."""
+
+    claim = await store.claim_order_for_submission(order.id)
+    if claim.outcome != CLAIM_CLAIMED:
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_BLOCKED,
+            order_id=order.id,
+            detail=claim.reason or claim.outcome,
+        )
+    try:
+        if kind is ActionKind.REPRICE:
+            assert working_order is not None
+            assert working_order.broker_order_id is not None  # staged guarantees
+            new_broker_id = await adapter.replace_order(
+                working_order.broker_order_id,
+                client_order_id=order.id,  # deterministic (ADR-002 recovery key)
+                limit_price=order.limit_price,
+                quantity=order.quantity,
+            )
+        else:
+            assert claim.order is not None  # CLAIM_CLAIMED carries the order
+            new_broker_id = await adapter.submit_order(claim.order)
+    except AmbiguousBrokerError:
+        # The venue MAY have the replacement/submission. Quarantine; the
+        # targeted client_order_id query resolves it; the envelope pauses
+        # (stage refuses) until then — never blind-re-replace.
+        await store.quarantine_timed_out_order(order.id)
+        return EnvelopeExecutionResult(ENVELOPE_EXEC_QUARANTINED, order_id=order.id)
+    except TerminalBrokerError as exc:
+        # S1 (WO-0035, extends the WO-0034 spec-1 pattern to the venue leg): a
+        # broker-authoritative rejection REASON is recorded, never hidden — the
+        # bare transition_order(REJECTED) row carries no detail and the caller
+        # used to drop the result entirely.
+        await store.append_event(
+            "envelope_venue_rejected",
+            message=f"venue rejected {kind.value}: {exc}",
+            symbol=order.symbol,
+            order_id=order.id,
+            payload={
+                "detail": str(exc),
+                "envelope_id": envelope_id,
+                "kind": kind.value,
+            },
+            session_id=order.session_id,
+        )
+        await store.transition_order(order.id, OrderStatus.REJECTED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_REJECTED, order_id=order.id, detail=str(exc)
+        )
+    except BrokerError as exc:
+        # Provably-pre-flight transient: release the claim; the SAME staged
+        # order (and its already-committed budget accounting) redrives later.
+        # S1: the release reason is evented so a repeatedly-releasing order's
+        # history is reconstructible from the durable log alone.
+        await store.append_event(
+            "envelope_venue_released",
+            message=f"venue call failed pre-flight; released for redrive: {exc}",
+            symbol=order.symbol,
+            order_id=order.id,
+            payload={
+                "detail": str(exc),
+                "envelope_id": envelope_id,
+                "kind": kind.value,
+            },
+            session_id=order.session_id,
+        )
+        await store.transition_order(order.id, OrderStatus.CREATED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_RELEASED, order_id=order.id, detail=str(exc)
+        )
+
+    await store.transition_order(
+        order.id, OrderStatus.SUBMITTED, broker_order_id=new_broker_id
+    )
+    if kind is ActionKind.REPRICE:
+        assert working_order is not None
+        # The venue's replace terminated the old order (broker-confirmed fact;
+        # the old order HAS a broker id, so ADR-008 stamps this
+        # BROKER_REST/BROKER_AUTHORITATIVE).
+        await store.transition_order(working_order.id, OrderStatus.CANCELED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_REPRICED,
+            order_id=order.id,
+            broker_order_id=new_broker_id,
+        )
+    return EnvelopeExecutionResult(
+        ENVELOPE_EXEC_SUBMITTED, order_id=order.id, broker_order_id=new_broker_id
+    )
+
+
+async def execute_envelope_action(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    envelope_id: str,
+    action: PlannedAction,
+    *,
+    snapshot_fingerprint: str,
+    actor: str = "engine",
+    now: Optional[datetime] = None,
+) -> EnvelopeExecutionResult:
+    """Stage (write-time D-3 validation, atomic) then drive the venue leg.
+    ``now`` is the injected validation clock (the tick's clock)."""
+
+    staged = await store.stage_envelope_action(
+        envelope_id,
+        action,
+        snapshot_fingerprint=snapshot_fingerprint,
+        actor=actor,
+        now=now,
+    )
+    if staged.outcome == STAGE_DIVERGENCE:
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_DIVERGENCE,
+            detail="plan/write validator disagreement — envelope frozen",
+        )
+    if staged.outcome == STAGE_REFUSED_STALE:
+        # WO-0029A: facts changed between plan and write — refused + evented,
+        # no freeze; the policy replans from fresh data next tick.
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_REFUSED_STALE,
+            detail="stale plan refused — facts changed between plan and write",
+        )
+    assert staged.order is not None
+    return await _drive_staged_order(
+        store,
+        adapter,
+        order=staged.order,
+        kind=action.kind,
+        working_order=staged.working_order,
+        envelope_id=envelope_id,
+    )
+
+
+async def redrive_staged_envelope_action(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    envelope_id: str,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[EnvelopeExecutionResult]:
+    """Resume a staged-but-not-executed action (transient release / crash
+    between staging and the venue call) WITHOUT re-staging — the budget
+    accounting committed with the original staging and must not be spent
+    twice. Returns None when there is nothing to redrive.
+
+    WO-0024 (REV-0023 F3, FINDING-W3-redrive-revalidation-bypass): before any
+    venue call, the staged order is RE-VALIDATED against CURRENT state and
+    CURRENT time — the original staging validated against the world as it was,
+    and fills, TTL, session phase, or a long gap may have invalidated it since:
+
+    * envelope no longer ACTIVE (preempted/frozen/terminal) → refuse;
+    * staged action older than ``REDRIVE_MAX_STAGED_AGE_S`` → the decision is
+      stale (crash-restart warm-up, freeze→resume stretch) → refuse;
+    * the shared hard-rail validator (``validate_action`` — floor, qty vs
+      CURRENT remaining, TTL, session phase, budget) rejects it → refuse.
+
+    A refusal makes ZERO venue calls and locally CANCELs the staged order
+    (CREATED → CANCELED, event-logged) so it can never be driven later; the
+    policy re-decides from current data on the next tick. Refusals are NOT
+    plan/write divergences — nothing here is a software defect, just staleness
+    — so the envelope is never frozen by this path (INV-082 stays a defect
+    signal).
+    """
+
+    ts = now if now is not None else utcnow()
+    events = await store.get_execution_events()
+    staged_events = [
+        e
+        for e in events
+        if e.envelope_id == envelope_id
+        and e.event_type.value == "envelope_action"
+        and e.order_id is not None
+    ]
+    if not staged_events:
+        return None
+    last = staged_events[-1]
+    assert last.order_id is not None
+    order = await store.get_order(last.order_id)
+    if order is None or order.status is not OrderStatus.CREATED:
+        return None  # nothing pending — executed, quarantined, or cancelled
+    kind = (
+        ActionKind.REPRICE
+        if last.payload.get("action") == "reprice"
+        else ActionKind.SUBMIT
+    )
+
+    refusal: Optional[str] = None
+    rail: Optional[str] = None
+    envelope = await store.get_envelope(envelope_id)
+    if envelope is None or envelope.status is not EnvelopeStatus.ACTIVE:
+        rail = "envelope_state"
+        refusal = (
+            "envelope is "
+            f"{envelope.status.value if envelope is not None else 'missing'}"
+        )
+    else:
+        staged_at = last.ts_event or last.ts_init
+        age = (ts - staged_at).total_seconds()
+        if age > REDRIVE_MAX_STAGED_AGE_S:
+            rail = "staleness"
+            refusal = (
+                f"staged action is {age:.0f}s old "
+                f"(redrive ceiling {REDRIVE_MAX_STAGED_AGE_S:.0f}s)"
+            )
+        else:
+            replayed = PlannedAction(
+                kind=kind,
+                limit_price=order.limit_price or 0.0,
+                quantity=order.quantity,
+                regime=None,
+                urgency=0.0,
+                working_stop=None,
+                atr=None,
+                tranche=bool(last.payload.get("tranche", False)),
+                stop_triggered=bool(last.payload.get("stop_triggered", False)),
+                clamps=(),
+            )
+            # Validate as if deciding this action NOW — excluding the staged
+            # action's OWN event, whose committed budget/cooldown accounting
+            # must not refuse its own completion.
+            history = [e for e in events if e.sequence != last.sequence]
+            violation = validate_action(envelope, replayed, history=history, now=ts)
+            if violation is not None:
+                rail = violation.rail
+                refusal = f"{violation.rail}: {violation.detail}"
+            else:
+                # WO-0026: reduce-only re-check — the position may have
+                # shrunk (fills, manual flatten) since staging.
+                position = await store.get_position(envelope.symbol)
+                if order.quantity > max(0, position.quantity):
+                    rail = "reduce_only"
+                    refusal = (
+                        f"reduce_only: SELL {order.quantity} exceeds live "
+                        f"position {max(0, position.quantity)}"
+                    )
+
+    if refusal is not None:
+        # spec-1 (REV-0023 Phase-A2): durably EVENT the refusal (rail + detail)
+        # before the local cancel — a redrive rail refusal (incl. the reduce_only
+        # safety refusal) must leave an audit trail, not vanish into a bare
+        # transition_order(CANCELED) whose caller drops the detail.
+        await store.append_event(
+            "envelope_redrive_refused",
+            message=f"redrive refused — {refusal}; staged order locally cancelled",
+            symbol=envelope.symbol if envelope is not None else order.symbol,
+            order_id=order.id,
+            payload={
+                "rail": rail,
+                "detail": refusal,
+                "envelope_id": envelope_id,
+                "kind": kind.value,
+            },
+            session_id=order.session_id,
+        )
+        await store.transition_order(order.id, OrderStatus.CANCELED)
+        return EnvelopeExecutionResult(
+            ENVELOPE_EXEC_CANCELLED,
+            order_id=order.id,
+            detail=f"redrive refused — {refusal}; staged order locally cancelled",
+        )
+
+    working_order: Optional[Order] = None
+    if kind is ActionKind.REPRICE and order.replaces_order_id is not None:
+        working_order = await store.get_order(order.replaces_order_id)
+    return await _drive_staged_order(
+        store,
+        adapter,
+        order=order,
+        kind=kind,
+        working_order=working_order,
+        envelope_id=envelope_id,
+    )

@@ -8,7 +8,12 @@ transitions are handled as idempotent no-ops by the stores, not encoded here.
 
 from __future__ import annotations
 
-from app.models import CandidateStatus, OrderStatus, SellIntentStatus
+from app.models import (
+    CandidateStatus,
+    EnvelopeStatus,
+    OrderStatus,
+    SellIntentStatus,
+)
 
 CANDIDATE_TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
     CandidateStatus.PENDING: {
@@ -42,6 +47,51 @@ SELL_INTENT_TRANSITIONS: dict[SellIntentStatus, set[SellIntentStatus]] = {
     SellIntentStatus.ORDERED: set(),
 }
 
+# Execution-envelope machine (ADR-010 §3, incl. the 2026-07-11 pre-activation
+# escape-edge amendment). BREACHED / EXHAUSTED are terminal-pending-human:
+# recorded, never hidden, and deliberately have NO outgoing edges — resumption
+# of a breached/exhausted mandate is not a transition, it is a new envelope
+# through the approval gate. FROZEN (kill switch / Halted) is the only
+# resumable non-terminal detour; FROZEN -> COMPLETED intentionally does NOT
+# exist — a frozen envelope whose remaining quantity hits 0 completes on
+# RESUME (the store's resume path auto-completes at remaining == 0), so a
+# freeze can never be silently exited by a fill.
+ENVELOPE_TRANSITIONS: dict[EnvelopeStatus, set[EnvelopeStatus]] = {
+    EnvelopeStatus.PENDING: {
+        EnvelopeStatus.APPROVED,
+        EnvelopeStatus.CANCELLED,  # operator withdraws a proposal
+        EnvelopeStatus.EXPIRED,  # TTL lapsed before approval
+    },
+    EnvelopeStatus.APPROVED: {
+        EnvelopeStatus.ACTIVE,
+        EnvelopeStatus.CANCELLED,  # operator withdraws before activation
+        EnvelopeStatus.EXPIRED,  # TTL lapsed before activation
+    },
+    EnvelopeStatus.ACTIVE: {
+        EnvelopeStatus.COMPLETED,
+        EnvelopeStatus.EXPIRED,
+        EnvelopeStatus.EXHAUSTED,
+        EnvelopeStatus.BREACHED,
+        EnvelopeStatus.SUPERSEDED,
+        EnvelopeStatus.FROZEN,
+    },
+    EnvelopeStatus.FROZEN: {
+        EnvelopeStatus.ACTIVE,  # kill switch released — resume
+        EnvelopeStatus.CANCELLED,
+        # WO-0029A (ADR-010 §2/§3 amendment, accepted 2026-07-12): a
+        # broker-authoritative overfill of the hard qty ceiling is a BREACH
+        # in every state that can receive a fill — a violated mandate must
+        # never terminate in the success state.
+        EnvelopeStatus.BREACHED,
+    },
+    EnvelopeStatus.COMPLETED: set(),
+    EnvelopeStatus.EXPIRED: set(),
+    EnvelopeStatus.EXHAUSTED: set(),
+    EnvelopeStatus.BREACHED: set(),
+    EnvelopeStatus.SUPERSEDED: set(),
+    EnvelopeStatus.CANCELLED: set(),
+}
+
 ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.CREATED: {
         # NOTE (AIR-007): CREATED -> SUBMITTING is deliberately ABSENT here.
@@ -60,10 +110,10 @@ ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     },
     OrderStatus.SUBMITTING: {
         OrderStatus.SUBMITTED,  # broker acked the submission
-        OrderStatus.CREATED,    # release the claim on a transient submit failure
-                                # (next tick re-runs the full control gate)
-        OrderStatus.CANCELED,   # manual cancel raced the submit / terminal
-        OrderStatus.REJECTED,   # broker rejected
+        OrderStatus.CREATED,  # release the claim on a transient submit failure
+        # (next tick re-runs the full control gate)
+        OrderStatus.CANCELED,  # manual cancel raced the submit / terminal
+        OrderStatus.REJECTED,  # broker rejected
         # Ambiguous submit outcome (ADR-002 / wave 3c): timeout/504/transport
         # after the request may have reached the venue. Driven ONLY by the
         # evented store path (`transition_order_evented`), which co-writes the
@@ -118,6 +168,20 @@ SELL_INTENT_TIMESTAMP: dict[SellIntentStatus, str] = {
     SellIntentStatus.REJECTED: "rejected_at",
     SellIntentStatus.EXPIRED: "expired_at",
     SellIntentStatus.ORDERED: "ordered_at",
+}
+
+# Envelope transition timestamps. ACTIVE maps to activated_at and is restamped
+# on every FROZEN -> ACTIVE resume (documented "most recent activation").
+ENVELOPE_TIMESTAMP: dict[EnvelopeStatus, str] = {
+    EnvelopeStatus.APPROVED: "approved_at",
+    EnvelopeStatus.ACTIVE: "activated_at",
+    EnvelopeStatus.FROZEN: "frozen_at",
+    EnvelopeStatus.COMPLETED: "completed_at",
+    EnvelopeStatus.EXPIRED: "expired_at",
+    EnvelopeStatus.EXHAUSTED: "exhausted_at",
+    EnvelopeStatus.BREACHED: "breached_at",
+    EnvelopeStatus.SUPERSEDED: "superseded_at",
+    EnvelopeStatus.CANCELLED: "cancelled_at",
 }
 
 ORDER_TIMESTAMP: dict[OrderStatus, str] = {

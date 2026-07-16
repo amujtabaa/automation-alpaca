@@ -95,12 +95,19 @@ def _stream(events, id_to_role: dict[str, str]):
                 f"event for untracked order_id={e.order_id!r} in stream: {e}"
             )
         out.append(
-            (e.event_type, e.dedupe_key.replace(e.order_id, role), e.source, e.authority)
+            (
+                e.event_type,
+                e.dedupe_key.replace(e.order_id, role),
+                e.source,
+                e.authority,
+            )
         )
     return out
 
 
-def _assert_parity(memory_events, sqlite_events, mem_ids: dict, sql_ids: dict, label: str):
+def _assert_parity(
+    memory_events, sqlite_events, mem_ids: dict, sql_ids: dict, label: str
+):
     mem_stream = _stream(memory_events, mem_ids)
     sql_stream = _stream(sqlite_events, sql_ids)
     assert mem_stream == sql_stream, (
@@ -149,12 +156,18 @@ async def _script_full_lifecycle_to_filled(store, quantity: int = 20):
     assert acked.status is OrderStatus.SUBMITTED
 
     # two separate partial fills, strictly increasing filled_quantity
-    p1 = await store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=6)
+    p1 = await store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=6
+    )
     assert p1.status is OrderStatus.PARTIALLY_FILLED
-    p2 = await store.transition_order(order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=15)
+    p2 = await store.transition_order(
+        order.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=15
+    )
     assert p2.status is OrderStatus.PARTIALLY_FILLED
 
-    filled = await store.transition_order(order.id, OrderStatus.FILLED, filled_quantity=quantity)
+    filled = await store.transition_order(
+        order.id, OrderStatus.FILLED, filled_quantity=quantity
+    )
     assert filled.status is OrderStatus.FILLED
 
     return order
@@ -170,8 +183,10 @@ async def test_dual_store_parity_full_lifecycle_to_filled(tmp_path):
         mem_events = await memory.get_execution_events()
         sql_events = await sqlite.get_execution_events()
         _assert_parity(
-            mem_events, sql_events,
-            {mem_order.id: "<ORDER>"}, {sql_order.id: "<ORDER>"},
+            mem_events,
+            sql_events,
+            {mem_order.id: "<ORDER>"},
+            {sql_order.id: "<ORDER>"},
             "full_lifecycle_to_filled",
         )
 
@@ -183,7 +198,11 @@ async def test_dual_store_parity_full_lifecycle_to_filled(tmp_path):
             (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<ORDER>:1", *_ENG),
             (ExecutionEventType.SUBMITTED, "submitted:<ORDER>", *_BRK),
             (ExecutionEventType.PARTIALLY_FILLED, "partially_filled:<ORDER>", *_BRK),
-            (ExecutionEventType.PARTIALLY_FILLED, "order_fill_progress:<ORDER>:15", *_BRK),
+            (
+                ExecutionEventType.PARTIALLY_FILLED,
+                "order_fill_progress:<ORDER>:15",
+                *_BRK,
+            ),
             (ExecutionEventType.FILLED, "filled:<ORDER>", *_BRK),
         ]
         assert _stream(mem_events, {mem_order.id: "<ORDER>"}) == expected
@@ -228,8 +247,10 @@ async def test_dual_store_parity_transition_order_cancel(tmp_path):
         mem_events = await memory.get_execution_events()
         sql_events = await sqlite.get_execution_events()
         _assert_parity(
-            mem_events, sql_events,
-            {mem_order.id: "<ORDER>"}, {sql_order.id: "<ORDER>"},
+            mem_events,
+            sql_events,
+            {mem_order.id: "<ORDER>"},
+            {sql_order.id: "<ORDER>"},
             "transition_order_cancel",
         )
 
@@ -276,8 +297,10 @@ async def test_dual_store_parity_session_close_cancel(tmp_path):
         mem_events = await memory.get_execution_events()
         sql_events = await sqlite.get_execution_events()
         _assert_parity(
-            mem_events, sql_events,
-            {mem_order.id: "<ORDER>"}, {sql_order.id: "<ORDER>"},
+            mem_events,
+            sql_events,
+            {mem_order.id: "<ORDER>"},
+            {sql_order.id: "<ORDER>"},
             "session_close_cancel",
         )
 
@@ -303,10 +326,14 @@ async def _hold(store, symbol: str, qty: int, avg: float = 10.0):
     buy = await store.create_order_for_test(
         cand.id, symbol, OrderSide.BUY, qty, session_id=session.id
     )
-    await store.append_fill(buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id)
+    await store.append_fill(
+        buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id
+    )
     claim = await store.claim_order_for_submission(buy.id)
     assert claim.outcome == "claimed"
-    await store.transition_order(buy.id, OrderStatus.SUBMITTED, broker_order_id="brk-hold")
+    await store.transition_order(
+        buy.id, OrderStatus.SUBMITTED, broker_order_id="brk-hold"
+    )
     await store.transition_order(buy.id, OrderStatus.FILLED, filled_quantity=qty)
     return buy
 
@@ -314,7 +341,9 @@ async def _hold(store, symbol: str, qty: int, avg: float = 10.0):
 async def _protective_floor_order(store, symbol: str, qty: int):
     session_id = (await store.get_current_session()).id
     si = await store.create_sell_intent(
-        symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=qty,
+        symbol=symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=qty,
         session_id=session_id,
     )
     await store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
@@ -348,7 +377,9 @@ async def test_dual_store_parity_flatten_supersede_cancel(tmp_path):
         sql_events = await sqlite.get_execution_events()
         mem_ids = {mem_buy.id: "<BUY>", mem_prot.id: "<PROT>"}
         sql_ids = {sql_buy.id: "<BUY>", sql_prot.id: "<PROT>"}
-        _assert_parity(mem_events, sql_events, mem_ids, sql_ids, "flatten_supersede_cancel")
+        _assert_parity(
+            mem_events, sql_events, mem_ids, sql_ids, "flatten_supersede_cancel"
+        )
 
         expected = [
             (ExecutionEventType.SUBMIT_PENDING, "submit_pending:<BUY>:0", *_ENG),

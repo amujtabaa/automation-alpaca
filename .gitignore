@@ -41,3 +41,5 @@ Thumbs.db
 # Claude Code local/personal files (not shared with the team)
 CLAUDE.local.md
 .claude/settings.local.json
+# Transient git worktrees created by background workflows (auto-cleaned; never a deliverable)
+.claude/worktrees/

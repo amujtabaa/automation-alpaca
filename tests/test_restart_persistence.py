@@ -16,9 +16,12 @@ def test_watchlist_survives_restart(tmp_path):
     # First "process": write through the API.
     app1 = create_app(SqliteStateStore(db))
     with TestClient(app1) as c1:
-        assert c1.post(
-            "/api/watchlist", json={"symbol": "AAPL", "armed": True}
-        ).status_code == 201
+        assert (
+            c1.post(
+                "/api/watchlist", json={"symbol": "AAPL", "armed": True}
+            ).status_code
+            == 201
+        )
 
     # Second "process": brand-new app + store over the same file.
     app2 = create_app(SqliteStateStore(db))

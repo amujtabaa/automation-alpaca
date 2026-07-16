@@ -94,7 +94,11 @@ def test_projector_latest_wins():
     events = [_tsc("s1", "halted", 1), _tsc("s1", "reducing", 2)]
     assert current_trading_state(events, "s1") is TradingState.REDUCING
     # ...and a third, distinct terminal value confirms it is genuinely the last.
-    events3 = [_tsc("s1", "reducing", 1), _tsc("s1", "halted", 2), _tsc("s1", "active", 3)]
+    events3 = [
+        _tsc("s1", "reducing", 1),
+        _tsc("s1", "halted", 2),
+        _tsc("s1", "active", 3),
+    ]
     assert current_trading_state(events3, "s1") is TradingState.ACTIVE
 
 
@@ -102,7 +106,9 @@ def test_projector_is_session_scoped():
     events = [_tsc("s1", "halted", 1), _tsc("s2", "reducing", 2)]
     assert current_trading_state(events, "s1") is TradingState.HALTED
     assert current_trading_state(events, "s2") is TradingState.REDUCING
-    assert current_trading_state(events, "s3") is TradingState.ACTIVE  # unknown -> default
+    assert (
+        current_trading_state(events, "s3") is TradingState.ACTIVE
+    )  # unknown -> default
 
 
 # --------------------------------------------------------------------------- #
@@ -142,15 +148,22 @@ async def test_event_carries_the_full_control_tuple(any_store):
     await any_store.initialize()
     await any_store.set_kill_switch(True)  # ACTIVE -> HALTED
     tsc = [
-        e for e in await any_store.get_execution_events()
+        e
+        for e in await any_store.get_execution_events()
         if e.event_type is ExecutionEventType.TRADING_STATE_CHANGED
     ]
     assert len(tsc) == 1
-    assert tsc[0].payload == {
-        "driver": "control",  # wave 4f: the FSM now has TWO drivers (control + reconcile)
-        "from": "active", "to": "halted",
-        "kill_switch": True, "buys_paused": False, "reason": "kill_switch",
-    }
+    assert (
+        tsc[0].payload
+        == {
+            "driver": "control",  # wave 4f: the FSM now has TWO drivers (control + reconcile)
+            "from": "active",
+            "to": "halted",
+            "kill_switch": True,
+            "buys_paused": False,
+            "reason": "kill_switch",
+        }
+    )
     assert tsc[0].authority is EventAuthority.LOCAL  # our decision, not a broker fact
 
 
@@ -161,7 +174,8 @@ async def test_redundant_reengage_emits_no_state_change_event(any_store):
     await any_store.set_kill_switch(True)
     await any_store.set_kill_switch(True)  # redundant
     tsc = [
-        e for e in await any_store.get_execution_events()
+        e
+        for e in await any_store.get_execution_events()
         if e.event_type is ExecutionEventType.TRADING_STATE_CHANGED
     ]
     assert len(tsc) == 1  # only the real ACTIVE->HALTED transition
@@ -223,7 +237,10 @@ async def test_backfill_makes_a_pre_wave3d_killed_session_consistent(tmp_path):
     await store.initialize()
     s1 = next(s for s in await store.list_sessions() if s.id == "s1")
     assert s1.trading_state is TradingState.HALTED
-    assert current_trading_state(await store.get_execution_events(), "s1") is TradingState.HALTED
+    assert (
+        current_trading_state(await store.get_execution_events(), "s1")
+        is TradingState.HALTED
+    )
 
     # The RAW read-model column must actually be healed (not just the mapped
     # value) — assert via direct SQL so the column-write is genuinely exercised
@@ -231,7 +248,9 @@ async def test_backfill_makes_a_pre_wave3d_killed_session_consistent(tmp_path):
     await store.close()
     raw = sqlite3.connect(str(path))
     try:
-        col = raw.execute("SELECT trading_state FROM sessions WHERE id='s1'").fetchone()[0]
+        col = raw.execute(
+            "SELECT trading_state FROM sessions WHERE id='s1'"
+        ).fetchone()[0]
         assert col == "halted"
     finally:
         raw.close()
@@ -240,7 +259,8 @@ async def test_backfill_makes_a_pre_wave3d_killed_session_consistent(tmp_path):
     reopened = SqliteStateStore(path)
     await reopened.initialize()
     tsc = [
-        e for e in await reopened.get_execution_events()
+        e
+        for e in await reopened.get_execution_events()
         if e.event_type is ExecutionEventType.TRADING_STATE_CHANGED
     ]
     assert len(tsc) == 1
@@ -254,12 +274,16 @@ def _session(*, kill: bool = False, paused: bool = False) -> SessionRecord:
     # Derive trading_state exactly as the store setters co-write it, so a
     # directly-built fixture mirrors a real store-produced (consistent) record.
     return SessionRecord(
-        session_date="2026-07-07", kill_switch=kill, buys_paused=paused,
+        session_date="2026-07-07",
+        kill_switch=kill,
+        buys_paused=paused,
         trading_state=TradingState.of(kill_switch=kill, buys_paused=paused),
     )
 
 
-def _diverged(state: TradingState, *, kill: bool = False, paused: bool = False) -> SessionRecord:
+def _diverged(
+    state: TradingState, *, kill: bool = False, paused: bool = False
+) -> SessionRecord:
     """A record whose ``trading_state`` DELIBERATELY contradicts its booleans.
 
     Only constructible because ``trading_state`` is an honest independent field
@@ -271,7 +295,9 @@ def _diverged(state: TradingState, *, kill: bool = False, paused: bool = False) 
     """
 
     return SessionRecord(
-        session_date="2026-07-07", kill_switch=kill, buys_paused=paused,
+        session_date="2026-07-07",
+        kill_switch=kill,
+        buys_paused=paused,
         trading_state=state,
     )
 
@@ -287,10 +313,14 @@ class TestEnforcementReadsFsm:
 
     def test_order_intent_block_reason_maps_each_fsm_state(self):
         assert order_intent_block_reason(_session()) is None  # ACTIVE
-        assert order_intent_block_reason(_session(paused=True)) == "buys_paused"  # REDUCING
+        assert (
+            order_intent_block_reason(_session(paused=True)) == "buys_paused"
+        )  # REDUCING
         assert order_intent_block_reason(_session(kill=True)) == "kill_switch"  # HALTED
         # kill dominates pause -> HALTED -> kill_switch (not buys_paused)
-        assert order_intent_block_reason(_session(kill=True, paused=True)) == "kill_switch"
+        assert (
+            order_intent_block_reason(_session(kill=True, paused=True)) == "kill_switch"
+        )
 
     def test_kill_switch_block_reason_holds_only_in_halted(self):
         # The protection-floor gate: only HALTED (kill) holds a reduce-only exit;
@@ -342,16 +372,26 @@ class TestEnforcementFollowsFsmFieldNotBooleans:
 # --------------------------------------------------------------------------- #
 def _buy_order() -> Order:
     return Order(
-        candidate_id="c1", sell_intent_id=None, symbol="AAPL", side=OrderSide.BUY,
-        order_type=OrderType.LIMIT, quantity=10, limit_price=1.0,
+        candidate_id="c1",
+        sell_intent_id=None,
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=10,
+        limit_price=1.0,
         status=OrderStatus.CREATED,
     )
 
 
 def _protective_sell() -> Order:
     return Order(
-        candidate_id=None, sell_intent_id="si1", symbol="AAPL", side=OrderSide.SELL,
-        order_type=OrderType.MARKET, quantity=10, limit_price=None,
+        candidate_id=None,
+        sell_intent_id="si1",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=10,
+        limit_price=None,
         status=OrderStatus.CREATED,
     )
 
@@ -373,7 +413,9 @@ class TestReducingIsReduceOnly:
         assert buy.reason == "buys_paused"
 
         sell = core.plan_claim_order_for_submission(
-            order=_protective_sell(), own_session=reducing, current_session=reducing,
+            order=_protective_sell(),
+            own_session=reducing,
+            current_session=reducing,
             sell_reason=SellReason.PROTECTION_FLOOR,
         )
         assert sell.outcome == CLAIM_CLAIMED  # reduce-only exit is permitted
@@ -388,7 +430,9 @@ class TestReducingIsReduceOnly:
         assert buy.outcome == CLAIM_BLOCKED
 
         sell = core.plan_claim_order_for_submission(
-            order=_protective_sell(), own_session=halted, current_session=halted,
+            order=_protective_sell(),
+            own_session=halted,
+            current_session=halted,
             sell_reason=SellReason.PROTECTION_FLOOR,
         )
         assert sell.outcome == CLAIM_BLOCKED
@@ -415,7 +459,9 @@ async def _hold_position(store, symbol: str, qty: int, *, avg: float = 10.0) -> 
     buy = await store.create_order_for_test(
         cand.id, symbol, OrderSide.BUY, qty, session_id=session.id
     )
-    await store.append_fill(buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id)
+    await store.append_fill(
+        buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id
+    )
     await store.transition_order(buy.id, OrderStatus.CANCELED)
 
 
@@ -430,7 +476,9 @@ async def test_run_protection_reads_fsm_field_not_kill_boolean():
     assert store._sessions[-1].kill_switch is False  # booleans stay clean
 
     md = FakeMarketDataFeed()
-    md.set_snapshot("AAPL", last_price=1.0, bid=1.0, ask=1.0)  # far below floor -> breach
+    md.set_snapshot(
+        "AAPL", last_price=1.0, bid=1.0, ask=1.0
+    )  # far below floor -> breach
     await run_monitoring_tick(store, MockBrokerAdapter(), Settings(), market_data=md)
 
     assert await store.active_sell_intent_for("AAPL") is None  # paused, not fired

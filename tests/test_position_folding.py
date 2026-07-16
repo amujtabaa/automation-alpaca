@@ -49,8 +49,12 @@ async def test_position_folding_through_store(store):
     candidate = await store.create_candidate("AAPL")
     # Buys and sells now go through side-matched orders (D-010); the position
     # still folds across all of the symbol's fills regardless of which order.
-    buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 200)
-    sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 200)
+    buy_order = await store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 200
+    )
+    sell_order = await store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.SELL, 200
+    )
 
     # order submitted, no fill yet -> position quantity 0
     assert (await store.get_position("AAPL")).quantity == 0
@@ -79,10 +83,14 @@ async def test_broker_overfill_is_recorded_and_quarantines_the_symbol(store):
     # a side-matched SELL order so it clears the side-match guard and reaches the
     # overfill branch; selling 101 vs a 100 position is the case under test.
     candidate = await store.create_candidate("AAPL")
-    buy_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
+    buy_order = await store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 100
+    )
     await store.append_fill(buy_order.id, "AAPL", OrderSide.BUY, 100, 1.00)
 
-    sell_order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.SELL, 101)
+    sell_order = await store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.SELL, 101
+    )
     result = await store.append_fill(sell_order.id, "AAPL", OrderSide.SELL, 101, 1.00)
     assert result.status == "appended"
 
@@ -96,7 +104,8 @@ async def test_broker_overfill_is_recorded_and_quarantines_the_symbol(store):
 
     # The overfill is audit-logged as a quarantine, not silently absorbed.
     quarantines = [
-        e for e in await store.list_events()
+        e
+        for e in await store.list_events()
         if e.event_type == "fill_overfill_quarantined"
     ]
     assert len(quarantines) == 1

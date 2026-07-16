@@ -47,13 +47,17 @@ class TestAir004RecoveryStatusTransitions:
         await any_store.initialize()
         rec = await _recovery(any_store)
         with pytest.raises(RecoveryTransitionError):
-            await any_store.update_submit_recovery(rec.id, cleanup_status="typo_resolved")
+            await any_store.update_submit_recovery(
+                rec.id, cleanup_status="typo_resolved"
+            )
         # No state change, no event emitted.
         after = (await any_store.list_submit_recoveries())[0]
         assert after.cleanup_status == RECOVERY_UNRESOLVED
         assert not [
-            e for e in await any_store.list_events()
-            if e.event_type.startswith("submit_recovery_") and e.event_type != "submit_recovery_recorded"
+            e
+            for e in await any_store.list_events()
+            if e.event_type.startswith("submit_recovery_")
+            and e.event_type != "submit_recovery_recorded"
         ]
 
     @pytest.mark.parametrize(
@@ -63,10 +67,14 @@ class TestAir004RecoveryStatusTransitions:
             (RECOVERY_NEEDS_REVIEW, "submit_recovery_needs_review"),
         ],
     )
-    async def test_allowed_automatic_transitions_emit_event(self, any_store, new_status, event):
+    async def test_allowed_automatic_transitions_emit_event(
+        self, any_store, new_status, event
+    ):
         await any_store.initialize()
         rec = await _recovery(any_store)
-        updated = await any_store.update_submit_recovery(rec.id, cleanup_status=new_status)
+        updated = await any_store.update_submit_recovery(
+            rec.id, cleanup_status=new_status
+        )
         assert updated.cleanup_status == new_status
         assert any(e.event_type == event for e in await any_store.list_events())
 
@@ -77,7 +85,9 @@ class TestAir004RecoveryStatusTransitions:
         await any_store.update_submit_recovery(rec.id, cleanup_status=terminal)
         events_before = len(await any_store.list_events())
         with pytest.raises(RecoveryTransitionError):
-            await any_store.update_submit_recovery(rec.id, cleanup_status=RECOVERY_UNRESOLVED)
+            await any_store.update_submit_recovery(
+                rec.id, cleanup_status=RECOVERY_UNRESOLVED
+            )
         after = (await any_store.list_submit_recoveries())[0]
         assert after.cleanup_status == terminal  # unchanged, no reopen
         assert len(await any_store.list_events()) == events_before  # no event
@@ -139,7 +149,9 @@ class TestAir006CreateOrderQuarantined:
         # gates, with no production caller. It must no longer be part of the
         # StateStore contract at all.
         assert not hasattr(StateStore, "create_order")
-        assert "create_order" not in getattr(StateStore, "__abstractmethods__", frozenset())
+        assert "create_order" not in getattr(
+            StateStore, "__abstractmethods__", frozenset()
+        )
 
     def test_no_production_code_calls_create_order_for_test(self):
         # The test-only helper must never be *called* from app/ (routes,
@@ -154,7 +166,9 @@ class TestAir006CreateOrderQuarantined:
         offenders = [
             str(p) for p in app_dir.rglob("*.py") if call.search(p.read_text())
         ]
-        assert offenders == [], f"create_order_for_test called in production: {offenders}"
+        assert offenders == [], (
+            f"create_order_for_test called in production: {offenders}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -179,7 +193,9 @@ class TestAir009EnumStringParity:
         await any_store.initialize()
         await any_store.create_candidate("AAPL")
         assert len(await any_store.list_candidates(status=CandidateStatus.PENDING)) == 1
-        assert len(await any_store.list_candidates(status=CandidateStatus.APPROVED)) == 0
+        assert (
+            len(await any_store.list_candidates(status=CandidateStatus.APPROVED)) == 0
+        )
 
     @pytest.mark.parametrize("bad", ["approved", True, None])
     async def test_transition_candidate_rejects_non_enum_status(self, any_store, bad):
@@ -188,7 +204,9 @@ class TestAir009EnumStringParity:
         with pytest.raises(InvalidStatusError):
             await any_store.transition_candidate(cand.id, bad)
         # No mutation.
-        assert (await any_store.get_candidate(cand.id)).status is CandidateStatus.PENDING
+        assert (
+            await any_store.get_candidate(cand.id)
+        ).status is CandidateStatus.PENDING
 
     @pytest.mark.parametrize("bad", ["submitted", True, None])
     async def test_transition_order_rejects_non_enum_status(self, any_store, bad):
@@ -281,22 +299,31 @@ class TestAir005StrictBooleansRoute:
     @pytest.mark.parametrize("bad", ["true", "false", "1", 1, 0])
     def test_kill_switch_route_rejects_coercion_class(self, bad):
         with self._client() as client:
-            assert client.post(
-                "/api/controls/kill-switch", json={"engaged": bad}
-            ).status_code == 422
+            assert (
+                client.post(
+                    "/api/controls/kill-switch", json={"engaged": bad}
+                ).status_code
+                == 422
+            )
 
     @pytest.mark.parametrize("bad", ["true", "false", 1, 0])
     def test_watchlist_route_rejects_non_bool_armed(self, bad):
         with self._client() as client:
-            assert client.post(
-                "/api/watchlist", json={"symbol": "AAPL", "armed": bad}
-            ).status_code == 422
+            assert (
+                client.post(
+                    "/api/watchlist", json={"symbol": "AAPL", "armed": bad}
+                ).status_code
+                == 422
+            )
 
     def test_kill_switch_route_accepts_real_bool(self):
         with self._client() as client:
-            assert client.post(
-                "/api/controls/kill-switch", json={"engaged": True}
-            ).status_code == 200
+            assert (
+                client.post(
+                    "/api/controls/kill-switch", json={"engaged": True}
+                ).status_code
+                == 200
+            )
             assert client.get("/api/session").json()["kill_switch"] is True
 
 
@@ -379,8 +406,12 @@ class TestAir008SerializationGuard:
         from app.models import Order, OrderSide, OrderType
 
         o = Order.model_construct(
-            candidate_id="c1", symbol="AAPL", side=OrderSide.BUY,
-            order_type=OrderType.LIMIT, quantity=10, limit_price=math.inf,
+            candidate_id="c1",
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=10,
+            limit_price=math.inf,
         )
         raw = o.model_dump_json()
         assert "Infinity" not in raw
@@ -413,8 +444,15 @@ class TestAir008SerializationGuard:
                     "INSERT INTO candidates (id, symbol, status, session_id, "
                     "suggested_limit_price, created_at, updated_at) "
                     "VALUES (?,?,?,?,?,?,?)",
-                    ("cid", "AAPL", "pending", session_id, float("inf"),
-                     "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+                    (
+                        "cid",
+                        "AAPL",
+                        "pending",
+                        session_id,
+                        float("inf"),
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:00Z",
+                    ),
                 )
                 store._conn.commit()
 

@@ -29,6 +29,7 @@ SCREENS = [
     "Watchlist Input",
     "Candidate Monitor",
     "Position Monitor",
+    "Envelope Monitor",
     "Daily Review",
 ]
 
@@ -90,17 +91,16 @@ def screen_session_control() -> None:
     a, b, c = st.columns(3)
     with a:
         if kill_on:
-            if st.button("Release kill switch", width='stretch'):
+            if st.button("Release kill switch", width="stretch"):
                 _do(lambda: api_client.set_kill_switch(False), "Kill switch released")
         else:
-            if st.button("🛑 Engage kill switch", type="primary",
-                         width='stretch'):
+            if st.button("🛑 Engage kill switch", type="primary", width="stretch"):
                 _do(lambda: api_client.set_kill_switch(True), "Kill switch engaged")
     with b:
-        if st.button("Pause buys", disabled=paused, width='stretch'):
+        if st.button("Pause buys", disabled=paused, width="stretch"):
             _do(api_client.pause_buys, "Buys paused")
     with c:
-        if st.button("Resume buys", disabled=not paused, width='stretch'):
+        if st.button("Resume buys", disabled=not paused, width="stretch"):
             _do(api_client.resume_buys, "Buys resumed")
 
     with st.expander("Raw session record"):
@@ -109,8 +109,10 @@ def screen_session_control() -> None:
 
 def screen_watchlist() -> None:
     st.header("Watchlist Input")
-    st.caption("Add or remove symbols and arm/disarm them. Backed by real "
-               "`/api/watchlist` endpoints.")
+    st.caption(
+        "Add or remove symbols and arm/disarm them. Backed by real "
+        "`/api/watchlist` endpoints."
+    )
 
     with st.form("add_symbols", clear_on_submit=True):
         raw = st.text_area(
@@ -170,7 +172,11 @@ def screen_watchlist() -> None:
         sym = entry["symbol"]
         armed = bool(entry["armed"])
         snap = snapshots.get(sym)
-        last_display = f"${snap['last_price']:.2f}" if snap and snap.get("last_price") is not None else "—"
+        last_display = (
+            f"${snap['last_price']:.2f}"
+            if snap and snap.get("last_price") is not None
+            else "—"
+        )
         move_display = "—"
         if snap and snap.get("pct_move") is not None:
             move_display = f"{snap['pct_move']:+.1f}%"
@@ -183,14 +189,18 @@ def screen_watchlist() -> None:
         row[2].write(last_display)
         row[3].write(move_display)
         if armed:
-            if row[4].button("Disarm", key=f"disarm_{sym}", width='stretch'):
-                _do(lambda s=sym: api_client.upsert_watchlist(s, armed=False),
-                    f"{sym} disarmed")
+            if row[4].button("Disarm", key=f"disarm_{sym}", width="stretch"):
+                _do(
+                    lambda s=sym: api_client.upsert_watchlist(s, armed=False),
+                    f"{sym} disarmed",
+                )
         else:
-            if row[4].button("Arm", key=f"arm_{sym}", width='stretch'):
-                _do(lambda s=sym: api_client.upsert_watchlist(s, armed=True),
-                    f"{sym} armed")
-        if row[5].button("Remove", key=f"rm_{sym}", width='stretch'):
+            if row[4].button("Arm", key=f"arm_{sym}", width="stretch"):
+                _do(
+                    lambda s=sym: api_client.upsert_watchlist(s, armed=True),
+                    f"{sym} armed",
+                )
+        if row[5].button("Remove", key=f"rm_{sym}", width="stretch"):
             _do(lambda s=sym: api_client.remove_watchlist(s), f"{sym} removed")
 
 
@@ -211,7 +221,9 @@ def screen_candidates() -> None:
         )
         with st.form("inject_candidate", clear_on_submit=True):
             symbol_input = st.text_input("Symbol", placeholder="AAPL")
-            qty_input = st.number_input("Suggested quantity", min_value=1, value=10, step=1)
+            qty_input = st.number_input(
+                "Suggested quantity", min_value=1, value=10, step=1
+            )
             inject_submitted = st.form_submit_button("Inject candidate")
         if inject_submitted:
             sym = symbol_input.strip().upper()
@@ -219,7 +231,9 @@ def screen_candidates() -> None:
                 st.warning("Symbol is required.")
             else:
                 try:
-                    api_client.create_mock_candidate(sym, suggested_quantity=int(qty_input))
+                    api_client.create_mock_candidate(
+                        sym, suggested_quantity=int(qty_input)
+                    )
                     st.toast(f"Mock candidate injected for {sym}")
                     st.rerun()
                 except BackendError as exc:
@@ -574,8 +588,10 @@ def screen_positions() -> None:
 
 def screen_review() -> None:
     st.header("Daily Review")
-    st.caption("Review the current session or a past one by date. History "
-               "persists across days.")
+    st.caption(
+        "Review the current session or a past one by date. History "
+        "persists across days."
+    )
     chosen = st.date_input("Session date", value=date.today())
     try:
         review = api_client.get_review(date=chosen.isoformat())
@@ -607,7 +623,7 @@ def screen_review() -> None:
     for title, rows in sections:
         st.subheader(title)
         if rows:
-            st.dataframe(rows, width='stretch', hide_index=True)
+            st.dataframe(rows, width="stretch", hide_index=True)
         else:
             st.caption("— none —")
 
@@ -633,6 +649,149 @@ def _do(action, success_message) -> None:
     st.rerun()
 
 
+def screen_envelopes() -> None:
+    """Execution-envelope visibility + the approval affordance (ADR-010 /
+    WO-0020). Read-only rendering of what GET /api/envelopes returns — the UI
+    holds no envelope state and refresh re-derives everything; approve/cancel
+    are INTENTS issued through the typed API client only."""
+
+    st.header("Envelope Monitor")
+    st.caption(
+        "An envelope is a bounded, immutable, human-approved execution "
+        "mandate (ADR-010). Hard rails breach — they are never clamped."
+    )
+    try:
+        envelopes = api_client.list_envelopes()
+    except BackendError as exc:
+        st.error(str(exc))
+        return
+
+    # Quarantine-grade prominence first (the WO-0015 visibility standard):
+    # a FROZEN / BREACHED / EXHAUSTED mandate is an operator action item.
+    attention = [
+        e for e in envelopes if e.get("status") in ("frozen", "breached", "exhausted")
+    ]
+    for env in attention:
+        st.error(
+            f"Envelope {env['id'][:8]} on {env['symbol']} is "
+            f"**{env['status'].upper()}** — human action required "
+            f"(remaining {env.get('remaining_quantity')}/{env.get('qty_ceiling')})."
+        )
+
+    if not envelopes:
+        st.info("No envelopes. Approve one below to delegate a bounded mandate.")
+    else:
+        st.dataframe(
+            [
+                {
+                    "id": e["id"][:8],
+                    "symbol": e["symbol"],
+                    "status": e["status"],
+                    "remaining/ceiling": (
+                        f"{e.get('remaining_quantity')}/{e.get('qty_ceiling')}"
+                    ),
+                    "floor": e.get("floor_price"),
+                    "trail (ATR x)": (
+                        f"{e.get('trail_distance_min')}-{e.get('trail_distance_max')}"
+                    ),
+                    "replaces": (
+                        f"{e.get('replaces_used', 0)}/{e.get('cancel_replace_budget')}"
+                    ),
+                    "expires_at": e.get("expires_at"),
+                    "on expiry": e.get("expiry_disposition"),
+                    "on stale data": e.get("stale_data_disposition"),
+                }
+                for e in envelopes
+            ],
+            use_container_width=True,
+        )
+        cancellable = [
+            e for e in envelopes if e.get("status") in ("pending", "approved", "frozen")
+        ]
+        if cancellable:
+            st.subheader("Withdraw / cancel")
+            for env in cancellable:
+                if st.button(
+                    f"Cancel {env['id'][:8]} ({env['symbol']}, {env['status']})",
+                    key=f"cancel-env-{env['id']}",
+                ):
+                    _do(
+                        lambda env_id=env["id"]: api_client.cancel_envelope(env_id),
+                        f"Envelope {env['id'][:8]} cancelled.",
+                    )
+
+    st.subheader("Approve a new envelope")
+    st.caption(
+        "Both dispositions and the TTL are MANDATORY approval-time choices — "
+        "the backend rejects a draft without them."
+    )
+    with st.form("approve-envelope"):
+        col1, col2 = st.columns(2)
+        with col1:
+            intent_id = st.text_input("Sell intent id")
+            symbol = st.text_input("Symbol")
+            qty = st.number_input("Qty ceiling", min_value=1, value=100, step=1)
+            floor = st.number_input(
+                "Floor price (hard rail)", min_value=0.01, value=1.00, step=0.01
+            )
+            trail_min = st.number_input(
+                "Trail min (ATR multiple)", min_value=0.1, value=1.0, step=0.1
+            )
+            trail_max = st.number_input(
+                "Trail max (ATR multiple)", min_value=0.1, value=3.0, step=0.1
+            )
+        with col2:
+            participation = st.number_input(
+                "Participation cap (0-1]", min_value=0.01, max_value=1.0, value=0.2
+            )
+            cooldown_ms = st.number_input(
+                "Cooldown floor (ms)", min_value=1, value=750, step=50
+            )
+            budget = st.number_input(
+                "Cancel/replace budget", min_value=1, value=40, step=1
+            )
+            ttl_hours = st.number_input(
+                "TTL (hours from now)", min_value=0.25, value=2.0, step=0.25
+            )
+            phases = st.multiselect(
+                "Allowed session phases",
+                ["pre_market", "regular", "after_hours"],
+                default=["pre_market", "regular", "after_hours"],
+            )
+            expiry_disposition = st.selectbox(
+                "On expiry (mandatory)", ["cancel_and_return", "rest_at_floor"]
+            )
+            stale_disposition = st.selectbox(
+                "On stale data (mandatory)", ["cancel", "leave_resting"]
+            )
+        submitted = st.form_submit_button("Approve envelope")
+    if submitted:
+        from datetime import datetime, timedelta, timezone
+
+        draft = {
+            "sell_intent_id": intent_id.strip(),
+            "symbol": symbol.strip().upper(),
+            "qty_ceiling": int(qty),
+            "floor_price": float(floor),
+            "trail_distance_min": float(trail_min),
+            "trail_distance_max": float(trail_max),
+            "participation_rate_cap": float(participation),
+            "aggressiveness": ["passive", "mid", "urgent"],
+            "cooldown_floor_ms": int(cooldown_ms),
+            "cancel_replace_budget": int(budget),
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(hours=float(ttl_hours))
+            ).isoformat(),
+            "allowed_session_phases": phases,
+            "expiry_disposition": expiry_disposition,
+            "stale_data_disposition": stale_disposition,
+        }
+        _do(
+            lambda: api_client.approve_envelope(draft),
+            "Envelope approved and ACTIVE.",
+        )
+
+
 def main() -> None:
     st.sidebar.title("📈 Alpaca CAPI Cockpit")
     reachable = _backend_banner()
@@ -651,6 +810,7 @@ def main() -> None:
         "Watchlist Input": screen_watchlist,
         "Candidate Monitor": screen_candidates,
         "Position Monitor": screen_positions,
+        "Envelope Monitor": screen_envelopes,
         "Daily Review": screen_review,
     }[screen]()
 

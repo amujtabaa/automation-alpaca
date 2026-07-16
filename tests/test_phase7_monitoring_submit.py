@@ -62,7 +62,9 @@ def _regular(monkeypatch):
 
 
 def _premarket(monkeypatch):
-    monkeypatch.setattr(monitoring, "session_type_for", lambda _t: SessionType.PRE_MARKET)
+    monkeypatch.setattr(
+        monitoring, "session_type_for", lambda _t: SessionType.PRE_MARKET
+    )
 
 
 # ---- §5.4: order-type re-derivation at submission ------------------------- #

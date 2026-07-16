@@ -45,9 +45,7 @@ async def test_resolve_timeout_quarantine_consumes_budget(any_store):
 
     adapter = _CountingAdapter()
     budget = ReconcileQueryBudget(2)  # only 2 tokens → 2 queries this tick
-    await _resolve_timeout_quarantine(
-        any_store, adapter, Settings(), budget=budget
-    )
+    await _resolve_timeout_quarantine(any_store, adapter, Settings(), budget=budget)
     assert adapter.query_count == 2, (
         f"budget of 2 should cap this tick at 2 targeted queries, "
         f"got {adapter.query_count}"

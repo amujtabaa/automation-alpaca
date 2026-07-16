@@ -27,14 +27,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from app.models import (
     Candidate,
     CandidateStatus,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     EventType,
+    ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
     Fill,
@@ -55,12 +57,16 @@ from app.models import (
     utcnow,
 )
 from app.position import would_go_negative
+from app.sellside.policy import validate_action as _sellside_validate_action
+from app.sellside.types import ActionKind as _SellsideActionKind
+from app.sellside.types import PlannedAction
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
     CLAIM_SKIPPED,
     COMMAND_ACTOR_SYSTEM,
     CandidateTransitionError,
+    EnvelopeTransitionError,
     InvalidControlValueError,
     InvalidFillError,
     InvalidOrderError,
@@ -73,12 +79,18 @@ from app.store.base import (
     SellIntentTransitionError,
     UnknownEntityError,
 )
-from app.transitions import ORDER_TIMESTAMP, ORDER_TRANSITIONS
+from app.transitions import (
+    ENVELOPE_TIMESTAMP,
+    ENVELOPE_TRANSITIONS,
+    ORDER_TIMESTAMP,
+    ORDER_TRANSITIONS,
+)
 from app.policy import (
     fill_order_match_reason,
     fill_value_reason,
     filled_quantity_reason,
     kill_switch_block_reason,
+    whole_count_reason,
     limit_price_reason,
     order_intent_block_reason,
     order_session_resolution_reason,
@@ -128,9 +140,13 @@ class EventSpec:
 # ---- append_fill ---------------------------------------------------------- #
 
 # FillPlan.outcome values. The store dispatches on these:
-FILL_REJECT = "reject"        # write `event`; raise `error`
-FILL_DUPLICATE = "duplicate"  # write `event`; return a FillAppendResult("duplicate", None, event)
-FILL_APPEND = "append"        # atomically write `fill` (+dedup) and `event`; return "appended"
+FILL_REJECT = "reject"  # write `event`; raise `error`
+FILL_DUPLICATE = (
+    "duplicate"  # write `event`; return a FillAppendResult("duplicate", None, event)
+)
+FILL_APPEND = (
+    "append"  # atomically write `fill` (+dedup) and `event`; return "appended"
+)
 
 
 @dataclass(frozen=True)
@@ -376,8 +392,12 @@ def plan_append_fill(
             session_id=session_id,
         )
     return FillPlan(
-        FILL_APPEND, event, fill=fill,
-        execution_event=execution_event_for_fill(fill, source=source, authority=authority),
+        FILL_APPEND,
+        event,
+        fill=fill,
+        execution_event=execution_event_for_fill(
+            fill, source=source, authority=authority
+        ),
     )
 
 
@@ -508,7 +528,9 @@ def emergency_reduce_override_event(
 
 # CreateOrderPlan.outcome values:
 CREATE_ORDER_REJECT = "reject"  # write `reject_event` (block case only); raise `error`
-CREATE_ORDER_CREATE = "create"  # write `order` + candidate ORDERED transition + `events`
+CREATE_ORDER_CREATE = (
+    "create"  # write `order` + candidate ORDERED transition + `events`
+)
 
 
 @dataclass(frozen=True)
@@ -823,8 +845,7 @@ def plan_create_order_for_sell_intent(
         expire_event = EventSpec(
             "sell_intent_transition",
             message=(
-                f"sell intent approved -> expired (order dispatch rejected: "
-                f"{error})"
+                f"sell intent approved -> expired (order dispatch rejected: {error})"
             ),
             symbol=intent.symbol,
             payload={
@@ -918,10 +939,10 @@ def plan_create_order_for_sell_intent(
 # ---- flatten_position (X-001, atomic manual-flatten) ---------------------- #
 
 # FlattenPlan.outcome values:
-FLATTEN_FLAT = "flat"                                   # no open position
-FLATTEN_EXISTING = "existing"                           # return an existing intent as-is
-FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"    # stand down + create fresh
-FLATTEN_DENIED_HALTED = "denied_halted"                  # ADR-003: Halted, no override
+FLATTEN_FLAT = "flat"  # no open position
+FLATTEN_EXISTING = "existing"  # return an existing intent as-is
+FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"  # stand down + create fresh
+FLATTEN_DENIED_HALTED = "denied_halted"  # ADR-003: Halted, no override
 
 
 @dataclass(frozen=True)
@@ -1150,9 +1171,7 @@ def plan_flatten_position(
             target_quantity=position.quantity,
         )
 
-    return FlattenPlan(
-        FLATTEN_SUPERSEDE_AND_CREATE, target_quantity=position.quantity
-    )
+    return FlattenPlan(FLATTEN_SUPERSEDE_AND_CREATE, target_quantity=position.quantity)
 
 
 # ---- submit-recovery ledger (D-017) --------------------------------------- #
@@ -1171,9 +1190,7 @@ def require_recovery_status(value: str, *, field: str = "cleanup_status") -> Non
         )
 
 
-def recovery_status_event(
-    prev_status: str, new_status: Optional[str]
-) -> Optional[str]:
+def recovery_status_event(prev_status: str, new_status: Optional[str]) -> Optional[str]:
     """Validate a recovery ``cleanup_status`` transition and return the audit
     event type to write, or ``None`` when nothing should change (AIR-004).
 
@@ -1373,8 +1390,8 @@ def plan_claim_order_for_submission(
 
 # OrderTransitionPlan.outcome values:
 ORDER_TRANSITION_REJECT = "reject"  # raise `error`
-ORDER_TRANSITION_NOOP = "noop"      # nothing changed; store returns the order unchanged
-ORDER_TRANSITION_APPLY = "apply"    # persist `order` (fully updated) + write `event`
+ORDER_TRANSITION_NOOP = "noop"  # nothing changed; store returns the order unchanged
+ORDER_TRANSITION_APPLY = "apply"  # persist `order` (fully updated) + write `event`
 
 
 @dataclass(frozen=True)
@@ -1487,7 +1504,9 @@ def plan_transition_order(
                 ),
             )
 
-    qty_changed = filled_quantity is not None and filled_quantity != order.filled_quantity
+    qty_changed = (
+        filled_quantity is not None and filled_quantity != order.filled_quantity
+    )
     broker_changed = (
         broker_order_id is not None and broker_order_id != order.broker_order_id
     )
@@ -1751,7 +1770,10 @@ def execution_event_for_routine_transition(
             session_id=order.session_id,
         )
 
-    if new_status is OrderStatus.PARTIALLY_FILLED and order.status is OrderStatus.PARTIALLY_FILLED:
+    if (
+        new_status is OrderStatus.PARTIALLY_FILLED
+        and order.status is OrderStatus.PARTIALLY_FILLED
+    ):
         # Same-status fill-progress self-loop. `filled_quantity` is monotonic
         # (bound-checked by `plan_transition_order`), so this key is guaranteed
         # distinct per repeat.
@@ -2168,3 +2190,909 @@ def plan_close_session(
         snapshots=snapshots,
         close_event=close_event,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Execution envelopes (ADR-010 / WO-0016)
+# --------------------------------------------------------------------------- #
+
+
+# ``EnvelopeTransitionError`` was relocated to ``app.store.base`` by WO-0030
+# (alongside the ``StateStore`` envelope API it belongs to) and is re-imported
+# above for compatibility, so ``from app.store.core import
+# EnvelopeTransitionError`` keeps working for every existing caller.
+
+
+# Outcomes, mirroring the order-transition planner's dispatch contract.
+ENVELOPE_TRANSITION_REJECT = "reject"  # raise `error`
+ENVELOPE_TRANSITION_NOOP = "noop"  # same-status re-request; nothing written
+ENVELOPE_TRANSITION_APPLY = "apply"  # persist `envelope` + append `events`
+
+
+# Which ExecutionEvent a genuine transition into each status appends. ACTIVE is
+# resolved by edge, not status alone: APPROVED->ACTIVE is ENVELOPE_ACTIVATED,
+# FROZEN->ACTIVE is ENVELOPE_RESUMED.
+_ENVELOPE_EVENT_FOR_STATUS: dict[EnvelopeStatus, ExecutionEventType] = {
+    EnvelopeStatus.APPROVED: ExecutionEventType.ENVELOPE_APPROVED,
+    EnvelopeStatus.FROZEN: ExecutionEventType.ENVELOPE_FROZEN,
+    EnvelopeStatus.COMPLETED: ExecutionEventType.ENVELOPE_COMPLETED,
+    EnvelopeStatus.EXPIRED: ExecutionEventType.ENVELOPE_EXPIRED,
+    EnvelopeStatus.EXHAUSTED: ExecutionEventType.ENVELOPE_EXHAUSTED,
+    EnvelopeStatus.BREACHED: ExecutionEventType.ENVELOPE_BREACHED,
+    EnvelopeStatus.SUPERSEDED: ExecutionEventType.ENVELOPE_SUPERSEDED,
+    EnvelopeStatus.CANCELLED: ExecutionEventType.ENVELOPE_CANCELLED,
+}
+
+# Transitions that can only ever happen once per envelope get a deterministic
+# dedupe key (idempotent on replay/retry — INV-5). FROZEN/RESUMED repeat
+# legitimately, so they are not deduped (None).
+_ENVELOPE_ONCE_ONLY: frozenset[EnvelopeStatus] = frozenset(
+    {
+        EnvelopeStatus.APPROVED,
+        EnvelopeStatus.COMPLETED,
+        EnvelopeStatus.EXPIRED,
+        EnvelopeStatus.EXHAUSTED,
+        EnvelopeStatus.BREACHED,
+        EnvelopeStatus.SUPERSEDED,
+        EnvelopeStatus.CANCELLED,
+    }
+)
+
+
+def _envelope_event(
+    envelope: ExecutionEnvelope,
+    event_type: ExecutionEventType,
+    *,
+    dedupe_key: Optional[str],
+    payload: dict[str, Any],
+    ts_event: Optional[datetime] = None,
+) -> ExecutionEvent:
+    """An envelope lifecycle ExecutionEvent. Every envelope lifecycle fact is a
+    local single-writer engine decision — never a broker report — so provenance
+    is uniformly ``ENGINE``/``LOCAL`` (ADR-008 convention). ``correlation_id``
+    is the owning sell intent (D-020: one key reconstructs the whole exit)."""
+
+    return ExecutionEvent(
+        event_type=event_type,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=dedupe_key,
+        ts_event=ts_event,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        envelope_id=envelope.id,
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload=payload,
+    )
+
+
+def envelope_created_event(
+    envelope: ExecutionEnvelope, *, actor: str = COMMAND_ACTOR_SYSTEM
+) -> ExecutionEvent:
+    """``ENVELOPE_CREATED`` — snapshots the FULL bound set in the payload so the
+    approved mandate is replayable from the log alone (ADR-010 §6), and stamps
+    the commanding actor (operator-* for a human-created draft; the *approval
+    flow* itself is WO-0017 — this is data plumbing only)."""
+
+    return _envelope_event(
+        envelope,
+        ExecutionEventType.ENVELOPE_CREATED,
+        dedupe_key=f"envelope:{envelope.id}:created",
+        payload={
+            "actor": actor,
+            "sell_intent_id": envelope.sell_intent_id,
+            "qty_ceiling": envelope.qty_ceiling,
+            "floor_price": envelope.floor_price,
+            "trail_distance_min": envelope.trail_distance_min,
+            "trail_distance_max": envelope.trail_distance_max,
+            "participation_rate_cap": envelope.participation_rate_cap,
+            "aggressiveness": list(envelope.aggressiveness),
+            "cooldown_floor_ms": envelope.cooldown_floor_ms,
+            "cancel_replace_budget": envelope.cancel_replace_budget,
+            "max_outstanding_children": envelope.max_outstanding_children,
+            "expires_at": envelope.expires_at.isoformat(),
+            "allowed_session_phases": [
+                p.value for p in envelope.allowed_session_phases
+            ],
+            "expiry_disposition": envelope.expiry_disposition.value,
+            "stale_data_disposition": envelope.stale_data_disposition.value,
+            "supersedes_id": envelope.supersedes_id,
+        },
+    )
+
+
+def envelope_draft_reason(envelope: ExecutionEnvelope) -> Optional[str]:
+    """Why a draft is NOT creatable, or None. The model's own validators already
+    hold the hard rails; this covers the *lifecycle* preconditions of create:
+    a draft enters the machine at PENDING with untouched counters and no
+    supersession linkage (only the atomic supersede op may set that)."""
+
+    if envelope.status is not EnvelopeStatus.PENDING:
+        return f"a new envelope must be PENDING, got {envelope.status.value}"
+    if envelope.remaining_quantity != envelope.qty_ceiling:
+        return "a new envelope's remaining_quantity must equal qty_ceiling"
+    if envelope.replaces_used != 0:
+        return "a new envelope's replaces_used must be 0"
+    if envelope.superseded_by_id is not None:
+        return "a new envelope cannot already be superseded"
+    # Codex PR#8 F2: a fresh draft must not pre-declare EITHER supersession link.
+    # `supersedes_id` set on an ordinary approve/create would activate a mandate
+    # that LOOKS like an amendment without any of the atomic supersede op's
+    # guarantees (predecessor validated + quantity-conserved + marked SUPERSEDED)
+    # — amendments must route through `supersede_envelope`.
+    if envelope.supersedes_id is not None:
+        return "a new envelope cannot pre-declare supersession (use supersede)"
+    return None
+
+
+@dataclass(frozen=True)
+class EnvelopeTransitionPlan:
+    """Pure outcome of a single envelope status transition."""
+
+    outcome: str
+    envelope: Optional[ExecutionEnvelope] = None
+    execution_event: Optional[ExecutionEvent] = None
+    audit_event: Optional[EventSpec] = None
+    error: Optional[Exception] = None
+
+
+def plan_envelope_transition(
+    envelope: ExecutionEnvelope,
+    new_status: EnvelopeStatus,
+    *,
+    actor: str = COMMAND_ACTOR_SYSTEM,
+    reason: Optional[str] = None,
+    superseded_by_id: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> EnvelopeTransitionPlan:
+    """Plan one status transition per ``ENVELOPE_TRANSITIONS`` (ADR-010 §3).
+
+    Same-status is an idempotent no-op; an illegal edge rejects with
+    :class:`EnvelopeTransitionError` and mutates nothing. A genuine transition
+    updates status + ``updated_at`` + the entered status's timestamp
+    (``ENVELOPE_TIMESTAMP``; ACTIVE restamps on every resume — documented
+    "most recent activation") and appends the matching §6 ExecutionEvent.
+    The single-ACTIVE-per-intent check is the STORE's job (it needs
+    neighboring-envelope state a pure planner cannot see).
+    """
+
+    current = envelope.status
+    if new_status is current:
+        return EnvelopeTransitionPlan(ENVELOPE_TRANSITION_NOOP)
+    if new_status not in ENVELOPE_TRANSITIONS.get(current, set()):
+        return EnvelopeTransitionPlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                f"illegal envelope transition {current.value} -> {new_status.value}"
+            ),
+        )
+
+    ts = now if now is not None else utcnow()
+    update: dict[str, Any] = {"status": new_status, "updated_at": ts}
+    ts_field = ENVELOPE_TIMESTAMP.get(new_status)
+    if ts_field:
+        update[ts_field] = ts
+    if new_status is EnvelopeStatus.SUPERSEDED and superseded_by_id is not None:
+        update["superseded_by_id"] = superseded_by_id
+    updated = envelope.model_copy(update=update)
+
+    if new_status is EnvelopeStatus.ACTIVE:
+        event_type = (
+            ExecutionEventType.ENVELOPE_RESUMED
+            if current is EnvelopeStatus.FROZEN
+            else ExecutionEventType.ENVELOPE_ACTIVATED
+        )
+        # First activation is once-only (APPROVED can never be re-entered);
+        # resumes repeat, so they are not deduped.
+        dedupe_key = (
+            f"envelope:{envelope.id}:activated"
+            if current is EnvelopeStatus.APPROVED
+            else None
+        )
+    else:
+        event_type = _ENVELOPE_EVENT_FOR_STATUS[new_status]
+        dedupe_key = (
+            f"envelope:{envelope.id}:{new_status.value}"
+            if new_status in _ENVELOPE_ONCE_ONLY
+            else None
+        )
+
+    payload: dict[str, Any] = {
+        "from": current.value,
+        "to": new_status.value,
+        "actor": actor,
+    }
+    if reason is not None:
+        payload["reason"] = reason
+    if new_status is EnvelopeStatus.EXPIRED:
+        # The approval-time mandatory choice this expiry now applies (§2/§6).
+        payload["expiry_disposition"] = envelope.expiry_disposition.value
+    if new_status is EnvelopeStatus.SUPERSEDED and superseded_by_id is not None:
+        payload["superseded_by_id"] = superseded_by_id
+
+    # F1 (WO-0035): the lifecycle event carries the transition's clock —
+    # injected when the caller ticks, so BREACHED/EXPIRED/FROZEN stamps are
+    # deterministic under replay instead of falling back to ts_init wall time.
+    execution_event = _envelope_event(
+        updated, event_type, dedupe_key=dedupe_key, payload=payload, ts_event=ts
+    )
+    audit_event = EventSpec(
+        "envelope_transition",
+        message=(
+            f"envelope {envelope.symbol} {current.value} -> {new_status.value}"
+            + (f" ({reason})" if reason else "")
+        ),
+        symbol=envelope.symbol,
+        payload=payload,
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+    )
+    return EnvelopeTransitionPlan(
+        ENVELOPE_TRANSITION_APPLY,
+        envelope=updated,
+        execution_event=execution_event,
+        audit_event=audit_event,
+    )
+
+
+# record_envelope_fill outcomes.
+ENVELOPE_FILL_REJECT = "reject"
+ENVELOPE_FILL_APPLY = "apply"
+
+
+@dataclass(frozen=True)
+class EnvelopeFillPlan:
+    """Pure outcome of applying one (deduped) fill fact to an envelope.
+
+    ``fill_event`` is the FILL ExecutionEvent to append **through the store's
+    dedupe-aware writer**; the store MUST apply ``envelope`` (and the optional
+    chained ``transition``) ONLY when the append actually wrote a new event —
+    a dedupe hit means this fill was already counted (exactly-once decrement,
+    INV-5)."""
+
+    outcome: str
+    error: Optional[Exception] = None
+    envelope: Optional[ExecutionEnvelope] = None
+    fill_event: Optional[ExecutionEvent] = None
+    # A status transition mechanically chained to this fill (ACTIVE envelope
+    # completing at remaining==0, or breaching on overfill), planned against
+    # the post-decrement envelope. None when the fill only decrements.
+    transition: Optional[EnvelopeTransitionPlan] = None
+
+
+def plan_envelope_fill(
+    envelope: ExecutionEnvelope,
+    *,
+    quantity: int,
+    dedupe_key: str,
+    price: float,
+    order_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    ts_event: Optional[datetime] = None,
+    source: EventSource = EventSource.BROKER_REST,
+    authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    now: Optional[datetime] = None,
+) -> EnvelopeFillPlan:
+    """Plan the ONLY operation that may decrement ``remaining_quantity``.
+
+    A fill is a broker fact (``BROKER_REST``/``BROKER_AUTHORITATIVE`` by
+    default; reconciliation-inferred callers override) and is recorded
+    faithfully in EVERY envelope state that can physically receive one:
+
+    * ``ACTIVE`` — decrement; remaining hits 0 → chain ``COMPLETED``; a fill
+      EXCEEDING remaining is a broker-authoritative overfill of the hard qty
+      ceiling → remaining floors at 0 and the envelope chains ``BREACHED``
+      (recorded + frozen-for-human, never hidden — ADR-001 posture).
+    * ``FROZEN`` — a resting order can fill before/while frozen: decrement,
+      record, NO status change (completion happens on resume — the store's
+      resume path auto-completes at remaining==0; a freeze is never exited by
+      a fill). Overfill while FROZEN chains ``BREACHED`` exactly like ACTIVE
+      (WO-0029A / ADR-010 §2-§3 amendment): a ceiling-violated mandate must
+      never reach COMPLETED via resume; the order-level quarantine (ADR-001)
+      still applies on top.
+    * terminal — a late fill (e.g. cancel raced a fill): recorded + decremented
+      + flagged ``late_fill``; terminal status never changes.
+    * ``PENDING``/``APPROVED`` — structurally impossible (no child order can
+      exist before activation): REJECT with :class:`InvalidFillError`.
+    """
+
+    bad = whole_count_reason(quantity)
+    if bad is not None or quantity <= 0:
+        return EnvelopeFillPlan(
+            ENVELOPE_FILL_REJECT,
+            error=InvalidFillError(
+                f"envelope fill needs a positive whole quantity, got {quantity!r}"
+            ),
+        )
+    # completeness-1 (REV-0023 Phase-A2): the shared D-019 value guard, exactly
+    # as plan_append_fill applies it — a non-finite/non-positive price would
+    # append a durable FILL event that permanently poisons
+    # project_symbol_position for the symbol (ProjectionError on every later
+    # get_position/close_session). Reject before anything is planned.
+    value_reason = fill_value_reason(quantity, price)
+    if value_reason is not None:
+        return EnvelopeFillPlan(
+            ENVELOPE_FILL_REJECT,
+            error=InvalidFillError(
+                f"invalid envelope fill for {envelope.symbol}: {value_reason}"
+            ),
+        )
+    if envelope.status in (EnvelopeStatus.PENDING, EnvelopeStatus.APPROVED):
+        return EnvelopeFillPlan(
+            ENVELOPE_FILL_REJECT,
+            error=InvalidFillError(
+                f"envelope {envelope.id} is {envelope.status.value}: no child "
+                "order can exist before activation, so a fill is not a "
+                "recordable fact"
+            ),
+        )
+
+    ts = now if now is not None else utcnow()
+    remaining = envelope.remaining_quantity or 0
+    overfill = quantity > remaining
+    new_remaining = max(0, remaining - quantity)
+    terminal = ENVELOPE_TRANSITIONS[envelope.status] == set()
+
+    payload: dict[str, Any] = {
+        "remaining_before": remaining,
+        "remaining_after": new_remaining,
+    }
+    if overfill:
+        payload["overfill"] = True
+        payload["overfill_quantity"] = quantity - remaining
+    if terminal:
+        payload["late_fill"] = True
+
+    updated = envelope.model_copy(
+        update={"remaining_quantity": new_remaining, "updated_at": ts}
+    )
+    fill_event = ExecutionEvent(
+        event_type=ExecutionEventType.FILL,
+        source=source,
+        authority=authority,
+        dedupe_key=dedupe_key,
+        # F1 (WO-0035): an explicit broker fill time wins; otherwise stamp the
+        # injected clock (``ts``), never a divergent bare wall read here.
+        ts_event=ts_event if ts_event is not None else ts,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        quantity=quantity,
+        price=price,
+        order_id=order_id,
+        envelope_id=envelope.id,
+        session_id=session_id if session_id is not None else envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload=payload,
+    )
+
+    transition: Optional[EnvelopeTransitionPlan] = None
+    if envelope.status in (EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN):
+        if overfill:
+            transition = plan_envelope_transition(
+                updated,
+                EnvelopeStatus.BREACHED,
+                actor="engine",
+                reason=(
+                    f"broker-authoritative overfill: fill of {quantity} exceeded "
+                    f"remaining {remaining} (hard qty ceiling "
+                    f"{envelope.qty_ceiling})"
+                ),
+                now=ts,
+            )
+        elif new_remaining == 0 and envelope.status is EnvelopeStatus.ACTIVE:
+            transition = plan_envelope_transition(
+                updated,
+                EnvelopeStatus.COMPLETED,
+                actor="engine",
+                reason="quantity ceiling fully filled",
+                now=ts,
+            )
+    return EnvelopeFillPlan(
+        ENVELOPE_FILL_APPLY,
+        envelope=updated,
+        fill_event=fill_event,
+        transition=transition,
+    )
+
+
+@dataclass(frozen=True)
+class EnvelopeSupersedePlan:
+    """Pure outcome of the atomic amendment-by-supersession operation."""
+
+    outcome: str  # ENVELOPE_TRANSITION_REJECT | ENVELOPE_TRANSITION_APPLY
+    error: Optional[Exception] = None
+    # Fully-updated rows to persist together (one atomic unit).
+    old_envelope: Optional[ExecutionEnvelope] = None
+    new_envelope: Optional[ExecutionEnvelope] = None
+    # Events in append order: created(B), approved(B), superseded(A),
+    # activated(B) — B never coexists ACTIVE with A inside the unit.
+    execution_events: tuple[ExecutionEvent, ...] = ()
+    audit_event: Optional[EventSpec] = None
+
+
+def plan_supersede_envelope(
+    old: ExecutionEnvelope,
+    successor: ExecutionEnvelope,
+    *,
+    actor: str = COMMAND_ACTOR_SYSTEM,
+    reason: Optional[str] = None,
+    now: Optional[datetime] = None,
+    working_order: Optional[Order] = None,
+) -> EnvelopeSupersedePlan:
+    """Plan ADR-010 §3 amendment-by-supersession as ONE atomic unit.
+
+    ``successor`` is a fresh PENDING draft for the SAME intent+symbol (its
+    bounds are the amendment; approval context arrives via ``actor`` — the
+    approval *flow* is WO-0017, this is the storage semantics). The plan walks
+    the successor through its legal chain PENDING→APPROVED→ACTIVE and moves the
+    old envelope ACTIVE→SUPERSEDED, linked both ways, all applied by the store
+    in one lock/tx hold so no window exists with two ACTIVE envelopes for one
+    intent — and a concurrent second supersede loses at "old is no longer
+    ACTIVE" (single-flight, W2-CAND shape).
+    """
+
+    if old.status is not EnvelopeStatus.ACTIVE:
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                f"only an ACTIVE envelope can be superseded; {old.id} is "
+                f"{old.status.value}"
+            ),
+        )
+    draft_bad = envelope_draft_reason(successor)
+    if draft_bad is not None:
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT, error=InvalidOrderError(draft_bad)
+        )
+    if successor.id == old.id:
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=InvalidOrderError("an envelope cannot supersede itself"),
+        )
+    if successor.sell_intent_id != old.sell_intent_id:
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=InvalidOrderError(
+                "a successor envelope must belong to the same sell intent "
+                f"({successor.sell_intent_id!r} != {old.sell_intent_id!r})"
+            ),
+        )
+    if successor.symbol != old.symbol:
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=InvalidOrderError(
+                "a successor envelope must keep the symbol "
+                f"({successor.symbol!r} != {old.symbol!r})"
+            ),
+        )
+    # WO-0027 (REV-0023 F6 / ADR-010 §3 amendment): supersession transfers
+    # the mandate, it never widens or duplicates it.
+    # (a) A LIVE working order at the venue blocks supersession outright —
+    #     the store cannot venue-cancel, and activating a successor next to a
+    #     resting predecessor order is exactly the double exposure INV-077
+    #     forbids in substance. The amendment flow cancels first (staged
+    #     CREATED orders are swept locally by the store in this same unit).
+    # CREATED is deliberately NOT venue-live: a staged, never-submitted order
+    # is local truth only — the stores sweep it in the same atomic unit as
+    # the supersession (WO-0024 machinery). Anything that may rest at the
+    # venue (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/CANCEL_PENDING/quarantine)
+    # blocks.
+    working_live = working_order is not None and working_order.status not in (
+        OrderStatus.CREATED,
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.REJECTED,
+    )
+    if working_live:
+        assert working_order is not None
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                f"envelope {old.id} has a live working order "
+                f"({working_order.id}, {working_order.status.value}) at the "
+                "venue; cancel it before superseding — a successor next to a "
+                "resting predecessor order is double exposure (INV-077)"
+            ),
+        )
+    # (b) Conservation: the successor's ceiling may not exceed what is LEFT
+    #     of the mandate the human approved (read under the caller's lock —
+    #     a fill racing the amendment shrinks remaining first and the
+    #     amendment re-drafts). Widening requires cancel + fresh approval.
+    old_remaining = old.remaining_quantity or 0
+    if successor.qty_ceiling > old_remaining:
+        return EnvelopeSupersedePlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                f"successor ceiling {successor.qty_ceiling} exceeds the "
+                f"predecessor's remaining {old_remaining} — supersession "
+                "conserves the mandate, it never widens it (INV-077)"
+            ),
+        )
+
+    ts = now if now is not None else utcnow()
+    linked = successor.model_copy(
+        update={"supersedes_id": old.id, "session_id": successor.session_id}
+    )
+    created_ev = envelope_created_event(linked, actor=actor)
+
+    approve = plan_envelope_transition(
+        linked, EnvelopeStatus.APPROVED, actor=actor, reason=reason, now=ts
+    )
+    assert approve.outcome == ENVELOPE_TRANSITION_APPLY  # PENDING->APPROVED is legal
+    assert approve.envelope is not None and approve.execution_event is not None
+
+    supersede_old = plan_envelope_transition(
+        old,
+        EnvelopeStatus.SUPERSEDED,
+        actor=actor,
+        reason=reason,
+        superseded_by_id=linked.id,
+        now=ts,
+    )
+    assert supersede_old.outcome == ENVELOPE_TRANSITION_APPLY  # ACTIVE checked above
+    assert (
+        supersede_old.envelope is not None and supersede_old.execution_event is not None
+    )
+
+    activate = plan_envelope_transition(
+        approve.envelope, EnvelopeStatus.ACTIVE, actor=actor, now=ts
+    )
+    assert activate.outcome == ENVELOPE_TRANSITION_APPLY  # APPROVED->ACTIVE is legal
+    assert activate.envelope is not None and activate.execution_event is not None
+
+    audit_event = EventSpec(
+        "envelope_superseded",
+        message=(
+            f"envelope for {old.symbol} superseded: {old.id} -> {linked.id}"
+            + (f" ({reason})" if reason else "")
+        ),
+        symbol=old.symbol,
+        payload={
+            "old_envelope_id": old.id,
+            "new_envelope_id": linked.id,
+            "actor": actor,
+            **({"reason": reason} if reason else {}),
+        },
+        session_id=old.session_id,
+        correlation_id=old.sell_intent_id,
+    )
+    return EnvelopeSupersedePlan(
+        ENVELOPE_TRANSITION_APPLY,
+        old_envelope=supersede_old.envelope,
+        new_envelope=activate.envelope,
+        execution_events=(
+            created_ev,
+            approve.execution_event,
+            supersede_old.execution_event,
+            activate.execution_event,
+        ),
+        audit_event=audit_event,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Envelope engine seam — write-time validation + divergence (WO-0019, D-3)
+# --------------------------------------------------------------------------- #
+
+
+class EnvelopeActionPausedError(ValueError):
+    """The envelope has a working order in TIMEOUT_QUARANTINE: no further
+    actions may be planned or written until the quarantine resolves (ADR-002 —
+    never blind-re-replace an order whose fate is unknown)."""
+
+
+STAGE_DIVERGENCE = "divergence"  # plan/write disagreement: frozen + event, no order
+STAGE_STAGED = "staged"  # order minted + accounting committed; drive the venue leg
+STAGE_REFUSED_STALE = "refused_stale"  # WO-0029A (ADR-010 §5 amendment): the
+# plan's FACTS went stale between decide and write (a fill shrank remaining,
+# order liveness flipped) — refused + evented, NO freeze; the policy replans
+# next tick. Only same-inputs validator disagreement is a DEFECT.
+
+# Rails whose write-time verdict can differ from plan time because the WORLD
+# changed (state-dependent), vs rails deterministic in (envelope constants,
+# action, the shared injected now, history) — where disagreement means the
+# validators themselves disagree (DEFECT). reduce_only is deliberately in the
+# defect/freeze set: it is not a plan/write comparison at all (the policy
+# cannot see position) — a mandate the book cannot cover needs a human
+# (INV-084).
+_STALE_REFUSAL_RAILS = frozenset({"qty_ceiling", "structural"})
+
+
+@dataclass(frozen=True)
+class EnvelopeActionStagePlan:
+    """Pure outcome of staging one envelope PlannedAction (WO-0019).
+
+    ``STAGE_STAGED``: ``order`` + ``action_event`` + ``audit_event`` commit as
+    ONE atomic unit — the ENVELOPE_ACTION event IS the budget/cooldown
+    accounting, so it can never desynchronize from the order it paid for.
+    ``STAGE_DIVERGENCE``: apply ``freeze`` then append ``divergence_event`` +
+    ``audit_event`` in the same unit; NOTHING else is written and the caller
+    must make ZERO venue calls (ADR-010 §5, D-3).
+    ``STAGE_REFUSED_STALE`` (WO-0029A): append ``action_event`` (an
+    ENVELOPE_ACTION with payload action="refused_stale" — never counted by
+    budget/cooldown accounting) + ``audit_event``; no order, no freeze, zero
+    venue calls; the policy replans from fresh facts next tick.
+    """
+
+    outcome: str
+    error: Optional[Exception] = None
+    order: Optional[Order] = None
+    action_event: Optional[ExecutionEvent] = None
+    audit_event: Optional[EventSpec] = None
+    freeze: Optional[EnvelopeTransitionPlan] = None
+    divergence_event: Optional[ExecutionEvent] = None
+
+
+def _divergence(
+    envelope: ExecutionEnvelope,
+    *,
+    rail: str,
+    detail: str,
+    action_payload: dict[str, Any],
+    snapshot_fingerprint: str,
+    now: datetime,
+) -> EnvelopeActionStagePlan:
+    freeze = plan_envelope_transition(
+        envelope,
+        EnvelopeStatus.FROZEN,
+        actor="engine",
+        reason=f"plan_divergence:{rail}",
+        now=now,
+    )
+    assert freeze.outcome == ENVELOPE_TRANSITION_APPLY  # envelope is ACTIVE here
+    assert freeze.envelope is not None
+    divergence_event = _envelope_event(
+        freeze.envelope,
+        ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE,
+        dedupe_key=None,
+        payload={
+            "rail": rail,
+            "detail": detail,
+            "snapshot_fingerprint": snapshot_fingerprint,
+            **action_payload,
+        },
+    )
+    audit_event = EventSpec(
+        "envelope_plan_divergence",
+        message=(
+            f"DEFECT: plan/write validator disagreement on {envelope.symbol} "
+            f"({rail}) — envelope frozen, no venue call"
+        ),
+        symbol=envelope.symbol,
+        payload={"rail": rail, "detail": detail, "envelope_id": envelope.id},
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+    )
+    return EnvelopeActionStagePlan(
+        STAGE_DIVERGENCE,
+        freeze=freeze,
+        divergence_event=divergence_event,
+        audit_event=audit_event,
+    )
+
+
+def _refused_stale(
+    envelope: ExecutionEnvelope,
+    *,
+    rail: str,
+    detail: str,
+    action_payload: dict[str, Any],
+    snapshot_fingerprint: str,
+) -> EnvelopeActionStagePlan:
+    """WO-0029A: a benign stale-plan refusal — the world changed between
+    decide and write. Evented distinctly, envelope untouched."""
+
+    refusal_event = _envelope_event(
+        envelope,
+        ExecutionEventType.ENVELOPE_ACTION,
+        dedupe_key=None,
+        payload={
+            **action_payload,
+            "action": "refused_stale",
+            "refused_action": action_payload.get("action"),
+            "rail": rail,
+            "detail": detail,
+            "snapshot_fingerprint": snapshot_fingerprint,
+        },
+    )
+    audit_event = EventSpec(
+        "envelope_action_refused_stale",
+        message=(
+            f"stale plan refused on {envelope.symbol} ({rail}) — facts "
+            "changed between plan and write; policy replans next tick"
+        ),
+        symbol=envelope.symbol,
+        payload={"rail": rail, "detail": detail, "envelope_id": envelope.id},
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+    )
+    return EnvelopeActionStagePlan(
+        STAGE_REFUSED_STALE,
+        action_event=refusal_event,
+        audit_event=audit_event,
+    )
+
+
+def plan_stage_envelope_action(
+    envelope: ExecutionEnvelope,
+    action: PlannedAction,
+    *,
+    history: Sequence[ExecutionEvent],
+    working_order: Optional[Order],
+    session_id: Optional[str],
+    snapshot_fingerprint: str,
+    actor: str,
+    now: Optional[datetime] = None,
+    current_position: Optional[int] = None,
+) -> EnvelopeActionStagePlan:
+    """Stage one PlannedAction: the WRITE-TIME half of D-3.
+
+    Re-runs the SAME :func:`app.sellside.policy.validate_action` the policy
+    ran at plan time (two mandatory call sites). Any disagreement — a rail
+    violation the plan claimed was valid, or a structural mismatch (REPRICE
+    with no working order / SUBMIT over a live one) — is a software-defect
+    signal: freeze + ENVELOPE_PLAN_DIVERGENCE (ADR-010 §5), never a venue
+    call. On pass, mints the SELL Order (CREATED; XOR origin = the envelope's
+    sell intent; ``replaces_order_id`` links the reprice chain) plus the
+    ENVELOPE_ACTION event carrying envelope_id, snapshot fingerprint and the
+    clamped params (§6).
+    """
+
+    ts = now if now is not None else utcnow()
+    action_payload: dict[str, Any] = {
+        "action": action.kind.value,
+        "limit_price": action.limit_price,
+        "quantity": action.quantity,
+        "tranche": action.tranche,
+        "stop_triggered": action.stop_triggered,
+        "urgency": action.urgency,
+        "regime": action.regime.value if action.regime is not None else None,
+        "working_stop": action.working_stop,
+        "atr": action.atr,
+        "clamps": [
+            {"field": c.field, "computed": c.computed, "clamped_to": c.clamped_to}
+            for c in action.clamps
+        ],
+    }
+
+    if envelope.status is not EnvelopeStatus.ACTIVE:
+        return EnvelopeActionStagePlan(
+            STAGE_DIVERGENCE,
+            error=EnvelopeTransitionError(
+                f"envelope {envelope.id} is {envelope.status.value}: no action "
+                "may be staged"
+            ),
+        )
+
+    working_live = working_order is not None and working_order.status not in (
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.REJECTED,
+    )
+    if action.kind is _SellsideActionKind.REPRICE:
+        if (
+            not working_live
+            or working_order is None
+            or (working_order.broker_order_id is None)
+        ):
+            # Order liveness is state that legitimately changes between plan
+            # and write (a fill landed) — benign stale refusal (WO-0029A).
+            return _refused_stale(
+                envelope,
+                rail="structural",
+                detail="REPRICE planned but no live working order with a venue id",
+                action_payload=action_payload,
+                snapshot_fingerprint=snapshot_fingerprint,
+            )
+    elif working_live:
+        return _refused_stale(
+            envelope,
+            rail="structural",
+            detail="SUBMIT planned over a live working order (max outstanding=1)",
+            action_payload=action_payload,
+            snapshot_fingerprint=snapshot_fingerprint,
+        )
+
+    violation = _sellside_validate_action(envelope, action, history=history, now=ts)
+    if violation is not None:
+        if violation.rail in _STALE_REFUSAL_RAILS:
+            return _refused_stale(
+                envelope,
+                rail=violation.rail,
+                detail=violation.detail,
+                action_payload=action_payload,
+                snapshot_fingerprint=snapshot_fingerprint,
+            )
+        return _divergence(
+            envelope,
+            rail=violation.rail,
+            detail=violation.detail,
+            action_payload=action_payload,
+            snapshot_fingerprint=snapshot_fingerprint,
+            now=ts,
+        )
+    # WO-0026 (REV-0023 F1): reduce-only is a §2 HARD rail — the SELL must
+    # never exceed the live fill-derived position (single-writer truth). The
+    # stores read their own projection under the SAME lock/transaction as
+    # this plan's application, so a fill racing the stage cannot slip an
+    # oversell through (the D-3 shape, extended to position). Checked AFTER
+    # the mandate rails: the envelope's own bounds adjudicate first, and
+    # reduce_only fires only when the mandate says yes but the book says no.
+    if current_position is not None and action.quantity > max(0, current_position):
+        return _divergence(
+            envelope,
+            rail="reduce_only",
+            detail=(
+                f"SELL {action.quantity} exceeds live position "
+                f"{max(0, current_position)}"
+            ),
+            action_payload=action_payload,
+            snapshot_fingerprint=snapshot_fingerprint,
+            now=ts,
+        )
+
+    if action.kind is _SellsideActionKind.REPRICE:
+        assert working_order is not None  # narrowed by the structural gate above
+        replaces_id: Optional[str] = working_order.id
+    else:
+        replaces_id = None
+    order = Order(
+        sell_intent_id=envelope.sell_intent_id,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=action.quantity,
+        limit_price=action.limit_price,
+        replaces_order_id=replaces_id,
+        session_id=session_id,
+    )
+    action_event = ExecutionEvent(
+        event_type=ExecutionEventType.ENVELOPE_ACTION,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        ts_event=ts,  # the DECISION clock — redrive's staleness ceiling and
+        # the cooldown rail read this deterministically (WO-0024)
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        quantity=action.quantity,
+        price=action.limit_price,
+        order_id=order.id,
+        envelope_id=envelope.id,
+        session_id=session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload={
+            **action_payload,
+            "snapshot_fingerprint": snapshot_fingerprint,
+            "actor": actor,
+            "replaces_order_id": order.replaces_order_id,
+        },
+    )
+    audit_event = EventSpec(
+        "envelope_action_staged",
+        message=(
+            f"envelope action staged: {action.kind.value} {action.quantity} "
+            f"{envelope.symbol} @ {action.limit_price}"
+        ),
+        symbol=envelope.symbol,
+        order_id=order.id,
+        payload={"envelope_id": envelope.id, **action_payload},
+        session_id=session_id,
+        correlation_id=envelope.sell_intent_id,
+    )
+    return EnvelopeActionStagePlan(
+        STAGE_STAGED,
+        order=order,
+        action_event=action_event,
+        audit_event=audit_event,
+    )
+
+
+@dataclass(frozen=True)
+class EnvelopeActionStageResult:
+    """What a store's ``stage_envelope_action`` returns (both stores)."""
+
+    outcome: str  # STAGE_STAGED | STAGE_DIVERGENCE
+    envelope: ExecutionEnvelope
+    order: Optional[Order] = None
+    working_order: Optional[Order] = None

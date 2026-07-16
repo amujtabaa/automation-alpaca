@@ -61,7 +61,9 @@ async def _hold(store, symbol, qty, avg=10.0):
     buy = await store.create_order_for_test(
         cand.id, symbol, OrderSide.BUY, qty, session_id=session.id
     )
-    await store.append_fill(buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id)
+    await store.append_fill(
+        buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id
+    )
     await store.transition_order(buy.id, OrderStatus.CANCELED)
 
 
@@ -210,7 +212,9 @@ async def test_kill_switch_route_persists_via_the_facade():
     is resolved) — confirm it still engages the switch exactly as before."""
     app, store = await _app()
     async with _client(app) as client:
-        response = await client.post("/api/controls/kill-switch", json={"engaged": True})
+        response = await client.post(
+            "/api/controls/kill-switch", json={"engaged": True}
+        )
     assert response.status_code == 200
     session = await store.get_current_session()
     assert session.kill_switch is True
@@ -274,7 +278,9 @@ async def test_store_backed_command_facade_pause_resume_forward_unchanged():
 # Unit: facade_error_to_http
 # --------------------------------------------------------------------------- #
 def test_engine_not_ready_maps_to_503():
-    http_exc = facade_error_to_http(EngineNotReadyError("startup reconciliation pending"))
+    http_exc = facade_error_to_http(
+        EngineNotReadyError("startup reconciliation pending")
+    )
     assert isinstance(http_exc, HTTPException)
     assert http_exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 

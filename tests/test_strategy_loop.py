@@ -27,7 +27,9 @@ _PRE_MARKET_NOW = datetime(2026, 1, 7, 10, 0, tzinfo=timezone.utc)
 # Same day, 11:00 ET = 16:00 UTC -> REGULAR.
 _REGULAR_NOW = datetime(2026, 1, 7, 16, 0, tzinfo=timezone.utc)
 
-_HEALTHY = dict(last_price=103.0, prev_close=100.0, bid=102.9, ask=103.1, volume=100_000)
+_HEALTHY = dict(
+    last_price=103.0, prev_close=100.0, bid=102.9, ask=103.1, volume=100_000
+)
 
 
 async def _armed_store(*symbols: str) -> InMemoryStateStore:
@@ -210,7 +212,9 @@ class TestSessionClose:
         await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
 
         events = await store.list_events()
-        assert any(e.event_type == "market_data_stale" and e.symbol == "AAPL" for e in events)
+        assert any(
+            e.event_type == "market_data_stale" and e.symbol == "AAPL" for e in events
+        )
 
 
 class TestIdleTickDoesNotCreateASession:
@@ -294,7 +298,10 @@ class TestMarketDataStaleness:
         await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
 
         events = await store.list_events()
-        assert any(e.event_type == "market_data_recovered" and e.symbol == "AAPL" for e in events)
+        assert any(
+            e.event_type == "market_data_recovered" and e.symbol == "AAPL"
+            for e in events
+        )
 
     async def test_never_stale_writes_no_events(self):
         store = await _armed_store("AAPL")
@@ -305,7 +312,10 @@ class TestMarketDataStaleness:
         await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW)
 
         events = await store.list_events()
-        assert not any(e.event_type in ("market_data_stale", "market_data_recovered") for e in events)
+        assert not any(
+            e.event_type in ("market_data_stale", "market_data_recovered")
+            for e in events
+        )
 
 
 class TestStaleStateCache:
@@ -321,21 +331,35 @@ class TestStaleStateCache:
         cache: dict[str, bool] = {}
 
         # Tick 1: becomes stale -> one event, cache updated.
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+        )
         assert cache == {"AAPL": True}
-        stale_events = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        stale_events = [
+            e for e in await store.list_events() if e.event_type == "market_data_stale"
+        ]
         assert len(stale_events) == 1
 
         # Tick 2: still stale, using the CACHE (not the event log) -> no new event.
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
-        stale_events = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+        )
+        stale_events = [
+            e for e in await store.list_events() if e.event_type == "market_data_stale"
+        ]
         assert len(stale_events) == 1  # unchanged
 
         # Tick 3: recovers -> one recovered event, cache flips.
         feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+        )
         assert cache == {"AAPL": False}
-        recovered = [e for e in await store.list_events() if e.event_type == "market_data_recovered"]
+        recovered = [
+            e
+            for e in await store.list_events()
+            if e.event_type == "market_data_recovered"
+        ]
         assert len(recovered) == 1
 
     async def test_cache_and_no_cache_agree_across_ticks(self):
@@ -347,10 +371,16 @@ class TestStaleStateCache:
             feed = FakeMarketDataFeed()
             await feed.subscribe(["AAPL"])
             feed.set_snapshot("AAPL", stale=True)
-            await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
-            await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+            await run_strategy_tick(
+                store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+            )
+            await run_strategy_tick(
+                store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+            )
             feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
-            await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+            await run_strategy_tick(
+                store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+            )
             events = await store.list_events()
             return (
                 len([e for e in events if e.event_type == "market_data_stale"]),
@@ -373,14 +403,22 @@ class TestStaleStateCache:
         feed.set_snapshot("AAPL", stale=True)
 
         # Pre-restart process: records the stale transition in its own cache.
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={})
-        stale = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={}
+        )
+        stale = [
+            e for e in await store.list_events() if e.event_type == "market_data_stale"
+        ]
         assert len(stale) == 1
 
         # Restart: a brand-new empty cache, feed still stale -> NO duplicate.
         fresh_cache: dict[str, bool] = {}
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=fresh_cache)
-        stale = [e for e in await store.list_events() if e.event_type == "market_data_stale"]
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=fresh_cache
+        )
+        stale = [
+            e for e in await store.list_events() if e.event_type == "market_data_stale"
+        ]
         assert len(stale) == 1  # not re-announced
         assert fresh_cache["AAPL"] is True  # seeded from the durable log
 
@@ -392,12 +430,20 @@ class TestStaleStateCache:
         feed = FakeMarketDataFeed()
         await feed.subscribe(["AAPL"])
         feed.set_snapshot("AAPL", stale=True)
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={})
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={}
+        )
 
         # Restart with an empty cache; feed has since recovered.
         feed.set_snapshot("AAPL", **_HEALTHY, stale=False)
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={})
-        recovered = [e for e in await store.list_events() if e.event_type == "market_data_recovered"]
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state={}
+        )
+        recovered = [
+            e
+            for e in await store.list_events()
+            if e.event_type == "market_data_recovered"
+        ]
         assert len(recovered) == 1
 
     async def test_cache_is_pruned_when_symbol_unsubscribed(self):
@@ -406,11 +452,15 @@ class TestStaleStateCache:
         await feed.subscribe(["AAPL"])
         feed.set_snapshot("AAPL", stale=True)
         cache: dict[str, bool] = {}
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+        )
         assert "AAPL" in cache
 
         await store.set_watchlist_armed("AAPL", False)  # disarm -> unsubscribed
-        await run_strategy_tick(store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache)
+        await run_strategy_tick(
+            store, feed, Settings(), now=_PRE_MARKET_NOW, stale_state=cache
+        )
 
         assert "AAPL" not in cache  # pruned, not leaked forever
 

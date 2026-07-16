@@ -49,7 +49,9 @@ async def _submitted_order(store, *, symbol="AAPL", qty=100, limit=2.0):
 # F-003 — store boundary, both stores, no persisted mutation
 # --------------------------------------------------------------------------- #
 class TestFilledQuantityHostileInput:
-    @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf, 0.5, True, False, "5", -1])
+    @pytest.mark.parametrize(
+        "bad", [math.nan, math.inf, -math.inf, 0.5, True, False, "5", -1]
+    )
     async def test_transition_order_rejects_and_persists_nothing(self, any_store, bad):
         order = await _submitted_order(any_store)
 
@@ -73,7 +75,9 @@ class TestFilledQuantityHostileInput:
 
 
 class TestFillQuantityHostileInput:
-    @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf, 0, -1, 0.5, True, "5"])
+    @pytest.mark.parametrize(
+        "bad", [math.nan, math.inf, -math.inf, 0, -1, 0.5, True, "5"]
+    )
     async def test_append_fill_rejects_bad_quantity(self, any_store, bad):
         order = await _submitted_order(any_store)
         with pytest.raises(InvalidFillError):
@@ -143,7 +147,9 @@ class TestStrategyRejectsNonFiniteSnapshot:
         # non-finite cases below are genuinely suppressing a real proposal.
         assert self._evaluate(self._snapshot()) is not None
 
-    @pytest.mark.parametrize("field", ["last_price", "prev_close", "bid", "ask", "volume"])
+    @pytest.mark.parametrize(
+        "field", ["last_price", "prev_close", "bid", "ask", "volume"]
+    )
     @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
     def test_non_finite_field_yields_no_candidate(self, field, bad):
         proposal = self._evaluate(self._snapshot(**{field: bad}))
@@ -177,7 +183,9 @@ class TestWholeCountReasonIsWiredIn:
             (10, None),
         ],
     )
-    def test_fill_value_reason_quantity_reason_codes_unchanged(self, quantity, expected):
+    def test_fill_value_reason_quantity_reason_codes_unchanged(
+        self, quantity, expected
+    ):
         from app.policy import fill_value_reason
 
         assert fill_value_reason(quantity, 1.0) == expected
@@ -197,8 +205,12 @@ class TestWholeCountReasonIsWiredIn:
         from app.policy import filled_quantity_reason
 
         order = Order(
-            candidate_id="c1", symbol="AAPL", side=OrderSide.BUY,
-            order_type=OrderType.LIMIT, quantity=100, limit_price=1.0,
+            candidate_id="c1",
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=100,
+            limit_price=1.0,
             filled_quantity=40,
         )
         assert filled_quantity_reason(order, value) == expected
@@ -227,7 +239,9 @@ class TestCandidateCreationRejectsSilentTypeCoercion:
     exactly to the two genuinely silent cases."""
 
     @pytest.mark.parametrize("bad_quantity", [True, False, "5"])
-    async def test_bool_or_string_suggested_quantity_rejected(self, any_store, bad_quantity):
+    async def test_bool_or_string_suggested_quantity_rejected(
+        self, any_store, bad_quantity
+    ):
         from app.store.base import InvalidOrderError
 
         await any_store.initialize()
@@ -238,7 +252,9 @@ class TestCandidateCreationRejectsSilentTypeCoercion:
         assert await any_store.list_candidates() == []  # no persisted mutation
 
     @pytest.mark.parametrize("bad_price", [True, "5.0"])
-    async def test_bool_or_string_suggested_limit_price_rejected(self, any_store, bad_price):
+    async def test_bool_or_string_suggested_limit_price_rejected(
+        self, any_store, bad_price
+    ):
         from app.store.base import InvalidOrderError
 
         await any_store.initialize()

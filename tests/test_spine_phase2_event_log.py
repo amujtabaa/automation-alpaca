@@ -68,10 +68,10 @@ def _fill_event(symbol, side, qty, price, dedupe_key, *, ts=_TS):
 def _script():
     events = [
         _fill_event("AAPL", OrderSide.BUY, 100, 1.00, "f1"),
-        _fill_event("AAPL", OrderSide.BUY, 100, 2.00, "f2"),   # qty 200 avg 1.50
-        _fill_event("AAPL", OrderSide.SELL, 50, 9.99, "f3"),   # qty 150 avg 1.50
+        _fill_event("AAPL", OrderSide.BUY, 100, 2.00, "f2"),  # qty 200 avg 1.50
+        _fill_event("AAPL", OrderSide.SELL, 50, 9.99, "f3"),  # qty 150 avg 1.50
         _fill_event("MSFT", OrderSide.BUY, 10, 5.00, "f4"),
-        _fill_event("MSFT", OrderSide.SELL, 10, 7.00, "f5"),   # flat, avg None
+        _fill_event("MSFT", OrderSide.SELL, 10, 7.00, "f5"),  # flat, avg None
     ]
     return [e.model_copy(update={"sequence": i}) for i, e in enumerate(events, start=1)]
 
@@ -93,9 +93,15 @@ async def test_empty_log_max_sequence_is_zero(any_store):
 
 async def test_append_assigns_monotonic_gapless_sequence(any_store):
     await any_store.initialize()
-    e1 = await any_store.append_execution_event(_fill_event("AAPL", OrderSide.BUY, 1, 1.0, "a"))
-    e2 = await any_store.append_execution_event(_fill_event("AAPL", OrderSide.BUY, 1, 1.0, "b"))
-    e3 = await any_store.append_execution_event(_fill_event("AAPL", OrderSide.BUY, 1, 1.0, "c"))
+    e1 = await any_store.append_execution_event(
+        _fill_event("AAPL", OrderSide.BUY, 1, 1.0, "a")
+    )
+    e2 = await any_store.append_execution_event(
+        _fill_event("AAPL", OrderSide.BUY, 1, 1.0, "b")
+    )
+    e3 = await any_store.append_execution_event(
+        _fill_event("AAPL", OrderSide.BUY, 1, 1.0, "c")
+    )
     assert [e1.sequence, e2.sequence, e3.sequence] == [1, 2, 3]
     # The draft's sequence (0) is overwritten: a persisted event is always >= 1.
     assert all(e.sequence >= 1 for e in await any_store.get_execution_events())
@@ -118,15 +124,21 @@ async def test_dedupe_key_is_idempotent(any_store):
     assert len(await any_store.get_execution_events()) == 1
     # A dedupe skip consumes no sequence, so the NEXT distinct append lands at
     # 2 (gapless continuation), never 3 — proving the skip left no hole.
-    nxt = await any_store.append_execution_event(_fill_event("AAPL", OrderSide.BUY, 5, 1.0, "next"))
+    nxt = await any_store.append_execution_event(
+        _fill_event("AAPL", OrderSide.BUY, 5, 1.0, "next")
+    )
     assert nxt.sequence == 2
     assert await any_store.get_max_execution_sequence() == 2
 
 
 async def test_null_dedupe_key_is_never_deduped(any_store):
     await any_store.initialize()
-    n1 = await any_store.append_execution_event(_fill_event("AAPL", OrderSide.BUY, 1, 1.0, None))
-    n2 = await any_store.append_execution_event(_fill_event("AAPL", OrderSide.BUY, 1, 1.0, None))
+    n1 = await any_store.append_execution_event(
+        _fill_event("AAPL", OrderSide.BUY, 1, 1.0, None)
+    )
+    n2 = await any_store.append_execution_event(
+        _fill_event("AAPL", OrderSide.BUY, 1, 1.0, None)
+    )
     assert [n1.sequence, n2.sequence] == [1, 2]
     assert await any_store.get_max_execution_sequence() == 2
 
@@ -137,11 +149,19 @@ async def test_get_execution_events_after_sequence_and_limit(any_store):
     assert [e.sequence for e in tail] == [3, 4, 5]
     head = await any_store.get_execution_events(limit=2)
     assert [e.sequence for e in head] == [1, 2]
-    assert [e.sequence for e in await any_store.get_execution_events()] == [1, 2, 3, 4, 5]
+    assert [e.sequence for e in await any_store.get_execution_events()] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
 
 
 @pytest.mark.parametrize("bad_limit", [-1, -2, -100])
-async def test_get_execution_events_negative_limit_raises_in_both_stores(any_store, bad_limit):
+async def test_get_execution_events_negative_limit_raises_in_both_stores(
+    any_store, bad_limit
+):
     """Dual-store parity trap: a Python slice ``out[:-1]`` silently drops the
     tail while SQL ``LIMIT -1`` means unlimited. Both stores must reject a
     negative limit identically (ValueError) rather than diverge."""
@@ -211,7 +231,9 @@ async def test_sqlite_roundtrips_the_full_execution_event_envelope(tmp_path):
     assert fetched.source is EventSource.RECONCILIATION
     assert fetched.payload == {"nested": {"k": [1, 2, 3]}, "flag": True}
     assert (fetched.primary_id, fetched.spawn_id, fetched.correlation_id) == (
-        "prim-1", "spawn-1", "corr-1",
+        "prim-1",
+        "spawn-1",
+        "corr-1",
     )
     store._conn.close()
     store._conn = None
@@ -281,8 +303,12 @@ def test_projector_up_to_sequence_tracks_max_not_last():
     event's — so a defensively out-of-order event cannot make ``up_to_sequence``
     regress (which would corrupt a subsequent snapshot/resume boundary)."""
     events = [
-        _fill_event("AAPL", OrderSide.BUY, 10, 1.0, "hi").model_copy(update={"sequence": 5}),
-        _fill_event("AAPL", OrderSide.BUY, 10, 1.0, "lo").model_copy(update={"sequence": 3}),
+        _fill_event("AAPL", OrderSide.BUY, 10, 1.0, "hi").model_copy(
+            update={"sequence": 5}
+        ),
+        _fill_event("AAPL", OrderSide.BUY, 10, 1.0, "lo").model_copy(
+            update={"sequence": 3}
+        ),
     ]
     projection = PositionProjector.project(events)
     assert projection.up_to_sequence == 5  # max, not the last event's 3
@@ -291,12 +317,12 @@ def test_projector_up_to_sequence_tracks_max_not_last():
 @pytest.mark.parametrize(
     "quantity,price",
     [
-        (100, float("nan")),   # non-finite price
+        (100, float("nan")),  # non-finite price
         (100, float("inf")),
-        (100, -1.0),           # negative price
-        (100, 0.0),            # zero price
-        (-5, 1.0),             # negative quantity
-        (0, 1.0),              # zero quantity
+        (100, -1.0),  # negative price
+        (100, 0.0),  # zero price
+        (-5, 1.0),  # negative quantity
+        (0, 1.0),  # zero quantity
     ],
 )
 def test_projector_rejects_non_finite_or_non_positive_values(quantity, price):
@@ -373,7 +399,9 @@ def test_compare_projections_detects_divergence():
 
 def test_compare_projections_detects_sequence_divergence():
     a = PositionProjector.project(_script())
-    b = PositionProjection(positions=dict(a.positions), up_to_sequence=a.up_to_sequence + 1)
+    b = PositionProjection(
+        positions=dict(a.positions), up_to_sequence=a.up_to_sequence + 1
+    )
     result = compare_projections("a", a, "b", b)
     assert result.ok is False
     assert "up_to_sequence" in result.detail
@@ -406,7 +434,9 @@ def test_apply_fill_equals_fold_fills_step_by_step():
 
 def test_apply_fill_is_pure_no_input_mutation():
     start = Position(symbol="AAPL", quantity=100, cost_basis=100.0, average_price=1.0)
-    fill = Fill(order_id="o", symbol="AAPL", side=OrderSide.BUY, quantity=100, price=3.0)
+    fill = Fill(
+        order_id="o", symbol="AAPL", side=OrderSide.BUY, quantity=100, price=3.0
+    )
     result = apply_fill(start, fill)
     assert start.quantity == 100 and start.cost_basis == 100.0  # input untouched
     assert result.quantity == 200 and result.cost_basis == pytest.approx(400.0)

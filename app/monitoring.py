@@ -45,15 +45,20 @@ from app.broker.adapter import (
 )
 from app.config import Settings
 from app.features import session_type_for
-from app.marketdata.service import MarketDataService
+from app.marketdata.service import MarketDataService, MarketSnapshot
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
     RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
+    EnvelopeExpiryDisposition,
+    EnvelopeStaleDataDisposition,
+    EnvelopeStatus,
     EventAuthority,
     EventSource,
     EventType,
+    ExecutionEnvelope,
+    ExecutionEventType,
     Order,
     OrderSide,
     OrderStatus,
@@ -73,10 +78,23 @@ from app.protection import (
     protective_limit_price,
 )
 from app.reconciliation import (
+    ENVELOPE_EXEC_BLOCKED,
+    ENVELOPE_EXEC_RELEASED,
     ReconcileFairnessCursor,
     ReconciliationPlan,
     ReconcileQueryBudget,
+    execute_envelope_action,
+    market_snapshot_fingerprint,
     plan_reconciliation,
+    redrive_staged_envelope_action,
+)
+from app.sellside.policy import decide
+from app.sellside.types import (
+    BreachSignal,
+    ExhaustedSignal,
+    ExpiredSignal,
+    PlannedAction,
+    StaleDataSignal,
 )
 from app.store.base import (
     CLAIM_BLOCKED,
@@ -88,6 +106,7 @@ from app.store.base import (
     StateStore,
     UnknownEntityError,
 )
+from app.store.core import EnvelopeActionPausedError
 
 _log = logging.getLogger(__name__)
 
@@ -105,9 +124,7 @@ _OPEN_STATUSES = frozenset(
 )
 # Open orders eligible for the unfilled-timeout stale flag — NOT cancel_pending
 # (it is already being wound down, not "stuck unfilled").
-_STALEABLE_STATUSES = frozenset(
-    {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
-)
+_STALEABLE_STATUSES = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED})
 
 # Fill-append failures that are recoverable per-order (logged, then skipped).
 _FILL_ERRORS = (InvalidFillError, UnknownEntityError, NegativePositionError)
@@ -432,6 +449,326 @@ async def _reconcile_protection_pause(
         )
 
 
+class EnvelopeTapeBuffer:
+    """Per-symbol session snapshot tape for the pure sell-side policy.
+
+    WORKING DATA, not persisted (the same ruling as ``MarketSnapshot`` itself,
+    docs/02): a restart empties it and the policy simply re-warms
+    (INSUFFICIENT_DATA → conservative no-action for the warmup window) —
+    fail-quiet, never fail-open. Appends dedupe on ``updated_at`` so a quiet
+    feed doesn't stutter duplicate ticks into the bars; bounded so a
+    long-lived session cannot grow memory without limit.
+    """
+
+    def __init__(self, max_len: int = 4096) -> None:
+        self._tapes: dict[str, list[MarketSnapshot]] = {}
+        self._max = max_len
+
+    def append(self, snapshot: MarketSnapshot) -> None:
+        tape = self._tapes.setdefault(snapshot.symbol, [])
+        if tape and tape[-1].updated_at == snapshot.updated_at:
+            tape[-1] = snapshot  # same tick refreshed, not a new observation
+            return
+        tape.append(snapshot)
+        if len(tape) > self._max:
+            del tape[: len(tape) - self._max]
+
+    def tape(self, symbol: str) -> list[MarketSnapshot]:
+        return list(self._tapes.get(symbol, ()))
+
+
+async def _envelope_working_order(
+    store: StateStore, envelope_id: str
+) -> Optional[Order]:
+    """The envelope's latest non-terminal order, discovered from its
+    ENVELOPE_ACTION events (the event log IS the envelope→order linkage)."""
+
+    events = await store.get_execution_events()
+    working: Optional[Order] = None
+    for event in events:
+        if (
+            event.envelope_id != envelope_id
+            or event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+            or event.order_id is None
+        ):
+            continue
+        order = await store.get_order(event.order_id)
+        if order is not None and order.status not in (
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+        ):
+            working = order
+    return working
+
+
+async def _envelope_id_for_order(store: StateStore, order_id: str) -> Optional[str]:
+    """The envelope that minted ``order_id`` (via its ENVELOPE_ACTION event),
+    or None for every non-envelope order."""
+
+    events = await store.get_execution_events()
+    for event in events:
+        if (
+            event.order_id == order_id
+            and event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id is not None
+        ):
+            return event.envelope_id
+    return None
+
+
+async def _envelope_order_ids(store: StateStore) -> set[str]:
+    """Every order id minted by an envelope action (an ENVELOPE_ACTION event
+    carrying both order_id and envelope_id). These orders are driven ONLY by the
+    envelope executor's redrive (atomic replace + write-time re-validation);
+    the generic submit sweep must never claim/submit them (Codex PR#8 #1)."""
+
+    return {
+        e.order_id
+        for e in await store.get_execution_events()
+        if e.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and e.order_id is not None
+        and e.envelope_id is not None
+    }
+
+
+async def _cancel_envelope_working_order(
+    store: StateStore, adapter: BrokerAdapter, envelope: ExecutionEnvelope
+) -> None:
+    """Best-effort venue cancel of the envelope's working order (the CANCEL
+    dispositions). A never-submitted CREATED order cancels locally; a live one
+    gets an idempotent venue cancel + CANCEL_PENDING so the poll confirms
+    (CHAOS-1 discipline: a late fill is still ingested, never missed)."""
+
+    order = await _envelope_working_order(store, envelope.id)
+    if order is None:
+        return
+    try:
+        if order.status is OrderStatus.CREATED:
+            await store.transition_order(order.id, OrderStatus.CANCELED)
+            return
+        if order.broker_order_id is not None:
+            await adapter.cancel_order(order.broker_order_id)
+            await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+    except (BrokerError, *_TRANSITION_ERRORS) as exc:
+        _log.warning(
+            "envelope %s: working-order cancel failed (%s); reconcile will converge it",
+            envelope.id,
+            exc,
+        )
+
+
+# Codex PR#8 #3 (R6): live-at-venue statuses whose envelope-cancel intent must
+# be re-driven to convergence. CANCEL_PENDING is excluded (the cancel already
+# reached the venue; the reconcile poll confirms it) as is TIMEOUT_QUARANTINE
+# (ambiguous — ADR-002 resolves it) and every terminal status.
+_RECANCEL_STATUSES = frozenset(
+    {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
+)
+
+
+async def _converge_expired_envelope_cancels(
+    store: StateStore, adapter: BrokerAdapter
+) -> None:
+    """R6 / Codex PR#8 #3: an EXPIRED ``CANCEL_AND_RETURN`` envelope's one-shot
+    working-order cancel can fail transiently (``BrokerError``), leaving the SELL
+    LIVE at the venue — and a terminal envelope is no longer visited by
+    ``_run_envelopes``, so the approved cancel disposition would never complete.
+    Re-drive the idempotent cancel each tick until the order converges (terminal
+    or CANCEL_PENDING, which the reconcile poll then confirms). Scoped to the ONE
+    terminal state carrying a cancel intent: REST_AT_FLOOR keeps its order by
+    design, and BREACHED/EXHAUSTED never cancelled one."""
+
+    try:
+        expired = await store.list_envelopes(status=EnvelopeStatus.EXPIRED)
+    except Exception:  # noqa: BLE001 — never crash the tick
+        _log.exception("envelope cancel-convergence: listing EXPIRED failed")
+        return
+    for env in expired:
+        if env.expiry_disposition is not EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
+            continue
+        try:
+            order = await _envelope_working_order(store, env.id)
+            if order is not None and order.status in _RECANCEL_STATUSES:
+                await _cancel_envelope_working_order(store, adapter, env)
+        except Exception:  # noqa: BLE001 — isolate per envelope
+            _log.exception("envelope %s: expiry cancel-convergence failed", env.id)
+
+
+async def _run_envelopes(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    market_data: Optional[MarketDataService],
+    settings: Optional[Settings],
+    *,
+    tapes: Optional[EnvelopeTapeBuffer],
+    now: Optional[datetime] = None,
+) -> None:
+    """The envelope pass (ADR-010 §1): runs immediately after protection —
+    protection always outranks autonomous repricing. Per-envelope failure
+    isolation matches the protection conventions: a policy exception freezes
+    ONLY that envelope (event-logged via the transition) and the tick
+    continues; the pass as a whole never raises."""
+
+    if market_data is None or tapes is None:
+        return
+    try:
+        envelopes = await store.list_envelopes(status=EnvelopeStatus.ACTIVE)
+    except Exception:  # noqa: BLE001 — never crash the tick
+        _log.exception("envelope pass: listing active envelopes failed")
+        return
+    if not envelopes:
+        return
+    ts = now if now is not None else utcnow()
+    snap_memo: dict[str, Optional[MarketSnapshot]] = {}
+    for envelope in envelopes:
+        try:
+            await _run_one_envelope(
+                store,
+                adapter,
+                market_data,
+                envelope,
+                tapes=tapes,
+                snap_memo=snap_memo,
+                now=ts,
+            )
+        except EnvelopeActionPausedError:
+            # Codex PR#8 F4: a child in TIMEOUT_QUARANTINE PAUSES the envelope —
+            # no action may be planned/written until ADR-002 targeted
+            # reconciliation resolves the ambiguity. That is an EXPECTED transient
+            # wait, NOT a policy crash: leave the envelope ACTIVE (skip this
+            # tick's action) so it resumes automatically once the quarantine
+            # clears. Freezing here (the broad handler below) would force a manual
+            # human resume after a recoverable submit/replace timeout.
+            _log.info(
+                "envelope %s (%s): paused this tick (child in TIMEOUT_QUARANTINE); "
+                "left ACTIVE for reconciliation to resolve",
+                envelope.id,
+                envelope.symbol,
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001 — isolate per envelope
+            _log.exception(
+                "envelope %s (%s): pass failed; freezing that envelope only",
+                envelope.id,
+                envelope.symbol,
+            )
+            try:
+                await store.transition_envelope(
+                    envelope.id,
+                    EnvelopeStatus.FROZEN,
+                    actor="engine",
+                    reason=f"policy_error:{type(exc).__name__}",
+                    now=ts,  # Codex #2: injected tick clock, not wall clock
+                )
+            except Exception:  # noqa: BLE001
+                _log.exception(
+                    "envelope %s: freeze after policy error ALSO failed",
+                    envelope.id,
+                )
+
+
+async def _run_one_envelope(
+    store: StateStore,
+    adapter: BrokerAdapter,
+    market_data: MarketDataService,
+    envelope: ExecutionEnvelope,
+    *,
+    tapes: EnvelopeTapeBuffer,
+    snap_memo: dict[str, Optional[MarketSnapshot]],
+    now: datetime,
+) -> None:
+    symbol = envelope.symbol
+    if symbol not in snap_memo:
+        # One fetch per symbol per pass, shared across the symbol's envelopes.
+        snap_memo[symbol] = await market_data.get_snapshot(symbol)
+    snapshot = snap_memo[symbol]
+    if snapshot is not None:
+        tapes.append(snapshot)
+
+    # A staged-but-unexecuted action (transient release / crash between
+    # staging and the venue call) resumes FIRST, with no new accounting —
+    # the budget was spent when it was staged (INV-083).
+    # Forward the tick's injected clock: redrive RE-VALIDATES the staged action
+    # (TTL / session-phase / reduce-only) and must use the tick's `now`, not a
+    # bare utcnow() fallback (engine determinism — H11 / REV-0023 parity-0).
+    redriven = await redrive_staged_envelope_action(
+        store, adapter, envelope.id, now=now
+    )
+    if redriven is not None and redriven.outcome not in (
+        ENVELOPE_EXEC_BLOCKED,
+        ENVELOPE_EXEC_RELEASED,
+    ):
+        return  # one venue action per envelope per tick
+
+    events = await store.get_execution_events()
+    # WO-0025: the policy's working-order predicate needs the envelope's
+    # ORDERS' lifecycle events too (FILLED/CANCELED/REJECTED terminals carry
+    # order_id but no envelope_id) — include them alongside the envelope's
+    # own events.
+    own_order_ids = {
+        e.order_id
+        for e in events
+        if e.envelope_id == envelope.id and e.order_id is not None
+    }
+    history = [
+        e
+        for e in events
+        if e.envelope_id == envelope.id
+        or (e.order_id is not None and e.order_id in own_order_ids)
+    ]
+    decision = decide(envelope, tapes.tape(symbol), now=now, history=history)
+
+    if isinstance(decision, PlannedAction):
+        if snapshot is None:
+            return  # no live snapshot to fingerprint — hold this tick
+        await execute_envelope_action(
+            store,
+            adapter,
+            envelope.id,
+            decision,
+            snapshot_fingerprint=market_snapshot_fingerprint(snapshot),
+            actor="engine",
+            now=now,
+        )
+    elif isinstance(decision, BreachSignal):
+        # A real market-vs-mandate breach (e.g. exit only executable below
+        # floor): terminal-pending-human, quarantine posture.
+        await store.transition_envelope(
+            envelope.id,
+            EnvelopeStatus.BREACHED,
+            actor="engine",
+            reason=f"{decision.rail}: {decision.detail}",
+            now=now,  # Codex #2: persisted breached_at matches the decision clock
+        )
+    elif isinstance(decision, ExhaustedSignal):
+        await store.transition_envelope(
+            envelope.id,
+            EnvelopeStatus.EXHAUSTED,
+            actor="engine",
+            reason=decision.detail,
+            now=now,  # Codex #2
+        )
+    elif isinstance(decision, ExpiredSignal):
+        await store.transition_envelope(
+            envelope.id,
+            EnvelopeStatus.EXPIRED,
+            actor="engine",
+            reason=f"ttl_lapsed:{decision.disposition.value}",
+            now=now,  # Codex #2
+        )
+        if decision.disposition is EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
+            await _cancel_envelope_working_order(store, adapter, envelope)
+        # REST_AT_FLOOR: the working order deliberately keeps resting.
+    elif isinstance(decision, StaleDataSignal):
+        # Fail closed: repricing already stopped (the policy returned no
+        # plan). The envelope stays ACTIVE — staleness is transient — and the
+        # approval-time choice decides the resting order's fate.
+        if decision.disposition is EnvelopeStaleDataDisposition.CANCEL:
+            await _cancel_envelope_working_order(store, adapter, envelope)
+    # NoAction (monitoring / cooldown / warmup / out-of-phase): nothing.
+
+
 async def monitoring_loop(
     store: StateStore,
     adapter: BrokerAdapter,
@@ -462,6 +799,9 @@ async def monitoring_loop(
     # the earliest TIMEOUT_QUARANTINE orders starve later ones — spans ticks like the
     # budget; direct run_monitoring_tick callers (tests) pass none.
     reconcile_fairness = ReconcileFairnessCursor()
+    # WO-0020: the loop owns the per-symbol snapshot tape the envelope policy
+    # consumes (working data — a restart re-warms; see EnvelopeTapeBuffer).
+    envelope_tapes = EnvelopeTapeBuffer()
     # Wave 4f gate: the startup reduce-only gate is owned by ``run_startup_reconcile``
     # (called in the app lifespan BEFORE this loop, so trading is Reducing-until-parity
     # before the first tick). This loop then MAINTAINS the reconcile driver each tick
@@ -470,11 +810,14 @@ async def monitoring_loop(
         try:
             await asyncio.sleep(settings.poll_cadence_seconds)
             await run_monitoring_tick(
-                store, adapter, settings,
+                store,
+                adapter,
+                settings,
                 market_data=market_data,
                 reconcile_budget=reconcile_budget,
                 reconcile_fairness=reconcile_fairness,
                 drive_reconcile_state=True,
+                envelope_tapes=envelope_tapes,
             )
         except asyncio.CancelledError:
             _log.info("monitoring loop cancelled; shutting down")
@@ -547,6 +890,8 @@ async def run_monitoring_tick(
     reconcile_budget: Optional[ReconcileQueryBudget] = None,
     reconcile_fairness: Optional[ReconcileFairnessCursor] = None,
     drive_reconcile_state: bool = False,
+    envelope_tapes: Optional[EnvelopeTapeBuffer] = None,
+    envelope_now: Optional[datetime] = None,
 ) -> None:
     """One monitoring iteration: submit pending orders, then reconcile open ones.
 
@@ -561,23 +906,37 @@ async def run_monitoring_tick(
     # + submitted in the SAME tick (no extra cadence of latency). No-op when there
     # is no market-data handle or protection is disabled.
     await _run_protection(store, adapter, market_data, settings)
-    await _submit_pending_orders(
-        store, adapter, settings, market_data=market_data
+    # ADR-010 §1 (WO-0020): the envelope pass runs immediately AFTER protection
+    # (protection always first) and BEFORE the submit sweep, so a stop-exit the
+    # policy stages is claimed + submitted in this same tick. No-op without a
+    # market-data handle or a tape buffer (the loop owns one; direct tick
+    # callers that don't pass one are untouched).
+    await _run_envelopes(
+        store,
+        adapter,
+        market_data,
+        settings,
+        tapes=envelope_tapes,
+        now=envelope_now,  # injected policy clock; None = wall clock (loop)
     )
-    await _redrive_stale_submitting(
-        store, adapter, settings, market_data=market_data
-    )
+    await _submit_pending_orders(store, adapter, settings, market_data=market_data)
+    await _redrive_stale_submitting(store, adapter, settings, market_data=market_data)
     # ADR-002: resolve any TIMEOUT_QUARANTINE order with a read-only targeted query
     # BEFORE the open-order reconcile — a resolution to SUBMITTED hands the order a
     # broker_order_id that the reconcile poll then tracks (and ingests fills for)
     # this same tick.
     await _resolve_timeout_quarantine(
-        store, adapter, settings,
-        budget=reconcile_budget, fairness=reconcile_fairness,
+        store,
+        adapter,
+        settings,
+        budget=reconcile_budget,
+        fairness=reconcile_fairness,
     )
-    await _reconcile_open_orders(
-        store, adapter, settings, market_data=market_data
-    )
+    await _reconcile_open_orders(store, adapter, settings, market_data=market_data)
+    # Codex #3 (R6): re-drive any EXPIRED CANCEL_AND_RETURN envelope whose
+    # working-order cancel didn't complete — AFTER reconcile so a CANCEL_PENDING
+    # from a prior tick is confirmed first (and this arm no-ops once terminal).
+    await _converge_expired_envelope_cancels(store, adapter)
     await _recover_unpersisted_submits(store, adapter)
     # Phase 4 wave 4e: the ACTING §7 mass-report reconcile. Runs LAST so it sees the
     # fully-reconciled post-tick state — a divergence it acts on is then one the
@@ -589,8 +948,11 @@ async def run_monitoring_tick(
     # TradingState driver (Reducing while divergent, Active on parity — wave 4f / R2);
     # direct tick callers leave it False, so the corpus never flips trading_state.
     await _run_reconciliation(
-        store, adapter, settings,
-        budget=reconcile_budget, drive_state=drive_reconcile_state,
+        store,
+        adapter,
+        settings,
+        budget=reconcile_budget,
+        drive_state=drive_reconcile_state,
     )
 
 
@@ -620,6 +982,17 @@ async def _submit_pending_orders(
     """
 
     created = [o for o in await store.list_orders() if o.status is OrderStatus.CREATED]
+    if not created:
+        return
+    # Codex PR#8 #1: envelope-minted orders are driven ONLY by the envelope
+    # executor (redrive: atomic replace + write-time re-validation). Exclude them
+    # from the generic submit sweep — a reprice released to CREATED (transient
+    # BrokerError after replace_order, or a crash before redrive) must NOT be
+    # independently submit_order'd here, which would place a second live SELL
+    # beside its still-working predecessor (double exposure) and bypass the
+    # atomic-replace path.
+    envelope_ids = await _envelope_order_ids(store)
+    created = [o for o in created if o.id not in envelope_ids]
     if not created:
         return
 
@@ -753,7 +1126,10 @@ async def _submit_pending_orders(
             # session closed during the submit await (close is one-shot and would
             # otherwise leave a CREATED buy counting toward exposure forever).
             release_target = OrderStatus.CREATED
-            if OrderSide(claimed.side) is OrderSide.BUY and claimed.session_id is not None:
+            if (
+                OrderSide(claimed.side) is OrderSide.BUY
+                and claimed.session_id is not None
+            ):
                 own_session = await store.get_session_by_id(claimed.session_id)
                 if (
                     own_session is not None
@@ -846,9 +1222,31 @@ async def _redrive_stale_submitting(
     )
     already_covered = {r.local_order_id for r in open_recoveries}
     max_attempts = settings.stale_submitting_max_redrive_attempts
+    # Codex PR#8 round-2 F1 (P1): envelope-minted orders must NEVER be blind
+    # `submit_order`'d here (the SUBMITTING sibling of the CREATED-sweep exclusion
+    # in `_submit_pending_orders`). A crash between the envelope claim and
+    # `replace_order` strands a reprice replacement SUBMITTING+idless; a bare
+    # submit would mint a SECOND live SELL beside the still-working predecessor,
+    # because the atomic replace's venue cancel never ran. Route them to
+    # TIMEOUT_QUARANTINE instead so the ADR-002 targeted `client_order_id` query
+    # resolves them — the venue's replace is atomic, so predecessor A and
+    # replacement B are never both live there (only a blind submit creates that).
+    envelope_ids = await _envelope_order_ids(store)
 
     for order in stale:
         if order.id in already_covered:
+            continue
+        if order.id in envelope_ids:
+            try:
+                await store.quarantine_timed_out_order(
+                    order.id, reason="envelope_stale_submit"
+                )
+            except _TRANSITION_ERRORS as q_exc:
+                _log.warning(
+                    "could not quarantine stale envelope submit %s: %s",
+                    order.id,
+                    q_exc,
+                )
             continue
         # Backstop: too many transient re-drive failures already → treat as a
         # permanent failure the classifier missed and escalate rather than loop.
@@ -947,7 +1345,9 @@ async def _redrive_stale_submitting(
             # The order left SUBMITTING some other way (e.g. a manual cancel) while
             # we re-drove it — the broker order is live but locally terminal. Same
             # durable path as the primary submit's unpersisted case.
-            await _handle_unpersisted_submit(store, adapter, order, broker_order_id, exc)
+            await _handle_unpersisted_submit(
+                store, adapter, order, broker_order_id, exc
+            )
 
 
 # Venue-terminal statuses a targeted query can resolve a quarantine to directly
@@ -1023,8 +1423,12 @@ async def _resolve_timeout_quarantine(
             errors = await _order_deferral_count(store, order.id, "query_error")
             if errors < max_attempts:
                 await _record_timeout_query_deferral(
-                    store, order, errors + 1, "query_error",
-                    needs_review=errors + 1 >= max_attempts, error=str(exc),
+                    store,
+                    order,
+                    errors + 1,
+                    "query_error",
+                    needs_review=errors + 1 >= max_attempts,
+                    error=str(exc),
                 )
             continue
 
@@ -1050,14 +1454,18 @@ async def _resolve_timeout_quarantine(
                 )
                 _log.info(
                     "resolved quarantined order %s via targeted query: venue %s -> %s",
-                    order.id, update.status.value, target.value,
+                    order.id,
+                    update.status.value,
+                    target.value,
                 )
             except _TRANSITION_ERRORS as exc:
                 # e.g. resolving to SUBMITTED with no broker id (AIR-001), or the
                 # order left TIMEOUT_QUARANTINE another way — leave it, retry.
                 _log.warning(
                     "could not resolve quarantined order %s to %s: %s",
-                    order.id, target.value, exc,
+                    order.id,
+                    target.value,
+                    exc,
                 )
             continue
 
@@ -1069,14 +1477,18 @@ async def _resolve_timeout_quarantine(
         if attempts >= max_attempts:
             _log.info(
                 "quarantined order %s confirmed absent after %s queries; "
-                "resolving to REJECTED (never landed).", order.id, attempts,
+                "resolving to REJECTED (never landed).",
+                order.id,
+                attempts,
             )
             try:
                 await store.resolve_timeout_quarantine(
                     order.id, OrderStatus.REJECTED, reason="not_found_at_venue"
                 )
             except _TRANSITION_ERRORS as exc:
-                _log.warning("could not reject absent quarantined %s: %s", order.id, exc)
+                _log.warning(
+                    "could not reject absent quarantined %s: %s", order.id, exc
+                )
         else:
             await _record_timeout_query_deferral(store, order, attempts, "not_found")
 
@@ -1171,14 +1583,10 @@ async def _record_redrive_deferral(
             session_id=order.session_id,
         )
     except Exception:  # noqa: BLE001 - audit is best-effort on a failure path
-        _log.exception(
-            "could not record re-drive deferral for order %s", order.id
-        )
+        _log.exception("could not record re-drive deferral for order %s", order.id)
 
 
-async def _order_event_count(
-    store: StateStore, order_id: str, event_type: str
-) -> int:
+async def _order_event_count(store: StateStore, order_id: str, event_type: str) -> int:
     """How many events of ``event_type`` are recorded for ``order_id`` (durable,
     survives restart). Uses the store-side ``event_type`` filter, then counts the
     order's own rows — the beta-scale event log is small; an indexed query is the
@@ -1275,9 +1683,7 @@ async def _handle_unpersisted_submit(
             await store.transition_order(
                 order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
             )
-            _log.info(
-                "recovered unpersisted submit for order %s on retry", order.id
-            )
+            _log.info("recovered unpersisted submit for order %s on retry", order.id)
             return
         except _TRANSITION_ERRORS as retry_exc:
             _log.error(
@@ -1375,7 +1781,10 @@ async def _recover_unpersisted_submits(
             await store.update_submit_recovery(
                 rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
             )
-            _log.info("recovered stranded broker order %s (terminal at broker)", rec.broker_order_id)
+            _log.info(
+                "recovered stranded broker order %s (terminal at broker)",
+                rec.broker_order_id,
+            )
             continue
 
         # Zero fills and still live → request a cancel and confirm.
@@ -1403,7 +1812,10 @@ async def _recover_unpersisted_submits(
             await store.update_submit_recovery(
                 rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
             )
-            _log.info("recovered stranded broker order %s (cancel confirmed)", rec.broker_order_id)
+            _log.info(
+                "recovered stranded broker order %s (cancel confirmed)",
+                rec.broker_order_id,
+            )
         else:
             # Cancel requested but not yet confirmed terminal — retry next tick.
             await store.update_submit_recovery(rec.id, bump_attempt=True)
@@ -1525,8 +1937,40 @@ async def _apply_update(
     position mutation.
     """
 
+    # WO-0020 envelope bridge: if this order was minted by an envelope, apply
+    # each broker fill to the envelope FIRST with the SAME canonical dedupe
+    # key the fill append uses. Record-first means the log gets ONE FILL event
+    # (envelope-attributed); append_fill's own shadow event append then dedupes
+    # to it while still writing the fill ROW — position folds exactly once and
+    # the envelope's remaining decrements exactly once (INV-076). Fills without
+    # a source_fill_id cannot be bridged deterministically (no venue identity
+    # before the row exists) — production Alpaca fills always carry one.
+    envelope_id = await _envelope_id_for_order(store, order.id)
     rejected: list[dict[str, Any]] = []
     for bf in update.fills:
+        # concurrency-0 root form (WO-0035): append_fill SELF-derives the
+        # pre-fill position by excluding this fill's own dedupe identity from
+        # the fold, so the record-first bridge below needs no prior-position
+        # bookkeeping here (and no call site can fabricate the phantom
+        # fill_overfill_quarantined by forgetting it).
+        if envelope_id is not None and bf.source_fill_id is not None:
+            try:
+                await store.record_envelope_fill(
+                    envelope_id,
+                    quantity=bf.quantity,
+                    dedupe_key=f"fill:{order.id}:{bf.source_fill_id}",
+                    price=bf.price,
+                    order_id=order.id,
+                    session_id=order.session_id,
+                    ts_event=bf.filled_at,
+                )
+            except Exception:  # noqa: BLE001 — never block fill ingest
+                _log.exception(
+                    "envelope fill bridge failed for order %s (envelope %s); "
+                    "fill ingest continues",
+                    order.id,
+                    envelope_id,
+                )
         try:
             await store.append_fill(
                 order.id,
@@ -1581,9 +2025,7 @@ async def _apply_update(
             )
         target = _reconciled_status(order, update.status, recorded)
     try:
-        await store.transition_order(
-            order.id, target, filled_quantity=recorded
-        )
+        await store.transition_order(order.id, target, filled_quantity=recorded)
     except _TRANSITION_ERRORS as exc:
         _log.warning(
             "order %s reconcile to %s (recorded filled=%s) rejected: %s",
@@ -1814,7 +2256,8 @@ async def _run_reconciliation(
                 TradingState.REDUCING
                 if _has_unresolved_divergence(plan)
                 else TradingState.ACTIVE,
-                reason="reconcile_parity" if not _has_unresolved_divergence(plan)
+                reason="reconcile_parity"
+                if not _has_unresolved_divergence(plan)
                 else "reconcile_divergence",
             )
         return plan
@@ -1823,16 +2266,16 @@ async def _run_reconciliation(
         if drive_state:
             # A reconcile FAILURE is not parity — stay reduce-only (R3: never
             # auto-Halt, a held position stays exitable), loud for the operator.
-            _log.error("reconcile failed — trading_state held at Reducing (reduce-only)")
+            _log.error(
+                "reconcile failed — trading_state held at Reducing (reduce-only)"
+            )
             await _safe_set_reconcile_state(
                 store, TradingState.REDUCING, reason="reconcile_failed"
             )
         return None
 
 
-async def _apply_inferred_fills(
-    store: StateStore, plan: ReconciliationPlan
-) -> None:
+async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> None:
     """Append each reconciliation-inferred fill as a SYNTHETIC/RECONCILIATION fill
     (wave 4e-4). The engine only infers a fill from a PRICED execution in the mass
     report (never a $0 synthetic), and ``source_fill_id`` is the execution's OWN
@@ -1841,6 +2284,36 @@ async def _apply_inferred_fills(
     the store rejects is logged, never crashes the tick."""
 
     for f in plan.inferred_fills:
+        # WO-0025 (REV-0023 F5): the RECORD-FIRST bridge applies to inferred
+        # fills exactly as to streamed ones — an envelope-minted order's fill
+        # must decrement the envelope's remaining, with the SAME canonical
+        # dedupe key, or the human-approved qty ceiling silently re-arms
+        # (200 shares reached the venue under a 100-share ceiling in the
+        # REV-0023 repro). Inferred fills always carry a venue
+        # source_fill_id (the engine never infers without one).
+        try:
+            envelope_id = await _envelope_id_for_order(store, f.order_id)
+            if envelope_id is not None and f.source_fill_id is not None:
+                await store.record_envelope_fill(
+                    envelope_id,
+                    quantity=f.quantity,
+                    dedupe_key=f"fill:{f.order_id}:{f.source_fill_id}",
+                    price=f.price,
+                    order_id=f.order_id,
+                    # Codex #7: this record-FIRST call writes the sole durable FILL
+                    # event (append_fill's shadow dedupes to it), so it must carry
+                    # the SYNTHETIC/RECONCILIATION provenance of an inferred fill —
+                    # not the BROKER_REST/BROKER_AUTHORITATIVE default that would
+                    # mis-state an engine-inferred fill as broker-observed.
+                    source=EventSource.RECONCILIATION,
+                    authority=EventAuthority.SYNTHETIC,
+                )
+        except Exception:  # noqa: BLE001 — never block fill ingest
+            _log.exception(
+                "envelope bridge for inferred fill on order %s failed; "
+                "fill ingest continues",
+                f.order_id,
+            )
         try:
             await store.append_fill(
                 f.order_id,
@@ -1855,13 +2328,13 @@ async def _apply_inferred_fills(
         except _FILL_ERRORS as exc:
             _log.warning(
                 "reconcile: inferred fill for order %s (%s) rejected: %s",
-                f.order_id, f.symbol, exc,
+                f.order_id,
+                f.symbol,
+                exc,
             )
 
 
-async def _surface_external_orders(
-    store: StateStore, plan: ReconciliationPlan
-) -> None:
+async def _surface_external_orders(store: StateStore, plan: ReconciliationPlan) -> None:
     """Surface each external/unmanaged venue order as a durable, deduped
     ``reconcile_external_order`` audit record (§7: surfaced, NEVER silently
     absorbed into managed state or folded into position). Deduped by
@@ -1968,9 +2441,7 @@ async def _surface_position_mismatches(
 # ABSENT. CANCEL_PENDING is excluded (§7 / R4): it is already being wound down and
 # the per-order poll (which holds its broker id) owns its resolution — the mass
 # report never drives it to a terminal.
-_RECONCILE_RESOLVABLE = frozenset(
-    {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
-)
+_RECONCILE_RESOLVABLE = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED})
 _RECONCILE_DEFERRED_EVENT = EventType.ORDER_RECONCILE_DEFERRED.value
 
 
@@ -2017,7 +2488,9 @@ async def _resolve_reconcile_not_found(
         # an un-queried order is NEVER resolved (never read as absent, §7). The
         # resolvable filter above runs first so a filtered-out order costs no token.
         if budget is not None and not budget.try_consume(utcnow()):
-            _log.debug("reconcile: query budget exhausted; deferring remaining not-found")
+            _log.debug(
+                "reconcile: query budget exhausted; deferring remaining not-found"
+            )
             return
         try:
             await _resolve_one_not_found(store, adapter, order, retries)
@@ -2046,8 +2519,12 @@ async def _resolve_one_not_found(
         )
         if errors < retries:
             await _record_reconcile_deferral(
-                store, order, errors + 1, "query_error",
-                needs_review=errors + 1 >= retries, error=str(exc),
+                store,
+                order,
+                errors + 1,
+                "query_error",
+                needs_review=errors + 1 >= retries,
+                error=str(exc),
             )
         return
 
@@ -2078,7 +2555,9 @@ async def _resolve_one_not_found(
             )
             _log.info(
                 "reconcile: order %s confirmed absent after %s consecutive queries -> %s",
-                order_id, attempts, target.value,
+                order_id,
+                attempts,
+                target.value,
             )
         except _TRANSITION_ERRORS as exc:
             # A fill that raced the resolve makes the transition illegal (e.g. the
@@ -2086,7 +2565,9 @@ async def _resolve_one_not_found(
             # fill or oversell. Leave it; the next tick re-evaluates.
             _log.warning(
                 "reconcile: could not resolve absent order %s to %s: %s",
-                order_id, target.value, exc,
+                order_id,
+                target.value,
+                exc,
             )
     else:
         await _record_reconcile_deferral(store, order, attempts, "not_found")
@@ -2129,9 +2610,7 @@ async def _record_reconcile_streak_reset(store: StateStore, order: Order) -> Non
             session_id=order.session_id,
         )
     except Exception:  # noqa: BLE001 - audit is best-effort on a resolution path
-        _log.exception(
-            "could not record reconcile streak reset for order %s", order.id
-        )
+        _log.exception("could not record reconcile streak reset for order %s", order.id)
 
 
 async def _record_reconcile_deferral(
@@ -2167,9 +2646,7 @@ async def _record_reconcile_deferral(
             session_id=order.session_id,
         )
     except Exception:  # noqa: BLE001 - audit is best-effort on a resolution path
-        _log.exception(
-            "could not record reconcile deferral for order %s", order.id
-        )
+        _log.exception("could not record reconcile deferral for order %s", order.id)
 
 
 async def _orders_with_event(store: StateStore, event_type: str) -> set[str]:

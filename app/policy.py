@@ -248,8 +248,12 @@ def fill_value_reason(quantity: object, price: object) -> Optional[str]:
         # "non_positive_quantity" reason a plain 0 gets below — quantity's
         # sign, unlike its type/finiteness/wholeness, isn't a distinct reason
         # code here (preserves the pre-D-019 reason vocabulary exactly).
-        return "non_positive_quantity" if qty_bad == "negative" else f"{qty_bad}_quantity"
-    assert isinstance(quantity, (int, float))  # whole_count_reason ruled out non-numbers
+        return (
+            "non_positive_quantity" if qty_bad == "negative" else f"{qty_bad}_quantity"
+        )
+    assert isinstance(
+        quantity, (int, float)
+    )  # whole_count_reason ruled out non-numbers
     if quantity <= 0:
         return "non_positive_quantity"
 
@@ -277,7 +281,9 @@ def limit_price_reason(limit_price: object) -> Optional[str]:
     bad = finite_number_reason(limit_price)
     if bad is not None:
         return f"{bad}_limit_price"
-    assert isinstance(limit_price, (int, float))  # finite_number_reason ruled out non-numbers
+    assert isinstance(
+        limit_price, (int, float)
+    )  # finite_number_reason ruled out non-numbers
     if limit_price <= 0:
         return "non_positive_limit_price"
     return None
@@ -303,7 +309,9 @@ def candidate_numeric_reason(
     if suggested_quantity is not None:
         reason = whole_count_reason(suggested_quantity)
         if reason is None:
-            assert isinstance(suggested_quantity, (int, float))  # guard ruled out non-numbers
+            assert isinstance(
+                suggested_quantity, (int, float)
+            )  # guard ruled out non-numbers
             if suggested_quantity <= 0:
                 reason = "non_positive"
         if reason is not None:
@@ -375,7 +383,9 @@ def filled_quantity_reason(order: Order, new_filled_quantity: object) -> Optiona
         # negative) suffix identically to the pre-D-019 checks this replaces —
         # e.g. "negative" + "_filled_quantity" == "negative_filled_quantity".
         return f"{base}_filled_quantity"
-    assert isinstance(new_filled_quantity, (int, float))  # whole_count_reason ruled out non-numbers
+    assert isinstance(
+        new_filled_quantity, (int, float)
+    )  # whole_count_reason ruled out non-numbers
     if new_filled_quantity > order.quantity:
         return "filled_quantity_exceeds_order_quantity"
     if new_filled_quantity < order.filled_quantity:
@@ -446,7 +456,8 @@ def existing_exposure(
     for f in fills:
         filled_by_order[f.order_id] = filled_by_order.get(f.order_id, 0) + f.quantity
     order_exposure = sum(
-        (o.quantity - filled_by_order.get(o.id, o.filled_quantity)) * (o.limit_price or 0.0)
+        (o.quantity - filled_by_order.get(o.id, o.filled_quantity))
+        * (o.limit_price or 0.0)
         for o in open_orders
         if o.status in NON_TERMINAL_ORDER_STATUSES
         # A pending/in-flight SELL (Phase 7 protective exit / flatten) REDUCES
@@ -542,8 +553,12 @@ OP_TIMEOUT_QUARANTINE = "timeout_quarantine"
 
 # Broker-submit recovery-ledger states (D-017 records surfaced in the operator
 # view), sharing the same label space.
-OP_BROKER_SUBMISSION_FAILED = "broker_submission_failed"  # unresolved: live at broker, being reconciled
-OP_RECOVERY_REQUIRED = "recovery_required"  # needs_review: real untracked position, human must act
+OP_BROKER_SUBMISSION_FAILED = (
+    "broker_submission_failed"  # unresolved: live at broker, being reconciled
+)
+OP_RECOVERY_REQUIRED = (
+    "recovery_required"  # needs_review: real untracked position, human must act
+)
 
 # Maps a submission-block reason (from an order_submission_blocked audit event)
 # to a held label. Two families of reason reach here:

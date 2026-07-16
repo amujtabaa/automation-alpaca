@@ -96,7 +96,10 @@ def test_no_action_when_disabled():
 
 def test_no_action_when_position_none_or_flat():
     assert floor_breach_reason(None, _snap(1.0), CFG) is None
-    assert floor_breach_reason(_pos(quantity=0, average_price=None), _snap(1.0), CFG) is None
+    assert (
+        floor_breach_reason(_pos(quantity=0, average_price=None), _snap(1.0), CFG)
+        is None
+    )
 
 
 @pytest.mark.parametrize("avg", [None, 0.0, -5.0, float("nan"), float("inf")])
@@ -109,7 +112,10 @@ def test_no_action_when_snapshot_none():
 
 
 def test_no_action_when_snapshot_stale():
-    assert floor_breach_reason(_pos(average_price=10.0), _snap(1.0, stale=True), CFG) is None
+    assert (
+        floor_breach_reason(_pos(average_price=10.0), _snap(1.0, stale=True), CFG)
+        is None
+    )
 
 
 @pytest.mark.parametrize("last", [None, 0.0, -1.0, float("nan"), float("inf")])
@@ -156,8 +162,10 @@ def test_limit_returns_none_when_last_untrustworthy():
 
 def test_limit_is_strictly_positive():
     # A near-zero reference with a full buffer still yields at least one tick.
-    tiny = protective_limit_price(_snap(0.0001, bid=None), ProtectionConfig(
-        enabled=True, stop_loss_pct=0.08, limit_buffer_pct=0.99))
+    tiny = protective_limit_price(
+        _snap(0.0001, bid=None),
+        ProtectionConfig(enabled=True, stop_loss_pct=0.08, limit_buffer_pct=0.99),
+    )
     assert tiny is not None
     assert tiny > 0
     assert math.isfinite(tiny)

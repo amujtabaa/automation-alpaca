@@ -102,7 +102,9 @@ async def test_no_breach_no_exit(store):
 async def test_no_snapshot_no_exit(store):
     await store.initialize()
     await _hold(store, "AAPL", 100, 10.0)
-    md = FakeMarketDataFeed()  # nothing set for AAPL; subscribe() gives a None-price snap
+    md = (
+        FakeMarketDataFeed()
+    )  # nothing set for AAPL; subscribe() gives a None-price snap
     await _run_protection(store, MockBrokerAdapter(), md, Settings())
     assert _sells(await store.list_orders()) == []
 
@@ -175,12 +177,16 @@ async def test_resume_emitted_when_paused_position_goes_flat(store):
     # Flatten AAPL to zero via a manual-flatten exit that fills.
     session = await store.get_current_session()
     si = await store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.MANUAL_FLATTEN, target_quantity=100,
+        symbol="AAPL",
+        reason=SellReason.MANUAL_FLATTEN,
+        target_quantity=100,
         session_id=session.id,
     )
     await store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
     sell = await store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
-    await store.append_fill(sell.id, "AAPL", OrderSide.SELL, 100, 9.0, session_id=session.id)
+    await store.append_fill(
+        sell.id, "AAPL", OrderSide.SELL, 100, 9.0, session_id=session.id
+    )
     assert (await store.get_position("AAPL")).quantity == 0
 
     # Next tick: no held positions, but the lingering pause must resolve.
@@ -208,7 +214,9 @@ async def test_disabled_is_noop(store):
     await store.initialize()
     await _hold(store, "AAPL", 100, 10.0)
     await _run_protection(
-        store, MockBrokerAdapter(), _breaching_feed(),
+        store,
+        MockBrokerAdapter(),
+        _breaching_feed(),
         Settings(protection_enabled=False),
     )
     assert _sells(await store.list_orders()) == []

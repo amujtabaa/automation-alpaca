@@ -232,9 +232,7 @@ async def test_script_can_be_set_before_submit_by_order_id():
     adapter = SimBrokerAdapter()
     order = _order()
 
-    adapter.script(
-        order.id, [BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])]
-    )
+    adapter.script(order.id, [BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])])
     broker_id = await adapter.submit_order(order)
 
     update = await adapter.get_order_status(broker_id)

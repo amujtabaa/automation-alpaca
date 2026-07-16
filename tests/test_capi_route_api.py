@@ -24,7 +24,12 @@ def _client_with_env(monkeypatch, **env) -> TestClient:
 
 
 def _inject(client: TestClient, symbol: str = "AAPL", **kwargs) -> dict:
-    payload = {"symbol": symbol, "suggested_quantity": 10, "suggested_limit_price": 1.0, **kwargs}
+    payload = {
+        "symbol": symbol,
+        "suggested_quantity": 10,
+        "suggested_limit_price": 1.0,
+        **kwargs,
+    }
     resp = client.post("/api/dev/candidates", json=payload)
     assert resp.status_code == 201, resp.text
     return resp.json()
@@ -106,17 +111,23 @@ def test_second_order_blocked_by_exposure_from_the_first(monkeypatch):
     configuration — the second approval sees the first order's notional."""
 
     with _client_with_env(monkeypatch, CAPI_MAX_TOTAL_EXPOSURE="15") as client:
-        first = _inject(client, symbol="AAPL", suggested_quantity=10, suggested_limit_price=1.0)
+        first = _inject(
+            client, symbol="AAPL", suggested_quantity=10, suggested_limit_price=1.0
+        )
         resp1 = client.post(f"/api/candidates/{first['id']}/approve")
         assert resp1.status_code == 200  # $10 <= $15
 
-        second = _inject(client, symbol="MSFT", suggested_quantity=10, suggested_limit_price=1.0)
+        second = _inject(
+            client, symbol="MSFT", suggested_quantity=10, suggested_limit_price=1.0
+        )
         resp2 = client.post(f"/api/candidates/{second['id']}/approve")
         assert resp2.status_code == 409  # $10 (open) + $10 (new) = $20 > $15
         assert "exceeds_max_total_exposure" in resp2.json()["detail"]
 
 
-def test_capi_race_between_precheck_and_authoritative_check_reverts_to_pending(monkeypatch):
+def test_capi_race_between_precheck_and_authoritative_check_reverts_to_pending(
+    monkeypatch,
+):
     """The exposure race (D-013's CAPI sibling): the pre-check passes ($10 <=
     the $15 cap, nothing else on the books yet), but before the authoritative
     check inside create_order_for_candidate runs, another candidate's approval
@@ -130,8 +141,12 @@ def test_capi_race_between_precheck_and_authoritative_check_reverts_to_pending(m
     monkeypatch.setenv("CAPI_MAX_TOTAL_EXPOSURE", "15")
     app = create_app(store)
     with TestClient(app) as client:
-        first = _inject(client, symbol="AAPL", suggested_quantity=10, suggested_limit_price=1.0)  # $10
-        second = _inject(client, symbol="MSFT", suggested_quantity=10, suggested_limit_price=1.0)  # $10
+        first = _inject(
+            client, symbol="AAPL", suggested_quantity=10, suggested_limit_price=1.0
+        )  # $10
+        second = _inject(
+            client, symbol="MSFT", suggested_quantity=10, suggested_limit_price=1.0
+        )  # $10
 
         orig = store.create_order_for_candidate
 

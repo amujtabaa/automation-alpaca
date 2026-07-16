@@ -78,7 +78,9 @@ async def _hold(store, symbol, qty, avg=10.0, *, session_id=None):
     )
     claim = await store.claim_order_for_submission(buy.id)
     assert claim.outcome == "claimed"
-    await store.transition_order(buy.id, OrderStatus.SUBMITTED, broker_order_id="brk-hold")
+    await store.transition_order(
+        buy.id, OrderStatus.SUBMITTED, broker_order_id="brk-hold"
+    )
     await store.transition_order(buy.id, OrderStatus.FILLED, filled_quantity=qty)
     return buy
 
@@ -92,7 +94,9 @@ async def _protective_floor_order(store, symbol, qty, *, session_id=None):
     if session_id is None:
         session_id = (await store.get_current_session()).id
     si = await store.create_sell_intent(
-        symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=qty,
+        symbol=symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=qty,
         session_id=session_id,
     )
     await store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)

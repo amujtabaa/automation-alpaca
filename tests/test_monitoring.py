@@ -267,7 +267,9 @@ async def test_filled_order_is_not_flagged_stale(any_store):
     )
     # Even with timeout 0, an order that fills in this tick is terminal and must
     # not be flagged stale (the stale check runs on the refreshed order).
-    await _reconcile_open_orders(any_store, adapter, Settings(unfilled_timeout_minutes=0.0))
+    await _reconcile_open_orders(
+        any_store, adapter, Settings(unfilled_timeout_minutes=0.0)
+    )
 
     assert not any(
         e.event_type == "order_stale" and e.order_id == order.id
@@ -390,7 +392,9 @@ async def test_cancel_pending_order_is_not_flagged_stale(any_store):
 
     # Even with timeout 0, a cancel_pending order is not "stuck unfilled" — it's
     # being wound down, so it is excluded from the stale flag.
-    await _reconcile_open_orders(any_store, adapter, Settings(unfilled_timeout_minutes=0.0))
+    await _reconcile_open_orders(
+        any_store, adapter, Settings(unfilled_timeout_minutes=0.0)
+    )
     assert not any(
         e.event_type == "order_stale" and e.order_id == order.id
         for e in await any_store.list_events()

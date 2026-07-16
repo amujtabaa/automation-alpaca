@@ -55,7 +55,9 @@ async def _hold(store, symbol, qty, avg=10.0):
     buy = await store.create_order_for_test(
         cand.id, symbol, OrderSide.BUY, qty, session_id=session.id
     )
-    await store.append_fill(buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id)
+    await store.append_fill(
+        buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id
+    )
     await store.transition_order(buy.id, OrderStatus.CANCELED)
 
 
@@ -118,7 +120,9 @@ class TestCharacterizeManualFlatten:
         # exit completes — §8 in-flight resolves first).
         adapter = MockBrokerAdapter()
         await run_monitoring_tick(any_store, adapter, Settings())
-        assert (await any_store.get_order(result.order.id)).status is OrderStatus.SUBMITTED
+        assert (
+            await any_store.get_order(result.order.id)
+        ).status is OrderStatus.SUBMITTED
 
         # Single-use: the override was consumed, so a SECOND flatten is denied again.
         with pytest.raises(FlattenBlockedError):
@@ -190,11 +194,15 @@ class TestCharacterizeStaleSubmittingRetry:
         await run_monitoring_tick(any_store, adapter, Settings())
         fresh = await any_store.get_order(order.id)
         assert fresh.status is OrderStatus.TIMEOUT_QUARANTINE
-        assert order.id in [o.id for o in await any_store.list_timeout_quarantined_orders()]
+        assert order.id in [
+            o.id for o in await any_store.list_timeout_quarantined_orders()
+        ]
         submits_after_quarantine = len(adapter.submitted)
 
         # The ambiguous submit in fact reached the venue and is working there.
-        adapter.seed_venue_order(order.id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, []))
+        adapter.seed_venue_order(
+            order.id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])
+        )
 
         # Tick 2: a READ-ONLY targeted query adopts it — with NO resubmit.
         await run_monitoring_tick(any_store, adapter, Settings())
@@ -278,12 +286,22 @@ class TestCharacterizeFillPositionDerivation:
             cand.id, "AAPL", OrderSide.BUY, 200, session_id=session.id
         )
         await any_store.append_fill(
-            buy.id, "AAPL", OrderSide.BUY, 100, 1.0,
-            source_fill_id="fill-1", session_id=session.id,
+            buy.id,
+            "AAPL",
+            OrderSide.BUY,
+            100,
+            1.0,
+            source_fill_id="fill-1",
+            session_id=session.id,
         )
         await any_store.append_fill(
-            buy.id, "AAPL", OrderSide.BUY, 100, 2.0,
-            source_fill_id="fill-2", session_id=session.id,
+            buy.id,
+            "AAPL",
+            OrderSide.BUY,
+            100,
+            2.0,
+            source_fill_id="fill-2",
+            session_id=session.id,
         )
         pos = await any_store.get_position("AAPL")
         assert pos.quantity == 200
@@ -291,8 +309,13 @@ class TestCharacterizeFillPositionDerivation:
 
         # A repeated source_fill_id is a dedup no-op — folding is unaffected.
         await any_store.append_fill(
-            buy.id, "AAPL", OrderSide.BUY, 100, 2.0,
-            source_fill_id="fill-2", session_id=session.id,
+            buy.id,
+            "AAPL",
+            OrderSide.BUY,
+            100,
+            2.0,
+            source_fill_id="fill-2",
+            session_id=session.id,
         )
         pos_after_dup = await any_store.get_position("AAPL")
         assert pos_after_dup.quantity == 200
@@ -335,7 +358,9 @@ class TestCharacterizeKillSwitchModel:
         assert session.kill_switch is False and session.buys_paused is False
 
         intent = await any_store.create_sell_intent(
-            symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100,
+            symbol="AAPL",
+            reason=SellReason.PROTECTION_FLOOR,
+            target_quantity=100,
             session_id=session.id,
         )
         await any_store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)

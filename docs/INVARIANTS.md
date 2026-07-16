@@ -16,6 +16,12 @@ from scratch.
 - Before trusting a green test suite, pick a handful of invariants below and
   write a **fresh probe** against them — not a re-run of the linked pinning
   test, which only proves the implementer's own scenario.
+- Probe each invariant over its **observable scope** (entity lifetime, session,
+  restart boundary), varying every free parameter — a pinning test that held a
+  parameter fixed proves the implementation's frame, not the invariant (the
+  SOL-F-002 lesson: "monotone" held per-call but not per-lifetime). And probe
+  **every ingress** the computation trusts, not just the newest one (SOL-F-003:
+  history rows were never screened).
 - When a new blocker/ADR-declared rule is added, add it here in the same
   session, not as a follow-up — an invariant that exists only in an ADR
   paragraph is exactly the drift class this file is meant to close (see X-003:
@@ -447,6 +453,310 @@ quarantine/timeout/TradingState/event-log seams (ADR-005). The ratchet stops the
 partial migration from regressing.
 *Pinned by:* the `api-routes-reach-backend-only-via-facade` contract
 (`test_all_import_contracts_hold`).
+
+## Execution envelopes (ADR-010 / WO-0016)
+
+**INV-076 — An envelope's remaining quantity is decremented ONLY by deduped
+fill events.** `ExecutionEnvelope.remaining_quantity` starts at `qty_ceiling`
+and moves only through `record_envelope_fill` (both stores), which appends the
+FILL `ExecutionEvent` through the dedupe-aware writer and applies the decrement
+ONLY when the append actually wrote a new event — a replayed `dedupe_key` is
+counted exactly once. No other store operation touches the field; submitted/
+ack-shaped facts structurally cannot (the sell-side analogue of invariants 8/9).
+*Why:* the qty ceiling is the hard scope rail of the human's mandate (ADR-010
+§2); if anything but a fill fact could move it, the envelope could under- or
+over-report how much of the mandate is spent.
+*Pinned by:* `tests/test_wo0016_envelope_fills.py`
+(`test_duplicate_fill_is_counted_exactly_once`,
+`test_transitions_and_raw_event_appends_cannot_move_remaining`).
+
+**INV-077 — At most ONE envelope per sell intent is ACTIVE, with no observable
+two-ACTIVE window.** Activation checks the intent's other envelopes under the
+same lock/transaction that writes the status (in-memory: under-lock scan;
+SQLite: explicit check + the `idx_envelopes_one_active` partial unique index as
+a structural backstop). Amendment-by-supersession swaps ACTIVE inside one
+atomic unit, and concurrent supersedes of the same envelope yield exactly one
+ACTIVE successor.
+*Why:* two live mandates for one intent means two executors repricing the same
+position — double exposure the human approved once.
+*Amended (WO-0027 / REV-0023 F6):* the invariant binds in SUBSTANCE, not just
+status: supersession refuses while a venue-live working order exists, sweeps
+staged CREATED orders in its atomic unit, and conserves the mandate
+(successor ceiling ≤ predecessor's current remaining, read under the same
+lock). One human approval can never become two live venue orders or a wider
+live mandate via amendment.
+*Pinned by:* `tests/test_wo0016_envelope_supersede.py`
+(`test_concurrent_supersedes_yield_exactly_one_active_successor`,
+`test_second_activation_for_same_intent_is_blocked`).
+
+**INV-078 — Envelope bounds never mutate in place; amendment is by
+supersession only.** The model validates bounds at construction; neither store
+exposes a bound-update operation (the SQLite `UPDATE` lists only status/
+counters/linkage/timestamps — bounds are structurally absent), and the
+supersede operation links predecessor and successor both ways.
+*Why:* the bounds ARE the human approval (ADR-010 §1); mutable bounds would
+let post-approval drift silently widen a mandate.
+*Pinned by:* `tests/test_wo0016_envelope_model.py` (construction rails) +
+`tests/test_wo0016_envelope_supersede.py`
+(`test_supersede_swaps_active_atomically_and_links_both`).
+
+**INV-079 — BREACHED and EXHAUSTED are terminal-pending-human, and a freeze is
+never exited by a fill.** Neither status has an outgoing edge
+(`ENVELOPE_TRANSITIONS`); a breached/exhausted mandate resumes only as a NEW
+envelope through the approval gate. A fill landing on a FROZEN envelope is
+recorded and decremented (facts are never hidden) but the envelope stays
+FROZEN; completion at remaining==0 happens on RESUME, atomically with it.
+*Why:* quarantine posture (ADR-001/ADR-010 §3): an envelope stopped for a
+human, or by the kill switch, must never silently resume through a data event.
+*Pinned by:* `tests/test_wo0016_envelope_transitions.py` (matrix: terminal
+rows empty) + `tests/test_wo0016_envelope_fills.py`
+(`test_fill_while_frozen_decrements_but_never_unfreezes`,
+`test_overfill_of_the_hard_ceiling_breaches`).
+
+**INV-080 — Envelope activation is one atomic unit, and the kill switch both
+blocks and preempts it.** `approve_envelope_activation` (both stores) runs
+dedup → HALTED check → create → approve → activate → events under ONE lock/
+transaction hold with no await between the control check and the durable
+writes: a kill landing first blocks the op with ZERO artifacts; landing after
+leaves an ACTIVE envelope that the kill hook freezes in the SAME atomic unit
+as the control change. Any `→ ACTIVE` transition (first activation OR resume)
+is refused while HALTED; releasing the kill NEVER auto-resumes a frozen
+envelope — resume is an explicit human action.
+*Why:* invariant 10 (kill blocks new order intent) — an ACTIVE envelope IS
+standing, pre-approved order intent; any window or auto-resume would let
+autonomous submissions restart without the human who stopped them.
+*Pinned by:* `tests/test_wo0017_envelope_approval.py`
+(`test_halted_blocks_approval_with_zero_artifacts`,
+`test_kill_race_never_ends_with_an_active_envelope_under_halted`) +
+`tests/test_wo0017_precedence.py` (`test_kill_freezes_every_active_envelope_atomically`,
+`test_release_never_auto_resumes`, `test_resume_and_activation_are_refused_while_halted`).
+
+**INV-081 — Manual flatten preempts envelopes; the ADR-003 deferral leaves the
+live exit's envelope managing it.** When a flatten takes over the exit path
+(create, or already-flat), every non-terminal envelope for the symbol is
+CANCELLED through legal edges inside the SAME lock/transaction, sequenced
+BEFORE the flatten's own writes — an envelope never races, blocks, or
+outlives the human's direct backstop (ADR-010 §4, D-2). When the flatten
+DEFERS to an in-flight PROTECTION_FLOOR exit (ADR-003/WO-0015 semantics,
+unchanged), that exit's envelope is deliberately left alone: it is the live
+order's manager, and cancelling it would strand the very exit the flatten
+defers to.
+*Why:* the backstop must dominate its dependents without destroying the
+mechanism executing the exit the human already has in flight.
+*Amended (WO-0024 / REV-0023 F3):* preemption extends to the preempted
+envelopes' STAGED orders — every CREATED (never venue-submitted) order staged
+by a preempted envelope is locally CANCELLED in the SAME atomic unit,
+sequenced after the envelope's own cancellation events. The kill switch does
+the same for the envelopes it freezes (a staged order IS pending order
+intent, INV-060). Belt two: ``redrive_staged_envelope_action`` re-validates
+against CURRENT state and time before any venue call — non-ACTIVE envelope,
+staged-action age past the redrive ceiling, or any ``validate_action`` rail
+(now including TTL and session phase, making ADR-010 §1's "bounds checked
+twice" true for every §2 rail) refuses with zero venue calls and locally
+cancels the staged order. Refusals are staleness, not defects: the envelope
+is never frozen by this path (INV-082 stays a defect-only signal).
+*Pinned by:* `tests/test_wo0017_precedence.py`
+(`test_flatten_cancels_the_symbols_envelopes_before_proceeding`,
+`test_flatten_on_a_flat_position_still_cancels_stale_envelopes`,
+`test_flatten_cancels_frozen_and_preactivation_envelopes_too`,
+`test_deferral_to_a_live_protection_exit_leaves_its_envelope_alone`) +
+`tests/test_phase7_flatten_atomic.py` (kept green, unmodified) +
+`tests/test_wo0021_envelope_chaos.py`
+(`test_flatten_mid_reprice_staged_order_never_reaches_the_venue` — the
+flipped WO-0021 finding pin) + `tests/test_wo0019_engine_seam.py`
+(`test_kill_between_staging_and_venue_call_blocks_at_the_claim`,
+`test_redrive_of_a_frozen_envelopes_staged_order_cancels_locally`,
+`test_redrive_past_staleness_ceiling_cancels_locally`,
+`test_write_time_ttl_rail_bites_at_the_seam`,
+`test_write_time_session_phase_rail_bites_at_the_seam`) +
+`tests/test_rev0023_phase_a_pins.py` (the three flipped `PIN_F3_*` tests).
+
+**INV-082 — Plan/write validator disagreement is a DEFECT signal: freeze +
+ENVELOPE_PLAN_DIVERGENCE, zero venue calls.** ``stage_envelope_action`` (both
+stores) re-runs the SAME ``app.sellside.policy.validate_action`` the policy
+ran at plan time, inside one lock/transaction with the HALTED check and the
+durable writes. Any rail violation the plan claimed was valid — or a
+structural mismatch (REPRICE with no live working order; SUBMIT over one) —
+freezes the envelope and appends ``ENVELOPE_PLAN_DIVERGENCE`` with the rail,
+detail, and snapshot fingerprint; no order is minted and the executor makes
+no venue call (ADR-010 §5, D-3).
+*Why:* if plan-time and write-time validation can disagree silently, the
+"bounds checked twice" guarantee is theater — the divergence event is the
+tripwire that turns a validator drift into an operator-visible incident.
+*Amended (WO-0025 / REV-0023 F4):* the false-positive class is gone — plan
+time and write time now evaluate the SAME live working-order predicate
+(ADR-010 §5 amendment), so a healthy second leg (filled tranche, stop
+continuation, disposition-cancel re-entry) never trips the tripwire; a
+divergence event again MEANS a defect (or a benign plan/write race on a
+freshly-changed fact — the §5 classification refinement itself is WO-0029).
+*Amended again (WO-0029A, accepted):* write-time rejections are now
+CLASSIFIED — state-dependent rails (qty_ceiling, structural) refuse as
+benign ``refused_stale`` events without freezing; only deterministic-rail
+disagreement (floor/ttl/phase/cooldown/budget) and reduce_only fire the
+divergence tripwire. A divergence event now ALWAYS merits investigation.
+*Pinned by:* `tests/test_wo0019_engine_seam.py`
+(`test_write_time_rejection_freezes_with_divergence_event`,
+`test_divergence_makes_zero_venue_calls`,
+`test_structural_disagreement_is_also_divergence`).
+
+**INV-083 — Envelope budget accounting is atomic with the order it pays for,
+and a quarantined leg pauses the envelope.** The ENVELOPE_ACTION event (the
+policy's history-derived budget/cooldown accounting substrate) commits in the
+SAME transaction as the staged order row — a crash between them is
+structurally impossible, and recovery re-drives the SAME staged order without
+a new accounting event (no double-spend). While ANY of an envelope's orders
+is in TIMEOUT_QUARANTINE, staging refuses (`EnvelopeActionPausedError`) —
+the ADR-002 rule that an ambiguous outcome is never blind-re-driven extends
+to the whole envelope. The venue leg enters SUBMITTING only through the
+existing submission claim (INV-021 unbroken).
+*Why:* budget accounting that can desynchronize from its order lets a crash
+mint free replaces; acting on an envelope with an unknown-fate order is the
+blind-resubmit failure mode ADR-002 exists to prevent.
+*Pinned by:* `tests/test_wo0019_engine_seam.py`
+(`test_sqlite_staging_is_all_or_nothing`,
+`test_ambiguous_replace_quarantines_and_pauses_the_envelope`,
+`test_transient_failure_releases_and_redrive_spends_no_new_budget`,
+`test_kill_between_staging_and_venue_call_blocks_at_the_claim`).
+
+**INV-084 — Reduce-only is enforced against the live fill-derived position at
+every pre-venue seam.** ``stage_envelope_action`` (both stores) reads the
+symbol's fill-derived position projection under the SAME lock/transaction as
+the staging writes and refuses any SELL whose quantity exceeds it
+(``ENVELOPE_PLAN_DIVERGENCE`` rail ``reduce_only``, envelope FROZEN, zero
+venue calls); ``redrive_staged_envelope_action`` re-checks the same bound
+before its venue call and locally cancels on violation. The envelope's own
+``remaining_quantity`` counter is NOT the enforcement point for this rail —
+both counters gate independently, so a fill/flatten racing the stage (or a
+stale envelope counter, REV-0023 F5) cannot produce a venue SELL the account
+cannot cover. Position source is the deduped fill log (single-writer truth),
+never the broker snapshot.
+*Why:* ADR-010 §2 declares reduce-only a HARD rail; before WO-0026 the only
+implementation was a validator locking the boolean flag — 180 shares were
+SOLD against a zero-share book in the REV-0023 Phase A repro, with harm
+surfacing only post-venue as an overfill quarantine, exactly what H1 forbids.
+*Pinned by:* `tests/test_rev0023_phase_a_pins.py`
+(`test_PIN_F1_sell_against_zero_position_never_reaches_venue` — the flipped
+P0 finding pin) + `tests/test_wo0019_engine_seam.py`
+(`test_position_shrink_between_plan_and_write_hits_reduce_only`,
+`test_redrive_recheck_catches_position_shrink`).
+
+**INV-085 — A ceiling-violated LIVE mandate never terminates in the success
+state.** A broker-authoritative overfill of ``qty_ceiling`` chains the
+envelope to ``BREACHED`` when it is still working the mandate — i.e. from
+``ACTIVE`` or ``FROZEN`` (the FROZEN edge added by the accepted WO-0029A
+amendment). Remaining floors at 0 (never negative), the overfill facts stay in
+the FILL event payload, and a resume of a breached envelope is structurally
+refused; an EXACT fill-to-zero while FROZEN remains benign (resume
+auto-completes, INV-079 unchanged).
+
+**Scope (narrowed by REV-0023 Phase-A2 spec-0, decision 3a):** the
+BREACHED-chain applies to the two NON-TERMINAL states only (``ACTIVE`` /
+``FROZEN``). A fill arriving after the envelope has ALREADY reached a terminal
+state (``COMPLETED`` / ``EXPIRED`` / ``EXHAUSTED`` / ``SUPERSEDED`` /
+``CANCELLED``) is recorded as a ``late_fill`` with the terminal status left
+unchanged — a done mandate is not retroactively un-terminated into BREACHED by
+a straggler execution. The independent backstop for a real position short in
+that case is the POSITION-level ADR-001 quarantine on ``append_fill``
+(``fill_overfill_quarantined`` + the projection-derived quarantine latch), which
+is unaffected by the envelope's terminal status. So a *violated live mandate* is
+never filed as a success, and a *late fill on a finished mandate* is faithfully
+recorded without a spurious status flip.
+*Why:* before the FROZEN edge, an overfill while FROZEN was clamped + flagged
+and the envelope resumed into COMPLETED — the audit trail filed a violated
+mandate as a success (REV-0023 SPEC-05). The Phase-A2 narrowing corrects the
+earlier prose "every state that can receive a fill," which over-claimed a
+terminal-state chain the transition table never implemented (COMPLETED etc. have
+no outgoing edge to BREACHED).
+*Pinned by:* `tests/test_rev0023_phase_a_pins.py`
+(`test_frozen_overfill_chains_breached_never_completed`,
+`test_frozen_exact_fill_still_completes_on_resume`) +
+`tests/test_wo0016_envelope_transitions.py` (ADR-mirror table) +
+`tests/test_wo0034_eventlog_fidelity.py`
+(`test_late_fill_on_terminal_envelope_is_recorded_not_breached`).
+
+**INV-086 — The working stop is monotone over the ENVELOPE LIFETIME, and only
+validated data ever drives it.** Three mechanisms, all in the pure policy:
+(1) historical ratchet candidates are computed with the urgency of their OWN
+epoch (``urgency_at``), so a session-phase boundary that widens time-to-close
+can never loosen an already-ratcheted stop; (2) the still-filling 30s bucket
+is excluded from the ratchet (``last_bar_open``) — the stop ratchets only on
+immutable completed bars, so an intra-bucket rewrite cannot lower it; (3) the
+ENTIRE active tape is screened by ``_snapshot_invalid_reasons`` before any
+feature computation — a stale/crossed/non-finite historical print never
+drives bars, ATR, VWAP, regime, sizing, or the stop (H6, whole-tape scope).
+Additionally the zero-allowance protective probe is REPORTED (participation
+ClampNote) and a venue-REJECTED probe doubles the next probe's floor, capped
+by remaining (adjudicated by the operator 2026-07-12); and a
+``refused_stale`` event never consumes the tranche entitlement (WORKING
+actions only).
+*Why:* SOL-0001 crosswise findings SOL-F-002/003/004 + DRIFT-SVD-2 — the
+stop loosened exactly at session opens and during intra-bar selloffs, a
+single poisoned historical print could re-anchor every feature, the 1-share
+probe was silent, and a benign refusal burned the one tranche.
+*Pinned by:* `tests/test_sol0001_incumbent_pins.py` (all six tests; each
+mechanism mutation-checked — including the pin itself, whose first version
+was vacuously green below the floor and was caught by the R4 discovery
+sweep).
+
+**INV-087 — At most one ACTIVE execution envelope per SYMBOL.** The
+single-ACTIVE mandate is scoped per ``symbol``, not per ``sell_intent_id``:
+activation (``approve_envelope_activation``), resume (``transition_envelope``
+→ ACTIVE), and supersession all refuse if any OTHER envelope for the same
+symbol is already ACTIVE — enforced under the store lock/transaction in both
+stores (the SQLite twin is the partial unique index
+``idx_envelopes_one_active ON execution_envelopes(symbol) WHERE
+status='active'``).
+*Why:* REV-0023 Phase-A2 P0. Scoping the guard per intent left a hole: a
+second sell_intent for the same symbol (e.g. across a session boundary that
+EXPIREd the first intent while its envelope stayed ACTIVE, since the envelope
+path never advances its backing intent past APPROVED) could activate a SECOND
+envelope for the same symbol/position. Two ACTIVE mandates could then each
+stage a full-size SELL against one position — a broker-authoritative
+oversell / double-book the single-mandate design exists to prevent. The
+orphaned first envelope keeps working its exit; a redundant second mandate is
+simply refused.
+*Pinned by:*
+`tests/test_rev0023_phase_a2_pins.py::test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary`
+(both stores; the session-boundary reproduction now refuses the second
+activation) and `tests/test_wo0032_per_symbol_mandate.py` (direct guard +
+supersession still permitted).
+
+**INV-088 — An unprintable price never drives features, sizing, or pricing.**
+Beyond the per-row validity screens (INV-086 clause 3), every print in the
+active window is screened by STEP DEVIATION against its immediate raw
+predecessor: a move greater than ``MAX_STEP_DEVIATION`` (25% per ~10-30s step
+— an order of magnitude outside LULD trading bands; planning calibration,
+Ameen-directed completion 2026-07-15) is excluded from bars/ATR/VWAP/regime/
+stop math, and if the LATEST print is deviation-suspect the tick fails quiet
+(``StaleDataSignal(price_deviation)``) — actions are priced off the latest
+print, so a phantom is never sized or submitted against. PRECEDENCE: a
+deviation-suspect latest print AT/BELOW the floor falls through to the hard
+floor rail instead (BreachSignal, never silence) — fail-safe outranks
+fail-quiet below the floor, so a genuine crash gap gets immediate protection
+and a phantom yields at worst a spurious frozen-for-human breach, never an
+order and never a quiet tick. Raw-predecessor comparison makes the screen
+self-healing: an isolated fat-finger costs at most two rows, a genuine gap
+(halt reopen) at most one.
+*Why:* REV-0023 Phase-A2 pure-math-0 — one finite absurd print (500,000x)
+passed every screen, pinned ``ref_high`` via the running max, and held a
+perpetual phantom-level ``stop_triggered`` SUBMIT.
+*Pinned by:* `tests/test_puremath0_deviation_band.py` (defect pins + self-heal
++ inside-band guards; band and latest-gate mutation-checked separately).
+
+**INV-089 — An envelope fill fact always carries a valid price.**
+``record_envelope_fill``/``plan_envelope_fill`` take a REQUIRED ``price``
+(``float``, no ``None``), value-guarded by the shared D-019
+``fill_value_reason`` exactly like ``plan_append_fill`` — a non-finite or
+non-positive price rejects with ``InvalidFillError`` and writes nothing.
+*Why:* REV-0023 Phase-A2 completeness-1 — a ``price=None`` FILL event appended
+durably and then PERMANENTLY poisoned ``project_symbol_position`` for the
+symbol (``ProjectionError`` on every later ``get_position``/``close_session``).
+Both production fill sources (``BrokerFill``, ``InferredFill``) carry
+``price: float``, so the requirement is honest end-to-end (AIR-002 already
+forbids fabricating a $0 price).
+*Pinned by:* `tests/test_wo0033_phase_a2_fixes.py::test_completeness1_*`
+(both stores; TypeError on omission, InvalidFillError on 0/negative/NaN/Inf,
+projection stays healthy).
 
 ---
 
