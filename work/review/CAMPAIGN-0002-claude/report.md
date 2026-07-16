@@ -1548,5 +1548,172 @@ so this is effectively resolved to "stacked PR," pending human ratification). Th
 
 ---
 
-*(§E Cross-Verification, §F Mechanism Decision, §H Consolidation Program, §I Human Decisions, §J
-full Evidence Appendix: in progress.)*
+## §H Consolidation Program (ordered, gated, reversible)
+
+### H.1 Canonical R2 definition
+
+Per §F.2's graft list, operationalized as build order for Part B (**none of this is executed by
+this investigator — Part A produces a plan, not code**, per the charter's hard stop):
+
+1. Port Sol's `project_envelope_obligation` and the reconcile write-back trio into the trunk,
+   unmodified in semantics, as the starting point.
+2. **Before anything else builds on top of it**, replace its query implementation with an
+   indexed/memoized per-symbol live-child/live-envelope projection (§D.5/§F.2's required new
+   work) — test-first against both this investigator's oracle (§B) and a ported version of Sol's
+   own `tests/performance/r2_scaling_gate.py` re-targeted at the new implementation, so the
+   performance budget (§D.1) is a build-time gate, not a post-hoc check.
+3. Port Sol's `app/monitoring.py`/`app/reconciliation.py` rework, with §E.3.2's fix applied
+   (logging/alerting on the fail-closed branches) as part of the same commit, not a follow-up.
+4. Graft Claude's masked-predecessor pins, the `spared_sell_intents` counter, and the
+   audit-reason-string granularity improvements (§F.2).
+5. Fix Theme D (`broker_order_id` write-once) as an independent, mechanism-agnostic commit.
+6. Merge the R2 test files: Sol's hostile/assurance/parity-adversarial suites become the primary
+   regression corpus; Claude's `test_wo0036_r2_lifecycle_link.py` and this investigator's
+   `tests/test_r2_conformance_oracle_claude.py` are retained as named, permanent pins within it
+   (charter's own phrase: "tests travel with the behaviors they pin").
+7. Perform the pre-cutover backfill verification pass (§F.2) against the actual shape of any
+   real pre-existing paper-trading data before relying on the startup re-projection in production.
+
+### H.2 Convergence topology
+
+```mermaid
+graph TD
+    A["consolidate/r2-canonical (this branch)<br/>Part A report + oracle, HARD STOP"] -->|human ratifies §I| B["Part B: build canonical R2<br/>on THIS SAME branch (charter §B1)"]
+    B --> C{{"STOP-FOR-HUMAN:<br/>order-intent lifecycle changes<br/>(the reconcile write-back,<br/>the indexed projection)"}}
+    C --> D["B2: reconcile 4 planes<br/>(ADR/INV/ledger/WO/PKL)"]
+    D --> E{{"STOP-FOR-HUMAN:<br/>event-log truth changes<br/>(session-close sparing semantics)"}}
+    E --> F["B3: full acceptance gate<br/>(§H.4) at a flake-exposing UTC time"]
+    F --> G{{"STOP-FOR-HUMAN:<br/>author + queue REV packet<br/>(next free id: REV-0029, §A.12)<br/>independent review REQUIRED before merge"}}
+    G --> H["B4: independent review<br/>ACCEPT / ACCEPT-WITH-CHANGES only"]
+    H --> I{{"STOP-FOR-HUMAN:<br/>assemble PR toward master<br/>-- human merges, never the agent"}}
+    I --> J["Fresh, stacked PR onto current master (2aa377a)<br/>NOT a fold into PR#8 (already merged, §G.5)"]
+    J --> K["PR#7 separately rebases onto<br/>post-R2 master (pre-existing obligation,<br/>independent of this consolidation)"]
+```
+
+Every arrow crossing a `{{STOP-FOR-HUMAN}}` diamond is a human-gated surface per CLAUDE.md
+(order-intent lifecycle, event-log truth, and the merge itself) — none of these steps auto-advance,
+matching the charter's own explicit instruction ("the ratification is the human's, recorded
+in-repo... not inferred from silence").
+
+**Sequencing note**: PR #8's merge already resolved the charter's anticipated "envelope-first"
+question (§G.5) — the remaining open sequencing item is PR #7 (signal-seat) rebasing onto whatever
+master looks like *after* this consolidation's own PR lands, since both touch all four
+`app/store/*.py` files. Recommend the consolidation's PR lands first (it is the smaller, better-
+audited, more recently-investigated change); PR #7's rebase is the existing, independent
+maintainer obligation described in PR #8's own merged description, not newly created by this
+campaign.
+
+### H.3 Governance to produce (the four planes, reconciled)
+
+- **One true ADR-010 amendment.** Recommend following the file's own established convention —
+  inline, dated "Amended \<date\> (WO-0036 R2)" paragraphs within the existing §3/§4/§6 (Sol's
+  approach, §G.1) rather than Claude's new-§8 pattern, purely for consistency with every other
+  amendment already in the file — but the **content** must be freshly written to describe the
+  *actual synthesized mechanism* (projection core + the new indexed implementation + the grafted
+  pieces), not copy-pasted from either attempt's now-superseded-in-parts prose.
+- **One canonical INV-090**, synthesized from both texts (§G.3's doc-variant matrix) — Sol's
+  wording is the closer starting point (it is what the shipped mechanism will most resemble
+  post-synthesis) but must be amended to name the new indexed projection and the grafted pins.
+- **One merged R2 test file** at the collision path both attempts claim
+  (`tests/test_wo0036_r2_lifecycle_link.py`, §G.1) — resolved by H.1 step 6.
+- **WO-0036 close-out**, including — per the charter's explicit instruction — **the planning-plane
+  record Sol's commit never shipped** (§C.2.5/§G.2: zero `work/` artifacts). This consolidation's
+  close-out must therefore write the WO status flip, disposition, and ledger entry that credits
+  Sol's actual contribution, not just Claude's (whose own WO-0036 ledger entry already exists at
+  `status: "REVIEW"`, §C.1.4, and itself needs closing).
+  candidate).
+- **The `close_session` docstring gap** (§G.3, pre-existing, unfixed by either attempt) should be
+  corrected as part of this same close-out, since the consolidated code changes exactly the
+  behavior that docstring under-describes.
+- **REV-0029** (next free id, §A.12/§G.1) for the consolidated gated change's independent-review
+  packet — required before any beta-relevant milestone relies on this merge, per CLAUDE.md's
+  own review-gate rule. REV-0028 (Claude's own, currently `AWAITING_REVIEW` with no
+  result/disposition, §C.1.4) should be explicitly superseded/closed by this new packet rather
+  than left dangling.
+- **docs/INVARIANTS.md**'s other five invariants Sol amended in place (INV-032, INV-036, INV-080,
+  INV-081, INV-087, §C.2.5) should be re-verified against the final synthesized code, not assumed
+  correct as originally written for Sol's unmodified mechanism.
+
+### H.4 Acceptance gate for the consolidated result
+
+Must pass, in this order, pasted in full:
+1. This investigation's spec-derived oracle (`tests/test_r2_conformance_oracle_claude.py`, §B) —
+   **unmodified**, per the charter's own rule ("it may not be edited to pass — a needed oracle
+   change is a spec change and goes to the human").
+2. **Both** attempts' hostile/adversarial suites (Sol's hostile-closure/assurance/parity-adversarial
+   trio, now permanent per H.1 step 6; Claude's masked-predecessor pins, grafted per H.1 step 4).
+3. The performance budget (§D.1's stated assumption; §D.5's ported gate, re-targeted at the new
+   indexed implementation) — this must now PASS where Sol's own gate failed it (§D.3), since H.1
+   step 2 makes closing this gap a build-order precondition, not a follow-up.
+4. The full native gate (`ruff check . && ruff format --check . && mypy app/ && lint-imports &&
+   pytest -q` + the coverage-gated variant, floor 93%) — **run at a UTC time past the charter's
+   documented flake window** (09:41 UTC 2026-07-16, per §0a), exactly as both characterization
+   agents did for their respective attempts (§C.1.5/§C.2.6).
+5. A required **adversarial fresh-eyes pass on the merged diff** (charter's own phrase) — walk
+   every treadmill-sibling class named in charter §3 explicitly, asserting closure by property
+   (does the merged code satisfy the *class* of defect), not by instance (does it pass the one
+   test that happens to pin it). This should be a *different* reviewer/session than whoever
+   performs the Part B build, matching the "no seat's self-review is ever the only review"
+   principle CLAUDE.md states explicitly.
+
+### H.5 Risk register + rollback
+
+| Risk | Mitigation | Rollback |
+|---|---|---|
+| Parity drift (memory vs. sqlite) in the new indexed projection | Build it test-first against Sol's exact-cross-store-snapshot technique (§C.2.3) from day one, not retrofitted | `freeze/20260715-pr8-head` (`22617f4`) — the shared pre-R2 base |
+| Tick tail-latency (the O(events) pattern found pre-existing in `redrive_staged_envelope_action`, §D.1) | Out of this consolidation's direct scope (neither attempt touches it) but should be tracked as a fast-follow given the same class of risk this campaign exists to close | N/A — pre-existing, unrelated to this merge's own rollback |
+| Pre-R2 migration correctness (does the startup re-projection actually repair real, not just synthetic, orphaned data) | H.1 step 7's required backfill verification pass before production reliance | `freeze/20260715-r2-claude`/`freeze/20260715-r2-sol` (`ba1cea7`/`353ef1c`) — both attempts' own tips, for comparison if the synthesis needs to be re-derived |
+| Four-store-file cross-lineage collision (PR #7 vs. this consolidation, both touch all `app/store/*.py`) | Land this consolidation's PR first (H.2); PR #7 rebases after, as it would have needed to regardless (§G.5) | `freeze/20260715-master-preconsolidation` (`80250e0`) — pre-PR#8 master, the deepest rollback anchor |
+| REV-0028/REV-0029 confusion (an incomplete packet left dangling alongside a new one) | H.3's explicit instruction to supersede/close REV-0028 as part of this consolidation's own close-out | N/A — a bookkeeping risk, not a code risk |
+| Sol's unbounded startup-scan growth (§D.4) shipping unfixed if H.1 step 2's scoping work is skipped under time pressure | Make it a named, separate acceptance-gate line item (H.4), not folded silently into "the performance budget passes" | Revert to the pre-consolidation freeze refs; the risk is scale-dependent, not correctness-dependent, so it degrades rather than breaks |
+
+## §I Batched Human Decisions
+
+Each stated as a crisp either/or, with this investigation's recommendation and one-line reason,
+per charter §9's format.
+
+**I.1 — Mechanism choice.** *Sol's delegation-projection, conditioned on the required performance
+remediation* **vs.** *Claude's evented-terminal-propagation, patched incident-by-incident* **vs.**
+*defer/re-scope.* **Recommend: Sol's projection, conditioned.** Reason: §F's evidence — 125
+cross-verification findings against Claude (two independently reverified as real) vs. zero against
+Sol, plus a confirmed reachable migration gap — outweighs Claude's fixable performance advantage.
+
+**I.2 — Performance remediation timing.** *Build the indexed/memoized projection as a
+precondition before any Part B code lands* **vs.** *land Sol's mechanism as-is and fast-follow the
+performance fix separately.* **Recommend: precondition.** Reason: §D's own measurements show
+Sol's current implementation misses its *own* stated performance gate by 20-70×, on the exact hot
+path that runs every 15 seconds in production — this is not a cosmetic follow-up.
+
+**I.3 — Merge order / PR shape.** *Fresh stacked PR onto current master* **vs.** *some other
+sequencing.* **Recommend: stacked PR** — the only live option, since PR #8 (the charter's
+originally-anticipated fold target) already merged (§G.5) before this investigation began.
+
+**I.4 — Namespace resolutions.** *ADR-010 amendment convention*: inline-dated-paragraphs
+(Sol's/the file's own established style) **vs.** a new top-level §8 section (Claude's style).
+**Recommend: inline**, for file-internal consistency (§H.3). *INV-090*: synthesize from both texts,
+weighted toward Sol's wording **vs.** pick one verbatim. **Recommend: synthesize** — both texts are
+independently well-written but neither describes the actual post-synthesis mechanism verbatim.
+
+**I.5 — Whether to also land Sol's `app/monitoring.py`/`app/reconciliation.py` rework, or defer
+it.** *Land it as part of this consolidation* **vs.** *defer to a separate WO, landing only the
+store-layer mechanism now.* **Recommend: land it together.** Reason: §E.3 found the monitoring/
+reconciliation rework is where the R6 silent-gap (E.3.2) and the CREATED-exclusion-from-`venue_orders`
+strength (E.3.3) both live — splitting the store mechanism from its monitoring-layer consumer risks
+landing a projection whose own real-time driver hasn't been co-reviewed with it.
+
+**I.6 — Repro 2's severity (§E.1)** — genuinely open, this investigation could not resolve it with
+confidence. *Treat as a beta blocker requiring a fix before any release* **vs.** *treat as an
+already-understood, already-bounded race window requiring only a comment/test pinning it as
+intentional.* **No recommendation — this is the one item this report defers entirely to the
+human's own judgment**, stated honestly per §E.1's own NEEDS-INPUT flag rather than manufactured
+confidence either way.
+
+**I.7 — Independent review dispatch.** *Queue the REV-0029 packet for independent cross-model
+review immediately upon Part B completion, before any beta-relevant reliance* **vs.** *batch it
+with other pending milestones.* **Recommend: immediately** — this touches human-gated order-intent
+lifecycle and event-log-truth surfaces, which CLAUDE.md's own review rule exempts from the
+"batched at milestones" default.
+
+---
+
+*(§J full Evidence Appendix and the Executive Summary: assembling now, from everything above.)*
