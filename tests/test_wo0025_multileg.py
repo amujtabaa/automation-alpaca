@@ -41,6 +41,7 @@ from app.reconciliation import (
 )
 from app.sellside.policy import _live_working_order_id, decide
 from app.sellside.types import PlannedAction
+from tests.store_helpers import activate_envelope_at
 
 import app.monitoring as monitoring
 
@@ -89,7 +90,10 @@ async def seeded_envelope(store, **overrides) -> ExecutionEnvelope:
     )
     draft = make_draft(si.id, **overrides)
     draft = draft.model_copy(update={"status": EnvelopeStatus.PENDING})
-    return await store.approve_envelope_activation(draft, actor="operator-a")
+    # Injected activation clock, anchored BEFORE the NOW-anchored tapes: the
+    # policy's since-activation window (INV-086) must contain the tape rows
+    # regardless of wall-clock time of day (see activate_envelope_at).
+    return await activate_envelope_at(store, draft, now=NOW - timedelta(hours=1))
 
 
 def _action_event(order_id: str, action: str = "submit", tranche=False, seq=1):

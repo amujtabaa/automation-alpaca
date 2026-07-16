@@ -31,6 +31,7 @@ from app.models import (
     utcnow,
 )
 from app.monitoring import EnvelopeTapeBuffer, run_monitoring_tick
+from tests.store_helpers import activate_envelope_at
 
 pytestmark = pytest.mark.anyio
 
@@ -111,8 +112,11 @@ async def _active_envelope(store, symbol="AAPL", **overrides):
     si = await store.create_sell_intent(
         symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
-    return await store.approve_envelope_activation(
-        make_draft(si.id, symbol, **overrides), actor="operator-a"
+    # Injected activation clock, anchored BEFORE the NOW-anchored tapes: the
+    # policy's since-activation window (INV-086) must contain the tape rows
+    # regardless of wall-clock time of day (see activate_envelope_at).
+    return await activate_envelope_at(
+        store, make_draft(si.id, symbol, **overrides), now=NOW - timedelta(hours=1)
     )
 
 
@@ -285,9 +289,7 @@ async def test_quarantined_child_pauses_not_freezes_the_envelope(any_store):
         env.id, action, snapshot_fingerprint="fp-f4", now=NOW
     )
     await any_store.claim_order_for_submission(staged.order.id)
-    await any_store.quarantine_timed_out_order(
-        staged.order.id, reason="submit_timeout"
-    )
+    await any_store.quarantine_timed_out_order(staged.order.id, reason="submit_timeout")
     assert (
         await any_store.get_order(staged.order.id)
     ).status is OrderStatus.TIMEOUT_QUARANTINE
@@ -337,7 +339,11 @@ async def test_expiry_disposition_cancel_and_return(any_store):
     import app.store.core  # noqa: F401  (imported for monkeypatch surface parity)
 
     expired_env = await any_store.get_envelope(env.id)
-    assert expired_env.expires_at > utcnow()  # not yet — so simulate via time
+    # Guard against the INJECTED clock universe, not the wall clock: this
+    # test's TTLs are NOW-anchored, so a utcnow() comparison here is a
+    # delayed-fuse time bomb (it held only until the wall clock crossed the
+    # anchor date — same class as the activation-window fix above).
+    assert expired_env.expires_at > NOW  # not yet — so simulate via time
     # Rather than monkeypatching clocks store-deep, drive the pass directly
     # with an injected now PAST the TTL:
     await monitoring._run_envelopes(
