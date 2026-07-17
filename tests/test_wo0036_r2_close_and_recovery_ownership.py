@@ -21,6 +21,7 @@ stood down (the restore path stays keyed on the strict pre-P-B predicate).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -286,7 +287,74 @@ async def test_close_summary_carries_spared_sell_intents_count(any_store):
     assert (
         await any_store.get_sell_intent(spared_intent.id)
     ).status is SellIntentStatus.APPROVED
-    assert (await any_store.get_sell_intent(plain.id)).status is SellIntentStatus.EXPIRED
+    assert (
+        await any_store.get_sell_intent(plain.id)
+    ).status is SellIntentStatus.EXPIRED
+
+
+async def test_close_with_sweep_emits_identical_streams_on_both_stores(tmp_path):
+    # Review advisory A-1 (P2 event-log-truth lens): the P-A sweep writes
+    # ENVELOPE_EXPIRED execution+audit events MID-CLOSE — pin that both stores
+    # emit the same normalized event streams in the same relative order for an
+    # identical close-with-sweep script (swept pre-activation owner + spared
+    # ACTIVE owner + an open candidate), so replay/parity can never drift here.
+    from app.store.memory import InMemoryStateStore
+    from app.store.sqlite import SqliteStateStore
+
+    async def drive(store):
+        await store.initialize()
+        session = await _hold(store)
+        # Swept: pre-activation APPROVED envelope on AAPL.
+        swept = await store.create_sell_intent(
+            symbol="AAPL",
+            reason=SellReason.PROTECTION_FLOOR,
+            target_quantity=100,
+            session_id=session.id,
+        )
+        draft = _draft(swept.id, session_id=session.id)
+        await store.create_envelope(draft, actor="operator-a")
+        await store.transition_envelope(
+            draft.id, EnvelopeStatus.APPROVED, actor="operator-a", now=NOW
+        )
+        # Spared: ACTIVE envelope on MSFT (own held position).
+        session2 = await _hold(store, symbol="MSFT")
+        spared = await store.create_sell_intent(
+            symbol="MSFT",
+            reason=SellReason.PROTECTION_FLOOR,
+            target_quantity=100,
+            session_id=session2.id,
+        )
+        await store.approve_envelope_activation(
+            _draft(spared.id, symbol="MSFT", session_id=session2.id),
+            actor="operator-a",
+        )
+        await store.create_candidate("TSLA", session_id=session2.id)
+        await store.close_session(actor="operator-a")
+
+        def _norm(key):
+            # Entity ids are random per store instance; normalize them so the
+            # comparison pins STRUCTURE and ORDER, not uuid values.
+            return re.sub(r"[0-9a-f]{32}", "*", key) if key else key
+
+        audit = [(e.event_type, e.symbol) for e in await store.list_events()]
+        execution = [
+            (e.event_type.value, e.symbol, _norm(e.dedupe_key))
+            for e in await store.get_execution_events()
+        ]
+        return audit, execution
+
+    mem_audit, mem_exec = await drive(InMemoryStateStore())
+    sq = SqliteStateStore(tmp_path / "a1-parity.db")
+    try:
+        sq_audit, sq_exec = await drive(sq)
+    finally:
+        if sq._conn is not None:
+            sq._conn.close()
+            sq._conn = None
+    assert mem_audit == sq_audit
+    assert mem_exec == sq_exec
+    # The sweep's expiry is present exactly once, identically keyed.
+    assert sum(1 for _t, _s, key in mem_exec if key and ":expired" in key) == 1
 
 
 # --------------------------------------------------------------------------- #

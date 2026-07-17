@@ -339,6 +339,10 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         "expired_candidates": 2,
         "canceled_orders": 1,
         "expired_sell_intents": 1,
+        # WO-0036 R2 P3a: envelope-spared intents count (0 here — no caller
+        # exclusion in this planner-level fixture; the spared path is pinned in
+        # tests/test_wo0036_r2_close_and_recovery_ownership.py).
+        "spared_sell_intents": 0,
         "position_snapshots": 1,
         # W2-SESS: the close is attributed; default "system" when no actor is passed.
         "actor": "system",

@@ -1427,8 +1427,11 @@ class StateStore(ABC):
            mandate or real exposure. A **bare pre-activation** ``APPROVED``
            envelope does NOT spare (authorization is not a working mandate):
            its owner expires and the envelope itself is swept
-           ``APPROVED -> EXPIRED`` in the same atomic close, so no delegating
-           envelope is ever left beside an expired owner.
+           ``APPROVED -> EXPIRED`` in the same atomic close, so no
+           **scope-valid** delegating envelope is ever left beside an expired
+           owner (a scope-INVALID legacy row naming the intent is outside the
+           owner projection by design — it cannot resurrect the owner and
+           keeps its symbol quarantined via the symbol-level obligation).
         4. Snapshot current positions — every symbol with a nonzero derived
            quantity — into ``position_snapshots``, keyed by this session id.
         5. Set ``status=CLOSED`` and ``closed_at=now``.
