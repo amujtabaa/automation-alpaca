@@ -32,6 +32,7 @@ from app.models import (
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import (
     CLAIM_CLAIMED,
+    EnvelopeTransitionError,
     FlattenBlockedError,
     InvalidOrderError,
     SellIntentTransitionError,
@@ -168,7 +169,7 @@ async def test_activation_approves_the_real_owner_and_close_spares_it(any_store)
 
 @pytest.mark.parametrize(
     "case",
-    ["missing", "symbol", "terminal", "reason", "quantity", "session"],
+    ["missing", "symbol", "terminal", "reason", "quantity", "session", "ordered"],
 )
 async def test_activation_rejects_every_invalid_owner_binding(any_store, case):
     await any_store.initialize()
@@ -184,6 +185,12 @@ async def test_activation_rejects_every_invalid_owner_binding(any_store, case):
             else SellReason.PROTECTION_FLOOR
         )
         quantity = 10 if case == "quantity" else 100
+        if case == "ordered":
+            # P3c gap port (attempt a3): an ORDERED intent is owned by the
+            # legacy single-order dispatch — an envelope on top of it would be
+            # a SECOND exit for the same mandate (the WO-0036 double-exit
+            # class). Needs a held position so the dispatch itself succeeds.
+            await _hold(any_store)
         intent = await any_store.create_sell_intent(
             symbol=symbol,
             reason=reason,
@@ -192,6 +199,11 @@ async def test_activation_rejects_every_invalid_owner_binding(any_store, case):
         )
         if case == "terminal":
             await any_store.transition_sell_intent(intent.id, SellIntentStatus.EXPIRED)
+        if case == "ordered":
+            await any_store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)
+            await any_store.create_order_for_sell_intent(
+                intent.id, order_type=OrderType.MARKET
+            )
         draft = _draft(
             intent.id,
             session_id=("different-session" if case == "session" else session.id),
@@ -225,6 +237,55 @@ async def test_direct_approval_ingress_uses_the_same_owner_link(any_store):
         draft.id, EnvelopeStatus.ACTIVE, actor="operator-a", now=NOW
     )
     assert active.status is EnvelopeStatus.ACTIVE
+
+
+async def test_direct_ingress_refuses_a_ghost_owner_at_the_approved_edge(any_store):
+    # P3c gap port (attempt a6, adapted — negative half of the direct-ingress
+    # pin above): the create_envelope + transition_envelope sibling path must
+    # enforce the SAME owner link, with no bypass. The trunk validates EARLIER
+    # than the attempt expected — at the PENDING -> APPROVED edge itself — so
+    # the ghost-owner envelope never even reaches APPROVED.
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    ghost = _draft("si-ghost", session_id=session.id)
+    await any_store.create_envelope(ghost, actor="operator-a")  # draft-shape only
+
+    with pytest.raises(InvalidOrderError, match="envelope owner"):
+        await any_store.transition_envelope(
+            ghost.id, EnvelopeStatus.APPROVED, actor="operator-a", now=NOW
+        )
+    assert (await any_store.get_envelope(ghost.id)).status is EnvelopeStatus.PENDING
+    # And no route into ACTIVE exists around it (PENDING -> ACTIVE is not an
+    # edge; the owner link would refuse regardless).
+    with pytest.raises((InvalidOrderError, EnvelopeTransitionError)):
+        await any_store.transition_envelope(
+            ghost.id, EnvelopeStatus.ACTIVE, actor="operator-a", now=NOW
+        )
+    assert (await any_store.get_envelope(ghost.id)).status is EnvelopeStatus.PENDING
+
+
+async def test_second_mandate_refused_while_symbol_envelope_is_frozen(any_store):
+    # P3c gap port (attempt f1, adapted): FROZEN counts as live at the
+    # activation-clash rail ITSELF, isolated from the kill-switch confounder
+    # (the oracle's kill-freeze test accepts either error, so a regression that
+    # stopped counting FROZEN as live could hide behind the kill-switch raise).
+    # Freeze does not release the symbol: a second envelope next to a FROZEN
+    # one is the same double-mandate INV-087 forbids for ACTIVE — and the
+    # frozen mandate itself still resumes (self-exclusion unchanged).
+    session, intent, envelope = await _activate(any_store)
+    await any_store.transition_envelope(
+        envelope.id, EnvelopeStatus.FROZEN, actor="operator-a", now=NOW
+    )
+
+    with pytest.raises(EnvelopeTransitionError, match="retains its delegation"):
+        await any_store.approve_envelope_activation(
+            _draft(intent.id, session_id=session.id), actor="operator-a"
+        )
+
+    resumed = await any_store.transition_envelope(
+        envelope.id, EnvelopeStatus.ACTIVE, actor="operator-a", now=NOW
+    )
+    assert resumed.status is EnvelopeStatus.ACTIVE
 
 
 async def test_envelope_delegation_closes_legacy_dispatch_and_direct_release(any_store):
