@@ -1,4 +1,4 @@
-# Part B completion run — goal prompt (DRAFT: awaiting D1–D8 ratification)
+# Part B completion run — goal prompt (RATIFIED 2026-07-17: D1–D8 all as recommended — see RATIFICATION-partb-completion.md)
 
 > **Purpose.** One ratification message from the operator, then an uninterrupted run that takes
 > `consolidate/r2-canonical` from its current state (`54fd817`) to the point where **the only thing
