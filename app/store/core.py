@@ -1034,6 +1034,34 @@ class EnvelopeObligationProjection:
     venue_orders: tuple[Order, ...] = ()
     claimable_order_ids: tuple[str, ...] = ()
     acknowledgeable_order_ids: tuple[str, ...] = ()
+    # WO-0036 R2 Part B P2 (operator-ratified, RATIFICATION-partb-completion.md
+    # D2): retention-source facts, exposed so consumers never re-derive envelope
+    # state ("no consumer gets to invent a neighboring definition"). Three
+    # predicates, one composition point (this function):
+    #   retains_intent        — release-prevention. Now ALSO true while a lineage
+    #                           child is latched needs_review (P-B: a stranded
+    #                           broker order that HAD fills is unresolved venue
+    #                           exposure, not proof of absence — the owner must
+    #                           not be released, else a SECOND automated SELL
+    #                           could be authorized against already-sold shares).
+    #   retains_intent_strict — the pre-P2 predicate (delegating | unresolved |
+    #                           malformed). Drives owner PROMOTION and RESTORE:
+    #                           needs-review retention HOLDS a live owner but
+    #                           never resurrects one a human stood down (the
+    #                           hold-vs-resurrect asymmetry — a flatten-
+    #                           superseded owner stays EXPIRED).
+    #   retains_across_close  — session-close sparing (P-A): bare pre-activation
+    #                           APPROVED delegation drops out (authorization is
+    #                           not a working mandate at the session boundary);
+    #                           ACTIVE/FROZEN, unresolved venue uncertainty,
+    #                           malformed ambiguity, and open needs_review
+    #                           exposure all still spare.
+    delegating: bool = False
+    active_delegating: bool = False
+    pre_activation_envelope_ids: tuple[str, ...] = ()
+    needs_review_child_order_ids: tuple[str, ...] = ()
+    retains_intent_strict: bool = False
+    retains_across_close: bool = False
 
 
 def project_envelope_obligation(
@@ -1415,6 +1443,7 @@ def project_envelope_obligation(
             invalid_seen.add(order_id)
             invalid.append(order_id)
 
+    needs_review_children: list[str] = []
     for order_id in order_ids:
         if order_id in invalid_seen:
             continue
@@ -1426,10 +1455,14 @@ def project_envelope_obligation(
             recovery.append(order_id)
             venue.append(order)
             continue
-        # Preserve X-003 for a structurally valid child: human-escalated
-        # recovery remains observable, but it does not monopolize future
-        # protection. Missing/malformed child identity above still fails closed.
+        # P-B (operator-ratified D2): a needs_review child is collected as a
+        # RETENTION source (see `retains_intent` below) without joining
+        # ``unresolved`` — so it retains the owner but never re-enters the
+        # claimable/acknowledgeable venue-eligibility machinery below, and the
+        # X-003 property (human-escalated recovery does not monopolize the
+        # execution lanes) is preserved for everything except owner release.
         if order_id in needs_review_order_ids:
+            needs_review_children.append(order_id)
             continue
         if claim_open_by_order[order_id]:
             unresolved.append(order_id)
@@ -1492,12 +1525,27 @@ def project_envelope_obligation(
     # An action row is durable proof of delegation even for a malformed legacy
     # envelope whose approved_at timestamp was absent.
     linked = linked or bool(order_ids)
-    retains = (
-        delegating
+    # P2 (operator-ratified D2) — the three retention predicates, composed once
+    # here (see the dataclass field docs for the semantics of each).
+    active_delegating = any(
+        envelope.status in (EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN)
+        for envelope in envelopes
+    )
+    pre_activation_envelope_ids = tuple(
+        envelope.id
+        for envelope in envelopes
+        if envelope.status is EnvelopeStatus.APPROVED
+    )
+    ambiguous_retention = (
+        bool(missing_envelopes) or bool(missing) or bool(invalid)
+    )
+    retains_strict = delegating or bool(unresolved) or ambiguous_retention
+    retains = retains_strict or bool(needs_review_children)
+    retains_across_close = (
+        active_delegating
         or bool(unresolved)
-        or bool(missing_envelopes)
-        or bool(missing)
-        or bool(invalid)
+        or ambiguous_retention
+        or bool(needs_review_children)
     )
     return EnvelopeObligationProjection(
         linked=linked,
@@ -1511,6 +1559,12 @@ def project_envelope_obligation(
         venue_orders=tuple(venue),
         claimable_order_ids=tuple(claimable),
         acknowledgeable_order_ids=tuple(acknowledgeable),
+        delegating=delegating,
+        active_delegating=active_delegating,
+        pre_activation_envelope_ids=pre_activation_envelope_ids,
+        needs_review_child_order_ids=tuple(needs_review_children),
+        retains_intent_strict=retains_strict,
+        retains_across_close=retains_across_close,
     )
 
 

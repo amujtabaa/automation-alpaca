@@ -148,7 +148,21 @@ diff. In-process panels NEVER count as the independent review — REV-0029 stays
   (`pre_activation…session_close`, `needs_review…retains_owner` × both stores). Dual-baseline:
   identical 4-only signature with the reseeded oracle overlaid on parent `15c2dd6` (worktree run,
   pasted in session log) ⇒ the reseed smuggled no Option-B-dependent behavior.
-- P2: —
+- P2: **DONE 2026-07-17.** Both properties implemented via three composed-once projection
+  predicates (`retains_intent_strict` / widened `retains_intent` / `retains_across_close`) +
+  exposed facts; both stores' close paths spare on `retains_across_close` and sweep bare
+  pre-activation APPROVED envelopes → EXPIRED atomically (characterization proved the sweep is
+  MANDATORY — the reconcile restore would otherwise resurrect the closed owner); restore/promote +
+  conflict sweep re-keyed to strict (hold-vs-resurrect asymmetry; inert escalated lineages don't
+  evict live mandates). Empirical P-B posture: complete sell-side quarantine of the escalated
+  symbol (flatten blocked, new delegation refused, replacement dedups to retained owner) —
+  TIMEOUT_QUARANTINE-style fail-closed. 12 new pins (`test_wo0036_r2_close_and_recovery_ownership.py`,
+  both stores); hostile pin 1973 amended per D2 (retention instead of release, dedup instead of
+  fresh replacement — cited). `close_session` ABC docstring gap (§G.3) fixed. **Codex oracle now
+  fully green: 61 passed / 0 failed** (was 14 red at run start). Full suite: **3053 / 0 failures /
+  0 errors / 12 skipped**. Parked: PD-1 (needs-review reconciliation release valve —
+  `BLOCKED-DECISIONS.md`). Adversarial lenses (event-log truth; projection consumers) ran
+  post-suite; findings, if any, folded as follow-ups in this phase's addendum.
 - P3: —
 - P4: —
 - P5: —

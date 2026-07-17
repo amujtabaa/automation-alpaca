@@ -1410,15 +1410,29 @@ class StateStore(ABC):
 
         1. Transition every ``PENDING``/``APPROVED`` candidate in this session
            to ``EXPIRED`` (terminal candidates are left untouched).
-        2. Cancel every still-``CREATED`` (never-submitted) order in this
-           session (D-013a) — a clean terminal state instead of a zombie
+        2. Cancel every still-``CREATED`` (never-submitted) **BUY** order in
+           this session (D-013a) — a clean terminal state instead of a zombie
            ``CREATED`` order the per-order-session submission gate would
-           otherwise hold forever. Already-``SUBMITTED`` orders are untouched
-           and keep reconciling after close (D-011).
-        3. Snapshot current positions — every symbol with a nonzero derived
+           otherwise hold forever. A ``CREATED`` SELL is a protective/flatten
+           exit and stays submittable (protection is always-on, Phase 7 §5.2);
+           already-``SUBMITTED`` orders are untouched and keep reconciling
+           after close (D-011).
+        3. Expire every ``PENDING``/``APPROVED`` sell intent in this session —
+           UNLESS the shared envelope-obligation projection **spares** it
+           (WO-0036 R2 P2, ``retains_across_close``): an owner whose envelope
+           is genuinely working (``ACTIVE``/``FROZEN``), or whose terminal
+           lineage still carries unresolved venue uncertainty (an unresolved or
+           ``needs_review`` recovery child, or malformed/ambiguous lineage
+           facts), survives the boundary — expiring it would orphan a working
+           mandate or real exposure. A **bare pre-activation** ``APPROVED``
+           envelope does NOT spare (authorization is not a working mandate):
+           its owner expires and the envelope itself is swept
+           ``APPROVED -> EXPIRED`` in the same atomic close, so no delegating
+           envelope is ever left beside an expired owner.
+        4. Snapshot current positions — every symbol with a nonzero derived
            quantity — into ``position_snapshots``, keyed by this session id.
-        4. Set ``status=CLOSED`` and ``closed_at=now``.
-        5. Write one audit event recording the close, how many candidates
+        5. Set ``status=CLOSED`` and ``closed_at=now``.
+        6. Write one audit event recording the close, how many candidates
            were expired, and how many orders were canceled.
 
         Raises :class:`SessionAlreadyClosedError` if the session is already

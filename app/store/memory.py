@@ -96,6 +96,7 @@ from app.store.core import (
     CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
+    EnvelopeObligationProjection,
     execution_event_for_fill,
     execution_event_for_routine_transition,
     order_status_backfill_event,
@@ -1193,18 +1194,30 @@ class InMemoryStateStore(StateStore):
         valid owner.  This is the owner-side half of the structural link.
         """
 
+        projection = self._envelope_owner_projection_unlocked(intent)
+        if projection is None:
+            return False, False
+        return projection.linked, projection.retains_intent
+
+    def _envelope_owner_projection_unlocked(
+        self, intent: SellIntent
+    ) -> Optional[EnvelopeObligationProjection]:
+        """The full owner-rooted obligation projection (P2 consumers need more
+        than the (linked, retains) tuple: the strict/close predicates and the
+        pre-activation envelope ids). ``None`` when the intent has no
+        scope-valid envelope at all. Mirrors the sqlite store exactly."""
+
         has_valid_envelope = any(
             envelope.sell_intent_id == intent.id
             and envelope_owner_scope_reason(envelope, intent) is None
             for envelope in self._envelopes.values()
         )
         if not has_valid_envelope:
-            return False, False
-        projection = self._envelope_obligation_unlocked(
+            return None
+        return self._envelope_obligation_unlocked(
             sell_intent_id=intent.id,
             valid_owner=intent,
         )
-        return projection.linked, projection.retains_intent
 
     def _symbol_envelopes_and_intents_unlocked(
         self, symbol: str, *, _cache: Optional[dict[tuple, Any]] = None
@@ -1304,10 +1317,16 @@ class InMemoryStateStore(StateStore):
         intent = self._sell_intents.get(intent_id)
         if intent is None:
             return
-        linked, retains = self._valid_envelope_owner_state_unlocked(intent)
-        if not linked:
+        projection = self._envelope_owner_projection_unlocked(intent)
+        if projection is None or not projection.linked:
             return
-        if retains:
+        # Promotion and RESTORE stay keyed on the STRICT (pre-P2) predicate:
+        # needs-review retention HOLDS a live owner (the release below never
+        # fires) but must never resurrect one a human has since stood down —
+        # e.g. a manual flatten's supersede leaves the owner EXPIRED, and a
+        # lingering needs_review child must not fight that decision (P2's
+        # hold-vs-resurrect asymmetry, RATIFICATION-partb-completion.md D2).
+        if projection.retains_intent_strict:
             if intent.status is SellIntentStatus.PENDING:
                 self._transition_sell_intent_unlocked(
                     intent,
@@ -1323,6 +1342,11 @@ class InMemoryStateStore(StateStore):
                     reason="envelope_delegation_restored",
                     allow_envelope_restore=True,
                 )
+            return
+        if projection.retains_intent:
+            # needs-review-only retention (P-B): unresolved venue exposure —
+            # hold the owner exactly as it stands. No release, no promotion,
+            # no resurrection.
             return
         if intent.status not in (
             SellIntentStatus.PENDING,
@@ -1347,10 +1371,14 @@ class InMemoryStateStore(StateStore):
             # C4 parity fix: one cache per symbol iteration (never reused across
             # symbols, and this symbol's own facts aren't re-read after this
             # block's writes) -- mirrors the sqlite store's identical fix.
+            # P2 (D2): the conflict sweep keys on the STRICT predicate — its job
+            # is "one WORKING delegation owns the symbol". A lineage retained
+            # only by an open needs_review child is inert escalated exposure; it
+            # must not evict the symbol's live replacement mandates.
             symbol_cache: dict[tuple, Any] = {}
             if not self._envelope_obligation_unlocked(
                 symbol=symbol, _cache=symbol_cache
-            ).retains_intent:
+            ).retains_intent_strict:
                 continue
             if (
                 self._envelope_symbol_owner_problem_unlocked(
@@ -1366,7 +1394,7 @@ class InMemoryStateStore(StateStore):
                 )
                 if self._envelope_obligation_unlocked(
                     envelope_id=envelope.id, _cache=symbol_cache
-                ).retains_intent
+                ).retains_intent_strict
                 and envelope_owner_scope_reason(envelope, intent) is None
             }
             if len(owner_ids) != 1:
@@ -4297,14 +4325,49 @@ class InMemoryStateStore(StateStore):
             and o.status is OrderStatus.CREATED
             and OrderSide(o.side) is OrderSide.BUY
         ]
-        # PENDING/APPROVED sell intents expire at close, like candidates.
-        open_sell_intents = [
-            si
-            for si in self._sell_intents.values()
-            if si.session_id == session.id
-            and si.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED)
-            and not self._valid_envelope_owner_state_unlocked(si)[1]
-        ]
+        # PENDING/APPROVED sell intents expire at close, like candidates —
+        # UNLESS the projection's close predicate spares the owner (P2,
+        # operator-ratified D2): ACTIVE/FROZEN delegation, unresolved venue
+        # uncertainty, malformed ambiguity, or an open needs_review child all
+        # spare; a bare pre-activation APPROVED delegation no longer does
+        # (P-A: authorization is not a working mandate at the session
+        # boundary) — its owner expires and the envelope is swept below.
+        open_sell_intents = []
+        pre_activation_sweep_ids: list[str] = []
+        for si in self._sell_intents.values():
+            if si.session_id != session.id or si.status not in (
+                SellIntentStatus.PENDING,
+                SellIntentStatus.APPROVED,
+            ):
+                continue
+            projection = self._envelope_owner_projection_unlocked(si)
+            if projection is not None:
+                if projection.retains_across_close:
+                    continue
+                pre_activation_sweep_ids.extend(projection.pre_activation_envelope_ids)
+            open_sell_intents.append(si)
+        # P-A sweep: a pre-activation APPROVED envelope whose owner is expiring
+        # at this close goes APPROVED -> EXPIRED in the SAME atomic close.
+        # Leaving it delegating would manufacture the pre-R2 orphan shape
+        # (delegating envelope beside an EXPIRED owner) and invite the
+        # reconcile restore to resurrect the closed owner on the next tick.
+        # reconcile_owner=False: the owner expires via the close plan below —
+        # the canonical close expiry event, not a mid-close release.
+        for envelope_id in pre_activation_sweep_ids:
+            envelope = self._envelopes.get(envelope_id)
+            if envelope is None or envelope.status is not EnvelopeStatus.APPROVED:
+                continue
+            sweep_plan = plan_envelope_transition(
+                envelope,
+                EnvelopeStatus.EXPIRED,
+                actor=actor,
+                reason="session_close_pre_activation_sweep",
+                now=now,
+            )
+            if sweep_plan.outcome == ENVELOPE_TRANSITION_APPLY:
+                self._apply_envelope_transition_unlocked(
+                    sweep_plan, reconcile_owner=False
+                )
         nonzero_positions = []
         # Enumerate position symbols from the event log (the Rule-7 truth), not
         # the fills read-model — so a FILL event with no fill row (reconciliation

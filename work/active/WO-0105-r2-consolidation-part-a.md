@@ -39,7 +39,10 @@ notes live here in prose, not inline. Part A paths are the `work/review/**`, ora
 `allowed_paths` (gated on the human ratification recorded in
 `work/review/CAMPAIGN-0002-claude/RATIFICATION-part-a.md`), plus a `tests/**` widening
 (amended 2026-07-16, operator-approved) so the consolidation can reconcile the full R2 test surface
-(the merged R2 suites + the base tests both attempts re-fixtured). The spec oracle
+(the merged R2 suites + the base tests both attempts re-fixtured). `app/store/base.py` added
+2026-07-17 (Part B completion run, D7-style flagged widening): the original list named the three
+concrete stores but omitted the ABC they share — same oversight WO-0107 corrected for its own
+scope; P2's `close_session` contract-docstring fix (§G.3) lives there. The spec oracle
 `tests/test_r2_conformance_oracle_claude.py` remains **UNMODIFIED** per charter §3 — a needed oracle
 change is a spec change, escalated to the human, never edited to pass.
 
@@ -50,6 +53,7 @@ allowed_paths:
   - work/ledger.jsonl
   - tests/**
   - app/store/core.py
+  - app/store/base.py
   - app/store/memory.py
   - app/store/sqlite.py
   - app/monitoring.py

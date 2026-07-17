@@ -112,6 +112,7 @@ from app.store.core import (
     CREATE_ORDER_REJECT,
     FILL_DUPLICATE,
     FILL_REJECT,
+    EnvelopeObligationProjection,
     execution_event_for_fill,
     execution_event_for_routine_transition,
     order_status_backfill_event,
@@ -2112,6 +2113,19 @@ class SqliteStateStore(StateStore):
         reuses the intent id cannot create the root link by itself.
         """
 
+        projection = self._envelope_owner_projection_locked(intent)
+        if projection is None:
+            return False, False
+        return projection.linked, projection.retains_intent
+
+    def _envelope_owner_projection_locked(
+        self, intent: SellIntent
+    ) -> Optional[EnvelopeObligationProjection]:
+        """The full owner-rooted obligation projection (P2 consumers need more
+        than the (linked, retains) tuple: the strict/close predicates and the
+        pre-activation envelope ids). ``None`` when the intent has no
+        scope-valid envelope at all."""
+
         envelope_rows = self._read_all(
             "SELECT * FROM execution_envelopes WHERE sell_intent_id = ? ORDER BY rowid",
             (intent.id,),
@@ -2122,7 +2136,7 @@ class SqliteStateStore(StateStore):
             if envelope_owner_scope_reason(envelope, intent) is None
         ]
         if not envelopes:
-            return False, False
+            return None
 
         envelope_ids = [envelope.id for envelope in envelopes]
         marks = ",".join("?" for _ in envelope_ids)
@@ -2202,7 +2216,7 @@ class SqliteStateStore(StateStore):
             ):
                 neighbour_envelope = self._envelope(row)
                 known_envelopes_by_id[neighbour_envelope.id] = neighbour_envelope
-        projection = project_envelope_obligation(
+        return project_envelope_obligation(
             envelopes=envelopes,
             action_events=action_events,
             orders_by_id=orders,
@@ -2211,7 +2225,6 @@ class SqliteStateStore(StateStore):
             needs_review_order_ids=needs_review_order_ids,
             known_envelopes_by_id=known_envelopes_by_id,
         )
-        return projection.linked, projection.retains_intent
 
     @staticmethod
     def _envelope_obligation_ambiguity(obligation: Any) -> tuple[str, ...]:
@@ -2332,10 +2345,15 @@ class SqliteStateStore(StateStore):
         if row is None:
             return
         intent = self._sell_intent(row)
-        linked, retains = self._valid_envelope_owner_state_locked(intent)
-        if not linked:
+        projection = self._envelope_owner_projection_locked(intent)
+        if projection is None or not projection.linked:
             return
-        if retains:
+        # Promotion and RESTORE stay keyed on the STRICT (pre-P2) predicate:
+        # needs-review retention HOLDS a live owner (the release below never
+        # fires) but must never resurrect one a human has since stood down
+        # (P2's hold-vs-resurrect asymmetry, RATIFICATION-partb-completion.md
+        # D2). Mirrors the memory store exactly.
+        if projection.retains_intent_strict:
             if intent.status is SellIntentStatus.PENDING:
                 self._transition_sell_intent_locked(
                     cur,
@@ -2353,6 +2371,11 @@ class SqliteStateStore(StateStore):
                     reason="envelope_delegation_restored",
                     allow_envelope_restore=True,
                 )
+            return
+        if projection.retains_intent:
+            # needs-review-only retention (P-B): unresolved venue exposure —
+            # hold the owner exactly as it stands. No release, no promotion,
+            # no resurrection.
             return
         if intent.status not in (
             SellIntentStatus.PENDING,
@@ -2381,19 +2404,29 @@ class SqliteStateStore(StateStore):
             # and this symbol's own facts aren't re-read after this block's
             # writes) -- same read-only memoization as _active_sell_intent_locked,
             # scoped tightly so it cannot mask a write made later in this loop.
+            # P2 (D2): keyed on the STRICT predicate — a lineage retained only
+            # by an open needs_review child is inert escalated exposure and
+            # must not evict live replacement mandates. Mirrors memory.
             symbol_cache: dict[tuple, Any] = {}
             if not self._envelope_obligation_locked(
                 symbol=symbol, _cache=symbol_cache
-            ).retains_intent:
+            ).retains_intent_strict:
                 continue
             if (
                 self._envelope_symbol_owner_problem_locked(symbol, _cache=symbol_cache)
                 is not None
             ):
                 continue
-            owner_ids = set(
-                self._retained_envelope_owner_ids_locked(symbol, _cache=symbol_cache)
-            )
+            owner_ids = {
+                envelope.sell_intent_id
+                for envelope, intent in self._symbol_envelopes_and_intents_locked(
+                    symbol, _cache=symbol_cache
+                )
+                if self._envelope_obligation_locked(
+                    envelope_id=envelope.id, _cache=symbol_cache
+                ).retains_intent_strict
+                and envelope_owner_scope_reason(envelope, intent) is None
+            }
             if len(owner_ids) != 1:
                 continue
             owner_id = next(iter(owner_ids))
@@ -5997,8 +6030,15 @@ class SqliteStateStore(StateStore):
                     (session.id, OrderStatus.CREATED.value, OrderSide.BUY.value),
                 )
             ]
-            # PENDING/APPROVED sell intents expire at close, like candidates.
+            # PENDING/APPROVED sell intents expire at close, like candidates —
+            # UNLESS the projection's close predicate spares the owner (P2,
+            # operator-ratified D2): ACTIVE/FROZEN delegation, unresolved venue
+            # uncertainty, malformed ambiguity, or an open needs_review child
+            # all spare; a bare pre-activation APPROVED delegation no longer
+            # does (P-A) — its owner expires and the envelope is swept in the
+            # transaction below. Mirrors the memory store exactly.
             open_sell_intents = []
+            pre_activation_sweep_ids: list[str] = []
             for row in self._read_all(
                 "SELECT * FROM sell_intents WHERE session_id = ? "
                 "AND status IN (?, ?) ORDER BY rowid",
@@ -6009,9 +6049,14 @@ class SqliteStateStore(StateStore):
                 ),
             ):
                 intent = self._sell_intent(row)
-                _, valid_owner_retains = self._valid_envelope_owner_state_locked(intent)
-                if not valid_owner_retains:
-                    open_sell_intents.append(intent)
+                projection = self._envelope_owner_projection_locked(intent)
+                if projection is not None:
+                    if projection.retains_across_close:
+                        continue
+                    pre_activation_sweep_ids.extend(
+                        projection.pre_activation_envelope_ids
+                    )
+                open_sell_intents.append(intent)
             nonzero_positions = []
             # Enumerate symbols from the event log (Rule-7 truth), matching
             # memory + list_positions, so a FILL event with no fill row is
@@ -6036,6 +6081,34 @@ class SqliteStateStore(StateStore):
 
             # Apply (read-then-write form): all UPDATEs/INSERTs commit together.
             with self._tx() as cur:
+                # P-A sweep: a pre-activation APPROVED envelope whose owner is
+                # expiring at this close goes APPROVED -> EXPIRED in the SAME
+                # transaction. Leaving it delegating would manufacture the
+                # pre-R2 orphan shape (delegating envelope beside an EXPIRED
+                # owner) and invite the reconcile restore to resurrect the
+                # closed owner. reconcile_owner=False: the owner expires via
+                # the close plan below — the canonical close expiry event.
+                for envelope_id in pre_activation_sweep_ids:
+                    env_row = cur.execute(
+                        "SELECT * FROM execution_envelopes WHERE id = ?",
+                        (envelope_id,),
+                    ).fetchone()
+                    if env_row is None:
+                        continue
+                    envelope = self._envelope(env_row)
+                    if envelope.status is not EnvelopeStatus.APPROVED:
+                        continue
+                    sweep_plan = plan_envelope_transition(
+                        envelope,
+                        EnvelopeStatus.EXPIRED,
+                        actor=actor,
+                        reason="session_close_pre_activation_sweep",
+                        now=now,
+                    )
+                    if sweep_plan.outcome == ENVELOPE_TRANSITION_APPLY:
+                        self._apply_envelope_transition_locked(
+                            cur, sweep_plan, reconcile_owner=False
+                        )
                 for candidate, event in zip(open_candidates, plan.candidate_events):
                     cur.execute(
                         "UPDATE candidates SET status=?, expired_at=?, "

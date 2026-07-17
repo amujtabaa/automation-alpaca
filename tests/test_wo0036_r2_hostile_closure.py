@@ -1970,7 +1970,15 @@ async def test_late_orphan_action_reconciles_valid_owner_by_every_identity(
     assert owner.status is SellIntentStatus.APPROVED
 
 
-async def test_needs_review_releases_terminal_child_but_not_active_envelope(any_store):
+async def test_needs_review_retains_owner_on_terminal_and_dedups_replacement(any_store):
+    # AMENDED under the operator-ratified P2 spec change (2026-07-17,
+    # RATIFICATION-partb-completion.md D2 — the cross-investigator oracle's
+    # needs-review property). This pin originally asserted the OPPOSITE
+    # (release on terminal + a fresh replacement intent): under P2, an open
+    # needs_review child is unresolved venue exposure, so the terminal envelope
+    # RETAINS its owner, and "creating a replacement" idempotently returns the
+    # retained owner (single-mandate identity). The full quarantine posture is
+    # pinned in tests/test_wo0036_r2_close_and_recovery_ownership.py.
     session, intent, envelope = await _activate(any_store)
     staged = await _stage(any_store, envelope.id)
     claimed = await any_store.claim_order_for_submission(staged.order.id)
@@ -1998,14 +2006,14 @@ async def test_needs_review_releases_terminal_child_but_not_active_envelope(any_
 
     assert (
         await any_store.get_sell_intent(intent.id)
-    ).status is SellIntentStatus.EXPIRED
+    ).status is SellIntentStatus.APPROVED
     replacement = await any_store.create_sell_intent(
         symbol="AAPL",
         reason=SellReason.PROTECTION_FLOOR,
         target_quantity=100,
         session_id=session.id,
     )
-    assert replacement.id != intent.id
+    assert replacement.id == intent.id
 
 
 async def test_recovery_audit_payload_cannot_override_reserved_identity(any_store):
