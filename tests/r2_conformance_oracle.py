@@ -144,6 +144,16 @@ async def _seed_long(store, *, symbol: str = "AAPL", quantity: int = 100):
         10.0,
         session_id=session.id,
     )
+    # Setup-only reseed (operator-ratified spec change, 2026-07-17 — see
+    # work/review/CAMPAIGN-0002-claude/RATIFICATION-partb-completion.md D1):
+    # terminalize the establishing BUY so the seeded long is a realistic held
+    # position with no lingering open buy. Under the ratified WO-0107 store
+    # contract, `flatten_position` refuses to act while an open BUY rests on a
+    # held symbol (`FLATTEN_BUYS_OPEN` — the §5.3 self-cross guard; the real
+    # caller cancels the buys and retries). Leaving this buy CREATED would make
+    # every flatten scenario exercise that signal instead of the deferral /
+    # preemption properties this oracle pins. Assertions are untouched.
+    await store.transition_order(order.id, OrderStatus.CANCELED)
     return session
 
 

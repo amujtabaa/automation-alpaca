@@ -142,7 +142,12 @@ diff. In-process panels NEVER count as the independent review — REV-0029 stays
 
 ## §6 Outcome log (filled during the run)
 
-- P1: —
+- P1: **DONE 2026-07-17.** Reseed = one setup-only hunk in `_seed_long` (terminalize establishing
+  BUY, citing D1). Evidence: `git diff --numstat` → `10 0` (additions-only ⇒ every assertion
+  byte-identical by construction). At HEAD: 10 former failures green; exactly the 4 P-reds remain
+  (`pre_activation…session_close`, `needs_review…retains_owner` × both stores). Dual-baseline:
+  identical 4-only signature with the reseeded oracle overlaid on parent `15c2dd6` (worktree run,
+  pasted in session log) ⇒ the reseed smuggled no Option-B-dependent behavior.
 - P2: —
 - P3: —
 - P4: —
