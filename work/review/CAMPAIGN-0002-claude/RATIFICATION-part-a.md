@@ -146,6 +146,20 @@ found it** — it is pre-existing, safety-neutral, and touches a different subsy
 layer) than WO-0036/R2's own scope; flagged for the operator's decision on sequencing rather than
 patched unilaterally.
 
+**FOLLOW-UP 2026-07-16 (operator asked to "address" this): analyzed by two further independent
+reviews; the conclusion is DO NOT PATCH IT NAÏVELY, and the fix is an operator decision — captured
+in `work/review/CAMPAIGN-0002-claude/FACADE-FLATTEN-LOCK-DISCIPLINE-DECISION.md`.** Both reviews
+confirmed (a) the finding is genuinely **non-exposure** — Window 1's "deferred cleanup" is
+store-internal envelope-FSM bookkeeping (`_cancel_symbol_envelopes_unlocked`), never a venue
+action, and the truly dangerous flat-with-live-venue-child case is caught by `FlattenBlockedError`
+on every path; and (b) the *obvious* fix (guard the buy-cancel, always flatten) is a net safety
+**REGRESSION** — it opens a new self-cross exposure window if a BUY fill lands in the lock gap. The
+two reviews then **disagreed** on the right alternative (unconditional `cancel_open_buys` vs. not),
+and any fix changes documented behavior on a human-gated flatten surface — so it is the operator's
+decision (leave as-is / lighter behavioral patch / proper atomic redesign), not an implementer's.
+The decision memo lays out the options and recommends the atomic redesign (Option B) via its own
+independently-reviewed WO if the team wants it closed. No facade code was changed.
+
 ### I.7 — Independent review dispatch · **RATIFIED as recommended**
 Queue the **REV-0029** independent cross-model review packet **immediately upon Part B
 completion**, before any beta-relevant reliance — not batched with other milestones. Basis: the
