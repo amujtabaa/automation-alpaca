@@ -163,9 +163,35 @@ diff. In-process panels NEVER count as the independent review — REV-0029 stays
   0 errors / 12 skipped**. Parked: PD-1 (needs-review reconciliation release valve —
   `BLOCKED-DECISIONS.md`). Adversarial lenses (event-log truth; projection consumers) ran
   post-suite; findings, if any, folded as follow-ups in this phase's addendum.
-- P3: —
-- P4: —
-- P5: —
+- P3: **DONE 2026-07-17.** P3a `spared_sell_intents` close counter (planner param + payload; both
+  stores count the spared branch; sequenced after P2). P3b granular
+  `deferred_to_live_envelope_child` audit reason (planner flag set at both stores' exact
+  child-substitution points; direct-protection reason unchanged). P3c: independent 23-test
+  coverage mapping of the Claude-attempt lifecycle suite → 20 COVERED (ratified divergences
+  absorbed as notes; masked-predecessor class mapped across five choke points), 3 GAPS — all
+  missing pins with conforming trunk behavior (probe-verified) — ported (`ordered` owner-binding
+  param; ghost-owner direct-ingress refusal at the APPROVED edge; second-mandate-refused-while-
+  FROZEN, kill-switch-free). Lens follow-ups landed same-phase: exact-payload close pin fixed
+  (the one HEAD red, found by the event-log-truth lens), A-1 cross-store sweep-stream parity pin
+  added, D-1 docstring scoping. Phase gate: **full suite 3058 / 0 / 0 / 12**.
+- P4: **DONE 2026-07-17 — measured, named finding; NO regression from this run.** Both gates
+  (script-contract runs, quiet box): every STRUCTURAL criterion green (constant 15 selects/call
+  across scales; all queries indexed; zero unrelated full scans; startup query growth 9.18× ≤ 12×;
+  projection peak 300 KiB ≤ 2 MiB). Two WALL-CLOCK ratios miss marginally and reproducibly:
+  runtime p95 large/small 3.35–3.77× (limit 3×), startup elapsed 12.87–13.15× (limit 12×).
+  **Baseline at pre-run parent `15c2dd6`: FAILS the same two, worse-or-equal (3.783× / 15.42×)**
+  ⇒ pre-existing, not introduced by P1–P3 (startup elapsed measurably improved this run). Per the
+  gate's own contract, recorded as a named finding for REV-0029 + a candidate separately-approved
+  perf work order (operator batch); no speculative mid-run optimization.
+- P5: **DONE 2026-07-17** (pending conformance-lens verdict, folded below). ADR-010 gains three
+  dated inline amendments describing the SYNTHESIZED mechanism: §3 (the shared projection + three
+  predicates + P-A close sweep + P-B needs-review retention/quarantine + PD-1 pointer), §4 (the
+  two fail-closed flatten pre-outcomes: BUYS_OPEN retry, needs-review refusal), §6 (three additive
+  provenance surfaces: sweep `envelope_expired`, `spared_sell_intents`,
+  `deferred_to_live_envelope_child`). INV-090 authored (the single-projection owner-lifecycle
+  invariant, three keyings named, both oracles as pins). Re-verify of Sol's five in-place
+  amendments vs final code: INV-032/036/080/087 HOLD verbatim; INV-081 gained a clarifying
+  2026-07-17 addendum (the two pre-outcomes precede "takes over" without weakening it) + new pins.
 - P6: —
 - P7: —
 - P8: —

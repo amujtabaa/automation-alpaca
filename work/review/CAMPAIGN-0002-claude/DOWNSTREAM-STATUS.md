@@ -1,4 +1,25 @@
-# Part B downstream status — reconciled against the current trunk (`d031a99`)
+# Part B downstream status — reconciled against the current trunk
+
+> **2026-07-17 refresh (Part B completion run, D1–D9 ratified):** every §H.1 build item is now
+> DONE or dispositioned; §H.3 governance is authored. Remaining before merge: P6 acceptance run,
+> P7 close-out bookkeeping, P8 REV-0029 packet — then the cross-model review (the endpoint).
+> Detail + evidence: `PARTB-COMPLETION-PLAN.md` §6 outcome log. Superseded rows below are kept
+> for the audit trail; the 2026-07-17 states are authoritative.
+>
+> | Piece | 2026-07-17 state |
+> |---|---|
+> | H.1-4 F.2 grafts | ✅ DONE — P3a counter, P3b granular reason, P3c 23/23 mapped (3 pins ported) |
+> | H.1-5 Theme D | ✅ already on trunk (verified, tested) |
+> | H.1-6 test-file merge | ✅ resolved as named coexistence (D6) |
+> | H.1-7 backfill verification | ⏸ deferred post-merge/pre-beta (D5) |
+> | Codex-oracle reds | ✅ 0 — P1 reseed (10) + P2 properties (4); oracle fully green |
+> | ADR-010 amendment | ✅ authored (§3/§4/§6, dated 2026-07-17) — review gate = REV-0029 |
+> | INV-090 | ✅ authored; INV-081 addendum; INV-032/036/080/087 re-verified HOLD |
+> | close_session docstring | ✅ fixed (P2) |
+> | Perf gates | ✅ run + recorded: structural green; two marginal wall-clock misses PRE-EXISTING (baseline-proven, no regression this run) — named finding for REV-0029 + candidate perf WO |
+> | WO-0036 close-out + ledger (credit Sol) | ⏳ P7 |
+> | REV-0029 (subsumes REV-0024, supersedes REV-0028) | ⏳ P8 |
+> | Parked (operator batch) | PD-1 needs-review reconciliation valve (`BLOCKED-DECISIONS.md`) |
 
 > Living tracker for the §H.1/§H.3 downstream pieces, reconciled against the **code on the
 > trunk** (not the Part A report, which was written against the pre-R2 base + the two attempts).

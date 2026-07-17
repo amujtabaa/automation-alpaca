@@ -102,6 +102,28 @@ The resume path can therefore never auto-COMPLETE a ceiling-violated mandate —
 amendment the code clamped, flagged in fine print, and terminated in the SUCCESS state (the §2
 "violation → BREACHED" rule and the §3 edge set contradicted each other; REV-0023 SPEC-05).
 
+**Amended 2026-07-17 (WO-0036 R2 Part B, operator-ratified D1–D9):** the SellIntent↔Envelope
+lifecycle link is a **single shared projection**, and the state machine's OWNER consequences are
+derived from it, never path-local. `project_envelope_obligation` (`app/store/core.py`) is the one
+composition point for three retention predicates both stores consume verbatim:
+*strict* (`delegating | unresolved-children | malformed-ambiguity`) drives owner promotion,
+restore, and the duplicate-conflict sweep; *widened* (strict + open `needs_review` recovery
+children) drives release-prevention and every sell-side choke (single-flight, legacy dispatch,
+flatten preemption, supersede/stage/claim guards); *across-close* (widened minus bare
+pre-activation `APPROVED` delegation) drives session-close sparing. Consequences ratified with it:
+(i) a **bare pre-activation `APPROVED` envelope is not a working mandate** — at session close its
+owner expires with the other open intents and the envelope itself is swept `APPROVED → EXPIRED`
+in the same atomic close (leaving it delegating beside an expired owner would recreate the pre-R2
+orphan shape and invite the restore path to resurrect the closed owner); (ii) an envelope going
+terminal while a lineage child is latched `needs_review` (a stranded broker SELL that HAD fills)
+**retains its owner** — unresolved venue exposure is not proof of absence, so the symbol's sell
+side quarantines fail-closed (flatten refuses, new delegation refuses, replacement intents dedup
+to the retained owner) until a human reconciles the recovery, mirroring the TIMEOUT_QUARANTINE
+ambiguity posture; retention HOLDS live owners but never resurrects stood-down ones (restore stays
+strict-keyed). The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
+The human reconciliation release valve for (ii) is an open, recorded design decision
+(`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.
+
 ### 4. Precedence and TradingState interactions
 
 - **Kill switch** blocks new order intent (invariant 10); a replace **is** new order intent. Kill
@@ -114,6 +136,19 @@ amendment the code clamped, flagged in fine print, and terminated in the SUCCESS
   coupling. **D-2 (decided):** flatten does **not** become an "emergency envelope"; it remains the
   separate, dumber, direct path through session control. The backstop does not share machinery
   with the thing it backstops.
+
+**Amended 2026-07-17 (WO-0107 Option B + WO-0036 R2 Part B, operator-ratified):** two bounded
+qualifications to "preempts, always", both fail-closed and both store-authoritative. (i) The
+store — under the same single lock hold that reads position and applies the decision — detects
+still-open BUYs (`CREATED`/`SUBMITTED`/`PARTIALLY_FILLED`) on a held symbol and returns
+`FLATTEN_BUYS_OPEN`, minting nothing: the caller cancels the buys (a broker call, never under the
+store lock) and retries, bounded, so a `MANUAL_FLATTEN` SELL is never minted beside a live BUY
+(the §5.3 self-cross) and no caller decides flat/blocked on a stale out-of-lock read. (ii) When
+the symbol's obligation is retained ONLY by an open `needs_review` recovery child (see the §3
+2026-07-17 amendment), the preemption's residual check refuses the flatten outright — a full-size
+manual SELL beside possibly-already-sold shares is the same double-sell class, and the human
+resolves the recovery first. Neither qualification lets an envelope outlive the backstop: (i)
+retries into the normal preemption; (ii) quarantines the whole sell side pending the human.
 
 ### 5. Engine-seam divergence is a defect signal
 
@@ -177,6 +212,18 @@ inferred path bypassed the envelope entirely: position folded but `remaining_qua
 silently re-arming the human-approved qty ceiling (200 shares reached the venue under a
 100-share ceiling in the REV-0023 repro; masked in the assembled system only by the F4 freeze —
 which is why F4 and F5 were remediated in one work order).
+
+**Amended 2026-07-17 (WO-0036 R2 Part B, operator-ratified):** three additive provenance
+surfaces from the consolidated lifecycle link. (i) The session-close **pre-activation sweep**
+emits the standard `envelope_expired` ExecutionEvent (+ audit row, reason
+`session_close_pre_activation_sweep`, once-only dedupe `envelope:{id}:expired`) inside the same
+atomic close as the owner's expiry — cross-store stream order is pinned by a dedicated parity
+test. (ii) The `session_closed` audit payload gains **`spared_sell_intents`** beside
+`expired_sell_intents`, so the close event is a complete account of the boundary (a working
+mandate surviving the bell is counted, not invisible). (iii) The `manual_flatten_deferred`
+provenance payload distinguishes **`deferred_to_live_envelope_child`** from
+`deferred_to_live_protection` — the audit trail names which machinery held the human's flatten
+(the envelope lineage's live child vs the intent's own in-flight protection order).
 
 ### 7. Disposition of the LASE v1 code
 

@@ -570,6 +570,20 @@ flipped WO-0021 finding pin) + `tests/test_wo0019_engine_seam.py`
 `test_write_time_ttl_rail_bites_at_the_seam`,
 `test_write_time_session_phase_rail_bites_at_the_seam`) +
 `tests/test_rev0023_phase_a_pins.py` (the three flipped `PIN_F3_*` tests).
+*Amended 2026-07-17 (WO-0107 Option B + WO-0036 R2 Part B, operator-ratified;
+re-verified against final code):* two fail-closed PRE-outcomes now precede
+"takes over", neither weakening it. (1) A held symbol with a still-open BUY
+returns ``FLATTEN_BUYS_OPEN`` before any preemption — the caller cancels the
+buys off-lock and retries into the normal take-over/defer flow (no
+MANUAL_FLATTEN SELL is ever minted beside a live BUY). (2) A symbol whose
+obligation is retained only by an open ``needs_review`` recovery child
+REFUSES the flatten at the preemption residual check (``FlattenBlockedError``)
+— unreconciled possible venue SELL exposure quarantines the manual path too
+(INV-090). Whenever the flatten DOES take over, this invariant applies
+verbatim. *Additional pins:*
+`tests/test_wo0036_r2_flatten_buys_open.py`,
+`tests/test_wo0036_r2_close_and_recovery_ownership.py`
+(`test_needs_review_retention_is_fail_closed_but_not_monopolizing`).
 
 **INV-082 — Plan/write validator disagreement is a DEFECT signal: freeze +
 ENVELOPE_PLAN_DIVERGENCE, zero venue calls.** ``stage_envelope_action`` (both
@@ -757,6 +771,40 @@ forbids fabricating a $0 price).
 *Pinned by:* `tests/test_wo0033_phase_a2_fixes.py::test_completeness1_*`
 (both stores; TypeError on omission, InvalidFillError on 0/negative/NaN/Inf,
 projection stays healthy).
+
+---
+
+**INV-090 — A SellIntent's envelope-owner lifecycle is decided ONLY by the
+shared obligation projection.** `project_envelope_obligation`
+(`app/store/core.py`) is the single composition point for the three retention
+predicates every consumer keys on — no store method, monitoring path, or
+facade derives a neighboring definition of "live delegation":
+(1) **strict** (`delegating ∨ unresolved-children ∨ malformed-ambiguity`)
+gates owner promotion (`PENDING→APPROVED`), restore
+(`EXPIRED→APPROVED`, `envelope_delegation_restored`), and the duplicate-
+conflict sweep; (2) **widened** (strict ∨ open `needs_review` recovery
+children) gates release (`envelope_delegation_released` fires only when it is
+false) and every sell-side choke — single-flight activation, legacy dispatch,
+direct release, flatten preemption residual, supersede/stage/claim; (3)
+**across-close** (widened minus bare pre-activation `APPROVED` delegation)
+gates session-close sparing, with the non-sparing pre-activation envelope
+swept `APPROVED→EXPIRED` in the same atomic close. Consequences: an owner
+retained only by an open `needs_review` child is HELD, never resurrected, and
+its symbol's sell side quarantines fail-closed pending human reconciliation;
+a bare authorization never outlives its session; a working or venue-uncertain
+mandate always does.
+*Why:* WO-0036 R2 (both attempts) existed because path-local owner-release
+definitions orphaned working mandates (release-while-child-rests) or stranded
+symbols (spared-forever authorizations); the consolidation (operator
+ratifications D1–D9, 2026-07-17) fixed the class by construction — one pure
+predicate source, three explicitly-named keyings, dual-store parity.
+*Pinned by:* `tests/test_wo0036_r2_lifecycle_link.py` (owner binding, ingress
+parity, release/retention),
+`tests/test_wo0036_r2_close_and_recovery_ownership.py` (close sparing + sweep
++ stream parity + needs-review quarantine + spared counter),
+`tests/test_wo0036_r2_hostile_closure.py` (hostile/legacy shapes),
+`tests/r2_conformance_oracle.py` + `tests/test_r2_conformance_oracle_claude.py`
+(both spec oracles, green), both stores throughout.
 
 ---
 
