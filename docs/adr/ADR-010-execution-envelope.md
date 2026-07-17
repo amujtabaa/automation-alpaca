@@ -142,8 +142,12 @@ qualifications to "preempts, always", both fail-closed and both store-authoritat
 store — under the same single lock hold that reads position and applies the decision — detects
 still-open BUYs (`CREATED`/`SUBMITTED`/`PARTIALLY_FILLED`) on a held symbol and returns
 `FLATTEN_BUYS_OPEN`, minting nothing: the caller cancels the buys (a broker call, never under the
-store lock) and retries, bounded, so a `MANUAL_FLATTEN` SELL is never minted beside a live BUY
-(the §5.3 self-cross) and no caller decides flat/blocked on a stale out-of-lock read. (ii) When
+store lock) and retries, bounded, so a `MANUAL_FLATTEN` SELL is never minted beside a **detected**
+open BUY (the §5.3 self-cross, closed for the entire `OPEN_BUY_STATUSES` set read under the
+deciding lock) and no caller decides flat/blocked on a stale out-of-lock read. Venue-uncertain
+BUYs (`SUBMITTING`, `TIMEOUT_QUARANTINE`) remain outside the signal exactly as they were outside
+the pre-Option-B §5.3 cancel set — Option B closed the stale-read class, it did not widen the
+detected set. (ii) When
 the symbol's obligation is retained ONLY by an open `needs_review` recovery child (see the §3
 2026-07-17 amendment), the preemption's residual check refuses the flatten outright — a full-size
 manual SELL beside possibly-already-sold shares is the same double-sell class, and the human

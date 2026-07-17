@@ -294,12 +294,21 @@ told the position is already exiting.
 `tests/test_phase7_flatten_atomic.py::test_live_protection_floor_order_is_left_alone`.
 
 **INV-037 — `flatten_position` never cancels a live BUY order itself** —
-that is a route-level pre-step (`cancel_open_buys`) that runs *before* the
-atomic store call, because canceling a live order needs a broker round-trip
-and the store's lock must never hold across network IO. `flatten_position`
-re-reads the live position under its own lock regardless, so a buy that fills
-concurrently with the cancel is still correctly sized.
-*Pinned by:* `tests/test_phase7_routes.py::test_flatten_cancels_open_buys`.
+canceling a live order needs a broker round-trip, and the store's lock must
+never hold across network IO. *Amended 2026-07-17 (WO-0107 Option B; the
+original prose described the superseded unconditional route-level pre-step):*
+the store now DETECTS still-open BUYs under its own deciding lock and returns
+``FLATTEN_BUYS_OPEN`` (minting nothing); the **facade** performs the
+`cancel_open_buys` broker call off-lock and retries, bounded, failing closed
+to a 409 if buys keep reappearing. The invariant itself is unchanged — the
+store still never makes the broker call — but the cancel is now
+signal-driven, not an unconditional pre-step, so a genuinely-flat symbol's
+unrelated resting BUY is never touched. `flatten_position` re-reads the live
+position under its own lock regardless, so a buy that fills concurrently with
+the cancel is still correctly sized.
+*Pinned by:* `tests/test_phase7_routes.py::test_flatten_cancels_open_buys`,
+`tests/test_wo0036_r2_flatten_buys_open.py` (signal, retry convergence,
+flat-symbol-buy-untouched, fail-closed bound).
 
 ---
 
@@ -362,9 +371,9 @@ lock or after releasing it; the lock only ever guards local state reads/writes.
 *Why:* holding the lock across an `await` to a real (or even mock/sim) network
 boundary would serialize all store access behind broker latency and could
 deadlock the monitoring loop against a concurrent request.
-*Pinned by:* structural — see `flatten_position`'s route-level
-`cancel_open_buys` pre-step (INV-037) and `_submit_pending_orders`'s
-claim-then-call ordering (INV-021).
+*Pinned by:* structural — see the flatten `FLATTEN_BUYS_OPEN` signal-then-
+off-lock-cancel-then-retry flow (INV-037, as amended 2026-07-17 for WO-0107
+Option B) and `_submit_pending_orders`'s claim-then-call ordering (INV-021).
 
 ---
 
@@ -575,7 +584,11 @@ re-verified against final code):* two fail-closed PRE-outcomes now precede
 "takes over", neither weakening it. (1) A held symbol with a still-open BUY
 returns ``FLATTEN_BUYS_OPEN`` before any preemption — the caller cancels the
 buys off-lock and retries into the normal take-over/defer flow (no
-MANUAL_FLATTEN SELL is ever minted beside a live BUY). (2) A symbol whose
+MANUAL_FLATTEN SELL is ever minted beside a DETECTED open BUY — the
+``OPEN_BUY_STATUSES`` set ``CREATED``/``SUBMITTED``/``PARTIALLY_FILLED`` read
+under the deciding lock; venue-uncertain ``SUBMITTING``/``TIMEOUT_QUARANTINE``
+BUYs stay outside the signal, as they were outside the pre-Option-B cancel
+set). (2) A symbol whose
 obligation is retained only by an open ``needs_review`` recovery child
 REFUSES the flatten at the preemption residual check (``FlattenBlockedError``)
 — unreconciled possible venue SELL exposure quarantines the manual path too
@@ -785,7 +798,10 @@ gates owner promotion (`PENDING→APPROVED`), restore
 conflict sweep; (2) **widened** (strict ∨ open `needs_review` recovery
 children) gates release (`envelope_delegation_released` fires only when it is
 false) and every sell-side choke — single-flight activation, legacy dispatch,
-direct release, flatten preemption residual, supersede/stage/claim; (3)
+flatten preemption residual, supersede/stage/claim (direct release attempts
+are refused for ANY projection-linked owner via ``projection.linked``,
+stricter than the widened predicate — the projection is the sole release
+authority); (3)
 **across-close** (widened minus bare pre-activation `APPROVED` delegation)
 gates session-close sparing, with the non-sparing pre-activation envelope
 swept `APPROVED→EXPIRED` in the same atomic close. Consequences: an owner
@@ -804,7 +820,9 @@ parity, release/retention),
 + stream parity + needs-review quarantine + spared counter),
 `tests/test_wo0036_r2_hostile_closure.py` (hostile/legacy shapes),
 `tests/r2_conformance_oracle.py` + `tests/test_r2_conformance_oracle_claude.py`
-(both spec oracles, green), both stores throughout.
+(both spec oracles green; the Claude oracle carries 6 recorded NEEDS-INPUT
+skips for tick-level properties not exercisable at store level — campaign
+report §C/§E), both stores throughout.
 
 ---
 
