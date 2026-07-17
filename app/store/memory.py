@@ -1102,6 +1102,23 @@ class InMemoryStateStore(StateStore):
             if record.local_order_id in order_ids
             and record.cleanup_status == RECOVERY_NEEDS_REVIEW
         )
+        # C1 (WO-0036 R2 consolidation, Part B step 1): mirror the sqlite store's
+        # bounded known_envelopes scope. project_envelope_obligation only resolves
+        # each in-scope envelope's direct supersession neighbours from this map, so
+        # passing the whole self._envelopes forced the pure function's
+        # `dict(known_envelopes_by_id)` copy to be O(all-envelopes) on every call.
+        # The in-scope envelopes plus their direct neighbours yield a byte-identical
+        # projection (pinned by the scoped-vs-full parity test).
+        known_envelopes_by_id = {envelope.id: envelope for envelope in envelopes}
+        for envelope in envelopes:
+            for neighbour_id in (envelope.superseded_by_id, envelope.supersedes_id):
+                if (
+                    neighbour_id is not None
+                    and neighbour_id not in known_envelopes_by_id
+                ):
+                    neighbour_envelope = self._envelopes.get(neighbour_id)
+                    if neighbour_envelope is not None:
+                        known_envelopes_by_id[neighbour_id] = neighbour_envelope
         return project_envelope_obligation(
             envelopes=envelopes,
             action_events=action_events,
@@ -1109,7 +1126,7 @@ class InMemoryStateStore(StateStore):
             order_events=order_events,
             open_recovery_order_ids=open_recovery_order_ids,
             needs_review_order_ids=needs_review_order_ids,
-            known_envelopes_by_id=self._envelopes,
+            known_envelopes_by_id=known_envelopes_by_id,
         )
 
     def _validate_envelope_owner_unlocked(

@@ -523,6 +523,24 @@ class SqliteStateStore(StateStore):
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_envelopes_one_active "
                 "ON execution_envelopes(symbol) WHERE status = 'active'"
             )
+            # WO-0036 R2 consolidation (Part B step 1, C2): the delegation
+            # projection's per-order recovery lookup filters submit_recoveries by
+            # local_order_id (an IN(...) membership test). submit_recoveries was
+            # indexed only on cleanup_status, so that lookup degraded to a full
+            # table scan on the hot single-flight read path — cost grew with the
+            # whole recovery ledger, unrelated to the symbol being projected.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_recoveries_local_order "
+                "ON submit_recoveries(local_order_id)"
+            )
+            # WO-0036 R2 consolidation (Part B step 1, C3): the projection selects
+            # ENVELOPE_ACTION events ordered by sequence. A (event_type, sequence)
+            # index lets SQLite seek to just the action rows and read them already
+            # ordered, instead of scanning the full event log to filter+sort.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_events_type_sequence "
+                "ON execution_events(event_type, sequence)"
+            )
             self._backfill_fill_events_locked()
             self._backfill_trading_state_events_locked()
             self._backfill_order_status_events_locked()
@@ -1595,11 +1613,21 @@ class SqliteStateStore(StateStore):
         return row is not None
 
     def _active_sell_intent_locked(self, symbol: str) -> Optional[SellIntent]:
-        symbol_obligation = self._envelope_obligation_locked(symbol=symbol)
+        # C4 (WO-0036 R2 consolidation, Part B step 1): one shared per-call cache,
+        # threaded through every _envelope_obligation_locked invocation this
+        # method triggers (directly, and transitively via the two helpers below,
+        # each of which re-derives per-envelope obligations for the same symbol).
+        # Safe because it never outlives this single synchronous call under the
+        # store's one lock hold -- no write can happen between reads to stale it.
+        cache: dict[tuple, Any] = {}
+        symbol_obligation = self._envelope_obligation_locked(
+            symbol=symbol, _cache=cache
+        )
         if symbol_obligation.retains_intent:
-            owner_ids = self._retained_envelope_owner_ids_locked(symbol)
+            owner_ids = self._retained_envelope_owner_ids_locked(symbol, _cache=cache)
             if (
-                self._envelope_symbol_owner_problem_locked(symbol) is not None
+                self._envelope_symbol_owner_problem_locked(symbol, _cache=cache)
+                is not None
                 or len(owner_ids) != 1
             ):
                 return None
@@ -1892,8 +1920,25 @@ class SqliteStateStore(StateStore):
         symbol: Optional[str] = None,
         envelope_id: Optional[str] = None,
         excluding_envelope_id: Optional[str] = None,
+        _cache: Optional[dict[tuple, Any]] = None,
     ):
-        """Project one owner/symbol lineage from event-truth order state."""
+        """Project one owner/symbol lineage from event-truth order state.
+
+        C4 (WO-0036 R2 consolidation, Part B step 1): ``_active_sell_intent_locked``
+        re-derives this same lineage 3+ times per logical call (once directly,
+        once per envelope inside ``_retained_envelope_owner_ids_locked``, again
+        inside ``_envelope_symbol_owner_problem_locked`` and ITS OWN nested calls
+        to the same two helpers) -- all reading the identical, unchanged-within-
+        one-lock-hold facts. ``_cache``, when the caller threads one shared dict
+        through the whole call, memoizes by selector so each distinct
+        (sell_intent_id, symbol, envelope_id, excluding_envelope_id) is computed
+        once. Optional and per-call only -- never persisted, never shared across
+        lock acquisitions, so it cannot see a stale answer past a write.
+        """
+
+        cache_key = (sell_intent_id, symbol, envelope_id, excluding_envelope_id)
+        if _cache is not None and cache_key in _cache:
+            return _cache[cache_key]
 
         clauses: list[str] = []
         params: list[Any] = []
@@ -1915,12 +1960,31 @@ class SqliteStateStore(StateStore):
             tuple(params),
         )
         envelopes = [self._envelope(row) for row in envelope_rows]
-        known_envelopes_by_id = {
-            row["id"]: self._envelope(row)
-            for row in self._read_all(
-                "SELECT * FROM execution_envelopes ORDER BY rowid"
-            )
+        # C1 (WO-0036 R2 consolidation, Part B step 1): project_envelope_obligation
+        # consumes known_envelopes_by_id ONLY to resolve each in-scope envelope's
+        # direct supersession neighbours (superseded_by_id / supersedes_id) and to
+        # diagnose a dangling/cross-scope link; it never iterates the global set.
+        # Loading every envelope in the store on each call was therefore pure
+        # O(all-envelopes) overhead (the `SCAN execution_envelopes` the perf gate
+        # flagged, growing with total history unrelated to this symbol). Load
+        # exactly the in-scope envelopes plus their direct supersession neighbours
+        # — a bounded, PK-indexed lookup that yields byte-identical projections
+        # (pinned by the scoped-vs-full parity test).
+        known_envelopes_by_id = {envelope.id: envelope for envelope in envelopes}
+        neighbour_ids = {
+            neighbour
+            for envelope in envelopes
+            for neighbour in (envelope.superseded_by_id, envelope.supersedes_id)
+            if neighbour is not None and neighbour not in known_envelopes_by_id
         }
+        if neighbour_ids:
+            marks = ",".join("?" for _ in neighbour_ids)
+            for row in self._read_all(
+                f"SELECT * FROM execution_envelopes WHERE id IN ({marks})",
+                tuple(neighbour_ids),
+            ):
+                neighbour_envelope = self._envelope(row)
+                known_envelopes_by_id[neighbour_envelope.id] = neighbour_envelope
         envelope_ids = [envelope.id for envelope in envelopes]
         action_sql = (
             "SELECT event.* FROM execution_events AS event "
@@ -1968,12 +2032,15 @@ class SqliteStateStore(StateStore):
             )
         )
         if not order_ids:
-            return project_envelope_obligation(
+            result = project_envelope_obligation(
                 envelopes=envelopes,
                 action_events=action_events,
                 orders_by_id={},
                 known_envelopes_by_id=known_envelopes_by_id,
             )
+            if _cache is not None:
+                _cache[cache_key] = result
+            return result
         order_marks = ",".join("?" for _ in order_ids)
         order_rows = self._read_all(
             f"SELECT * FROM orders WHERE id IN ({order_marks}) ORDER BY rowid",
@@ -2003,7 +2070,7 @@ class SqliteStateStore(StateStore):
             for row in recovery_rows
             if row["cleanup_status"] == RECOVERY_NEEDS_REVIEW
         )
-        return project_envelope_obligation(
+        result = project_envelope_obligation(
             envelopes=envelopes,
             action_events=action_events,
             orders_by_id=orders,
@@ -2012,6 +2079,9 @@ class SqliteStateStore(StateStore):
             needs_review_order_ids=needs_review_order_ids,
             known_envelopes_by_id=known_envelopes_by_id,
         )
+        if _cache is not None:
+            _cache[cache_key] = result
+        return result
 
     def _validate_envelope_owner_locked(
         self, envelope: ExecutionEnvelope, *, cur: Optional[sqlite3.Cursor] = None
@@ -2107,6 +2177,28 @@ class SqliteStateStore(StateStore):
                 for row in recovery_rows
                 if row["cleanup_status"] == RECOVERY_NEEDS_REVIEW
             )
+        # C1 (WO-0036 R2 consolidation, Part B step 1): same bounded scope as
+        # _envelope_obligation_locked's known_envelopes_by_id (see the comment
+        # there) — this call site independently rebuilt the SAME unscoped
+        # full-table load; a second O(all-envelopes) offender the perf gate's
+        # own EXPLAIN didn't separately name because both share one query shape,
+        # but which this method's own per-sell_intent-row callers (the
+        # active_sell_intent_for fallback loop) could invoke once per row.
+        known_envelopes_by_id = {envelope.id: envelope for envelope in envelopes}
+        neighbour_ids = {
+            neighbour
+            for envelope in envelopes
+            for neighbour in (envelope.superseded_by_id, envelope.supersedes_id)
+            if neighbour is not None and neighbour not in known_envelopes_by_id
+        }
+        if neighbour_ids:
+            neighbour_marks = ",".join("?" for _ in neighbour_ids)
+            for row in self._read_all(
+                f"SELECT * FROM execution_envelopes WHERE id IN ({neighbour_marks})",
+                tuple(neighbour_ids),
+            ):
+                neighbour_envelope = self._envelope(row)
+                known_envelopes_by_id[neighbour_envelope.id] = neighbour_envelope
         projection = project_envelope_obligation(
             envelopes=envelopes,
             action_events=action_events,
@@ -2114,12 +2206,7 @@ class SqliteStateStore(StateStore):
             order_events=order_events,
             open_recovery_order_ids=open_recovery_order_ids,
             needs_review_order_ids=needs_review_order_ids,
-            known_envelopes_by_id={
-                row["id"]: self._envelope(row)
-                for row in self._read_all(
-                    "SELECT * FROM execution_envelopes ORDER BY rowid"
-                )
-            },
+            known_envelopes_by_id=known_envelopes_by_id,
         )
         return projection.linked, projection.retains_intent
 
@@ -2135,51 +2222,69 @@ class SqliteStateStore(StateStore):
             )
         )
 
-    def _retained_envelope_owner_ids_locked(self, symbol: str) -> tuple[str, ...]:
-        owner_ids: set[str] = set()
+    def _symbol_envelopes_and_intents_locked(
+        self, symbol: str, *, _cache: Optional[dict[tuple, Any]] = None
+    ) -> list[tuple[ExecutionEnvelope, Optional[SellIntent]]]:
+        """C4: the (envelope, its intent) pairs for ``symbol``, memoized.
+
+        ``_retained_envelope_owner_ids_locked`` and
+        ``_envelope_symbol_owner_problem_locked`` both scan this exact row set
+        (the latter calls the former too) -- one shared, per-call-cached read
+        instead of re-querying the same symbol-scoped rows repeatedly.
+        """
+        cache_key = ("symbol_envelopes_and_intents", symbol)
+        if _cache is not None and cache_key in _cache:
+            return _cache[cache_key]
         envelope_rows = self._read_all(
             "SELECT * FROM execution_envelopes WHERE symbol = ? ORDER BY rowid",
             (symbol,),
         )
+        pairs: list[tuple[ExecutionEnvelope, Optional[SellIntent]]] = []
         for envelope_row in envelope_rows:
             envelope = self._envelope(envelope_row)
-            if not self._envelope_obligation_locked(
-                envelope_id=envelope.id
-            ).retains_intent:
-                continue
             intent_row = self._read_one(
                 "SELECT * FROM sell_intents WHERE id = ?",
                 (envelope.sell_intent_id,),
             )
             intent = self._sell_intent(intent_row) if intent_row is not None else None
+            pairs.append((envelope, intent))
+        if _cache is not None:
+            _cache[cache_key] = pairs
+        return pairs
+
+    def _retained_envelope_owner_ids_locked(
+        self, symbol: str, *, _cache: Optional[dict[tuple, Any]] = None
+    ) -> tuple[str, ...]:
+        owner_ids: set[str] = set()
+        for envelope, intent in self._symbol_envelopes_and_intents_locked(
+            symbol, _cache=_cache
+        ):
+            if not self._envelope_obligation_locked(
+                envelope_id=envelope.id, _cache=_cache
+            ).retains_intent:
+                continue
             if envelope_owner_scope_reason(envelope, intent) is None:
                 owner_ids.add(envelope.sell_intent_id)
         return tuple(sorted(owner_ids))
 
-    def _envelope_symbol_owner_problem_locked(self, symbol: str) -> Optional[str]:
-        obligation = self._envelope_obligation_locked(symbol=symbol)
+    def _envelope_symbol_owner_problem_locked(
+        self, symbol: str, *, _cache: Optional[dict[tuple, Any]] = None
+    ) -> Optional[str]:
+        obligation = self._envelope_obligation_locked(symbol=symbol, _cache=_cache)
         ambiguous = self._envelope_obligation_ambiguity(obligation)
         if ambiguous:
             return "missing or malformed envelope lineage: " + ", ".join(ambiguous)
-        envelope_rows = self._read_all(
-            "SELECT * FROM execution_envelopes WHERE symbol = ? ORDER BY rowid",
-            (symbol,),
-        )
-        for envelope_row in envelope_rows:
-            envelope = self._envelope(envelope_row)
+        for envelope, intent in self._symbol_envelopes_and_intents_locked(
+            symbol, _cache=_cache
+        ):
             if not self._envelope_obligation_locked(
-                envelope_id=envelope.id
+                envelope_id=envelope.id, _cache=_cache
             ).retains_intent:
                 continue
-            intent_row = self._read_one(
-                "SELECT * FROM sell_intents WHERE id = ?",
-                (envelope.sell_intent_id,),
-            )
-            intent = self._sell_intent(intent_row) if intent_row is not None else None
             reason = envelope_owner_scope_reason(envelope, intent)
             if reason is not None:
                 return reason
-        owner_ids = self._retained_envelope_owner_ids_locked(symbol)
+        owner_ids = self._retained_envelope_owner_ids_locked(symbol, _cache=_cache)
         if len(owner_ids) != 1:
             return (
                 f"retained envelope obligation has {len(owner_ids)} valid owners "
@@ -2269,11 +2374,23 @@ class SqliteStateStore(StateStore):
         ).fetchall()
         for symbol_row in symbol_rows:
             symbol = symbol_row["symbol"]
-            if not self._envelope_obligation_locked(symbol=symbol).retains_intent:
+            # C4: one cache per symbol iteration (never reused across symbols,
+            # and this symbol's own facts aren't re-read after this block's
+            # writes) -- same read-only memoization as _active_sell_intent_locked,
+            # scoped tightly so it cannot mask a write made later in this loop.
+            symbol_cache: dict[tuple, Any] = {}
+            if not self._envelope_obligation_locked(
+                symbol=symbol, _cache=symbol_cache
+            ).retains_intent:
                 continue
-            if self._envelope_symbol_owner_problem_locked(symbol) is not None:
+            if (
+                self._envelope_symbol_owner_problem_locked(symbol, _cache=symbol_cache)
+                is not None
+            ):
                 continue
-            owner_ids = set(self._retained_envelope_owner_ids_locked(symbol))
+            owner_ids = set(
+                self._retained_envelope_owner_ids_locked(symbol, _cache=symbol_cache)
+            )
             if len(owner_ids) != 1:
                 continue
             owner_id = next(iter(owner_ids))

@@ -1,9 +1,12 @@
 # Part B — Step 1 Build Plan: the indexed/memoized projection (I.2 precondition)
 
-> **STATUS: PLAN AWAITING HUMAN APPROVAL AT THE FIRST STOP-FOR-HUMAN CHECKPOINT (report §H.2).**
-> This step changes order-intent-lifecycle read semantics' *implementation* — a human-gated
-> surface per CLAUDE.md. **No `app/` code has been written.** This document is the reviewable plan;
-> implementation begins only on the operator's explicit approval of the approach below.
+> **STATUS: APPROVED (Ameen, in-chat, 2026-07-16) AND IMPLEMENTED.** C1–C4 below are built,
+> test-first, on `consolidate/r2-canonical`. See "§ Outcome" at the end of this document for the
+> honest, measured result (the architectural risk this step exists to close is fully and
+> repeatably closed; one ratio-based sub-gate remains marginal at sub-3ms absolute scale — recorded
+> precisely, not glossed over). Step 1a (porting Sol's mechanism onto the trunk) and step 1b (this
+> document) are both committed. Next Part B steps (monitoring/reconciliation port with the R6 fix,
+> Claude-side grafts, doc synthesis, etc.) remain their own separate STOP-FOR-HUMAN checkpoints.
 
 ## Objective (ratified I.1 + I.2)
 
@@ -109,3 +112,90 @@ verification — all remain downstream, each pausing at its own checkpoint.
 **This is the first STOP-FOR-HUMAN gate.** Requested decision: approve this approach (C1–C4,
 test-first, both stores, the allowed_paths amendment) so implementation can begin — or redirect.
 Nothing in `app/` changes until then.
+
+---
+
+## § Outcome (recorded 2026-07-16, after implementation — honest, measured, not rounded up)
+
+**C1 (bounded envelope scope).** Confirmed by direct reading (not assumption) that
+`project_envelope_obligation` only ever resolves each in-scope envelope's *direct* supersession
+neighbor via `.get()` — it never iterates the global map. Found **two** independent unscoped
+`SELECT * FROM execution_envelopes ORDER BY rowid` call sites in `app/store/sqlite.py`
+(`_envelope_obligation_locked` — the one the perf gate's `EXPLAIN` named — **and** a second,
+undetected-by-EXPLAIN duplicate inside `_valid_envelope_owner_state_locked`, which the fallback
+branch of `_active_sell_intent_locked` could invoke once per sell-intent row). Both replaced with a
+bounded `WHERE id IN (...)` load of the in-scope envelopes' direct neighbors only. `app/store/memory.py`'s
+single call site fixed the same way. **Safety guardrail delivered as promised**: a dedicated pure-function
+parity suite, `tests/test_wo0036_r2_projection_scope_parity.py` (6 tests: no-neighbor baseline,
+valid 2-envelope pair, a 3-link chain queried from the middle, a dangling malformed link, a
+mismatched-back-reference corruption, a completed-envelope-with-no-neighbor case), asserts
+byte-identical `EnvelopeObligationProjection` results between the full and scoped maps for every
+shape. All 6 pass. One caught a real error in the *test*, not the fix: a validly-superseded
+envelope queried alone correctly returns `retains_intent=False` (the obligation passes to its
+successor) — the test's first draft asserted the opposite and was corrected after tracing why.
+
+**C2 (missing index).** `CREATE INDEX idx_recoveries_local_order ON submit_recoveries(local_order_id)`.
+Closed the `SCAN submit_recoveries` offender.
+
+**C3 (event index).** `CREATE INDEX idx_exec_events_type_sequence ON execution_events(event_type, sequence)`.
+Closed the `SCAN event USING INDEX sqlite_autoindex_execution_events_2` offender (a full index
+scan, not a seek).
+
+**C4 (per-call memoization), extended beyond the original plan.** `_active_sell_intent_locked`'s
+`retains_intent` branch was found to re-derive the same symbol's projection **3+ times** per
+logical call (directly, once per envelope inside `_retained_envelope_owner_ids_locked`, and again
+inside `_envelope_symbol_owner_problem_locked`'s own loop plus its own tail call to the first
+helper). Added an optional, per-call-only `_cache` dict threaded through
+`_envelope_obligation_locked`/`_retained_envelope_owner_ids_locked`/`_envelope_symbol_owner_problem_locked`
+(keyed by selector; never persisted or shared across lock acquisitions, so it cannot see a stale
+answer past a write), plus a new `_symbol_envelopes_and_intents_locked` helper memoizing the
+symbol-scoped envelope+intent row reads the two helpers both independently repeated. Applied the
+identical, tightly-scoped (one cache per symbol, never reused across symbols) pattern to
+`_reconcile_envelope_symbol_conflicts_locked` — the startup re-projection's own per-symbol loop —
+since it's the same read-only redundancy, not a change to the loop's own bound.
+
+**Measured result:**
+
+| Metric | Before (RED baseline) | After C1+C2+C3 | After C1+C2+C3+C4 |
+|---|---|---|---|
+| `runtime_has_no_unrelated_full_scan` | **FAIL** (3 SCAN offenders) | **PASS** (0) | **PASS** (0) |
+| `runtime_query_count_independent_of_unrelated_scale` | PASS | PASS | PASS |
+| SELECTs per `active_sell_intent_for` call | 42 | 37 | **15** |
+| `runtime_p95_large_over_small` | 42.9–65× | 3.4–5.0× | 3.1–5.5× (run-to-run) |
+| `runtime_p95_large_over_small_le_3x` | FAIL | FAIL (marginal) | **FAIL (marginal)** |
+| Absolute p95, SMALL scale | — | — | ~1.0ms |
+| Absolute p95, REALISTIC scale | — | — | ~3.1ms |
+| `startup_elapsed_growth_for_10x_facts_le_12x` | FAIL (41.4×) | FAIL (39.7×) | FAIL (17.2–18.1×, improved as a side effect) |
+
+**Honest verdict, not rounded up to "gate passes":**
+
+- **The architectural risk §D.1 exists to catch — cost scaling with *total system history* unrelated
+  to the queried symbol — is fully and repeatably closed.** Zero unindexed full-table scans, in
+  every run, confirmed by three independent measurements. This was the concrete, dangerous failure
+  mode (§D.3's original 42×/58.9–72× findings); it is gone.
+- **The `runtime_p95_large_over_small_le_3x` ratio gate remains marginal** (3.1–5.5× across
+  repeated runs, never reliably under 3×) even after C1–C4. Investigated rather than chased
+  further: at REALISTIC scale the absolute p95 is **~3.1ms**, at SMALL scale **~1.0ms** — both
+  utterly negligible against the stated budget (§D.1: "well under 1–2 seconds" for the whole
+  envelope pass, run once per 15-second tick). At this sub-3ms magnitude, OS-scheduling/SQLite
+  cache-warmth jitter plausibly dominates the ratio measurement more than real algorithmic cost;
+  the remaining growth is also proportional to *this symbol's own* accumulated envelope count
+  (REALISTIC generates ~10 envelopes/symbol vs. SMALL's ~1), which is legitimate bounded growth,
+  not the pathological unbounded pattern the gate was written to catch. Recorded as a known,
+  disclosed residual rather than silently claimed green — matches this campaign's own evidence
+  discipline (§B.2's fixture-bug narrative: state the true result, not the convenient one).
+- **`startup_elapsed_growth_for_10x_facts_le_12x` remains red, as scoped from the outset** — the
+  plan explicitly deferred bounding the startup scan itself (it's tied to the migration-safety
+  guarantee independently verified in I.6/§C.2.2's dual-direction tests, and casually bounding it
+  risks that guarantee). It improved as a side effect of C1–C4 (41.4× → 17.2–18.1×) without any
+  change to its own bound, which is expected and not claimed as a fix.
+- **Zero regressions**: R2-focused suite 308/308 passed (0 failed, 6 skipped, +6 new parity tests
+  vs. the 302-test 1a baseline); full repo suite 3014/3014 passed (0 failed, 0 errors, 12 skipped,
+  matching the 1a baseline's skip count exactly). Static gate (`ruff check`, `ruff format --check`,
+  `mypy app/`, `lint-imports`) clean.
+
+**Recommendation carried forward, not resolved here**: whether the marginal ratio gate is
+acceptable as-is (given the negligible absolute cost) or needs a dedicated fast-follow (e.g.
+further reducing the REALISTIC-scale per-envelope work, or recalibrating the gate's threshold for
+sub-millisecond regimes) is noted for the acceptance-gate review (§H.4) rather than decided
+unilaterally here.
