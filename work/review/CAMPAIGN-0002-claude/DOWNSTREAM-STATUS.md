@@ -1,8 +1,9 @@
 # Part B downstream status — reconciled against the current trunk
 
-> **2026-07-17 refresh (Part B completion run, D1–D9 ratified):** every §H.1 build item is now
-> DONE or dispositioned; §H.3 governance is authored. Remaining before merge: P6 acceptance run,
-> P7 close-out bookkeeping, P8 REV-0029 packet — then the cross-model review (the endpoint).
+> **2026-07-17 refresh (Part B completion run, D1–D9 ratified; final update at run end):** every
+> §H.1 build item is DONE or dispositioned; §H.3 governance authored; P6 acceptance gate run with
+> pasted evidence (plan §6); P7 close-out + P8 packet landed at `4feb01d`. **Remaining before
+> merge: the REV-0029 cross-model verdict + its disposition loop — the endpoint, by design.**
 > Detail + evidence: `PARTB-COMPLETION-PLAN.md` §6 outcome log. Superseded rows below are kept
 > for the audit trail; the 2026-07-17 states are authoritative.
 >
@@ -17,8 +18,8 @@
 > | INV-090 | ✅ authored; INV-081 addendum; INV-032/036/080/087 re-verified HOLD |
 > | close_session docstring | ✅ fixed (P2) |
 > | Perf gates | ✅ run + recorded: structural green; two marginal wall-clock misses PRE-EXISTING (baseline-proven, no regression this run) — named finding for REV-0029 + candidate perf WO |
-> | WO-0036 close-out + ledger (credit Sol) | ⏳ P7 |
-> | REV-0029 (subsumes REV-0024, supersedes REV-0028) | ⏳ P8 |
+> | WO-0036 close-out + ledger (credit Sol) | ✅ DONE — `4feb01d` (archived to `work/completed/keep/`) |
+> | REV-0029 (subsumes REV-0024, supersedes REV-0028) | ✅ AUTHORED + QUEUED — `4feb01d` (awaiting the cross-model run) |
 > | Parked (operator batch) | PD-1 needs-review reconciliation valve (`BLOCKED-DECISIONS.md`) |
 
 > Living tracker for the §H.1/§H.3 downstream pieces, reconciled against the **code on the

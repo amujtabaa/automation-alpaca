@@ -122,12 +122,13 @@ forbidden_paths:
 - [x] In-process adversarial pass: concurrency **SHIP**, behavior/self-cross **SHIP**,
       test-integrity **TESTS-SOUND** (fixtures not weakened; two incompleteness defects found + one
       fixed, one routed to the human — see below). Summarized in `../REV-0024/request.md`.
-- [ ] **STOP-FOR-HUMAN — Codex spec-oracle conflict (test-integrity DEFECT-2).** Option B makes the
-      Codex oracle `tests/r2_conformance_oracle.py` fail 10 flatten scenarios (`BUYS_OPEN` before the
-      `deferred` it asserts on a raw store call); my own spec oracle passes. The oracle "may not be
-      edited to pass" (charter §3) and is the Codex investigator's file → the human/cross-investigator
-      decides the reconciliation. Analysis: `../CAMPAIGN-0002-claude/OPTIONB-CODEX-ORACLE-CONFLICT.md`.
-- [ ] **Independent cross-model review (REV-0024) dispositioned `ACCEPT` / `ACCEPT-WITH-CHANGES`.**
+- [x] **RESOLVED (operator ratification D1, 2026-07-17) — Codex spec-oracle conflict
+      (test-integrity DEFECT-2).** The operator ratified the setup-only reseed of the 10 affected
+      scenarios as a recorded spec change (`RATIFICATION-partb-completion.md` D1; dual-baseline
+      proof in `PARTB-COMPLETION-PLAN.md` §6-P1). The Codex oracle is now fully green (61/0).
+      Original analysis: `../CAMPAIGN-0002-claude/OPTIONB-CODEX-ORACLE-CONFLICT.md`.
+- [ ] **Independent cross-model review dispositioned `ACCEPT` / `ACCEPT-WITH-CHANGES` — now via
+      REV-0029** (REV-0024 subsumed per ratification D4; see `../REV-0024/SUPERSEDED.md`).
       This is a **human-gated flatten surface** — per CLAUDE.md the review gate clears only on that
       verdict, and no beta-relevant milestone may rely on Option B until it does. **status stays
       `REVIEW` until then.**

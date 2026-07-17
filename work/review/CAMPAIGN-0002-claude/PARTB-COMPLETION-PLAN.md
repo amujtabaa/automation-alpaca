@@ -192,7 +192,39 @@ diff. In-process panels NEVER count as the independent review — REV-0029 stays
   invariant, three keyings named, both oracles as pins). Re-verify of Sol's five in-place
   amendments vs final code: INV-032/036/080/087 HOLD verbatim; INV-081 gained a clarifying
   2026-07-17 addendum (the two pre-outcomes precede "takes over" without weakening it) + new pins.
-- P6: —
-- P7: —
-- P8: —
-- Parked (R1 lane): —
+- P6: (entry below, after the best-effort stress run completes)
+- P7: **DONE 2026-07-17 (`4feb01d`).** WO-0036 → CLOSED `[RESULT_SUMMARY_KEPT, ADR_CREATED]`,
+  archived to `work/completed/keep/` with the close-out section crediting **Sol's
+  delegation-projection mechanism as canonical** (the planning-plane record Sol's commit never
+  shipped); ledger row appended (validates; note: its `"commit"` field reads `HEAD` — the real
+  SHA is `4feb01d`, recorded here since the ledger is append-only). WO-0105 → REVIEW. REV-0028
+  recorded SUPERSEDED. WO-0106 (the Codex investigator's WO) verifiably untouched across the
+  entire run (zero commits in range) — left to its owner, flagged in the operator report.
+- P8: **DONE 2026-07-17 (`4feb01d` + this commit).** `REV-0029/request.md` authored — the single
+  consolidated independent packet (scope `5d10c70..HEAD`, subsumes REV-0024 per D4, supersedes
+  REV-0028; seven attack lenses led by the charter's treadmill-sibling-class walk, which
+  delegates the fresh-eyes-on-merged-diff mandate to the independent reviewer). `PR-PREP.md`:
+  read-only master divergence — master ahead by ONE content commit (`38762a1`, fixture-only);
+  `merge-tree` conflicts in exactly 3 TEST files, zero production; mechanical resolution at PR
+  time; NO rebase before the gate clears; draft PR body included; no PR created. Capstone
+  checks: 4-seed lifecycle soak green; completeness critic returned **GAPS(8) — all
+  recording/bookkeeping, zero code/test/governance defects** — every gap closed in this commit
+  (this log, DOWNSTREAM-STATUS refresh, WO-0107 gate re-point, D7/D9/stress recordings, OBS
+  summaries) or in the delivered operator report.
+- Parked (R1 lane): **PD-1 only** — the needs-review reconciliation release valve
+  (`BLOCKED-DECISIONS.md`; sketched as a WO-0108 candidate, human-gated). Operator batch also
+  carries: the P4 perf follow-up WO candidate, and the WO-0106 not-mine-to-close flag.
+- Decision-usage record (completeness gap 7): **D7 UNUSED** (`app/models.py`/`app/transitions.py`
+  untouched — scope checker proves it); **D9 UNUSED** (zero `CREATE INDEX` statements added after
+  its ratification; the step-1b indexes predate it). Both as predicted at ratification time.
+- Lens observations recorded in-repo (completeness gap 8): **OBS-1** conflict-sweep middle gate
+  keys widened while gates 1/3 are strict → a needs-review lineage coexisting with a working
+  mandate makes the sweep SKIP the symbol (conservative, fail-closed; pre-R2 duplicates behind
+  the live mandate stay unswept until the exposure resolves). **OBS-2** direct-path needs_review
+  frees single-flight (X-003) while envelope-child needs-review quarantines — no gap: the direct
+  second-sell hazard is separately blocked via `RECOVERY_OPEN_STATUSES` feeding the unresolved-
+  direct-sell gates. **OBS-3** the P-A sweep is close-time only — legacy DBs whose sessions
+  closed pre-P2 keep spared bare-APPROVED shapes until the (deferred, D5) backfill pass; no
+  retro-sweep. **OBS-4** `envelope_owner_scope_reason` ignores intent status (pre-existing), so
+  a stood-down owner can be the dedup target under needs-review retention — consistent with
+  hold-without-resurrect. All four are REV-0029 reviewer context, none blocking.
