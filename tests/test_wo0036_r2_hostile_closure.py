@@ -8,6 +8,7 @@ projection in both stores.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -40,9 +41,11 @@ from app.models import (
 from app.sellside.types import ActionKind, PlannedAction
 from app.monitoring import (
     _apply_update,
+    _cancel_envelope_working_order,
     _converge_expired_envelope_cancels,
     _record_recovery_terminal_fact,
     _recover_unpersisted_submits,
+    _validated_envelope_lineage,
 )
 from app.reconciliation import (
     ENVELOPE_EXEC_BLOCKED,
@@ -3412,3 +3415,137 @@ async def test_only_fill_path_can_complete_envelope_with_zero_mutation_on_reject
     assert (
         await any_store.get_sell_intent(intent.id)
     ).status is SellIntentStatus.EXPIRED
+
+
+# --------------------------------------------------------------------------- #
+# E.3.2 / R6: the cancel-convergence arm must fail closed LOUDLY, not silently.
+# _cancel_envelope_working_order had two early returns (a vanished envelope, and
+# a malformed/corrupt lineage) that no-oped with no log/alert/ledger entry, so a
+# stranded live SELL never surfaced. These pin: (1) the malformed branch emits a
+# warning and still cancels nothing, (2) the vanished-envelope branch emits a
+# warning, and (3) — the load-bearing anti-spam negative — a benign clean lineage
+# emits NO fail-closed warning (it proceeds down the normal cancel path). All
+# three run on both stores (any_store) per CLAUDE.md's dual-store rule. These are
+# the first caplog assertions in the tests/ tree.
+# --------------------------------------------------------------------------- #
+
+
+async def test_cancel_convergence_logs_and_no_ops_on_malformed_lineage(
+    any_store, caplog
+):
+    await any_store.initialize()
+    session = await _hold(any_store)
+    intent = await any_store.create_sell_intent(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    # An EXPIRED CANCEL_AND_RETURN envelope whose lineage is malformed: an
+    # ENVELOPE_ACTION references a child order that has no order row, so the
+    # shared projection reports it in missing_order_ids and the cancel fails
+    # closed (no target is guessed).
+    malformed = _draft(intent.id, session_id=session.id).model_copy(
+        update={
+            "id": "malformed-expired-env",
+            "status": EnvelopeStatus.EXPIRED,
+            "approved_at": NOW - timedelta(minutes=1),
+            "activated_at": NOW - timedelta(minutes=1),
+            "expired_at": NOW,
+        }
+    )
+    _raw_insert_envelope(any_store, malformed)
+    ghost = Order(
+        id="ghost-child-no-order-row",
+        sell_intent_id=intent.id,
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=100,
+        limit_price=9.9,
+        status=OrderStatus.SUBMITTED,
+        broker_order_id="broker-ghost-child",
+        session_id=session.id,
+        submitted_at=NOW,
+    )
+    # Append the ENVELOPE_ACTION but do NOT insert the order row.
+    _raw_append_execution(any_store, _action_event(malformed, ghost))
+
+    # Precondition: the lineage genuinely trips the malformed fail-closed guard
+    # (guards against the fixture silently going valid and vacuously passing).
+    loaded = await _validated_envelope_lineage(any_store, malformed.id)
+    assert loaded is not None
+    _, projection, _ = loaded
+    assert (
+        projection.missing_order_ids
+        or projection.missing_envelope_ids
+        or projection.invalid_order_ids
+    ), "fixture did not produce a malformed lineage"
+
+    adapter = MockBrokerAdapter()
+    with caplog.at_level(logging.WARNING, logger="app.monitoring"):
+        await _cancel_envelope_working_order(any_store, adapter, malformed)
+
+    # Behaviour unchanged — fail closed, nothing cancelled at the venue.
+    assert adapter.canceled == []
+    # Visibility — exactly one warning, naming the stranded envelope.
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "app.monitoring"
+    ]
+    assert len(warnings) == 1
+    assert malformed.id in warnings[0].getMessage()
+
+
+async def test_cancel_convergence_logs_on_vanished_envelope(any_store, caplog):
+    await any_store.initialize()
+    session = await _hold(any_store)
+    # An envelope object that was never inserted -> get_envelope returns None
+    # inside the cancel function -> the vanished-envelope fail-closed branch.
+    phantom = _draft("phantom-intent", session_id=session.id).model_copy(
+        update={"id": "phantom-envelope"}
+    )
+    adapter = MockBrokerAdapter()
+    with caplog.at_level(logging.WARNING, logger="app.monitoring"):
+        await _cancel_envelope_working_order(any_store, adapter, phantom)
+
+    assert adapter.canceled == []
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "app.monitoring"
+    ]
+    assert len(warnings) == 1
+    assert "phantom-envelope" in warnings[0].getMessage()
+
+
+async def test_cancel_convergence_no_warning_on_benign_clean_lineage(any_store, caplog):
+    # A valid ACTIVE envelope with a valid live child, then EXPIRED
+    # CANCEL_AND_RETURN -> lineage is clean; the cancel proceeds down the normal
+    # path (cancels the child) and must NOT emit a fail-closed warning. This is
+    # the anti-spam pin: the new logging fires ONLY on the malformed/vanished
+    # branches, never on the ordinary no-op/valid path.
+    _, _, envelope = await _activate(any_store)
+    child = _raw_seed_live_child(any_store, envelope, order_id="benign-live-child")
+    expired = await any_store.transition_envelope(
+        envelope.id,
+        EnvelopeStatus.EXPIRED,
+        reason="benign clean lineage",
+        now=NOW,
+    )
+    adapter = MockBrokerAdapter()
+    with caplog.at_level(logging.WARNING, logger="app.monitoring"):
+        await _cancel_envelope_working_order(any_store, adapter, expired)
+
+    # Normal path ran: the valid child was cancelled at the venue.
+    assert adapter.canceled == [child.broker_order_id]
+    # And NO fail-closed warning was emitted.
+    fail_closed = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.name == "app.monitoring"
+        and "fail-closed" in r.getMessage()
+    ]
+    assert fail_closed == []

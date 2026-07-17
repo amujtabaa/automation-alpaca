@@ -635,6 +635,17 @@ async def _cancel_envelope_working_order(
 
     loaded = await _validated_envelope_lineage(store, envelope.id)
     if loaded is None:
+        # WO-0036 R2 consolidation (E.3.2): fail closed loudly, not silently.
+        # `envelope` was handed in already-loaded (by _converge_expired_envelope_
+        # cancels or _run_one_envelope), so a None reload means it VANISHED from
+        # the store between visits -- a should-not-happen inconsistency, never a
+        # benign no-op. Fires at most once (the EXPIRED lister stops visiting an
+        # absent envelope), so no per-tick spam.
+        _log.warning(
+            "envelope %s: cancel-convergence fail-closed -- lineage no longer "
+            "resolves (envelope absent from store); no child cancelled",
+            envelope.id,
+        )
         return
     _, projection, orders = loaded
     if (
@@ -642,6 +653,26 @@ async def _cancel_envelope_working_order(
         or projection.missing_order_ids
         or projection.invalid_order_ids
     ):
+        # WO-0036 R2 consolidation (E.3.2): the core of the finding. A malformed/
+        # legacy-corrupt lineage (dangling envelope refs, orders with no row, or
+        # scope/shape/replacement-chain-invalid children) fails the cancel closed
+        # -- correct (no target is guessed) -- but SILENTLY, so a stranded live
+        # SELL never surfaced. Match the warning discipline of the sibling arm at
+        # the failed-cancel branch below. A genuinely-corrupt lineage never
+        # converges, so this recurs per tick by design: a persistent, non-self-
+        # healing integrity fault SHOULD keep alerting until an operator repairs
+        # it. (A durable, deduped needs_review event would be the quieter, fuller
+        # remedy, but that writes the event log -- a human-gated surface -- and is
+        # beyond this additive-logging fix; flagged for a separate decision.)
+        _log.warning(
+            "envelope %s: cancel-convergence fail-closed on a malformed lineage "
+            "(missing_envelopes=%s missing_orders=%s invalid_orders=%s); no child "
+            "cancelled -- corrupt lineage stranded, needs operator review",
+            envelope.id,
+            projection.missing_envelope_ids,
+            projection.missing_order_ids,
+            projection.invalid_order_ids,
+        )
         return
     excluded_ids = set(projection.recovery_order_ids) | set(
         projection.uncertain_claim_order_ids
