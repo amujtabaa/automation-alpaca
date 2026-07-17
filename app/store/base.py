@@ -345,6 +345,10 @@ FLATTEN_EXISTING = "existing"  # an existing intent returned as-is (idempotent
 FLATTEN_CREATED = "created"  # a fresh manual_flatten intent was created + ordered
 # (superseding a non-live protection_floor exit first,
 # if one was active)
+FLATTEN_BUYS_OPEN = "buys_open"  # WO-0036 R2 Option B: the held position has an
+# open BUY that must be cancelled before a MANUAL_FLATTEN SELL is minted. No
+# intent/order was created. The caller cancels the buys (app.monitoring.
+# cancel_open_buys — a broker call, never under the store lock) and RETRIES.
 
 # P6-C minimal actor-audit: the default ``actor`` stamped on a control-command
 # audit event (kill switch / pause-buys — the sensitive ``/api/controls/*`` surface)
@@ -671,12 +675,19 @@ class StateStore(ABC):
 
         Does **not** cancel a LIVE (broker-submitted) BUY order — that needs a
         broker call, which must never happen while this lock is held (the
-        concurrency model: no network call under the store lock). Callers
-        cancel open buys via ``app.monitoring.cancel_open_buys`` (best-effort,
-        idempotent) BEFORE calling this method; this method re-reads the live
-        position under its own lock regardless, so sizing always reflects
-        whatever the buy-cancel step actually achieved — never oversized, never
-        racing a partial fill.
+        concurrency model: no network call under the store lock). Instead, when a
+        HELD position (``position.quantity > 0``) still has an open BUY, this
+        method DETECTS it under its own lock and returns
+        :data:`FLATTEN_BUYS_OPEN` (no intent/order created); the caller cancels
+        the buys via ``app.monitoring.cancel_open_buys`` (best-effort, idempotent)
+        and **retries**. This makes the store — not the caller — the single
+        authority on the flat/blocked/buys-open decision, so a caller can never
+        mint a MANUAL_FLATTEN SELL alongside a live BUY on a stale out-of-lock
+        read (WO-0036 R2 Option B; the §5.3 self-cross). A GENUINELY-flat symbol
+        returns :data:`FLATTEN_FLAT` and leaves an unrelated resting BUY untouched;
+        every read this decision depends on is taken under this one lock hold, so
+        sizing always reflects the live position — never oversized, never racing a
+        partial fill.
 
         Returns :class:`FlattenResult`. ``session_id`` seeds a freshly-created
         intent only (ignored when returning an existing one). ``actor`` (P6-C

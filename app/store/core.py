@@ -762,6 +762,19 @@ _TERMINAL_ORDER_STATUSES = frozenset(
     {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
 
+# An "open BUY" for the flatten decision (WO-0036 R2 consolidation, Option B).
+# Position derives ONLY from filled shares, so an unfilled BUY is invisible to
+# the exit size — leaving one live while a MANUAL_FLATTEN SELL is minted lets the
+# BUY fill and the SELL execute at once (a self-cross) or re-grow the very
+# position being exited (§5.3). ``flatten_position`` now DETECTS these under its
+# own lock and signals the caller to cancel them first, rather than relying on
+# callers to cancel buys beforehand. This is the single source of truth for the
+# set: ``app.monitoring.cancel_open_buys`` cancels EXACTLY this set, so the
+# store's "buys open" signal and the caller's cancel converge.
+OPEN_BUY_STATUSES = frozenset(
+    {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
+)
+
 # An approved Envelope is a bounded delegation of its owning SellIntent.  These
 # statuses retain that delegation by themselves.  A terminal/SUPERSEDED envelope
 # can ALSO retain it when an action-linked child is unresolved (for example,
@@ -1854,6 +1867,9 @@ FLATTEN_FLAT = "flat"  # no open position
 FLATTEN_EXISTING = "existing"  # return an existing intent as-is
 FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"  # stand down + create fresh
 FLATTEN_DENIED_HALTED = "denied_halted"  # ADR-003: Halted, no override
+FLATTEN_BUYS_OPEN = "buys_open"  # WO-0036 R2 Option B: open BUY(s) must be
+# cancelled first; the caller cancels them (a broker call, never under the store
+# lock) and RETRIES flatten_position. No intent/order is created on this outcome.
 
 
 @dataclass(frozen=True)
@@ -1919,6 +1935,7 @@ def plan_flatten_position(
     trading_state: TradingState = TradingState.ACTIVE,
     override_active: bool = False,
     actor: str = COMMAND_ACTOR_SYSTEM,
+    open_buy_order_ids: Sequence[str] = (),
 ) -> FlattenPlan:
     """Decide the manual-flatten outcome for one symbol.
 
@@ -1945,6 +1962,16 @@ def plan_flatten_position(
     command actor and hands it in, and it is only stamped into the
     ``manual_flatten_deferred`` event's payload here — this planner never resolves
     identity itself, keeping it a pure function of its inputs.
+
+    ``open_buy_order_ids`` (WO-0036 R2 consolidation, Option B) is the set of
+    still-open BUY orders for the symbol the store found under this same lock. A
+    non-empty set on a *held* position (``position.quantity > 0``) short-circuits
+    to ``FLATTEN_BUYS_OPEN``: the store cannot cancel a broker-live BUY under its
+    lock, so it signals the caller to cancel them (``cancel_open_buys``) and RETRY,
+    rather than minting a MANUAL_FLATTEN SELL alongside a live BUY (the §5.3
+    self-cross). Ordered AFTER the flat/halted gates on purpose: a genuinely-flat
+    symbol returns ``FLATTEN_FLAT`` with an unrelated resting BUY UNTOUCHED (the
+    long-standing behaviour), and a Halted-denied flatten never cancels buys.
     """
 
     if position.quantity <= 0:
@@ -1952,6 +1979,15 @@ def plan_flatten_position(
 
     if trading_state is TradingState.HALTED and not override_active:
         return FlattenPlan(FLATTEN_DENIED_HALTED)
+
+    if open_buy_order_ids:
+        # A held position with an open BUY: the caller must cancel the BUY(s)
+        # first (a broker call, never under the store lock) then retry. No
+        # intent/order is created here. Placed before the existing/supersede
+        # logic so the BUYs are cleared even when the flatten will ultimately
+        # defer to a live protection exit (matching the pre-Option-B ordering,
+        # where the caller cancelled buys before every held-position flatten).
+        return FlattenPlan(FLATTEN_BUYS_OPEN, target_quantity=position.quantity)
 
     if active_intent is not None:
         if (

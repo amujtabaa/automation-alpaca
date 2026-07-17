@@ -69,6 +69,7 @@ from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
     COMMAND_ACTOR_SYSTEM,
+    FLATTEN_BUYS_OPEN,
     FLATTEN_CREATED,
     FLATTEN_EXISTING,
     FLATTEN_FLAT,
@@ -100,8 +101,10 @@ from app.store.core import (
     order_status_backfill_event,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
+    FLATTEN_BUYS_OPEN as _PLAN_FLATTEN_BUYS_OPEN,
     FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
+    OPEN_BUY_STATUSES,
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
     STAGE_DIVERGENCE,
@@ -2614,6 +2617,21 @@ class InMemoryStateStore(StateStore):
             override_active = key in active_emergency_reduce_overrides(
                 self._execution_events, current_session.id
             )
+            # Option B (WO-0036 R2): detect still-open BUYs for the symbol under
+            # this same lock, so the store — not a caller reading a stale
+            # out-of-lock position — is the authority on whether a MANUAL_FLATTEN
+            # SELL may be minted next to a live BUY (the §5.3 self-cross). The
+            # status is the event-log projection (``_project_order_unlocked``),
+            # the SAME truth ``list_orders``/``cancel_open_buys`` read, so the
+            # store's "buys open" signal names EXACTLY the buys the caller's
+            # cancel step will act on — the retry converges.
+            open_buy_order_ids = [
+                projected.id
+                for order in self._orders.values()
+                if order.symbol == key and OrderSide(order.side) is OrderSide.BUY
+                for projected in (self._project_order_unlocked(order),)
+                if projected.status in OPEN_BUY_STATUSES
+            ]
             plan = plan_flatten_position(
                 position=position,
                 active_intent=active,
@@ -2621,6 +2639,7 @@ class InMemoryStateStore(StateStore):
                 trading_state=trading_state,
                 override_active=override_active,
                 actor=actor,
+                open_buy_order_ids=open_buy_order_ids,
             )
 
             if plan.outcome == FLATTEN_DENIED_HALTED:
@@ -2628,6 +2647,12 @@ class InMemoryStateStore(StateStore):
                     f"manual flatten of {key} denied: trading halted "
                     "(issue an emergency reduce override to exit)"
                 )
+            # Option B: a held position with an open BUY. Return the signal
+            # BEFORE consuming any override or writing anything — the caller
+            # cancels the buys (a broker call, not under this lock) and retries,
+            # and the override (if any) must survive to authorize that retry.
+            if plan.outcome == _PLAN_FLATTEN_BUYS_OPEN:
+                return FlattenResult(FLATTEN_BUYS_OPEN)
             # ADR-003 / wave 3e (review MEDIUM fix): the override authorized THIS
             # flatten call, so it is spent by it on ANY authorized outcome —
             # create, existing, OR flat. Consuming only on the create branch

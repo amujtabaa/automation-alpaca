@@ -68,6 +68,12 @@ async def _hold(store, symbol, qty, avg=10.0):
     await store.append_fill(
         buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session.id
     )
+    # Terminalize the establishing BUY (WO-0036 R2, Option B). A realistic held
+    # position has no lingering open buy; leaving this buy CREATED would trip the
+    # store's new BUYS_OPEN self-cross guard (flatten_position signals the caller
+    # to cancel live buys first) instead of exercising the envelope-precedence
+    # outcomes these tests pin.
+    await store.transition_order(buy.id, OrderStatus.CANCELED)
 
 
 async def _protection_intent(store, symbol, qty):

@@ -215,6 +215,11 @@ async def test_flatten_mid_reprice_staged_order_never_reaches_the_venue(any_stor
     await any_store.append_fill(
         buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
     )
+    # Terminalize the establishing BUY (WO-0036 R2, Option B): a realistic held
+    # position has no lingering open buy. Left CREATED it would trip the store's
+    # BUYS_OPEN self-cross guard and short-circuit the flatten before its envelope
+    # preemption sweep — which is exactly what this test pins.
+    await any_store.transition_order(buy.id, OrderStatus.CANCELED)
     si = await any_store.create_sell_intent(
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )

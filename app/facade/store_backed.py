@@ -81,11 +81,13 @@ from app.broker.adapter import BrokerError
 from app.monitoring import cancel_open_buys
 from app.protection import ProtectionConfig, floor_breach_reason, floor_price
 from app.store.base import (
+    FLATTEN_BUYS_OPEN,
     FLATTEN_FLAT,
     CandidateTransitionError,
     EmergencyReduceBlockedError,
     EnvelopeTransitionError,
     FlattenBlockedError,
+    FlattenResult,
     InvalidControlValueError,
     InvalidFillError,
     InvalidOrderError,
@@ -135,6 +137,13 @@ _CONFLICT_STORE_ERRORS = (
 )
 # Store errors (and the bare ValueError normalize_symbol raises) that map to 422.
 _INVALID_INPUT_STORE_ERRORS = (InvalidControlValueError, InvalidStatusError)
+
+# Option B (WO-0036 R2): create_exit cancels open buys and retries the store's
+# atomic flatten decision at most this many times before failing closed to a 409.
+# One retry is the ordinary case (cancel the buys, they move to CANCEL_PENDING/
+# CANCELED, the next attempt mints); the small bound only guards a pathological
+# loop where buys keep reappearing faster than we clear them.
+_FLATTEN_MAX_BUY_CANCEL_ATTEMPTS = 3
 
 # The store/gate errors the candidate approve/reject flow translates to HTTP —
 # mirrors the old route's ``_MAPPED_ERRORS`` (anything else is a genuine bug → 500).
@@ -807,32 +816,23 @@ class StoreBackedCommandFacade:
 
         X-001: the whole "stand down a non-live autonomous exit, then create +
         approve + dispatch a fresh MANUAL_FLATTEN" decision is ONE atomic,
-        single-lock op in ``StateStore.flatten_position`` — NOT here; this THIN
-        caller only clears open buys first (best-effort broker call, never under
-        the store lock) and surfaces the outcome. ``flatten_position`` re-reads the
-        live position under its own lock, so sizing is never stale.
+        single-lock op in ``StateStore.flatten_position`` — NOT here.
+
+        Option B (WO-0036 R2): this caller no longer pre-checks the position on a
+        stale, out-of-lock read (which could route around the store's own
+        protections, or — worse — mint a SELL next to a live BUY if a fill landed
+        in the read gap; the §5.3 self-cross). The store is the single authority:
+        it re-reads the live position under its own lock and, if a HELD position
+        still has an open BUY, returns ``FLATTEN_BUYS_OPEN``. We then cancel the
+        buys (a broker call, never under the store lock) and RETRY. A genuinely
+        flat symbol returns ``FLATTEN_FLAT`` (→ 409) with any unrelated resting
+        BUY untouched.
         """
         if self._broker is None:
             raise RuntimeError("broker adapter not available")
         key = _normalize_or_422(symbol)
 
-        position = await self._store.get_position(key)
-        if position.quantity <= 0:
-            # Checked before AND after the buy-cancel step, so a flat symbol has
-            # no side effects at all (a stray unrelated pending buy is untouched).
-            raise ConflictError(f"no open {key} position to flatten")
-
-        # §5.3: clear open buys so the exit truly reaches flat. Best-effort/
-        # idempotent; cancel_open_buys logs its own broker failures and never
-        # blocks the flatten below.
-        await cancel_open_buys(self._store, self._broker, key)
-
-        try:
-            result = await self._store.flatten_position(key, actor=actor)
-        except (FlattenBlockedError, InvalidOrderError) as exc:
-            # ADR-003 Halted-deny / an oversell/unpriceable exit → 409. Any OTHER
-            # store error propagates raw (500), exactly as the old route did.
-            raise ConflictError(str(exc)) from exc
+        result = await self._flatten_cancelling_open_buys(key, actor=actor)
 
         if result.outcome == FLATTEN_FLAT:
             raise ConflictError(f"no open {key} position to flatten")
@@ -847,6 +847,45 @@ class StoreBackedCommandFacade:
                 result.order.status.value if result.deferred and result.order else None
             ),
         )
+
+    async def _flatten_cancelling_open_buys(
+        self, key: str, *, actor: str
+    ) -> FlattenResult:
+        """Option B (WO-0036 R2): call the store's atomic flatten decision; when it
+        signals ``FLATTEN_BUYS_OPEN`` (a held position still has an open BUY),
+        cancel the buys — a broker call, never under the store lock — and retry.
+
+        The store is the single authority on flat/blocked/buys-open (it re-reads
+        the live position under its own lock), so no caller makes a flat/exit
+        decision on a stale out-of-lock read, and a MANUAL_FLATTEN SELL is never
+        minted next to a genuinely-live BUY (the §5.3 self-cross). Bounded so a
+        pathological buys-keep-reappearing case fails closed to a 409 rather than
+        looping. ``self._broker`` is guaranteed non-None by the public callers.
+        """
+        assert self._broker is not None
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                result = await self._store.flatten_position(key, actor=actor)
+            except (FlattenBlockedError, InvalidOrderError) as exc:
+                # ADR-003 Halted-deny / an oversell/unpriceable exit → 409. Any
+                # OTHER store error propagates raw (500), as the old route did.
+                raise ConflictError(str(exc)) from exc
+            if result.outcome != FLATTEN_BUYS_OPEN:
+                return result
+            if attempts >= _FLATTEN_MAX_BUY_CANCEL_ATTEMPTS:
+                # Open buys keep reappearing across cancel+retry (an operator or
+                # strategy re-placing them faster than we clear them, or a broker
+                # cancel that will not stick). Fail closed to a 409 rather than
+                # loop forever — never mint a SELL next to a live BUY.
+                raise ConflictError(
+                    f"could not flatten {key}: open buy orders keep reappearing"
+                )
+            # §5.3: clear open buys so the exit truly reaches flat, THEN retry the
+            # store's atomic decision. Best-effort/idempotent; cancel_open_buys
+            # logs its own broker failures.
+            await cancel_open_buys(self._store, self._broker, key)
 
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0020) — thin, typed passthroughs.
@@ -1019,12 +1058,14 @@ class StoreBackedCommandFacade:
         except EmergencyReduceBlockedError as exc:
             raise ConflictError(str(exc)) from exc
 
+        # Stand down open buys up-front (the authorize step already validated a
+        # held position under its own lock), then run the atomic flatten. The
+        # shared helper additionally handles the Option B FLATTEN_BUYS_OPEN signal
+        # (a buy reappearing between this cancel and the store's own re-read) by
+        # cancelling + retrying, so the override grant — not consumed until an
+        # authorized create/existing/flat outcome — still drives the retry.
         await cancel_open_buys(self._store, self._broker, key)
-
-        try:
-            result = await self._store.flatten_position(key, actor=actor)
-        except (FlattenBlockedError, InvalidOrderError) as exc:
-            raise ConflictError(str(exc)) from exc
+        result = await self._flatten_cancelling_open_buys(key, actor=actor)
 
         if result.outcome == FLATTEN_FLAT:
             raise ConflictError(f"no open {key} position to flatten")

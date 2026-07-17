@@ -110,6 +110,7 @@ from app.store.base import (
     UnknownEntityError,
 )
 from app.store.core import (
+    OPEN_BUY_STATUSES,
     EnvelopeActionPausedError,
     EnvelopeObligationProjection,
     claim_occurrence_at,
@@ -239,9 +240,11 @@ async def _snapshot_fill_fallback(
 # Non-terminal BUY statuses a protective exit must clear so it truly reaches flat
 # (§5.3). SUBMITTING (mid-claim, no broker id yet) and CANCEL_PENDING (already
 # winding down) are left for the normal pipeline; everything else is terminal.
-_CANCELLABLE_BUY_STATUSES = frozenset(
-    {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
-)
+# The open-BUY set cancel_open_buys acts on IS the set the store's flatten
+# decision detects (WO-0036 R2 Option B): one shared definition
+# (app.store.core.OPEN_BUY_STATUSES) so the store's FLATTEN_BUYS_OPEN signal and
+# this cancel step can never name different orders — the retry always converges.
+_CANCELLABLE_BUY_STATUSES = OPEN_BUY_STATUSES
 
 
 async def cancel_open_buys(

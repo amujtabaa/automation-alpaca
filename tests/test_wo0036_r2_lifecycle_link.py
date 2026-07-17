@@ -99,6 +99,13 @@ async def _hold(store, *, symbol: str = "AAPL", quantity: int = 100):
         10.0,
         session_id=session.id,
     )
+    # Terminalize the establishing BUY so the held position carries no lingering
+    # "open buy": the realistic state (a filled buy is done). Since WO-0036 R2
+    # Option B, flatten_position detects a still-open BUY under its lock and
+    # returns FLATTEN_BUYS_OPEN (caller cancels + retries) rather than minting a
+    # SELL next to a live BUY; leaving this buy CREATED would exercise that
+    # signal instead of the envelope-deferral outcomes these tests pin.
+    await store.transition_order(buy.id, OrderStatus.CANCELED)
     return session
 
 

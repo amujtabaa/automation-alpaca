@@ -44,6 +44,16 @@ async def _hold(store, symbol, qty, avg=10.0, *, session_id=None):
     await store.append_fill(
         buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session_id
     )
+    # The establishing BUY must reach a TERMINAL status, so the held position
+    # has no lingering "open buy" — the realistic state (a filled buy is done),
+    # and the one a real caller sees. Since WO-0036 R2 Option B, flatten_position
+    # detects a still-open BUY under its lock and returns FLATTEN_BUYS_OPEN
+    # (the caller cancels it and retries) rather than minting a SELL next to a
+    # live BUY; leaving this buy CREATED would exercise that signal instead of
+    # the flatten outcomes these X-001 tests pin. (Matches the terminalizing
+    # ``_hold`` in tests/test_phase6e_command_facade.py.) The Option B signal
+    # itself is pinned directly in test_wo0036_r2_flatten_buys_open.py.
+    await store.transition_order(buy.id, OrderStatus.CANCELED)
     return buy
 
 
