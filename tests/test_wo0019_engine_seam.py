@@ -303,6 +303,11 @@ async def test_position_shrink_between_plan_and_write_hits_reduce_only(any_store
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 80, 10.5, session_id=session.id
     )  # book: 100 -> 20; envelope remaining untouched (100)
+    # This synthetic order is only the carrier for an already-observed external
+    # fill. Mark the never-submitted local row terminal so the independent
+    # direct-SELL claim/venue rail does not (correctly) treat it as still
+    # submittable and mask the reduce-only race this test isolates.
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
 
     adapter = MockBrokerAdapter()
     result = await execute_envelope_action(
@@ -463,7 +468,7 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
 async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
-    await execute_envelope_action(
+    first = await execute_envelope_action(
         any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
     )
     adapter.fail_next_replace(AmbiguousBrokerError("504 mid-replace"))
@@ -493,7 +498,7 @@ async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
     await any_store.resolve_timeout_quarantine(
         quarantined.id, OrderStatus.SUBMITTED, broker_order_id="venue-recovered"
     )
-    # ... the envelope resumes, and the budget was spent EXACTLY ONCE for
+    # The envelope stays paused, but the budget was spent EXACTLY ONCE for
     # that reprice (the accounting event committed with the staging, and the
     # recovery consumed the SAME staged order — no re-stage).
     actions = await envelope_events(
@@ -501,6 +506,18 @@ async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
     )
     reprices = [e for e in actions if e.payload["action"] == "reprice"]
     assert len(reprices) == 1
+    # Resolving the replacement as SUBMITTED does not prove its predecessor is
+    # dead. Both may still be venue-live, so a third stage remains paused.
+    with pytest.raises(EnvelopeActionPausedError):
+        await any_store.stage_envelope_action(
+            env.id,
+            planned(kind=ActionKind.REPRICE, limit_price=9.70),
+            snapshot_fingerprint="fp-3-still-ambiguous",
+            now=later(75),
+        )
+
+    # Broker truth must converge the predecessor before delegation resumes.
+    await any_store.transition_order(first.order_id, OrderStatus.CANCELED)
     third = await any_store.stage_envelope_action(
         env.id,
         planned(kind=ActionKind.REPRICE, limit_price=9.70),

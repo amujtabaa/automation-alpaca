@@ -58,6 +58,7 @@ from app.models import (
     EventSource,
     EventType,
     ExecutionEnvelope,
+    ExecutionEvent,
     ExecutionEventType,
     Order,
     OrderSide,
@@ -66,6 +67,7 @@ from app.models import (
     Position,
     SessionStatus,
     SessionType,
+    SubmitRecoveryRecord,
     TradingState,
     utcnow,
 )
@@ -103,10 +105,17 @@ from app.store.base import (
     InvalidOrderError,
     OrderTransitionError,
     ProtectionHaltedError,
+    RecoveryTransitionError,
     StateStore,
     UnknownEntityError,
 )
-from app.store.core import EnvelopeActionPausedError
+from app.store.core import (
+    EnvelopeActionPausedError,
+    EnvelopeObligationProjection,
+    claim_occurrence_at,
+    project_envelope_obligation,
+    recovery_terminal_fact_matches,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -477,29 +486,97 @@ class EnvelopeTapeBuffer:
         return list(self._tapes.get(symbol, ()))
 
 
+async def _validated_envelope_lineage(
+    store: StateStore,
+    envelope_id: str,
+    *,
+    events: Optional[list[ExecutionEvent]] = None,
+) -> Optional[tuple[ExecutionEnvelope, EnvelopeObligationProjection, dict[str, Order]]]:
+    """Load one Envelope lineage through the shared bounded projection."""
+
+    envelope = await store.get_envelope(envelope_id)
+    if envelope is None:
+        return None
+    all_events = events if events is not None else await store.get_execution_events()
+    parent_actions = [
+        event
+        for event in all_events
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope_id
+    ]
+    parent_order_ids = {
+        event.order_id for event in parent_actions if event.order_id is not None
+    }
+    actions = [
+        event
+        for event in all_events
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and (
+            event.envelope_id == envelope_id
+            or (event.order_id is not None and event.order_id in parent_order_ids)
+        )
+    ]
+    order_ids = {event.order_id for event in actions if event.order_id is not None}
+    orders: dict[str, Order] = {}
+    for order_id in order_ids:
+        order = await store.get_order(order_id)
+        if order is not None:
+            orders[order_id] = order
+    recoveries = await store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)
+    known_envelopes = await store.list_envelopes()
+    projection = project_envelope_obligation(
+        envelopes=[envelope],
+        action_events=actions,
+        orders_by_id=orders,
+        order_events=[
+            event
+            for event in all_events
+            if event.order_id in order_ids
+            and event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+        ],
+        open_recovery_order_ids=frozenset(
+            record.local_order_id
+            for record in recoveries
+            if record.cleanup_status == RECOVERY_UNRESOLVED
+        ),
+        needs_review_order_ids=frozenset(
+            record.local_order_id
+            for record in recoveries
+            if record.cleanup_status == RECOVERY_NEEDS_REVIEW
+        ),
+        known_envelopes_by_id={item.id: item for item in known_envelopes},
+    )
+    return envelope, projection, orders
+
+
 async def _envelope_working_order(
     store: StateStore, envelope_id: str
 ) -> Optional[Order]:
     """The envelope's latest non-terminal order, discovered from its
     ENVELOPE_ACTION events (the event log IS the envelope→order linkage)."""
 
-    events = await store.get_execution_events()
-    working: Optional[Order] = None
-    for event in events:
-        if (
-            event.envelope_id != envelope_id
-            or event.event_type is not ExecutionEventType.ENVELOPE_ACTION
-            or event.order_id is None
-        ):
-            continue
-        order = await store.get_order(event.order_id)
-        if order is not None and order.status not in (
-            OrderStatus.FILLED,
-            OrderStatus.CANCELED,
-            OrderStatus.REJECTED,
-        ):
-            working = order
-    return working
+    loaded = await _validated_envelope_lineage(store, envelope_id)
+    if loaded is None:
+        return None
+    _, projection, orders = loaded
+    if (
+        projection.missing_envelope_ids
+        or projection.missing_order_ids
+        or projection.invalid_order_ids
+        or projection.recovery_order_ids
+        or projection.uncertain_claim_order_ids
+    ):
+        return None
+    if len(projection.venue_orders) == 1:
+        return projection.venue_orders[0]
+    if projection.venue_orders:
+        return None
+    local = [
+        orders[order_id]
+        for order_id in projection.unresolved_order_ids
+        if order_id in orders and orders[order_id].status is OrderStatus.CREATED
+    ]
+    return local[0] if len(local) == 1 else None
 
 
 async def _envelope_id_for_order(store: StateStore, order_id: str) -> Optional[str]:
@@ -507,66 +584,134 @@ async def _envelope_id_for_order(store: StateStore, order_id: str) -> Optional[s
     or None for every non-envelope order."""
 
     events = await store.get_execution_events()
-    for event in events:
-        if (
-            event.order_id == order_id
-            and event.event_type is ExecutionEventType.ENVELOPE_ACTION
-            and event.envelope_id is not None
-        ):
-            return event.envelope_id
-    return None
+    actions = [
+        event
+        for event in events
+        if event.order_id == order_id
+        and event.event_type is ExecutionEventType.ENVELOPE_ACTION
+    ]
+    parent_ids = {event.envelope_id for event in actions}
+    if not actions or None in parent_ids or len(parent_ids) != 1:
+        return None
+    envelope_id = next(iter(parent_ids))
+    assert envelope_id is not None
+    loaded = await _validated_envelope_lineage(store, envelope_id, events=events)
+    if loaded is None:
+        return None
+    _, projection, _ = loaded
+    if (
+        order_id in projection.invalid_order_ids
+        or order_id in projection.missing_order_ids
+        or projection.missing_envelope_ids
+    ):
+        return None
+    return envelope_id
 
 
 async def _envelope_order_ids(store: StateStore) -> set[str]:
     """Every order id minted by an envelope action (an ENVELOPE_ACTION event
-    carrying both order_id and envelope_id). These orders are driven ONLY by the
+    carrying an order id). These orders are driven ONLY by the
     envelope executor's redrive (atomic replace + write-time re-validation);
     the generic submit sweep must never claim/submit them (Codex PR#8 #1)."""
 
     return {
         e.order_id
         for e in await store.get_execution_events()
-        if e.event_type is ExecutionEventType.ENVELOPE_ACTION
-        and e.order_id is not None
-        and e.envelope_id is not None
+        if e.event_type is ExecutionEventType.ENVELOPE_ACTION and e.order_id is not None
     }
 
 
 async def _cancel_envelope_working_order(
     store: StateStore, adapter: BrokerAdapter, envelope: ExecutionEnvelope
 ) -> None:
-    """Best-effort venue cancel of the envelope's working order (the CANCEL
-    dispositions). A never-submitted CREATED order cancels locally; a live one
-    gets an idempotent venue cancel + CANCEL_PENDING so the poll confirms
-    (CHAOS-1 discipline: a late fill is still ingested, never missed)."""
+    """Best-effort cancel of every projection-valid child obligation.
 
-    order = await _envelope_working_order(store, envelope.id)
-    if order is None:
+    New staging enforces one working child, but cancellation is a recovery
+    boundary and must safely wind down a pre-R2/legacy lineage that already has
+    multiple broker-confirmed children.  Missing, malformed, recovery-owned, or
+    claim-uncertain lineages remain fail-closed; no target is guessed.  Each
+    valid target is isolated so one failed cancel cannot strand its sibling.
+    """
+
+    loaded = await _validated_envelope_lineage(store, envelope.id)
+    if loaded is None:
         return
-    try:
-        if order.status is OrderStatus.CREATED:
-            await store.transition_order(order.id, OrderStatus.CANCELED)
-            return
-        if order.broker_order_id is not None:
-            await adapter.cancel_order(order.broker_order_id)
-            await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
-    except (BrokerError, *_TRANSITION_ERRORS) as exc:
-        _log.warning(
-            "envelope %s: working-order cancel failed (%s); reconcile will converge it",
-            envelope.id,
-            exc,
-        )
+    _, projection, orders = loaded
+    if (
+        projection.missing_envelope_ids
+        or projection.missing_order_ids
+        or projection.invalid_order_ids
+    ):
+        return
+    excluded_ids = set(projection.recovery_order_ids) | set(
+        projection.uncertain_claim_order_ids
+    )
+    targets = {
+        order.id: order
+        for order in projection.venue_orders
+        if order.id not in excluded_ids
+    }
+    for order_id in projection.unresolved_order_ids:
+        local = orders.get(order_id)
+        if (
+            local is not None
+            and local.status is OrderStatus.CREATED
+            and local.id not in excluded_ids
+        ):
+            targets[local.id] = local
+    for order in targets.values():
+        try:
+            if order.status is OrderStatus.CREATED:
+                await store.transition_order(order.id, OrderStatus.CANCELED)
+                continue
+            if (
+                order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+                and order.broker_order_id is not None
+            ):
+                await adapter.cancel_order(order.broker_order_id)
+                await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+                continue
+            if (
+                order.broker_order_id is not None
+                and order.status is not OrderStatus.CANCEL_PENDING
+            ):
+                # The projection, not the terminal local column, says this
+                # broker interval is still open. A terminal row cannot move to
+                # CANCEL_PENDING, so give cleanup a durable occurrence-scoped
+                # recovery owner *before* the best-effort cancel call. The
+                # recovery loop then polls/cancels until broker terminal truth
+                # closes the interval.
+                await store.create_submit_recovery(
+                    local_order_id=order.id,
+                    broker_order_id=order.broker_order_id,
+                    client_order_id=order.id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    quantity=order.quantity,
+                    limit_price=order.limit_price,
+                    failure_reason=(
+                        "envelope cancel found a broker-open interval behind "
+                        f"local {order.status.value}"
+                    ),
+                    session_id=order.session_id,
+                    candidate_id=order.candidate_id,
+                    extra_payload={
+                        "envelope_id": envelope.id,
+                        "action_kind": "cancel_terminal_venue_interval",
+                    },
+                )
+                await adapter.cancel_order(order.broker_order_id)
+        except (BrokerError, *_TRANSITION_ERRORS) as exc:
+            _log.warning(
+                "envelope %s: child %s cancel failed (%s); reconcile will converge it",
+                envelope.id,
+                order.id,
+                exc,
+            )
 
 
-# Codex PR#8 #3 (R6): live-at-venue statuses whose envelope-cancel intent must
-# be re-driven to convergence. CANCEL_PENDING is excluded (the cancel already
-# reached the venue; the reconcile poll confirms it) as is TIMEOUT_QUARANTINE
-# (ambiguous — ADR-002 resolves it) and every terminal status.
-_RECANCEL_STATUSES = frozenset(
-    {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
-)
-
-
+# Terminal CANCEL_AND_RETURN convergence reuses the projection-wide cancel
+# seam, including safe cleanup of legacy lineages with multiple venue children.
 async def _converge_expired_envelope_cancels(
     store: StateStore, adapter: BrokerAdapter
 ) -> None:
@@ -588,9 +733,7 @@ async def _converge_expired_envelope_cancels(
         if env.expiry_disposition is not EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
             continue
         try:
-            order = await _envelope_working_order(store, env.id)
-            if order is not None and order.status in _RECANCEL_STATUSES:
-                await _cancel_envelope_working_order(store, adapter, env)
+            await _cancel_envelope_working_order(store, adapter, env)
         except Exception:  # noqa: BLE001 — isolate per envelope
             _log.exception("envelope %s: expiry cancel-convergence failed", env.id)
 
@@ -1724,6 +1867,88 @@ def _broker_filled(update: BrokerOrderUpdate) -> int:
     return max(update.filled_quantity or 0, from_fills)
 
 
+async def _record_recovery_terminal_fact(
+    store: StateStore,
+    record: SubmitRecoveryRecord,
+    status: OrderStatus,
+) -> None:
+    """Persist the broker's actual terminal fact before releasing recovery.
+
+    ``RECOVERY_RESOLVED`` historically means ``resolved_canceled``, but the
+    broker can also report REJECTED.  Recording the observed status first keeps
+    event truth source-faithful; the store then sees the recovery-id fact and
+    does not synthesize a second CANCELED event.  The claim occurrence is derived
+    from the immutable recovery creation time so an old terminal cannot close a
+    later claim of the same local order.
+    """
+
+    assert status in (OrderStatus.CANCELED, OrderStatus.REJECTED)
+    events = await store.get_execution_events()
+    occurrence = claim_occurrence_at(
+        events,
+        order_id=record.local_order_id,
+        at=record.created_at,
+    )
+    payload: dict[str, Any] = {
+        "broker_order_id": record.broker_order_id,
+        "recovery_id": record.id,
+        "cleanup_status": RECOVERY_RESOLVED,
+    }
+    if occurrence is not None:
+        payload["claim_occurrence"] = occurrence
+    expected_type = (
+        ExecutionEventType.CANCELED
+        if status is OrderStatus.CANCELED
+        else ExecutionEventType.REJECTED
+    )
+    stored = await store.append_execution_event(
+        ExecutionEvent(
+            event_type=(expected_type),
+            source=EventSource.BROKER_REST,
+            authority=EventAuthority.BROKER_AUTHORITATIVE,
+            dedupe_key=f"submit_recovery_terminal:{record.id}:{status.value}",
+            ts_event=utcnow(),
+            symbol=record.symbol,
+            side=record.side,
+            quantity=record.quantity,
+            order_id=record.local_order_id,
+            session_id=record.session_id,
+            payload=payload,
+        )
+    )
+    if stored.event_type is not expected_type or not recovery_terminal_fact_matches(
+        record,
+        stored,
+        claim_occurrence=occurrence,
+    ):
+        raise RecoveryTransitionError(
+            "recovery terminal event identity conflicts with existing dedupe fact "
+            f"for {record.id}"
+        )
+
+
+async def _resolve_recovery_terminal(
+    store: StateStore,
+    record: SubmitRecoveryRecord,
+    status: OrderStatus,
+) -> bool:
+    """Atomically ordered terminal-fact/ledger work, isolated per recovery."""
+
+    try:
+        await _record_recovery_terminal_fact(store, record, status)
+        await store.update_submit_recovery(
+            record.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
+        )
+    except Exception:  # noqa: BLE001 - poison must not abort later records
+        _log.exception(
+            "recovery terminal persistence failed for broker order %s; "
+            "leaving it unresolved",
+            record.broker_order_id,
+        )
+        return False
+    return True
+
+
 async def _recover_unpersisted_submits(
     store: StateStore, adapter: BrokerAdapter
 ) -> None:
@@ -1778,9 +2003,8 @@ async def _recover_unpersisted_submits(
             )
             continue
         if update.status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
-            await store.update_submit_recovery(
-                rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
-            )
+            if not await _resolve_recovery_terminal(store, rec, update.status):
+                continue
             _log.info(
                 "recovered stranded broker order %s (terminal at broker)",
                 rec.broker_order_id,
@@ -1809,9 +2033,8 @@ async def _recover_unpersisted_submits(
                 rec.id, cleanup_status=RECOVERY_NEEDS_REVIEW, bump_attempt=True
             )
         elif confirm.status in (OrderStatus.CANCELED, OrderStatus.REJECTED):
-            await store.update_submit_recovery(
-                rec.id, cleanup_status=RECOVERY_RESOLVED, bump_attempt=True
-            )
+            if not await _resolve_recovery_terminal(store, rec, confirm.status):
+                continue
             _log.info(
                 "recovered stranded broker order %s (cancel confirmed)",
                 rec.broker_order_id,

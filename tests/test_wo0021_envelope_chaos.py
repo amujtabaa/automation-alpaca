@@ -102,9 +102,21 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
         reason=SellReason.PROTECTION_FLOOR,
         target_quantity=100,
     )
-    return await store.approve_envelope_activation(
+    envelope = await store.approve_envelope_activation(
         make_draft(si.id, **overrides), actor="operator-a"
     )
+    # This module's tape and decision clock are fixed at NOW. Keep activation
+    # causal to that tape even when the suite runs on a later wall-clock date.
+    activated_at = NOW - timedelta(hours=1)
+    if hasattr(store, "_envelopes"):
+        store._envelopes[envelope.id].activated_at = activated_at
+    else:
+        store._conn.execute(
+            "UPDATE execution_envelopes SET activated_at=? WHERE id=?",
+            (activated_at.isoformat(), envelope.id),
+        )
+        store._conn.commit()
+    return envelope.model_copy(update={"activated_at": activated_at})
 
 
 # --- partial-fill / race interleavings -------------------------------------------- #

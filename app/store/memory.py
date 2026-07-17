@@ -23,6 +23,8 @@ from typing import Any, Iterable, Iterator, Optional
 
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
+    RECOVERY_OPEN_STATUSES,
+    RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
     Candidate,
     EnvelopeStatus,
@@ -75,9 +77,11 @@ from app.store.base import (
     FillAppendResult,
     FlattenBlockedError,
     FlattenResult,
+    InvalidFillError,
     InvalidOrderError,
     OrderIntentBlockedError,
     ProtectionHaltedError,
+    RecoveryTransitionError,
     RiskLimits,
     SellIntentTransitionError,
     SessionAlreadyClosedError,
@@ -116,7 +120,11 @@ from app.store.core import (
     ORDER_TRANSITION_REJECT,
     OrderEventedTransitionPlan,
     envelope_created_event,
+    envelope_claim_hard_rail_reason,
+    envelope_action_logical_now,
     envelope_draft_reason,
+    envelope_owner_binding_reason,
+    envelope_owner_scope_reason,
     plan_envelope_fill,
     plan_envelope_transition,
     plan_supersede_envelope,
@@ -137,6 +145,12 @@ from app.store.core import (
     require_recovery_status,
     require_status_enum,
     recovery_status_event,
+    recovery_resolution_execution_event,
+    recovery_creation_audit_matches,
+    recovery_terminal_fact_matches,
+    claim_occurrence_at,
+    direct_sell_order_may_execute,
+    project_envelope_obligation,
     sell_intent_is_active,
 )
 from app.transitions import (
@@ -187,6 +201,16 @@ class InMemoryStateStore(StateStore):
                 self._backfill_fill_events_unlocked()
                 self._backfill_trading_state_events_unlocked()
                 self._backfill_order_status_events_unlocked()
+                # R2 migration/convergence: a pre-link database may contain an
+                # APPROVED owner whose entire Envelope lineage already ended.
+                # Re-project persisted facts on every open; idempotency makes a
+                # healthy database a no-op.
+                now = utcnow()
+                for intent_id in sorted(
+                    {envelope.sell_intent_id for envelope in self._envelopes.values()}
+                ):
+                    self._reconcile_envelope_owner_unlocked(intent_id, now=now)
+                self._reconcile_envelope_symbol_conflicts_unlocked(now=now)
                 self._ensure_current_session_unlocked()
 
     def _backfill_order_status_events_unlocked(self) -> None:
@@ -708,16 +732,49 @@ class InMemoryStateStore(StateStore):
         return None
 
     def _active_sell_intent_unlocked(self, symbol: str) -> Optional[SellIntent]:
-        for si in self._sell_intents.values():
+        symbol_obligation = self._envelope_obligation_unlocked(symbol=symbol)
+        if symbol_obligation.retains_intent:
+            owner_ids = self._retained_envelope_owner_ids_unlocked(symbol)
+            if (
+                self._envelope_symbol_owner_problem_unlocked(symbol) is not None
+                or len(owner_ids) != 1
+            ):
+                # A missing/malformed owner or two pre-R2 retained owners is an
+                # ambiguity, not permission to pick whichever row was inserted
+                # last.  Mint/flatten/claim choke points diagnose and block it.
+                return None
+            return self._sell_intents[owner_ids[0]]
+
+        fallback: Optional[SellIntent] = None
+        for si in reversed(list(self._sell_intents.values())):
             if si.symbol != symbol:
                 continue
-            order = self._orders.get(si.order_id) if si.order_id is not None else None
+            raw_order = (
+                self._orders.get(si.order_id) if si.order_id is not None else None
+            )
+            order = (
+                self._project_order_unlocked(raw_order)
+                if raw_order is not None
+                else None
+            )
             needs_review = order is not None and self._order_needs_review_unlocked(
                 order.id
             )
-            if sell_intent_is_active(si, order, order_needs_review=needs_review):
-                return si
-        return None
+            envelope_linked, envelope_retains = (
+                self._valid_envelope_owner_state_unlocked(si)
+            )
+            is_active = sell_intent_is_active(
+                si,
+                order,
+                order_needs_review=needs_review,
+                envelope_linked=envelope_linked,
+                envelope_obligation=envelope_retains,
+            )
+            if not is_active:
+                continue
+            if fallback is None:
+                fallback = si
+        return fallback
 
     def _insert_sell_intent_unlocked(
         self,
@@ -770,6 +827,9 @@ class InMemoryStateStore(StateStore):
         new_status: SellIntentStatus,
         *,
         order_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+        reason: Optional[str] = None,
+        allow_envelope_restore: bool = False,
     ) -> bool:
         """Apply a sell-intent status transition in place (assumes the lock and
         an ``_atomic()`` block are already held by the caller). Returns
@@ -782,23 +842,36 @@ class InMemoryStateStore(StateStore):
         current = intent.status
         if new_status is current:
             return False
-        if new_status not in _SELL_INTENT_TRANSITIONS.get(current, set()):
+        restoring = (
+            allow_envelope_restore
+            and current is SellIntentStatus.EXPIRED
+            and new_status is SellIntentStatus.APPROVED
+        )
+        if not restoring and new_status not in _SELL_INTENT_TRANSITIONS.get(
+            current, set()
+        ):
             raise SellIntentTransitionError(
                 f"illegal sell intent transition {current.value} -> {new_status.value}"
             )
+        ts = now if now is not None else utcnow()
         intent.status = new_status
-        intent.updated_at = utcnow()
+        intent.updated_at = ts
         ts_field = _SELL_INTENT_TIMESTAMP.get(new_status)
-        if ts_field:
-            setattr(intent, ts_field, utcnow())
+        if ts_field and (not restoring or getattr(intent, ts_field) is None):
+            setattr(intent, ts_field, ts)
+        if restoring:
+            intent.expired_at = None
         if new_status is SellIntentStatus.ORDERED and order_id is not None:
             intent.order_id = order_id
+        payload = {"from": current.value, "to": new_status.value}
+        if reason is not None:
+            payload["reason"] = reason
         self._append_event_unlocked(
             "sell_intent_transition",
             message=f"sell intent {current.value} -> {new_status.value}",
             symbol=intent.symbol,
             order_id=order_id,
-            payload={"from": current.value, "to": new_status.value},
+            payload=payload,
             session_id=intent.session_id,
             correlation_id=intent.id,
         )
@@ -832,6 +905,17 @@ class InMemoryStateStore(StateStore):
             active = self._active_sell_intent_unlocked(key)
             if active is not None:
                 return active.model_copy(deep=True)
+            direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(key)
+            if direct_ids:
+                raise SellIntentTransitionError(
+                    f"cannot create a sell intent for {key}: unresolved direct "
+                    "SELL exposure exists (" + ", ".join(direct_ids) + ")"
+                )
+            if self._envelope_obligation_unlocked(symbol=key).retains_intent:
+                raise SellIntentTransitionError(
+                    f"cannot create a sell intent for {key}: an unresolved "
+                    "envelope delegation has no usable owner"
+                )
             # ENG-001 / INV-060: the kill switch blocks NEW autonomous order intent.
             # A PROTECTION_FLOOR exit must not be created while Halted — checked here
             # under the SAME lock as the insert so a kill landing during the
@@ -871,6 +955,13 @@ class InMemoryStateStore(StateStore):
             intent = self._sell_intents.get(intent_id)
             if intent is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
+            envelope_linked = self._valid_envelope_owner_state_unlocked(intent)[0]
+            if new_status is not intent.status and envelope_linked:
+                raise SellIntentTransitionError(
+                    f"sell intent {intent.id} is controlled by an envelope "
+                    "delegation; its lifecycle may only be released by the "
+                    "shared envelope-obligation projection"
+                )
             with self._atomic():
                 self._transition_sell_intent_unlocked(
                     intent, new_status, order_id=order_id
@@ -913,6 +1004,329 @@ class InMemoryStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
+    def _envelope_obligation_unlocked(
+        self,
+        *,
+        sell_intent_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        envelope_id: Optional[str] = None,
+        excluding_envelope_id: Optional[str] = None,
+        valid_owner: Optional[SellIntent] = None,
+    ):
+        """Project one owner/symbol lineage from event-truth order state."""
+
+        envelopes = [
+            envelope
+            for envelope in self._envelopes.values()
+            if (sell_intent_id is None or envelope.sell_intent_id == sell_intent_id)
+            and (symbol is None or envelope.symbol == symbol)
+            and (envelope_id is None or envelope.id == envelope_id)
+            and (excluding_envelope_id is None or envelope.id != excluding_envelope_id)
+            and (
+                valid_owner is None
+                or envelope_owner_scope_reason(envelope, valid_owner) is None
+            )
+        ]
+        envelope_ids = {envelope.id for envelope in envelopes}
+        all_envelope_ids = set(self._envelopes)
+
+        def action_in_scope(event: ExecutionEvent) -> bool:
+            """Select by every immutable identity available on the link.
+
+            A malformed action must not disappear merely because its event-side
+            symbol/owner disagrees with the referenced order.  In particular,
+            symbol-wide safety gates must still see an AAPL order that a corrupt
+            MSFT action or parent points at; the shared projector then diagnoses
+            the mismatch and fails closed.
+            """
+
+            if event.envelope_id in envelope_ids:
+                return True
+            if envelope_id is not None and event.envelope_id != envelope_id:
+                return False
+            if (
+                excluding_envelope_id is not None
+                and event.envelope_id == excluding_envelope_id
+            ):
+                return False
+            order = (
+                self._orders.get(event.order_id) if event.order_id is not None else None
+            )
+            if sell_intent_id is not None and not (
+                event.correlation_id == sell_intent_id
+                or (order is not None and order.sell_intent_id == sell_intent_id)
+            ):
+                return False
+            if symbol is not None and not (
+                event.symbol == symbol or (order is not None and order.symbol == symbol)
+            ):
+                return False
+            if (
+                envelope_id is None
+                and sell_intent_id is None
+                and symbol is None
+                and event.envelope_id in all_envelope_ids
+            ):
+                return True
+            return True
+
+        action_events = [
+            event
+            for event in self._execution_events
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and (action_in_scope(event))
+        ]
+        order_ids = {
+            event.order_id for event in action_events if event.order_id is not None
+        }
+        orders = {
+            order_id: self._project_order_unlocked(order)
+            for order_id, order in self._orders.items()
+            if order_id in order_ids
+        }
+        order_events = [
+            event
+            for event in self._execution_events
+            if event.order_id in order_ids
+            and event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+        ]
+        open_recovery_order_ids = frozenset(
+            record.local_order_id
+            for record in self._submit_recoveries
+            if record.local_order_id in order_ids
+            and record.cleanup_status == RECOVERY_UNRESOLVED
+        )
+        needs_review_order_ids = frozenset(
+            record.local_order_id
+            for record in self._submit_recoveries
+            if record.local_order_id in order_ids
+            and record.cleanup_status == RECOVERY_NEEDS_REVIEW
+        )
+        return project_envelope_obligation(
+            envelopes=envelopes,
+            action_events=action_events,
+            orders_by_id=orders,
+            order_events=order_events,
+            open_recovery_order_ids=open_recovery_order_ids,
+            needs_review_order_ids=needs_review_order_ids,
+            known_envelopes_by_id=self._envelopes,
+        )
+
+    def _validate_envelope_owner_unlocked(
+        self, envelope: ExecutionEnvelope
+    ) -> SellIntent:
+        intent = self._sell_intents.get(envelope.sell_intent_id)
+        reason = envelope_owner_binding_reason(envelope, intent)
+        if reason is not None:
+            raise InvalidOrderError(reason)
+        assert intent is not None
+        return intent
+
+    def _valid_envelope_owner_state_unlocked(
+        self, intent: SellIntent
+    ) -> tuple[bool, bool]:
+        """Linked/retained state from only scope-valid envelopes for ``intent``.
+
+        A malformed envelope that merely reuses an intent id remains a
+        symbol-local ambiguity, but it cannot restore or keep alive an unrelated
+        valid owner.  This is the owner-side half of the structural link.
+        """
+
+        has_valid_envelope = any(
+            envelope.sell_intent_id == intent.id
+            and envelope_owner_scope_reason(envelope, intent) is None
+            for envelope in self._envelopes.values()
+        )
+        if not has_valid_envelope:
+            return False, False
+        projection = self._envelope_obligation_unlocked(
+            sell_intent_id=intent.id,
+            valid_owner=intent,
+        )
+        return projection.linked, projection.retains_intent
+
+    def _retained_envelope_owner_ids_unlocked(self, symbol: str) -> tuple[str, ...]:
+        """Valid owners of every retained Envelope lineage for ``symbol``.
+
+        The aggregate obligation says whether anything may still execute; this
+        helper answers whether that obligation has exactly one structurally
+        valid owner.  It never guesses through missing/malformed legacy data.
+        """
+
+        owner_ids: set[str] = set()
+        for envelope in self._envelopes.values():
+            if envelope.symbol != symbol:
+                continue
+            if not self._envelope_obligation_unlocked(
+                envelope_id=envelope.id
+            ).retains_intent:
+                continue
+            intent = self._sell_intents.get(envelope.sell_intent_id)
+            if envelope_owner_scope_reason(envelope, intent) is None:
+                owner_ids.add(envelope.sell_intent_id)
+        return tuple(sorted(owner_ids))
+
+    def _envelope_symbol_owner_problem_unlocked(self, symbol: str) -> Optional[str]:
+        """Why a retained symbol obligation cannot be assigned to one owner."""
+
+        obligation = self._envelope_obligation_unlocked(symbol=symbol)
+        ambiguous = self._envelope_obligation_ambiguity(obligation)
+        if ambiguous:
+            return "missing or malformed envelope lineage: " + ", ".join(ambiguous)
+        for envelope in self._envelopes.values():
+            if envelope.symbol != symbol:
+                continue
+            if not self._envelope_obligation_unlocked(
+                envelope_id=envelope.id
+            ).retains_intent:
+                continue
+            reason = envelope_owner_scope_reason(
+                envelope, self._sell_intents.get(envelope.sell_intent_id)
+            )
+            if reason is not None:
+                return reason
+        owner_ids = self._retained_envelope_owner_ids_unlocked(symbol)
+        if len(owner_ids) != 1:
+            return (
+                f"retained envelope obligation has {len(owner_ids)} valid owners "
+                f"({', '.join(owner_ids) or 'none'})"
+            )
+        return None
+
+    @staticmethod
+    def _envelope_obligation_ambiguity(obligation: Any) -> tuple[str, ...]:
+        """Missing/malformed action children that must fail closed."""
+
+        return tuple(
+            dict.fromkeys(
+                (
+                    *obligation.missing_envelope_ids,
+                    *obligation.missing_order_ids,
+                    *obligation.invalid_order_ids,
+                )
+            )
+        )
+
+    def _reconcile_envelope_owner_unlocked(
+        self, intent_id: str, *, now: Optional[datetime] = None
+    ) -> None:
+        """Converge a valid owner without ever rejecting broker truth.
+
+        Missing/mismatched/ORDERED legacy owners are deliberately left alone:
+        ingress validation prevents new corruption, while a terminal Envelope or
+        fill/order fact must never roll back merely because old metadata is bad.
+        """
+
+        intent = self._sell_intents.get(intent_id)
+        if intent is None:
+            return
+        linked, retains = self._valid_envelope_owner_state_unlocked(intent)
+        if not linked:
+            return
+        if retains:
+            if intent.status is SellIntentStatus.PENDING:
+                self._transition_sell_intent_unlocked(
+                    intent,
+                    SellIntentStatus.APPROVED,
+                    now=now,
+                    reason="envelope_delegation_linked",
+                )
+            elif intent.status is SellIntentStatus.EXPIRED:
+                self._transition_sell_intent_unlocked(
+                    intent,
+                    SellIntentStatus.APPROVED,
+                    now=now,
+                    reason="envelope_delegation_restored",
+                    allow_envelope_restore=True,
+                )
+            return
+        if intent.status not in (
+            SellIntentStatus.PENDING,
+            SellIntentStatus.APPROVED,
+        ):
+            return
+        self._transition_sell_intent_unlocked(
+            intent,
+            SellIntentStatus.EXPIRED,
+            now=now,
+            reason="envelope_delegation_released",
+        )
+
+    def _reconcile_envelope_symbol_conflicts_unlocked(
+        self, *, now: Optional[datetime] = None
+    ) -> None:
+        """Expire pre-R2 unlinked duplicates behind one retained delegation."""
+
+        for symbol in sorted(
+            {envelope.symbol for envelope in self._envelopes.values()}
+        ):
+            if not self._envelope_obligation_unlocked(symbol=symbol).retains_intent:
+                continue
+            if self._envelope_symbol_owner_problem_unlocked(symbol) is not None:
+                continue
+            owner_ids = {
+                envelope.sell_intent_id
+                for envelope in self._envelopes.values()
+                if envelope.symbol == symbol
+                and self._envelope_obligation_unlocked(
+                    envelope_id=envelope.id
+                ).retains_intent
+                and envelope_owner_scope_reason(
+                    envelope, self._sell_intents.get(envelope.sell_intent_id)
+                )
+                is None
+            }
+            if len(owner_ids) != 1:
+                continue
+            owner_id = next(iter(owner_ids))
+            for intent_id in sorted(self._sell_intents):
+                intent = self._sell_intents[intent_id]
+                if (
+                    intent.symbol == symbol
+                    and intent.id != owner_id
+                    and intent.status
+                    in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED)
+                ):
+                    self._transition_sell_intent_unlocked(
+                        intent,
+                        SellIntentStatus.EXPIRED,
+                        now=now,
+                        reason="envelope_delegation_conflict",
+                    )
+
+    def _reconcile_envelope_owners_for_order_unlocked(
+        self, order_id: str, *, now: Optional[datetime] = None
+    ) -> None:
+        intent_ids: list[str] = []
+        seen: set[str] = set()
+        order = self._orders.get(order_id)
+        if order is not None and order.sell_intent_id is not None:
+            seen.add(order.sell_intent_id)
+            intent_ids.append(order.sell_intent_id)
+        for event in self._execution_events:
+            if (
+                event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+                or event.order_id != order_id
+            ):
+                continue
+            candidate_ids: list[str] = []
+            if event.correlation_id is not None:
+                candidate_ids.append(event.correlation_id)
+            envelope = (
+                self._envelopes.get(event.envelope_id)
+                if event.envelope_id is not None
+                else None
+            )
+            if envelope is not None:
+                candidate_ids.append(envelope.sell_intent_id)
+            for intent_id in candidate_ids:
+                if intent_id in seen:
+                    continue
+                seen.add(intent_id)
+                intent_ids.append(intent_id)
+        for intent_id in intent_ids:
+            self._reconcile_envelope_owner_unlocked(intent_id, now=now)
+
     def _other_active_envelope_for_symbol_unlocked(
         self, symbol: str, *, excluding: str
     ) -> Optional[ExecutionEnvelope]:
@@ -938,7 +1352,10 @@ class InMemoryStateStore(StateStore):
         return None
 
     def _apply_envelope_transition_unlocked(
-        self, plan: EnvelopeTransitionPlan
+        self,
+        plan: EnvelopeTransitionPlan,
+        *,
+        reconcile_owner: bool = True,
     ) -> ExecutionEnvelope:
         """Persist an APPLY-outcome transition plan (assumes lock + _atomic).
         The caller has already dispatched NOOP/REJECT and run the
@@ -952,6 +1369,10 @@ class InMemoryStateStore(StateStore):
         self._append_event_unlocked(
             plan.audit_event.event_type, **plan.audit_event.as_kwargs()
         )
+        if reconcile_owner:
+            self._reconcile_envelope_owner_unlocked(
+                stored.sell_intent_id, now=stored.updated_at
+            )
         return stored
 
     async def create_envelope(
@@ -1021,13 +1442,41 @@ class InMemoryStateStore(StateStore):
             env = self._envelopes.get(envelope_id)
             if env is None:
                 raise UnknownEntityError(f"envelope {envelope_id} not found")
+            transition_now = now if now is not None else utcnow()
             plan = plan_envelope_transition(
-                env, new_status, actor=actor, reason=reason, now=now
+                env, new_status, actor=actor, reason=reason, now=transition_now
             )
             if plan.outcome == ENVELOPE_TRANSITION_REJECT:
                 assert plan.error is not None
                 raise plan.error
+            owner = None
+            if new_status in (EnvelopeStatus.APPROVED, EnvelopeStatus.ACTIVE):
+                owner = self._validate_envelope_owner_unlocked(env)
+                direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(
+                    env.symbol
+                )
+                if direct_ids:
+                    raise EnvelopeTransitionError(
+                        f"envelope {env.id} cannot enter {new_status.value}: "
+                        "unresolved direct SELL exposure exists ("
+                        + ", ".join(direct_ids)
+                        + ")"
+                    )
+                foreign = self._envelope_obligation_unlocked(
+                    symbol=env.symbol, excluding_envelope_id=env.id
+                )
+                if foreign.retains_intent:
+                    raise EnvelopeTransitionError(
+                        f"envelope {env.id} cannot enter {new_status.value}: "
+                        "another envelope lineage for the symbol retains its "
+                        "delegation"
+                    )
             if plan.outcome == ENVELOPE_TRANSITION_NOOP:
+                if owner is not None:
+                    with self._atomic():
+                        self._reconcile_envelope_owner_unlocked(
+                            owner.id, now=transition_now
+                        )
                 return env.model_copy(deep=True)
             if new_status is EnvelopeStatus.ACTIVE:
                 # ADR-010 §4 / INV-060: activation OR resume is new standing
@@ -1058,34 +1507,48 @@ class InMemoryStateStore(StateStore):
                 # stop monitoring it while the order keeps working — refuse; the
                 # live order must be wound down first (flatten/kill precedence).
                 # A quarantined (ambiguous) child counts as live.
-                try:
-                    _, working = self._envelope_action_context_unlocked(env)
-                    live_child = working is not None
-                except EnvelopeActionPausedError:
-                    live_child = True
-                if live_child:
+                exact = self._envelope_obligation_unlocked(envelope_id=env.id)
+                if self._envelope_obligation_ambiguity(exact) or exact.venue_orders:
                     raise EnvelopeTransitionError(
                         f"envelope {env.id} cannot be CANCELLED while a child "
                         "order is live at the venue — wind it down first "
                         "(flatten / kill switch), then cancel"
                     )
             with self._atomic():
-                stored = self._apply_envelope_transition_unlocked(plan)
+                auto_complete = (
+                    plan.envelope is not None
+                    and plan.envelope.status is EnvelopeStatus.ACTIVE
+                    and (plan.envelope.remaining_quantity or 0) == 0
+                )
+                terminal = plan.envelope is not None and not ENVELOPE_TRANSITIONS.get(
+                    plan.envelope.status
+                )
+                stored = self._apply_envelope_transition_unlocked(
+                    plan,
+                    reconcile_owner=not auto_complete and not terminal,
+                )
                 # A freeze is never exited by a fill: an envelope fully filled
                 # while FROZEN completes HERE, on resume, atomically with it.
-                if (
-                    stored.status is EnvelopeStatus.ACTIVE
-                    and (stored.remaining_quantity or 0) == 0
-                ):
+                if auto_complete:
                     chain = plan_envelope_transition(
                         stored,
                         EnvelopeStatus.COMPLETED,
                         actor="engine",
                         reason="fully filled while frozen; completed on resume",
-                        now=now,
+                        now=transition_now,
+                        _fill_completion=True,
                     )
                     assert chain.outcome == ENVELOPE_TRANSITION_APPLY
                     stored = self._apply_envelope_transition_unlocked(chain)
+                elif terminal:
+                    # No terminal mandate leaves a never-submitted child behind.
+                    # Venue-capable children remain projected and retain the owner.
+                    self._cancel_staged_envelope_orders_unlocked(
+                        [stored.id], actor=actor
+                    )
+                    self._reconcile_envelope_owner_unlocked(
+                        stored.sell_intent_id, now=stored.updated_at
+                    )
             return stored.model_copy(deep=True)
 
     async def supersede_envelope(
@@ -1107,6 +1570,36 @@ class InMemoryStateStore(StateStore):
             normalized = successor.model_copy(
                 update={"symbol": normalize_symbol(successor.symbol)}
             )
+            self._validate_envelope_owner_unlocked(old)
+            self._validate_envelope_owner_unlocked(normalized)
+            direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(old.symbol)
+            if direct_ids:
+                raise EnvelopeTransitionError(
+                    f"envelope {old.id} cannot be superseded: unresolved direct "
+                    "SELL exposure exists (" + ", ".join(direct_ids) + ")"
+                )
+            exact = self._envelope_obligation_unlocked(envelope_id=old.id)
+            ambiguous = self._envelope_obligation_ambiguity(exact)
+            if ambiguous or len(exact.unresolved_order_ids) > 1:
+                detail = ambiguous or exact.unresolved_order_ids
+                raise EnvelopeTransitionError(
+                    f"envelope {old.id} cannot be superseded: ambiguous linked "
+                    f"child set ({', '.join(detail)})"
+                )
+            if exact.venue_orders:
+                raise EnvelopeTransitionError(
+                    f"envelope {old.id} cannot be superseded while live working order(s) "
+                    + ", ".join(order.id for order in exact.venue_orders)
+                    + " may be live at the venue"
+                )
+            foreign = self._envelope_obligation_unlocked(
+                symbol=old.symbol, excluding_envelope_id=old.id
+            )
+            if foreign.retains_intent:
+                raise EnvelopeTransitionError(
+                    f"envelope {old.id} cannot be superseded: another envelope "
+                    "lineage for the symbol retains its delegation"
+                )
             _, working = self._envelope_action_context_unlocked(old)
             plan = plan_supersede_envelope(
                 old, normalized, actor=actor, reason=reason, working_order=working
@@ -1145,6 +1638,10 @@ class InMemoryStateStore(StateStore):
                 self._cancel_staged_envelope_orders_unlocked(
                     [plan.old_envelope.id], actor=actor
                 )
+                self._reconcile_envelope_owner_unlocked(
+                    plan.new_envelope.sell_intent_id,
+                    now=plan.new_envelope.updated_at,
+                )
             return plan.new_envelope.model_copy(deep=True)
 
     async def record_envelope_fill(
@@ -1169,6 +1666,28 @@ class InMemoryStateStore(StateStore):
             env = self._envelopes.get(envelope_id)
             if env is None:
                 raise UnknownEntityError(f"envelope {envelope_id} not found")
+            if order_id is not None:
+                action_links = [
+                    event
+                    for event in self._execution_events
+                    if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+                    and event.order_id == order_id
+                ]
+                raw_order = self._orders.get(order_id)
+                if action_links or raw_order is not None:
+                    parent_ids = {event.envelope_id for event in action_links}
+                    projection = self._envelope_obligation_unlocked(envelope_id=env.id)
+                    if (
+                        raw_order is None
+                        or parent_ids != {env.id}
+                        or order_id in projection.invalid_order_ids
+                        or order_id in projection.missing_order_ids
+                        or projection.missing_envelope_ids
+                    ):
+                        raise InvalidFillError(
+                            f"fill order {order_id} is not a uniquely bounded child "
+                            f"of envelope {env.id}"
+                        )
             plan = plan_envelope_fill(
                 env,
                 quantity=quantity,
@@ -1193,7 +1712,20 @@ class InMemoryStateStore(StateStore):
                 self._envelopes[stored.id] = stored
                 if plan.transition is not None:
                     assert plan.transition.outcome == ENVELOPE_TRANSITION_APPLY
-                    stored = self._apply_envelope_transition_unlocked(plan.transition)
+                    assert plan.transition.envelope is not None
+                    terminal = not ENVELOPE_TRANSITIONS.get(
+                        plan.transition.envelope.status
+                    )
+                    stored = self._apply_envelope_transition_unlocked(
+                        plan.transition, reconcile_owner=not terminal
+                    )
+                    if terminal:
+                        self._cancel_staged_envelope_orders_unlocked(
+                            [stored.id], actor="engine"
+                        )
+                        self._reconcile_envelope_owner_unlocked(
+                            stored.sell_intent_id, now=stored.updated_at
+                        )
             return stored.model_copy(deep=True)
 
     def _envelope_action_context_unlocked(
@@ -1215,7 +1747,11 @@ class InMemoryStateStore(StateStore):
                 continue
             order = self._orders.get(event.order_id)
             if order is None:
-                continue
+                raise EnvelopeActionPausedError(
+                    f"envelope {envelope.id} is paused: action-linked order "
+                    f"{event.order_id} is missing"
+                )
+            order = self._project_order_unlocked(order)
             if order.status is OrderStatus.TIMEOUT_QUARANTINE:
                 raise EnvelopeActionPausedError(
                     f"envelope {envelope.id} is paused: order {order.id} is in "
@@ -1248,6 +1784,38 @@ class InMemoryStateStore(StateStore):
             env = self._envelopes.get(envelope_id)
             if env is None:
                 raise UnknownEntityError(f"envelope {envelope_id} not found")
+            self._validate_envelope_owner_unlocked(env)
+            direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(env.symbol)
+            if direct_ids:
+                raise EnvelopeActionPausedError(
+                    f"envelope {env.id} is paused: unresolved direct SELL "
+                    "exposure exists (" + ", ".join(direct_ids) + ")"
+                )
+            foreign = self._envelope_obligation_unlocked(
+                symbol=env.symbol, excluding_envelope_id=env.id
+            )
+            if foreign.retains_intent:
+                raise EnvelopeActionPausedError(
+                    f"envelope {env.id} is paused: another envelope lineage "
+                    "for the symbol retains its delegation"
+                )
+            obligation = self._envelope_obligation_unlocked(envelope_id=env.id)
+            ambiguous = self._envelope_obligation_ambiguity(obligation)
+            uncertain = (
+                *obligation.recovery_order_ids,
+                *obligation.uncertain_claim_order_ids,
+            )
+            if ambiguous or uncertain or len(obligation.unresolved_order_ids) > 1:
+                detail = ambiguous or uncertain or obligation.unresolved_order_ids
+                raise EnvelopeActionPausedError(
+                    f"envelope {env.id} is paused: ambiguous linked child "
+                    f"set ({', '.join(detail)})"
+                )
+            if session_id is not None and session_id != env.session_id:
+                raise EnvelopeActionPausedError(
+                    f"envelope {env.id} is paused: action session {session_id!r} "
+                    f"does not match immutable envelope session {env.session_id!r}"
+                )
             # INV-060: staging is new order intent — refused while HALTED,
             # checked under the SAME lock as the writes below.
             session = self._ensure_current_session_unlocked()
@@ -1259,8 +1827,9 @@ class InMemoryStateStore(StateStore):
                     "envelope action refused: trading halted (kill switch engaged)"
                 )
             actions, working = self._envelope_action_context_unlocked(env)
-            if session_id is None:
-                session_id = session.id
+            # The current session controls the global kill state only. Child
+            # identity always comes from the Envelope's immutable scope.
+            session_id = env.session_id
             plan = plan_stage_envelope_action(
                 env,
                 action,
@@ -1330,12 +1899,14 @@ class InMemoryStateStore(StateStore):
 
         async with self._lock:
             stored = self._envelopes.get(draft.id)
+            candidate = stored or draft.model_copy(
+                deep=True, update={"symbol": normalize_symbol(draft.symbol)}
+            )
             if stored is not None:
-                if stored.status is EnvelopeStatus.ACTIVE:
-                    return stored.model_copy(deep=True)  # idempotent re-approve
                 if stored.status not in (
                     EnvelopeStatus.PENDING,
                     EnvelopeStatus.APPROVED,
+                    EnvelopeStatus.ACTIVE,
                 ):
                     raise EnvelopeTransitionError(
                         f"cannot approve envelope {draft.id}: it is "
@@ -1345,6 +1916,27 @@ class InMemoryStateStore(StateStore):
                 bad = envelope_draft_reason(draft)
                 if bad is not None:
                     raise InvalidOrderError(bad)
+            owner = self._validate_envelope_owner_unlocked(candidate)
+            direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(
+                candidate.symbol
+            )
+            if direct_ids:
+                raise EnvelopeTransitionError(
+                    f"cannot activate envelope {candidate.id}: unresolved direct "
+                    "SELL exposure exists (" + ", ".join(direct_ids) + ")"
+                )
+            foreign = self._envelope_obligation_unlocked(
+                symbol=candidate.symbol, excluding_envelope_id=candidate.id
+            )
+            if foreign.retains_intent:
+                raise EnvelopeTransitionError(
+                    f"cannot activate envelope {candidate.id}: another envelope "
+                    "lineage for the symbol retains its delegation"
+                )
+            if stored is not None and stored.status is EnvelopeStatus.ACTIVE:
+                with self._atomic():
+                    self._reconcile_envelope_owner_unlocked(owner.id)
+                return stored.model_copy(deep=True)  # idempotent re-approve
             # INV-060: the kill switch blocks NEW standing order intent — the
             # check shares this lock hold with every write below (no await
             # window), so a kill either lands before (zero artifacts) or after
@@ -1368,8 +1960,7 @@ class InMemoryStateStore(StateStore):
                 )
             with self._atomic():
                 if stored is None:
-                    key = normalize_symbol(draft.symbol)
-                    stored = draft.model_copy(deep=True, update={"symbol": key})
+                    stored = candidate
                     self._envelopes[stored.id] = stored
                     self._append_execution_event_unlocked(
                         envelope_created_event(stored, actor=actor)
@@ -1382,15 +1973,16 @@ class InMemoryStateStore(StateStore):
                         correlation_id=stored.sell_intent_id,
                         payload={"actor": actor, "envelope_id": stored.id},
                     )
+                ts = utcnow()
                 current = stored
                 if current.status is EnvelopeStatus.PENDING:
                     plan = plan_envelope_transition(
-                        current, EnvelopeStatus.APPROVED, actor=actor
+                        current, EnvelopeStatus.APPROVED, actor=actor, now=ts
                     )
                     assert plan.outcome == ENVELOPE_TRANSITION_APPLY
                     current = self._apply_envelope_transition_unlocked(plan)
                 plan = plan_envelope_transition(
-                    current, EnvelopeStatus.ACTIVE, actor=actor
+                    current, EnvelopeStatus.ACTIVE, actor=actor, now=ts
                 )
                 assert plan.outcome == ENVELOPE_TRANSITION_APPLY
                 current = self._apply_envelope_transition_unlocked(plan)
@@ -1405,7 +1997,11 @@ class InMemoryStateStore(StateStore):
         the preemption commits in the SAME atomic unit as the flatten's own
         writes and its events sequence BEFORE them."""
 
-        preempted: list[str] = []
+        lineage_ids = [
+            envelope.id
+            for envelope in self._envelopes.values()
+            if envelope.symbol == symbol
+        ]
         for env in list(self._envelopes.values()):
             if env.symbol != symbol:
                 continue
@@ -1423,12 +2019,11 @@ class InMemoryStateStore(StateStore):
             )
             assert plan.outcome == ENVELOPE_TRANSITION_APPLY
             self._apply_envelope_transition_unlocked(plan)
-            preempted.append(env.id)
         # WO-0024: a preempted mandate's obligations die with it — its staged
         # CREATED orders are cancelled in the SAME atomic unit, sequenced
         # AFTER the envelope cancellation events
         # (FINDING-W3-staged-order-outlives-preemption).
-        self._cancel_staged_envelope_orders_unlocked(preempted, actor=actor)
+        self._cancel_staged_envelope_orders_unlocked(lineage_ids, actor=actor)
 
     def _cancel_staged_envelope_orders_unlocked(
         self, envelope_ids: list[str], *, actor: str
@@ -1452,8 +2047,17 @@ class InMemoryStateStore(StateStore):
             ):
                 continue
             seen.add(event.order_id)
-            order = self._orders.get(event.order_id)
-            if order is None or order.status is not OrderStatus.CREATED:
+            raw_order = self._orders.get(event.order_id)
+            if raw_order is None:
+                continue
+            if not self._order_has_valid_envelope_link_unlocked(raw_order):
+                # Terminal cleanup is a mutation choke point: never let a
+                # malformed/foreign action make this Envelope cancel another
+                # lineage's local order. The invalid fact remains projected and
+                # retains the owner for quarantine/reconciliation.
+                continue
+            order = self._project_order_unlocked(raw_order)
+            if order.status is not OrderStatus.CREATED:
                 continue
             plan = plan_transition_order(
                 order=order,
@@ -1471,6 +2075,21 @@ class InMemoryStateStore(StateStore):
             )
             if exec_event is not None:
                 self._append_execution_event_unlocked(exec_event)
+            self._reconcile_envelope_owners_for_order_unlocked(
+                order.id, now=plan.order.updated_at
+            )
+
+    def _assert_symbol_envelope_preempted_unlocked(self, symbol: str) -> None:
+        residual = self._envelope_obligation_unlocked(symbol=symbol)
+        if residual.retains_intent:
+            detail = self._envelope_obligation_ambiguity(residual)
+            if not detail:
+                detail = tuple(residual.unresolved_order_ids)
+            raise FlattenBlockedError(
+                f"manual flatten of {symbol} blocked: envelope preemption "
+                "left a retained obligation"
+                + (f" ({', '.join(detail)})" if detail else "")
+            )
 
     def _dispatch_order_for_sell_intent_unlocked(
         self,
@@ -1493,6 +2112,20 @@ class InMemoryStateStore(StateStore):
         events.
         """
 
+        own_linked = self._valid_envelope_owner_state_unlocked(intent)[0]
+        symbol_obligation = self._envelope_obligation_unlocked(symbol=intent.symbol)
+        if own_linked or symbol_obligation.retains_intent:
+            raise SellIntentTransitionError(
+                f"sell intent {intent.id} cannot use legacy single-order "
+                f"dispatch while an envelope delegation for {intent.symbol} "
+                "is retained"
+            )
+        direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(intent.symbol)
+        if direct_ids:
+            raise SellIntentTransitionError(
+                f"sell intent {intent.id} cannot dispatch while unresolved direct "
+                "SELL exposure exists (" + ", ".join(direct_ids) + ")"
+            )
         live_qty = self._position_unlocked(intent.symbol).quantity
         plan = plan_create_order_for_sell_intent(
             intent=intent,
@@ -1538,6 +2171,11 @@ class InMemoryStateStore(StateStore):
             intent = self._sell_intents.get(intent_id)
             if intent is None:
                 raise UnknownEntityError(f"sell intent {intent_id} not found")
+            if self._valid_envelope_owner_state_unlocked(intent)[0]:
+                raise SellIntentTransitionError(
+                    f"sell intent {intent.id} has an envelope delegation; "
+                    "legacy single-order dispatch is structurally unavailable"
+                )
             # Idempotent: an intent already dispatched returns its existing order.
             if intent.status is SellIntentStatus.ORDERED:
                 existing = (
@@ -1588,6 +2226,17 @@ class InMemoryStateStore(StateStore):
                     else None
                 )
                 return existing.model_copy(deep=True) if existing is not None else None
+            direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(key)
+            if direct_ids:
+                raise SellIntentTransitionError(
+                    f"cannot open a protection exit for {key}: unresolved direct "
+                    "SELL exposure exists (" + ", ".join(direct_ids) + ")"
+                )
+            if self._envelope_obligation_unlocked(symbol=key).retains_intent:
+                raise SellIntentTransitionError(
+                    f"cannot open a protection exit for {key}: an unresolved "
+                    "envelope delegation has no unambiguous usable owner"
+                )
             # ENG-001 / INV-060 (REV-0019-F-001): the kill switch blocks NEW
             # autonomous order intent. The whole create+approve+dispatch+audit
             # below runs under THIS single lock hold with no await after this
@@ -1641,6 +2290,130 @@ class InMemoryStateStore(StateStore):
                 )
             return order.model_copy(deep=True)
 
+    def _order_has_valid_envelope_link_unlocked(self, order: Order) -> bool:
+        """Whether ``order`` is a structurally valid Envelope child.
+
+        A bare action reference is not enough: malformed/cross-symbol links must
+        remain visible to the direct-order safety rail instead of hiding venue
+        exposure from flatten, mint, stage, or claim.
+        """
+
+        actions = [
+            event
+            for event in self._execution_events
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.order_id == order.id
+        ]
+        envelope_ids = {event.envelope_id for event in actions}
+        if not actions or None in envelope_ids or len(envelope_ids) != 1:
+            return False
+        envelope_id = next(iter(envelope_ids))
+        assert envelope_id is not None  # narrowed by the fail-closed check above
+        envelope = self._envelopes.get(envelope_id)
+        if envelope is None:
+            return False
+        if (
+            envelope_owner_scope_reason(
+                envelope, self._sell_intents.get(envelope.sell_intent_id)
+            )
+            is not None
+        ):
+            return False
+        projection = self._envelope_obligation_unlocked(envelope_id=envelope.id)
+        return (
+            order.id not in projection.invalid_order_ids
+            and order.id not in projection.missing_order_ids
+            and not projection.missing_envelope_ids
+        )
+
+    def _unresolved_direct_sell_orders_unlocked(self, symbol: str) -> tuple[Order, ...]:
+        open_recovery_ids = {
+            record.local_order_id
+            for record in self._submit_recoveries
+            if record.cleanup_status == RECOVERY_UNRESOLVED
+        }
+        needs_review_ids = {
+            record.local_order_id
+            for record in self._submit_recoveries
+            if record.cleanup_status == RECOVERY_NEEDS_REVIEW
+        }
+        orders: list[Order] = []
+        for raw_order in self._orders.values():
+            if (
+                raw_order.symbol != symbol
+                or raw_order.side is not OrderSide.SELL
+                or self._order_has_valid_envelope_link_unlocked(raw_order)
+            ):
+                continue
+            order = self._project_order_unlocked(raw_order)
+            order_events = [
+                event
+                for event in self._execution_events
+                if event.order_id == order.id
+                and event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+            ]
+            if direct_sell_order_may_execute(
+                order,
+                order_events,
+                has_open_recovery=order.id in open_recovery_ids,
+                needs_review=order.id in needs_review_ids,
+            ):
+                orders.append(order)
+        return tuple(orders)
+
+    def _open_direct_sell_recovery_ids_unlocked(self, symbol: str) -> tuple[str, ...]:
+        """Open SELL recoveries not protected by a valid Envelope lineage.
+
+        Recovery truth can outlive or exist without its local order row.  Such
+        venue exposure must remain symbol-visible rather than disappearing from
+        an order-table scan.
+        """
+
+        ids: list[str] = []
+        seen: set[str] = set()
+        for record in self._submit_recoveries:
+            if (
+                record.symbol != symbol
+                or record.side is not OrderSide.SELL
+                or record.cleanup_status != RECOVERY_UNRESOLVED
+                or record.local_order_id in seen
+            ):
+                continue
+            order = self._orders.get(record.local_order_id)
+            if order is not None:
+                recovery_matches_order_scope = (
+                    record.symbol == order.symbol
+                    and record.side is order.side
+                    and record.quantity == order.quantity
+                    and record.limit_price == order.limit_price
+                    and record.session_id == order.session_id
+                )
+                if (
+                    recovery_matches_order_scope
+                    and self._order_has_valid_envelope_link_unlocked(order)
+                ):
+                    continue
+            seen.add(record.local_order_id)
+            ids.append(record.local_order_id)
+        return tuple(ids)
+
+    def _unresolved_direct_sell_exposure_ids_unlocked(
+        self, symbol: str
+    ) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    *(
+                        order.id
+                        for order in self._unresolved_direct_sell_orders_unlocked(
+                            symbol
+                        )
+                    ),
+                    *self._open_direct_sell_recovery_ids_unlocked(symbol),
+                )
+            )
+        )
+
     async def flatten_position(
         self,
         symbol: str,
@@ -1657,10 +2430,89 @@ class InMemoryStateStore(StateStore):
             position = self._position_unlocked(key)
             active = self._active_sell_intent_unlocked(key)
             active_order = (
-                self._orders.get(active.order_id)
-                if active is not None and active.order_id is not None
+                self._project_order_unlocked(self._orders[active.order_id])
+                if active is not None
+                and active.order_id is not None
+                and active.order_id in self._orders
                 else None
             )
+            obligation = self._envelope_obligation_unlocked(symbol=key)
+            direct_orders = self._unresolved_direct_sell_orders_unlocked(key)
+            direct_recovery_ids = self._open_direct_sell_recovery_ids_unlocked(key)
+            unsafe_direct = (
+                bool(direct_recovery_ids)
+                or bool(direct_orders)
+                and (
+                    obligation.retains_intent
+                    or position.quantity <= 0
+                    or len(direct_orders) != 1
+                    or active_order is None
+                    or active_order.id != direct_orders[0].id
+                    or direct_orders[0].status
+                    in (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED)
+                )
+            )
+            if unsafe_direct:
+                direct_ids = tuple(
+                    dict.fromkeys(
+                        (
+                            *(order.id for order in direct_orders),
+                            *direct_recovery_ids,
+                        )
+                    )
+                )
+                raise FlattenBlockedError(
+                    f"manual flatten of {key} blocked: unresolved direct SELL "
+                    "exposure cannot be safely deduplicated ("
+                    + ", ".join(direct_ids)
+                    + ")"
+                )
+            ambiguous = self._envelope_obligation_ambiguity(obligation)
+            if ambiguous:
+                raise FlattenBlockedError(
+                    f"manual flatten of {key} blocked: envelope lineage is "
+                    "missing or malformed (" + ", ".join(ambiguous) + ")"
+                )
+            if obligation.retains_intent:
+                owner_problem = self._envelope_symbol_owner_problem_unlocked(key)
+                if owner_problem is not None:
+                    raise FlattenBlockedError(
+                        f"manual flatten of {key} blocked: {owner_problem}"
+                    )
+            if len(obligation.venue_orders) > 1:
+                raise FlattenBlockedError(
+                    f"manual flatten of {key} blocked: multiple envelope "
+                    "children may be live at the venue ("
+                    + ", ".join(order.id for order in obligation.venue_orders)
+                    + ")"
+                )
+            if obligation.venue_orders:
+                envelope_order = obligation.venue_orders[0]
+                if position.quantity <= 0:
+                    raise FlattenBlockedError(
+                        f"manual flatten of {key} blocked: position is flat but "
+                        f"envelope order {envelope_order.id} may still be live"
+                    )
+                envelope_owner = self._sell_intents.get(
+                    envelope_order.sell_intent_id or ""
+                )
+                if (
+                    envelope_owner is None
+                    or active is None
+                    or active.id != envelope_owner.id
+                ):
+                    raise FlattenBlockedError(
+                        f"manual flatten of {key} blocked: envelope order "
+                        f"{envelope_order.id} has no unique owning intent"
+                    )
+                if active_order is not None and active_order.id != envelope_order.id:
+                    raise FlattenBlockedError(
+                        f"manual flatten of {key} blocked: direct order "
+                        f"{active_order.id} and envelope order {envelope_order.id} "
+                        "are both unresolved"
+                    )
+                active = envelope_owner
+                active_order = envelope_order
             # ADR-003 / wave 3e: read the current session's §8 FSM + whether an
             # emergency-reduce override is active for this symbol, both under this
             # same lock so the deny decision can't straddle a concurrent control
@@ -1707,6 +2559,7 @@ class InMemoryStateStore(StateStore):
                     self._cancel_symbol_envelopes_unlocked(
                         key, actor=actor, reason="manual_flatten_preemption"
                     )
+                    self._assert_symbol_envelope_preempted_unlocked(key)
                 return FlattenResult(FLATTEN_FLAT)
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 assert plan.existing_intent is not None
@@ -1750,6 +2603,7 @@ class InMemoryStateStore(StateStore):
                 self._cancel_symbol_envelopes_unlocked(
                     key, actor=actor, reason="manual_flatten_preemption"
                 )
+                self._assert_symbol_envelope_preempted_unlocked(key)
                 if plan.supersede_order_cancel is not None:
                     # A supersede-cancel implies the stranded active_order exists
                     # and the planner produced its cancel audit event (narrows both).
@@ -1782,13 +2636,23 @@ class InMemoryStateStore(StateStore):
                     superseded = True
                 if plan.supersede_intent_expire is not None:
                     assert plan.supersede_expire_event is not None
-                    self._sell_intents[plan.supersede_intent_expire.id] = (
-                        plan.supersede_intent_expire
+                    current_intent = self._sell_intents.get(
+                        plan.supersede_intent_expire.id
                     )
-                    self._append_event_unlocked(
-                        plan.supersede_expire_event.event_type,
-                        **plan.supersede_expire_event.as_kwargs(),
-                    )
+                    # Envelope preemption may already have released the owner
+                    # through the shared projection.  Never overwrite that
+                    # transition or append a duplicate audit event.
+                    if current_intent is not None and current_intent.status in (
+                        SellIntentStatus.PENDING,
+                        SellIntentStatus.APPROVED,
+                    ):
+                        self._sell_intents[plan.supersede_intent_expire.id] = (
+                            plan.supersede_intent_expire
+                        )
+                        self._append_event_unlocked(
+                            plan.supersede_expire_event.event_type,
+                            **plan.supersede_expire_event.as_kwargs(),
+                        )
                     superseded = True
                 intent = self._insert_sell_intent_unlocked(
                     symbol=key,
@@ -1946,6 +2810,157 @@ class InMemoryStateStore(StateStore):
                     self._append_event_unlocked(event.event_type, **event.as_kwargs())
             return order.model_copy(deep=True)
 
+    def _envelope_claim_block_reason_unlocked(
+        self,
+        order: Order,
+        *,
+        accepted: bool = False,
+    ) -> Optional[str]:
+        if any(
+            record.local_order_id == order.id
+            and record.cleanup_status in RECOVERY_OPEN_STATUSES
+            for record in self._submit_recoveries
+        ):
+            return "order has unresolved broker-submit recovery"
+        actions = [
+            event
+            for event in self._execution_events
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.order_id == order.id
+        ]
+        if not actions:
+            if order.side is OrderSide.SELL:
+                if self._envelope_obligation_unlocked(
+                    symbol=order.symbol
+                ).retains_intent:
+                    return (
+                        "legacy/direct sell submission is blocked while an envelope "
+                        "delegation for the symbol is retained"
+                    )
+                sibling_ids = tuple(
+                    exposure_id
+                    for exposure_id in self._unresolved_direct_sell_exposure_ids_unlocked(
+                        order.symbol
+                    )
+                    if exposure_id != order.id
+                )
+                if sibling_ids:
+                    return (
+                        "unresolved direct SELL sibling exposure exists: "
+                        + ", ".join(sibling_ids)
+                    )
+            return None
+        envelope_ids = {
+            event.envelope_id for event in actions if event.envelope_id is not None
+        }
+        if len(envelope_ids) != 1 or any(
+            event.envelope_id is None for event in actions
+        ):
+            return "envelope action has no unique parent envelope"
+        envelope_id = next(iter(envelope_ids))
+        envelope = self._envelopes.get(envelope_id)
+        if envelope is None:
+            return f"parent envelope {envelope_id} is missing"
+        if envelope.status is not EnvelopeStatus.ACTIVE:
+            return (
+                f"parent envelope {envelope.id} is {envelope.status.value}; "
+                "submission requires active"
+            )
+        owner = self._sell_intents.get(envelope.sell_intent_id)
+        reason = envelope_owner_binding_reason(envelope, owner)
+        if reason is not None:
+            return reason
+        assert owner is not None
+        if owner.status is not SellIntentStatus.APPROVED:
+            return f"envelope owner {owner.id} is not approved"
+        exact = self._envelope_obligation_unlocked(envelope_id=envelope.id)
+        ambiguous = self._envelope_obligation_ambiguity(exact)
+        if ambiguous:
+            return "envelope lineage is missing or malformed: " + ", ".join(ambiguous)
+        if exact.recovery_order_ids:
+            return "envelope child has unresolved submission/recovery uncertainty"
+        if order.id not in exact.unresolved_order_ids:
+            return f"order {order.id} is not an unresolved child of its envelope"
+        eligible_ids = (
+            exact.acknowledgeable_order_ids if accepted else exact.claimable_order_ids
+        )
+        if accepted:
+            if set(exact.uncertain_claim_order_ids) != {order.id}:
+                return (
+                    "accepted envelope child does not own exactly one current "
+                    "submission claim"
+                )
+        elif exact.uncertain_claim_order_ids:
+            return "envelope child has unresolved submission/recovery uncertainty"
+        if order.id not in eligible_ids:
+            sibling_ids = tuple(
+                child_id
+                for child_id in exact.unresolved_order_ids
+                if child_id != order.id
+            )
+            return (
+                "envelope child is not the projection's sole submit or exact "
+                "same-lineage reprice candidate"
+                + (f" ({', '.join(sibling_ids)})" if sibling_ids else "")
+            )
+        action = next(event for event in actions if event.envelope_id == envelope.id)
+        logical_now, clock_reason = envelope_action_logical_now(
+            action, wall_now=utcnow()
+        )
+        if clock_reason is not None:
+            return clock_reason
+        assert logical_now is not None
+        hard_rail = envelope_claim_hard_rail_reason(
+            envelope=envelope,
+            order=order,
+            action_event=action,
+            history=self._execution_events,
+            current_position=self._position_unlocked(order.symbol).quantity,
+            now=logical_now,
+        )
+        if hard_rail is not None:
+            return "envelope hard rail changed after staging: " + hard_rail
+        direct_ids = self._unresolved_direct_sell_exposure_ids_unlocked(order.symbol)
+        if direct_ids:
+            return "unresolved direct SELL exposure exists: " + ", ".join(direct_ids)
+        foreign = self._envelope_obligation_unlocked(
+            symbol=envelope.symbol, excluding_envelope_id=envelope.id
+        )
+        if foreign.retains_intent:
+            return "another envelope lineage for the symbol retains its delegation"
+        return None
+
+    def _released_terminal_envelope_child_can_cancel_unlocked(
+        self, order: Order
+    ) -> bool:
+        """Whether a just-released CREATED child is now purely local dead work."""
+
+        if order.status is not OrderStatus.CREATED:
+            return False
+        actions = [
+            event
+            for event in self._execution_events
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.order_id == order.id
+        ]
+        parent_ids = {event.envelope_id for event in actions}
+        if not actions or None in parent_ids or len(parent_ids) != 1:
+            return False
+        parent_id = next(iter(parent_ids))
+        assert parent_id is not None  # narrowed by the fail-closed check above
+        parent = self._envelopes.get(parent_id)
+        if parent is None or ENVELOPE_TRANSITIONS.get(parent.status):
+            return False
+        projection = self._envelope_obligation_unlocked(envelope_id=parent.id)
+        if self._envelope_obligation_ambiguity(projection):
+            return False
+        return (
+            order.id in projection.unresolved_order_ids
+            and order.id not in projection.recovery_order_ids
+            and order.id not in projection.uncertain_claim_order_ids
+            and all(venue.id != order.id for venue in projection.venue_orders)
+        )
+
     async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
         async with self._lock:
             order = self._orders.get(order_id)
@@ -1974,6 +2989,22 @@ class InMemoryStateStore(StateStore):
                     "co-write invariant violated; refusing to avoid a blind re-submit"
                 )
                 order = projected
+                envelope_block = self._envelope_claim_block_reason_unlocked(order)
+                if envelope_block is not None:
+                    with self._atomic():
+                        self._append_event_unlocked(
+                            "envelope_submission_claim_blocked",
+                            message=(
+                                f"envelope child {order.id} submission blocked: "
+                                f"{envelope_block}"
+                            ),
+                            symbol=order.symbol,
+                            order_id=order.id,
+                            payload={"reason": envelope_block},
+                            session_id=order.session_id,
+                            correlation_id=order.sell_intent_id,
+                        )
+                    return SubmissionClaim(CLAIM_BLOCKED, reason=envelope_block)
             own_session = (
                 next((s for s in self._sessions if s.id == order.session_id), None)
                 if order is not None
@@ -2068,13 +3099,23 @@ class InMemoryStateStore(StateStore):
                 cleanup_status=cleanup_status,
                 session_id=session_id,
             )
-            payload: dict[str, Any] = {
-                "broker_order_id": broker_order_id,
-                "failure_reason": failure_reason,
-                "cleanup_status": cleanup_status,
-            }
-            if extra_payload:
-                payload.update(extra_payload)
+            claim_occurrence = claim_occurrence_at(
+                self._execution_events,
+                order_id=local_order_id,
+                at=record.created_at,
+            )
+            payload: dict[str, Any] = dict(extra_payload or {})
+            payload.update(
+                {
+                    "broker_order_id": broker_order_id,
+                    "recovery_id": record.id,
+                    "failure_reason": failure_reason,
+                    "cleanup_status": cleanup_status,
+                }
+            )
+            payload.pop("claim_occurrence", None)
+            if claim_occurrence is not None:
+                payload["claim_occurrence"] = claim_occurrence
             with self._atomic():
                 self._submit_recoveries.append(record)
                 self._append_event_unlocked(
@@ -2089,7 +3130,62 @@ class InMemoryStateStore(StateStore):
                     payload=payload,
                     session_id=session_id,
                 )
+                if record.cleanup_status == RECOVERY_RESOLVED:
+                    stored_resolution = self._append_execution_event_unlocked(
+                        recovery_resolution_execution_event(
+                            record,
+                            now=record.created_at,
+                            claim_occurrence=claim_occurrence,
+                        )
+                    )
+                    if not recovery_terminal_fact_matches(
+                        record,
+                        stored_resolution,
+                        claim_occurrence=claim_occurrence,
+                    ):
+                        raise RecoveryTransitionError(
+                            "recovery resolution event identity conflicts with "
+                            f"existing dedupe fact for {record.id}"
+                        )
+                self._reconcile_envelope_owners_for_order_unlocked(
+                    local_order_id, now=record.created_at
+                )
             return record.model_copy(deep=True)
+
+    def _recovery_claim_occurrence_unlocked(
+        self, record: SubmitRecoveryRecord
+    ) -> Optional[int]:
+        # Creation and audit append are atomic.  Read the first mention of this
+        # recovery id and accept it only when its immutable scope matches; a
+        # later operator/audit message cannot retarget the captured occurrence.
+        for event in self._events:
+            if event.payload.get("recovery_id") != record.id:
+                continue
+            if recovery_creation_audit_matches(record, event):
+                raw = event.payload.get("claim_occurrence")
+                if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+                    return raw
+            break
+        return claim_occurrence_at(
+            self._execution_events,
+            order_id=record.local_order_id,
+            at=record.created_at,
+        )
+
+    def _has_recovery_terminal_fact_unlocked(
+        self,
+        record: SubmitRecoveryRecord,
+        *,
+        claim_occurrence: Optional[int],
+    ) -> bool:
+        return any(
+            recovery_terminal_fact_matches(
+                record,
+                event,
+                claim_occurrence=claim_occurrence,
+            )
+            for event in self._execution_events
+        )
 
     async def list_submit_recoveries(
         self, *, statuses: Optional[Iterable[str]] = None
@@ -2124,6 +3220,7 @@ class InMemoryStateStore(StateStore):
             terminal_event = recovery_status_event(
                 record.cleanup_status, cleanup_status
             )
+            claim_occurrence = self._recovery_claim_occurrence_unlocked(record)
             # Replace, never mutate in place (keeps _atomic's shallow snapshot valid).
             updated = record.model_copy(deep=True)
             if bump_attempt:
@@ -2131,6 +3228,12 @@ class InMemoryStateStore(StateStore):
                 updated.last_attempt_at = utcnow()
             if cleanup_status is not None:
                 updated.cleanup_status = cleanup_status
+            resolution_now = (
+                utcnow()
+                if terminal_event is not None
+                and updated.cleanup_status == RECOVERY_RESOLVED
+                else None
+            )
             with self._atomic():
                 self._submit_recoveries[idx] = updated
                 if terminal_event is not None:
@@ -2159,6 +3262,32 @@ class InMemoryStateStore(StateStore):
                         },
                         session_id=updated.session_id,
                     )
+                    if (
+                        updated.cleanup_status == RECOVERY_RESOLVED
+                        and not self._has_recovery_terminal_fact_unlocked(
+                            updated,
+                            claim_occurrence=claim_occurrence,
+                        )
+                    ):
+                        stored_resolution = self._append_execution_event_unlocked(
+                            recovery_resolution_execution_event(
+                                updated,
+                                now=resolution_now,
+                                claim_occurrence=claim_occurrence,
+                            )
+                        )
+                        if not recovery_terminal_fact_matches(
+                            updated,
+                            stored_resolution,
+                            claim_occurrence=claim_occurrence,
+                        ):
+                            raise RecoveryTransitionError(
+                                "recovery resolution event identity conflicts with "
+                                f"existing dedupe fact for {updated.id}"
+                            )
+                self._reconcile_envelope_owners_for_order_unlocked(
+                    updated.local_order_id, now=resolution_now or utcnow()
+                )
             return updated.model_copy(deep=True)
 
     async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
@@ -2243,9 +3372,22 @@ class InMemoryStateStore(StateStore):
         actor: str = COMMAND_ACTOR_SYSTEM,
     ) -> Order:
         async with self._lock:
-            order = self._orders.get(order_id)
-            if order is None:
+            raw_order = self._orders.get(order_id)
+            if raw_order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
+            order = self._project_order_unlocked(raw_order)
+            if (
+                order.status is OrderStatus.SUBMITTING
+                and new_status is OrderStatus.SUBMITTED
+            ):
+                envelope_block = self._envelope_claim_block_reason_unlocked(
+                    order, accepted=True
+                )
+                if envelope_block is not None:
+                    raise InvalidOrderError(
+                        f"accepted envelope order {order.id} no longer satisfies "
+                        f"its venue authorization: {envelope_block}"
+                    )
             plan = plan_transition_order(
                 order=order,
                 new_status=new_status,
@@ -2257,6 +3399,10 @@ class InMemoryStateStore(StateStore):
                 assert plan.error is not None
                 raise plan.error
             if plan.outcome == ORDER_TRANSITION_NOOP:
+                with self._atomic():
+                    self._reconcile_envelope_owners_for_order_unlocked(
+                        order_id, now=utcnow()
+                    )
                 return order.model_copy(deep=True)
             # APPLY: plan.order + plan.event are set for this outcome (narrows the
             # Optional plan fields for the rest of the method; mypy can't infer it
@@ -2315,7 +3461,39 @@ class InMemoryStateStore(StateStore):
                 )
                 if exec_event is not None:
                     self._append_execution_event_unlocked(exec_event)
-            return plan.order.model_copy(deep=True)
+                final_order = plan.order
+                if self._released_terminal_envelope_child_can_cancel_unlocked(
+                    final_order
+                ):
+                    cancel_plan = plan_transition_order(
+                        order=final_order,
+                        new_status=OrderStatus.CANCELED,
+                        filled_quantity=None,
+                        broker_order_id=None,
+                        actor=actor,
+                    )
+                    assert (
+                        cancel_plan.outcome == ORDER_TRANSITION_APPLY
+                        and cancel_plan.order is not None
+                        and cancel_plan.event is not None
+                    )
+                    cancel_event = execution_event_for_routine_transition(
+                        final_order,
+                        OrderStatus.CANCELED,
+                        cancel_plan.order.filled_quantity,
+                    )
+                    self._orders[order_id] = cancel_plan.order
+                    self._append_event_unlocked(
+                        cancel_plan.event.event_type,
+                        **cancel_plan.event.as_kwargs(),
+                    )
+                    if cancel_event is not None:
+                        self._append_execution_event_unlocked(cancel_event)
+                    final_order = cancel_plan.order
+                self._reconcile_envelope_owners_for_order_unlocked(
+                    order_id, now=final_order.updated_at
+                )
+            return final_order.model_copy(deep=True)
 
     # ------------------------------------------------------------------ #
     # Timeout-quarantine (ADR-002 / wave 3c) — evented order transitions
@@ -2330,6 +3508,10 @@ class InMemoryStateStore(StateStore):
             assert plan.error is not None
             raise plan.error
         if plan.outcome == ORDER_TRANSITION_NOOP:
+            with self._atomic():
+                self._reconcile_envelope_owners_for_order_unlocked(
+                    order.id, now=utcnow()
+                )
             return order.model_copy(deep=True)
         assert (
             plan.order is not None
@@ -2342,15 +3524,19 @@ class InMemoryStateStore(StateStore):
                 plan.audit_event.event_type, **plan.audit_event.as_kwargs()
             )
             self._append_execution_event_unlocked(plan.execution_event)
+            self._reconcile_envelope_owners_for_order_unlocked(
+                plan.order.id, now=plan.order.updated_at
+            )
         return plan.order.model_copy(deep=True)
 
     async def quarantine_timed_out_order(
         self, order_id: str, *, reason: Optional[str] = None
     ) -> Order:
         async with self._lock:
-            order = self._orders.get(order_id)
-            if order is None:
+            raw_order = self._orders.get(order_id)
+            if raw_order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
+            order = self._project_order_unlocked(raw_order)
             plan = plan_quarantine_timed_out_order(order, reason=reason)
             return self._apply_order_evented_plan_unlocked(plan, order)
 
@@ -2363,9 +3549,10 @@ class InMemoryStateStore(StateStore):
         reason: Optional[str] = None,
     ) -> Order:
         async with self._lock:
-            order = self._orders.get(order_id)
-            if order is None:
+            raw_order = self._orders.get(order_id)
+            if raw_order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
+            order = self._project_order_unlocked(raw_order)
             plan = plan_resolve_timeout_quarantine(
                 order, new_status, broker_order_id=broker_order_id, reason=reason
             )
@@ -2388,9 +3575,10 @@ class InMemoryStateStore(StateStore):
         reason: Optional[str] = None,
     ) -> Order:
         async with self._lock:
-            order = self._orders.get(order_id)
-            if order is None:
+            raw_order = self._orders.get(order_id)
+            if raw_order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
+            order = self._project_order_unlocked(raw_order)
             plan = plan_reconcile_resolve_order(order, new_status, reason=reason)
             return self._apply_order_evented_plan_unlocked(plan, order)
 
@@ -2612,7 +3800,29 @@ class InMemoryStateStore(StateStore):
     async def append_execution_event(self, event: ExecutionEvent) -> ExecutionEvent:
         async with self._lock:
             with self._atomic():
-                return self._append_execution_event_unlocked(event)
+                stored = self._append_execution_event_unlocked(event)
+                if stored.order_id is not None:
+                    self._reconcile_envelope_owners_for_order_unlocked(
+                        stored.order_id, now=stored.ts_event or stored.ts_init
+                    )
+                # A malformed ENVELOPE_ACTION may have lost its child id.  Its
+                # parent/correlation identities still change the shared owner
+                # projection and must converge immediately, not only on restart.
+                event_owner_ids: set[str] = set()
+                if stored.correlation_id is not None:
+                    event_owner_ids.add(stored.correlation_id)
+                parent = (
+                    self._envelopes.get(stored.envelope_id)
+                    if stored.envelope_id is not None
+                    else None
+                )
+                if parent is not None:
+                    event_owner_ids.add(parent.sell_intent_id)
+                for intent_id in sorted(event_owner_ids):
+                    self._reconcile_envelope_owner_unlocked(
+                        intent_id, now=stored.ts_event or stored.ts_init
+                    )
+                return stored
 
     async def get_execution_events(
         self, *, after_sequence: int = 0, limit: Optional[int] = None
@@ -2978,6 +4188,7 @@ class InMemoryStateStore(StateStore):
             for si in self._sell_intents.values()
             if si.session_id == session.id
             and si.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED)
+            and not self._valid_envelope_owner_state_unlocked(si)[1]
         ]
         nonzero_positions = []
         # Enumerate position symbols from the event log (the Rule-7 truth), not

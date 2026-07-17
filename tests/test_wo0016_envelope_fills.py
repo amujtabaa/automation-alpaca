@@ -22,6 +22,7 @@ from app.models import (
     EventAuthority,
     EventSource,
     ExecutionEnvelope,
+    SellReason,
     SessionType,
     utcnow,
 )
@@ -52,6 +53,20 @@ def make_draft(intent_id: str = "si-1", qty: int = 100) -> ExecutionEnvelope:
     )
 
 
+async def create_owned_envelope(store, *, qty: int = 100) -> ExecutionEnvelope:
+    draft = make_draft(qty=qty)
+    owner = await store.create_sell_intent(
+        symbol=draft.symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=draft.qty_ceiling,
+    )
+    return await store.create_envelope(
+        draft.model_copy(
+            update={"sell_intent_id": owner.id, "session_id": owner.session_id}
+        )
+    )
+
+
 async def activate(store, env: ExecutionEnvelope) -> ExecutionEnvelope:
     await store.transition_envelope(env.id, S.APPROVED)
     return await store.transition_envelope(env.id, S.ACTIVE)
@@ -59,7 +74,7 @@ async def activate(store, env: ExecutionEnvelope) -> ExecutionEnvelope:
 
 async def test_fill_decrements_and_full_fill_completes(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await activate(any_store, env)
 
     after = await any_store.record_envelope_fill(
@@ -84,7 +99,7 @@ async def test_fill_decrements_and_full_fill_completes(any_store):
 
 async def test_duplicate_fill_is_counted_exactly_once(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await activate(any_store, env)
 
     await any_store.record_envelope_fill(
@@ -110,7 +125,7 @@ async def test_overfill_of_the_hard_ceiling_breaches(any_store):
     terminal-pending-human (ADR-001 posture, ADR-010 hard rail)."""
 
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft(qty=50))
+    env = await create_owned_envelope(any_store, qty=50)
     await activate(any_store, env)
 
     after = await any_store.record_envelope_fill(
@@ -132,7 +147,7 @@ async def test_overfill_of_the_hard_ceiling_breaches(any_store):
 
 async def test_fill_while_frozen_decrements_but_never_unfreezes(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await activate(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN)
 
@@ -155,7 +170,7 @@ async def test_fill_while_frozen_decrements_but_never_unfreezes(any_store):
 
 async def test_late_fill_on_terminal_envelope_is_recorded_not_hidden(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await activate(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN)
     await any_store.transition_envelope(env.id, S.CANCELLED)
@@ -176,7 +191,7 @@ async def test_late_fill_on_terminal_envelope_is_recorded_not_hidden(any_store):
 
 async def test_fill_before_activation_is_structurally_impossible(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     with pytest.raises(InvalidFillError):
         await any_store.record_envelope_fill(
             env.id, quantity=10, dedupe_key="fill:o1:early", price=9.9
@@ -193,7 +208,7 @@ async def test_fill_before_activation_is_structurally_impossible(any_store):
 @pytest.mark.parametrize("qty", [0, -5])
 async def test_nonpositive_fill_quantity_rejected(any_store, qty):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await activate(any_store, env)
     with pytest.raises(InvalidFillError):
         await any_store.record_envelope_fill(
@@ -215,7 +230,7 @@ async def test_transitions_and_raw_event_appends_cannot_move_remaining(any_store
     envelope — remaining_quantity must not move (invariant 8/9 analogue)."""
 
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await activate(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN)
     await any_store.transition_envelope(env.id, S.ACTIVE)

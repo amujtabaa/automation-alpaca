@@ -88,8 +88,21 @@ async def seeded_envelope(store, **overrides) -> ExecutionEnvelope:
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
     draft = make_draft(si.id, **overrides)
-    draft = draft.model_copy(update={"status": EnvelopeStatus.PENDING})
-    return await store.approve_envelope_activation(draft, actor="operator-a")
+    draft = draft.model_copy(
+        update={"status": EnvelopeStatus.PENDING, "activated_at": None}
+    )
+    envelope = await store.approve_envelope_activation(draft, actor="operator-a")
+    # The policy tape is deliberately fixed at July 15. Keep activation causal
+    # to that tape regardless of the wall-clock day running the suite.
+    if hasattr(store, "_envelopes"):
+        store._envelopes[envelope.id].activated_at = T0
+    else:
+        store._conn.execute(
+            "UPDATE execution_envelopes SET activated_at=? WHERE id=?",
+            (T0.isoformat(), envelope.id),
+        )
+        store._conn.commit()
+    return envelope.model_copy(update={"activated_at": T0})
 
 
 def _action_event(order_id: str, action: str = "submit", tranche=False, seq=1):

@@ -13,7 +13,7 @@ cancelling it would strand the working order the human is deferring to).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -25,17 +25,17 @@ from app.models import (
     ExecutionEventType,
     OrderSide,
     OrderStatus,
-    OrderType,
-    SellIntentStatus,
     SellReason,
     SessionType,
     utcnow,
 )
+from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import FLATTEN_CREATED, FLATTEN_FLAT, OrderIntentBlockedError
 
 pytestmark = pytest.mark.anyio
 
 S = EnvelopeStatus
+ACTION_NOW = datetime(2026, 7, 15, 15, 0, 0, tzinfo=timezone.utc)
 
 
 def make_draft(intent_id: str, symbol: str = "AAPL", **overrides) -> ExecutionEnvelope:
@@ -71,10 +71,39 @@ async def _hold(store, symbol, qty, avg=10.0):
 
 
 async def _protection_intent(store, symbol, qty):
+    session = await store.get_current_session()
     si = await store.create_sell_intent(
-        symbol=symbol, reason=SellReason.PROTECTION_FLOOR, target_quantity=qty
+        symbol=symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=qty,
+        session_id=session.id,
     )
     return si
+
+
+def _bound_draft(si, **overrides):
+    return make_draft(
+        si.id,
+        si.symbol,
+        qty_ceiling=si.target_quantity,
+        session_id=si.session_id,
+        **overrides,
+    )
+
+
+def _planned(quantity=100, limit_price=9.90) -> PlannedAction:
+    return PlannedAction(
+        kind=ActionKind.SUBMIT,
+        limit_price=limit_price,
+        quantity=quantity,
+        regime=None,
+        urgency=0.0,
+        working_stop=9.50,
+        atr=0.05,
+        tranche=False,
+        stop_triggered=False,
+        clamps=(),
+    )
 
 
 # --- kill switch ⇒ freeze --------------------------------------------------------- #
@@ -82,13 +111,16 @@ async def _protection_intent(store, symbol, qty):
 
 async def test_kill_freezes_every_active_envelope_atomically(any_store):
     await any_store.initialize()
+    si_a = await _protection_intent(any_store, "AAPL", 100)
     a = await any_store.approve_envelope_activation(
-        make_draft("si-1", "AAPL"), actor="operator-a"
+        _bound_draft(si_a), actor="operator-a"
     )
+    si_b = await _protection_intent(any_store, "MSFT", 100)
     b = await any_store.approve_envelope_activation(
-        make_draft("si-2", "MSFT"), actor="operator-a"
+        _bound_draft(si_b), actor="operator-a"
     )
-    pending = await any_store.create_envelope(make_draft("si-3", "NVDA"))
+    si_pending = await _protection_intent(any_store, "NVDA", 100)
+    pending = await any_store.create_envelope(_bound_draft(si_pending))
 
     await any_store.set_kill_switch(True, actor="operator-a")
 
@@ -109,8 +141,9 @@ async def test_kill_freezes_every_active_envelope_atomically(any_store):
 
 async def test_release_never_auto_resumes(any_store):
     await any_store.initialize()
+    si = await _protection_intent(any_store, "AAPL", 100)
     env = await any_store.approve_envelope_activation(
-        make_draft("si-1"), actor="operator-a"
+        _bound_draft(si), actor="operator-a"
     )
     await any_store.set_kill_switch(True, actor="operator-a")
     await any_store.set_kill_switch(False, actor="operator-a")
@@ -123,10 +156,12 @@ async def test_release_never_auto_resumes(any_store):
 
 async def test_resume_and_activation_are_refused_while_halted(any_store):
     await any_store.initialize()
+    si = await _protection_intent(any_store, "AAPL", 100)
     env = await any_store.approve_envelope_activation(
-        make_draft("si-1"), actor="operator-a"
+        _bound_draft(si), actor="operator-a"
     )
-    pending = await any_store.create_envelope(make_draft("si-2", "MSFT"))
+    si_pending = await _protection_intent(any_store, "MSFT", 100)
+    pending = await any_store.create_envelope(_bound_draft(si_pending))
     await any_store.transition_envelope(pending.id, S.APPROVED)
     await any_store.set_kill_switch(True, actor="operator-a")
 
@@ -148,10 +183,11 @@ async def test_flatten_cancels_the_symbols_envelopes_before_proceeding(any_store
     await _hold(any_store, "AAPL", 100)
     si = await _protection_intent(any_store, "AAPL", 100)
     env = await any_store.approve_envelope_activation(
-        make_draft(si.id, "AAPL"), actor="operator-a"
+        _bound_draft(si), actor="operator-a"
     )
+    si_other = await _protection_intent(any_store, "MSFT", 100)
     other = await any_store.approve_envelope_activation(
-        make_draft("si-other", "MSFT"), actor="operator-a"
+        _bound_draft(si_other), actor="operator-a"
     )
 
     result = await any_store.flatten_position("AAPL", actor="operator-ameen")
@@ -203,7 +239,7 @@ async def test_flatten_on_a_flat_position_still_cancels_stale_envelopes(any_stor
     si = await _protection_intent(any_store, "AAPL", 50)
     # No position was ever built — the envelope is a stale mandate.
     env = await any_store.approve_envelope_activation(
-        make_draft(si.id, "AAPL"), actor="operator-a"
+        _bound_draft(si), actor="operator-a"
     )
     result = await any_store.flatten_position("AAPL", actor="operator-a")
     assert result.outcome == FLATTEN_FLAT
@@ -219,17 +255,19 @@ async def test_deferral_to_a_live_protection_exit_leaves_its_envelope_alone(
 
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
-    si = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
-    )
+    si = await _protection_intent(any_store, "AAPL", 100)
     env = await any_store.approve_envelope_activation(
-        make_draft(si.id, "AAPL"), actor="operator-a"
+        _bound_draft(si, expires_at=ACTION_NOW + timedelta(hours=2)),
+        actor="operator-a",
     )
-    await any_store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
-    order = await any_store.create_order_for_sell_intent(
-        si.id, order_type=OrderType.MARKET
+    staged = await any_store.stage_envelope_action(
+        env.id,
+        _planned(quantity=100),
+        snapshot_fingerprint="fp-live-protection-exit",
+        now=ACTION_NOW,
     )
-    claim = await any_store.claim_order_for_submission(order.id)
+    assert staged.order is not None
+    claim = await any_store.claim_order_for_submission(staged.order.id)
     await any_store.transition_order(
         claim.order.id, OrderStatus.SUBMITTED, broker_order_id="broker-x"
     )
@@ -244,10 +282,10 @@ async def test_flatten_cancels_frozen_and_preactivation_envelopes_too(any_store)
     await _hold(any_store, "AAPL", 100)
     si = await _protection_intent(any_store, "AAPL", 100)
     active = await any_store.approve_envelope_activation(
-        make_draft(si.id, "AAPL"), actor="operator-a"
+        _bound_draft(si), actor="operator-a"
     )
     await any_store.transition_envelope(active.id, S.FROZEN)
-    pending = await any_store.create_envelope(make_draft("si-x", "AAPL"))
+    pending = await any_store.create_envelope(_bound_draft(si))
 
     result = await any_store.flatten_position("AAPL", actor="operator-a")
     assert result.outcome == FLATTEN_CREATED

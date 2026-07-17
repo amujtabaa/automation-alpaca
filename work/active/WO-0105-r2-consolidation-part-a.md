@@ -32,14 +32,23 @@ independent WO-0036 R2 (SellIntent↔Envelope lifecycle link) implementations �
 
 ## Allowed paths
 
+The list below is a **single consecutive block** (no comment lines interrupting the `- ` entries):
+`.ai-os/scripts/check_work_order_scope.py`'s parser reads only an unbroken run of list items, so
+notes live here in prose, not inline. Part A paths are the `work/review/**`, oracle, and
+`tests/performance/**` entries. The remaining entries are Part B scope, mirroring WO-0036's own
+`allowed_paths` (gated on the human ratification recorded in
+`work/review/CAMPAIGN-0002-claude/RATIFICATION-part-a.md`), plus a `tests/**` widening
+(amended 2026-07-16, operator-approved) so the consolidation can reconcile the full R2 test surface
+(the merged R2 suites + the base tests both attempts re-fixtured). The spec oracle
+`tests/test_r2_conformance_oracle_claude.py` remains **UNMODIFIED** per charter §3 — a needed oracle
+change is a spec change, escalated to the human, never edited to pass.
+
 ```yaml
 allowed_paths:
   - work/review/CAMPAIGN-0002-claude/**
   - work/active/WO-0105-r2-consolidation-part-a.md
   - work/ledger.jsonl
-  - tests/test_r2_conformance_oracle_claude.py
-  - tests/performance/**            # scratch-worktree perf harness porting, Phase 3 only
-  # Part B (gated on human ratification of §I) additionally needs, per WO-0036's own scope:
+  - tests/**
   - app/store/core.py
   - app/store/memory.py
   - app/store/sqlite.py
