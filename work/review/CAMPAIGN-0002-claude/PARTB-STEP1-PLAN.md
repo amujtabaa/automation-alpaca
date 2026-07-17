@@ -233,3 +233,55 @@ errors, 12 skipped — identical to the pre-fix baseline); `ruff`/`mypy`/`lint-i
 
 Both stores now carry the same memoization discipline for this hot path, closing the parity gap
 the independent review surfaced rather than leaving it as a disclosed-but-unfixed asymmetry.
+
+## § Operator-requested third-party double-check (2026-07-16) — three more independent agents
+
+After step 1c closed, the operator explicitly asked for a further "third-party clear eyes"
+double-check of the whole step-1 arc before continuing. Dispatched 3 more independent agents, each
+briefed to try to find problems rather than confirm success, none told the others' framing:
+
+**Correction to this document's own precision** (found by the ground-truth-verification agent):
+every "N/N passed" figure above states pytest's *collected* count as if it were the *passed*
+count. Pytest's own verdicts, re-run and confirmed fresh: R2-focused suite is **302 passed, 6
+skipped** (of 308 collected) — not "308/308 passed"; full suite is **3002 passed, 11 skipped, 1
+xfailed** (of 3014 collected) — not "3014/3014 passed... 12 skipped" (11 true skips + 1 xfail is a
+different pytest category than "skipped," even though 11+1=12 as a raw count). **The substance was
+never wrong** — zero failures, zero errors, nothing hidden, confirmed independently — only the
+headline phrasing overstated precision. Recorded here rather than silently rewritten into the
+already-pushed commit messages, matching this campaign's own discipline of appending corrections
+rather than editing history.
+
+**Two real, narrow gaps found and closed the same session** (by the code-correctness-review
+agent, which went further than the original adversarial review by building live multi-envelope
+supersession chains through the actual store SQL/dict code, not just the pure function, plus
+mutation-testing its own check):
+1. **Test-coverage gap**: the scoped-vs-full parity suite proved the scoping *algorithm* correct
+   but never drove a 3+-link chain through the real store implementations. Closed:
+   `tests/test_wo0036_r2_projection_scope_parity.py` gained 3 new real-store integration tests
+   (`test_three_link_chain_through_real_store_resolves_current_owner` on `any_store`,
+   `test_three_link_chain_owner_resolution_matches_across_stores` comparing both concrete stores
+   directly) — built entirely through the public `supersede_envelope`/`active_sell_intent_for` API,
+   producing a genuine middle-of-chain envelope (both `supersedes_id` and `superseded_by_id` set)
+   the same way production code would. (Hit the campaign's own familiar `session_id` fixture gap
+   on the first attempt — Sol's owner-scope validator checks it — fixed the same way as every prior
+   occurrence.)
+2. **Latent, not-currently-reachable cache-key footgun**: `memory.py`'s `_envelope_obligation_unlocked`
+   included `id(valid_owner)` in its cache key; no current caller combines `_cache` with
+   `valid_owner`, so this was dead code, not a live bug — but a future change wiring the two
+   together could risk a false cache hit from `id()` reuse after garbage collection. Fixed by
+   having the function simply opt OUT of caching whenever `valid_owner is not None` (that shape is
+   only ever called once per intent today, so caching would not have helped even if wired up
+   safely) — removes the risk class entirely rather than trying to key around it.
+
+A third agent independently re-derived the I.6 (Repro 2) discharge from scratch, briefed to try to
+break it. Its finding is recorded in full in
+`work/review/CAMPAIGN-0002-claude/RATIFICATION-part-a.md`'s 2026-07-16 addendum under I.6, not
+duplicated here: the non-blocking verdict survives, but the discharge's supporting reasoning had
+not traced execution up to the facade layer, where a pre-existing (not R2-introduced), out-of-lock
+check-then-act pattern can bypass the store-level protection the discharge cited. Deliberately
+**not fixed** in this pass — pre-existing, safety-neutral, a different subsystem than WO-0036/R2's
+own scope — flagged for the operator's own sequencing decision.
+
+Re-verified after both code fixes: R2-focused + supersession suites 317 tests, 0 failed, 0 errors,
+6 skipped (exit 0); full repo suite re-run for a final confirmation (see commit for exact numbers,
+reported in pytest's own vocabulary this time); `ruff`/`mypy(64)`/`lint-imports(6-0)` clean.

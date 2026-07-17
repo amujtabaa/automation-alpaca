@@ -1032,19 +1032,25 @@ class InMemoryStateStore(StateStore):
         symbol's lineage 3+ times per logical call via the helpers below. ``_cache``,
         when the caller threads one shared dict through the whole call, memoizes by
         selector so each distinct (sell_intent_id, symbol, envelope_id,
-        excluding_envelope_id, id(valid_owner)) is computed once. Optional and
-        per-call only -- never persisted, never shared across a write, so it cannot
-        see a stale answer.
+        excluding_envelope_id) is computed once. Optional and per-call only --
+        never persisted, never shared across a write, so it cannot see a stale
+        answer.
+
+        ``valid_owner`` deliberately opts a call OUT of caching (no current
+        caller combines ``_cache`` with ``valid_owner`` -- the sole caller that
+        passes ``valid_owner``, ``_valid_envelope_owner_state_unlocked``, never
+        passes ``_cache``). ``valid_owner`` is a ``SellIntent`` object, not a
+        stable id; keying on it would require ``id(valid_owner)``, which risks
+        a false cache hit if a future caller combined the two and a garbage-
+        collected object's id were reused within the same cache's lifetime.
+        Simpler and equally correct to just never cache this shape -- it is
+        only ever called once per intent today, so caching would not help
+        even if wired up safely.
         """
 
-        cache_key = (
-            sell_intent_id,
-            symbol,
-            envelope_id,
-            excluding_envelope_id,
-            id(valid_owner) if valid_owner is not None else None,
-        )
-        if _cache is not None and cache_key in _cache:
+        cache_key = (sell_intent_id, symbol, envelope_id, excluding_envelope_id)
+        cacheable = valid_owner is None
+        if _cache is not None and cacheable and cache_key in _cache:
             return _cache[cache_key]
 
         envelopes = [
@@ -1160,7 +1166,7 @@ class InMemoryStateStore(StateStore):
             needs_review_order_ids=needs_review_order_ids,
             known_envelopes_by_id=known_envelopes_by_id,
         )
-        if _cache is not None:
+        if _cache is not None and cacheable:
             _cache[cache_key] = result
         return result
 

@@ -105,6 +105,47 @@ table as `flat` rather than `blocked`, and/or ensure the transient never persist
 reconcile tick (this depends on the I.5 R6-logging fix landing, since a silently-stranded lineage
 could otherwise prolong the block). Recorded as a Part B acceptance nicety, not a gate.
 
+**ADDENDUM 2026-07-16 (independent third-party re-derivation, requested by the operator as a
+double-check of the Part B step 1 work) — corrects claim 4's completeness, does NOT change the
+non-blocking verdict.** An independent review agent, briefed to try to break this discharge rather
+than confirm it, re-derived claims 1-3 as sound but found claim 4 ("Sol's mechanism is even safer
+here") is **incomplete, not wrong**: this discharge investigated `app/store/core.py` +
+`flatten_position` in both stores, but never traced execution up to the actual HTTP entry point.
+`app/facade/store_backed.py`'s `create_exit` — the sole caller of `POST
+/positions/{symbol}/flatten` (`app/api/routes_trading.py:95-115`) — performs its own
+`position.quantity <= 0` check **before** ever calling the store, using a read taken **outside**
+the store's lock (`get_position` acquires and releases its own lock, then the facade's `if` runs
+unprotected) — a check-then-act split across two lock acquisitions, at odds with this codebase's
+own stated discipline elsewhere ("every read this decision depends on happens under this ONE lock
+hold," `memory.py`). In the exact Repro-2 window, **this facade check fires first and returns 409
+without ever calling `store.flatten_position()`** — meaning Sol's cited `FlattenBlockedError`
+never actually gets a chance to run in this scenario; it is bypassed one layer up, not exercised.
+
+**Why the non-blocking verdict still holds**: the reviewer traced every sub-case (bypassed
+live-envelope-child, bypassed unresolved-direct-order, bypassed clean-flat) and in every one the
+operator-visible outcome is identical whether the bypass fires or the store's checks run: HTTP 409,
+no order minted, no phantom "you're flat" success — the facade converts even the store's own
+legitimate `FLATTEN_FLAT` to the same `ConflictError`. **No path exists — bypassed or not — where a
+caller is told "success" while real exposure persists.** This bypass is also confirmed pre-existing
+base behavior (zero diff across `22617f4`, both R2 freeze branches, and current HEAD in
+`app/facade/store_backed.py`) — not something this campaign's work introduced or regressed.
+
+**One genuine, narrow, previously-uncounted cost**: when the bypass fires with a stale non-terminal
+envelope present (APPROVED/ACTIVE/FROZEN, no currently-live venue order), ADR-010 §4's
+stale-envelope cleanup is *deferred* for that call (not lost — a later reconcile tick or subsequent
+flatten attempt still performs it), which could transiently block a fresh legitimate sell-intent on
+the symbol. Availability/tidiness, not exposure. **Folded into the residual Part B item above**,
+which should now also cover: (a) whether `create_exit`'s pre-check should move inside the store's
+lock or be removed in favor of always calling `store.flatten_position()` as the single source of
+truth (closes the lock-discipline exception, not just the UX wrinkle), and (b) adding the missing
+test coverage for this exact interaction (pre-check reads flat while the store, if reached, would
+have found an unresolved order or live envelope child — confirmed untested by both
+`test_create_exit_flat_symbol_is_409` and `test_create_exit_race_to_flat_after_buy_cancel_is_409`
+in `tests/test_phase6e_command_facade.py`). **This was deliberately NOT fixed in the same pass that
+found it** — it is pre-existing, safety-neutral, and touches a different subsystem (the facade
+layer) than WO-0036/R2's own scope; flagged for the operator's decision on sequencing rather than
+patched unilaterally.
+
 ### I.7 — Independent review dispatch · **RATIFIED as recommended**
 Queue the **REV-0029** independent cross-model review packet **immediately upon Part B
 completion**, before any beta-relevant reliance — not batched with other milestones. Basis: the

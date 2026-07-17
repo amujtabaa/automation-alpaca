@@ -24,8 +24,18 @@ from datetime import timedelta
 
 import pytest
 
-from app.models import EnvelopeStatus
+from app.models import (
+    EnvelopeExpiryDisposition,
+    EnvelopeStaleDataDisposition,
+    EnvelopeStatus,
+    ExecutionEnvelope,
+    OrderSide,
+    SellReason,
+    SessionType,
+)
 from app.store.core import project_envelope_obligation
+from app.store.memory import InMemoryStateStore
+from app.store.sqlite import SqliteStateStore
 from tests.test_wo0036_r2_lifecycle_link import NOW, _draft
 
 pytestmark = pytest.mark.anyio
@@ -189,3 +199,143 @@ def test_completed_envelope_zero_remaining_no_neighbor_needed():
     )
     projection = _assert_parity([e], {"env-1": e})
     assert projection.retains_intent is False
+
+
+# --- Real-store integration: the tests above prove the SCOPING ALGORITHM is
+# semantics-preserving by hand-reimplementing it in Python against the pure
+# function. They do not exercise the actual SQL (sqlite.py) / dict-scan
+# (memory.py) code that performs that scoping in the real stores. An
+# independent review (2026-07-16, requested by the operator as a double-check
+# of this file) found that gap precisely: no test drove a 3+-link chain, or a
+# middle-of-chain envelope query (an envelope with BOTH supersedes_id and
+# superseded_by_id set), through the real store implementations. Closing it
+# here, through 100% public API, on both stores via any_store.
+
+
+def _chain_draft(intent_id: str, **overrides) -> ExecutionEnvelope:
+    base = dict(
+        sell_intent_id=intent_id,
+        symbol="AAPL",
+        qty_ceiling=100,
+        floor_price=9.0,
+        trail_distance_min=1.0,
+        trail_distance_max=3.0,
+        participation_rate_cap=0.2,
+        aggressiveness=["passive"],
+        cooldown_floor_ms=1,
+        cancel_replace_budget=3,
+        expires_at=NOW + timedelta(hours=2),
+        allowed_session_phases=[SessionType.REGULAR],
+        expiry_disposition=EnvelopeExpiryDisposition.CANCEL_AND_RETURN,
+        stale_data_disposition=EnvelopeStaleDataDisposition.CANCEL,
+    )
+    base.update(overrides)
+    return ExecutionEnvelope(**base)
+
+
+async def _seeded_active_envelope(store) -> ExecutionEnvelope:
+    await store.initialize()
+    session = await store.get_current_session()
+    candidate = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+    )
+    intent = await store.create_sell_intent(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    return await store.approve_envelope_activation(
+        _chain_draft(intent.id, session_id=session.id), actor="operator-a"
+    )
+
+
+async def test_three_link_chain_through_real_store_resolves_current_owner(any_store):
+    """A -> B -> C via the real supersede_envelope API (never a hand-built
+    lineage). B ends up with BOTH supersedes_id (A) and superseded_by_id (C)
+    set -- the exact "middle envelope, both neighbours needed" shape -- and
+    is queried indirectly (active_sell_intent_for iterates every envelope for
+    the symbol, including B, via the real store's own scoping code, not a
+    Python re-implementation of it)."""
+
+    a = await _seeded_active_envelope(any_store)
+    b = await any_store.supersede_envelope(
+        a.id,
+        _chain_draft(a.sell_intent_id, session_id=a.session_id),
+        actor="operator-a",
+        reason="reprice-1",
+    )
+    c = await any_store.supersede_envelope(
+        b.id,
+        _chain_draft(b.sell_intent_id, session_id=b.session_id),
+        actor="operator-a",
+        reason="reprice-2",
+    )
+
+    a_after = await any_store.get_envelope(a.id)
+    b_after = await any_store.get_envelope(b.id)
+    assert a_after.status is EnvelopeStatus.SUPERSEDED
+    assert a_after.superseded_by_id == b.id
+    assert b_after.status is EnvelopeStatus.SUPERSEDED
+    assert b_after.supersedes_id == a.id
+    assert b_after.superseded_by_id == c.id  # B: both neighbour fields populated
+    assert c.status is EnvelopeStatus.ACTIVE
+    assert c.supersedes_id == b.id
+
+    owner = await any_store.active_sell_intent_for("AAPL")
+    assert owner is not None
+    assert owner.id == a.sell_intent_id  # the intent travels with the chain
+    assert owner.status.value in ("approved", "pending")
+
+
+async def test_three_link_chain_owner_resolution_matches_across_stores(tmp_path):
+    """The identical chain SHAPE, built independently on each store, must
+    resolve the SAME STRUCTURAL way on both -- direct sqlite-vs-memory parity
+    for this shape, not inferred from each store separately agreeing with the
+    pure function. Constructs both stores directly (mirrors conftest.py's
+    any_store fixture construction, including sqlite connection cleanup)
+    since this test needs BOTH concrete stores in one test body.
+
+    Each store generates its own random ids (create_sell_intent has no
+    caller-supplied id) -- comparing raw ids across the two independent store
+    instances is meaningless, since they can never coincide. What's
+    comparable, and what parity actually means here, is: does each store
+    resolve active_sell_intent_for back to the SAME intent it itself created
+    for the chain (self-consistency, per store), and do both stores agree on
+    the resolved owner's STATUS (a determinate, non-random value)."""
+    stores = {
+        "memory": InMemoryStateStore(),
+        "sqlite": SqliteStateStore(tmp_path / "chain_parity.db"),
+    }
+    try:
+        statuses = {}
+        for name, store in stores.items():
+            a = await _seeded_active_envelope(store)
+            b = await store.supersede_envelope(
+                a.id,
+                _chain_draft(a.sell_intent_id, session_id=a.session_id),
+                actor="operator-a",
+                reason="reprice-1",
+            )
+            await store.supersede_envelope(
+                b.id,
+                _chain_draft(b.sell_intent_id, session_id=b.session_id),
+                actor="operator-a",
+                reason="reprice-2",
+            )
+            owner = await store.active_sell_intent_for("AAPL")
+            assert owner is not None, f"{name}: no owner resolved for the chain"
+            assert owner.id == a.sell_intent_id, (
+                f"{name}: resolved owner {owner.id} != the chain's own "
+                f"originating intent {a.sell_intent_id}"
+            )
+            statuses[name] = owner.status
+        assert statuses["memory"] == statuses["sqlite"]
+    finally:
+        sqlite_conn = getattr(stores["sqlite"], "_conn", None)
+        if sqlite_conn is not None:
+            sqlite_conn.close()
