@@ -25,7 +25,8 @@
   `CREATE INDEX IF NOT EXISTS`** on the SQLite store (startup-DDL pattern; no table shape or data
   changes) is pre-approved if P2-B / P4 measurements demand it — or whether index-requiring work
   parks instead. **Outcome:** recorded below on answer.
-  - Outcome: —
+  - Outcome: **PRE-APPROVED** (Ameen, 2026-07-17, via structured prompt): additive + idempotent
+    only, existing startup-DDL pattern, flagged in the commit message, folded into REV-0029 scope.
 
 ## Defaults applied unless the operator objects (recorded for the run)
 
