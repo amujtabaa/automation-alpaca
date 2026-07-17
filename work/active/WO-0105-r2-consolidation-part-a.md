@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: R2 consolidation campaign — Part A (investigate + decide the canonical SellIntent↔Envelope lifecycle link)
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0105
 wave: R2 consolidation campaign (CAMPAIGN-0002), Part A
 model_tier: strong
@@ -42,14 +42,21 @@ notes live here in prose, not inline. Part A paths are the `work/review/**`, ora
 (the merged R2 suites + the base tests both attempts re-fixtured). `app/store/base.py` added
 2026-07-17 (Part B completion run, D7-style flagged widening): the original list named the three
 concrete stores but omitted the ABC they share — same oversight WO-0107 corrected for its own
-scope; P2's `close_session` contract-docstring fix (§G.3) lives there. The spec oracle
+scope; P2's `close_session` contract-docstring fix (§G.3) lives there. The review-packet and
+close-out paths (`REV-0029/**`, `REV-0024/**`, WO-0107, the archived WO-0036) added 2026-07-17
+(P7/P8, same flagged-widening convention): they are this WO's own §H.3 deliverables — the
+consolidated review packet, its subsumption note, and the close-out bookkeeping. The spec oracle
 `tests/test_r2_conformance_oracle_claude.py` remains **UNMODIFIED** per charter §3 — a needed oracle
 change is a spec change, escalated to the human, never edited to pass.
 
 ```yaml
 allowed_paths:
   - work/review/CAMPAIGN-0002-claude/**
+  - work/review/REV-0029/**
+  - work/review/REV-0024/**
   - work/active/WO-0105-r2-consolidation-part-a.md
+  - work/active/WO-0107-option-b-atomic-flatten.md
+  - work/completed/keep/WO-0036-intent-envelope-lifecycle-link.md
   - work/ledger.jsonl
   - tests/**
   - app/store/core.py

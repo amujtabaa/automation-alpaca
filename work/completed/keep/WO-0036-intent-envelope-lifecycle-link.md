@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Link the SellIntent↔Envelope lifecycle + terminal-cancel convergence (treadmill roots R2 + R6)
-status: APPROVED (Ameen 2026-07-15 "Approve expanded WO-0036 — implement all 8") — IN PROGRESS
+status: CLOSED
 work_order_id: WO-0036
 wave: W3 root-cause follow-up (quarantine-treadmill audit, 2026-07-15)
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ADR_CREATED]
 owner: Ameen
 created: 2026-07-15
 gated_surface: order-intent lifecycle, session-close event truth, cancel/replace
@@ -230,3 +230,45 @@ allowed_paths: [app/store/core.py, app/store/memory.py, app/store/sqlite.py, app
 - [ ] NEW #6: `_live_working_order_id` returns a still-live predecessor when the
       newest replacement is terminal (pinned; reprice-rejected-predecessor-live).
 - [ ] #7 provenance + #2 now=now folded in or explicitly split to a fast-follow WO.
+
+---
+
+## CLOSE-OUT (2026-07-17, CAMPAIGN-0002 Part B completion run)
+
+Two full independent implementations were produced from this WO (charter §0a): **Claude R2**
+(`claude/sellintent-envelope-linking-h2z7i7`, evented terminal propagation) and **Sol R2**
+(`codex/r2-lifecycle-link-sol-impl`, delegation projection). The consolidation campaign
+(CAMPAIGN-0002, WO-0105/0106 Part A; operator ratification I.1) selected **Sol's
+delegation-projection mechanism as canonical** — credit for the shipped R2 core belongs to
+**Sol**, whose commit carried the mechanism, the reconcile write-back, the startup re-projection,
+and the hostile/assurance/parity regression corpus, but zero `work/` planning artifacts; this
+close-out is the planning-plane record Sol's commit never shipped (report §C.2.5/§G.2). The
+unchecked items in the list above were superseded by the consolidation's own program — their
+substance landed via the campaign (masked-predecessor pins P3c; provenance P3b/§6 amendments) or
+is explicitly parked (below), and the campaign report §C/§G is the authoritative disposition of
+each.
+
+**What landed on `consolidate/r2-canonical`** (evidence: `work/review/CAMPAIGN-0002-claude/`
+`PARTB-COMPLETION-PLAN.md` §6 outcome log):
+- Sol's projection core + reconcile write-back, ported (step 1a), then indexed/memoized as a
+  precondition per ratification I.2 (steps 1b/1c), with the R6 fail-closed logging fix (I.5).
+- The Part B completion run (operator ratifications D1–D9): Codex-oracle reconciliation (P1);
+  the two close/retention spec properties (P2 — strict/widened/across-close predicates, P-A
+  pre-activation sweep, P-B needs-review quarantine); the Claude-attempt F.2 grafts (P3 —
+  spared counter, granular deferral reason, 3 ported gap pins; 23/23 dispositioned);
+  perf-gate disposition (P4 — no regression this run; pre-existing marginal wall-clock misses
+  named for review); governance (P5 — ADR-010 §3/§4/§6 amendments, INV-090, INV-081/037/052
+  refresh).
+- WO-0107 (Option B atomic flatten) closed the adjacent §5.3 stale-read class on the same trunk.
+- Both spec oracles green (Codex 61/0, explicit run; Claude 22 passed + 6 recorded NEEDS-INPUT
+  skips, file unmodified since Part A).
+
+**Review lineage:** REV-0028 (the Claude-attempt packet, `AWAITING_REVIEW` on the attempt branch,
+never dispositioned) is **SUPERSEDED** by **REV-0029** — the consolidated independent cross-model
+packet covering the entire Part B diff (it also subsumes REV-0024/Option B, per ratification D4).
+The independent-review gate for every human-gated surface this WO touched clears only on
+REV-0029's ACCEPT / ACCEPT-WITH-CHANGES.
+
+**Open by design:** PD-1 (needs-review reconciliation release valve — `BLOCKED-DECISIONS.md`);
+H.1-step-7 backfill verification (deferred post-merge/pre-beta-reliance, D5); the P4 perf
+follow-up WO candidate.
