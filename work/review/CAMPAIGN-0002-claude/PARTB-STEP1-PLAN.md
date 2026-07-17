@@ -199,3 +199,37 @@ acceptable as-is (given the negligible absolute cost) or needs a dedicated fast-
 further reducing the REALISTIC-scale per-envelope work, or recalibrating the gate's threshold for
 sub-millisecond regimes) is noted for the acceptance-gate review (§H.4) rather than decided
 unilaterally here.
+
+## § Independent adversarial review (2026-07-16) — per CLAUDE.md's "no seat's self-review is ever
+## the only review" rule, before this step was considered closed
+
+Dispatched a 4-lens independent workflow review (not self-review) against the committed C1–C4
+diff: (1) correctness of C1's neighbor-scoping bound, (2) C4 cache staleness/concurrency safety,
+(3) correctness/safety of the new SQL (parameter binding, empty-IN-clause handling, index/migration
+ordering), (4) whether `app/store/memory.py` genuinely matches `app/store/sqlite.py`'s semantics
+and performance profile. Each raw finding was then independently re-verified by a second agent
+instructed to try to *refute* it (default to "refuted" absent a concrete, reachable counterexample).
+
+**Result: 3 of 4 lenses found nothing** — a real corroboration, not silence: the correctness of
+C1's neighbor-scoping, the safety of the sqlite-side C4 cache, and the new SQL all held up under
+independent adversarial scrutiny with zero findings. **1 confirmed finding**, low severity,
+performance-only (no correctness/staleness risk — verified by the refutation pass, which
+cross-checked every line citation and complexity claim against the live code):
+`app/store/memory.py` had not received the C4 memoization applied to `sqlite.py`.
+`_active_sell_intent_unlocked` still re-derived the same symbol's obligation ~(3N+2) times per
+call, each pass scanning the *entire* `self._envelopes` dict — and the reviewer additionally
+confirmed `state_store == "memory"` is a real, operator-selectable production backend
+(`app/store/__init__.py`), not merely a test fixture, so the asymmetry was not purely academic.
+
+**Fixed the same session, mirroring the proven sqlite.py pattern exactly**: added the identical
+optional, per-call-only `_cache` threading to `_envelope_obligation_unlocked`,
+`_retained_envelope_owner_ids_unlocked`, `_envelope_symbol_owner_problem_unlocked`, a new
+`_symbol_envelopes_and_intents_unlocked` memo helper, and the same per-symbol-scoped cache in
+`_reconcile_envelope_symbol_conflicts_unlocked`'s startup loop. No new query patterns or semantics
+— purely additive memoization using the exact same safety argument already adversarially cleared
+for the sqlite side (cache never persists past one synchronous call under the store's single lock
+hold). Re-verified: R2-focused suite 308/308 passed; full repo suite 3014/3014 passed (0 failed, 0
+errors, 12 skipped — identical to the pre-fix baseline); `ruff`/`mypy`/`lint-imports` clean.
+
+Both stores now carry the same memoization discipline for this hot path, closing the parity gap
+the independent review surfaced rather than leaving it as a disclosed-but-unfixed asymmetry.

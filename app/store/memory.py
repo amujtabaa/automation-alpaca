@@ -732,11 +732,21 @@ class InMemoryStateStore(StateStore):
         return None
 
     def _active_sell_intent_unlocked(self, symbol: str) -> Optional[SellIntent]:
-        symbol_obligation = self._envelope_obligation_unlocked(symbol=symbol)
+        # C4 parity fix (WO-0036 R2 consolidation, Part B step 1): one shared
+        # per-call cache threaded through every _envelope_obligation_unlocked
+        # invocation this method triggers, directly and via the two helpers
+        # below -- mirrors the sqlite store's identical fix. Safe because it
+        # never outlives this single synchronous call (no write is possible
+        # between reads under one lock hold).
+        cache: dict[tuple, Any] = {}
+        symbol_obligation = self._envelope_obligation_unlocked(
+            symbol=symbol, _cache=cache
+        )
         if symbol_obligation.retains_intent:
-            owner_ids = self._retained_envelope_owner_ids_unlocked(symbol)
+            owner_ids = self._retained_envelope_owner_ids_unlocked(symbol, _cache=cache)
             if (
-                self._envelope_symbol_owner_problem_unlocked(symbol) is not None
+                self._envelope_symbol_owner_problem_unlocked(symbol, _cache=cache)
+                is not None
                 or len(owner_ids) != 1
             ):
                 # A missing/malformed owner or two pre-R2 retained owners is an
@@ -1012,8 +1022,30 @@ class InMemoryStateStore(StateStore):
         envelope_id: Optional[str] = None,
         excluding_envelope_id: Optional[str] = None,
         valid_owner: Optional[SellIntent] = None,
+        _cache: Optional[dict[tuple, Any]] = None,
     ):
-        """Project one owner/symbol lineage from event-truth order state."""
+        """Project one owner/symbol lineage from event-truth order state.
+
+        C4 (WO-0036 R2 consolidation, Part B step 1 -- parity fix, mirrors the
+        sqlite store's memoization): ``_active_sell_intent_unlocked`` and
+        ``_reconcile_envelope_symbol_conflicts_unlocked`` each re-derive the same
+        symbol's lineage 3+ times per logical call via the helpers below. ``_cache``,
+        when the caller threads one shared dict through the whole call, memoizes by
+        selector so each distinct (sell_intent_id, symbol, envelope_id,
+        excluding_envelope_id, id(valid_owner)) is computed once. Optional and
+        per-call only -- never persisted, never shared across a write, so it cannot
+        see a stale answer.
+        """
+
+        cache_key = (
+            sell_intent_id,
+            symbol,
+            envelope_id,
+            excluding_envelope_id,
+            id(valid_owner) if valid_owner is not None else None,
+        )
+        if _cache is not None and cache_key in _cache:
+            return _cache[cache_key]
 
         envelopes = [
             envelope
@@ -1119,7 +1151,7 @@ class InMemoryStateStore(StateStore):
                     neighbour_envelope = self._envelopes.get(neighbour_id)
                     if neighbour_envelope is not None:
                         known_envelopes_by_id[neighbour_id] = neighbour_envelope
-        return project_envelope_obligation(
+        result = project_envelope_obligation(
             envelopes=envelopes,
             action_events=action_events,
             orders_by_id=orders,
@@ -1128,6 +1160,9 @@ class InMemoryStateStore(StateStore):
             needs_review_order_ids=needs_review_order_ids,
             known_envelopes_by_id=known_envelopes_by_id,
         )
+        if _cache is not None:
+            _cache[cache_key] = result
+        return result
 
     def _validate_envelope_owner_unlocked(
         self, envelope: ExecutionEnvelope
@@ -1162,7 +1197,31 @@ class InMemoryStateStore(StateStore):
         )
         return projection.linked, projection.retains_intent
 
-    def _retained_envelope_owner_ids_unlocked(self, symbol: str) -> tuple[str, ...]:
+    def _symbol_envelopes_and_intents_unlocked(
+        self, symbol: str, *, _cache: Optional[dict[tuple, Any]] = None
+    ) -> list[tuple[ExecutionEnvelope, Optional[SellIntent]]]:
+        """C4 parity fix: the (envelope, its intent) pairs for ``symbol``, memoized.
+
+        ``_retained_envelope_owner_ids_unlocked`` and
+        ``_envelope_symbol_owner_problem_unlocked`` both scan this exact set (the
+        latter calls the former too) -- one shared, per-call-cached pass over
+        ``self._envelopes`` instead of re-scanning it repeatedly.
+        """
+        cache_key = ("symbol_envelopes_and_intents", symbol)
+        if _cache is not None and cache_key in _cache:
+            return _cache[cache_key]
+        pairs = [
+            (envelope, self._sell_intents.get(envelope.sell_intent_id))
+            for envelope in self._envelopes.values()
+            if envelope.symbol == symbol
+        ]
+        if _cache is not None:
+            _cache[cache_key] = pairs
+        return pairs
+
+    def _retained_envelope_owner_ids_unlocked(
+        self, symbol: str, *, _cache: Optional[dict[tuple, Any]] = None
+    ) -> tuple[str, ...]:
         """Valid owners of every retained Envelope lineage for ``symbol``.
 
         The aggregate obligation says whether anything may still execute; this
@@ -1171,38 +1230,37 @@ class InMemoryStateStore(StateStore):
         """
 
         owner_ids: set[str] = set()
-        for envelope in self._envelopes.values():
-            if envelope.symbol != symbol:
-                continue
+        for envelope, intent in self._symbol_envelopes_and_intents_unlocked(
+            symbol, _cache=_cache
+        ):
             if not self._envelope_obligation_unlocked(
-                envelope_id=envelope.id
+                envelope_id=envelope.id, _cache=_cache
             ).retains_intent:
                 continue
-            intent = self._sell_intents.get(envelope.sell_intent_id)
             if envelope_owner_scope_reason(envelope, intent) is None:
                 owner_ids.add(envelope.sell_intent_id)
         return tuple(sorted(owner_ids))
 
-    def _envelope_symbol_owner_problem_unlocked(self, symbol: str) -> Optional[str]:
+    def _envelope_symbol_owner_problem_unlocked(
+        self, symbol: str, *, _cache: Optional[dict[tuple, Any]] = None
+    ) -> Optional[str]:
         """Why a retained symbol obligation cannot be assigned to one owner."""
 
-        obligation = self._envelope_obligation_unlocked(symbol=symbol)
+        obligation = self._envelope_obligation_unlocked(symbol=symbol, _cache=_cache)
         ambiguous = self._envelope_obligation_ambiguity(obligation)
         if ambiguous:
             return "missing or malformed envelope lineage: " + ", ".join(ambiguous)
-        for envelope in self._envelopes.values():
-            if envelope.symbol != symbol:
-                continue
+        for envelope, intent in self._symbol_envelopes_and_intents_unlocked(
+            symbol, _cache=_cache
+        ):
             if not self._envelope_obligation_unlocked(
-                envelope_id=envelope.id
+                envelope_id=envelope.id, _cache=_cache
             ).retains_intent:
                 continue
-            reason = envelope_owner_scope_reason(
-                envelope, self._sell_intents.get(envelope.sell_intent_id)
-            )
+            reason = envelope_owner_scope_reason(envelope, intent)
             if reason is not None:
                 return reason
-        owner_ids = self._retained_envelope_owner_ids_unlocked(symbol)
+        owner_ids = self._retained_envelope_owner_ids_unlocked(symbol, _cache=_cache)
         if len(owner_ids) != 1:
             return (
                 f"retained envelope obligation has {len(owner_ids)} valid owners "
@@ -1277,21 +1335,30 @@ class InMemoryStateStore(StateStore):
         for symbol in sorted(
             {envelope.symbol for envelope in self._envelopes.values()}
         ):
-            if not self._envelope_obligation_unlocked(symbol=symbol).retains_intent:
+            # C4 parity fix: one cache per symbol iteration (never reused across
+            # symbols, and this symbol's own facts aren't re-read after this
+            # block's writes) -- mirrors the sqlite store's identical fix.
+            symbol_cache: dict[tuple, Any] = {}
+            if not self._envelope_obligation_unlocked(
+                symbol=symbol, _cache=symbol_cache
+            ).retains_intent:
                 continue
-            if self._envelope_symbol_owner_problem_unlocked(symbol) is not None:
+            if (
+                self._envelope_symbol_owner_problem_unlocked(
+                    symbol, _cache=symbol_cache
+                )
+                is not None
+            ):
                 continue
             owner_ids = {
                 envelope.sell_intent_id
-                for envelope in self._envelopes.values()
-                if envelope.symbol == symbol
-                and self._envelope_obligation_unlocked(
-                    envelope_id=envelope.id
-                ).retains_intent
-                and envelope_owner_scope_reason(
-                    envelope, self._sell_intents.get(envelope.sell_intent_id)
+                for envelope, intent in self._symbol_envelopes_and_intents_unlocked(
+                    symbol, _cache=symbol_cache
                 )
-                is None
+                if self._envelope_obligation_unlocked(
+                    envelope_id=envelope.id, _cache=symbol_cache
+                ).retains_intent
+                and envelope_owner_scope_reason(envelope, intent) is None
             }
             if len(owner_ids) != 1:
                 continue
