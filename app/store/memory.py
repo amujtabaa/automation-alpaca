@@ -2607,6 +2607,7 @@ class InMemoryStateStore(StateStore):
                     + ", ".join(order.id for order in obligation.venue_orders)
                     + ")"
                 )
+            deferral_via_envelope_child = False
             if obligation.venue_orders:
                 envelope_order = obligation.venue_orders[0]
                 if position.quantity <= 0:
@@ -2634,6 +2635,10 @@ class InMemoryStateStore(StateStore):
                     )
                 active = envelope_owner
                 active_order = envelope_order
+                # P3b (F.2 graft): remember the substitution so the deferral
+                # provenance names the envelope machinery, not the direct
+                # protection-order path.
+                deferral_via_envelope_child = True
             # ADR-003 / wave 3e: read the current session's §8 FSM + whether an
             # emergency-reduce override is active for this symbol, both under this
             # same lock so the deny decision can't straddle a concurrent control
@@ -2668,6 +2673,7 @@ class InMemoryStateStore(StateStore):
                 override_active=override_active,
                 actor=actor,
                 open_buy_order_ids=open_buy_order_ids,
+                deferral_via_envelope_child=deferral_via_envelope_child,
             )
 
             if plan.outcome == FLATTEN_DENIED_HALTED:
@@ -4334,6 +4340,7 @@ class InMemoryStateStore(StateStore):
         # boundary) — its owner expires and the envelope is swept below.
         open_sell_intents = []
         pre_activation_sweep_ids: list[str] = []
+        spared_sell_intents = 0
         for si in self._sell_intents.values():
             if si.session_id != session.id or si.status not in (
                 SellIntentStatus.PENDING,
@@ -4343,6 +4350,7 @@ class InMemoryStateStore(StateStore):
             projection = self._envelope_owner_projection_unlocked(si)
             if projection is not None:
                 if projection.retains_across_close:
+                    spared_sell_intents += 1
                     continue
                 pre_activation_sweep_ids.extend(projection.pre_activation_envelope_ids)
             open_sell_intents.append(si)
@@ -4385,6 +4393,7 @@ class InMemoryStateStore(StateStore):
             nonzero_positions=nonzero_positions,
             now=now,
             actor=actor,
+            spared_sell_intents=spared_sell_intents,
         )
 
         # Apply (in-place mutation form). D-013a: expire open candidates, cancel

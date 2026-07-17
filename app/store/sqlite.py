@@ -3886,6 +3886,7 @@ class SqliteStateStore(StateStore):
                     + ", ".join(order.id for order in obligation.venue_orders)
                     + ")"
                 )
+            deferral_via_envelope_child = False
             if obligation.venue_orders:
                 envelope_order = obligation.venue_orders[0]
                 if position.quantity <= 0:
@@ -3917,6 +3918,10 @@ class SqliteStateStore(StateStore):
                     )
                 active = envelope_owner
                 active_order = envelope_order
+                # P3b (F.2 graft): remember the substitution so the deferral
+                # provenance names the envelope machinery, not the direct
+                # protection-order path. Mirrors memory.
+                deferral_via_envelope_child = True
 
             # ADR-003 / wave 3e: current session's §8 FSM + whether an
             # emergency-reduce override is active for this symbol, read under the
@@ -3949,6 +3954,7 @@ class SqliteStateStore(StateStore):
                 override_active=override_active,
                 actor=actor,
                 open_buy_order_ids=open_buy_order_ids,
+                deferral_via_envelope_child=deferral_via_envelope_child,
             )
 
             if plan.outcome == FLATTEN_DENIED_HALTED:
@@ -6039,6 +6045,7 @@ class SqliteStateStore(StateStore):
             # transaction below. Mirrors the memory store exactly.
             open_sell_intents = []
             pre_activation_sweep_ids: list[str] = []
+            spared_sell_intents = 0
             for row in self._read_all(
                 "SELECT * FROM sell_intents WHERE session_id = ? "
                 "AND status IN (?, ?) ORDER BY rowid",
@@ -6052,6 +6059,7 @@ class SqliteStateStore(StateStore):
                 projection = self._envelope_owner_projection_locked(intent)
                 if projection is not None:
                     if projection.retains_across_close:
+                        spared_sell_intents += 1
                         continue
                     pre_activation_sweep_ids.extend(
                         projection.pre_activation_envelope_ids
@@ -6077,6 +6085,7 @@ class SqliteStateStore(StateStore):
                 nonzero_positions=nonzero_positions,
                 now=now,
                 actor=actor,
+                spared_sell_intents=spared_sell_intents,
             )
 
             # Apply (read-then-write form): all UPDATEs/INSERTs commit together.

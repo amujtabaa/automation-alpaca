@@ -1536,9 +1536,7 @@ def project_envelope_obligation(
         for envelope in envelopes
         if envelope.status is EnvelopeStatus.APPROVED
     )
-    ambiguous_retention = (
-        bool(missing_envelopes) or bool(missing) or bool(invalid)
-    )
+    ambiguous_retention = bool(missing_envelopes) or bool(missing) or bool(invalid)
     retains_strict = delegating or bool(unresolved) or ambiguous_retention
     retains = retains_strict or bool(needs_review_children)
     retains_across_close = (
@@ -1990,6 +1988,7 @@ def plan_flatten_position(
     override_active: bool = False,
     actor: str = COMMAND_ACTOR_SYSTEM,
     open_buy_order_ids: Sequence[str] = (),
+    deferral_via_envelope_child: bool = False,
 ) -> FlattenPlan:
     """Decide the manual-flatten outcome for one symbol.
 
@@ -2026,6 +2025,13 @@ def plan_flatten_position(
     self-cross). Ordered AFTER the flat/halted gates on purpose: a genuinely-flat
     symbol returns ``FLATTEN_FLAT`` with an unrelated resting BUY UNTOUCHED (the
     long-standing behaviour), and a Halted-denied flatten never cancels buys.
+    ``deferral_via_envelope_child`` (WO-0036 R2 F.2 graft, P3b): the stores
+    substitute an Envelope lineage's live CHILD as ``active_order`` before
+    calling this planner; this flag records that substitution so the deferral
+    provenance event names the machinery that actually held the flatten —
+    ``deferred_to_live_envelope_child`` — instead of reusing the direct
+    protection-order reason. Audit-trail legibility only; every other output
+    is unchanged by the flag.
     """
 
     if position.quantity <= 0:
@@ -2070,16 +2076,28 @@ def plan_flatten_position(
             and active_order is not None
             and active_order.status is not OrderStatus.CREATED
         ):
+            # P3b (F.2 graft): name the machinery that actually held the
+            # flatten — an Envelope lineage's live child vs the intent's own
+            # in-flight protection order — so the audit trail is unambiguous.
+            deferral_target = (
+                "the live envelope child"
+                if deferral_via_envelope_child
+                else "the in-flight protection_floor exit"
+            )
             deferral_event = EventSpec(
                 EventType.MANUAL_FLATTEN_DEFERRED.value,
                 message=(
-                    f"manual flatten for {position.symbol} deferred to the in-flight "
-                    f"protection_floor exit (order {active_order.status.value})"
+                    f"manual flatten for {position.symbol} deferred to "
+                    f"{deferral_target} (order {active_order.status.value})"
                 ),
                 symbol=position.symbol,
                 order_id=active_order.id,
                 payload={
-                    "reason": "deferred_to_live_protection",
+                    "reason": (
+                        "deferred_to_live_envelope_child"
+                        if deferral_via_envelope_child
+                        else "deferred_to_live_protection"
+                    ),
                     "order_status": active_order.status.value,
                     "deferred_intent_reason": active_intent.reason.value,
                     # Who commanded the flatten (REV-0002 F-002) — passed IN by the
@@ -3222,6 +3240,7 @@ def plan_close_session(
     nonzero_positions: list[Position],
     now: datetime,
     actor: str = COMMAND_ACTOR_SYSTEM,
+    spared_sell_intents: int = 0,
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
@@ -3231,6 +3250,14 @@ def plan_close_session(
     PENDING/APPROVED sell intents (expired like candidates), and
     ``nonzero_positions`` every symbol with a nonzero derived position. The
     counts drive the summary event.
+
+    ``spared_sell_intents`` (WO-0036 R2 F.2 graft, P2/P3a) is the count of this
+    session's PENDING/APPROVED intents the stores EXCLUDED from
+    ``open_sell_intents`` because the shared projection's close predicate
+    (``retains_across_close``) spared them — a working ACTIVE/FROZEN mandate,
+    unresolved venue uncertainty, or an open needs_review child. Carried in the
+    summary payload so the close event is a complete account of the boundary
+    (the expired count alone under-reports when a mandate survives).
     """
 
     candidate_events = tuple(
@@ -3300,6 +3327,10 @@ def plan_close_session(
             "expired_candidates": len(open_candidates),
             "canceled_orders": len(created_orders),
             "expired_sell_intents": len(open_sell_intents),
+            # WO-0036 R2 (P2/P3a): intents whose envelope delegation spared them
+            # across the close (see the docstring) — kept beside the expired
+            # count so the boundary account is complete.
+            "spared_sell_intents": spared_sell_intents,
             "position_snapshots": len(snapshots),
             # W2-SESS (REV-0013): who closed the session — so the audit can
             # attribute a manual close to the operator (default "system" for an

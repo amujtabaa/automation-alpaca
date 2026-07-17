@@ -222,6 +222,73 @@ async def test_close_spares_owner_when_terminal_envelope_has_unresolved_recovery
     assert active is not None and active.id == intent.id
 
 
+async def test_flatten_deferral_to_envelope_child_uses_granular_audit_reason(
+    any_store,
+):
+    # F.2 graft (P3b): the manual_flatten_deferred provenance event
+    # distinguishes deferral to a live ENVELOPE CHILD from deferral to the
+    # intent's own live protection order. Pre-graft both emitted
+    # "deferred_to_live_protection", which under-describes the envelope case —
+    # an auditor reading the trail could not tell which machinery held the
+    # flatten. Direct-order deferral coverage keeps its original reason (pinned
+    # by the pre-existing 3e/phase7 suites).
+    session, intent, envelope = await _activate(any_store)
+    staged = await any_store.stage_envelope_action(
+        envelope.id, _action(), snapshot_fingerprint=FP, now=NOW
+    )
+    claimed = await any_store.claim_order_for_submission(staged.order.id)
+    assert claimed.order is not None
+    await any_store.transition_order(
+        staged.order.id,
+        OrderStatus.SUBMITTED,
+        broker_order_id=f"broker-{FP}-defer",
+    )
+
+    result = await any_store.flatten_position("AAPL", actor="operator-a")
+
+    assert result.outcome == "existing" and result.deferred is True
+    deferrals = [
+        e
+        for e in await any_store.list_events()
+        if e.event_type == "manual_flatten_deferred"
+    ]
+    assert len(deferrals) == 1
+    payload = deferrals[0].payload
+    assert payload["reason"] == "deferred_to_live_envelope_child"
+    assert payload["order_status"] == "submitted"
+    assert payload["actor"] == "operator-a"
+
+
+async def test_close_summary_carries_spared_sell_intents_count(any_store):
+    # F.2 graft (P3a, after P2 so it counts the FINAL sparing semantics): the
+    # session-close summary event carries how many sell intents were SPARED by
+    # the projection's close predicate, so the close audit is a complete account
+    # of the boundary — the expired count alone under-reports when a working
+    # mandate survives.
+    session, spared_intent, _env = await _activate(any_store)
+    plain = await any_store.create_sell_intent(
+        symbol="MSFT",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=50,
+        session_id=session.id,
+    )
+
+    await any_store.close_session(actor="operator-a")
+
+    closes = [
+        e for e in await any_store.list_events() if e.event_type == "session_closed"
+    ]
+    assert len(closes) == 1
+    payload = closes[0].payload
+    assert payload["expired_sell_intents"] == 1  # the plain MSFT intent
+    assert payload["spared_sell_intents"] == 1  # the ACTIVE-envelope owner
+    # The spared owner genuinely survived; the plain intent expired.
+    assert (
+        await any_store.get_sell_intent(spared_intent.id)
+    ).status is SellIntentStatus.APPROVED
+    assert (await any_store.get_sell_intent(plain.id)).status is SellIntentStatus.EXPIRED
+
+
 # --------------------------------------------------------------------------- #
 # P-B: needs-review retention
 # --------------------------------------------------------------------------- #
