@@ -192,7 +192,30 @@ diff. In-process panels NEVER count as the independent review — REV-0029 stays
   invariant, three keyings named, both oracles as pins). Re-verify of Sol's five in-place
   amendments vs final code: INV-032/036/080/087 HOLD verbatim; INV-081 gained a clarifying
   2026-07-17 addendum (the two pre-outcomes precede "takes over" without weakening it) + new pins.
-- P6: (entry below, after the best-effort stress run completes)
+- P6: **DONE 2026-07-17.** The §H.4 acceptance gate, in order, at the final code state (the only
+  commits after the evidence stamps are planning-plane-only; the completeness critic
+  independently re-verified 1–3 and 5 at `4feb01d`, 23:15–23:22Z):
+  1. Claude spec oracle, UNMODIFIED (git log: two pre-hard-stop Part A commits only):
+     `22 passed, 6 skipped` (the 6 = recorded NEEDS-INPUT tick-level skips) @ 22:27:43Z.
+  2. Sol trio + lifecycle + P2/P3 property pins + Option B pins: `344 passed` @ 22:28Z.
+  3. Reseeded Codex oracle, explicit run: `61 passed` @ 22:28Z.
+  4. Perf gates — **discharged via the P4 named-finding disposition, NOT green** (the §0.1
+     "acceptance gate green including both perf gates" clause is satisfied in substance via the
+     plan's own P4 lane + D8: structural criteria green, wall-clock misses baseline-proven
+     pre-existing, no regression this run — acknowledged deviation, reviewer weighs it as
+     REV-0029 lens 7). **Best-effort `R2_STRESS=1` (default #1, recorded):** structural still
+     green at 1,000-symbol/100k-event scale (no unrelated scans; query count scale-independent;
+     startup SELECT growth 9.91× ≤ 12×); wall-clock convexity quantified — stress startup elapsed
+     47.4× over realistic (limit 12×), stress runtime p95 7.6× (limit 3×): the startup scan's
+     PYTHON-side per-row cost curve is convex while SQL work scales sub-budget. Beta-scale
+     absolutes remain small (realistic corpus ≈ 1.6s startup at 100 symbols / 10k events). This
+     gives the P4 follow-up WO candidate concrete shape.
+  5. Native gate @ 22:27–22:31Z (UTC, clear of 09:41Z): `ruff` All checks passed; `ruff format
+     --check` 240 files; `mypy app/` Success 64 files; `lint-imports` 6 kept / 0 broken;
+     coverage-gated full suite exit 0, **93.76% ≥ 93.0% floor**; 4-seed lifecycle soak (3/17/99/
+     271) green; GitHub CI success at `4feb01d`. Fresh-eyes-on-merged-diff is delegated to
+     REV-0029 (lens 1) per the plan — the in-process capstone (completeness critic, GAPS(8),
+     all recording-plane, all closed) does not substitute for it.
 - P7: **DONE 2026-07-17 (`4feb01d`).** WO-0036 → CLOSED `[RESULT_SUMMARY_KEPT, ADR_CREATED]`,
   archived to `work/completed/keep/` with the close-out section crediting **Sol's
   delegation-projection mechanism as canonical** (the planning-plane record Sol's commit never
