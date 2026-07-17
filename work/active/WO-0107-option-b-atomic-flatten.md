@@ -112,10 +112,22 @@ forbidden_paths:
       fails-closed on buys-keep-reappearing.
 - [x] Corrected fixtures: `test_phase7_flatten_atomic.py`, `test_wo0036_r2_lifecycle_link.py`,
       `test_wo0017_precedence.py`, `test_wo0021_envelope_chaos.py`.
+- [x] Taught the `FLATTEN_BUYS_OPEN` outcome to `test_lifecycle_state_machine.py` (the Hypothesis
+      state machine asserted `intent is not None` for any non-flat outcome → a flaky false X-001
+      failure on a held-position-with-open-buy state), + a deterministic reachability proof of the
+      new branch on both stores. (Test-integrity review DEFECT-1.)
 - [x] Native gate green: `ruff check .` + `ruff format --check` + `mypy app/` (64 files) +
-      `lint-imports` (6/0) + full `pytest` (3037 tests, 0 failures, 0 errors, 12 skipped).
+      `lint-imports` (6/0) + full `pytest` (0 failures, 0 errors).
 - [x] AI-OS hygiene green: install / version / ledger / pkl / disposition all PASS.
-- [ ] **Independent cross-model review (REV packet) dispositioned `ACCEPT` / `ACCEPT-WITH-CHANGES`.**
+- [x] In-process adversarial pass: concurrency **SHIP**, behavior/self-cross **SHIP**,
+      test-integrity **TESTS-SOUND** (fixtures not weakened; two incompleteness defects found + one
+      fixed, one routed to the human — see below). Summarized in `../REV-0024/request.md`.
+- [ ] **STOP-FOR-HUMAN — Codex spec-oracle conflict (test-integrity DEFECT-2).** Option B makes the
+      Codex oracle `tests/r2_conformance_oracle.py` fail 10 flatten scenarios (`BUYS_OPEN` before the
+      `deferred` it asserts on a raw store call); my own spec oracle passes. The oracle "may not be
+      edited to pass" (charter §3) and is the Codex investigator's file → the human/cross-investigator
+      decides the reconciliation. Analysis: `../CAMPAIGN-0002-claude/OPTIONB-CODEX-ORACLE-CONFLICT.md`.
+- [ ] **Independent cross-model review (REV-0024) dispositioned `ACCEPT` / `ACCEPT-WITH-CHANGES`.**
       This is a **human-gated flatten surface** — per CLAUDE.md the review gate clears only on that
       verdict, and no beta-relevant milestone may rely on Option B until it does. **status stays
       `REVIEW` until then.**

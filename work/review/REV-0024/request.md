@@ -68,6 +68,36 @@ Option B moves the **entire** flat/blocked/buys-open decision into the store und
    store-authoritative "no mint next to a live buy" invariant)? (The author plans an INV entry in the
    downstream doc-synthesis step — flag if it should land with this change instead.)
 
+## In-process adversarial pass — findings for your adjudication
+
+Three Claude subagent lenses ran pre-/post-commit (NOT independent review — that is your job):
+
+- **Concurrency / lock-discipline → SHIP.** TOCTOU closed (detection under one lock hold, no
+  `await` before mint, both stores); convergence proven (detected set == cancelled set; the
+  `broker_order_id=None` livelock unreachable via AIR-001); override survives `BUYS_OPEN`.
+- **Behavior / self-cross → SHIP.** All six prior flatten behaviors preserved; the flat-symbol-
+  resting-buy regression is avoided; no new mint window.
+- **Test-integrity → TESTS-SOUND but the change was INCOMPLETE** (two harnesses hadn't learned
+  the new outcome). Both now addressed in the follow-up commit:
+  - **DEFECT-1 (FIXED):** `tests/test_lifecycle_state_machine.py` (a regular Hypothesis harness)
+    asserted `intent is not None` for any non-flat outcome → a held-position-with-open-buy state
+    now returns `BUYS_OPEN`/`intent=None` (a *flaky* latent false "X-001 violation"). Taught the
+    `flatten` rule the new no-mint outcome + added a deterministic reachability proof (both stores).
+  - **DEFECT-2 (STOP-FOR-HUMAN, oracle untouched):** the **Codex** spec oracle
+    `tests/r2_conformance_oracle.py` fails 10 flatten/emergency scenarios under Option B (its
+    `_seed_long` leaves the establishing buy open, so the store returns `BUYS_OPEN` before the
+    `deferred is True` it asserts). My **own** spec oracle passes. Full analysis + isolation of the
+    10 (vs 4 pre-existing, unrelated) failures is in
+    `work/review/CAMPAIGN-0002-claude/OPTIONB-CODEX-ORACLE-CONFLICT.md`. **Please weigh in on the
+    reconciliation** — my read is Option B is spec-conformant and the Codex oracle's store-level
+    seed over-specifies (identical facade behavior after cancel+retry), but the oracle "may not be
+    edited to pass," so it is the human's / cross-investigator's call.
+
+- **P3 (both concurrency + behavior lenses, non-blocking):** on the facade's 3-attempt fail-closed
+  409, an emergency-reduce grant is left unspent. Correct single-use behavior (no authorized outcome
+  occurred) and nearly unreachable under Halt (the kill switch only shrinks the open-buy set); noted
+  for the record, no change made.
+
 ## Deliverable
 
 Write `work/review/REV-0024/result.md` with a verdict
