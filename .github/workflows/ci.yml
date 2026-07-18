@@ -49,6 +49,28 @@ jobs:
         # tests/test_import_boundaries.py, so the gate holds even if this step is
         # ever removed).
         run: lint-imports
+      - name: No out-of-scope tooling trees (contamination guard)
+        # REV-0029 NEW-P1-2: a stale clone twice re-merged 403 tracked files under
+        # .agents/ and .codex/ (ClaudeFast/Codex tooling, ~91k lines, outside every
+        # work order's allowed_paths). .gitignore lists both, but an ignore only
+        # blocks NEW untracked adds — it cannot untrack files reintroduced through
+        # merge ancestry or a forced `git add`. This gate fails the build if either
+        # tree becomes tracked again, or if the ignore entries go missing, so the
+        # contamination cannot silently return regardless of how it is re-added.
+        run: |
+          tracked=$(git ls-files .agents .codex)
+          if [ -n "$tracked" ]; then
+            echo "::error::Out-of-scope tooling files are tracked again (REV-0029 NEW-P1-2 contamination). Remove them with: git rm -r .agents .codex"
+            printf '%s\n' "$tracked" | head
+            exit 1
+          fi
+          for entry in '.agents/' '.codex/'; do
+            if ! grep -qxF "$entry" .gitignore; then
+              echo "::error::.gitignore is missing the '$entry' ignore entry — restore it so the tooling trees cannot re-accumulate."
+              exit 1
+            fi
+          done
+          echo "contamination guard: clean (no tracked .agents/.codex; ignore entries present)"
       - name: Work-order and knowledge hygiene (AI-OS)
         # CLAUDE.md close-out rule ("close-out ships with the work"): finished work
         # must land WITH its disposition, ledger entry, and file move — stale
