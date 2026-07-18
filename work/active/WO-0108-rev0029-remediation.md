@@ -80,3 +80,27 @@ forbidden_paths:
 - [ ] Reviewer's reproduction scenarios (result.md P0-1/2/3 probes) re-run and now fail closed.
 - [ ] Full native gate + coverage floor + AI-OS hygiene green.
 - [ ] Re-review packet queued (REV-0029 round 2 or REV-0030) — merge gate reopens only on ACCEPT.
+
+## Progress log
+
+- **Step 1 (P0-1) DONE** — commit "WO-0108 step 1": `FLATTEN_BLOCKING_BUY_STATUSES` superset in
+  core; both stores detect it; facade fails closed on venue-uncertain buys, never blind-cancels
+  (zero-venue-calls pinned). Full suite 3080/0/0/12.
+- **Step 3 (P0-3, Policy A) DONE** — commit "WO-0108 step 3": scans widened to
+  `RECOVERY_OPEN_STATUSES` (Lane B closes at creation); stage + final-claim rails on
+  `needs_review_child_order_ids` (Lane A + latched-after-stage race). 22/22 WO-0108 pins; two
+  X-003-era pins amended with citations; full suite 3086/0/0/12.
+- **NEXT — Step 2 (P0-2, Policy B)**: (a) cross-side same-symbol rail at the FINAL claim, both
+  stores, both directions ("may execute" = open claims + broker-working + CANCEL_PENDING +
+  TIMEOUT_QUARANTINE); (b) flatten + protection-open atomically stand down PENDING/APPROVED
+  same-symbol BUY candidates (audited `candidate_transition … reason=exit_preemption`);
+  (c) candidate dispatch refuses while a same-symbol exit obligation may execute. Red pins first
+  in `tests/test_wo0108_rev0029_remediation.py` (reviewer scenarios: approval-pause race,
+  post-mint BUY creation, both claim orderings, manual + protection paths, full sweep — see
+  `../review/REV-0029/result.md` P0-2). Key code sites from the review: facade approve→dispatch
+  await gap `store_backed.py:782-785`; claim choke `memory.py:~2979` / `sqlite.py:~4384`
+  (WO-0108 rails just added there — the cross-side rail joins them); candidate dispatch
+  `memory.py:~2892` / sqlite twin; protection-open `memory.py:~2320` / sqlite `~3562`.
+- **Then**: Step 4 (P1-1 monitoring identity universe), Step 5 (P1-2 retry/restart+rollback
+  parity scripts), Step 6 (flip each doc "OPEN DEFECT" correction to closed as its fix lands:
+  ADR-010 §3/§4, INV-090, INV-081, plan OBS-2, PD-1 premise), then the re-review packet.
