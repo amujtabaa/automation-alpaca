@@ -34,6 +34,7 @@ from app.reconciliation import (
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import OrderIntentBlockedError
 from app.store.core import STAGE_DIVERGENCE
+from tests.store_helpers import activate_envelope_at
 
 pytestmark = pytest.mark.anyio
 
@@ -102,21 +103,12 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
         reason=SellReason.PROTECTION_FLOOR,
         target_quantity=100,
     )
-    envelope = await store.approve_envelope_activation(
-        make_draft(si.id, **overrides), actor="operator-a"
+    # Injected activation clock before the tape (see activate_envelope_at).
+    # (Merge note: the branch's raw activated_at poke anchored the SAME NOW-1h
+    # instant; the helper does it through transition_envelope(now=...).)
+    return await activate_envelope_at(
+        store, make_draft(si.id, **overrides), now=NOW - timedelta(hours=1)
     )
-    # This module's tape and decision clock are fixed at NOW. Keep activation
-    # causal to that tape even when the suite runs on a later wall-clock date.
-    activated_at = NOW - timedelta(hours=1)
-    if hasattr(store, "_envelopes"):
-        store._envelopes[envelope.id].activated_at = activated_at
-    else:
-        store._conn.execute(
-            "UPDATE execution_envelopes SET activated_at=? WHERE id=?",
-            (activated_at.isoformat(), envelope.id),
-        )
-        store._conn.commit()
-    return envelope.model_copy(update={"activated_at": activated_at})
 
 
 # --- partial-fill / race interleavings -------------------------------------------- #
@@ -223,8 +215,9 @@ async def test_flatten_mid_reprice_staged_order_never_reaches_the_venue(any_stor
     si = await any_store.create_sell_intent(
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
-    env = await any_store.approve_envelope_activation(
-        make_draft(si.id), actor="operator-a"
+    # Injected activation clock before the tape (see activate_envelope_at).
+    env = await activate_envelope_at(
+        any_store, make_draft(si.id), now=NOW - timedelta(hours=1)
     )
 
     # Stage without executing (the mid-reprice window: transient release).

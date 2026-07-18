@@ -41,6 +41,7 @@ from app.reconciliation import (
 )
 from app.sellside.policy import _live_working_order_id, decide
 from app.sellside.types import PlannedAction
+from tests.store_helpers import activate_envelope_at
 
 import app.monitoring as monitoring
 
@@ -88,21 +89,13 @@ async def seeded_envelope(store, **overrides) -> ExecutionEnvelope:
         symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
     )
     draft = make_draft(si.id, **overrides)
-    draft = draft.model_copy(
-        update={"status": EnvelopeStatus.PENDING, "activated_at": None}
-    )
-    envelope = await store.approve_envelope_activation(draft, actor="operator-a")
-    # The policy tape is deliberately fixed at July 15. Keep activation causal
-    # to that tape regardless of the wall-clock day running the suite.
-    if hasattr(store, "_envelopes"):
-        store._envelopes[envelope.id].activated_at = T0
-    else:
-        store._conn.execute(
-            "UPDATE execution_envelopes SET activated_at=? WHERE id=?",
-            (T0.isoformat(), envelope.id),
-        )
-        store._conn.commit()
-    return envelope.model_copy(update={"activated_at": T0})
+    draft = draft.model_copy(update={"status": EnvelopeStatus.PENDING})
+    # Injected activation clock, anchored BEFORE the NOW-anchored tapes: the
+    # policy's since-activation window (INV-086) must contain the tape rows
+    # regardless of wall-clock time of day (see activate_envelope_at).
+    # (Merge note: the branch's raw poke anchored T0 == NOW - 1h — the same
+    # instant this helper injects through transition_envelope(now=...).)
+    return await activate_envelope_at(store, draft, now=NOW - timedelta(hours=1))
 
 
 def _action_event(order_id: str, action: str = "submit", tranche=False, seq=1):
