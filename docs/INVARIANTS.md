@@ -588,7 +588,11 @@ MANUAL_FLATTEN SELL is ever minted beside a DETECTED open BUY — the
 ``OPEN_BUY_STATUSES`` set ``CREATED``/``SUBMITTED``/``PARTIALLY_FILLED`` read
 under the deciding lock; venue-uncertain ``SUBMITTING``/``TIMEOUT_QUARANTINE``
 BUYs stay outside the signal, as they were outside the pre-Option-B cancel
-set). (2) A symbol whose
+set — and, per the 2026-07-18 REV-0029 correction, so does ``CANCEL_PENDING``:
+the cancel issued by the retry itself moves a live BUY there, where a late
+fill remains possible while the retry mints; with an APPROVED BUY *candidate*
+handoff also invisible to the scan, the cross-interleaving self-cross classes
+P0-1/P0-2 remain OPEN, under remediation). (2) A symbol whose
 obligation is retained only by an open ``needs_review`` recovery child
 REFUSES the flatten at the preemption residual check (``FlattenBlockedError``)
 — unreconciled possible venue SELL exposure quarantines the manual path too
@@ -823,6 +827,20 @@ parity, release/retention),
 (both spec oracles green; the Claude oracle carries 6 recorded NEEDS-INPUT
 skips for tick-level properties not exercisable at store level — campaign
 report §C/§E), both stores throughout.
+*Correction 2026-07-18 (REV-0029 — OPEN DEFECTS, under remediation):* two
+claims above are narrower than written. (1) "Every sell-side choke" is not yet
+true of the WIDENED predicate: the envelope stage and final claim rails do not
+consume `needs_review_child_order_ids`, and the direct-SELL exposure scans
+select `RECOVERY_UNRESOLVED` only — two submission lanes can reach
+`SUBMITTING` beside a `needs_review` exposure (P0-3). (2) "No monitoring path
+derives a neighboring definition" is overstated: monitoring's
+`_validated_envelope_lineage` seeds actions from exact `envelope_id` matches
+only, narrower than the store projector's bounded identity discovery
+(parent / owner-correlation / order-owner / symbol) — a malformed lineage the
+store quarantines can project clean-and-empty in monitoring, losing the R6
+diagnostic (P1-1). The release/retention/close semantics of this invariant are
+implemented and pinned; these two closures are tracked to the REV-0029
+remediation work order.
 
 ---
 

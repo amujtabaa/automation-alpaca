@@ -60,7 +60,13 @@ def _run(monkeypatch, candidates: list, recorder: list) -> AppTest:
         lambda symbol, **kw: {"id": "new", "symbol": symbol, "status": "pending"},
     )
 
-    at = AppTest.from_file("cockpit/app.py").run()
+    # REV-0029 P0-5: AppTest's hard-coded default_timeout is 3s, which the full
+    # script run intermittently exceeds under coverage instrumentation (a
+    # pre-existing flake exposed by the CI-form `pytest --cov` invocation — the
+    # single test passes in ~4.6s uninstrumented but tripped the 3s wall). A
+    # 30s budget stays sensitive to a real hang while removing the
+    # coverage-overhead false positive. Do NOT remove the timeout entirely.
+    at = AppTest.from_file("cockpit/app.py", default_timeout=30).run()
     # Navigate to the Candidate Monitor screen via the sidebar radio
     at.sidebar.radio[0].set_value("Candidate Monitor").run()
     return at

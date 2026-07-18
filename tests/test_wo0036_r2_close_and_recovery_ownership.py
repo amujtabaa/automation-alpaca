@@ -331,16 +331,38 @@ async def test_close_with_sweep_emits_identical_streams_on_both_stores(tmp_path)
         await store.create_candidate("TSLA", session_id=session2.id)
         await store.close_session(actor="operator-a")
 
-        def _norm(key):
-            # Entity ids are random per store instance; normalize them so the
-            # comparison pins STRUCTURE and ORDER, not uuid values.
-            return re.sub(r"[0-9a-f]{32}", "*", key) if key else key
+        # REV-0029 P1-2 (fixed): compare canonicalized FULL model dumps, not
+        # lossy (type, symbol, key) tuples — payload transitions, reasons,
+        # actors, session/correlation identity, quantities, prices, source and
+        # authority are all pinned. Only genuinely nondeterministic values are
+        # normalized: random entity ids map to stable placeholders in FIRST-
+        # APPEARANCE order (so cross-store identity RELATIONSHIPS still must
+        # match), and wall-clock timestamps collapse to a sentinel. Sequence
+        # numbers are kept verbatim — they ARE the ordering truth.
+        id_map: dict = {}
 
-        audit = [(e.event_type, e.symbol) for e in await store.list_events()]
-        execution = [
-            (e.event_type.value, e.symbol, _norm(e.dedupe_key))
-            for e in await store.get_execution_events()
-        ]
+        def _canon(value):
+            if isinstance(value, str):
+                value = re.sub(
+                    r"[0-9a-f]{32}",
+                    lambda m: id_map.setdefault(m.group(0), f"<id{len(id_map)}>"),
+                    value,
+                )
+                return re.sub(
+                    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[0-9:.+\-Z]*",
+                    "<ts>",
+                    value,
+                )
+            if isinstance(value, dict):
+                return {k: _canon(v) for k, v in sorted(value.items())}
+            if isinstance(value, (list, tuple)):
+                return [_canon(v) for v in value]
+            if hasattr(value, "isoformat"):
+                return "<ts>"
+            return value
+
+        audit = [_canon(e.model_dump()) for e in await store.list_events()]
+        execution = [_canon(e.model_dump()) for e in await store.get_execution_events()]
         return audit, execution
 
     mem_audit, mem_exec = await drive(InMemoryStateStore())
@@ -354,7 +376,10 @@ async def test_close_with_sweep_emits_identical_streams_on_both_stores(tmp_path)
     assert mem_audit == sq_audit
     assert mem_exec == sq_exec
     # The sweep's expiry is present exactly once, identically keyed.
-    assert sum(1 for _t, _s, key in mem_exec if key and ":expired" in key) == 1
+    assert (
+        sum(1 for e in mem_exec if (e.get("dedupe_key") or "").endswith(":expired"))
+        == 1
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -474,14 +499,23 @@ async def test_needs_review_retention_never_resurrects_an_expired_owner(any_stor
         )
         any_store._conn.commit()
 
-    # A reconcile-bearing touch (idempotent same-status transition) must NOT
-    # resurrect the expired owner.
-    try:
-        await any_store.transition_envelope(
-            envelope.id, EnvelopeStatus.BREACHED, reason="noop", now=NOW
-        )
-    except Exception:
-        pass
+    # A GUARANTEED reconcile-bearing operation must NOT resurrect the expired
+    # owner. REV-0029 P0-4 (fixed): the original touch here was a
+    # BREACHED -> BREACHED same-status no-op, which never reaches the owner
+    # reconcile (both stores reconcile a same-status no-op only for
+    # APPROVED/ACTIVE targets) — the pin could not fail. ``initialize()``
+    # re-projects EVERY envelope owner via the R2 startup convergence block, so
+    # the strict-keyed restore path provably RUNS here and must decline.
+    await any_store.initialize()
+
     assert (
         await any_store.get_sell_intent(intent.id)
     ).status is SellIntentStatus.EXPIRED
+    # And the decline is total: no restore transition was ever emitted.
+    restored = [
+        e
+        for e in await any_store.list_events()
+        if e.event_type == "sell_intent_transition"
+        and e.payload.get("reason") == "envelope_delegation_restored"
+    ]
+    assert restored == []

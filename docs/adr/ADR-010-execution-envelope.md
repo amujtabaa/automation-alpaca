@@ -116,11 +116,17 @@ owner expires with the other open intents and the envelope itself is swept `APPR
 in the same atomic close (leaving it delegating beside an expired owner would recreate the pre-R2
 orphan shape and invite the restore path to resurrect the closed owner); (ii) an envelope going
 terminal while a lineage child is latched `needs_review` (a stranded broker SELL that HAD fills)
-**retains its owner** — unresolved venue exposure is not proof of absence, so the symbol's sell
-side quarantines fail-closed (flatten refuses, new delegation refuses, replacement intents dedup
-to the retained owner) until a human reconciles the recovery, mirroring the TIMEOUT_QUARANTINE
-ambiguity posture; retention HOLDS live owners but never resurrects stood-down ones (restore stays
-strict-keyed). The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
+**retains its owner** — unresolved venue exposure is not proof of absence; flatten refuses, new
+delegation refuses, and replacement intents dedup to the retained owner until a human reconciles
+the recovery, mirroring the TIMEOUT_QUARANTINE ambiguity posture; retention HOLDS live owners but
+never resurrects stood-down ones (restore stays strict-keyed). **Correction 2026-07-18 (REV-0029
+P0-3 — OPEN DEFECT, under remediation):** the quarantine is NOT complete as originally written
+here. The projection exposes `needs_review_child_order_ids`, but the envelope **stage** and final
+**claim** rails do not consume it (a still-active or fresh envelope lineage can stage and claim a
+second SELL), and the direct-SELL exposure scans select `RECOVERY_UNRESOLVED` only — so two
+submission lanes can reach `SUBMITTING` beside a `needs_review` exposure. The retention/owner
+semantics above are implemented and pinned; the *submission-lane* closure is the remediation's
+job. The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
 The human reconciliation release valve for (ii) is an open, recorded design decision
 (`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.
 
@@ -147,7 +153,18 @@ open BUY (the §5.3 self-cross, closed for the entire `OPEN_BUY_STATUSES` set re
 deciding lock) and no caller decides flat/blocked on a stale out-of-lock read. Venue-uncertain
 BUYs (`SUBMITTING`, `TIMEOUT_QUARANTINE`) remain outside the signal exactly as they were outside
 the pre-Option-B §5.3 cancel set — Option B closed the stale-read class, it did not widen the
-detected set. (ii) When
+detected set.
+
+**Correction 2026-07-18 (REV-0029 P0-1/P0-2 — OPEN DEFECTS, under remediation):** the independent
+review falsified the retry-convergence claim above by lifecycle property: cancelling a `SUBMITTED`
+BUY leaves it `CANCEL_PENDING` (non-terminal — it can still late-fill), which is OUTSIDE
+`OPEN_BUY_STATUSES`, so the bounded retry can mint a full-size SELL beside a BUY whose fill is
+still possible. Independently, an `APPROVED` BUY *Candidate* that has not yet produced its Order
+row is invisible to the scan entirely, and no cross-side same-symbol rail exists at candidate
+dispatch or the final submission claim — both exit mint paths can cross a BUY to the venue. Until
+the remediation lands (its own scoped WO + re-review), the flatten self-cross closure holds ONLY
+for the three detected statuses at the instant of the locked read — not across cancel/late-fill or
+candidate-handoff interleavings. (ii) When
 the symbol's obligation is retained ONLY by an open `needs_review` recovery child (see the §3
 2026-07-17 amendment), the preemption's residual check refuses the flatten outright — a full-size
 manual SELL beside possibly-already-sold shares is the same double-sell class, and the human
