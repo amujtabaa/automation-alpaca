@@ -128,7 +128,19 @@ direct-SELL exposure scans selected `RECOVERY_UNRESOLVED` only, so two submissio
 `SUBMITTING` beside a `needs_review` exposure. Both are now closed on both stores: the stage and
 final-claim rails fail closed on same-lineage `needs_review_child_order_ids`, and the direct-SELL
 dispatch/claim scans widened to `RECOVERY_OPEN_STATUSES` (Policy A, full submission quarantine —
-pins in `tests/test_wo0108_rev0029_remediation.py`, both lanes × both owners × both stores). The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
+pins in `tests/test_wo0108_rev0029_remediation.py`, both lanes × both owners × both stores).
+**Round-3 correction 2026-07-18 (WO-0109 Cluster B):** that closure assumed honest recovery
+scope. `create_submit_recovery` previously accepted a declared symbol or side that contradicted an
+existing referenced Order, which could remove the Order's real SELL scope from both the order-id
+and declared-recovery scans. Both stores now compare the recovery's immutable symbol/side with an
+existing referenced Order under the same lock/transaction and reject a mismatch without writing
+the recovery. A genuinely missing local Order remains valid input: the recovery ledger explicitly
+models venue exposure whose local row was lost. Persisted legacy corruption remains projected
+fail-closed across both scopes for SELL recovery exposure. The stage and final-claim consumers
+are now mutation-pinned with a distinct prior sibling and with a fresh owner across the
+before-stage and between-stage-and-claim schedules in
+`tests/test_wo0109_round3_remediation.py`.
+The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
 The human reconciliation release valve for (ii) is an open, recorded design decision
 (`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.
 

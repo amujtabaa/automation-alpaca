@@ -2515,16 +2515,24 @@ class InMemoryStateStore(StateStore):
         seen: set[str] = set()
         for record in self._submit_recoveries:
             if (
-                record.symbol != symbol
-                or record.side is not OrderSide.SELL
                 # WO-0108/REV-0029 P0-3 (Policy A): needs_review IS open
                 # venue exposure — it must stay symbol-visible to the dispatch
                 # and claim rails, not vanish on human escalation.
-                or record.cleanup_status not in RECOVERY_OPEN_STATUSES
+                record.cleanup_status not in RECOVERY_OPEN_STATUSES
                 or record.local_order_id in seen
             ):
                 continue
             order = self._orders.get(record.local_order_id)
+            declared_scope_matches = (
+                record.symbol == symbol and record.side is OrderSide.SELL
+            )
+            referenced_scope_matches = (
+                order is not None
+                and order.symbol == symbol
+                and order.side is OrderSide.SELL
+            )
+            if not declared_scope_matches and not referenced_scope_matches:
+                continue
             if order is not None:
                 recovery_matches_order_scope = (
                     record.symbol == order.symbol
@@ -3461,12 +3469,24 @@ class InMemoryStateStore(StateStore):
         require_recovery_status(cleanup_status)
         key = normalize_symbol(symbol)
         async with self._lock:
+            recovery_side = OrderSide(side)
+            referenced_order = self._orders.get(local_order_id)
+            if referenced_order is not None and (
+                key != referenced_order.symbol
+                or recovery_side is not referenced_order.side
+            ):
+                raise RecoveryTransitionError(
+                    "submit recovery scope "
+                    f"{key}/{recovery_side.value} conflicts with referenced order "
+                    f"{referenced_order.id} scope "
+                    f"{referenced_order.symbol}/{referenced_order.side.value}"
+                )
             record = SubmitRecoveryRecord(
                 local_order_id=local_order_id,
                 broker_order_id=broker_order_id,
                 client_order_id=client_order_id,
                 symbol=key,
-                side=OrderSide(side),
+                side=recovery_side,
                 quantity=quantity,
                 limit_price=limit_price,
                 failure_reason=failure_reason,

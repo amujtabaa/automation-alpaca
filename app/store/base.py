@@ -835,6 +835,12 @@ class StateStore(ABC):
         ``event_type`` names the creation audit event and ``extra_payload`` is
         merged into it (e.g. the broker/local fill counts for a divergence).
 
+        When ``local_order_id`` still exists, its immutable ``symbol``/``side``
+        scope must match the recovery under this method's store lock; a mismatch
+        raises :class:`RecoveryTransitionError` and writes nothing. A genuinely
+        missing local row remains valid recovery input because this ledger also
+        models orders whose local row was lost.
+
         ``candidate_id`` (D-020) correlates the creation event to the owning
         candidate's lifecycle. It is not stored on :class:`SubmitRecoveryRecord`
         itself (D-020 stays to one nullable ``Event`` field, not a new entity

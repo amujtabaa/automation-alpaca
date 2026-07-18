@@ -290,6 +290,31 @@ and move this WO to `work/completed/`.
   work-order check, and contamination guard passed. ADR-010 §4 and INV-081 corrected in the same
   cluster.
 
+- **Cluster B VERIFIED 2026-07-18** — root cause: `create_submit_recovery` trusted caller-declared
+  symbol/side even when the referenced local Order still existed, and the round-2 sibling test put
+  its recovery on the order under claim rather than on the intended prior sibling. A pre-existing
+  malformed direct recovery was also visible only through its declared scope. Fix: both store
+  ingresses validate immutable recovery scope against an existing Order under the same lock or
+  transaction and reject a mismatch without a write; genuinely missing local rows remain supported.
+  Legacy open direct recoveries project through either their declared scope or the referenced
+  Order's immutable SELL scope, so neither identity can suppress the other.
+  The corrected schedules use a distinct terminal O1 recovery to block O2, plus a fresh owner whose
+  direct sibling recovery appears before stage or between stage and final claim. Red baseline after
+  fixture validation: the 4 public-ingress symbol/side mismatch cases failed while all 6 honest
+  sibling schedules were already green; the audit-added raw legacy symbol/side cases then failed
+  4/4. Green: all 14 Cluster B cases; restored cross-cluster target set **28 passed**, including the
+  raw Envelope-corruption projection pin. Mutation proof: neutering each store's ingress guard
+  failed its 2 exact mismatch cases; removing each store's referenced-Order scope arm failed its 2
+  exact legacy cases; neutering the same-lineage stage consumer failed the
+  existing exact memory/SQLite pin independently; neutering each same-lineage final-claim consumer
+  failed its corrected prior-sibling pin; neutering each direct-exposure stage consumer failed its
+  fresh-owner pre-stage pin; and neutering each direct-exposure final-claim consumer failed its
+  between-stage-and-claim pin. Every mutant was restored and the 28-test target returned green. Full
+  cluster gate: Ruff lint/format, mypy (64 files), six import contracts, full `pytest -q` (exit 0,
+  255.0s), both spec oracles (61 green; 22 green + 6 documented skips), hardening gates (5 green),
+  all applicable AI-OS checks, scoped work-order check, and contamination guard passed. ADR-010 §3
+  and INV-090 now state the recovery-ingress invariant and the honest dual-store pins.
+
 - **QUEUED 2026-07-18** — drafted by the Claude seat from its independent triage of
   `result-round2.md` (all eight round-2 findings confirmed; NEW-P1-2 contamination already removed in
   `e0da97d`, CI guard added in `aba8052`). Awaiting Codex to move to `work/active/` and begin at

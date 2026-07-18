@@ -206,6 +206,14 @@ def _raw_insert_order(store, order: Order) -> None:
         store._insert_order(cur, order)
 
 
+def _raw_insert_recovery(store, recovery: SubmitRecoveryRecord) -> None:
+    if hasattr(store, "_submit_recoveries"):
+        store._submit_recoveries.append(recovery)
+        return
+    with store._tx() as cur:
+        store._insert_submit_recovery(cur, recovery)
+
+
 def _raw_append_execution(store, event: ExecutionEvent) -> ExecutionEvent:
     if hasattr(store, "_execution_events"):
         return store._append_execution_event_unlocked(event)
@@ -1419,15 +1427,18 @@ async def test_misscoped_child_recovery_retains_both_symbol_obligations(any_stor
     # The local order/action lineage is a structurally valid AAPL Envelope
     # child, but the persisted recovery falsely scopes the same possibly-live
     # venue order to MSFT.  Neither side of that ambiguity may disappear.
-    await any_store.create_submit_recovery(
-        local_order_id=staged.order.id,
-        broker_order_id="broker-misscoped-child",
-        symbol="MSFT",
-        side=OrderSide.SELL,
-        quantity=100,
-        limit_price=staged.order.limit_price,
-        failure_reason="recovery symbol disagrees with child lineage",
-        session_id=session.id,
+    _raw_insert_recovery(
+        any_store,
+        SubmitRecoveryRecord(
+            local_order_id=staged.order.id,
+            broker_order_id="broker-misscoped-child",
+            symbol="MSFT",
+            side=OrderSide.SELL,
+            quantity=100,
+            limit_price=staged.order.limit_price,
+            failure_reason="recovery symbol disagrees with child lineage",
+            session_id=session.id,
+        ),
     )
     await any_store.transition_envelope(
         envelope.id,

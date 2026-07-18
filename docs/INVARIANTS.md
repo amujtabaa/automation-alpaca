@@ -848,6 +848,15 @@ for the WIDENED predicate — the envelope stage AND final claim rails consume
 `needs_review_child_order_ids`, and the direct-SELL exposure scans widened to
 `RECOVERY_OPEN_STATUSES`, so no submission lane reaches `SUBMITTING` beside a
 `needs_review` exposure (the two P0-3 lanes are pinned closed on both stores).
+(1a) ROUND-3 CORRECTION (WO-0109 Cluster B): recovery scope itself is now an
+ingress invariant. When the referenced local Order exists,
+`create_submit_recovery` compares immutable symbol/side under the same store
+lock or transaction and rejects a contradiction without writing anything. A
+missing local Order remains legal because the recovery ledger models that lost-
+row case. Persisted legacy SELL mismatches still project fail-closed across
+both scopes. The stage and final-claim rails are independently mutation-pinned
+with a distinct prior sibling and a fresh owner in
+`tests/test_wo0109_round3_remediation.py`, both stores.
 (2) CLOSED (WO-0108 step 4, P1-1): "No monitoring path derives a neighboring
 definition" now holds — monitoring's `_validated_envelope_lineage` discovers
 actions through the store's OWNER-SCOPED identity universe (parent envelope /
