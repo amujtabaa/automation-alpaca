@@ -1,5 +1,13 @@
 # Cross-Model Review Packets (v0.9.1)
 
+> **See also — `pkl/process/review-hardening.md` (accepted 2026-07-18, REV-0029 post-mortem):**
+> mechanical review gates (enum-total classification, mutation checks for safety pins,
+> producer/consumer tables for new fields, repeated runs for timing-sensitive gate claims) and
+> **blind, spec-first** rules for the IN-PROCESS lens layer beneath this packet protocol. Those
+> rules exist because six in-process lenses returned SHIP on a change that independent review then
+> BLOCKED with three real execution-safety defects — in-process review is a first-pass filter, and
+> "in-process validation never counts as independent review" (below) is load-bearing.
+
 ## Purpose
 Provide a low-friction, tracked way for independent cross-model review (e.g. Claude → Codex or other model) so that reviewer output is never orphaned and the "queues for independent review" gate can be cleared reliably.
 

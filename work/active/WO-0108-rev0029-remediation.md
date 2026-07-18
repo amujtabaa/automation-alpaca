@@ -41,7 +41,15 @@ allowed_paths:
   - app/facade/store_backed.py
   - docs/INVARIANTS.md
   - docs/adr/ADR-010-execution-envelope.md
+  - pkl/**
+  - .ai-os/core/15_CROSS_MODEL_REVIEW.md
 ```
+
+The last two paths (added 2026-07-18, flagged D7-style widening) carry the **review-hardening
+protocol amendment** the operator asked for as part of this WO's close-out — the durable process
+change the REV-0029 post-mortem earned. `pkl/process/review-hardening.md` is the authoritative
+page; `.ai-os/core/15_CROSS_MODEL_REVIEW.md` gets a one-line pointer to it (the core file only
+checks for existence, not content-hash — `check_install` verified).
 
 ```yaml
 forbidden_paths:
