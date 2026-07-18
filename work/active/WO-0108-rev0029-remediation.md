@@ -36,6 +36,7 @@ allowed_paths:
   - app/store/base.py
   - app/store/memory.py
   - app/store/sqlite.py
+  - app/policy.py
   - app/monitoring.py
   - app/reconciliation.py
   - app/facade/store_backed.py
@@ -50,6 +51,14 @@ protocol amendment** the operator asked for as part of this WO's close-out — t
 change the REV-0029 post-mortem earned. `pkl/process/review-hardening.md` is the authoritative
 page; `.ai-os/core/15_CROSS_MODEL_REVIEW.md` gets a one-line pointer to it (the core file only
 checks for existence, not content-hash — `check_install` verified).
+
+`app/policy.py` (added 2026-07-18, Step 2 P0-2, flagged) is the home of the new
+`MAY_EXECUTE_ORDER_STATUSES` constant — the exact "may execute" set the operator ratified
+(`open claims + broker-working + CANCEL_PENDING + TIMEOUT_QUARANTINE`, i.e. `NON_TERMINAL` minus
+`CREATED`), placed directly beside its parent `NON_TERMINAL_ORDER_STATUSES`. This is mechanical
+placement of an already-ratified policy concept, not a new decision; the `policy.py` import
+contract (kernel + abstract market-data only) is unchanged — `lint-imports` verified 6 kept / 0
+broken.
 
 ```yaml
 forbidden_paths:
@@ -98,20 +107,31 @@ forbidden_paths:
   `RECOVERY_OPEN_STATUSES` (Lane B closes at creation); stage + final-claim rails on
   `needs_review_child_order_ids` (Lane A + latched-after-stage race). 22/22 WO-0108 pins; two
   X-003-era pins amended with citations; full suite 3086/0/0/12.
-- **NEXT — Step 2 (P0-2, Policy B)**: (a) cross-side same-symbol rail at the FINAL claim, both
-  stores, both directions ("may execute" = open claims + broker-working + CANCEL_PENDING +
-  TIMEOUT_QUARANTINE); (b) flatten + protection-open atomically stand down PENDING/APPROVED
-  same-symbol BUY candidates (audited `candidate_transition … reason=exit_preemption`);
-  (c) candidate dispatch refuses while a same-symbol exit obligation may execute. Red pins first
-  in `tests/test_wo0108_rev0029_remediation.py` (reviewer scenarios: approval-pause race,
-  post-mint BUY creation, both claim orderings, manual + protection paths, full sweep — see
-  `../review/REV-0029/result.md` P0-2). Key code sites from the review: facade approve→dispatch
-  await gap `store_backed.py:782-785`; claim choke `memory.py:~2979` / `sqlite.py:~4384`
-  (WO-0108 rails just added there — the cross-side rail joins them); candidate dispatch
-  `memory.py:~2892` / sqlite twin; protection-open `memory.py:~2320` / sqlite `~3562`.
-- **Then**: Step 4 (P1-1 monitoring identity universe), Step 5 (P1-2 retry/restart+rollback
-  parity scripts), Step 6 (flip each doc "OPEN DEFECT" correction to closed as its fix lands:
-  ADR-010 §3/§4, INV-090, INV-081, plan OBS-2, PD-1 premise), then the re-review packet.
+- **Step 2 (P0-2, Policy B) DONE** — commit "WO-0108 step 2": three-layer "exit preempts" on both
+  stores. (a) Cross-side same-symbol claim rail as the FINAL claim gate — a BUY and an exit SELL for
+  one symbol can never both pass. "BUY may execute" = new `MAY_EXECUTE_ORDER_STATUSES` (`app/policy.py`)
+  = `NON_TERMINAL` minus `CREATED` — the exact reviewer set (open claim / broker-working /
+  CANCEL_PENDING / TIMEOUT_QUARANTINE); CREATED is excluded because a pre-claim BUY is blocked at its
+  OWN claim while the exit is live (asymmetric: the exit set stays full `NON_TERMINAL`, so a freshly
+  minted CREATED exit already preempts). The rail runs last (only on an otherwise-claimable order), so
+  a symbol-wide overfill quarantine (ADR-001) or a Rule-8 stop keeps precedence and reports its reason
+  first. (b) Flatten (SUPERSEDE_AND_CREATE) + protection-open atomically stand down same-symbol
+  PENDING/APPROVED BUY candidates (audited `candidate_transition … reason=exit_preemption`).
+  (c) `create_order_for_candidate` refuses dispatch while a same-symbol exit may execute
+  (`candidate_dispatch_blocked` → `OrderIntentBlockedError`). 14 P0-2 pins (7×2 stores); reviewer's
+  result.md P0-2 reproduction re-run fails closed (1 SELL / 0 live BUY, candidate EXPIRED, dispatch
+  refused). **Zero existing tests needed Policy-B amendment** — the 198 pre-fix failures were all
+  fixture-artifact (establishing BUY parked in `CREATED`, now excluded by MAY_EXECUTE) or reason-
+  precedence (fixed by running the rail last), never the unsafe behavior. Full suite 3088/0/0
+  (11 skip, 1 xfail); ruff + mypy(app, 64 files) + lint-imports(6·0) + both oracles green; scope
+  widened to `app/policy.py` (flagged — MAY_EXECUTE home, import contract unchanged). Docs: ADR-010 §4
+  + INVARIANTS self-cross corrections flipped P0-1/P0-2 → amended-and-closed.
+- **NEXT — Step 4 (P1-1)**: monitoring's `_validated_envelope_lineage` loads the store projector's
+  bounded identity universe (parent / owner-correlation / order-owner / symbol), warns on ambiguity,
+  cancels nothing unvalidated. Pins: correlation-keyed + order-owner-keyed hostile shapes, both stores.
+- **Then**: Step 5 (P1-2 retry/restart+rollback parity scripts), Step 6 remaining doc flips
+  (INVARIANTS 830-843 — P0-3 half closeable now, P1-1 half closes with step 4; ADR-010 §3, INV-090,
+  INV-081, plan OBS-2), the review-hardening Tier-1 CI gates, then the re-review packet.
 
 ## Batched ratifications (Ameen, 2026-07-18 — up-front, to run remediation→re-review without stops)
 

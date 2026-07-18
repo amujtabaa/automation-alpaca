@@ -588,11 +588,15 @@ MANUAL_FLATTEN SELL is ever minted beside a DETECTED open BUY — the
 ``OPEN_BUY_STATUSES`` set ``CREATED``/``SUBMITTED``/``PARTIALLY_FILLED`` read
 under the deciding lock; venue-uncertain ``SUBMITTING``/``TIMEOUT_QUARANTINE``
 BUYs stay outside the signal, as they were outside the pre-Option-B cancel
-set — and, per the 2026-07-18 REV-0029 correction, so does ``CANCEL_PENDING``:
-the cancel issued by the retry itself moves a live BUY there, where a late
-fill remains possible while the retry mints; with an APPROVED BUY *candidate*
-handoff also invisible to the scan, the cross-interleaving self-cross classes
-P0-1/P0-2 remain OPEN, under remediation). (2) A symbol whose
+set — and, per the 2026-07-18 REV-0029 correction, so did ``CANCEL_PENDING``
+and the ``APPROVED`` BUY *candidate* handoff, both invisible to the order-only
+scan. Those cross-interleaving self-cross classes P0-1/P0-2 are now CLOSED by
+WO-0108: P0-1 widens the flatten detection set to
+``FLATTEN_BLOCKING_BUY_STATUSES`` (adds ``SUBMITTING`` / ``CANCEL_PENDING`` /
+``TIMEOUT_QUARANTINE``; the facade cancels only the cancellable subset and
+fails closed on the rest), and P0-2 adds the cross-side same-symbol claim rail
++ same-symbol BUY-candidate stand-down + dispatch refusal, so a BUY and an exit
+SELL for one symbol can never both reach the venue). (2) A symbol whose
 obligation is retained only by an open ``needs_review`` recovery child
 REFUSES the flatten at the preemption residual check (``FlattenBlockedError``)
 — unreconciled possible venue SELL exposure quarantines the manual path too

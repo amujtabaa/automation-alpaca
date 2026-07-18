@@ -155,16 +155,25 @@ BUYs (`SUBMITTING`, `TIMEOUT_QUARANTINE`) remain outside the signal exactly as t
 the pre-Option-B §5.3 cancel set — Option B closed the stale-read class, it did not widen the
 detected set.
 
-**Correction 2026-07-18 (REV-0029 P0-1/P0-2 — OPEN DEFECTS, under remediation):** the independent
-review falsified the retry-convergence claim above by lifecycle property: cancelling a `SUBMITTED`
-BUY leaves it `CANCEL_PENDING` (non-terminal — it can still late-fill), which is OUTSIDE
-`OPEN_BUY_STATUSES`, so the bounded retry can mint a full-size SELL beside a BUY whose fill is
-still possible. Independently, an `APPROVED` BUY *Candidate* that has not yet produced its Order
-row is invisible to the scan entirely, and no cross-side same-symbol rail exists at candidate
-dispatch or the final submission claim — both exit mint paths can cross a BUY to the venue. Until
-the remediation lands (its own scoped WO + re-review), the flatten self-cross closure holds ONLY
-for the three detected statuses at the instant of the locked read — not across cancel/late-fill or
-candidate-handoff interleavings. (ii) When
+**Correction 2026-07-18, closed by WO-0108 (REV-0029 P0-1/P0-2 — amended-and-closed):** the
+independent review falsified the original retry-convergence claim by lifecycle property —
+cancelling a `SUBMITTED` BUY leaves it `CANCEL_PENDING` (non-terminal, can still late-fill), which
+was OUTSIDE `OPEN_BUY_STATUSES`, so the bounded retry could mint a full-size SELL beside a BUY
+whose fill was still possible; independently, an `APPROVED` BUY *Candidate* that had not yet
+produced its Order row was invisible to the order-only scan, and no cross-side same-symbol rail
+existed at candidate dispatch or the final submission claim. Both classes are now closed.
+**P0-1 (WO-0108 step 1):** the flatten detection set is the superset
+`FLATTEN_BLOCKING_BUY_STATUSES` (`OPEN_BUY_STATUSES` + `SUBMITTING` + `CANCEL_PENDING` +
+`TIMEOUT_QUARANTINE`); the facade retry cancels only the cancellable subset and fails closed (409)
+on venue-uncertain BUYs — never blind-cancelling `SUBMITTING`/`TIMEOUT_QUARANTINE`.
+**P0-2 (WO-0108 step 2, Policy B "exit preempts"):** a cross-side same-symbol rail at the final
+submission claim (a BUY and an exit SELL for one symbol can never both pass — "BUY may execute" =
+`MAY_EXECUTE_ORDER_STATUSES`, i.e. `NON_TERMINAL` minus `CREATED`, since a pre-claim BUY is blocked
+at its own claim while the exit is live), plus atomic stand-down of same-symbol PENDING/APPROVED
+BUY candidates on flatten + protection-open (audited `candidate_transition`, reason
+`exit_preemption`) and a candidate-dispatch refusal while a same-symbol exit may execute. The
+flatten self-cross closure now holds across cancel/late-fill and candidate-handoff interleavings,
+both stores; pins in `tests/test_wo0108_rev0029_remediation.py`. (ii) When
 the symbol's obligation is retained ONLY by an open `needs_review` recovery child (see the §3
 2026-07-17 amendment), the preemption's residual check refuses the flatten outright — a full-size
 manual SELL beside possibly-already-sold shares is the same double-sell class, and the human

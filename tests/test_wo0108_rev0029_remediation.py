@@ -364,3 +364,146 @@ async def test_lane_b_direct_needs_review_blocks_fresh_owner_submission(any_stor
             target_quantity=100,
             session_id=session.id,
         )
+
+
+# --------------------------------------------------------------------------- #
+# P0-2: same-symbol cross-side eligibility (exit-preempts, ratified 2026-07-18)
+# The §5.3 self-cross across the Candidate->Order handoff Option B cannot see.
+# --------------------------------------------------------------------------- #
+
+from app.models import CandidateStatus  # noqa: E402
+from app.store.base import (  # noqa: E402
+    CLAIM_CLAIMED,
+    OrderIntentBlockedError,
+)
+
+
+async def _approved_buy_candidate(store, session, qty=40, symbol="AAPL"):
+    cand = await store.create_candidate(
+        symbol, suggested_quantity=qty, session_id=session.id
+    )
+    await store.transition_candidate(cand.id, CandidateStatus.APPROVED)
+    return cand
+
+
+def _regular(monkeypatch):
+    monkeypatch.setattr(monitoring, "session_type_for", lambda _t: SessionType.REGULAR)
+
+
+async def _live_sell_exit_order(store, session, qty=100, symbol="AAPL"):
+    """A non-terminal SELL exit ORDER (protection), reaching the venue."""
+    order = await store.open_protection_exit(
+        symbol=symbol,
+        target_quantity=qty,
+        floor_price=9.0,
+        observed_price=8.5,
+        average_price=10.0,
+        session_id=session.id,
+    )
+    return order
+
+
+async def test_p0_2_manual_flatten_stands_down_buy_candidate(any_store, monkeypatch):
+    _regular(monkeypatch)
+    session = await _held(any_store)
+    cand = await _approved_buy_candidate(any_store, session)
+
+    res = await any_store.flatten_position("AAPL", actor="op")
+    assert res.order is not None  # a MANUAL_FLATTEN SELL was minted
+
+    # The BUY candidate was stood down in the same atomic unit...
+    assert (await any_store.get_candidate(cand.id)).status is CandidateStatus.EXPIRED
+    ev = [
+        e
+        for e in await any_store.list_events()
+        if e.event_type == "candidate_transition"
+        and e.payload.get("reason") == "exit_preemption"
+    ]
+    assert len(ev) == 1
+    # ...and it can no longer dispatch into a crossing BUY.
+    with pytest.raises(OrderIntentBlockedError, match="same-symbol exit"):
+        await any_store.create_order_for_candidate(cand.id)
+    live_buys = [
+        o
+        for o in await any_store.list_orders()
+        if o.side is OrderSide.BUY
+        and o.status
+        not in (OrderStatus.CANCELED, OrderStatus.FILLED, OrderStatus.REJECTED)
+    ]
+    assert live_buys == []
+
+
+async def test_p0_2_protection_open_stands_down_buy_candidate(any_store, monkeypatch):
+    _regular(monkeypatch)
+    session = await _held(any_store)
+    cand = await _approved_buy_candidate(any_store, session)
+
+    await _live_sell_exit_order(any_store, session)
+    assert (await any_store.get_candidate(cand.id)).status is CandidateStatus.EXPIRED
+
+
+async def test_p0_2_dispatch_refused_while_exit_order_live(any_store, monkeypatch):
+    # A buy candidate approved AFTER a live exit exists must not dispatch.
+    _regular(monkeypatch)
+    session = await _held(any_store)
+    await _live_sell_exit_order(any_store, session)
+    cand = await _approved_buy_candidate(any_store, session)
+    with pytest.raises(OrderIntentBlockedError, match="same-symbol exit"):
+        await any_store.create_order_for_candidate(cand.id)
+
+
+async def test_p0_2_buy_claim_blocked_while_exit_order_may_execute(
+    any_store, monkeypatch
+):
+    _regular(monkeypatch)
+    session = await _held(any_store)
+    await _live_sell_exit_order(any_store, session)  # non-terminal SELL exit
+    # A raw BUY order that already exists must not CLAIM into the venue.
+    bcand = await any_store.create_candidate("AAPL", session_id=session.id)
+    buy = await any_store.create_order_for_test(
+        bcand.id, "AAPL", OrderSide.BUY, 40, session_id=session.id
+    )
+    claim = await any_store.claim_order_for_submission(buy.id)
+    assert claim.outcome == CLAIM_BLOCKED
+    assert "same-symbol exit" in (claim.reason or "")
+
+
+async def test_p0_2_sell_exit_claim_blocked_while_buy_may_execute(
+    any_store, monkeypatch
+):
+    _regular(monkeypatch)
+    session = await _held(any_store)
+    # A live BUY order (SUBMITTED)...
+    await _buy_in(any_store, session, OrderStatus.SUBMITTED)
+    # ...and a raw SELL exit order for the same symbol: its claim must wait.
+    scand = await any_store.create_candidate("AAPL", session_id=session.id)
+    sell = await any_store.create_order_for_test(
+        scand.id, "AAPL", OrderSide.SELL, 100, session_id=session.id
+    )
+    claim = await any_store.claim_order_for_submission(sell.id)
+    assert claim.outcome == CLAIM_BLOCKED
+    assert "same-symbol BUY" in (claim.reason or "")
+
+
+async def test_p0_2_regression_normal_buy_claims_with_no_exit(any_store, monkeypatch):
+    # No same-symbol exit -> a normal BUY claims exactly as before.
+    _regular(monkeypatch)
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    cand = await any_store.create_candidate("AAPL", session_id=session.id)
+    buy = await any_store.create_order_for_test(
+        cand.id, "AAPL", OrderSide.BUY, 40, session_id=session.id
+    )
+    claim = await any_store.claim_order_for_submission(buy.id)
+    assert claim.outcome == CLAIM_CLAIMED
+
+
+async def test_p0_2_regression_protection_sell_claims_with_no_buy(
+    any_store, monkeypatch
+):
+    # A protection SELL with no same-symbol live BUY claims normally.
+    _regular(monkeypatch)
+    session = await _held(any_store)
+    order = await _live_sell_exit_order(any_store, session)
+    claim = await any_store.claim_order_for_submission(order.id)
+    assert claim.outcome == CLAIM_CLAIMED
