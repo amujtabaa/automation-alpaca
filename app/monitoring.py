@@ -270,9 +270,18 @@ async def cancel_open_buys(
             continue
         try:
             if order.status is OrderStatus.CREATED:
-                # Never sent to the broker — cancel locally (D-013a style).
-                await store.transition_order(order.id, OrderStatus.CANCELED)
-            elif order.broker_order_id is not None:
+                # The snapshot can race the submission claim. Cancel locally
+                # only if the current row is STILL CREATED under the store lock;
+                # otherwise continue with the current venue-aware state below.
+                order = await store.transition_order(
+                    order.id,
+                    OrderStatus.CANCELED,
+                    expected_from=OrderStatus.CREATED,
+                )
+            if (
+                order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+                and order.broker_order_id is not None
+            ):
                 await adapter.cancel_order(order.broker_order_id)
                 await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
         except (BrokerError, *_TRANSITION_ERRORS) as exc:

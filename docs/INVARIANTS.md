@@ -590,13 +590,23 @@ under the deciding lock; venue-uncertain ``SUBMITTING``/``TIMEOUT_QUARANTINE``
 BUYs stay outside the signal, as they were outside the pre-Option-B cancel
 set — and, per the 2026-07-18 REV-0029 correction, so did ``CANCEL_PENDING``
 and the ``APPROVED`` BUY *candidate* handoff, both invisible to the order-only
-scan. Those cross-interleaving self-cross classes P0-1/P0-2 are now CLOSED by
-WO-0108: P0-1 widens the flatten detection set to
+scan. WO-0108 closed the projected-order and candidate-handoff portions of
+P0-1/P0-2: P0-1 widens the flatten detection set to
 ``FLATTEN_BLOCKING_BUY_STATUSES`` (adds ``SUBMITTING`` / ``CANCEL_PENDING`` /
 ``TIMEOUT_QUARANTINE``; the facade cancels only the cancellable subset and
 fails closed on the rest), and P0-2 adds the cross-side same-symbol claim rail
 + same-symbol BUY-candidate stand-down + dispatch refusal, so a BUY and an exit
-SELL for one symbol can never both reach the venue). (2) A symbol whose
+SELL cannot both pass those projected-order seams).
+*Amended 2026-07-18 (WO-0109 Cluster A / REV-0029 round 2):* the remaining
+terminal-local/venue-live schedule is closed. A stale ``CREATED`` snapshot can
+no longer cancel a BUY after the submission claim advances it: the local
+cancel is a store-atomic compare-and-swap with ``expected_from=CREATED`` and an
+advanced row stays non-terminal or follows the broker-cancel path. Flatten and
+the final exit-SELL claim now consume the same BUY execution-exposure
+projection, combining their existing order-status boundary with open
+``unresolved`` and ``needs_review`` BUY recoveries. Thus a local-terminal BUY
+which may still execute at the paper venue remains blocking in both stores.
+Mutation-verified pins: ``tests/test_wo0109_round3_remediation.py``. (2) A symbol whose
 obligation is retained only by an open ``needs_review`` recovery child
 REFUSES the flatten at the preemption residual check (``FlattenBlockedError``)
 — unreconciled possible venue SELL exposure quarantines the manual path too

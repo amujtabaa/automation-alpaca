@@ -3825,6 +3825,23 @@ class SqliteStateStore(StateStore):
         CREATED is excluded (a pre-claim BUY is blocked at its own claim while
         the exit is live) and a BUY CANDIDATE is not counted (closed at the
         Candidate layer: stand-down + dispatch-refuse). Mirrors memory."""
+        exposure_ids = self._same_symbol_buy_execution_exposure_ids_locked(
+            symbol,
+            order_statuses=MAY_EXECUTE_ORDER_STATUSES,
+            exclude_order_id=exclude_order_id,
+        )
+        return exposure_ids[0] if exposure_ids else None
+
+    def _same_symbol_buy_execution_exposure_ids_locked(
+        self,
+        symbol: str,
+        *,
+        order_statuses: frozenset[OrderStatus],
+        exclude_order_id: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        """SQLite twin of the shared order-plus-recovery BUY projection."""
+
+        ids: list[str] = []
         for row in self._read_all(
             "SELECT * FROM orders WHERE symbol = ? AND side = ? ORDER BY rowid",
             (symbol, OrderSide.BUY.value),
@@ -3832,9 +3849,20 @@ class SqliteStateStore(StateStore):
             order = self._project_order_locked(self._order(row))
             if order.id == exclude_order_id:
                 continue
-            if order.status in MAY_EXECUTE_ORDER_STATUSES:
-                return order.id
-        return None
+            if order.status in order_statuses:
+                ids.append(order.id)
+        ids.extend(
+            recovery.local_order_id
+            for row in self._read_all(
+                "SELECT * FROM submit_recoveries WHERE symbol = ? AND side = ? "
+                "ORDER BY rowid",
+                (symbol, OrderSide.BUY.value),
+            )
+            for recovery in (self._submit_recovery(row),)
+            if recovery.local_order_id != exclude_order_id
+            and recovery.cleanup_status in RECOVERY_OPEN_STATUSES
+        )
+        return tuple(dict.fromkeys(ids))
 
     def _cross_side_claim_block_reason_locked(self, order: Order) -> Optional[str]:
         if OrderSide(order.side) is OrderSide.BUY:
@@ -4050,16 +4078,9 @@ class SqliteStateStore(StateStore):
             # buys (SUBMITTING/CANCEL_PENDING/TIMEOUT_QUARANTINE) block the
             # mint but are never blindly cancelled; the caller fails closed
             # until they are broker-authoritatively terminal. Mirrors memory.
-            open_buy_rows = self._read_all(
-                "SELECT * FROM orders WHERE symbol = ? AND side = ?",
-                (key, OrderSide.BUY.value),
+            open_buy_order_ids = self._same_symbol_buy_execution_exposure_ids_locked(
+                key, order_statuses=FLATTEN_BLOCKING_BUY_STATUSES
             )
-            open_buy_order_ids = [
-                projected.id
-                for row in open_buy_rows
-                for projected in (self._project_order_locked(self._order(row)),)
-                if projected.status in FLATTEN_BLOCKING_BUY_STATUSES
-            ]
 
             plan = plan_flatten_position(
                 position=position,
@@ -5204,6 +5225,7 @@ class SqliteStateStore(StateStore):
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
         actor: str = COMMAND_ACTOR_SYSTEM,
+        expected_from: Optional[OrderStatus | frozenset[OrderStatus]] = None,
     ) -> Order:
         # No OrderStatus(new_status) coercion (AIR-009): plan_transition_order
         # validates the enum type itself, identically to InMemoryStateStore, so a
@@ -5213,6 +5235,14 @@ class SqliteStateStore(StateStore):
             if row is None:
                 raise UnknownEntityError(f"order {order_id} not found")
             order = self._project_order_locked(self._order(row))
+            if expected_from is not None:
+                expected_statuses = (
+                    expected_from
+                    if isinstance(expected_from, frozenset)
+                    else frozenset({expected_from})
+                )
+                if order.status not in expected_statuses:
+                    return order
             if (
                 order.status is OrderStatus.SUBMITTING
                 and new_status is OrderStatus.SUBMITTED

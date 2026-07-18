@@ -163,7 +163,8 @@ cancelling a `SUBMITTED` BUY leaves it `CANCEL_PENDING` (non-terminal, can still
 was OUTSIDE `OPEN_BUY_STATUSES`, so the bounded retry could mint a full-size SELL beside a BUY
 whose fill was still possible; independently, an `APPROVED` BUY *Candidate* that had not yet
 produced its Order row was invisible to the order-only scan, and no cross-side same-symbol rail
-existed at candidate dispatch or the final submission claim. Both classes are now closed.
+existed at candidate dispatch or the final submission claim. WO-0108 closed those two
+projected-order/candidate schedules.
 **P0-1 (WO-0108 step 1):** the flatten detection set is the superset
 `FLATTEN_BLOCKING_BUY_STATUSES` (`OPEN_BUY_STATUSES` + `SUBMITTING` + `CANCEL_PENDING` +
 `TIMEOUT_QUARANTINE`); the facade retry cancels only the cancellable subset and fails closed (409)
@@ -173,9 +174,20 @@ submission claim (a BUY and an exit SELL for one symbol can never both pass — 
 `MAY_EXECUTE_ORDER_STATUSES`, i.e. `NON_TERMINAL` minus `CREATED`, since a pre-claim BUY is blocked
 at its own claim while the exit is live), plus atomic stand-down of same-symbol PENDING/APPROVED
 BUY candidates on flatten + protection-open (audited `candidate_transition`, reason
-`exit_preemption`) and a candidate-dispatch refusal while a same-symbol exit may execute. The
-flatten self-cross closure now holds across cancel/late-fill and candidate-handoff interleavings,
-both stores; pins in `tests/test_wo0108_rev0029_remediation.py`. (ii) When
+`exit_preemption`) and a candidate-dispatch refusal while a same-symbol exit may execute. Pins are
+in `tests/test_wo0108_rev0029_remediation.py`.
+
+**Round-3 correction 2026-07-18 (WO-0109 Cluster A):** round-2 review found a remaining
+stale-snapshot escape. A `CREATED` BUY could be atomically claimed to `SUBMITTING` after
+`cancel_open_buys` took its snapshot, then the stale local-cancel branch could drive the current
+row to terminal `CANCELED` without a broker cancel. Flatten and final SELL claim also ignored an
+open BUY `SubmitRecoveryRecord`, so the terminal-local but venue-live BUY disappeared from both
+rails. The local cancel now uses `transition_order(expected_from=CREATED)` under the store lock;
+on mismatch it leaves the advanced row live (and uses the broker-cancel path when the current row
+has a cancellable broker identity). Both flatten and final SELL claim consume one shared
+same-symbol BUY exposure projection: their existing order-status boundaries plus open
+`unresolved`/`needs_review` BUY recoveries. Pins and killed mutants are in
+`tests/test_wo0109_round3_remediation.py` on both stores. (ii) When
 the symbol's obligation is retained ONLY by an open `needs_review` recovery child (see the §3
 2026-07-17 amendment), the preemption's residual check refuses the flatten outright — a full-size
 manual SELL beside possibly-already-sold shares is the same double-sell class, and the human

@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: REV-0029 round-3 remediation — close every confirmed round-2 finding (Codex implements)
-status: QUEUED
+status: ACTIVE
 work_order_id: WO-0109
 wave: R2 consolidation campaign (CAMPAIGN-0002), post-review remediation (round 3)
 model_tier: strong
@@ -271,6 +271,24 @@ and move this WO to `work/completed/`.
       human — not Codex). Merge gate reopens only on that ACCEPT + operator merge.
 
 ## Progress log
+
+- **ACTIVE 2026-07-18** — Codex implementer seat activated the authorized work order on
+  `consolidate/r2-canonical`. Fable FULL gate loaded; beginning Cluster A with red dual-store pins
+  before production changes.
+- **Cluster A VERIFIED 2026-07-18** — root cause: `cancel_open_buys` chose a local-cancel branch
+  from a stale `CREATED` snapshot, while flatten and final SELL claim projected BUY exposure from
+  Order status only. Fix: store-atomic `transition_order(expected_from=CREATED)` plus one shared
+  order-and-open-recovery BUY exposure projection consumed by flatten and final claim, in both
+  stores. Red baseline: `tests/test_wo0109_round3_remediation.py` = **10 failed** (2 stale-CAS,
+  4 flatten-recovery, 4 final-claim-recovery). Green: **10 passed**. Mutation proof: neutering the
+  memory CAS and SQLite CAS independently made their exact race pin fail (1/1 each); deleting the
+  monitoring caller's `expected_from` made both race pins fail (2/2); deleting each store's open
+  recovery contribution made that store's unresolved/needs-review flatten and claim pins fail
+  (4/4 each); restored suite returned 10/10 green. Full cluster gate: Ruff lint/format, mypy (64
+  files), six import contracts, full `pytest -q` (exit 0, 278.5s), both spec oracles (61 green;
+  22 green + 6 documented skips), hardening gates (5 green), all applicable AI-OS checks, scoped
+  work-order check, and contamination guard passed. ADR-010 §4 and INV-081 corrected in the same
+  cluster.
 
 - **QUEUED 2026-07-18** — drafted by the Claude seat from its independent triage of
   `result-round2.md` (all eight round-2 findings confirmed; NEW-P1-2 contamination already removed in

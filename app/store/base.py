@@ -906,11 +906,18 @@ class StateStore(ABC):
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
         actor: str = COMMAND_ACTOR_SYSTEM,
+        expected_from: Optional[OrderStatus | frozenset[OrderStatus]] = None,
     ) -> Order:
-        """Atomically transition an order and write an audit event. ``actor``
-        stamps the ``order_transition`` audit event's provenance (UC-002) — a
-        human-triggered cancel passes the operator; routine engine transitions
-        default to ``COMMAND_ACTOR_SYSTEM``."""
+        """Atomically transition an order and write an audit event.
+
+        ``expected_from`` makes the transition conditional under the same store
+        lock/transaction: when the projected current status is outside the
+        expected set, nothing is written and the current order is returned. It
+        is the compare-and-swap seam for decisions made from an earlier snapshot.
+        ``actor`` stamps the ``order_transition`` audit event's provenance
+        (UC-002) — a human-triggered cancel passes the operator; routine engine
+        transitions default to ``COMMAND_ACTOR_SYSTEM``.
+        """
 
     # ------------------------------------------------------------------ #
     # Timeout-quarantine (ADR-002 / wave 3c) — evented order transitions

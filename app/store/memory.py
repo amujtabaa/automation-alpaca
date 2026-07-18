@@ -2600,14 +2600,45 @@ class InMemoryStateStore(StateStore):
         block a SELL exit on a merely-proposed buy (and, in the fixtures, on a
         held position's abandoned establishing BUY stub, which ``append_fill``
         leaves parked in CREATED)."""
-        for order in self._orders.values():
-            if order.id == exclude_order_id or order.symbol != symbol:
-                continue
-            if OrderSide(order.side) is not OrderSide.BUY:
-                continue
-            if self._project_order_unlocked(order).status in MAY_EXECUTE_ORDER_STATUSES:
-                return order.id
-        return None
+        exposure_ids = self._same_symbol_buy_execution_exposure_ids_unlocked(
+            symbol,
+            order_statuses=MAY_EXECUTE_ORDER_STATUSES,
+            exclude_order_id=exclude_order_id,
+        )
+        return exposure_ids[0] if exposure_ids else None
+
+    def _same_symbol_buy_execution_exposure_ids_unlocked(
+        self,
+        symbol: str,
+        *,
+        order_statuses: frozenset[OrderStatus],
+        exclude_order_id: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        """Same-symbol BUY venue exposure from orders plus open recoveries.
+
+        The caller chooses its existing order-status boundary (flatten includes
+        CREATED; final claim does not). Both consumers share the recovery
+        boundary: unresolved and needs-review each mean the BUY may be live at
+        the paper broker even when its local order row is terminal.
+        """
+
+        ids = [
+            order.id
+            for order in self._orders.values()
+            if order.id != exclude_order_id
+            and order.symbol == symbol
+            and OrderSide(order.side) is OrderSide.BUY
+            and self._project_order_unlocked(order).status in order_statuses
+        ]
+        ids.extend(
+            recovery.local_order_id
+            for recovery in self._submit_recoveries
+            if recovery.local_order_id != exclude_order_id
+            and recovery.symbol == symbol
+            and recovery.side is OrderSide.BUY
+            and recovery.cleanup_status in RECOVERY_OPEN_STATUSES
+        )
+        return tuple(dict.fromkeys(ids))
 
     def _cross_side_claim_block_reason_unlocked(self, order: Order) -> Optional[str]:
         """The rail at the FINAL claim: a BUY is blocked while a same-symbol exit
@@ -2787,13 +2818,9 @@ class InMemoryStateStore(StateStore):
             # cancelled — the caller fails closed until they are broker-
             # authoritatively terminal. Status is the event-log projection,
             # the SAME truth ``list_orders``/``cancel_open_buys`` read.
-            open_buy_order_ids = [
-                projected.id
-                for order in self._orders.values()
-                if order.symbol == key and OrderSide(order.side) is OrderSide.BUY
-                for projected in (self._project_order_unlocked(order),)
-                if projected.status in FLATTEN_BLOCKING_BUY_STATUSES
-            ]
+            open_buy_order_ids = self._same_symbol_buy_execution_exposure_ids_unlocked(
+                key, order_statuses=FLATTEN_BLOCKING_BUY_STATUSES
+            )
             plan = plan_flatten_position(
                 position=position,
                 active_intent=active,
@@ -3717,12 +3744,21 @@ class InMemoryStateStore(StateStore):
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
         actor: str = COMMAND_ACTOR_SYSTEM,
+        expected_from: Optional[OrderStatus | frozenset[OrderStatus]] = None,
     ) -> Order:
         async with self._lock:
             raw_order = self._orders.get(order_id)
             if raw_order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
             order = self._project_order_unlocked(raw_order)
+            if expected_from is not None:
+                expected_statuses = (
+                    expected_from
+                    if isinstance(expected_from, frozenset)
+                    else frozenset({expected_from})
+                )
+                if order.status not in expected_statuses:
+                    return order.model_copy(deep=True)
             if (
                 order.status is OrderStatus.SUBMITTING
                 and new_status is OrderStatus.SUBMITTED
