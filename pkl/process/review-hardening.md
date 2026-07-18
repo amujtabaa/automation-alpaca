@@ -48,7 +48,10 @@ it. In-process lenses remain a cheap first-pass filter, not a safety net.
   enum and requires an explicit disposition for every member (in the gating set, or provably
   non-executable/irrelevant with the reason asserted). Adding an enum member must break the build
   until classified. First instances: the `FLATTEN_BLOCKING_BUY_STATUSES` totality pin (WO-0108
-  step 1).
+  step 1). **Implemented CI-blocking (WO-0108 step "review-hardening gates"):**
+  `tests/test_review_hardening_gates.py` — `FLATTEN_BLOCKING_BUY_STATUSES == NON_TERMINAL`,
+  `MAY_EXECUTE == NON_TERMINAL − {CREATED}`, and the full-enum terminal/non-terminal partition,
+  all total over `OrderStatus`; a new or dropped member breaks the pytest gate (which CI runs).
 - **T1.2 Mutation check for new safety pins.** A new test pinning a safety behavior counts only
   after demonstrating it CAN fail: break the guarded branch (or spy the guarded path) and show
   the pin goes red. Record the mutation in the test's docstring or the WO evidence log. (P0-4's
@@ -57,6 +60,9 @@ it. In-process lenses remain a cheap first-pass filter, not a safety net.
   enumerated consumer table (file:line), verified by grep at review time. Universally-quantified
   doc claims ("every sell-side choke keys on X") must cite the enumeration; conformance review
   verifies the enumeration's completeness against a fresh grep — never by sampling positives.
+  **Implemented CI-blocking:** `tests/test_review_hardening_gates.py` asserts the P0-3 field
+  `needs_review_child_order_ids` and the P0-2 set `MAY_EXECUTE_ORDER_STATUSES` each have their
+  producer PLUS both-store rail consumers via a fresh source grep (a zero-consumer field fails).
 - **T1.4 Repeated runs for timing-sensitive gate claims.** A gate claim over a suite containing
   wall-clock-sensitive tests requires N≥3 consecutive green runs (or an explicit flake
   disposition naming the test). One green run is a data point, not a gate.

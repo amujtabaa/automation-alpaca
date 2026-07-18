@@ -146,10 +146,21 @@ forbidden_paths:
   injection) a failure injected on the 2nd audit write mid-close rolls the whole single-atomic-unit
   close back on both stores — no partial stream, session still ACTIVE, swept owner still APPROVED.
   6 tests green; ruff green; no doc flip (P1-2 is a test-fidelity concern, no INV claim).
-- **NEXT — review-hardening Tier-1 CI gates** (enum-total classification + producer/consumer grep for
-  new safety fields, blocking; per pkl/process/review-hardening.md + the 2026-07-18 ratification), then
-  Step 6 residual doc flips (ADR-010 §3, INV-081, plan OBS-2 if still marked open), then the REV-0029
-  round-2 re-review packet (merge gate reopens only on ACCEPT).
+- **Review-hardening Tier-1 CI gates DONE** — commit "WO-0108 review-hardening gates":
+  `tests/test_review_hardening_gates.py` (5 tests, CI-blocking as pytest). T1.1 enum-total — the
+  full-enum terminal/non-terminal partition, `FLATTEN_BLOCKING_BUY_STATUSES == NON_TERMINAL` (P0-1's
+  class), and `MAY_EXECUTE == NON_TERMINAL − {CREATED}` (P0-2's set); a new/dropped OrderStatus member
+  breaks the build. T1.3 producer/consumer — `needs_review_child_order_ids` (P0-3) and
+  `MAY_EXECUTE_ORDER_STATUSES` (P0-2) each verified by a fresh source grep to have a producer PLUS
+  both-store rail consumers; a zero-consumer safety field fails. `pkl/process/review-hardening.md`
+  T1.1/T1.3 carry the implementation pointer. (T1.2 mutation-check + T1.4 N-run stay review-checklist
+  per the ratification.)
+- **NEXT — REV-0029 round-2 re-review packet**: assemble the `work/review/REV-0029/` round-2 request
+  (P0-1/2/3 + P1-1/P1-2ext closures + fresh-probe lines for the INV-090/INV-081 amendments) so the
+  operator can commission the same-Codex round-2 review. Merge gate reopens only on ACCEPT (operator-
+  gated terminal).
+- **Deferred (Step 6 residual)**: ADR-010 §3 / INV-081 / plan OBS-2 doc flips — audit whether still
+  marked open and flip any a landed fix closed; none block the re-review of the code fixes.
 
 ## Batched ratifications (Ameen, 2026-07-18 — up-front, to run remediation→re-review without stops)
 
