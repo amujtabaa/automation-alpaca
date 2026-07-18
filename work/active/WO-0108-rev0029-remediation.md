@@ -1,6 +1,6 @@
 ---
 type: Work Order
-title: REV-0029 remediation — close the three execution-safety classes (P0-1/2/3) + P1-1/P1-2ext
+title: REV-0029 remediation — close the three order-execution correctness classes (P0-1/2/3) + P1-1/P1-2ext
 status: ACTIVE
 work_order_id: WO-0108
 wave: R2 consolidation campaign (CAMPAIGN-0002), post-review remediation
@@ -16,7 +16,7 @@ gated_surface: order submission/claim, manual flatten, candidate dispatch, event
 
 ## Goal
 
-Close the three independently-reproduced execution-safety classes from the REV-0029 BLOCK
+Close the three independently-reproduced order-execution correctness classes from the REV-0029 BLOCK
 (`work/review/REV-0029/result.md`) plus the two accepted P1s, under the operator's 2026-07-18
 policy ratifications (disposition.md): **Policy A** — full needs_review submission quarantine;
 **Policy B** — flatten/protection stand down same-symbol BUY candidates + dispatch refusal +
@@ -162,7 +162,7 @@ forbidden_paths:
 - **REV-0029 round-2 re-review packet QUEUED** — `work/review/REV-0029/request-round2.md` (round-2
   request, same-Codex per ratification) + `disposition.md` round-2 update recording every closure.
   The request asks for closure BY PROPERTY (negative-space enumeration, boundary review,
-  exploit-or-proof — the review-hardening lessons applied to the request itself), lists the
+  counterexample-or-proof — the review-hardening lessons applied to the request itself), lists the
   `abfbae9..HEAD` review diff + turnkey verification, and carries the PROC-0001 fresh-probe
   obligation for INV-090 / INV-081 / ADR-010 §3-4. **Operator action (terminal, human-gated):**
   commission the round-2 review; the merge gate reopens only on its ACCEPT + a recorded disposition.

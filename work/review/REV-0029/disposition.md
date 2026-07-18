@@ -2,7 +2,7 @@
 
 > **Verdict acknowledged: BLOCK — and it is correct.** Every finding was independently re-verified
 > against the source by the builder before this disposition; none is disputed. Three real
-> execution-safety classes (P0-1/2/3) survived all six in-process lenses — one lens affirmatively
+> order-execution correctness classes (P0-1/2/3) survived all six in-process lenses — one lens affirmatively
 > mis-verified P0-1 as "convergence" and another mis-read the P0-3 gating code (OBS-2) — which is
 > precisely the failure mode the independent-review gate exists to catch. The merge gate stays
 > CLOSED until the remediation WO lands and re-review returns ACCEPT.
