@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: R2 consolidation investigation and decision package (Codex seat)
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0106
 wave: W3
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Codex
 created: 2026-07-16
 ---
@@ -165,7 +165,7 @@ Complete this section only after Part B closure or an explicit campaign disposit
 
 - [ ] PKL_UPDATED
 - [ ] ADR_CREATED
-- [ ] RESULT_SUMMARY_KEPT
+- [x] RESULT_SUMMARY_KEPT
 - [ ] ARCHIVED
 - [ ] DELETED
 - [ ] SUPERSEDED
@@ -182,5 +182,20 @@ Complete this section only after Part B closure or an explicit campaign disposit
 
 ## Deletion decision
 
-Deletion reason: Retain while the two-part consolidation campaign and its human
-ratification gate remain active.
+Deletion reason: Kept as durable provenance for the independent Part A investigation,
+its neutral oracle, and the human-ratified consolidation decisions.
+
+## CLOSE-OUT (2026-07-18)
+
+Part A is complete. Commit `f15f344` delivered the independent Sections A-J decision package at
+`work/review/CONSOLIDATION-R2-PARTA-CODEX/report-codex.md` and the neutral conformance oracle, then
+stopped before Part B as required. Ameen subsequently recorded the Part A/Part B ratifications in
+the campaign packet. REV-0029 independently rechecked the Codex oracle provenance and found its
+later D1 fixture reseed to be setup-only: 10 additions, 0 deletions, assertion lines unchanged,
+identical four-property failures at both pre-fix baselines, and 61 passes after the ratified code
+fixes.
+
+The REV-0029 `BLOCK` verdict concerns defects in the consolidated Part B implementation; it does
+not reopen the completed investigation or alter the decisions/evidence Part A delivered. The
+report remains the durable result summary, so this work order closes with
+`RESULT_SUMMARY_KEPT`.
