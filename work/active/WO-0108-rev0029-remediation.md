@@ -112,3 +112,22 @@ forbidden_paths:
 - **Then**: Step 4 (P1-1 monitoring identity universe), Step 5 (P1-2 retry/restart+rollback
   parity scripts), Step 6 (flip each doc "OPEN DEFECT" correction to closed as its fix lands:
   ADR-010 §3/§4, INV-090, INV-081, plan OBS-2, PD-1 premise), then the re-review packet.
+
+## Batched ratifications (Ameen, 2026-07-18 — up-front, to run remediation→re-review without stops)
+
+- **P0-2 = Exit preempts.** Flatten AND autonomous protection atomically STAND DOWN (cancel,
+  audited `candidate_transition … reason=exit_preemption`) same-symbol PENDING/APPROVED BUY
+  candidates; the cross-side claim rail (both stores, both directions) makes exits wait for any
+  live BUY order to terminalize. "BUY may execute" = open claims + broker-working + CANCEL_PENDING
+  + TIMEOUT_QUARANTINE. Layered: (a) claim rail = hard venue gate, (b) stand-down = preempt
+  semantics + don't starve the exit, (c) dispatch-refuse = no new BUY order appears mid-exit.
+- **Review-hardening gates = Blocking where cheap now.** Enum-total classification (the
+  `FLATTEN_BLOCKING_BUY_STATUSES` pin) + producer/consumer grep for new safety fields are
+  CI-blocking immediately; mutation-check + N-run are review-checklist items until automated
+  (follow-up process WO). Recorded in `pkl/process/review-hardening.md`.
+- **PD-1 = Keep parked** (post-merge WO with its own EventSource/EventAuthority design + review).
+  Quarantine is fail-closed after P0-3; nothing forces the valve now.
+- **Re-review = Same Codex session, round 2** (finder verifies the fixes are closed; one
+  continuation round per the packet protocol).
+- **Terminal (flagged, not decisions):** operator commissions the round-2 review; operator merges
+  on ACCEPT.
