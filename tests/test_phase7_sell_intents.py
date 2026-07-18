@@ -528,13 +528,20 @@ async def test_needs_review_order_does_not_block_re_protection(any_store):
         cleanup_status=RECOVERY_NEEDS_REVIEW,
     )
 
-    # The symbol is now eligible for a FRESH protective intent — needs_review
-    # does not block re-protection.
+    # X-003's ACTIVITY exclusion survives: the stuck intent no longer counts
+    # as the symbol's active mandate...
     assert await any_store.active_sell_intent_for("AAPL") is None
-    fresh = await any_store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
-    )
-    assert fresh.id != si.id
+    # ...but AMENDED under WO-0108 / REV-0029 P0-3 (operator-ratified Policy A,
+    # 2026-07-18): a needs_review recovery is UNRECONCILED venue exposure (the
+    # stranded SELL may have executed), so a FRESH protective SELL is refused —
+    # selling again beside unknown fills can oversell. The quarantine lifts
+    # only when the exposure is reconciled (the PD-1 release valve, parked).
+    from app.store.base import SellIntentTransitionError
+
+    with pytest.raises(SellIntentTransitionError, match="direct SELL exposure"):
+        await any_store.create_sell_intent(
+            symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+        )
 
     # The recovery record itself stays independently visible (this only
     # affects single-flight dedup eligibility, never recovery/operator visibility).

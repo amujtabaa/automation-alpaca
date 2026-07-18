@@ -1932,6 +1932,18 @@ class InMemoryStateStore(StateStore):
                     f"envelope {env.id} is paused: ambiguous linked child "
                     f"set ({', '.join(detail)})"
                 )
+            # WO-0108/REV-0029 P0-3 (Policy A, ratified 2026-07-18): a lineage
+            # child latched needs_review is UNRECONCILED venue exposure — the
+            # stranded broker SELL had fills not yet in position truth. Staging
+            # another SELL beside it can oversell; fail closed until a human
+            # reconciles the recovery.
+            if obligation.needs_review_child_order_ids:
+                raise EnvelopeActionPausedError(
+                    f"envelope {env.id} is paused: needs_review venue exposure "
+                    "is unreconciled ("
+                    + ", ".join(obligation.needs_review_child_order_ids)
+                    + ")"
+                )
             if session_id is not None and session_id != env.session_id:
                 raise EnvelopeActionPausedError(
                     f"envelope {env.id} is paused: action session {session_id!r} "
@@ -2496,7 +2508,10 @@ class InMemoryStateStore(StateStore):
             if (
                 record.symbol != symbol
                 or record.side is not OrderSide.SELL
-                or record.cleanup_status != RECOVERY_UNRESOLVED
+                # WO-0108/REV-0029 P0-3 (Policy A): needs_review IS open
+                # venue exposure — it must stay symbol-visible to the dispatch
+                # and claim rails, not vanish on human escalation.
+                or record.cleanup_status not in RECOVERY_OPEN_STATUSES
                 or record.local_order_id in seen
             ):
                 continue
@@ -3030,6 +3045,13 @@ class InMemoryStateStore(StateStore):
             return "envelope lineage is missing or malformed: " + ", ".join(ambiguous)
         if exact.recovery_order_ids:
             return "envelope child has unresolved submission/recovery uncertainty"
+        # WO-0108/REV-0029 P0-3 (Policy A): a needs_review sibling latched at
+        # ANY point before this final claim — including between stage and claim
+        # — is unreconciled venue exposure; the claim fails closed.
+        if exact.needs_review_child_order_ids:
+            return "needs_review venue exposure is unreconciled: " + ", ".join(
+                exact.needs_review_child_order_ids
+            )
         if order.id not in exact.unresolved_order_ids:
             return f"order {order.id} is not an unresolved child of its envelope"
         eligible_ids = (

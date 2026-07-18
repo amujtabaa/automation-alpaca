@@ -3077,6 +3077,16 @@ class SqliteStateStore(StateStore):
                     f"envelope {pre_envelope.id} is paused: ambiguous linked "
                     f"child set ({', '.join(detail_ids)})"
                 )
+            # WO-0108/REV-0029 P0-3 (Policy A): a needs_review lineage child is
+            # UNRECONCILED venue exposure — staging another SELL beside it can
+            # oversell; fail closed until a human reconciles. Mirrors memory.
+            if obligation.needs_review_child_order_ids:
+                raise EnvelopeActionPausedError(
+                    f"envelope {pre_envelope.id} is paused: needs_review venue "
+                    "exposure is unreconciled ("
+                    + ", ".join(obligation.needs_review_child_order_ids)
+                    + ")"
+                )
             if session_id is not None and session_id != pre_envelope.session_id:
                 raise EnvelopeActionPausedError(
                     f"envelope {pre_envelope.id} is paused: action session "
@@ -3729,10 +3739,17 @@ class SqliteStateStore(StateStore):
         """Unresolved SELL recoveries not protected by a valid Envelope lineage."""
 
         recovery_rows = self._read_all(
+            # WO-0108/REV-0029 P0-3 (Policy A): needs_review IS open venue
+            # exposure — symbol-visible to dispatch/claim, like UNRESOLVED.
             "SELECT * FROM submit_recoveries "
-            "WHERE symbol = ? AND side = ? AND cleanup_status = ? "
+            "WHERE symbol = ? AND side = ? AND cleanup_status IN (?, ?) "
             "ORDER BY rowid",
-            (symbol, OrderSide.SELL.value, RECOVERY_UNRESOLVED),
+            (
+                symbol,
+                OrderSide.SELL.value,
+                RECOVERY_UNRESOLVED,
+                RECOVERY_NEEDS_REVIEW,
+            ),
         )
         ids: list[str] = []
         seen: set[str] = set()
@@ -4383,6 +4400,13 @@ class SqliteStateStore(StateStore):
             )
         if exact.recovery_order_ids:
             return "envelope child has unresolved submission/recovery uncertainty"
+        # WO-0108/REV-0029 P0-3 (Policy A): needs_review latched at ANY point
+        # before this final claim — including between stage and claim — fails
+        # the claim closed. Mirrors memory.
+        if exact.needs_review_child_order_ids:
+            return "needs_review venue exposure is unreconciled: " + ", ".join(
+                exact.needs_review_child_order_ids
+            )
         if order.id not in exact.unresolved_order_ids:
             return f"order {order.id} is not an unresolved child of its envelope"
         eligible_ids = (

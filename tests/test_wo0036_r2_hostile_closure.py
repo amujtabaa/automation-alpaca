@@ -2115,15 +2115,27 @@ async def test_reprice_cannot_claim_a_needs_review_direct_order_as_predecessor(
         cleanup_status=RECOVERY_NEEDS_REVIEW,
     )
 
-    owner = await any_store.create_sell_intent(
+    # AMENDED under WO-0108 / REV-0029 P0-3 (Policy A): the public creation
+    # path now correctly REFUSES a fresh owner beside the needs_review
+    # exposure, so this hostile shape is constructed raw (the suite's
+    # legacy/corrupt-shape idiom) — the property under test is the CLAIM
+    # choke, which must block regardless of how the shape came to exist.
+    owner = SellIntent(
         symbol="AAPL",
         reason=SellReason.PROTECTION_FLOOR,
+        status=SellIntentStatus.APPROVED,
         target_quantity=100,
         session_id=session.id,
     )
-    envelope = await any_store.approve_envelope_activation(
-        _draft(owner.id, session_id=session.id), actor="operator-a"
+    _raw_insert_intent(any_store, owner)
+    envelope = _draft(owner.id, session_id=session.id).model_copy(
+        update={
+            "status": EnvelopeStatus.ACTIVE,
+            "approved_at": NOW,
+            "activated_at": NOW,
+        }
     )
+    _raw_insert_envelope(any_store, envelope)
     replacement = Order(
         id="hostile-cross-lineage-reprice",
         sell_intent_id=owner.id,
@@ -2151,7 +2163,14 @@ async def test_reprice_cannot_claim_a_needs_review_direct_order_as_predecessor(
     claim = await any_store.claim_order_for_submission(replacement.id)
 
     assert claim.outcome == CLAIM_BLOCKED
-    assert claim.reason is not None and "missing or malformed" in claim.reason
+    # Any of the fail-closed rails may fire first (the WO-0108 needs_review /
+    # direct-exposure rails precede the lineage-shape check) — blocked is the
+    # property; the reason names whichever rail caught it.
+    assert claim.reason is not None and (
+        "missing or malformed" in claim.reason
+        or "needs_review" in claim.reason
+        or "direct SELL exposure" in claim.reason
+    )
     assert (await any_store.get_order(replacement.id)).status is OrderStatus.CREATED
 
 

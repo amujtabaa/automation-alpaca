@@ -19,7 +19,14 @@ from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.facade.errors import ConflictError
 from app.facade.store_backed import StoreBackedCommandFacade
-from app.models import OrderSide, OrderStatus, SellReason, SessionType
+from app.models import (
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    SellIntentStatus,
+    SellReason,
+    SessionType,
+)
 from app.store.base import FLATTEN_BUYS_OPEN
 import app.monitoring as monitoring
 
@@ -107,9 +114,7 @@ async def test_flatten_blocks_on_every_nonterminal_buy_status(any_store, status)
     assert sells == []
 
 
-async def test_facade_fails_closed_while_cancel_is_unconfirmed(
-    any_store, monkeypatch
-):
+async def test_facade_fails_closed_while_cancel_is_unconfirmed(any_store, monkeypatch):
     # The reviewer's exact P0-1 schedule: held 100 + SUBMITTED BUY 40. The
     # facade's cancel moves the BUY only to CANCEL_PENDING (non-terminal, can
     # late-fill). The retry must therefore FAIL CLOSED (409) — not mint. The
@@ -152,6 +157,210 @@ async def test_facade_never_blind_cancels_venue_uncertain_buys(any_store, monkey
         await facade.create_exit(symbol="AAPL", actor="operator-a")
 
     assert adapter.canceled == []  # zero venue calls against the quarantined BUY
-    assert (
-        await any_store.get_order(buy.id)
-    ).status is OrderStatus.TIMEOUT_QUARANTINE
+    assert (await any_store.get_order(buy.id)).status is OrderStatus.TIMEOUT_QUARANTINE
+
+
+# --------------------------------------------------------------------------- #
+# P0-3 (Policy A, ratified 2026-07-18): needs_review quarantines the sell side
+# --------------------------------------------------------------------------- #
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from app.models import (  # noqa: E402
+    RECOVERY_NEEDS_REVIEW,
+    EnvelopeExpiryDisposition,
+    EnvelopeStaleDataDisposition,
+    ExecutionEnvelope,
+)
+from app.sellside.types import ActionKind, PlannedAction  # noqa: E402
+from app.store.base import CLAIM_BLOCKED  # noqa: E402
+from app.store.core import EnvelopeActionPausedError  # noqa: E402
+
+_NOW = datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc)
+
+
+def _p03_draft(intent_id, session_id):
+    return ExecutionEnvelope(
+        sell_intent_id=intent_id,
+        symbol="AAPL",
+        qty_ceiling=100,
+        floor_price=9.0,
+        trail_distance_min=1.0,
+        trail_distance_max=3.0,
+        participation_rate_cap=0.2,
+        aggressiveness=["passive"],
+        cooldown_floor_ms=1,
+        cancel_replace_budget=3,
+        expires_at=_NOW + timedelta(hours=2),
+        allowed_session_phases=[SessionType.REGULAR],
+        expiry_disposition=EnvelopeExpiryDisposition.CANCEL_AND_RETURN,
+        stale_data_disposition=EnvelopeStaleDataDisposition.CANCEL,
+        session_id=session_id,
+    )
+
+
+def _p03_action():
+    return PlannedAction(
+        kind=ActionKind.SUBMIT,
+        limit_price=9.9,
+        quantity=100,
+        regime=None,
+        urgency=0.0,
+        working_stop=9.5,
+        atr=0.05,
+        tranche=False,
+        stop_triggered=False,
+    )
+
+
+async def _needs_review_child(store, session, envelope, *, now=_NOW):
+    staged = await store.stage_envelope_action(
+        envelope.id, _p03_action(), snapshot_fingerprint="wo0108-p03", now=now
+    )
+    claimed = await store.claim_order_for_submission(staged.order.id)
+    assert claimed.order is not None
+    await store.transition_order(staged.order.id, OrderStatus.CANCELED)
+    await store.create_submit_recovery(
+        local_order_id=staged.order.id,
+        broker_order_id=f"broker-nr-{staged.order.id}",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        quantity=100,
+        limit_price=9.9,
+        failure_reason="wo0108 p03",
+        session_id=session.id,
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+    )
+    return staged.order
+
+
+async def test_lane_a_same_envelope_cannot_stage_second_sell(any_store):
+    # Lane A: the SAME still-active envelope must not stage a second SELL while
+    # its child's needs_review exposure is unreconciled.
+    session = await _held(any_store)
+    intent = await any_store.create_sell_intent(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    envelope = await any_store.approve_envelope_activation(
+        _p03_draft(intent.id, session.id), actor="operator-a"
+    )
+    await _needs_review_child(any_store, session, envelope)
+
+    with pytest.raises(EnvelopeActionPausedError, match="needs_review"):
+        await any_store.stage_envelope_action(
+            envelope.id,
+            _p03_action(),
+            snapshot_fingerprint="wo0108-p03-2",
+            now=_NOW + timedelta(seconds=5),
+        )
+    # Nothing minted beside the exposure.
+    live_sells = [
+        o
+        for o in await any_store.list_orders()
+        if o.side is OrderSide.SELL and o.status is OrderStatus.CREATED
+    ]
+    assert live_sells == []
+
+
+async def test_lane_a_claim_blocks_recovery_latched_after_stage(any_store):
+    # The race variant: the second SELL was staged BEFORE the recovery latched.
+    # The final claim choke must then fail closed.
+    session = await _held(any_store)
+    intent = await any_store.create_sell_intent(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    envelope = await any_store.approve_envelope_activation(
+        _p03_draft(intent.id, session.id), actor="operator-a"
+    )
+    o1 = await _needs_review_child(any_store, session, envelope)
+    # Resolve the recovery's block long enough to stage O2... no — construct the
+    # order first, then latch a SECOND needs_review on O1's sibling: simplest
+    # honest shape is stage O2 while NO recovery exists, then latch one on O1.
+    # (O1's recovery is created AFTER O2's stage below.)
+    del o1
+
+    session2 = await _held(any_store, symbol="MSFT")  # noqa: F841 - unrelated noise
+
+    # Fresh envelope/intent for a clean stage-then-latch ordering:
+    intent2 = await any_store.create_sell_intent(
+        symbol="MSFT",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session2.id,
+    )
+    draft2 = _p03_draft(intent2.id, session2.id)
+    draft2 = draft2.model_copy(update={"symbol": "MSFT"})
+    envelope2 = await any_store.approve_envelope_activation(draft2, actor="operator-a")
+    staged2 = await any_store.stage_envelope_action(
+        envelope2.id, _p03_action(), snapshot_fingerprint="wo0108-p03-3", now=_NOW
+    )
+    # NOW the same-lineage exposure latches (a prior child of envelope2):
+    await any_store.create_submit_recovery(
+        local_order_id=staged2.order.id,
+        broker_order_id=f"broker-nr-{staged2.order.id}",
+        symbol="MSFT",
+        side=OrderSide.SELL,
+        quantity=100,
+        limit_price=9.9,
+        failure_reason="wo0108 p03 race",
+        session_id=session2.id,
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+    )
+    claim = await any_store.claim_order_for_submission(staged2.order.id)
+    assert claim.outcome == CLAIM_BLOCKED, (
+        "the final claim must fail closed on a needs_review exposure latched "
+        f"after staging; got {claim.outcome!r}"
+    )
+
+
+async def test_lane_b_direct_needs_review_blocks_fresh_owner_submission(any_store):
+    # Lane B: a DIRECT SELL's needs_review exposure must stay symbol-visible —
+    # a fresh intent may exist (X-003), but its envelope must not stage/claim a
+    # second full-size SELL beside unreconciled venue exposure.
+    session = await _held(any_store)
+    intent = await any_store.create_sell_intent(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    await any_store.transition_sell_intent(intent.id, SellIntentStatus.APPROVED)
+    o1 = await any_store.create_order_for_sell_intent(
+        intent.id, order_type=OrderType.LIMIT, limit_price=9.9
+    )
+    claim1 = await any_store.claim_order_for_submission(o1.id)
+    assert claim1.order is not None
+    await any_store.transition_order(o1.id, OrderStatus.CANCELED)
+    await any_store.create_submit_recovery(
+        local_order_id=o1.id,
+        broker_order_id=f"broker-nr-{o1.id}",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        quantity=100,
+        limit_price=9.9,
+        failure_reason="wo0108 p03 lane b",
+        session_id=session.id,
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+    )
+
+    # Policy A lands one gate EARLIER than the review's minimum: with the
+    # direct-exposure scan widened to RECOVERY_OPEN_STATUSES, the existing
+    # create_sell_intent gate already refuses a fresh owner beside the
+    # unreconciled exposure — there is nothing to stage at all. (X-003's
+    # fresh-owner freedom now yields to the ratified quarantine while the
+    # exposure is open; it returns the moment the recovery is reconciled.)
+    from app.store.base import SellIntentTransitionError
+
+    with pytest.raises(SellIntentTransitionError, match="direct SELL exposure"):
+        await any_store.create_sell_intent(
+            symbol="AAPL",
+            reason=SellReason.PROTECTION_FLOOR,
+            target_quantity=100,
+            session_id=session.id,
+        )
