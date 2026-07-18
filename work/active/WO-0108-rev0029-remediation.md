@@ -137,12 +137,19 @@ forbidden_paths:
   intent). 5 red-first pins (correlation-keyed + order-owner-keyed × both stores + sqlite restart) in
   `tests/test_wo0036_r2_hostile_closure.py`. Full suite 3093/0/0 (11 skip, 1 xfail); ruff + mypy(app)
   + lint-imports green. Docs: INVARIANTS INV-090 correction flipped P0-3 + P1-1 → amended-and-closed.
-- **NEXT — Step 5 (P1-2 ext)**: the close-parity full-fidelity comparison already landed (commit
-  321320c, uncontested-fixes split); add the retry/restart + rollback-injection VARIANTS the reviewer
-  asked for to `tests/test_wo0036_r2_close_and_recovery_ownership.py`.
-- **Then**: Step 6 remaining doc flips (ADR-010 §3, INV-081, plan OBS-2 as their fixes are confirmed),
-  the review-hardening Tier-1 CI gates (enum-total classification + producer/consumer grep, blocking),
-  then the REV-0029 round-2 re-review packet (merge gate reopens only on ACCEPT).
+- **Step 5 (P1-2 ext) DONE** — commit "WO-0108 step 5": the close-parity full-fidelity canonical
+  comparison already landed (commit 321320c); this adds the three VARIANTS the reviewer asked for to
+  `tests/test_wo0036_r2_close_and_recovery_ownership.py`, factored onto shared `_canon_streams` /
+  `_drive_close_with_sweep` helpers. (restart) a sqlite store reopened on the same file replays a
+  byte-identical audit+execution stream, cross-checked against memory; (retry) a retried close on an
+  already-closed session raises `SessionAlreadyClosedError` and appends/rewrites nothing; (rollback
+  injection) a failure injected on the 2nd audit write mid-close rolls the whole single-atomic-unit
+  close back on both stores — no partial stream, session still ACTIVE, swept owner still APPROVED.
+  6 tests green; ruff green; no doc flip (P1-2 is a test-fidelity concern, no INV claim).
+- **NEXT — review-hardening Tier-1 CI gates** (enum-total classification + producer/consumer grep for
+  new safety fields, blocking; per pkl/process/review-hardening.md + the 2026-07-18 ratification), then
+  Step 6 residual doc flips (ADR-010 §3, INV-081, plan OBS-2 if still marked open), then the REV-0029
+  round-2 re-review packet (merge gate reopens only on ACCEPT).
 
 ## Batched ratifications (Ameen, 2026-07-18 — up-front, to run remediation→re-review without stops)
 

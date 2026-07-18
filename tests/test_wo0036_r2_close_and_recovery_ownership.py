@@ -38,9 +38,13 @@ from app.models import (
     OrderStatus,
     SellIntentStatus,
     SellReason,
+    SessionStatus,
     SessionType,
 )
 from app.sellside.types import ActionKind, PlannedAction
+from app.store.base import SessionAlreadyClosedError
+from app.store.memory import InMemoryStateStore
+from app.store.sqlite import SqliteStateStore
 
 pytestmark = pytest.mark.anyio
 
@@ -292,83 +296,101 @@ async def test_close_summary_carries_spared_sell_intents_count(any_store):
     ).status is SellIntentStatus.EXPIRED
 
 
+def _canon_streams(audit_dumps, execution_dumps):
+    """Canonicalize a store's (audit, execution) FULL model-dump streams for
+    cross-store / cross-restart comparison (REV-0029 P1-2). Random 32-hex ids map
+    to stable placeholders in FIRST-APPEARANCE order — so identity RELATIONSHIPS
+    across the two streams still must match, not just shapes — and wall-clock
+    timestamps collapse to a sentinel. Sequence numbers are kept verbatim: they
+    ARE the ordering truth. A single ``id_map`` spans both streams so an id that
+    appears in audit and execution maps to the same placeholder."""
+
+    id_map: dict = {}
+
+    def _canon(value):
+        if isinstance(value, str):
+            value = re.sub(
+                r"[0-9a-f]{32}",
+                lambda m: id_map.setdefault(m.group(0), f"<id{len(id_map)}>"),
+                value,
+            )
+            return re.sub(
+                r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[0-9:.+\-Z]*",
+                "<ts>",
+                value,
+            )
+        if isinstance(value, dict):
+            return {k: _canon(v) for k, v in sorted(value.items())}
+        if isinstance(value, (list, tuple)):
+            return [_canon(v) for v in value]
+        if hasattr(value, "isoformat"):
+            return "<ts>"
+        return value
+
+    return [_canon(d) for d in audit_dumps], [_canon(d) for d in execution_dumps]
+
+
+async def _build_close_with_sweep_state(store):
+    """The canonical close-with-sweep fixture (pre-close): a swept pre-activation
+    APPROVED envelope (AAPL), a spared ACTIVE envelope (MSFT, own held position),
+    and an open candidate (TSLA). Returns ``(session, swept_intent)``; the caller
+    drives ``close_session`` (or injects a failure first)."""
+
+    await store.initialize()
+    session = await _hold(store)
+    swept = await store.create_sell_intent(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    draft = _draft(swept.id, session_id=session.id)
+    await store.create_envelope(draft, actor="operator-a")
+    await store.transition_envelope(
+        draft.id, EnvelopeStatus.APPROVED, actor="operator-a", now=NOW
+    )
+    session2 = await _hold(store, symbol="MSFT")
+    spared = await store.create_sell_intent(
+        symbol="MSFT",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session2.id,
+    )
+    await store.approve_envelope_activation(
+        _draft(spared.id, symbol="MSFT", session_id=session2.id),
+        actor="operator-a",
+    )
+    await store.create_candidate("TSLA", session_id=session2.id)
+    return session, swept
+
+
+async def _canon_store_streams(store):
+    return _canon_streams(
+        [e.model_dump() for e in await store.list_events()],
+        [e.model_dump() for e in await store.get_execution_events()],
+    )
+
+
+async def _drive_close_with_sweep(store):
+    """Build the fixture, close the session, and return the canonicalized
+    (audit, execution) streams."""
+
+    await _build_close_with_sweep_state(store)
+    await store.close_session(actor="operator-a")
+    return await _canon_store_streams(store)
+
+
 async def test_close_with_sweep_emits_identical_streams_on_both_stores(tmp_path):
     # Review advisory A-1 (P2 event-log-truth lens): the P-A sweep writes
     # ENVELOPE_EXPIRED execution+audit events MID-CLOSE — pin that both stores
     # emit the same normalized event streams in the same relative order for an
-    # identical close-with-sweep script (swept pre-activation owner + spared
-    # ACTIVE owner + an open candidate), so replay/parity can never drift here.
-    from app.store.memory import InMemoryStateStore
-    from app.store.sqlite import SqliteStateStore
-
-    async def drive(store):
-        await store.initialize()
-        session = await _hold(store)
-        # Swept: pre-activation APPROVED envelope on AAPL.
-        swept = await store.create_sell_intent(
-            symbol="AAPL",
-            reason=SellReason.PROTECTION_FLOOR,
-            target_quantity=100,
-            session_id=session.id,
-        )
-        draft = _draft(swept.id, session_id=session.id)
-        await store.create_envelope(draft, actor="operator-a")
-        await store.transition_envelope(
-            draft.id, EnvelopeStatus.APPROVED, actor="operator-a", now=NOW
-        )
-        # Spared: ACTIVE envelope on MSFT (own held position).
-        session2 = await _hold(store, symbol="MSFT")
-        spared = await store.create_sell_intent(
-            symbol="MSFT",
-            reason=SellReason.PROTECTION_FLOOR,
-            target_quantity=100,
-            session_id=session2.id,
-        )
-        await store.approve_envelope_activation(
-            _draft(spared.id, symbol="MSFT", session_id=session2.id),
-            actor="operator-a",
-        )
-        await store.create_candidate("TSLA", session_id=session2.id)
-        await store.close_session(actor="operator-a")
-
-        # REV-0029 P1-2 (fixed): compare canonicalized FULL model dumps, not
-        # lossy (type, symbol, key) tuples — payload transitions, reasons,
-        # actors, session/correlation identity, quantities, prices, source and
-        # authority are all pinned. Only genuinely nondeterministic values are
-        # normalized: random entity ids map to stable placeholders in FIRST-
-        # APPEARANCE order (so cross-store identity RELATIONSHIPS still must
-        # match), and wall-clock timestamps collapse to a sentinel. Sequence
-        # numbers are kept verbatim — they ARE the ordering truth.
-        id_map: dict = {}
-
-        def _canon(value):
-            if isinstance(value, str):
-                value = re.sub(
-                    r"[0-9a-f]{32}",
-                    lambda m: id_map.setdefault(m.group(0), f"<id{len(id_map)}>"),
-                    value,
-                )
-                return re.sub(
-                    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[0-9:.+\-Z]*",
-                    "<ts>",
-                    value,
-                )
-            if isinstance(value, dict):
-                return {k: _canon(v) for k, v in sorted(value.items())}
-            if isinstance(value, (list, tuple)):
-                return [_canon(v) for v in value]
-            if hasattr(value, "isoformat"):
-                return "<ts>"
-            return value
-
-        audit = [_canon(e.model_dump()) for e in await store.list_events()]
-        execution = [_canon(e.model_dump()) for e in await store.get_execution_events()]
-        return audit, execution
-
-    mem_audit, mem_exec = await drive(InMemoryStateStore())
+    # identical close-with-sweep script. REV-0029 P1-2: compare canonicalized
+    # FULL model dumps (payload/reason/actor/session/correlation/identity/qty/
+    # price/source/authority all pinned), not lossy (type, symbol, key) tuples.
+    mem_audit, mem_exec = await _drive_close_with_sweep(InMemoryStateStore())
     sq = SqliteStateStore(tmp_path / "a1-parity.db")
     try:
-        sq_audit, sq_exec = await drive(sq)
+        sq_audit, sq_exec = await _drive_close_with_sweep(sq)
     finally:
         if sq._conn is not None:
             sq._conn.close()
@@ -380,6 +402,107 @@ async def test_close_with_sweep_emits_identical_streams_on_both_stores(tmp_path)
         sum(1 for e in mem_exec if (e.get("dedupe_key") or "").endswith(":expired"))
         == 1
     )
+
+
+async def test_close_with_sweep_stream_survives_sqlite_restart(tmp_path):
+    # REV-0029 P1-2 (restart variant): the full canonical close+sweep stream is a
+    # property of the PERSISTED log, not a live in-process projection. A sqlite
+    # store reopened on the same file replays a byte-identical audit+execution
+    # stream (same relative order), so no reload/re-projection step silently
+    # rewrites event truth across a restart. Cross-checked against the memory
+    # store's stream for the same script.
+    db_path = tmp_path / "restart-parity.db"
+    store = SqliteStateStore(db_path)
+    try:
+        before_audit, before_exec = await _drive_close_with_sweep(store)
+    finally:
+        if store._conn is not None:
+            store._conn.close()
+            store._conn = None
+
+    reopened = SqliteStateStore(db_path)
+    try:
+        await reopened.initialize()
+        after_audit, after_exec = await _canon_store_streams(reopened)
+    finally:
+        if reopened._conn is not None:
+            reopened._conn.close()
+            reopened._conn = None
+
+    assert after_audit == before_audit
+    assert after_exec == before_exec
+    mem_audit, mem_exec = await _drive_close_with_sweep(InMemoryStateStore())
+    assert after_audit == mem_audit
+    assert after_exec == mem_exec
+
+
+async def test_close_with_sweep_retry_is_idempotent(any_store):
+    # REV-0029 P1-2 (retry variant): a retried close on an already-closed session
+    # is rejected (SessionAlreadyClosedError) and appends/rewrites NOTHING — the
+    # canonical event stream is byte-identical before and after the retry, so a
+    # duplicated close can never emit a second sweep or a divergent stream.
+    before_audit, before_exec = await _drive_close_with_sweep(any_store)
+    with pytest.raises(SessionAlreadyClosedError):
+        await any_store.close_session(actor="operator-a")
+    after_audit, after_exec = await _canon_store_streams(any_store)
+    assert after_audit == before_audit
+    assert after_exec == before_exec
+
+
+async def test_close_with_sweep_rolls_back_atomically_on_injected_failure(
+    any_store, monkeypatch
+):
+    # REV-0029 P1-2 (rollback-injection variant): the close-with-sweep is a SINGLE
+    # atomic unit on both stores (memory `_atomic()` snapshot/restore; sqlite
+    # `_tx()` BEGIN/ROLLBACK). A failure injected mid-close — after at least one
+    # close event has been staged — rolls the WHOLE close back identically: no
+    # partial event stream, session still ACTIVE, swept owner still APPROVED.
+    # This pins that both stores fail ATOMICALLY the same way, not merely that
+    # they agree on the happy path (the lossy predecessor could not see a
+    # half-applied close at all).
+    session, swept = await _build_close_with_sweep_state(any_store)
+    before_audit = [e.model_dump() for e in await any_store.list_events()]
+    before_exec = [e.model_dump() for e in await any_store.get_execution_events()]
+
+    class _InjectedRollback(RuntimeError):
+        pass
+
+    # Fail on the SECOND audit-event write during close, so ≥1 close event is
+    # already staged in the atomic block before the failure — proving rollback of
+    # staged state, not a pre-write bail-out. Store-agnostic: memory appends audit
+    # events via `_append_event_unlocked(event_type, ...)`, sqlite via
+    # `_insert_event(cur, event_type, ...)`; both re-dispatch through *args.
+    calls = {"n": 0}
+
+    def _boom(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise _InjectedRollback("injected mid-close failure")
+        return _original(*args, **kwargs)
+
+    if hasattr(any_store, "_append_event_unlocked"):  # memory
+        _original = any_store._append_event_unlocked
+        monkeypatch.setattr(any_store, "_append_event_unlocked", _boom)
+    else:  # sqlite
+        _original = any_store._insert_event
+        monkeypatch.setattr(any_store, "_insert_event", _boom)
+
+    with pytest.raises(_InjectedRollback):
+        await any_store.close_session(actor="operator-a")
+
+    # Full rollback: not one close event leaked onto either stream, the session
+    # is still ACTIVE, and the swept owner is still APPROVED (the sweep undone).
+    assert [e.model_dump() for e in await any_store.list_events()] == before_audit
+    assert [
+        e.model_dump() for e in await any_store.get_execution_events()
+    ] == before_exec
+    current = await any_store.get_current_session()
+    assert current is not None
+    assert current.id == session.id
+    assert current.status is SessionStatus.ACTIVE
+    assert (
+        await any_store.get_sell_intent(swept.id)
+    ).status is SellIntentStatus.APPROVED
 
 
 # --------------------------------------------------------------------------- #
