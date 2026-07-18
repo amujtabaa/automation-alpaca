@@ -1,0 +1,22 @@
+---
+menu: "Getting Started"
+title: "Getting Started with Acme: The Complete Setup Guide"
+seoTitle: "Acme Setup Guide"
+description: "Set up Acme in under five minutes. Installation, configuration, and your first project."
+publishedAt: "2026-01-15"
+views: 2400
+---
+
+This is an example post demonstrating the frontmatter contract.
+
+- `menu` is what appears in the SIDEBAR (short).
+- `title` is the H1 on the page AND the SEO title in search results.
+- `seoTitle` overrides the search title ONLY when `title` exceeds 60 characters.
+- `description` becomes the meta description with the brand prefix auto-prepended.
+- `views` seeds popularity sorting (the "Popular" toggle on the blog landing page).
+
+## Writing posts
+
+Standard MDX. Headings build the table of contents automatically.
+
+After creating a post: register its slug in `blog-structure.ts`, then run `pnpm generate:meta`.

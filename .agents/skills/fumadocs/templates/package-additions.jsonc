@@ -1,0 +1,36 @@
+// Merge these into your package.json. EXACT PINS for the fumadocs +
+// content-collections suite - caret ranges are how blog ports silently
+// drift across breaking majors (see port-error-catalogue.md #3).
+// This is the verified modern-stack matrix (Tailwind 4 + Next 15/16 + React 19).
+{
+  "scripts": {
+    "build": "pnpm build:content && next build",
+    "build:content": "pnpm generate:meta && content-collections build",
+    "generate:meta": "tsx scripts/generate-meta.ts",
+    "views:pull": "tsx scripts/views-pull.ts",
+    "views:push": "tsx scripts/views-push.ts"
+  },
+  "dependencies": {
+    "fumadocs-core": "16.4.7",
+    "fumadocs-ui": "16.4.7",
+    "@fumadocs/content-collections": "1.2.5",
+    "@content-collections/core": "0.13.1",
+    "@content-collections/mdx": "0.2.2",
+    "@content-collections/next": "0.2.10",
+    "nuqs": "2.8.6",
+    "gray-matter": "4.0.3",
+    "lucide-react": "0.562.0" // or your existing version
+  },
+  "devDependencies": {
+    "@content-collections/cli": "0.1.8",
+    "schema-dts": "1.1.5",
+    "tsx": "4.21.0",
+    "yaml": "2.8.2"
+  }
+}
+// Also required (you likely have these already): next, react, tailwindcss 4.x,
+// zod, and the shadcn/ui components used by the blog components:
+// badge, button, card, input, select, skeleton.
+//
+// .gitignore addition (meta.json files are generated, never committed):
+// src/content/blog/**/meta.json
