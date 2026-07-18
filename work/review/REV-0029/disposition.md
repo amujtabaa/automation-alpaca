@@ -55,6 +55,10 @@ re-opens:
 5. **P1-2 extension:** close-parity scripts gain retry/restart + rollback injection.
 6. Doc corrections flip from "OPEN DEFECT" to amended-and-closed wording as each lands.
 
+> **RATIFIED (Ameen, 2026-07-18, via structured prompt): Policy A = (a) full submission
+> quarantine; Policy B = (a) stand down + rails.** Both as recommended. The remediation WO
+> (WO-0108) executes on these rulings.
+
 **Policy question A (P0-3 — the needs_review sell-side posture).** Codex: authorizing a new SELL
 claim beside known-untracked fills would need explicit ratification. Options: (a) full submission
 quarantine — no new SELL stage/claim for the symbol while any needs_review exposure is open

@@ -1,0 +1,82 @@
+---
+type: Work Order
+title: REV-0029 remediation — close the three execution-safety classes (P0-1/2/3) + P1-1/P1-2ext
+status: ACTIVE
+work_order_id: WO-0108
+wave: R2 consolidation campaign (CAMPAIGN-0002), post-review remediation
+model_tier: strong
+risk: high
+disposition: []
+owner: Ameen
+created: 2026-07-18
+gated_surface: order submission/claim, manual flatten, candidate dispatch, event-log truth
+---
+
+# Work Order: REV-0029 remediation
+
+## Goal
+
+Close the three independently-reproduced execution-safety classes from the REV-0029 BLOCK
+(`work/review/REV-0029/result.md`) plus the two accepted P1s, under the operator's 2026-07-18
+policy ratifications (disposition.md): **Policy A** — full needs_review submission quarantine;
+**Policy B** — flatten/protection stand down same-symbol BUY candidates + dispatch refusal +
+cross-side claim rail. TDD, both stores, every pin red-first. The merge gate reopens only on
+re-review ACCEPT.
+
+## Scope (allowed_paths)
+
+```yaml
+allowed_paths:
+  - work/active/WO-0108-rev0029-remediation.md
+  - work/review/REV-0029/**
+  - work/review/CAMPAIGN-0002-claude/**
+  - work/ledger.jsonl
+  - tests/**
+  - app/store/core.py
+  - app/store/base.py
+  - app/store/memory.py
+  - app/store/sqlite.py
+  - app/monitoring.py
+  - app/reconciliation.py
+  - app/facade/store_backed.py
+  - docs/INVARIANTS.md
+  - docs/adr/ADR-010-execution-envelope.md
+```
+
+```yaml
+forbidden_paths:
+  - Any push/rebase/merge of a branch other than consolidate/r2-canonical.
+```
+
+## Build order (each step: red pins → fix → both stores → gate → commit)
+
+1. **P0-1** — split `CANCELLABLE_BUY_STATUSES` (the current three) from
+   `FLATTEN_BLOCKING_BUY_STATUSES` (+ `SUBMITTING`, `CANCEL_PENDING`, `TIMEOUT_QUARANTINE`).
+   `flatten_position` signals `FLATTEN_BUYS_OPEN` while ANY blocking BUY is non-terminal; the
+   facade retry cancels only the cancellable set and fails closed (409) when ambiguity persists —
+   never blind-cancels `SUBMITTING`/`TIMEOUT_QUARANTINE`. Pins: every non-terminal BUY status ×
+   flatten, the cancel→CANCEL_PENDING→late-fill interleaving, bound exhaustion, override survival.
+2. **P0-2 (Policy B)** — (a) flatten + protection-open atomically stand down PENDING/APPROVED
+   same-symbol BUY candidates (audited `candidate_transition … reason=exit_preemption`);
+   (b) candidate dispatch refuses while a same-symbol exit obligation may execute; (c) final
+   submission claim gains the symmetric cross-side same-symbol rail (BUY blocked while an exit may
+   execute; SELL blocked while a BUY may execute — "may execute" includes open claims,
+   broker-working intervals, `CANCEL_PENDING`, `TIMEOUT_QUARANTINE`). Pins: the approval-pause
+   race, post-mint BUY creation, both claim orderings, manual + protection paths, the full sweep.
+3. **P0-3 (Policy A)** — envelope stage AND final claim fail closed on same-lineage
+   `needs_review_child_order_ids`; direct-SELL dispatch/claim exposure scans widen to
+   `RECOVERY_OPEN_STATUSES`. Pins: recovery latched before stage; appearing between stage and
+   claim; both lanes (same-envelope, fresh-owner); both stores.
+4. **P1-1** — monitoring's `_validated_envelope_lineage` loads the store projector's bounded
+   identity universe (parent / owner-correlation / order-owner / symbol), warns on ambiguity,
+   cancels nothing unvalidated. Pins: correlation-keyed + order-owner-keyed hostile shapes.
+5. **P1-2 extension** — close-parity script gains retry/restart + rollback-injection variants.
+6. Docs: flip each 2026-07-18 "OPEN DEFECT" correction (ADR-010 §3/§4, INV-090, INV-081, plan
+   OBS-2, PD-1 premise) to amended-and-closed wording as its fix lands — same commit.
+
+## Done-when
+
+- [ ] Steps 1–5 implemented, red-first pins green on both stores; step-6 doc flips shipped with each.
+- [ ] Reviewer's reproduction scenarios (result.md P0-1/2/3 probes) re-run and now fail closed.
+- [ ] Full native gate + coverage floor + AI-OS hygiene green.
+- [ ] Re-review packet queued (REV-0029 round 2 or REV-0030) — merge gate reopens only on ACCEPT.
