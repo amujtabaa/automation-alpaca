@@ -120,7 +120,7 @@ from app.store.core import (
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_BUYS_OPEN as _PLAN_FLATTEN_BUYS_OPEN,
     FLATTEN_DENIED_HALTED,
-    OPEN_BUY_STATUSES,
+    FLATTEN_BLOCKING_BUY_STATUSES,
     FLATTEN_SUPERSEDE_AND_CREATE,
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
@@ -3930,11 +3930,12 @@ class SqliteStateStore(StateStore):
             trading_state = self._current_trading_state_locked(current_session.id)
             override_active = key in self._active_overrides_locked(current_session.id)
 
-            # Option B (WO-0036 R2): detect still-open BUYs for the symbol under
-            # this same lock. The status is the event-log projection (the same
-            # truth ``list_orders``/``cancel_open_buys`` read), so the store's
-            # "buys open" signal names EXACTLY the buys the caller's cancel step
-            # will act on — the retry converges.
+            # Option B (WO-0036 R2) + WO-0108/REV-0029 P0-1: detect EVERY
+            # non-terminal BUY under this same lock. The BLOCKING set is a
+            # strict superset of the caller's CANCELLABLE set — venue-uncertain
+            # buys (SUBMITTING/CANCEL_PENDING/TIMEOUT_QUARANTINE) block the
+            # mint but are never blindly cancelled; the caller fails closed
+            # until they are broker-authoritatively terminal. Mirrors memory.
             open_buy_rows = self._read_all(
                 "SELECT * FROM orders WHERE symbol = ? AND side = ?",
                 (key, OrderSide.BUY.value),
@@ -3943,7 +3944,7 @@ class SqliteStateStore(StateStore):
                 projected.id
                 for row in open_buy_rows
                 for projected in (self._project_order_locked(self._order(row)),)
-                if projected.status in OPEN_BUY_STATUSES
+                if projected.status in FLATTEN_BLOCKING_BUY_STATUSES
             ]
 
             plan = plan_flatten_position(

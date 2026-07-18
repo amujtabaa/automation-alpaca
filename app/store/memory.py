@@ -105,7 +105,7 @@ from app.store.core import (
     FLATTEN_BUYS_OPEN as _PLAN_FLATTEN_BUYS_OPEN,
     FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
-    OPEN_BUY_STATUSES,
+    FLATTEN_BLOCKING_BUY_STATUSES,
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
     STAGE_DIVERGENCE,
@@ -2650,20 +2650,22 @@ class InMemoryStateStore(StateStore):
             override_active = key in active_emergency_reduce_overrides(
                 self._execution_events, current_session.id
             )
-            # Option B (WO-0036 R2): detect still-open BUYs for the symbol under
-            # this same lock, so the store — not a caller reading a stale
-            # out-of-lock position — is the authority on whether a MANUAL_FLATTEN
-            # SELL may be minted next to a live BUY (the §5.3 self-cross). The
-            # status is the event-log projection (``_project_order_unlocked``),
-            # the SAME truth ``list_orders``/``cancel_open_buys`` read, so the
-            # store's "buys open" signal names EXACTLY the buys the caller's
-            # cancel step will act on — the retry converges.
+            # Option B (WO-0036 R2) + WO-0108/REV-0029 P0-1: detect EVERY
+            # non-terminal BUY for the symbol under this same lock — the store,
+            # not a caller on a stale read, is the authority on whether a
+            # MANUAL_FLATTEN SELL may be minted next to a possibly-executable
+            # BUY (the §5.3 self-cross). The BLOCKING set is a strict superset
+            # of the caller's CANCELLABLE set: SUBMITTING/CANCEL_PENDING/
+            # TIMEOUT_QUARANTINE buys block the mint but are never blindly
+            # cancelled — the caller fails closed until they are broker-
+            # authoritatively terminal. Status is the event-log projection,
+            # the SAME truth ``list_orders``/``cancel_open_buys`` read.
             open_buy_order_ids = [
                 projected.id
                 for order in self._orders.values()
                 if order.symbol == key and OrderSide(order.side) is OrderSide.BUY
                 for projected in (self._project_order_unlocked(order),)
-                if projected.status in OPEN_BUY_STATUSES
+                if projected.status in FLATTEN_BLOCKING_BUY_STATUSES
             ]
             plan = plan_flatten_position(
                 position=position,

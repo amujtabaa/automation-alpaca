@@ -775,6 +775,24 @@ OPEN_BUY_STATUSES = frozenset(
     {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
 )
 
+# WO-0108 / REV-0029 P0-1: the statuses that BLOCK a flatten are a strict
+# superset of the statuses the caller may safely CANCEL (OPEN_BUY_STATUSES,
+# above). A cancellation REQUEST is not convergence: the caller's own cancel
+# moves a live BUY to CANCEL_PENDING, where a late fill is still legal
+# (transitions.py: CANCEL_PENDING -> FILLED); SUBMITTING has a broker call
+# possibly in flight; TIMEOUT_QUARANTINE explicitly means "may be live or
+# filled" (ADR-002). Minting a MANUAL_FLATTEN SELL beside ANY of these is the
+# §5.3 self-cross. The store therefore signals FLATTEN_BUYS_OPEN for this whole
+# set, while the caller cancels only the cancellable subset and FAILS CLOSED
+# when venue-uncertain BUYs remain — ambiguity is quarantined, never acted on.
+FLATTEN_BLOCKING_BUY_STATUSES = OPEN_BUY_STATUSES | frozenset(
+    {
+        OrderStatus.SUBMITTING,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.TIMEOUT_QUARANTINE,
+    }
+)
+
 # An approved Envelope is a bounded delegation of its owning SellIntent.  These
 # statuses retain that delegation by themselves.  A terminal/SUPERSEDED envelope
 # can ALSO retain it when an action-linked child is unresolved (for example,
