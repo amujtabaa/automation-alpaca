@@ -544,12 +544,30 @@ async def _validated_envelope_lineage(
         for event in all_actions
         if event.envelope_id == envelope_id and event.order_id is not None
     }
+    # PR#9 Codex Finding 1: the owner-scoped discovery below reaches a MALFORMED
+    # action — one whose parent linkage is broken/missing yet still claims this
+    # envelope's intent (correlation_id or referenced-order owner) — so the store-
+    # quarantined R6 corruption is not lost by monitoring's exact-envelope_id scan.
+    # It must NOT reach a WELL-FORMED sibling's action: one parented by another
+    # KNOWN envelope (e.g. a superseded predecessor that shares this sell_intent_id).
+    # That action is the sibling's own obligation. Pulling it into this single-
+    # envelope projection (``envelopes=[envelope]`` below) flags the sibling as a
+    # "missing envelope" — it is not in that one-element set — and ``_envelope_id_
+    # for_order`` then disowns THIS envelope's real order, silently skipping its
+    # fills. The sibling's own lineage validation still audits its action under the
+    # correct parent, so no corruption escapes.
+    known_envelopes = await store.list_envelopes()
+    known_sibling_ids = {item.id for item in known_envelopes if item.id != envelope_id}
 
     def _owner_scoped(event: ExecutionEvent) -> bool:
         if event.envelope_id == envelope_id:  # parent envelope
             return True
+        if event.envelope_id in known_sibling_ids:
+            return (
+                False  # a well-formed sibling's action — audited under its own parent
+            )
         if owner_intent_id is not None and event.correlation_id == owner_intent_id:
-            return True  # owner correlation
+            return True  # owner correlation (parent broken/missing)
         referenced = (
             all_action_orders.get(event.order_id)
             if event.order_id is not None
@@ -560,7 +578,7 @@ async def _validated_envelope_lineage(
             and referenced is not None
             and referenced.sell_intent_id == owner_intent_id
         ):
-            return True  # referenced-order owner
+            return True  # referenced-order owner (parent broken/missing)
         if event.order_id is not None and event.order_id in parent_order_ids:
             return True  # co-order of a parent action (multi-action-per-order)
         return False
@@ -573,7 +591,6 @@ async def _validated_envelope_lineage(
         if order_id in order_ids
     }
     recoveries = await store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)
-    known_envelopes = await store.list_envelopes()
     projection = project_envelope_obligation(
         envelopes=[envelope],
         action_events=actions,

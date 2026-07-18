@@ -4551,16 +4551,21 @@ class InMemoryStateStore(StateStore):
                     f"emergency reduce of {key} refused: an ambiguous "
                     "TIMEOUT_QUARANTINE order is unresolved (INV-3)"
                 )
-            # Defensive (review): never stack a second grant on top of an active
-            # one — an override authorizes exactly one flatten and is consumed by
-            # it. A still-active grant means the prior authorization hasn't been
-            # spent; refuse rather than double-grant.
+            # PR#9 Codex Finding 2: an override authorizes exactly ONE reduce-only
+            # exit and is consumed by it — but the store's WO-0108/REV-0029
+            # hardening makes the flatten fail closed (409) whenever a venue-
+            # uncertain BUY remains, returning/raising BEFORE the flatten consumes
+            # the grant. That is the NORMAL fail-closed exit, and it leaves the
+            # grant ACTIVE and un-consumed. The operator's documented "retry after
+            # reconciliation" must REUSE that still-active grant, not wedge behind
+            # "an override is already active": re-authorizing is idempotent — the
+            # ADR-003 preconditions above are re-validated on every call, and an
+            # already-active grant is reused rather than stacked (exactly one
+            # grant, one authorized exit, consumed on the first authorized flatten).
             if key in active_emergency_reduce_overrides(
                 self._execution_events, session.id
             ):
-                raise EmergencyReduceBlockedError(
-                    f"emergency reduce of {key} refused: an override is already active"
-                )
+                return
             with self._atomic():
                 self._write_emergency_reduce_override_unlocked(
                     key, actor=actor, reason="emergency_reduce", resolved=False

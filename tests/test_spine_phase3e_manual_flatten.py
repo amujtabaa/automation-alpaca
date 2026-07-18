@@ -159,14 +159,22 @@ async def test_override_consumed_on_existing_outcome_no_leak(any_store):
         await any_store.flatten_position("AAPL")
 
 
-async def test_double_authorize_without_flatten_refused(any_store):
-    # Never stack a second grant on an active one — one override authorizes one exit.
+async def test_reauthorize_reuses_active_grant_without_stacking(any_store):
+    # PR#9 Codex Finding 2 (amends the former test_double_authorize_without_flatten_
+    # refused): an override still authorizes exactly ONE reduce-only exit, but the
+    # store's WO-0108/REV-0029 hardening makes the flatten fail closed (409)
+    # whenever a venue-uncertain BUY remains — leaving the grant ACTIVE and
+    # un-consumed. The operator's documented "retry after reconciliation" must
+    # REUSE that grant, not wedge behind "an override is already active". So
+    # re-authorizing is idempotent: it does NOT raise, and it does NOT stack a
+    # second grant (exactly one stays active, consumed by the first authorized
+    # flatten). Raising here was the wedge; the single-grant invariant is kept.
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
     await any_store.set_kill_switch(True)
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-    with pytest.raises(EmergencyReduceBlockedError):
-        await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
+    await any_store.authorize_emergency_reduce_override("AAPL", actor="op")  # no raise
+    assert await any_store.list_emergency_reduce_overrides() == {"AAPL"}  # one, not two
 
 
 async def test_inv3_gate_is_symbol_specific(any_store):

@@ -6359,12 +6359,15 @@ class SqliteStateStore(StateStore):
                         f"emergency reduce of {key} refused: an ambiguous "
                         "TIMEOUT_QUARANTINE order is unresolved (INV-3)"
                     )
-            # Defensive (review): never stack a second grant on top of an active
-            # one — an override authorizes exactly one flatten and is consumed by it.
+            # PR#9 Codex Finding 2: re-authorizing REUSES a still-active grant
+            # instead of wedging the operator's retry (see the memory-store twin for
+            # the full rationale). The flatten fails closed (409) while a venue-
+            # uncertain BUY remains, leaving the grant un-consumed; the documented
+            # "retry after reconciliation" must reuse it. Idempotent — the ADR-003
+            # preconditions above are re-validated every call, and one grant
+            # authorizes exactly one exit (consumed on the first authorized flatten).
             if key in self._active_overrides_locked(session.id):
-                raise EmergencyReduceBlockedError(
-                    f"emergency reduce of {key} refused: an override is already active"
-                )
+                return
             self._write_emergency_reduce_override_locked(
                 key, actor=actor, reason="emergency_reduce", resolved=False
             )
