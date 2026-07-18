@@ -116,11 +116,19 @@ owner expires with the other open intents and the envelope itself is swept `APPR
 in the same atomic close (leaving it delegating beside an expired owner would recreate the pre-R2
 orphan shape and invite the restore path to resurrect the closed owner); (ii) an envelope going
 terminal while a lineage child is latched `needs_review` (a stranded broker SELL that HAD fills)
-**retains its owner** — unresolved venue exposure is not proof of absence, so the symbol's sell
-side quarantines fail-closed (flatten refuses, new delegation refuses, replacement intents dedup
-to the retained owner) until a human reconciles the recovery, mirroring the TIMEOUT_QUARANTINE
-ambiguity posture; retention HOLDS live owners but never resurrects stood-down ones (restore stays
-strict-keyed). The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
+**retains its owner** — unresolved venue exposure is not proof of absence; flatten refuses, new
+delegation refuses, and replacement intents dedup to the retained owner until a human reconciles
+the recovery, mirroring the TIMEOUT_QUARANTINE ambiguity posture; retention HOLDS live owners but
+never resurrects stood-down ones (restore stays strict-keyed). **Correction 2026-07-18, closed by
+WO-0108 step 3 (REV-0029 P0-3 — amended-and-closed, Policy A):** round-1 review found the
+submission-lane quarantine incomplete as originally written — the projection exposed
+`needs_review_child_order_ids` but the envelope **stage** and final **claim** rails did not consume
+it (a still-active or fresh envelope lineage could stage and claim a second SELL), and the
+direct-SELL exposure scans selected `RECOVERY_UNRESOLVED` only, so two submission lanes could reach
+`SUBMITTING` beside a `needs_review` exposure. Both are now closed on both stores: the stage and
+final-claim rails fail closed on same-lineage `needs_review_child_order_ids`, and the direct-SELL
+dispatch/claim scans widened to `RECOVERY_OPEN_STATUSES` (Policy A, full submission quarantine —
+pins in `tests/test_wo0108_rev0029_remediation.py`, both lanes × both owners × both stores). The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
 The human reconciliation release valve for (ii) is an open, recorded design decision
 (`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.
 
@@ -147,7 +155,27 @@ open BUY (the §5.3 self-cross, closed for the entire `OPEN_BUY_STATUSES` set re
 deciding lock) and no caller decides flat/blocked on a stale out-of-lock read. Venue-uncertain
 BUYs (`SUBMITTING`, `TIMEOUT_QUARANTINE`) remain outside the signal exactly as they were outside
 the pre-Option-B §5.3 cancel set — Option B closed the stale-read class, it did not widen the
-detected set. (ii) When
+detected set.
+
+**Correction 2026-07-18, closed by WO-0108 (REV-0029 P0-1/P0-2 — amended-and-closed):** the
+independent review falsified the original retry-convergence claim by lifecycle property —
+cancelling a `SUBMITTED` BUY leaves it `CANCEL_PENDING` (non-terminal, can still late-fill), which
+was OUTSIDE `OPEN_BUY_STATUSES`, so the bounded retry could mint a full-size SELL beside a BUY
+whose fill was still possible; independently, an `APPROVED` BUY *Candidate* that had not yet
+produced its Order row was invisible to the order-only scan, and no cross-side same-symbol rail
+existed at candidate dispatch or the final submission claim. Both classes are now closed.
+**P0-1 (WO-0108 step 1):** the flatten detection set is the superset
+`FLATTEN_BLOCKING_BUY_STATUSES` (`OPEN_BUY_STATUSES` + `SUBMITTING` + `CANCEL_PENDING` +
+`TIMEOUT_QUARANTINE`); the facade retry cancels only the cancellable subset and fails closed (409)
+on venue-uncertain BUYs — never blind-cancelling `SUBMITTING`/`TIMEOUT_QUARANTINE`.
+**P0-2 (WO-0108 step 2, Policy B "exit preempts"):** a cross-side same-symbol rail at the final
+submission claim (a BUY and an exit SELL for one symbol can never both pass — "BUY may execute" =
+`MAY_EXECUTE_ORDER_STATUSES`, i.e. `NON_TERMINAL` minus `CREATED`, since a pre-claim BUY is blocked
+at its own claim while the exit is live), plus atomic stand-down of same-symbol PENDING/APPROVED
+BUY candidates on flatten + protection-open (audited `candidate_transition`, reason
+`exit_preemption`) and a candidate-dispatch refusal while a same-symbol exit may execute. The
+flatten self-cross closure now holds across cancel/late-fill and candidate-handoff interleavings,
+both stores; pins in `tests/test_wo0108_rev0029_remediation.py`. (ii) When
 the symbol's obligation is retained ONLY by an open `needs_review` recovery child (see the §3
 2026-07-17 amendment), the preemption's residual check refuses the flatten outright — a full-size
 manual SELL beside possibly-already-sold shares is the same double-sell class, and the human

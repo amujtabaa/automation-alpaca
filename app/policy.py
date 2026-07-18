@@ -55,6 +55,28 @@ NON_TERMINAL_ORDER_STATUSES = frozenset(
     status for status, transitions in ORDER_TRANSITIONS.items() if transitions
 )
 
+# The subset of non-terminal statuses in which an order has PASSED the
+# submission claim gate and so may already be — or may still become — live AT
+# THE VENUE: SUBMITTING (an open claim, broker call pending/in flight),
+# SUBMITTED / PARTIALLY_FILLED (broker-working), and CANCEL_PENDING /
+# TIMEOUT_QUARANTINE (both nonterminal and both still accept a late fill). This
+# is the exact "may execute" set the REV-0029 P0-2 cross-side self-cross rail
+# keys on (result.md: "same_symbol_buy_may_execute must include open claims,
+# broker-working intervals, CANCEL_PENDING, and TIMEOUT_QUARANTINE").
+#
+# It is NON_TERMINAL minus CREATED: a CREATED order is minted but not yet
+# claimed, so it cannot reach the venue until it passes the claim gate — where
+# the same cross-side rail blocks it while an opposing exit is live. Counting
+# CREATED here would instead make a SELL exit wait on a buy that structurally
+# cannot cross it (and, in the fixtures, on a held position's abandoned
+# establishing BUY stub, which append_fill leaves parked in CREATED). Deriving
+# it by subtraction — rather than hand-listing — keeps it in lockstep with the
+# transition table: any future non-terminal venue status is treated as
+# may-execute by default (fail-safe).
+MAY_EXECUTE_ORDER_STATUSES = NON_TERMINAL_ORDER_STATUSES - frozenset(
+    {OrderStatus.CREATED}
+)
+
 
 def order_intent_block_reason(
     session: Optional[SessionRecord],

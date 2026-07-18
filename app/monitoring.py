@@ -501,30 +501,67 @@ async def _validated_envelope_lineage(
     if envelope is None:
         return None
     all_events = events if events is not None else await store.get_execution_events()
-    parent_actions = [
+    owner_intent_id = envelope.sell_intent_id
+    all_actions = [
         event
         for event in all_events
         if event.event_type is ExecutionEventType.ENVELOPE_ACTION
-        and event.envelope_id == envelope_id
     ]
-    parent_order_ids = {
-        event.order_id for event in parent_actions if event.order_id is not None
+    # REV-0029 P1-1: discover actions through the store's OWNER-SCOPED identity
+    # universe, not an exact-``envelope_id`` subset. The store's gates select an
+    # action by parent envelope OR owner correlation OR referenced-order owner
+    # (``app/store/memory.py`` ``action_in_scope``; the ``sqlite`` twin), so a
+    # malformed action whose parent is wrong/missing but which still claims this
+    # envelope's intent — via ``correlation_id`` or its order's ``sell_intent_id``
+    # — is quarantined by the store. Keying monitoring only on exact envelope_id
+    # let that action project clean-empty here, losing the R6 malformed-lineage
+    # diagnostic and silently declining to fail the cancel closed. The symbol key
+    # the store adds for SYMBOL-scoped gates is deliberately NOT used: this is a
+    # per-envelope (owner-scoped) convergence, and the store itself omits the
+    # symbol key when it keys by intent. Owners are resolved for every order any
+    # action references (bounded by action count, beta scale), so the
+    # referenced-order-owner key resolves exactly as the gates see it.
+    action_order_ids = {
+        event.order_id for event in all_actions if event.order_id is not None
     }
-    actions = [
-        event
-        for event in all_events
-        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
-        and (
-            event.envelope_id == envelope_id
-            or (event.order_id is not None and event.order_id in parent_order_ids)
-        )
-    ]
-    order_ids = {event.order_id for event in actions if event.order_id is not None}
-    orders: dict[str, Order] = {}
-    for order_id in order_ids:
+    all_action_orders: dict[str, Order] = {}
+    for order_id in action_order_ids:
         order = await store.get_order(order_id)
         if order is not None:
-            orders[order_id] = order
+            all_action_orders[order_id] = order
+    parent_order_ids = {
+        event.order_id
+        for event in all_actions
+        if event.envelope_id == envelope_id and event.order_id is not None
+    }
+
+    def _owner_scoped(event: ExecutionEvent) -> bool:
+        if event.envelope_id == envelope_id:  # parent envelope
+            return True
+        if owner_intent_id is not None and event.correlation_id == owner_intent_id:
+            return True  # owner correlation
+        referenced = (
+            all_action_orders.get(event.order_id)
+            if event.order_id is not None
+            else None
+        )
+        if (
+            owner_intent_id is not None
+            and referenced is not None
+            and referenced.sell_intent_id == owner_intent_id
+        ):
+            return True  # referenced-order owner
+        if event.order_id is not None and event.order_id in parent_order_ids:
+            return True  # co-order of a parent action (multi-action-per-order)
+        return False
+
+    actions = [event for event in all_actions if _owner_scoped(event)]
+    order_ids = {event.order_id for event in actions if event.order_id is not None}
+    orders: dict[str, Order] = {
+        order_id: order
+        for order_id, order in all_action_orders.items()
+        if order_id in order_ids
+    }
     recoveries = await store.list_submit_recoveries(statuses=RECOVERY_OPEN_STATUSES)
     known_envelopes = await store.list_envelopes()
     projection = project_envelope_obligation(

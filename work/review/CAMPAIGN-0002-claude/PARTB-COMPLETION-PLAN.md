@@ -246,7 +246,12 @@ diff. In-process panels NEVER count as the independent review — REV-0029 stays
   the live mandate stay unswept until the exposure resolves). **OBS-2** direct-path needs_review
   frees single-flight (X-003) while envelope-child needs-review quarantines — no gap: the direct
   second-sell hazard is separately blocked via `RECOVERY_OPEN_STATUSES` feeding the unresolved-
-  direct-sell gates. **OBS-3** the P-A sweep is close-time only — legacy DBs whose sessions
+  direct-sell gates. **[CORRECTION 2026-07-18, REV-0029 P0-3: the OBS-2 "no gap" claim was
+  FALSE — the direct-sell exposure scans select `RECOVERY_UNRESOLVED` only (not
+  `RECOVERY_OPEN_STATUSES`), and the stage/final-claim rails never consume
+  `needs_review_child_order_ids`; both second-SELL lanes were reproduced in both stores by the
+  independent reviewer. The lens that recorded OBS-2 mis-read the gating code. Tracked to the
+  remediation WO.]** **OBS-3** the P-A sweep is close-time only — legacy DBs whose sessions
   closed pre-P2 keep spared bare-APPROVED shapes until the (deferred, D5) backfill pass; no
   retro-sweep. **OBS-4** `envelope_owner_scope_reason` ignores intent status (pre-existing), so
   a stood-down owner can be the dedup target under needs-review retention — consistent with

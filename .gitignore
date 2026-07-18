@@ -43,3 +43,9 @@ CLAUDE.local.md
 .claude/settings.local.json
 # Transient git worktrees created by background workflows (auto-cleaned; never a deliverable)
 .claude/worktrees/
+
+# Per-session agent tooling that lives in the execution environment, NOT repo
+# content (a leaked plugin/skill library was accidentally committed once — 06abd3f,
+# dropped 2026-07-18). These dirs mirror .claude/ but for other agent seats.
+.agents/
+.codex/

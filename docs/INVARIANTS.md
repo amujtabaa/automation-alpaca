@@ -588,7 +588,15 @@ MANUAL_FLATTEN SELL is ever minted beside a DETECTED open BUY — the
 ``OPEN_BUY_STATUSES`` set ``CREATED``/``SUBMITTED``/``PARTIALLY_FILLED`` read
 under the deciding lock; venue-uncertain ``SUBMITTING``/``TIMEOUT_QUARANTINE``
 BUYs stay outside the signal, as they were outside the pre-Option-B cancel
-set). (2) A symbol whose
+set — and, per the 2026-07-18 REV-0029 correction, so did ``CANCEL_PENDING``
+and the ``APPROVED`` BUY *candidate* handoff, both invisible to the order-only
+scan. Those cross-interleaving self-cross classes P0-1/P0-2 are now CLOSED by
+WO-0108: P0-1 widens the flatten detection set to
+``FLATTEN_BLOCKING_BUY_STATUSES`` (adds ``SUBMITTING`` / ``CANCEL_PENDING`` /
+``TIMEOUT_QUARANTINE``; the facade cancels only the cancellable subset and
+fails closed on the rest), and P0-2 adds the cross-side same-symbol claim rail
++ same-symbol BUY-candidate stand-down + dispatch refusal, so a BUY and an exit
+SELL for one symbol can never both reach the venue). (2) A symbol whose
 obligation is retained only by an open ``needs_review`` recovery child
 REFUSES the flatten at the preemption residual check (``FlattenBlockedError``)
 — unreconciled possible venue SELL exposure quarantines the manual path too
@@ -823,6 +831,23 @@ parity, release/retention),
 (both spec oracles green; the Claude oracle carries 6 recorded NEEDS-INPUT
 skips for tick-level properties not exercisable at store level — campaign
 report §C/§E), both stores throughout.
+*Correction 2026-07-18, closed by WO-0108 (REV-0029 P0-3 + P1-1 —
+amended-and-closed):* two claims above were narrower than written; both are now
+closed. (1) CLOSED (WO-0108 step 3, Policy A): "Every sell-side choke" now holds
+for the WIDENED predicate — the envelope stage AND final claim rails consume
+`needs_review_child_order_ids`, and the direct-SELL exposure scans widened to
+`RECOVERY_OPEN_STATUSES`, so no submission lane reaches `SUBMITTING` beside a
+`needs_review` exposure (the two P0-3 lanes are pinned closed on both stores).
+(2) CLOSED (WO-0108 step 4, P1-1): "No monitoring path derives a neighboring
+definition" now holds — monitoring's `_validated_envelope_lineage` discovers
+actions through the store's OWNER-SCOPED identity universe (parent envelope /
+owner correlation / referenced-order owner, matching the gates' `action_in_scope`;
+the symbol key is a symbol-scoped gate concern the store itself omits when it
+keys by intent, so a per-envelope owner-scoped convergence rightly omits it too),
+so a malformed owner-keyed lineage the store quarantines projects malformed in
+monitoring as well and fails the cancel closed with the R6 diagnostic — never
+clean-and-empty. The release/retention/close semantics of this invariant remain
+implemented and pinned; both closures landed under WO-0108.
 
 ---
 

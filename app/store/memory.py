@@ -105,7 +105,7 @@ from app.store.core import (
     FLATTEN_BUYS_OPEN as _PLAN_FLATTEN_BUYS_OPEN,
     FLATTEN_DENIED_HALTED,
     FLATTEN_SUPERSEDE_AND_CREATE,
-    OPEN_BUY_STATUSES,
+    FLATTEN_BLOCKING_BUY_STATUSES,
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
     STAGE_DIVERGENCE,
@@ -165,6 +165,7 @@ from app.transitions import (
     SELL_INTENT_TRANSITIONS as _SELL_INTENT_TRANSITIONS,
 )
 from app.policy import (
+    MAY_EXECUTE_ORDER_STATUSES,
     NON_TERMINAL_ORDER_STATUSES,
     candidate_numeric_reason,
     existing_exposure,
@@ -1932,6 +1933,18 @@ class InMemoryStateStore(StateStore):
                     f"envelope {env.id} is paused: ambiguous linked child "
                     f"set ({', '.join(detail)})"
                 )
+            # WO-0108/REV-0029 P0-3 (Policy A, ratified 2026-07-18): a lineage
+            # child latched needs_review is UNRECONCILED venue exposure — the
+            # stranded broker SELL had fills not yet in position truth. Staging
+            # another SELL beside it can oversell; fail closed until a human
+            # reconciles the recovery.
+            if obligation.needs_review_child_order_ids:
+                raise EnvelopeActionPausedError(
+                    f"envelope {env.id} is paused: needs_review venue exposure "
+                    "is unreconciled ("
+                    + ", ".join(obligation.needs_review_child_order_ids)
+                    + ")"
+                )
             if session_id is not None and session_id != env.session_id:
                 raise EnvelopeActionPausedError(
                     f"envelope {env.id} is paused: action session {session_id!r} "
@@ -2409,6 +2422,14 @@ class InMemoryStateStore(StateStore):
                     session_id=session_id,
                     correlation_id=intent.id,
                 )
+                # P0-2 exit-preempt (ratified 2026-07-18): an autonomous
+                # protection SELL is now reaching the venue — stand down any
+                # same-symbol pending/approved BUY candidate in the SAME atomic
+                # unit so it cannot dispatch into a crossing BUY (self-cross /
+                # re-grow of the position protection is exiting).
+                self._stand_down_symbol_buy_candidates_unlocked(
+                    key, actor=COMMAND_ACTOR_SYSTEM
+                )
             return order.model_copy(deep=True)
 
     def _order_has_valid_envelope_link_unlocked(self, order: Order) -> bool:
@@ -2496,7 +2517,10 @@ class InMemoryStateStore(StateStore):
             if (
                 record.symbol != symbol
                 or record.side is not OrderSide.SELL
-                or record.cleanup_status != RECOVERY_UNRESOLVED
+                # WO-0108/REV-0029 P0-3 (Policy A): needs_review IS open
+                # venue exposure — it must stay symbol-visible to the dispatch
+                # and claim rails, not vanish on human escalation.
+                or record.cleanup_status not in RECOVERY_OPEN_STATUSES
                 or record.local_order_id in seen
             ):
                 continue
@@ -2534,6 +2558,109 @@ class InMemoryStateStore(StateStore):
                 )
             )
         )
+
+    # --- P0-2 (REV-0029, exit-preempts ratified 2026-07-18): the same-symbol --- #
+    # cross-side eligibility property. An EXIT (manual flatten or an autonomous
+    # protection SELL that is actually reaching the venue) and a BUY for one
+    # symbol must never both reach the broker — the §5.3 self-cross across the
+    # Candidate->Order handoff the order-only Option B scan cannot see.
+
+    def _same_symbol_exit_may_execute_unlocked(
+        self, symbol: str, *, exclude_order_id: Optional[str] = None
+    ) -> Optional[str]:
+        """A same-symbol SELL that may still reach the venue — a non-terminal
+        SELL ORDER (protection or flatten). A RESTING protection envelope with
+        no live child SELL does NOT count: buying more of a protected symbol
+        stays legal; only an exit ORDER that could execute blocks a crossing
+        BUY."""
+        for order in self._orders.values():
+            if order.id == exclude_order_id or order.symbol != symbol:
+                continue
+            if OrderSide(order.side) is not OrderSide.SELL:
+                continue
+            if (
+                self._project_order_unlocked(order).status
+                in NON_TERMINAL_ORDER_STATUSES
+            ):
+                return order.id
+        return None
+
+    def _same_symbol_buy_may_execute_unlocked(
+        self, symbol: str, *, exclude_order_id: Optional[str] = None
+    ) -> Optional[str]:
+        """A same-symbol BUY ORDER that may still reach/execute at the venue —
+        a BUY whose projected status is in ``MAY_EXECUTE_ORDER_STATUSES`` (open
+        claim / broker-working / CANCEL_PENDING / TIMEOUT_QUARANTINE, the exact
+        set REV-0029 result.md names). CREATED is excluded: a pre-claim BUY
+        cannot cross an exit at the venue because this same cross-side rail
+        blocks its OWN claim while the exit is live. A PENDING/APPROVED BUY
+        CANDIDATE is not counted either — it is closed at the Candidate layer
+        (the exit stands it down via ``_stand_down_symbol_buy_candidates`` and
+        dispatch is refused while an exit may execute), so counting it here would
+        block a SELL exit on a merely-proposed buy (and, in the fixtures, on a
+        held position's abandoned establishing BUY stub, which ``append_fill``
+        leaves parked in CREATED)."""
+        for order in self._orders.values():
+            if order.id == exclude_order_id or order.symbol != symbol:
+                continue
+            if OrderSide(order.side) is not OrderSide.BUY:
+                continue
+            if self._project_order_unlocked(order).status in MAY_EXECUTE_ORDER_STATUSES:
+                return order.id
+        return None
+
+    def _cross_side_claim_block_reason_unlocked(self, order: Order) -> Optional[str]:
+        """The rail at the FINAL claim: a BUY is blocked while a same-symbol exit
+        may execute (exit preempts); a SELL exit is blocked until every
+        same-symbol BUY is authoritatively terminal (never crosses)."""
+        if OrderSide(order.side) is OrderSide.BUY:
+            hit = self._same_symbol_exit_may_execute_unlocked(
+                order.symbol, exclude_order_id=order.id
+            )
+            if hit is not None:
+                return f"same-symbol exit may execute ({hit})"
+        else:
+            hit = self._same_symbol_buy_may_execute_unlocked(
+                order.symbol, exclude_order_id=order.id
+            )
+            if hit is not None:
+                return f"same-symbol BUY may execute ({hit})"
+        return None
+
+    def _stand_down_symbol_buy_candidates_unlocked(
+        self, symbol: str, *, actor: str
+    ) -> None:
+        """Exit-preempt: an exit stands down every same-symbol PENDING/APPROVED
+        BUY candidate so it can never dispatch into a crossing BUY. Audited
+        ``candidate_transition`` (reason ``exit_preemption``), same atomic unit
+        as the exit's own writes."""
+        now = utcnow()
+        for cand in list(self._candidates.values()):
+            if cand.symbol != symbol or cand.status not in (
+                CandidateStatus.PENDING,
+                CandidateStatus.APPROVED,
+            ):
+                continue
+            prev = cand.status
+            cand.status = CandidateStatus.EXPIRED
+            cand.expired_at = now
+            cand.updated_at = now
+            self._append_event_unlocked(
+                "candidate_transition",
+                message=(
+                    f"candidate {symbol} {prev.value} -> expired "
+                    "(exit preemption, REV-0029 P0-2)"
+                ),
+                symbol=symbol,
+                candidate_id=cand.id,
+                payload={
+                    "from": prev.value,
+                    "to": "expired",
+                    "reason": "exit_preemption",
+                    "actor": actor,
+                },
+                session_id=cand.session_id,
+            )
 
     async def flatten_position(
         self,
@@ -2650,20 +2777,22 @@ class InMemoryStateStore(StateStore):
             override_active = key in active_emergency_reduce_overrides(
                 self._execution_events, current_session.id
             )
-            # Option B (WO-0036 R2): detect still-open BUYs for the symbol under
-            # this same lock, so the store — not a caller reading a stale
-            # out-of-lock position — is the authority on whether a MANUAL_FLATTEN
-            # SELL may be minted next to a live BUY (the §5.3 self-cross). The
-            # status is the event-log projection (``_project_order_unlocked``),
-            # the SAME truth ``list_orders``/``cancel_open_buys`` read, so the
-            # store's "buys open" signal names EXACTLY the buys the caller's
-            # cancel step will act on — the retry converges.
+            # Option B (WO-0036 R2) + WO-0108/REV-0029 P0-1: detect EVERY
+            # non-terminal BUY for the symbol under this same lock — the store,
+            # not a caller on a stale read, is the authority on whether a
+            # MANUAL_FLATTEN SELL may be minted next to a possibly-executable
+            # BUY (the §5.3 self-cross). The BLOCKING set is a strict superset
+            # of the caller's CANCELLABLE set: SUBMITTING/CANCEL_PENDING/
+            # TIMEOUT_QUARANTINE buys block the mint but are never blindly
+            # cancelled — the caller fails closed until they are broker-
+            # authoritatively terminal. Status is the event-log projection,
+            # the SAME truth ``list_orders``/``cancel_open_buys`` read.
             open_buy_order_ids = [
                 projected.id
                 for order in self._orders.values()
                 if order.symbol == key and OrderSide(order.side) is OrderSide.BUY
                 for projected in (self._project_order_unlocked(order),)
-                if projected.status in OPEN_BUY_STATUSES
+                if projected.status in FLATTEN_BLOCKING_BUY_STATUSES
             ]
             plan = plan_flatten_position(
                 position=position,
@@ -2752,6 +2881,11 @@ class InMemoryStateStore(StateStore):
                 self._cancel_symbol_envelopes_unlocked(
                     key, actor=actor, reason="manual_flatten_preemption"
                 )
+                # P0-2 exit-preempt (ratified 2026-07-18): this branch MINTS a
+                # MANUAL_FLATTEN SELL — stand down any same-symbol pending/
+                # approved BUY candidate in the SAME atomic unit so it can never
+                # dispatch into a crossing BUY.
+                self._stand_down_symbol_buy_candidates_unlocked(key, actor=actor)
                 self._assert_symbol_envelope_preempted_unlocked(key)
                 if plan.supersede_order_cancel is not None:
                     # A supersede-cancel implies the stranded active_order exists
@@ -2912,6 +3046,32 @@ class InMemoryStateStore(StateStore):
                         f"candidate {candidate_id} is ORDERED but has no linked order"
                     )
                 return existing.model_copy(deep=True)
+            # P0-2 (REV-0029): a BUY candidate must not dispatch into an ORDER
+            # while a same-symbol exit may execute — the exit-preempt backstop
+            # for the narrow race between the exit firing and its candidate
+            # stand-down. Refuse (candidate stays put; exit-preempt expires it,
+            # or it dispatches once the exit clears); never mint a crossing BUY.
+            exit_hit = self._same_symbol_exit_may_execute_unlocked(candidate.symbol)
+            if exit_hit is not None:
+                with self._atomic():
+                    self._append_event_unlocked(
+                        "candidate_dispatch_blocked",
+                        message=(
+                            f"candidate {candidate_id} dispatch blocked: same-symbol "
+                            f"exit may execute ({exit_hit})"
+                        ),
+                        symbol=candidate.symbol,
+                        candidate_id=candidate_id,
+                        payload={
+                            "reason": "same_symbol_exit_may_execute",
+                            "exit_order_id": exit_hit,
+                        },
+                        session_id=candidate.session_id,
+                    )
+                raise OrderIntentBlockedError(
+                    f"candidate {candidate_id} cannot dispatch: a same-symbol exit "
+                    f"may execute ({exit_hit})"
+                )
             # Shared validation cascade + order construction (app/store/core.py);
             # the candidate-missing and ORDERED-idempotent cases above stay here
             # since they need store-specific fetches. Exposure is computed
@@ -3028,6 +3188,13 @@ class InMemoryStateStore(StateStore):
             return "envelope lineage is missing or malformed: " + ", ".join(ambiguous)
         if exact.recovery_order_ids:
             return "envelope child has unresolved submission/recovery uncertainty"
+        # WO-0108/REV-0029 P0-3 (Policy A): a needs_review sibling latched at
+        # ANY point before this final claim — including between stage and claim
+        # — is unreconciled venue exposure; the claim fails closed.
+        if exact.needs_review_child_order_ids:
+            return "needs_review venue exposure is unreconciled: " + ", ".join(
+                exact.needs_review_child_order_ids
+            )
         if order.id not in exact.unresolved_order_ids:
             return f"order {order.id} is not an unresolved child of its envelope"
         eligible_ids = (
@@ -3154,6 +3321,13 @@ class InMemoryStateStore(StateStore):
                             correlation_id=order.sell_intent_id,
                         )
                     return SubmissionClaim(CLAIM_BLOCKED, reason=envelope_block)
+                # P0-2 (REV-0029) cross-side self-cross rail — see the FINAL gate
+                # in the CLAIM_CLAIMED branch below. It is evaluated last, only on
+                # an order the envelope/session/quarantine gates would otherwise
+                # let through, so a symbol-wide broker-overfill quarantine or a
+                # Rule-8 stop reports its higher-precedence reason first (ADR-001
+                # wave 3b holds a BUY on a quarantined symbol as "symbol_quaran-
+                # tined", not as a cross-side interaction).
             own_session = (
                 next((s for s in self._sessions if s.id == order.session_id), None)
                 if order is not None
@@ -3187,6 +3361,30 @@ class InMemoryStateStore(StateStore):
                     and plan.order is not None
                     and plan.event is not None
                 )
+                # P0-2 (REV-0029): the same-symbol cross-side rail — the hard
+                # venue gate a BUY and an exit SELL for one symbol can never both
+                # pass (the §5.3 self-cross across the Candidate->Order handoff
+                # Option B's order-only scan misses). Evaluated here, as the last
+                # gate before the co-write, so higher-precedence holds (quarantine,
+                # kill switch) surface first; an order every earlier gate would
+                # claim is still blocked here if it would cross a live opposite-
+                # side order that may execute at the venue.
+                cross_side = self._cross_side_claim_block_reason_unlocked(order)
+                if cross_side is not None:
+                    with self._atomic():
+                        self._append_event_unlocked(
+                            "cross_side_claim_blocked",
+                            message=(
+                                f"{order.side} {order.id} submission blocked: "
+                                f"{cross_side}"
+                            ),
+                            symbol=order.symbol,
+                            order_id=order.id,
+                            payload={"reason": cross_side},
+                            session_id=order.session_id,
+                            correlation_id=order.sell_intent_id,
+                        )
+                    return SubmissionClaim(CLAIM_BLOCKED, reason=cross_side)
                 # WO-0007a Stage 1: co-write a SUBMIT_PENDING ExecutionEvent in
                 # the SAME atomic block as the order-row + audit-event write.
                 # `occurrence` = count of PRIOR SUBMIT_PENDING events for this

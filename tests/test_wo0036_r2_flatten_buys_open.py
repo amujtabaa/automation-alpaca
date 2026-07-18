@@ -161,7 +161,15 @@ async def test_emergency_override_survives_buys_open_then_authorizes_retry(any_s
 # --------------------------------------------------------------------------- #
 
 
-async def test_create_exit_cancels_open_buy_then_creates(any_store, monkeypatch):
+async def test_create_exit_cancels_open_buy_then_fails_closed_until_confirmed(
+    any_store, monkeypatch
+):
+    # AMENDED under WO-0108 / REV-0029 P0-1 (operator-ratified): this pin
+    # originally asserted the DEFECT — a MANUAL_FLATTEN SELL minted while the
+    # cancelled buy sat CANCEL_PENDING (non-terminal; a late fill was still
+    # possible). A cancellation request is not convergence. The facade now
+    # cancels the buy and FAILS CLOSED (409) until the buy is broker-
+    # authoritatively terminal; only then does a flatten mint.
     monkeypatch.setattr(monitoring, "session_type_for", lambda _t: SessionType.REGULAR)
     await any_store.initialize()
     session = await any_store.get_current_session()
@@ -169,15 +177,20 @@ async def test_create_exit_cancels_open_buy_then_creates(any_store, monkeypatch)
     buy = await _open_submitted_buy(any_store, "AAPL", 40, session_id=session.id)
 
     adapter = MockBrokerAdapter()
-    result = await _facade(any_store, broker=adapter).create_exit(
-        symbol="AAPL", actor="operator"
-    )
+    facade = _facade(any_store, broker=adapter)
+    with pytest.raises(ConflictError, match="venue-uncertain"):
+        await facade.create_exit(symbol="AAPL", actor="operator")
 
-    # The facade cancelled the live buy (broker call) and RETRIED to a real exit.
-    assert result.order is not None
+    # The cancel WAS issued (fail-closed, not fail-idle)...
     assert adapter.canceled == [f"broker-{buy.id}"]
     assert (await any_store.get_order(buy.id)).status is OrderStatus.CANCEL_PENDING
-    # A MANUAL_FLATTEN SELL now exists (the flatten completed on retry).
+    # ...and no SELL exists beside the still-possibly-live buy.
+    assert [o for o in await any_store.list_orders() if o.side is OrderSide.SELL] == []
+
+    # Broker truth arrives (cancel confirmed terminal) — NOW the flatten mints.
+    await any_store.transition_order(buy.id, OrderStatus.CANCELED)
+    result = await facade.create_exit(symbol="AAPL", actor="operator")
+    assert result.order is not None
     sells = [o for o in await any_store.list_orders() if o.side is OrderSide.SELL]
     assert len(sells) == 1
 
@@ -212,7 +225,7 @@ async def test_create_exit_fails_closed_if_buys_keep_reappearing(
 
     monkeypatch.setattr(any_store, "flatten_position", _always_buys_open)
 
-    with pytest.raises(ConflictError, match="keep reappearing"):
+    with pytest.raises(ConflictError, match="open or venue-uncertain"):
         await _facade(any_store, broker=MockBrokerAdapter()).create_exit(
             symbol="AAPL", actor="operator"
         )

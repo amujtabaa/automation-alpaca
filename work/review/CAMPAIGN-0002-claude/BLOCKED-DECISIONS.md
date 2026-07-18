@@ -39,5 +39,16 @@ fills?). Beta exposure is acceptable meanwhile: `needs_review` arises only from 
 stranded-submit path, the quarantine is fail-closed, and the BUY side / other symbols are
 unaffected.
 
-**Recommendation.** Approve the sketch as WO-0108 after this consolidation merges (or fold its
+**Recommendation.** Approve the sketch as its own WO after this consolidation merges (or fold its
 design review into REV-0029's disposition loop).
+
+**Correction 2026-07-18 (REV-0029):** this memo's premise that the current posture is already a
+"complete sell-side quarantine" was falsified by review finding P0-3 — two submission lanes
+(stage/claim of a second envelope SELL; direct-SELL scans keyed `RECOVERY_UNRESOLVED`-only) reach
+`SUBMITTING` beside a `needs_review` exposure. Closing those lanes is part of the REV-0029
+remediation WO, *prior to* and independent of this parked release-valve design. The reviewer also
+sharpened the valve's requirements (see `../REV-0029/result.md` "PD-1 assessment"): a status flip
+must never act as a synthetic fill; discovered fills enter position truth only as deduplicated
+FILL events; and the current `EventSource`/`EventAuthority` vocabulary has NO human-attested
+value — mislabeling a human attestation as broker-authoritative is forbidden, so the design needs
+an explicit human provenance addition. Fold those constraints into the sketch before approval.

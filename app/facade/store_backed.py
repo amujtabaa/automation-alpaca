@@ -875,12 +875,19 @@ class StoreBackedCommandFacade:
             if result.outcome != FLATTEN_BUYS_OPEN:
                 return result
             if attempts >= _FLATTEN_MAX_BUY_CANCEL_ATTEMPTS:
-                # Open buys keep reappearing across cancel+retry (an operator or
-                # strategy re-placing them faster than we clear them, or a broker
-                # cancel that will not stick). Fail closed to a 409 rather than
-                # loop forever — never mint a SELL next to a live BUY.
+                # WO-0108/REV-0029 P0-1: the store now blocks on EVERY
+                # non-terminal BUY, and the cancel we issue only reaches
+                # CANCEL_PENDING (a request, not convergence — a late fill is
+                # still possible). So this branch is the NORMAL fail-closed exit
+                # whenever a venue-uncertain BUY (freshly-cancelled, SUBMITTING,
+                # or TIMEOUT_QUARANTINE) remains: 409 now, flatten again once
+                # reconciliation confirms the BUY broker-authoritatively
+                # terminal. Never mint a SELL beside a possibly-executable BUY;
+                # never blind-cancel ambiguity.
                 raise ConflictError(
-                    f"could not flatten {key}: open buy orders keep reappearing"
+                    f"could not flatten {key}: buy orders remain open or "
+                    "venue-uncertain (cancel requested where safe; retry after "
+                    "reconciliation confirms them terminal)"
                 )
             # §5.3: clear open buys so the exit truly reaches flat, THEN retry the
             # store's atomic decision. Best-effort/idempotent; cancel_open_buys
