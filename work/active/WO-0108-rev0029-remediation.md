@@ -126,12 +126,23 @@ forbidden_paths:
   (11 skip, 1 xfail); ruff + mypy(app, 64 files) + lint-imports(6·0) + both oracles green; scope
   widened to `app/policy.py` (flagged — MAY_EXECUTE home, import contract unchanged). Docs: ADR-010 §4
   + INVARIANTS self-cross corrections flipped P0-1/P0-2 → amended-and-closed.
-- **NEXT — Step 4 (P1-1)**: monitoring's `_validated_envelope_lineage` loads the store projector's
-  bounded identity universe (parent / owner-correlation / order-owner / symbol), warns on ambiguity,
-  cancels nothing unvalidated. Pins: correlation-keyed + order-owner-keyed hostile shapes, both stores.
-- **Then**: Step 5 (P1-2 retry/restart+rollback parity scripts), Step 6 remaining doc flips
-  (INVARIANTS 830-843 — P0-3 half closeable now, P1-1 half closes with step 4; ADR-010 §3, INV-090,
-  INV-081, plan OBS-2), the review-hardening Tier-1 CI gates, then the re-review packet.
+- **Step 4 (P1-1) DONE** — commit "WO-0108 step 4": monitoring's `_validated_envelope_lineage` now
+  discovers actions through the store's OWNER-SCOPED identity universe (parent envelope + owner
+  correlation + referenced-order owner, matching the gates' `action_in_scope`; owners resolved for
+  every order any action references), not an exact-`envelope_id` subset. An owner-keyed malformed
+  action with a wrong/missing parent — which the store quarantines — is now projected malformed in
+  monitoring too, so `_cancel_envelope_working_order` fails closed with the R6 diagnostic instead of
+  projecting clean-empty and silently stranding it. Projection stays envelope-scoped; the symbol key
+  is deliberately excluded (per-envelope owner-scoped convergence — the store omits it when keyed by
+  intent). 5 red-first pins (correlation-keyed + order-owner-keyed × both stores + sqlite restart) in
+  `tests/test_wo0036_r2_hostile_closure.py`. Full suite 3093/0/0 (11 skip, 1 xfail); ruff + mypy(app)
+  + lint-imports green. Docs: INVARIANTS INV-090 correction flipped P0-3 + P1-1 → amended-and-closed.
+- **NEXT — Step 5 (P1-2 ext)**: the close-parity full-fidelity comparison already landed (commit
+  321320c, uncontested-fixes split); add the retry/restart + rollback-injection VARIANTS the reviewer
+  asked for to `tests/test_wo0036_r2_close_and_recovery_ownership.py`.
+- **Then**: Step 6 remaining doc flips (ADR-010 §3, INV-081, plan OBS-2 as their fixes are confirmed),
+  the review-hardening Tier-1 CI gates (enum-total classification + producer/consumer grep, blocking),
+  then the REV-0029 round-2 re-review packet (merge gate reopens only on ACCEPT).
 
 ## Batched ratifications (Ameen, 2026-07-18 — up-front, to run remediation→re-review without stops)
 

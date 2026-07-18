@@ -831,20 +831,23 @@ parity, release/retention),
 (both spec oracles green; the Claude oracle carries 6 recorded NEEDS-INPUT
 skips for tick-level properties not exercisable at store level — campaign
 report §C/§E), both stores throughout.
-*Correction 2026-07-18 (REV-0029 — OPEN DEFECTS, under remediation):* two
-claims above are narrower than written. (1) "Every sell-side choke" is not yet
-true of the WIDENED predicate: the envelope stage and final claim rails do not
-consume `needs_review_child_order_ids`, and the direct-SELL exposure scans
-select `RECOVERY_UNRESOLVED` only — two submission lanes can reach
-`SUBMITTING` beside a `needs_review` exposure (P0-3). (2) "No monitoring path
-derives a neighboring definition" is overstated: monitoring's
-`_validated_envelope_lineage` seeds actions from exact `envelope_id` matches
-only, narrower than the store projector's bounded identity discovery
-(parent / owner-correlation / order-owner / symbol) — a malformed lineage the
-store quarantines can project clean-and-empty in monitoring, losing the R6
-diagnostic (P1-1). The release/retention/close semantics of this invariant are
-implemented and pinned; these two closures are tracked to the REV-0029
-remediation work order.
+*Correction 2026-07-18, closed by WO-0108 (REV-0029 P0-3 + P1-1 —
+amended-and-closed):* two claims above were narrower than written; both are now
+closed. (1) CLOSED (WO-0108 step 3, Policy A): "Every sell-side choke" now holds
+for the WIDENED predicate — the envelope stage AND final claim rails consume
+`needs_review_child_order_ids`, and the direct-SELL exposure scans widened to
+`RECOVERY_OPEN_STATUSES`, so no submission lane reaches `SUBMITTING` beside a
+`needs_review` exposure (the two P0-3 lanes are pinned closed on both stores).
+(2) CLOSED (WO-0108 step 4, P1-1): "No monitoring path derives a neighboring
+definition" now holds — monitoring's `_validated_envelope_lineage` discovers
+actions through the store's OWNER-SCOPED identity universe (parent envelope /
+owner correlation / referenced-order owner, matching the gates' `action_in_scope`;
+the symbol key is a symbol-scoped gate concern the store itself omits when it
+keys by intent, so a per-envelope owner-scoped convergence rightly omits it too),
+so a malformed owner-keyed lineage the store quarantines projects malformed in
+monitoring as well and fails the cancel closed with the R6 diagnostic — never
+clean-and-empty. The release/retention/close semantics of this invariant remain
+implemented and pinned; both closures landed under WO-0108.
 
 ---
 

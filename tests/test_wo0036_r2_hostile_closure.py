@@ -54,6 +54,7 @@ from app.reconciliation import (
     _drive_staged_order,
     execute_envelope_action,
 )
+from app.store.sqlite import SqliteStateStore
 from app.store.base import (
     CLAIM_BLOCKED,
     CLAIM_CLAIMED,
@@ -3576,3 +3577,168 @@ async def test_cancel_convergence_no_warning_on_benign_clean_lineage(any_store, 
         and "fail-closed" in r.getMessage()
     ]
     assert fail_closed == []
+
+
+# --------------------------------------------------------------------------- #
+# REV-0029 P1-1 (WO-0108 step 4): monitoring must load the store's OWNER-SCOPED
+# identity universe, not an exact-envelope_id subset. The store's gates discover
+# a hostile action through every immutable owner identity (parent envelope +
+# owner correlation + referenced-order owner) and quarantine the symbol; a
+# monitoring path that keys only on exact envelope_id projects clean-empty for
+# an owner-keyed action whose parent is wrong/missing — losing the R6 malformed-
+# lineage diagnostic and, worse, silently declining to fail closed. These pins
+# seed the two owner-keyed shapes the reviewer named (correlation-keyed and
+# order-owner-keyed), on both stores + a sqlite restart, and assert monitoring
+# now SEES the action (projects it malformed) and fails the cancel closed loudly.
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
+    """An EXPIRED envelope ``E`` owns intent ``I``; a live SELL child asserts
+    ownership by ``I`` ONLY through the chosen owner key, with a WRONG/missing
+    parent ``envelope_id`` (never ``E.id``).
+
+    ``key='correlation'`` -> the ENVELOPE_ACTION carries ``correlation_id=I``.
+    ``key='order_owner'`` -> the action's ``correlation_id`` is a stranger and
+    only the child ORDER carries ``sell_intent_id=I``. Either way the store's
+    owner-scoped discovery quarantines the symbol, while a bare exact-envelope_id
+    monitoring scan sees nothing.
+    """
+
+    await store.initialize()
+    session = await _hold(store)
+    owner = SellIntent(
+        id="p1-1-owner",
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        status=SellIntentStatus.EXPIRED,
+        target_quantity=100,
+        session_id=session.id,
+        expired_at=NOW,
+    )
+    _raw_insert_intent(store, owner)
+    envelope = _draft(owner.id, session_id=session.id).model_copy(
+        update={
+            "status": EnvelopeStatus.EXPIRED,
+            "approved_at": NOW - timedelta(minutes=2),
+            "activated_at": NOW - timedelta(minutes=2),
+            "expired_at": NOW,
+        }
+    )
+    _raw_insert_envelope(store, envelope)
+    child = Order(
+        id="p1-1-hostile-child",
+        sell_intent_id=owner.id,  # referenced-order-owner key = I
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=100,
+        limit_price=9.9,
+        status=OrderStatus.SUBMITTED,
+        broker_order_id="broker-p1-1-hostile",
+        session_id=session.id,
+        submitted_at=NOW,
+    )
+    _raw_insert_order(store, child)
+    correlation = owner.id if key == "correlation" else "p1-1-stranger-owner"
+    _raw_append_execution(
+        store,
+        _action_event(
+            envelope,
+            child,
+            envelope_id="p1-1-missing-envelope-row",  # wrong/missing parent
+            correlation_id=correlation,
+        ),
+    )
+    _raw_append_execution(
+        store, _status_event(ExecutionEventType.SUBMITTED, child, envelope)
+    )
+    return session, owner, envelope, child
+
+
+@pytest.mark.parametrize("key", ["correlation", "order_owner"])
+async def test_p1_1_owner_keyed_hostile_lineage_seen_and_fails_closed(
+    any_store, key, caplog
+):
+    _, _, envelope, child = await _seed_owner_keyed_hostile_lineage(any_store, key=key)
+
+    # DISCOVERY: monitoring now loads the owner-scoped universe, so the malformed
+    # owner-keyed action is IN the projection (it was invisible to the old exact-
+    # envelope_id scan, which projected clean-empty).
+    loaded = await _validated_envelope_lineage(any_store, envelope.id)
+    assert loaded is not None
+    _, projection, _ = loaded
+    assert (
+        projection.missing_envelope_ids
+        or projection.missing_order_ids
+        or projection.invalid_order_ids
+    ), (
+        "monitoring projected a clean-empty lineage — the owner-keyed hostile "
+        f"action ({key}) was not discovered (P1-1 regression)"
+    )
+
+    # FAIL CLOSED + R6: convergence emits the malformed-lineage warning and
+    # cancels nothing (identity never validated).
+    adapter = MockBrokerAdapter()
+    with caplog.at_level(logging.WARNING, logger="app.monitoring"):
+        await _cancel_envelope_working_order(any_store, adapter, envelope)
+    assert adapter.canceled == []
+    fail_closed = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.name == "app.monitoring"
+        and "fail-closed" in r.getMessage()
+        and "malformed lineage" in r.getMessage()
+    ]
+    assert len(fail_closed) == 1, (
+        "monitoring did not emit the R6 malformed-lineage warning for the "
+        f"owner-keyed hostile action ({key})"
+    )
+    # The hostile child was never touched.
+    assert (await any_store.get_order(child.id)).status is OrderStatus.SUBMITTED
+
+
+async def test_p1_1_owner_keyed_hostile_lineage_survives_sqlite_restart(
+    tmp_path, caplog
+):
+    """The owner-scoped discovery is a property of the persisted event log, not
+    of a live in-process index: a sqlite store reopened on the same file still
+    sees the owner-keyed hostile action and fails the cancel closed."""
+
+    db_path = tmp_path / "p1_1_restart.db"
+    store = SqliteStateStore(db_path)
+    _, _, envelope, child = await _seed_owner_keyed_hostile_lineage(
+        store, key="order_owner"
+    )
+    if store._conn is not None:
+        store._conn.close()
+        store._conn = None
+
+    reopened = SqliteStateStore(db_path)
+    await reopened.initialize()
+    loaded = await _validated_envelope_lineage(reopened, envelope.id)
+    assert loaded is not None
+    _, projection, _ = loaded
+    assert (
+        projection.missing_envelope_ids
+        or projection.missing_order_ids
+        or projection.invalid_order_ids
+    ), "reopened sqlite store lost the owner-keyed hostile action (P1-1)"
+
+    adapter = MockBrokerAdapter()
+    with caplog.at_level(logging.WARNING, logger="app.monitoring"):
+        await _cancel_envelope_working_order(reopened, adapter, envelope)
+    assert adapter.canceled == []
+    fail_closed = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.name == "app.monitoring"
+        and "fail-closed" in r.getMessage()
+    ]
+    assert len(fail_closed) == 1
+    assert (await reopened.get_order(child.id)).status is OrderStatus.SUBMITTED
+    if reopened._conn is not None:
+        reopened._conn.close()
+        reopened._conn = None
