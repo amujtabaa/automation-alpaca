@@ -1550,6 +1550,14 @@ class InMemoryStateStore(StateStore):
                 and (status is None or env.status is status)
             ]
 
+    async def envelope_obligation_ambiguity_for_symbol(
+        self, symbol: str
+    ) -> tuple[str, ...]:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            obligation = self._envelope_obligation_unlocked(symbol=key)
+            return self._envelope_obligation_ambiguity(obligation)
+
     async def transition_envelope(
         self,
         envelope_id: str,

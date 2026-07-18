@@ -1202,6 +1202,16 @@ class StateStore(ABC):
         status. ``status`` is validated as a real :class:`EnvelopeStatus`."""
 
     @abstractmethod
+    async def envelope_obligation_ambiguity_for_symbol(
+        self, symbol: str
+    ) -> tuple[str, ...]:
+        """Missing/malformed ids from the shared symbol obligation projection.
+
+        This is a diagnostic-only view. Its symbol scope never grants authority
+        to mutate or cancel any projected child order.
+        """
+
+    @abstractmethod
     async def transition_envelope(
         self,
         envelope_id: str,

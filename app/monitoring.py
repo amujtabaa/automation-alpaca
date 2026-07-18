@@ -525,10 +525,11 @@ async def _validated_envelope_lineage(
     # — is quarantined by the store. Keying monitoring only on exact envelope_id
     # let that action project clean-empty here, losing the R6 malformed-lineage
     # diagnostic and silently declining to fail the cancel closed. The symbol key
-    # the store adds for SYMBOL-scoped gates is deliberately NOT used: this is a
-    # per-envelope (owner-scoped) convergence, and the store itself omits the
-    # symbol key when it keys by intent. Owners are resolved for every order any
-    # action references (bounded by action count, beta scale), so the
+    # the store adds for SYMBOL-scoped gates is deliberately NOT used to select
+    # cancel targets: symbol alone never establishes child ownership. Cancellation
+    # separately consumes a diagnostic-only symbol projection so store-quarantined
+    # corruption cannot disappear silently. Owners are resolved for every order
+    # any action references (bounded by action count, beta scale), so the
     # referenced-order-owner key resolves exactly as the gates see it.
     action_order_ids = {
         event.order_id for event in all_actions if event.order_id is not None
@@ -696,7 +697,27 @@ async def _cancel_envelope_working_order(
             envelope.id,
         )
         return
-    _, projection, orders = loaded
+    reloaded, projection, orders = loaded
+    owner_ambiguity_ids = {
+        *projection.missing_envelope_ids,
+        *projection.missing_order_ids,
+        *projection.invalid_order_ids,
+    }
+    symbol_ambiguity_ids = await store.envelope_obligation_ambiguity_for_symbol(
+        reloaded.symbol
+    )
+    symbol_only_ambiguity = tuple(
+        item for item in symbol_ambiguity_ids if item not in owner_ambiguity_ids
+    )
+    if symbol_only_ambiguity:
+        _log.warning(
+            "envelope %s: cancel-convergence fail-closed on symbol-scoped "
+            "malformed lineage (symbol=%s ambiguity=%s); no unvalidated child "
+            "targeted",
+            reloaded.id,
+            reloaded.symbol,
+            symbol_only_ambiguity,
+        )
     if (
         projection.missing_envelope_ids
         or projection.missing_order_ids

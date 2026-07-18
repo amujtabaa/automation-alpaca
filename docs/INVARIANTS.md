@@ -857,16 +857,19 @@ row case. Persisted legacy SELL mismatches still project fail-closed across
 both scopes. The stage and final-claim rails are independently mutation-pinned
 with a distinct prior sibling and a fresh owner in
 `tests/test_wo0109_round3_remediation.py`, both stores.
-(2) CLOSED (WO-0108 step 4, P1-1): "No monitoring path derives a neighboring
-definition" now holds — monitoring's `_validated_envelope_lineage` discovers
-actions through the store's OWNER-SCOPED identity universe (parent envelope /
-owner correlation / referenced-order owner, matching the gates' `action_in_scope`;
-the symbol key is a symbol-scoped gate concern the store itself omits when it
-keys by intent, so a per-envelope owner-scoped convergence rightly omits it too),
-so a malformed owner-keyed lineage the store quarantines projects malformed in
-monitoring as well and fails the cancel closed with the R6 diagnostic — never
-clean-and-empty. The release/retention/close semantics of this invariant remain
-implemented and pinned; both closures landed under WO-0108.
+(2) ROUND-3 CORRECTION (WO-0109 Cluster C): WO-0108 correctly made
+`_validated_envelope_lineage` discover cancellation targets through the
+OWNER-SCOPED identity universe (parent envelope / owner correlation /
+referenced-order owner), but its assertion that monitoring could never appear
+clean-empty was too broad: a malformed action selected by the store's symbol
+scope alone still disappeared. Cancel authority remains owner-scoped — symbol
+equality never authorizes a broker call. A read-only dual-store view now exposes
+only the ambiguity identifiers from the shared symbol projection; cancellation
+compares that diagnostic with its owner projection and emits the R6 fail-closed
+warning for symbol-only corruption without targeting an unvalidated child.
+Correlation and referenced-order-owner discovery are mutation-pinned with
+mutually exclusive fixtures in `tests/test_wo0036_r2_hostile_closure.py`. The
+release/retention/close semantics of this invariant remain unchanged.
 
 ---
 

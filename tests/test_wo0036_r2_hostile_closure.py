@@ -3610,10 +3610,10 @@ async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
     parent ``envelope_id`` (never ``E.id``).
 
     ``key='correlation'`` -> the ENVELOPE_ACTION carries ``correlation_id=I``.
-    ``key='order_owner'`` -> the action's ``correlation_id`` is a stranger and
-    only the child ORDER carries ``sell_intent_id=I``. Either way the store's
-    owner-scoped discovery quarantines the symbol, while a bare exact-envelope_id
-    monitoring scan sees nothing.
+    ``key='order_owner'`` -> only the child ORDER carries ``sell_intent_id=I``.
+    ``key='symbol'`` -> neither owner key matches; only the immutable AAPL symbol
+    lets the store's symbol projection quarantine the hostile action. The keys
+    are mutually exclusive so each discovery branch can be mutation-verified.
     """
 
     await store.initialize()
@@ -3637,9 +3637,10 @@ async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
         }
     )
     _raw_insert_envelope(store, envelope)
+    order_owner = owner.id if key == "order_owner" else "p1-1-stranger-order-owner"
     child = Order(
         id="p1-1-hostile-child",
-        sell_intent_id=owner.id,  # referenced-order-owner key = I
+        sell_intent_id=order_owner,
         symbol="AAPL",
         side=OrderSide.SELL,
         order_type=OrderType.LIMIT,
@@ -3652,6 +3653,8 @@ async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
     )
     _raw_insert_order(store, child)
     correlation = owner.id if key == "correlation" else "p1-1-stranger-owner"
+    assert (correlation == owner.id) is (key == "correlation")
+    assert (child.sell_intent_id == owner.id) is (key == "order_owner")
     _raw_append_execution(
         store,
         _action_event(
@@ -3707,6 +3710,48 @@ async def test_p1_1_owner_keyed_hostile_lineage_seen_and_fails_closed(
         f"owner-keyed hostile action ({key})"
     )
     # The hostile child was never touched.
+    assert (await any_store.get_order(child.id)).status is OrderStatus.SUBMITTED
+
+
+async def test_p1_1_symbol_only_hostile_lineage_warns_without_cancel(any_store, caplog):
+    """Symbol scope diagnoses corruption but never authorizes a cancel target."""
+
+    _, _, envelope, child = await _seed_owner_keyed_hostile_lineage(
+        any_store, key="symbol"
+    )
+
+    owner_loaded = await _validated_envelope_lineage(any_store, envelope.id)
+    assert owner_loaded is not None
+    _, owner_projection, owner_orders = owner_loaded
+    assert owner_projection.missing_envelope_ids == ()
+    assert owner_projection.missing_order_ids == ()
+    assert owner_projection.invalid_order_ids == ()
+    assert child.id not in owner_orders
+
+    if hasattr(any_store, "_envelope_obligation_unlocked"):
+        symbol_projection = any_store._envelope_obligation_unlocked(symbol="AAPL")
+    else:
+        symbol_projection = any_store._envelope_obligation_locked(symbol="AAPL")
+    assert "p1-1-missing-envelope-row" in symbol_projection.missing_envelope_ids
+    assert child.id in symbol_projection.invalid_order_ids
+
+    adapter = MockBrokerAdapter()
+    with caplog.at_level(logging.WARNING, logger="app.monitoring"):
+        await _cancel_envelope_working_order(any_store, adapter, envelope)
+
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.name == "app.monitoring"
+        and "symbol-scoped malformed lineage" in record.getMessage()
+    ]
+    assert len(diagnostics) == 1
+    assert "fail-closed" in diagnostics[0]
+    assert "p1-1-missing-envelope-row" in diagnostics[0]
+    assert child.id in diagnostics[0]
+    assert "no unvalidated child targeted" in diagnostics[0]
+    assert adapter.canceled == []
     assert (await any_store.get_order(child.id)).status is OrderStatus.SUBMITTED
 
 

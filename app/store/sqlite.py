@@ -2587,6 +2587,14 @@ class SqliteStateStore(StateStore):
             rows = self._read_all(sql, tuple(params))
             return [self._envelope(r) for r in rows]
 
+    async def envelope_obligation_ambiguity_for_symbol(
+        self, symbol: str
+    ) -> tuple[str, ...]:
+        key = normalize_symbol(symbol)
+        async with self._lock:
+            obligation = self._envelope_obligation_locked(symbol=key)
+            return self._envelope_obligation_ambiguity(obligation)
+
     async def transition_envelope(
         self,
         envelope_id: str,

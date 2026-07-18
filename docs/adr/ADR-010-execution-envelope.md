@@ -140,6 +140,15 @@ fail-closed across both scopes for SELL recovery exposure. The stage and final-c
 are now mutation-pinned with a distinct prior sibling and with a fresh owner across the
 before-stage and between-stage-and-claim schedules in
 `tests/test_wo0109_round3_remediation.py`.
+**Round-3 correction 2026-07-18 (WO-0109 Cluster C):** cancellation convergence now separates
+diagnostic scope from cancel authority. Parent-envelope, owner-correlation, and referenced-order
+owner identities remain the only inputs that can select a cancellation target; symbol equality
+alone never authorizes a broker call. A new read-only store view exposes only the missing/malformed
+identifiers from the shared symbol obligation projection. Cancellation compares that diagnostic
+with its owner-scoped projection and emits the R6 fail-closed warning for symbol-only corruption,
+while targeting no unvalidated child. Correlation and referenced-order-owner discovery are pinned
+with mutually exclusive hostile fixtures on both stores in
+`tests/test_wo0036_r2_hostile_closure.py`.
 The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
 The human reconciliation release valve for (ii) is an open, recorded design decision
 (`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.

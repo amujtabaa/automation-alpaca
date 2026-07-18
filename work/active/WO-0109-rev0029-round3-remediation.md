@@ -315,6 +315,25 @@ and move this WO to `work/completed/`.
   all applicable AI-OS checks, scoped work-order check, and contamination guard passed. ADR-010 §3
   and INV-090 now state the recovery-ingress invariant and the honest dual-store pins.
 
+- **Cluster C VERIFIED 2026-07-18** — root cause: cancellation target discovery correctly used
+  owner identities, but a malformed action selected only by the store's symbol projection appeared
+  clean-empty in monitoring and emitted no R6 diagnostic; the prior correlation fixture also matched
+  the order-owner key. Fix: correlation and referenced-order-owner hostile fixtures are mutually
+  exclusive, both stores expose a locked read-only symbol-ambiguity view of the shared projection,
+  and cancellation logs symbol-only ambiguity without adding any child to its owner-authorized
+  target set. Red baseline: the 2 symbol-only dual-store probes failed while the 4 exclusive owner-
+  key cases and SQLite restart remained green. Green: **7 passed**; each symbol-only case asserted
+  one fail-closed warning containing the missing/invalid ids, zero broker cancels, and an unchanged
+  `SUBMITTED` child. Mutation proof: deleting correlation discovery failed its 2 exact cases;
+  deleting referenced-order-owner discovery failed its 2 exact cases; emptying the memory and
+  SQLite symbol-diagnostic seams independently failed their exact store case; and neutering the
+  monitoring warning branch failed both symbol-only cases. Every mutant was restored and 7/7
+  returned green. Full cluster gate: Ruff lint/format, mypy (64 files), six import contracts, full
+  `pytest -q` (exit 0, 287.8s), both spec oracles (61 green; 22 green + 6 documented skips),
+  hardening gates (5 green), all applicable AI-OS checks, scoped work-order check, and contamination
+  guard passed. An independent read-only audit found no issues. ADR-010 §3 and INV-090 now record
+  the diagnostic-scope/cancel-authority split.
+
 - **QUEUED 2026-07-18** — drafted by the Claude seat from its independent triage of
   `result-round2.md` (all eight round-2 findings confirmed; NEW-P1-2 contamination already removed in
   `e0da97d`, CI guard added in `aba8052`). Awaiting Codex to move to `work/active/` and begin at
