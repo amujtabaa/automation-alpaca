@@ -57,12 +57,16 @@ it. In-process lenses remain a cheap first-pass filter, not a safety net.
   the pin goes red. Record the mutation in the test's docstring or the WO evidence log. (P0-4's
   class: a pin whose scenario never reaches the guarded code.)
 - **T1.3 Producer/consumer tables for new fields.** Every new projection/store field ships an
-  enumerated consumer table (file:line), verified by grep at review time. Universally-quantified
-  doc claims ("every sell-side choke keys on X") must cite the enumeration; conformance review
-  verifies the enumeration's completeness against a fresh grep — never by sampling positives.
-  **Implemented CI-blocking:** `tests/test_review_hardening_gates.py` asserts the P0-3 field
-  `needs_review_child_order_ids` and the P0-2 set `MAY_EXECUTE_ORDER_STATUSES` each have their
-  producer PLUS both-store rail consumers via a fresh source grep (a zero-consumer field fails).
+  enumerated consumer table (file:function/role), verified from executable syntax at review time.
+  Universally-quantified doc claims ("every sell-side choke keys on X") must cite the enumeration;
+  conformance review verifies completeness from the AST — never by sampling positives or counting
+  filenames containing a text fragment. Imports, comments, and dead compound conditions do not
+  count as consumers. **Implemented CI-blocking (amended by WO-0109 Cluster D):**
+  `tests/test_review_hardening_gates.py` identifies the real
+  `needs_review_child_order_ids` producer assignment, the distinct memory/SQLite stage and final-
+  claim guards, and both executable `MAY_EXECUTE_ORDER_STATUSES` helper arguments. Each site is
+  independently mutation-verified; deleting a producer/consumer while leaving textual mentions
+  breaks the gate.
 - **T1.4 Repeated runs for timing-sensitive gate claims.** A gate claim over a suite containing
   wall-clock-sensitive tests requires N≥3 consecutive green runs (or an explicit flake
   disposition naming the test). One green run is a data point, not a gate.

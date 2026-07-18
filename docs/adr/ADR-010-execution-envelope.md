@@ -149,6 +149,13 @@ with its owner-scoped projection and emits the R6 fail-closed warning for symbol
 while targeting no unvalidated child. Correlation and referenced-order-owner discovery are pinned
 with mutually exclusive hostile fixtures on both stores in
 `tests/test_wo0036_r2_hostile_closure.py`.
+**Round-3 evidence correction 2026-07-18 (WO-0109 Cluster D):** the close/restart parity comparator
+now normalizes only generated 32-hex identities and the nondeterministic root ingest clocks (audit
+`created_at`, execution `ts_init`). It preserves causal `ExecutionEvent.ts_event` and deterministic
+payload timestamps such as `expires_at`; the dual-store parity scripts freeze the three store clock
+sources instead of erasing those semantic fields. The T1.3 hardening gate now parses executable AST
+sites: one real projection producer, distinct memory/SQLite stage and final-claim guards, and both
+`MAY_EXECUTE_ORDER_STATUSES` helper arguments. Imports and comments cannot satisfy the gate.
 The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
 The human reconciliation release valve for (ii) is an open, recorded design decision
 (`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.

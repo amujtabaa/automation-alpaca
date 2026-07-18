@@ -870,6 +870,16 @@ warning for symbol-only corruption without targeting an unvalidated child.
 Correlation and referenced-order-owner discovery are mutation-pinned with
 mutually exclusive fixtures in `tests/test_wo0036_r2_hostile_closure.py`. The
 release/retention/close semantics of this invariant remain unchanged.
+(3) EVIDENCE CORRECTION (WO-0109 Cluster D): full-stream parity now preserves
+causal `ts_event` and deterministic payload timestamps (including
+`expires_at`), normalizing only generated identities and root audit
+`created_at` / execution `ts_init` ingest clocks. The cross-store scripts freeze
+their store clock sources. T1.3 now AST-verifies the real projection producer,
+the four distinct memory/SQLite stage/final consumers, and both executable
+`MAY_EXECUTE_ORDER_STATUSES` arguments; imports/comments cannot substitute for
+a rail. Comparator fields and every producer/consumer entry are independently
+mutation-pinned in `tests/test_wo0036_r2_close_and_recovery_ownership.py` and
+`tests/test_review_hardening_gates.py`.
 
 ---
 

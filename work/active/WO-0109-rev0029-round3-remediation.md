@@ -334,6 +334,30 @@ and move this WO to `work/completed/`.
   guard passed. An independent read-only audit found no issues. ADR-010 §3 and INV-090 now record
   the diagnostic-scope/cancel-authority split.
 
+- **Cluster D VERIFIED 2026-07-18** — root cause: the parity canonicalizer collapsed every datetime
+  and ISO timestamp, while T1.3 counted filenames containing text instead of executable producer and
+  rail sites. Fix: parity now normalizes only generated 32-hex identities plus root audit
+  `created_at` / execution `ts_init`; cross-store scripts freeze the core/memory/SQLite clock
+  sources, preserving causal `ts_event` and payload `expires_at`. T1.3 parses executable AST sites
+  for the real producer, four distinct memory/SQLite stage/final guards, and both
+  `MAY_EXECUTE_ORDER_STATUSES` helper arguments. Red baseline: the semantic `ts_event` and payload-
+  expiry comparisons failed 2/2 while the positive ingest-clock/id normalization case passed; the
+  first semantic-helper pins failed before the AST helpers existed. An independent audit then
+  demonstrated four false-positive shapes in the first AST implementation (nested dead raise,
+  non-blocking `return None`, post-return guard, and post-return producer/consumer); the added
+  adversarial pins failed 2/2 before reachability/direct-exit tightening. Green target:
+  **37 passed** across the parity and hardening files; explicit hardening gate **12 passed**.
+  Mutation proof: re-normalizing `ts_event` failed its semantic-time pin; restoring blanket ISO
+  normalization failed the payload-expiry pin; separately omitting audit-clock, execution-clock, or
+  ID normalization failed the positive pin. Emptying the real projection producer, neutering each
+  of the four stage/final guards, and emptying each store's `MAY_EXECUTE` argument independently
+  failed its exact AST entry after the audit correction; all mutants restored. Full cluster gate:
+  Ruff lint/format, mypy (64 files), six import contracts, full `pytest -q` (exit 0, 254.9s), both
+  spec oracles (61 green; 22 green + 6 documented skips), hardening gates (12 green), all applicable
+  AI-OS checks, scoped work-order check, and contamination guard passed. Re-audit confirmed the P1
+  resolved with no remaining code finding. ADR-010 §3, INV-090, and the T1.3 PKL process page now
+  describe the fidelity and executable-site requirements.
+
 - **QUEUED 2026-07-18** — drafted by the Claude seat from its independent triage of
   `result-round2.md` (all eight round-2 findings confirmed; NEW-P1-2 contamination already removed in
   `e0da97d`, CI guard added in `aba8052`). Awaiting Codex to move to `work/active/` and begin at

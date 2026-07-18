@@ -300,34 +300,125 @@ def _canon_streams(audit_dumps, execution_dumps):
     """Canonicalize a store's (audit, execution) FULL model-dump streams for
     cross-store / cross-restart comparison (REV-0029 P1-2). Random 32-hex ids map
     to stable placeholders in FIRST-APPEARANCE order — so identity RELATIONSHIPS
-    across the two streams still must match, not just shapes — and wall-clock
-    timestamps collapse to a sentinel. Sequence numbers are kept verbatim: they
-    ARE the ordering truth. A single ``id_map`` spans both streams so an id that
-    appears in audit and execution maps to the same placeholder."""
+    across the two streams still must match, not just shapes. Only root audit
+    ``created_at`` and execution ``ts_init`` ingest clocks collapse to a sentinel;
+    causal ``ts_event`` and payload timestamps remain semantic comparison truth.
+    Sequence numbers are kept verbatim. A single ``id_map`` spans both streams so
+    an id in audit and execution maps to the same placeholder."""
 
     id_map: dict = {}
 
     def _canon(value):
         if isinstance(value, str):
-            value = re.sub(
+            return re.sub(
                 r"[0-9a-f]{32}",
                 lambda m: id_map.setdefault(m.group(0), f"<id{len(id_map)}>"),
-                value,
-            )
-            return re.sub(
-                r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[0-9:.+\-Z]*",
-                "<ts>",
                 value,
             )
         if isinstance(value, dict):
             return {k: _canon(v) for k, v in sorted(value.items())}
         if isinstance(value, (list, tuple)):
             return [_canon(v) for v in value]
-        if hasattr(value, "isoformat"):
-            return "<ts>"
         return value
 
-    return [_canon(d) for d in audit_dumps], [_canon(d) for d in execution_dumps]
+    def _canon_record(dump, *, ingest_clock: str):
+        record = dict(dump)
+        if ingest_clock in record:
+            record[ingest_clock] = "<ingest-ts>"
+        return _canon(record)
+
+    return [_canon_record(dump, ingest_clock="created_at") for dump in audit_dumps], [
+        _canon_record(dump, ingest_clock="ts_init") for dump in execution_dumps
+    ]
+
+
+def test_stream_canonicalizer_preserves_execution_event_time():
+    left = _canon_streams(
+        [],
+        [
+            {
+                "id": "a" * 32,
+                "ts_event": NOW,
+                "ts_init": NOW + timedelta(seconds=1),
+            }
+        ],
+    )
+    right = _canon_streams(
+        [],
+        [
+            {
+                "id": "b" * 32,
+                "ts_event": NOW + timedelta(minutes=1),
+                "ts_init": NOW + timedelta(seconds=9),
+            }
+        ],
+    )
+
+    assert left != right
+
+
+def test_stream_canonicalizer_preserves_payload_expiry_time():
+    left = _canon_streams(
+        [
+            {
+                "id": "a" * 32,
+                "created_at": NOW,
+                "payload": {"expires_at": (NOW + timedelta(hours=1)).isoformat()},
+            }
+        ],
+        [],
+    )
+    right = _canon_streams(
+        [
+            {
+                "id": "b" * 32,
+                "created_at": NOW + timedelta(seconds=9),
+                "payload": {"expires_at": (NOW + timedelta(hours=2)).isoformat()},
+            }
+        ],
+        [],
+    )
+
+    assert left != right
+
+
+def test_stream_canonicalizer_normalizes_only_ids_and_root_ingest_clocks():
+    left = _canon_streams(
+        [
+            {
+                "id": "a" * 32,
+                "order_id": "b" * 32,
+                "created_at": NOW,
+            }
+        ],
+        [
+            {
+                "id": "c" * 32,
+                "order_id": "b" * 32,
+                "ts_event": NOW,
+                "ts_init": NOW + timedelta(seconds=1),
+            }
+        ],
+    )
+    right = _canon_streams(
+        [
+            {
+                "id": "d" * 32,
+                "order_id": "e" * 32,
+                "created_at": NOW + timedelta(seconds=8),
+            }
+        ],
+        [
+            {
+                "id": "f" * 32,
+                "order_id": "e" * 32,
+                "ts_event": NOW,
+                "ts_init": NOW + timedelta(seconds=9),
+            }
+        ],
+    )
+
+    assert left == right
 
 
 async def _build_close_with_sweep_state(store):
@@ -380,13 +471,22 @@ async def _drive_close_with_sweep(store):
     return await _canon_store_streams(store)
 
 
-async def test_close_with_sweep_emits_identical_streams_on_both_stores(tmp_path):
+def _freeze_store_clocks(monkeypatch) -> None:
+    monkeypatch.setattr("app.store.core.utcnow", lambda: NOW)
+    monkeypatch.setattr("app.store.memory.utcnow", lambda: NOW)
+    monkeypatch.setattr("app.store.sqlite.utcnow", lambda: NOW)
+
+
+async def test_close_with_sweep_emits_identical_streams_on_both_stores(
+    tmp_path, monkeypatch
+):
     # Review advisory A-1 (P2 event-log-truth lens): the P-A sweep writes
     # ENVELOPE_EXPIRED execution+audit events MID-CLOSE — pin that both stores
     # emit the same normalized event streams in the same relative order for an
     # identical close-with-sweep script. REV-0029 P1-2: compare canonicalized
     # FULL model dumps (payload/reason/actor/session/correlation/identity/qty/
     # price/source/authority all pinned), not lossy (type, symbol, key) tuples.
+    _freeze_store_clocks(monkeypatch)
     mem_audit, mem_exec = await _drive_close_with_sweep(InMemoryStateStore())
     sq = SqliteStateStore(tmp_path / "a1-parity.db")
     try:
@@ -404,13 +504,14 @@ async def test_close_with_sweep_emits_identical_streams_on_both_stores(tmp_path)
     )
 
 
-async def test_close_with_sweep_stream_survives_sqlite_restart(tmp_path):
+async def test_close_with_sweep_stream_survives_sqlite_restart(tmp_path, monkeypatch):
     # REV-0029 P1-2 (restart variant): the full canonical close+sweep stream is a
     # property of the PERSISTED log, not a live in-process projection. A sqlite
     # store reopened on the same file replays a byte-identical audit+execution
     # stream (same relative order), so no reload/re-projection step silently
     # rewrites event truth across a restart. Cross-checked against the memory
     # store's stream for the same script.
+    _freeze_store_clocks(monkeypatch)
     db_path = tmp_path / "restart-parity.db"
     store = SqliteStateStore(db_path)
     try:
