@@ -3304,6 +3304,13 @@ class SqliteStateStore(StateStore):
                     plan.audit_event.event_type,
                     **plan.audit_event.as_kwargs(),
                 )
+                # PR #9 P1-a: stand down every same-symbol PENDING/APPROVED BUY
+                # candidate in the SAME stage transaction (mirrors manual flatten
+                # and autonomous protection) so a proposed buy can never dispatch
+                # into the position the envelope is now exiting.
+                self._stand_down_symbol_buy_candidates_locked(
+                    cur, env.symbol, actor=actor
+                )
                 return EnvelopeActionStageResult(
                     STAGE_STAGED,
                     envelope=env,
@@ -3932,8 +3939,11 @@ class SqliteStateStore(StateStore):
     def _same_symbol_exit_may_execute_locked(
         self, symbol: str, *, exclude_order_id: Optional[str] = None
     ) -> Optional[str]:
-        """A same-symbol non-terminal SELL ORDER (an exit reaching the venue); a
-        resting protection envelope with no live child does NOT count."""
+        """A same-symbol non-terminal SELL ORDER (an exit reaching the venue) OR
+        an open SELL ``SubmitRecoveryRecord`` (broker-accepted SELL whose local
+        row fell back to recovery — may still execute). A resting protection
+        envelope with no live child does NOT count. Matched by declared OR
+        referenced-order SELL scope (PR #9 P1-b). Mirrors memory."""
         for row in self._read_all(
             "SELECT * FROM orders WHERE symbol = ? AND side = ? ORDER BY rowid",
             (symbol, OrderSide.SELL.value),
@@ -3943,6 +3953,24 @@ class SqliteStateStore(StateStore):
                 continue
             if order.status in NON_TERMINAL_ORDER_STATUSES:
                 return order.id
+        sell_order_ids = {
+            self._order(row).id
+            for row in self._read_all(
+                "SELECT * FROM orders WHERE symbol = ? AND side = ?",
+                (symbol, OrderSide.SELL.value),
+            )
+        }
+        for row in self._read_all("SELECT * FROM submit_recoveries ORDER BY rowid"):
+            recovery = self._submit_recovery(row)
+            if (
+                recovery.local_order_id == exclude_order_id
+                or recovery.cleanup_status not in RECOVERY_OPEN_STATUSES
+            ):
+                continue
+            if (
+                recovery.symbol == symbol and recovery.side is OrderSide.SELL
+            ) or recovery.local_order_id in sell_order_ids:
+                return recovery.local_order_id
         return None
 
     def _same_symbol_buy_may_execute_locked(
@@ -3980,17 +4008,27 @@ class SqliteStateStore(StateStore):
                 continue
             if order.status in order_statuses:
                 ids.append(order.id)
-        ids.extend(
-            recovery.local_order_id
+        # PR #9 P1-c: declared OR referenced-order BUY scope — a legacy misscoped
+        # open BUY recovery whose local_order_id points at this symbol's BUY order
+        # (declaring another symbol/side) is still same-symbol BUY venue exposure.
+        buy_order_ids = {
+            self._order(row).id
             for row in self._read_all(
-                "SELECT * FROM submit_recoveries WHERE symbol = ? AND side = ? "
-                "ORDER BY rowid",
+                "SELECT * FROM orders WHERE symbol = ? AND side = ?",
                 (symbol, OrderSide.BUY.value),
             )
-            for recovery in (self._submit_recovery(row),)
-            if recovery.local_order_id != exclude_order_id
-            and recovery.cleanup_status in RECOVERY_OPEN_STATUSES
-        )
+        }
+        for row in self._read_all("SELECT * FROM submit_recoveries ORDER BY rowid"):
+            recovery = self._submit_recovery(row)
+            if (
+                recovery.local_order_id == exclude_order_id
+                or recovery.cleanup_status not in RECOVERY_OPEN_STATUSES
+            ):
+                continue
+            if (
+                recovery.symbol == symbol and recovery.side is OrderSide.BUY
+            ) or recovery.local_order_id in buy_order_ids:
+                ids.append(recovery.local_order_id)
         return tuple(dict.fromkeys(ids))
 
     def _cross_side_claim_block_reason_locked(self, order: Order) -> Optional[str]:

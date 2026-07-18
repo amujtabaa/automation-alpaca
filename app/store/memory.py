@@ -2022,6 +2022,12 @@ class InMemoryStateStore(StateStore):
                 self._append_event_unlocked(
                     plan.audit_event.event_type, **plan.audit_event.as_kwargs()
                 )
+                # PR #9 P1-a: the exit child is now staged — stand down every
+                # same-symbol PENDING/APPROVED BUY candidate in the SAME atomic
+                # unit, exactly as manual flatten and autonomous protection do,
+                # so a proposed buy can never dispatch into the position the
+                # envelope is now exiting.
+                self._stand_down_symbol_buy_candidates_unlocked(env.symbol, actor=actor)
             return EnvelopeActionStageResult(
                 STAGE_STAGED,
                 envelope=env.model_copy(deep=True),
@@ -2588,10 +2594,15 @@ class InMemoryStateStore(StateStore):
         self, symbol: str, *, exclude_order_id: Optional[str] = None
     ) -> Optional[str]:
         """A same-symbol SELL that may still reach the venue — a non-terminal
-        SELL ORDER (protection or flatten). A RESTING protection envelope with
-        no live child SELL does NOT count: buying more of a protected symbol
-        stays legal; only an exit ORDER that could execute blocks a crossing
-        BUY."""
+        SELL ORDER (protection or flatten) OR an open SELL ``SubmitRecoveryRecord``.
+        A RESTING protection envelope with no live child SELL does NOT count:
+        buying more of a protected symbol stays legal; only an exit that could
+        execute blocks a crossing BUY.
+
+        PR #9 P1-b: a broker-accepted protective/manual SELL whose local row fell
+        back to an open (``unresolved``/``needs_review``) recovery is terminal
+        locally but may still execute at the venue — matched by declared OR
+        referenced-order SELL scope so the misscoped-legacy case is caught too."""
         for order in self._orders.values():
             if order.id == exclude_order_id or order.symbol != symbol:
                 continue
@@ -2602,6 +2613,19 @@ class InMemoryStateStore(StateStore):
                 in NON_TERMINAL_ORDER_STATUSES
             ):
                 return order.id
+        for recovery in self._submit_recoveries:
+            if (
+                recovery.local_order_id == exclude_order_id
+                or recovery.cleanup_status not in RECOVERY_OPEN_STATUSES
+            ):
+                continue
+            referenced = self._orders.get(recovery.local_order_id)
+            if (recovery.symbol == symbol and recovery.side is OrderSide.SELL) or (
+                referenced is not None
+                and referenced.symbol == symbol
+                and OrderSide(referenced.side) is OrderSide.SELL
+            ):
+                return recovery.local_order_id
         return None
 
     def _same_symbol_buy_may_execute_unlocked(
@@ -2649,14 +2673,23 @@ class InMemoryStateStore(StateStore):
             and OrderSide(order.side) is OrderSide.BUY
             and self._project_order_unlocked(order).status in order_statuses
         ]
-        ids.extend(
-            recovery.local_order_id
-            for recovery in self._submit_recoveries
-            if recovery.local_order_id != exclude_order_id
-            and recovery.symbol == symbol
-            and recovery.side is OrderSide.BUY
-            and recovery.cleanup_status in RECOVERY_OPEN_STATUSES
-        )
+        # PR #9 P1-c: match a recovery by its DECLARED scope or by its referenced
+        # order's immutable scope — a legacy misscoped open BUY recovery whose
+        # local_order_id points at this symbol's BUY order (but declares another
+        # symbol/side) is still same-symbol BUY venue exposure and must not vanish.
+        for recovery in self._submit_recoveries:
+            if (
+                recovery.local_order_id == exclude_order_id
+                or recovery.cleanup_status not in RECOVERY_OPEN_STATUSES
+            ):
+                continue
+            referenced = self._orders.get(recovery.local_order_id)
+            if (recovery.symbol == symbol and recovery.side is OrderSide.BUY) or (
+                referenced is not None
+                and referenced.symbol == symbol
+                and OrderSide(referenced.side) is OrderSide.BUY
+            ):
+                ids.append(recovery.local_order_id)
         return tuple(dict.fromkeys(ids))
 
     def _cross_side_claim_block_reason_unlocked(self, order: Order) -> Optional[str]:
