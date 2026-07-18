@@ -228,6 +228,12 @@ class InMemoryStateStore(StateStore):
         never overrides an order that already has lifecycle events — and is idempotent
         (deterministic dedupe_key). Mirror of the SQLite backfill."""
 
+        orders_with_status_events = {
+            event.order_id
+            for event in self._execution_events
+            if event.order_id is not None
+            and event.event_type in ORDER_STATUS_EVENT_TYPES
+        }
         for order in self._orders.values():
             # WO-0013 (F-002): reconstruct ONLY orders with zero status-lifecycle
             # events. Keying on projected.status == CREATED was wrong: a legitimately
@@ -236,10 +242,7 @@ class InMemoryStateStore(StateStore):
             # event. A FILL is excluded from the set (a position fact, not a status
             # event), so a pre-eventing FILLED order (fills backfilled, no lifecycle
             # event) is still correctly reconstructed.
-            has_status_events = any(
-                e.order_id == order.id and e.event_type in ORDER_STATUS_EVENT_TYPES
-                for e in self._execution_events
-            )
+            has_status_events = order.id in orders_with_status_events
             if not has_status_events and order.status is not OrderStatus.CREATED:
                 event = order_status_backfill_event(order)
                 if event is not None:

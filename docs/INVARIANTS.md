@@ -880,6 +880,17 @@ the four distinct memory/SQLite stage/final consumers, and both executable
 a rail. Comparator fields and every producer/consumer entry are independently
 mutation-pinned in `tests/test_wo0036_r2_close_and_recovery_ownership.py` and
 `tests/test_review_hardening_gates.py`.
+(4) PERFORMANCE CLOSURE (WO-0109 Cluster E): SQLite's action-row loader now
+evaluates the same parent/owner/symbol selector through independent indexed
+identity arms, deduplicates by event id, applies exclusion after composition,
+and restores event-sequence order. In particular, combined owner+symbol scope
+remains `parent OR (owner AND symbol)`; it was not broadened to a union.
+Referenced-order expansion is bounded by SQLite's variable limit. Both stores'
+status-event migration builds one lifecycle-order-id set rather than rescanning
+the log for every Order. A dual-store selector matrix, exclusive immutable-key
+fixtures, a reduced-variable-limit SQLite pin, and a deterministic dual-store
+backfill work counter mutation-pin those mechanics; the retention semantics
+above remain unchanged.
 
 ---
 

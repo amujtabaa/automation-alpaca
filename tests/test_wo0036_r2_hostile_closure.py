@@ -9,6 +9,7 @@ projection in both stores.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -3611,9 +3612,10 @@ async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
 
     ``key='correlation'`` -> the ENVELOPE_ACTION carries ``correlation_id=I``.
     ``key='order_owner'`` -> only the child ORDER carries ``sell_intent_id=I``.
-    ``key='symbol'`` -> neither owner key matches; only the immutable AAPL symbol
-    lets the store's symbol projection quarantine the hostile action. The keys
-    are mutually exclusive so each discovery branch can be mutation-verified.
+    ``key='event_symbol'`` -> only the action-event AAPL symbol matches.
+    ``key='order_symbol'`` -> only the referenced-order AAPL symbol matches.
+    The keys are mutually exclusive so each discovery branch can be
+    mutation-verified.
     """
 
     await store.initialize()
@@ -3638,10 +3640,11 @@ async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
     )
     _raw_insert_envelope(store, envelope)
     order_owner = owner.id if key == "order_owner" else "p1-1-stranger-order-owner"
+    order_symbol = "MSFT" if key == "event_symbol" else "AAPL"
     child = Order(
         id="p1-1-hostile-child",
         sell_intent_id=order_owner,
-        symbol="AAPL",
+        symbol=order_symbol,
         side=OrderSide.SELL,
         order_type=OrderType.LIMIT,
         quantity=100,
@@ -3655,15 +3658,19 @@ async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
     correlation = owner.id if key == "correlation" else "p1-1-stranger-owner"
     assert (correlation == owner.id) is (key == "correlation")
     assert (child.sell_intent_id == owner.id) is (key == "order_owner")
-    _raw_append_execution(
-        store,
-        _action_event(
-            envelope,
-            child,
-            envelope_id="p1-1-missing-envelope-row",  # wrong/missing parent
-            correlation_id=correlation,
-        ),
+    action = _action_event(
+        envelope,
+        child,
+        envelope_id="p1-1-missing-envelope-row",  # wrong/missing parent
+        correlation_id=correlation,
     )
+    if key in {"event_symbol", "order_symbol"}:
+        action = action.model_copy(
+            update={"symbol": "AAPL" if key == "event_symbol" else "MSFT"}
+        )
+    assert (action.symbol == owner.symbol) is (key != "order_symbol")
+    assert (child.symbol == owner.symbol) is (key != "event_symbol")
+    _raw_append_execution(store, action)
     _raw_append_execution(
         store, _status_event(ExecutionEventType.SUBMITTED, child, envelope)
     )
@@ -3674,7 +3681,20 @@ async def _seed_owner_keyed_hostile_lineage(store, *, key: str):
 async def test_p1_1_owner_keyed_hostile_lineage_seen_and_fails_closed(
     any_store, key, caplog
 ):
-    _, _, envelope, child = await _seed_owner_keyed_hostile_lineage(any_store, key=key)
+    _, owner, envelope, child = await _seed_owner_keyed_hostile_lineage(
+        any_store, key=key
+    )
+
+    if hasattr(any_store, "_envelope_obligation_unlocked"):
+        store_projection = any_store._envelope_obligation_unlocked(
+            sell_intent_id=owner.id
+        )
+    else:
+        store_projection = any_store._envelope_obligation_locked(
+            sell_intent_id=owner.id
+        )
+    assert "p1-1-missing-envelope-row" in store_projection.missing_envelope_ids
+    assert child.id in store_projection.invalid_order_ids
 
     # DISCOVERY: monitoring now loads the owner-scoped universe, so the malformed
     # owner-keyed action is IN the projection (it was invisible to the old exact-
@@ -3713,12 +3733,13 @@ async def test_p1_1_owner_keyed_hostile_lineage_seen_and_fails_closed(
     assert (await any_store.get_order(child.id)).status is OrderStatus.SUBMITTED
 
 
-async def test_p1_1_symbol_only_hostile_lineage_warns_without_cancel(any_store, caplog):
+@pytest.mark.parametrize("key", ["event_symbol", "order_symbol"])
+async def test_p1_1_symbol_only_hostile_lineage_warns_without_cancel(
+    any_store, key, caplog
+):
     """Symbol scope diagnoses corruption but never authorizes a cancel target."""
 
-    _, _, envelope, child = await _seed_owner_keyed_hostile_lineage(
-        any_store, key="symbol"
-    )
+    _, _, envelope, child = await _seed_owner_keyed_hostile_lineage(any_store, key=key)
 
     owner_loaded = await _validated_envelope_lineage(any_store, envelope.id)
     assert owner_loaded is not None
@@ -3753,6 +3774,242 @@ async def test_p1_1_symbol_only_hostile_lineage_warns_without_cancel(any_store, 
     assert "no unvalidated child targeted" in diagnostics[0]
     assert adapter.canceled == []
     assert (await any_store.get_order(child.id)).status is OrderStatus.SUBMITTED
+
+
+async def test_owner_and_symbol_selector_preserves_boolean_scope(
+    any_store, monkeypatch
+):
+    """Combined scope is parent OR (owner identity AND symbol identity).
+
+    Each owner/symbol cross-product is independently sufficient for the AND,
+    while owner-only and symbol-only actions remain out of scope.  Results keep
+    event sequence, and exclusion applies after every immutable-identity arm.
+    """
+
+    await any_store.initialize()
+    session = await _hold(any_store)
+    owner = SellIntent(
+        id="selector-owner",
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        status=SellIntentStatus.EXPIRED,
+        target_quantity=100,
+        session_id=session.id,
+        expired_at=NOW,
+    )
+    _raw_insert_intent(any_store, owner)
+    envelope = _draft(owner.id, session_id=session.id).model_copy(
+        update={
+            "id": "selector-envelope",
+            "status": EnvelopeStatus.EXPIRED,
+            "approved_at": NOW - timedelta(minutes=2),
+            "activated_at": NOW - timedelta(minutes=2),
+            "expired_at": NOW,
+        }
+    )
+    _raw_insert_envelope(any_store, envelope)
+    excluded_envelope = envelope.model_copy(update={"id": "selector-excluded"})
+    _raw_insert_envelope(any_store, excluded_envelope)
+
+    target_owner = owner.id
+    foreign_owner = "selector-foreign-owner"
+    cases = (
+        (
+            "order-order",
+            foreign_owner,
+            "MSFT",
+            target_owner,
+            "AAPL",
+            "selector-missing-order-order",
+        ),
+        (
+            "owner-only",
+            target_owner,
+            "MSFT",
+            target_owner,
+            "MSFT",
+            "selector-missing-owner-only",
+        ),
+        (
+            "parent-only",
+            foreign_owner,
+            "MSFT",
+            foreign_owner,
+            "MSFT",
+            envelope.id,
+        ),
+        (
+            "event-order",
+            target_owner,
+            "MSFT",
+            foreign_owner,
+            "AAPL",
+            "selector-missing-event-order",
+        ),
+        (
+            "excluded",
+            target_owner,
+            "AAPL",
+            target_owner,
+            "AAPL",
+            excluded_envelope.id,
+        ),
+        (
+            "all-arms",
+            target_owner,
+            "AAPL",
+            target_owner,
+            "AAPL",
+            envelope.id,
+        ),
+        (
+            "order-event",
+            foreign_owner,
+            "AAPL",
+            target_owner,
+            "MSFT",
+            "selector-missing-order-event",
+        ),
+        (
+            "symbol-only",
+            foreign_owner,
+            "AAPL",
+            foreign_owner,
+            "AAPL",
+            "selector-missing-symbol-only",
+        ),
+        (
+            "event-event",
+            target_owner,
+            "AAPL",
+            foreign_owner,
+            "MSFT",
+            "selector-missing-event-event",
+        ),
+        (
+            "unrelated",
+            foreign_owner,
+            "MSFT",
+            foreign_owner,
+            "MSFT",
+            "selector-missing-unrelated",
+        ),
+    )
+    for (
+        suffix,
+        event_owner,
+        event_symbol,
+        order_owner,
+        order_symbol,
+        parent_id,
+    ) in cases:
+        order = Order(
+            id=f"selector-order-{suffix}",
+            sell_intent_id=order_owner,
+            symbol=order_symbol,
+            side=OrderSide.SELL,
+            order_type=OrderType.LIMIT,
+            quantity=100,
+            limit_price=9.9,
+            status=OrderStatus.SUBMITTED,
+            broker_order_id=f"selector-broker-{suffix}",
+            session_id=session.id,
+            submitted_at=NOW,
+        )
+        _raw_insert_order(any_store, order)
+        action = _action_event(
+            envelope,
+            order,
+            envelope_id=parent_id,
+            correlation_id=event_owner,
+        ).model_copy(update={"id": f"selector-action-{suffix}", "symbol": event_symbol})
+        _raw_append_execution(any_store, action)
+
+    captured: list[tuple[str, ...]] = []
+
+    def capture_projector(*, action_events, **kwargs):
+        captured.append(tuple(event.id for event in action_events))
+        return project_envelope_obligation(action_events=action_events, **kwargs)
+
+    target = (
+        "app.store.memory.project_envelope_obligation"
+        if hasattr(any_store, "_envelope_obligation_unlocked")
+        else "app.store.sqlite.project_envelope_obligation"
+    )
+    monkeypatch.setattr(target, capture_projector)
+    kwargs = {
+        "sell_intent_id": owner.id,
+        "symbol": owner.symbol,
+        "excluding_envelope_id": excluded_envelope.id,
+    }
+    if hasattr(any_store, "_envelope_obligation_unlocked"):
+        any_store._envelope_obligation_unlocked(**kwargs)
+    else:
+        any_store._envelope_obligation_locked(**kwargs)
+
+    assert captured == [
+        (
+            "selector-action-order-order",
+            "selector-action-parent-only",
+            "selector-action-event-order",
+            "selector-action-all-arms",
+            "selector-action-order-event",
+            "selector-action-event-event",
+        )
+    ]
+
+
+async def test_sqlite_action_scope_chunks_linked_orders_at_variable_limit(tmp_path):
+    """Related orders may exceed SQLite's bind-variable ceiling.
+
+    The split identity loader must keep the former constant-parameter JOIN's
+    capacity instead of constructing one unbounded ``order_id IN (...)`` list.
+    """
+
+    store = SqliteStateStore(tmp_path / "selector-limit.db")
+    await store.initialize()
+    session = await _hold(store)
+    envelope = _draft("selector-limit-owner", session_id=session.id)
+    for index in range(12):
+        order = Order(
+            id=f"selector-limit-order-{index}",
+            sell_intent_id=envelope.sell_intent_id,
+            symbol=envelope.symbol,
+            side=OrderSide.SELL,
+            order_type=OrderType.LIMIT,
+            quantity=100,
+            limit_price=9.9,
+            status=OrderStatus.SUBMITTED,
+            broker_order_id=f"selector-limit-broker-{index}",
+            session_id=session.id,
+            submitted_at=NOW,
+        )
+        _raw_insert_order(store, order)
+        if index == 11:
+            action = _action_event(envelope, order).model_copy(
+                update={
+                    "id": "selector-limit-action",
+                    "symbol": "MSFT",
+                    "envelope_id": "selector-limit-missing-parent",
+                    "correlation_id": "selector-limit-foreign-owner",
+                }
+            )
+            _raw_append_execution(store, action)
+
+    connection = store._connect()
+    prior_limit = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 8)
+    try:
+        rows = store._envelope_action_rows_locked(
+            sell_intent_id=envelope.sell_intent_id,
+            symbol=envelope.symbol,
+        )
+        action_ids = tuple(row["id"] for row in rows)
+    finally:
+        connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, prior_limit)
+        await store.close()
+
+    assert action_ids == ("selector-limit-action",)
 
 
 async def test_p1_1_owner_keyed_hostile_lineage_survives_sqlite_restart(

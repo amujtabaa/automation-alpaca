@@ -318,6 +318,7 @@ def _unrelated_scans(plans: list[dict[str, Any]]) -> list[str]:
                     "scan execution_envelopes",
                     "scan event",
                     "scan submit_recoveries",
+                    "using index idx_exec_events_type_sequence (event_type=?)",
                 )
             ):
                 offenders.append(detail)

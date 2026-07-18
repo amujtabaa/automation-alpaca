@@ -510,6 +510,15 @@ class SqliteStateStore(StateStore):
                 "CREATE INDEX IF NOT EXISTS idx_exec_events_order "
                 "ON execution_events(order_id)"
             )
+            # The immutable-identity action loader resolves malformed lineage
+            # through the referenced Order as well as event-side fields.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_orders_sell_intent "
+                "ON orders(sell_intent_id)"
+            )
             # ADR-010 (WO-0016): per-envelope event queries (replay/audit of one
             # mandate) and the structural single-ACTIVE-per-intent invariant —
             # the DB-level twin of the in-memory store's under-lock check.
@@ -546,6 +555,10 @@ class SqliteStateStore(StateStore):
                 "CREATE INDEX IF NOT EXISTS idx_exec_events_type_sequence "
                 "ON execution_events(event_type, sequence)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_events_correlation_type "
+                "ON execution_events(correlation_id, event_type)"
+            )
             self._backfill_fill_events_locked()
             self._backfill_trading_state_events_locked()
             self._backfill_order_status_events_locked()
@@ -576,6 +589,12 @@ class SqliteStateStore(StateStore):
             return
         event_rows = self._read_all("SELECT * FROM execution_events ORDER BY sequence")
         events = [self._execution_event(r) for r in event_rows]
+        orders_with_status_events = {
+            event.order_id
+            for event in events
+            if event.order_id is not None
+            and event.event_type in ORDER_STATUS_EVENT_TYPES
+        }
         with self._tx() as cur:
             for row in order_rows:
                 order = self._order(row)
@@ -584,11 +603,8 @@ class SqliteStateStore(StateStore):
                 # CREATED but HAS events, so the old projected==CREATED predicate
                 # wrongly re-backfilled it; a FILL is excluded, so a pre-eventing FILLED
                 # order (fills present, no lifecycle event) is still reconstructed.
-                # Reuses the already-loaded `events` list — no extra per-order query.
-                has_status_events = any(
-                    e.order_id == order.id and e.event_type in ORDER_STATUS_EVENT_TYPES
-                    for e in events
-                )
+                # The already-loaded log is indexed once; no per-order scan.
+                has_status_events = order.id in orders_with_status_events
                 if not has_status_events and order.status is not OrderStatus.CREATED:
                     event = order_status_backfill_event(order)
                     if event is not None:
@@ -1918,6 +1934,146 @@ class SqliteStateStore(StateStore):
     # ------------------------------------------------------------------ #
     # Execution envelopes (ADR-010 / WO-0016)
     # ------------------------------------------------------------------ #
+    def _envelope_action_rows_locked(
+        self,
+        *,
+        envelope_ids: Iterable[str] = (),
+        exact_envelope_id: Optional[str] = None,
+        sell_intent_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        excluding_envelope_id: Optional[str] = None,
+    ) -> list[sqlite3.Row]:
+        """Load action rows through bounded immutable-identity lookups.
+
+        The former LEFT JOIN + OR predicate selected the right rows, but SQLite
+        had to walk every ENVELOPE_ACTION as unrelated history grew.  Keep the
+        predicate's exact shape while seeking each identity arm independently:
+        parent-envelope membership is always sufficient; when owner and symbol
+        are both supplied, non-parent actions must appear in both identity sets.
+        """
+
+        action_type = ExecutionEventType.ENVELOPE_ACTION.value
+
+        def without_excluded(rows: Iterable[sqlite3.Row]) -> list[sqlite3.Row]:
+            return [
+                row
+                for row in rows
+                if excluding_envelope_id is None
+                or row["envelope_id"] != excluding_envelope_id
+            ]
+
+        if exact_envelope_id is not None:
+            return without_excluded(
+                self._read_all(
+                    "SELECT * FROM execution_events "
+                    "INDEXED BY idx_exec_events_envelope "
+                    "WHERE envelope_id = ? AND event_type = ? ORDER BY sequence",
+                    (exact_envelope_id, action_type),
+                )
+            )
+
+        parent_rows: dict[str, sqlite3.Row] = {}
+        parent_ids = tuple(dict.fromkeys(envelope_ids))
+        if parent_ids:
+            marks = ",".join("?" for _ in parent_ids)
+            rows = self._read_all(
+                "SELECT * FROM execution_events "
+                "INDEXED BY idx_exec_events_envelope "
+                f"WHERE envelope_id IN ({marks}) AND event_type = ?",
+                (*parent_ids, action_type),
+            )
+            parent_rows = {row["id"]: row for row in rows}
+
+        def action_rows_for_orders(order_ids: Iterable[str]) -> list[sqlite3.Row]:
+            ids = tuple(dict.fromkeys(order_ids))
+            if not ids:
+                return []
+            variable_limit = self._connect().getlimit(
+                sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER
+            )
+            chunk_size = max(1, variable_limit - 1)  # reserve event_type
+            rows: list[sqlite3.Row] = []
+            for offset in range(0, len(ids), chunk_size):
+                chunk = ids[offset : offset + chunk_size]
+                marks = ",".join("?" for _ in chunk)
+                rows.extend(
+                    self._read_all(
+                        "SELECT * FROM execution_events "
+                        "INDEXED BY idx_exec_events_order "
+                        f"WHERE order_id IN ({marks}) AND event_type = ?",
+                        (*chunk, action_type),
+                    )
+                )
+            return rows
+
+        owner_rows: dict[str, sqlite3.Row] = {}
+        if sell_intent_id is not None:
+            owner_rows.update(
+                (row["id"], row)
+                for row in self._read_all(
+                    "SELECT * FROM execution_events "
+                    "INDEXED BY idx_exec_events_correlation_type "
+                    "WHERE correlation_id = ? AND event_type = ?",
+                    (sell_intent_id, action_type),
+                )
+            )
+            linked_order_rows = self._read_all(
+                "SELECT id FROM orders INDEXED BY idx_orders_sell_intent "
+                "WHERE sell_intent_id = ?",
+                (sell_intent_id,),
+            )
+            owner_rows.update(
+                (row["id"], row)
+                for row in action_rows_for_orders(
+                    row["id"] for row in linked_order_rows
+                )
+            )
+
+        symbol_rows: dict[str, sqlite3.Row] = {}
+        if symbol is not None:
+            symbol_rows.update(
+                (row["id"], row)
+                for row in self._read_all(
+                    "SELECT * FROM execution_events "
+                    "INDEXED BY idx_exec_events_symbol_type "
+                    "WHERE symbol = ? AND event_type = ?",
+                    (symbol, action_type),
+                )
+            )
+            linked_order_rows = self._read_all(
+                "SELECT id FROM orders INDEXED BY idx_orders_symbol WHERE symbol = ?",
+                (symbol,),
+            )
+            symbol_rows.update(
+                (row["id"], row)
+                for row in action_rows_for_orders(
+                    row["id"] for row in linked_order_rows
+                )
+            )
+
+        if sell_intent_id is None and symbol is None:
+            selected_rows = {
+                row["id"]: row
+                for row in self._read_all(
+                    "SELECT * FROM execution_events WHERE event_type = ?",
+                    (action_type,),
+                )
+            }
+        elif sell_intent_id is not None and symbol is not None:
+            selected_rows = dict(parent_rows)
+            selected_rows.update(
+                (event_id, owner_rows[event_id])
+                for event_id in owner_rows.keys() & symbol_rows.keys()
+            )
+        elif sell_intent_id is not None:
+            selected_rows = {**parent_rows, **owner_rows}
+        else:
+            selected_rows = {**parent_rows, **symbol_rows}
+
+        return sorted(
+            without_excluded(selected_rows.values()), key=lambda row: row["sequence"]
+        )
+
     def _envelope_obligation_locked(
         self,
         *,
@@ -1991,45 +2147,13 @@ class SqliteStateStore(StateStore):
                 neighbour_envelope = self._envelope(row)
                 known_envelopes_by_id[neighbour_envelope.id] = neighbour_envelope
         envelope_ids = [envelope.id for envelope in envelopes]
-        action_sql = (
-            "SELECT event.* FROM execution_events AS event "
-            "LEFT JOIN orders AS linked_order ON linked_order.id = event.order_id "
-            "WHERE event.event_type = ?"
+        action_rows = self._envelope_action_rows_locked(
+            envelope_ids=envelope_ids,
+            exact_envelope_id=envelope_id,
+            sell_intent_id=sell_intent_id,
+            symbol=symbol,
+            excluding_envelope_id=excluding_envelope_id,
         )
-        action_params: list[Any] = [ExecutionEventType.ENVELOPE_ACTION.value]
-        if envelope_id is not None:
-            action_sql += " AND event.envelope_id = ?"
-            action_params.append(envelope_id)
-        elif sell_intent_id is not None or symbol is not None:
-            # Select a malformed action through every immutable identity that
-            # can place it in scope.  A corrupt event/parent must not hide an
-            # AAPL order merely because its event-side symbol or correlation
-            # says MSFT; the shared projector diagnoses the disagreement.
-            identity_terms: list[str] = []
-            identity_params: list[Any] = []
-            if sell_intent_id is not None:
-                identity_terms.append(
-                    "(event.correlation_id = ? OR linked_order.sell_intent_id = ?)"
-                )
-                identity_params.extend((sell_intent_id, sell_intent_id))
-            if symbol is not None:
-                identity_terms.append("(event.symbol = ? OR linked_order.symbol = ?)")
-                identity_params.extend((symbol, symbol))
-            identity_sql = " AND ".join(identity_terms)
-            if envelope_ids:
-                marks = ",".join("?" for _ in envelope_ids)
-                action_sql += (
-                    f" AND (event.envelope_id IN ({marks}) OR ({identity_sql}))"
-                )
-                action_params.extend(envelope_ids)
-            else:
-                action_sql += f" AND ({identity_sql})"
-            action_params.extend(identity_params)
-        if excluding_envelope_id is not None:
-            action_sql += " AND (event.envelope_id IS NULL OR event.envelope_id != ?)"
-            action_params.append(excluding_envelope_id)
-        action_sql += " ORDER BY event.sequence"
-        action_rows = self._read_all(action_sql, tuple(action_params))
         action_events = [self._execution_event(row) for row in action_rows]
         order_ids = list(
             dict.fromkeys(
@@ -2140,19 +2264,9 @@ class SqliteStateStore(StateStore):
             return None
 
         envelope_ids = [envelope.id for envelope in envelopes]
-        marks = ",".join("?" for _ in envelope_ids)
-        action_rows = self._read_all(
-            "SELECT event.* FROM execution_events AS event "
-            "LEFT JOIN orders AS linked_order ON linked_order.id = event.order_id "
-            "WHERE event.event_type = ? AND ("
-            f"event.envelope_id IN ({marks}) OR event.correlation_id = ? OR "
-            "linked_order.sell_intent_id = ?) ORDER BY event.sequence",
-            (
-                ExecutionEventType.ENVELOPE_ACTION.value,
-                *envelope_ids,
-                intent.id,
-                intent.id,
-            ),
+        action_rows = self._envelope_action_rows_locked(
+            envelope_ids=envelope_ids,
+            sell_intent_id=intent.id,
         )
         action_events = [self._execution_event(row) for row in action_rows]
         order_ids = list(

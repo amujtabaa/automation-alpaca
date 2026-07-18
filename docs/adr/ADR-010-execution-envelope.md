@@ -156,6 +156,16 @@ payload timestamps such as `expires_at`; the dual-store parity scripts freeze th
 sources instead of erasing those semantic fields. The T1.3 hardening gate now parses executable AST
 sites: one real projection producer, distinct memory/SQLite stage and final-claim guards, and both
 `MAY_EXECUTE_ORDER_STATUSES` helper arguments. Imports and comments cannot satisfy the gate.
+**Round-3 performance closure 2026-07-18 (WO-0109 Cluster E):** the SQLite projection retains the
+same immutable-identity formula while decomposing its former `LEFT JOIN`/`OR` action query into
+bounded, indexed parent, event-owner/event-symbol, and referenced-order-owner/order-symbol arms.
+For a combined owner+symbol selector the composition remains exactly
+`parent OR ((event-owner OR order-owner) AND (event-symbol OR order-symbol))`; rows are deduplicated
+by event id, exclusion applies after composition, and final order is event sequence. Referenced-order
+lookups are chunked below SQLite's variable ceiling. Both stores also index lifecycle-bearing order
+ids once during status-event backfill instead of rescanning the complete event log per Order. These
+are behavior-preserving implementation changes: no retention predicate, action authority, scaling
+threshold, or human-gated transition changed.
 The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
 The human reconciliation release valve for (ii) is an open, recorded design decision
 (`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.

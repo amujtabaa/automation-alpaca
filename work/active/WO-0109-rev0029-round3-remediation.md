@@ -358,6 +358,36 @@ and move this WO to `work/completed/`.
   resolved with no remaining code finding. ADR-010 §3, INV-090, and the T1.3 PKL process page now
   describe the fidelity and executable-site requirements.
 
+- **Cluster E VERIFIED 2026-07-18** — unprofiled red baseline reproduced both approved performance
+  findings: runtime p95 growth **6.63× > 3×** and startup elapsed growth **19.89× > 12×**. Profiling
+  identified two asymptotic multipliers: both stores' order-status migration scanned the complete
+  event log once per Order, and SQLite's owner/symbol action queries walked the global
+  `ENVELOPE_ACTION` corpus through a `LEFT JOIN`/`OR` predicate on every projection. Fix: both
+  backfills build one lifecycle-order-id set; SQLite decomposes the exact immutable-identity formula
+  into indexed parent, event owner/symbol, and referenced-Order owner/symbol arms, intersects owner
+  and symbol identity sets when both selectors are present, deduplicates by event id, applies
+  exclusion after composition, and restores sequence order. New Order symbol/owner and event
+  correlation indexes make each arm seekable. Referenced-Order event reads are chunked below the
+  connection's SQLite variable ceiling. No threshold or retention/action-authority behavior changed.
+  Red-first deterministic pins: the legacy nested backfill read lifecycle fields **324 times** against
+  a linear bound of 72 on each store; the unbounded linked-Order query raised `OperationalError: too
+  many SQL variables` under a reduced limit. Green: backfill target **8 passed**, full hostile-closure
+  **200 passed**, and the scaling gate passed three sequential unprofiled runs with runtime ratios
+  **0.58–1.01×** and startup ratios **9.13–10.26×**. Mutation proof: restoring the legacy global
+  action query made the gate red (startup **14.51×**); forcing the symbol arm onto the type-only
+  global index made both the structural scan gate and runtime ratio red (**5.33×**); restoring the
+  nested backfill made the deterministic dual-store work counter fail 2/2. Independently removing
+  event-correlation, referenced-Order-owner, event-symbol, or referenced-Order-symbol discovery
+  failed its exclusive memory/SQLite pin. Broadening owner∩symbol to union, dropping parent override,
+  losing dedupe, bypassing exclusion, or removing sequence sort each failed the selector matrix;
+  an unbounded bind list and a first-chunk-only mutant each failed the reduced-limit pin. All mutants
+  were restored. Full cluster gate: Ruff lint/format (243 files), mypy (64 files), six import
+  contracts, full `pytest -q` (exit 0, **317.5s**), both spec oracles (61 green; 22 green + 6
+  documented skips), hardening gates (12 green), scaling gate, and all AI-OS checks passed. An
+  independent re-audit found and then verified closure of the bind-limit/test-quality issue and
+  returned **ACCEPT**. ADR-010, INV-090, and the testing-model PKL page record the behavior-preserving
+  selector and deterministic scaling evidence.
+
 - **QUEUED 2026-07-18** — drafted by the Claude seat from its independent triage of
   `result-round2.md` (all eight round-2 findings confirmed; NEW-P1-2 contamination already removed in
   `e0da97d`, CI guard added in `aba8052`). Awaiting Codex to move to `work/active/` and begin at

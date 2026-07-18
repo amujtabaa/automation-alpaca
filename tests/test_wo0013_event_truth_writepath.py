@@ -184,3 +184,59 @@ async def test_backfill_is_idempotent_for_released_cycle_on_reinit(any_store):
         project_order_status(await any_store.get_execution_events(), order.id).status
         is OrderStatus.CREATED
     )
+
+
+async def test_backfill_indexes_status_events_once_for_all_orders(
+    any_store, monkeypatch
+):
+    """The migration decision is linear in orders + events, not their product.
+
+    Count immutable lifecycle-field reads instead of timing the stores so this
+    complexity pin is deterministic on both implementations and every runner.
+    """
+
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    for index in range(24):
+        symbol = f"Q{index:02d}"
+        candidate = await any_store.create_candidate(symbol, session_id=session.id)
+        order = await any_store.create_order_for_test(
+            candidate.id,
+            symbol,
+            OrderSide.BUY,
+            1,
+            session_id=session.id,
+        )
+        await any_store.claim_order_for_submission(order.id)
+
+    reads = [0]
+
+    class CountingEvent:
+        def __init__(self, event):
+            self._event = event
+
+        def __getattr__(self, name):
+            if name in {"order_id", "event_type"}:
+                reads[0] += 1
+            return getattr(self._event, name)
+
+    baseline_events = await any_store.get_execution_events()
+    if isinstance(any_store, InMemoryStateStore):
+        original_events = any_store._execution_events
+        any_store._execution_events = [
+            CountingEvent(event) for event in original_events
+        ]
+        try:
+            any_store._backfill_order_status_events_unlocked()
+        finally:
+            any_store._execution_events = original_events
+    else:
+        original_mapper = any_store._execution_event
+
+        def counting_mapper(row):
+            return CountingEvent(original_mapper(row))
+
+        monkeypatch.setattr(any_store, "_execution_event", counting_mapper)
+        any_store._backfill_order_status_events_locked()
+
+    assert reads[0] <= 3 * len(baseline_events)
