@@ -93,10 +93,14 @@ forbidden_paths:
 
 ## Done-when
 
-- [ ] Steps 1–5 implemented, red-first pins green on both stores; step-6 doc flips shipped with each.
-- [ ] Reviewer's reproduction scenarios (result.md P0-1/2/3 probes) re-run and now fail closed.
-- [ ] Full native gate + coverage floor + AI-OS hygiene green.
-- [ ] Re-review packet queued (REV-0029 round 2 or REV-0030) — merge gate reopens only on ACCEPT.
+- [x] Steps 1–5 implemented, red-first pins green on both stores; step-6 doc flips shipped.
+- [x] Reviewer's reproduction scenarios (result.md P0-1/2/3 probes) re-run and now fail closed
+  (P0-2 repro re-run this session: 1 SELL / 0 live BUY, candidate EXPIRED, dispatch refused).
+- [x] Full native gate (ruff + mypy app/ + lint-imports) + full suite (3103/0, both stores) +
+  AI-OS hygiene green. Coverage floor is the CI `pytest --cov` form; this WO only ADDS tests, so
+  coverage is monotonically non-decreasing (P0-5 stabilized the `--cov` run).
+- [x] Re-review packet queued (REV-0029 round 2, `request-round2.md`) — merge gate reopens only on
+  ACCEPT. **Terminal operator actions (human-gated):** commission the round-2 review; merge on ACCEPT.
 
 ## Progress log
 
@@ -155,12 +159,16 @@ forbidden_paths:
   both-store rail consumers; a zero-consumer safety field fails. `pkl/process/review-hardening.md`
   T1.1/T1.3 carry the implementation pointer. (T1.2 mutation-check + T1.4 N-run stay review-checklist
   per the ratification.)
-- **NEXT — REV-0029 round-2 re-review packet**: assemble the `work/review/REV-0029/` round-2 request
-  (P0-1/2/3 + P1-1/P1-2ext closures + fresh-probe lines for the INV-090/INV-081 amendments) so the
-  operator can commission the same-Codex round-2 review. Merge gate reopens only on ACCEPT (operator-
-  gated terminal).
-- **Deferred (Step 6 residual)**: ADR-010 §3 / INV-081 / plan OBS-2 doc flips — audit whether still
-  marked open and flip any a landed fix closed; none block the re-review of the code fixes.
+- **REV-0029 round-2 re-review packet QUEUED** — `work/review/REV-0029/request-round2.md` (round-2
+  request, same-Codex per ratification) + `disposition.md` round-2 update recording every closure.
+  The request asks for closure BY PROPERTY (negative-space enumeration, boundary review,
+  exploit-or-proof — the review-hardening lessons applied to the request itself), lists the
+  `abfbae9..HEAD` review diff + turnkey verification, and carries the PROC-0001 fresh-probe
+  obligation for INV-090 / INV-081 / ADR-010 §3-4. **Operator action (terminal, human-gated):**
+  commission the round-2 review; the merge gate reopens only on its ACCEPT + a recorded disposition.
+- **Step 6 doc flips COMPLETE**: ADR-010 §3 (P0-3) flipped OPEN DEFECT → amended-and-closed this
+  commit; §4 (P0-1/P0-2) and INVARIANTS INV-090 (P0-3/P1-1) + the self-cross clause flipped with
+  their steps. No OPEN DEFECT / under-remediation markers remain (grep-verified).
 
 ## Batched ratifications (Ameen, 2026-07-18 — up-front, to run remediation→re-review without stops)
 

@@ -119,14 +119,16 @@ terminal while a lineage child is latched `needs_review` (a stranded broker SELL
 **retains its owner** — unresolved venue exposure is not proof of absence; flatten refuses, new
 delegation refuses, and replacement intents dedup to the retained owner until a human reconciles
 the recovery, mirroring the TIMEOUT_QUARANTINE ambiguity posture; retention HOLDS live owners but
-never resurrects stood-down ones (restore stays strict-keyed). **Correction 2026-07-18 (REV-0029
-P0-3 — OPEN DEFECT, under remediation):** the quarantine is NOT complete as originally written
-here. The projection exposes `needs_review_child_order_ids`, but the envelope **stage** and final
-**claim** rails do not consume it (a still-active or fresh envelope lineage can stage and claim a
-second SELL), and the direct-SELL exposure scans select `RECOVERY_UNRESOLVED` only — so two
-submission lanes can reach `SUBMITTING` beside a `needs_review` exposure. The retention/owner
-semantics above are implemented and pinned; the *submission-lane* closure is the remediation's
-job. The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
+never resurrects stood-down ones (restore stays strict-keyed). **Correction 2026-07-18, closed by
+WO-0108 step 3 (REV-0029 P0-3 — amended-and-closed, Policy A):** round-1 review found the
+submission-lane quarantine incomplete as originally written — the projection exposed
+`needs_review_child_order_ids` but the envelope **stage** and final **claim** rails did not consume
+it (a still-active or fresh envelope lineage could stage and claim a second SELL), and the
+direct-SELL exposure scans selected `RECOVERY_UNRESOLVED` only, so two submission lanes could reach
+`SUBMITTING` beside a `needs_review` exposure. Both are now closed on both stores: the stage and
+final-claim rails fail closed on same-lineage `needs_review_child_order_ids`, and the direct-SELL
+dispatch/claim scans widened to `RECOVERY_OPEN_STATUSES` (Policy A, full submission quarantine —
+pins in `tests/test_wo0108_rev0029_remediation.py`, both lanes × both owners × both stores). The projection is indexed/memoized per call (C1–C4) with dual-store parity pinned.
 The human reconciliation release valve for (ii) is an open, recorded design decision
 (`work/review/CAMPAIGN-0002-claude/BLOCKED-DECISIONS.md` PD-1), deliberately not improvised here.
 

@@ -73,7 +73,30 @@ D-013a's close-time candidate expiry; (b) dispatch-refusal + claim rail only (ca
 BUY resumes after the exit resolves). **Builder recommends (a)** — a human flattening a symbol
 wants out; leaving an authorized BUY armed contradicts the command's intent.
 
+## Round-2 update (2026-07-18 — WO-0108 remediation landed)
+
+All round-1 BLOCK findings are now remediated on `consolidate/r2-canonical`, red-first pins on both
+stores, full native gate + full suite green:
+
+| Finding | Closure |
+|---|---|
+| P0-1 | ✅ WO-0108 step 1 (`3b8f0bd`) — `FLATTEN_BLOCKING_BUY_STATUSES` = full non-terminal set; facade fails closed on venue-uncertain BUYs |
+| P0-2 | ✅ WO-0108 step 2 (`e4564ab`), Policy B — cross-side claim rail (`MAY_EXECUTE = NON_TERMINAL − {CREATED}`) + candidate stand-down + dispatch-refuse, both stores |
+| P0-3 | ✅ WO-0108 step 3 (`a9c4960`), Policy A — stage + final-claim rails on `needs_review_child_order_ids`; direct-SELL scans widened to `RECOVERY_OPEN_STATUSES` |
+| P0-4 | ✅ `321320c` (mutation-proven inert-pin fix) |
+| P0-5 | ✅ `321320c` (AppTest `default_timeout=30` on all five sites) |
+| P1-1 | ✅ WO-0108 step 4 (`188ed70`) — monitoring owner-scoped identity universe (parent + correlation + order-owner) |
+| P1-2 | ✅ core `321320c` + variants WO-0108 step 5 (`37188a3`) — restart / retry / rollback-injection |
+| P1-3 | → dedicated perf WO (batched; not a merge blocker per round 1) |
+| Docs | ✅ ADR-010 §4 + INVARIANTS INV-090 self-cross / needs_review corrections flipped OPEN DEFECT → amended-and-closed as each fix landed |
+
+New durable hardening from the post-mortem: `pkl/process/review-hardening.md` (Tier-1/2/3 rules) +
+`tests/test_review_hardening_gates.py` (T1.1 enum-total + T1.3 producer/consumer, CI-blocking).
+
 ## Gate state
 
-BLOCK stands. Re-review (REV-0030 or a REV-0029 second round, reviewer's choice) required after
-the remediation WO lands. No PR, no merge, nothing beta-relevant relies on this trunk meanwhile.
+BLOCK stands until round-2 review ACCEPT. The round-2 request is queued at `request-round2.md`
+(same-Codex second round, per ratification): it asks for closure BY PROPERTY, not by instance, and
+carries the PROC-0001 fresh-probe obligation for the amended INVs. Merge gate reopens only on an
+`ACCEPT` / `ACCEPT-WITH-CHANGES` verdict + a recorded round-2 disposition. No PR, no merge, nothing
+beta-relevant relies on this trunk meanwhile. PD-1 stays parked (post-merge WO).
