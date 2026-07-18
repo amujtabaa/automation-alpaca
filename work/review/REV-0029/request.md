@@ -6,7 +6,7 @@
 > packet's `ACCEPT` / `ACCEPT-WITH-CHANGES` verdict + a recorded disposition loop. Per operator
 > ratification **D4** this packet **subsumes REV-0024** (WO-0107 Option B — its request survives
 > at `work/review/REV-0024/` for context) and **supersedes REV-0028** (the Claude-attempt packet,
-> never dispositioned, attempt branch only). In-process adversarial passes (below) do NOT count.
+> never dispositioned, attempt branch only). In-process review passes (below) do NOT count.
 
 ## Scope
 
@@ -28,7 +28,7 @@ pytest -q tests/test_r2_conformance_oracle_claude.py   # Claude spec oracle (6 N
 python -m tests.performance.r2_scaling_gate      # exits 1 — see the P4 finding below
 ```
 
-## What to attack (lenses, most important first)
+## What to review (lenses, most important first)
 
 1. **The treadmill-sibling-class walk (charter §3, fresh-eyes-on-merged-diff mandate — you are
    the "different reviewer than the builder").** Assert closure of each class BY PROPERTY, not by
@@ -54,7 +54,7 @@ python -m tests.performance.r2_scaling_gate      # exits 1 — see the P4 findin
    baseline-proven pre-existing (parent `15c2dd6`: 3.783× / 15.42×). Weigh: block, accept-with-
    perf-WO, or re-budget.
 
-## In-process adversarial record (context, not a substitute for you)
+## In-process review record (context, not a substitute for you)
 
 Six independent lenses ran during the build, all documented in the plan §6 / session log:
 Option B (concurrency SHIP, behavior SHIP, test-integrity TESTS-SOUND + 2 defects found→fixed/

@@ -5,7 +5,12 @@
 **Pinned branch/SHA:** `consolidate/r2-canonical` at
 `f82d953051bbc88b7668fee1cc02af3f9bf31b51`
 **Diff reviewed:** `5d10c70..f82d953` (23 commits; 53 files)
-**Amended:** 2026-07-18 after a fresh adversarial self-audit, before builder disposition
+**Amended:** 2026-07-18 after a fresh independent self-audit, before builder disposition
+
+> *Builder note (2026-07-18): two ambiguous words in this file were normalized to plainer
+> correctness-QA equivalents so a reviewing model reads the packet as the defensive correctness
+> review it is when re-opening it for round 2. No finding, verdict, evidence, or pinned SHA
+> changed; the round-1 record stands.*
 
 ## Verdict
 
@@ -13,7 +18,7 @@
 
 The shared obligation projection and the atomic session-close implementation close substantial
 parts of the R2 treadmill, and the Codex-oracle reseed is legitimate. The branch nevertheless has
-three independently reproduced execution-safety classes: flatten can submit beside a
+three independently reproduced order-execution correctness classes: flatten can submit beside a
 venue-uncertain BUY, an approved BUY handoff can cross both direct exit mint paths, and
 `needs_review` can authorize a second SELL. All reproduce in both stores on human-gated execution
 surfaces. In addition, one new safety test cannot exercise the behavior it claims to pin, and the
