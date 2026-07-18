@@ -5,6 +5,7 @@
 **Pinned branch/SHA:** `consolidate/r2-canonical` at
 `f82d953051bbc88b7668fee1cc02af3f9bf31b51`
 **Diff reviewed:** `5d10c70..f82d953` (23 commits; 53 files)
+**Amended:** 2026-07-18 after a fresh adversarial self-audit, before builder disposition
 
 ## Verdict
 
@@ -12,10 +13,11 @@
 
 The shared obligation projection and the atomic session-close implementation close substantial
 parts of the R2 treadmill, and the Codex-oracle reseed is legitimate. The branch nevertheless has
-two independently reproduced paths that can submit a SELL beside unresolved venue exposure, in
-both stores. Those are safety-core defects on human-gated execution surfaces. In addition, one
-new safety test cannot exercise the behavior it claims to pin, and the advertised CI-form green
-gate is not reproducible from the pinned clean checkout.
+three independently reproduced execution-safety classes: flatten can submit beside a
+venue-uncertain BUY, an approved BUY handoff can cross both direct exit mint paths, and
+`needs_review` can authorize a second SELL. All reproduce in both stores on human-gated execution
+surfaces. In addition, one new safety test cannot exercise the behavior it claims to pin, and the
+advertised CI-form green gate is not reproducible from the pinned clean checkout.
 
 No source, test, or documentation file was changed during this review. Suggested correction
 shapes below are proposals only.
@@ -84,7 +86,74 @@ Then pin every nonterminal BUY status, cancel/claim interleavings, late fills, b
 override survival in both stores. Because a fresh BUY can appear after a flatten SELL is minted,
 the final submission claim also needs a symmetric cross-side, same-symbol revalidation.
 
-### P0-2 — `needs_review` does not quarantine the sell side; two second-SELL lanes reach `SUBMITTING`
+### P0-2 — An approved BUY handoff can cross both exit mint paths and both orders reach broker submission
+
+This is independent of P0-1's incomplete status set. Even a blocking set containing every
+nonterminal Order status cannot see an approved Candidate that has not produced its BUY order yet.
+
+**Concrete route-reachable failure.** Begin with a held 100-share AAPL position. Approve a fresh
+40-share BUY Candidate, then pause at the real facade's await boundary between
+`gate.approve(candidate_id)` and `create_order_for_candidate(...)`
+(`app/facade/store_backed.py:782-785`). While the Candidate is durably `APPROVED` but has no Order,
+run either manual flatten or the ordinary autonomous protection-open sequence. Resume Candidate
+dispatch, then run the normal pending-order submission sweep during the regular session. Temporary
+public-store/engine probes made real mock-adapter submission calls and produced:
+
+```text
+memory/manual:     broker_sides=['sell', 'buy']; sell=submitted; buy=submitted
+sqlite/manual:     broker_sides=['sell', 'buy']; sell=submitted; buy=submitted
+memory/protection: broker_sides=['sell', 'buy']; sell=submitted; buy=submitted
+sqlite/protection: broker_sides=['sell', 'buy']; sell=submitted; buy=submitted
+```
+
+A second probe minted the manual-flatten SELL first and created a fresh BUY afterward. In both
+stores, both `SELL -> BUY` and `BUY -> SELL` claim orderings returned `claimed` twice and left both
+orders `SUBMITTING`. Thus the defect is not dependent on insertion order or the particular facade
+pause above.
+
+**Root cause and reachability.**
+
+- Option B scans only existing BUY Order rows under the flatten lock
+  (`app/store/memory.py:2661-2667`; `app/store/sqlite.py:3938-3947`). The Candidate that the normal
+  approval route has already authorized is invisible.
+- The protection path cancels the BUYs it observed, then awaits and separately calls
+  `open_protection_exit` (`app/monitoring.py:360-410`). Neither store's atomic protection-open
+  operation rechecks BUY Orders or approved Candidates (`app/store/memory.py:2320-2412`;
+  `app/store/sqlite.py:3562-3655`).
+- Candidate dispatch rechecks controls, risk, and quarantine but not a same-symbol direct/envelope
+  exit obligation (`app/store/memory.py:2892-2960`; `app/store/sqlite.py:4206-4301`).
+- The final claim choke handles envelope/direct SELL siblings and control state, but has no
+  cross-side same-symbol rail (`app/store/memory.py:2962-3185`;
+  `app/store/sqlite.py:4303-4555`; `app/store/core.py:2391-2511`). The ordinary sweep then calls the
+  adapter once per successful claim (`app/monitoring.py:1161-1232`).
+
+**Wrong outcome.** The SELL can close the original 100 shares while the BUY fills 40 shares beside
+or after it, self-crossing/re-growing the position that manual flatten or protection was supposed
+to exit. This is an order-submission safety-surface defect, not merely a stale UI outcome.
+
+**What resolves it.** Define and enforce one same-symbol cross-side eligibility property at the
+final claim in both stores, with the exit taking precedence only after every possibly executable
+BUY is authoritatively terminal. Also close the Candidate handoff: flatten/protection must either
+atomically stand down PENDING/APPROVED BUY Candidates for the symbol or Candidate dispatch must
+refuse while a direct/envelope exit obligation exists. The correction needs this shape (proposal
+only; exact policy and audit event require the builder's disposition):
+
+```diff
++ if claiming BUY and same_symbol_exit_may_execute(order.symbol):
++     return CLAIM_BLOCKED("same-symbol exit obligation exists")
++ if claiming SELL and same_symbol_buy_may_execute(order.symbol):
++     return CLAIM_BLOCKED("same-symbol BUY may execute")
++ if dispatching approved Candidate and same_symbol_exit_may_execute(candidate.symbol):
++     refuse_or_hold_dispatch_with_audit()
+```
+
+`same_symbol_buy_may_execute` must include open claims, broker-working intervals,
+`CANCEL_PENDING`, and `TIMEOUT_QUARANTINE`; it must never blindly cancel ambiguity. Pin the real
+approval pause, post-mint BUY creation, both claim orderings, manual/protection exits, and the full
+submission sweep in both stores. Fixing only the flatten mint decision leaves the demonstrated
+post-mint schedule open.
+
+### P0-3 — `needs_review` does not quarantine the sell side; two second-SELL lanes reach `SUBMITTING`
 
 This falsifies the P-B safety posture, ADR-010, INV-090, and plan §6 OBS-2.
 
@@ -135,14 +204,18 @@ a fill event is not proof that the venue did not fill (`CLAUDE.md:34-48`).
 - Plan §6 OBS-2 says direct exposure remains blocked through `RECOVERY_OPEN_STATUSES`; the code
   shown above selects only `RECOVERY_UNRESOLVED`.
 
-**What resolves it.** Stage and final claim/accepted-ack rails must fail closed on same-lineage
+**What resolves it.** Stage and final claim rails must fail closed on same-lineage
 `needs_review_child_order_ids`; direct `needs_review` must remain symbol-visible venue exposure at
 dispatch and claim even if a fresh intent is allowed to exist. Add both-store pins for recovery
-appearing before stage, between stage/claim, and between claim/accepted acknowledgement. If X-003
-is instead intended to authorize submission beside untracked fills, that requires a new explicit
-human ratification and corresponding ADR/invariant rewrite.
+present before stage and appearing between stage and claim. Do not describe accepted
+acknowledgement as a preventive choke: the adapter call occurs first
+(`app/reconciliation.py:692-755`), so a recovery discovered after the claim cannot retroactively
+prevent that already-committed venue request. Such a late discovery must record both exposures
+truthfully and quarantine all later activity; it must never be hidden as proof that only one SELL
+exists. If X-003 is instead intended to authorize a new claim beside already-known untracked fills,
+that requires a new explicit human ratification and corresponding ADR/invariant rewrite.
 
-### P0-3 — The new hold-vs-resurrect test cannot fail when the protected restore keying is broken
+### P0-4 — The new hold-vs-resurrect test cannot fail when the protected restore keying is broken
 
 `test_needs_review_retention_never_resurrects_an_expired_owner`
 (`tests/test_wo0036_r2_close_and_recovery_ownership.py:449-487`) raw-expires the owner, performs a
@@ -168,7 +241,7 @@ in both stores (`app/store/memory.py:202-217`; `app/store/sqlite.py:476` and its
 block)—remove the blanket exception catch, assert no `envelope_delegation_restored` event, and
 prove with a targeted mutation that widened-key restore makes the test red.
 
-### P0-4 — The packet's CI-form green claim is not reproducible from the pinned clean checkout
+### P0-5 — The packet's CI-form green claim is not reproducible from the pinned clean checkout
 
 The exact clean target contains 995 tracked files. The default suite did pass once, but the CI-form
 command from `.github/workflows/ci.yml:71-74` repeatedly fails at
@@ -251,26 +324,29 @@ the reason for this BLOCK verdict.
    all five choke points; release-while-child-rests, orphan-at-close, double-mandate, and ordinary
    blind-resubmit/blind-cancel classes are closed by source and both-store pins. Stale-read flatten
    is closed only for the declared three-status set; P0-1 falsifies closure over the nonterminal BUY
-   property. P0-2 falsifies the needs-review second-SELL property.
+   property. P0-2 falsifies cross-side closure across the Candidate-to-Order handoff and both direct
+   exit mint paths. P0-3 falsifies the needs-review second-SELL property.
 2. **Three retention predicates.** `strict` correctly drives promote/restore/conflict sweep;
-   `widened` correctly prevents release but is not consumed by every submission choke (P0-2);
+   `widened` correctly prevents release but is not consumed by every submission choke (P0-3);
    `across-close` correctly excludes only bare pre-activation approval. Hold-vs-resurrect source
-   keying is sound, but its claimed pin is inert (P0-3).
+   keying is sound, but its claimed pin is inert (P0-4).
 3. **Session-close truth.** I found no implementation defect in the P-A sweep. Both stores collect
    the same envelope/action/order/recovery facts; memory closes within `_atomic`
    (`app/store/memory.py:4300-4438`), SQLite in one transaction
    (`app/store/sqlite.py:6091-6197`), both sweep before owner expiry with one close timestamp, and
    both snapshot positions from FILL-event truth. Full-fidelity parity remains under-tested (P1-2).
 4. **Option B flatten.** Continuous-lock TOCTOU closure and override preservation are green for the
-   detected set. Retry convergence is false by lifecycle property (P0-1).
+   detected set. Retry convergence is false by lifecycle property (P0-1), and the broader
+   self-cross property remains open across approved/fresh BUY dispatch after the mint (P0-2).
 5. **Oracle legitimacy.** Green. `15c2dd6..f82d953` changes the Codex oracle by exactly 10 additions
    and 0 deletions, all in `_seed_long`: explanatory setup plus
    `transition_order(..., CANCELED)`. All 53 assertion lines are byte-identical. The final oracle
    overlaid on both `15c2dd6` and `fa4437d` produces the same four P-A/P-B failures; target code
    makes all 61 pass. D1 is a setup-only reseed, not oracle weakening.
 6. **Docs vs code.** INV-037/052 and the close portions of ADR-010/INV-081 agree with the source.
-   ADR-010/INV-081 overstate Option B convergence (P0-1); ADR-010/INV-090 overstate widened
-   sell-side quarantine (P0-2); INV-090 overstates monitoring keying (P1-1).
+   ADR-010/INV-081 overstate Option B convergence (P0-1); the runtime flatten/protection comments
+   overstate cross-side closure beyond the detected Order set (P0-2); ADR-010/INV-090 overstate
+   widened sell-side quarantine (P0-3); INV-090 overstates monitoring keying (P1-1).
 7. **Named P4 performance finding.** Structural acceptance is justified; silent green status or
    re-budgeting is not. Record and execute a performance work order (P1-3).
 
@@ -278,7 +354,7 @@ the reason for this BLOCK verdict.
 
 Parking the needs-review reconciliation API was procedurally correct: it is a new human-gated
 event-truth surface and needs explicit authorization. The stated premise that the current system is
-already a complete fail-closed quarantine is unsound because P0-2 proves two submission lanes.
+already a complete fail-closed quarantine is unsound because P0-3 proves two submission lanes.
 
 The sketch is directionally right but incomplete. A status flip must never itself overwrite
 position or serve as a synthetic fill. The future design should require broker-terminal evidence,
@@ -287,6 +363,14 @@ envelope/owner, actor/reason/evidence, retry idempotency, and atomic revalidatio
 fill must enter canonical position truth as a deduplicated FILL event. Clearing one recovery may
 remove only that recovery's contribution; it cannot promise the whole quarantine lifts while any
 other strict, malformed, recovery, or venue obligation remains.
+
+The sketch's phrase “broker/human-authoritative” must also be split into honest provenance. The
+current `EventSource` vocabulary has no human source and `EventAuthority` has only
+`BROKER_AUTHORITATIVE`, `LOCAL`, and `SYNTHETIC` (`app/models.py:466-491`). A human attestation must
+never be mislabeled broker-authoritative. The follow-up design needs an explicit human-attested
+source/authority (or an audit-to-execution bridge with equivalent semantics), while actual broker
+executions retain immutable broker provenance and enter position truth only through canonical,
+deduplicated FILL events.
 
 ## Human-gate and scope audit
 
@@ -311,16 +395,19 @@ literal `ruff check .` sees those unrelated plugin files, while the pinned clean
 | `ruff format --check .` | PASS — 240 files formatted |
 | `mypy app/` | PASS — 64 source files |
 | `lint-imports` | PASS — 6 contracts kept |
-| `pytest -q` | PASS on clean rerun, 245.2s; an earlier run hit P0-4 |
+| `pytest -q` | PASS on clean rerun, 245.2s; an earlier run hit P0-5 |
 | `pytest -q tests/r2_conformance_oracle.py` | PASS — 61 cases; explicitly invoked |
 | `pytest -q tests/test_r2_conformance_oracle_claude.py` | PASS — 22 passed, 6 recorded skips |
-| `pytest --cov=app --cov-branch --cov-report=term-missing` | FAIL — P0-4; coverage itself 93.78% |
+| `pytest --cov=app --cov-branch --cov-report=term-missing` | FAIL — P0-5; coverage itself 93.78% |
 | `python -m tests.performance.r2_scaling_gate` | FAIL as packet predicts; structural gates green, P1-3 |
 
-Additional independent public-API probes reproduced P0-1 and both P0-2 variants in memory and
-SQLite. A mutation/spy probe established P0-3's reconcile path was called zero times. Oracle
-provenance was checked at both baselines, and performance was repeated at target, parent baseline,
-and stress scale.
+Additional independent public-API/engine probes reproduced P0-1; P0-2 across manual flatten,
+autonomous protection, both claim orders, and the ordinary submission sweep; and both P0-3 variants
+in memory and SQLite. A mutation/spy probe established P0-4's reconcile path was called zero times.
+A canonicalized full-stream recheck also found the current close outputs equal across stores (25
+audit and 10 execution events), so P1-2 remains a pin-strength defect rather than a found source
+divergence. Oracle provenance was checked at both baselines, and performance was repeated at target,
+parent baseline, and stress scale.
 
 ## Could not verify
 
