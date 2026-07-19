@@ -443,11 +443,13 @@ async def test_p0_2_protection_open_stands_down_buy_candidate(any_store, monkeyp
 
 
 async def test_p0_2_dispatch_refused_while_exit_order_live(any_store, monkeypatch):
-    # A buy candidate approved AFTER a live exit exists must not dispatch.
+    # Preserve a legacy approved candidate from before the exit. New candidate
+    # admission is now refused earlier; this shape keeps the downstream
+    # candidate-to-order dispatch backstop under test.
     _regular(monkeypatch)
     session = await _held(any_store)
-    await _live_sell_exit_order(any_store, session)
     cand = await _approved_buy_candidate(any_store, session)
+    await _live_sell_exit_order(any_store, session)
     with pytest.raises(OrderIntentBlockedError, match="same-symbol exit"):
         await any_store.create_order_for_candidate(cand.id)
 
@@ -457,9 +459,13 @@ async def test_p0_2_buy_claim_blocked_while_exit_order_may_execute(
 ):
     _regular(monkeypatch)
     session = await _held(any_store)
-    await _live_sell_exit_order(any_store, session)  # non-terminal SELL exit
-    # A raw BUY order that already exists must not CLAIM into the venue.
+    # Preserve a legacy candidate from before the exit. New candidate admission
+    # is correctly refused once the exit exists, and a safe pre-existing CREATED
+    # BUY is now canceled atomically by exit preemption. Materialize the raw
+    # test-only order after that preemption to model a stale handoff which only
+    # the submission-claim choke point can still contain.
     bcand = await any_store.create_candidate("AAPL", session_id=session.id)
+    await _live_sell_exit_order(any_store, session)  # non-terminal SELL exit
     buy = await any_store.create_order_for_test(
         bcand.id, "AAPL", OrderSide.BUY, 40, session_id=session.id
     )

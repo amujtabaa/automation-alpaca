@@ -145,6 +145,10 @@ async def test_p1a_envelope_stage_stands_down_same_symbol_buy_candidate(any_stor
 # --------------------------------------------------------------------------- #
 async def test_p1b_buy_dispatch_blocked_by_open_sell_recovery(any_store):
     session = await _held_position(any_store)
+    # Precreate the approved candidate to model a legacy handoff race. Candidate
+    # admission is now refused once the recovery exists; retaining this older
+    # artifact keeps the downstream candidate-to-order backstop covered.
+    buy_candidate = await _approved_buy_candidate(any_store, session)
     # A SELL that reached the broker but whose local row fell back to an open
     # needs_review recovery (the broker order may still execute).
     sell_cand = await any_store.create_candidate("AAPL", session_id=session.id)
@@ -163,7 +167,6 @@ async def test_p1b_buy_dispatch_blocked_by_open_sell_recovery(any_store):
         cleanup_status=RECOVERY_NEEDS_REVIEW,
     )
 
-    buy_candidate = await _approved_buy_candidate(any_store, session)
     with pytest.raises(OrderIntentBlockedError, match="exit"):
         await any_store.create_order_for_candidate(buy_candidate.id)
 

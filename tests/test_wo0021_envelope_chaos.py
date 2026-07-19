@@ -111,6 +111,16 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
     )
 
 
+async def canceled_envelope_child(store, env: ExecutionEnvelope, *, quantity: int):
+    staged = await store.stage_envelope_action(
+        env.id,
+        planned(quantity=quantity),
+        snapshot_fingerprint=f"wo0021-fill-lineage:{env.id}",
+        now=later(),
+    )
+    return await store.transition_order(staged.order.id, OrderStatus.CANCELED)
+
+
 # --- partial-fill / race interleavings -------------------------------------------- #
 
 
@@ -121,8 +131,13 @@ async def test_partial_fill_between_plan_and_write_hits_the_qty_rail(any_store):
 
     env = await active_envelope(any_store)
     stale_view_action = planned(quantity=80)  # valid when planned...
+    order = await canceled_envelope_child(any_store, env, quantity=60)
     await any_store.record_envelope_fill(
-        env.id, quantity=60, dedupe_key="fill:o0:race", order_id="o0", price=9.9
+        env.id,
+        quantity=60,
+        dedupe_key=f"fill:{order.id}:race",
+        order_id=order.id,
+        price=9.9,
     )  # ...then the fill lands (remaining 40)
 
     adapter = MockBrokerAdapter()
@@ -149,12 +164,21 @@ async def test_replayed_fill_on_the_replace_leg_never_double_counts(any_store):
     events are the only quantity writers)."""
 
     env = await active_envelope(any_store)
+    order = await canceled_envelope_child(any_store, env, quantity=30)
     first = await any_store.record_envelope_fill(
-        env.id, quantity=30, dedupe_key="fill:oX:exec1", order_id="oX", price=9.9
+        env.id,
+        quantity=30,
+        dedupe_key=f"fill:{order.id}:exec1",
+        order_id=order.id,
+        price=9.9,
     )
     assert first.remaining_quantity == 70
     replay = await any_store.record_envelope_fill(
-        env.id, quantity=30, dedupe_key="fill:oX:exec1", order_id="oX", price=9.9
+        env.id,
+        quantity=30,
+        dedupe_key=f"fill:{order.id}:exec1",
+        order_id=order.id,
+        price=9.9,
     )
     assert replay.remaining_quantity == 70  # exactly once
     fills = [

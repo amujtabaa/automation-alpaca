@@ -173,8 +173,9 @@ async def test_f1_protection_open_fails_closed_on_venue_uncertain_buy(any_store)
 
 
 # --------------------------------------------------------------------------- #
-# F2 — a late fill on an already-terminal envelope cancels a live CREATED child
-# (memory must match SQLite; the state is legacy/crash-recovery, raw-built)
+# F2 — a late fill on an already-terminal envelope preserves its source child,
+# cancels a distinct safely-local CREATED sibling, and reconciles the owner
+# fail-closed (the state is legacy/crash-recovery, raw-built).
 # --------------------------------------------------------------------------- #
 def _raw_insert_order(store, order):
     if hasattr(store, "_orders"):
@@ -235,7 +236,7 @@ async def test_f2_late_fill_on_terminal_envelope_cancels_created_child(any_store
         }
     )
     _raw_insert_envelope(any_store, envelope)
-    child = Order(
+    fill_source = Order(
         id="wo0112-f2-created-child",
         sell_intent_id=intent.id,
         symbol="AAPL",
@@ -246,20 +247,38 @@ async def test_f2_late_fill_on_terminal_envelope_cancels_created_child(any_store
         status=OrderStatus.CREATED,
         session_id=session.id,
     )
-    _raw_insert_order(any_store, child)
-    _raw_append_action(any_store, envelope, child)
+    _raw_insert_order(any_store, fill_source)
+    _raw_append_action(any_store, envelope, fill_source)
+    sibling = fill_source.model_copy(update={"id": "wo0112-f2-created-sibling"})
+    _raw_insert_order(any_store, sibling)
+    _raw_append_action(any_store, envelope, sibling)
 
     # A late fill on the already-terminal envelope: plan.transition is None.
-    await any_store.record_envelope_fill(
+    stored = await any_store.record_envelope_fill(
         envelope.id,
         quantity=10,
         dedupe_key="wo0112-f2-late",
-        order_id=child.id,
+        order_id=fill_source.id,
         price=9.9,
     )
 
-    after = await any_store.get_order(child.id)
-    assert after.status is OrderStatus.CANCELED, (
-        "late fill on a terminal envelope left the staged CREATED child live "
-        f"(status {after.status!r}) — memory/SQLite parity break"
+    assert stored.status is EnvelopeStatus.BREACHED
+    assert stored.remaining_quantity == 90
+    source_after = await any_store.get_order(fill_source.id)
+    sibling_after = await any_store.get_order(sibling.id)
+    assert source_after.status is OrderStatus.CREATED, (
+        "late-fill source was canceled from ambiguous local CREATED state "
+        f"(status {source_after.status!r})"
     )
+    assert sibling_after.status is OrderStatus.CANCELED
+
+    terminal_facts = [
+        event
+        for event in await any_store.get_execution_events()
+        if event.event_type is ExecutionEventType.CANCELED
+        and event.order_id in {fill_source.id, sibling.id}
+    ]
+    assert [event.order_id for event in terminal_facts] == [sibling.id]
+    assert (
+        await any_store.get_sell_intent(intent.id)
+    ).status is SellIntentStatus.APPROVED

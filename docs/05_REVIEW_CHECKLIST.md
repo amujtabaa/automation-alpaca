@@ -259,8 +259,9 @@ Use when reviewing Codex or Claude Code output.
       contract: position never negative, `filled_quantity` whole/bounded/equal
       to recorded fills, no candidate stranded `APPROVED`, every order has a
       resolvable session, and **no `is_live` broker order is untracked** (the
-      F-002 orphan guard — referenced by a local order or an open recovery
-      record).
+      F-002 orphan guard — referenced by a local order, an open recovery record,
+      or the exact canonical WO-0113 `UNKNOWN_RECONCILE_REQUIRED`
+      accepted-submit owner pending operator ratification and REV-0033 review).
 - [ ] The orphan guard is a **live** invariant, not a vacuous one: the machine
       actually reaches the orphan state via `arm_submit_cancel_race` (a one-shot
       mid-submit `set_on_submit` cancel) + `submit_pending_only` (submit phase in
@@ -352,6 +353,9 @@ traceability. The build-round invariants a reviewer should re-verify:
 - [ ] **Single active exit per symbol.** `create_sell_intent` is atomic
       single-flight; `_run_protection` and `flatten_position` dedup on
       `active_sell_intent_for`; `protection_triggered` is not re-emitted each tick.
+      A canonical accepted-submit fallback for a direct SELL remains same-side
+      single-flight ownership even if the local order projects terminal; it cannot
+      be locally canceled or replaced before broker-authoritative resolution.
       A terminal (filled/canceled) exit frees the symbol for re-protection, and so
       does an `ordered` exit whose order is stuck in an OPEN `needs_review`
       recovery (`docs/INVARIANTS.md` INV-032) — a spurious escalation must never
@@ -424,6 +428,25 @@ this remediation exists to close):
       fill before `Order.filled_quantity` does) before this fix landed.
       `tests/test_capi_order_gate.py::test_fill_without_order_transition_is_not_double_counted`
       pins the fixed behavior directly.
+- [ ] **WO-0113 branch behavior pending operator ratification and REV-0033:** an
+      accepted terminalized BUY's exact UNKNOWN/open-recovery owner contributes
+      its remaining CAPI exposure once per distinct broker identity; fills are
+      allocated once across those identities, and malformed numeric scope
+      cannot shrink the immutable referenced-order remainder. Only exact overlap
+      with its order/recovery/position/fills is subtracted.
+- [ ] The final BUY submission claim recomputes current CAPI exposure and risk
+      limits inside the same store lock/transaction, so uncertainty appearing
+      after order mint cannot pass the venue choke point. Every order in that
+      exposure aggregate uses event-projected lifecycle status, not the raw
+      co-written status scalar.
+- [ ] The final claim for either side refuses a projected-`CREATED` order that
+      already carries a broker id or its own accepted-submit fallback; neither a
+      direct claim nor the monitoring sweep may send that local id again.
+- [ ] Accepted-submit hot reads use the rollback/restart-safe accepted-fact
+      selector rather than materializing unrelated historical UNKNOWN facts.
+      Accepted-submit and fill-attribution repair skip checkpoint-only pages, so
+      alternating idle consumers converge across restart instead of appending
+      checkpoints for each other's transport metadata.
 - [ ] The three numeric caps' boundary (`order_quantity`/`notional`/`exposure`
       *exactly equal* to the configured limit) is asserted, not just values
       strictly above/below it — a `>` → `>=` regression silently tightening a

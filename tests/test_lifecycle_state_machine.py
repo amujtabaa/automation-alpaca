@@ -65,6 +65,7 @@ from app.models import (
     utcnow,
 )
 from app.monitoring import _run_protection, _submit_pending_orders, run_monitoring_tick
+from app.policy import canonical_accepted_submit_broker_id
 from app.store.base import (
     CLAIM_CLAIMED,
     FLATTEN_BUYS_OPEN,
@@ -769,23 +770,44 @@ class LifecycleMachine(RuleBasedStateMachine):
     @invariant()
     def no_live_untracked_broker_order(self):
         """Every broker order the sim still considers *live* must be tracked —
-        either a local order references it, or an open recovery record does.
+        a local order, an open recovery record, or the exact canonical
+        accepted-submit UNKNOWN fallback references it.
         This is the F-002 orphan guard: a live-at-broker order the local state
-        knows nothing about is the exact failure D-017 exists to prevent."""
+        knows nothing about is the exact failure D-017 exists to prevent.
+
+        The fallback disjunct is provenance- and identity-exact; malformed
+        UNKNOWN facts cannot weaken the guard. Producer/repair behavior is
+        pinned independently in ``test_wo0113_submit_acceptance_fallback.py``.
+        """
 
         orders = self._run(self.store.list_orders())
         recoveries = self._run(self.store.list_submit_recoveries())
+        execution_events = self._run(self.store.get_execution_events())
         tracked = {o.broker_order_id for o in orders if o.broker_order_id is not None}
         open_recovery = {
             r.broker_order_id
             for r in recoveries
             if r.cleanup_status in RECOVERY_OPEN_STATUSES
         }
+        orders_by_id = {order.id: order for order in orders}
+        canonical_unknown: set[str] = set()
+        for execution_event in execution_events:
+            order = orders_by_id.get(execution_event.order_id)
+            broker_order_id = canonical_accepted_submit_broker_id(
+                execution_event, order
+            )
+            if broker_order_id is not None:
+                canonical_unknown.add(broker_order_id)
         for broker_id in list(self.sim._broker_ids.values()):
             if self.sim.is_live(broker_id):
                 in_tracked = broker_id in tracked
-                assert in_tracked or broker_id in open_recovery, (
-                    f"live broker order {broker_id} is untracked (no order, no recovery)"
+                assert (
+                    in_tracked
+                    or broker_id in open_recovery
+                    or broker_id in canonical_unknown
+                ), (
+                    f"live broker order {broker_id} is untracked "
+                    "(no order, recovery, or canonical UNKNOWN owner)"
                 )
                 # AIR-010 coverage: record when the invariant is satisfied via the
                 # open-recovery DISJUNCT (a live broker order the local order state

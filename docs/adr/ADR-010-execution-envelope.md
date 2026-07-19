@@ -18,6 +18,10 @@ working-order predicate (WO-0025), §3 supersession (WO-0027), FROZEN→BREACHED
 split (WO-0029A, both text proposals accepted by Ameen 2026-07-12), INV-085 scope narrowed to
 ACTIVE/FROZEN (WO-0034, decision 3a).
 
+WO-0113's implemented hardening is recorded below as recommended amendments pending operator
+ratification and REV-0033 independent review. Those blocks describe current branch behavior without
+retroactively relabeling the accepted decisions above.
+
 ## Context
 
 The liquidity-aware sell executor (LASE v1 package) is a high-speed autonomous reprice loop:
@@ -84,9 +88,10 @@ no continuity worth linking.
 widens or duplicates it. Three storage-enforced rules: (i) a venue-live working order
 (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/CANCEL_PENDING/quarantined) blocks supersession outright —
 the store cannot venue-cancel, and a successor activating next to a resting predecessor SELL is
-double exposure; the amendment FLOW cancels first, then supersedes. (ii) A staged CREATED
-(never-submitted) order does not block: it is locally cancelled in the same atomic unit (nothing
-of the old mandate survives). (iii) Conservation: `successor.qty_ceiling ≤ old.remaining_quantity`
+double exposure; the amendment FLOW cancels first, then supersedes. (ii) A staged, event-projected
+CREATED order blocks when broker identity, open recovery, or accepted-submit uncertainty says it
+may have crossed the venue. A safely local CREATED child is cancelled in the same atomic unit
+(nothing of the old mandate survives). (iii) Conservation: `successor.qty_ceiling ≤ old.remaining_quantity`
 at commit time, read under the same lock — a fill racing the amendment shrinks remaining first and
 the stale draft is refused (re-draft against the truth); WIDENING a mandate requires cancel + a
 fresh human approval, never an amendment. As drafted, none of these were decided: the successor
@@ -232,6 +237,41 @@ manual SELL beside possibly-already-sold shares is the same double-sell class, a
 resolves the recovery first. Neither qualification lets an envelope outlive the backstop: (i)
 retries into the normal preemption; (ii) quarantines the whole sell side pending the human.
 
+#### WO-0113 recommended amendment — pending operator ratification
+
+The exclusion of `CREATED` from `MAY_EXECUTE_ORDER_STATUSES` is safe only while exit preemption
+closes the complete proposal-to-order epoch. Candidate admission refuses while a same-symbol exit
+may execute; a final dispatch that loses that race expires its PENDING/APPROVED candidate rather
+than parking it for revival. A successful legacy SELL dispatch, protection open, flatten, or
+envelope stage stands down same-symbol PENDING/APPROVED BUY candidates and every safely local,
+event-projected `CREATED` BUY. There is no `filled_quantity == 0` exception: cached filled quantity
+is not evidence that a projected-CREATED order remains needed. A local cancel is allowed only with
+no broker id and no open recovery that references the order; a claim race wins safely through the
+store-atomic compare-and-swap. A concrete broker id on projected-CREATED, or an unrepresented
+accepted-submit execution fact, is also venue exposure. These rails bind raw SELL dispatch,
+envelope stage, final SELL claim, protection, flatten, and emergency reduce. Venue-uncertain and
+recovery-owned BUYs are never blindly cancelled and continue to block the exit.
+
+The same cross-side check now binds the raw legacy SELL boundary: intent creation and dispatch
+recheck `Halted`; dispatch rechecks same-symbol BUY execution exposure; a blocked PENDING/APPROVED
+intent self-heals to EXPIRED. After a successful SELL mint, the candidate/CREATED stand-down is in
+the same atomic unit. The explicit emergency command is the only caller permitted to carry the
+ADR-003 override capability through that boundary.
+
+For autonomous protection, a same-symbol venue-uncertain or recovery-derived BUY remains the
+fail-closed `None` + audit + next-tick retry outcome. The recommendation endorses that bounded
+deferral over minting a potentially crossing or mis-sized SELL.
+
+Pins: `tests/test_wo0113_primary_remediation.py`
+(`test_exit_preempt_cancels_nonzero_filled_created_buy`,
+`test_envelope_stage_defers_without_canceling_recovery_owned_created_buy`,
+`test_candidate_creation_is_refused_during_exit_preemption`, and
+`test_exit_blocked_candidate_dispatch_expires_instead_of_reviving`),
+`tests/test_wo0113_sell_boundary.py` (all direct-boundary cases), and
+`tests/test_wo0113_safe_local_cancel.py`
+(`test_facade_created_cancel_loses_safely_to_submission_claim` and
+`test_monitoring_created_cancel_race_uses_cas_returned_venue_state`).
+
 ### 5. Engine-seam divergence is a defect signal
 
 **D-3 (decided):** if the engine's write-time validation rejects an action the pure policy planned,
@@ -306,6 +346,34 @@ mandate surviving the bell is counted, not invisible). (iii) The `manual_flatten
 provenance payload distinguishes **`deferred_to_live_envelope_child`** from
 `deferred_to_live_protection` — the audit trail names which machinery held the human's flatten
 (the envelope lineage's live child vs the intent's own in-flight protection order).
+
+#### WO-0113 recommended amendment — pending operator ratification
+
+The quantity rail is charged by one canonical fill fact exactly once, even if ingestion appended
+that canonical `FILL` before the envelope bridge ran. The canonical event stays immutable. For a
+uniquely bounded child whose matching canonical FILL is still unattributed, the store appends one
+`ENVELOPE_FILL_ATTRIBUTED` marker, globally deduped from the fill key, and decrements
+`remaining_quantity` in the same atomic unit. The marker is `ENGINE`/`LOCAL`, points to the
+canonical fill's id, sequence, and dedupe key, and is deliberately excluded from position folding;
+only the canonical `FILL` moves position. Only a validated already-attributed replay is a no-op.
+Before every NEW application, repair, or replay, the ordered canonical FILL/marker chain must run
+contiguously from `qty_ceiling` exactly to stored remaining. Cadence validates direct-attributed as
+well as orphan FILLs; its durable tail checkpoint advances only after all selected facts validate,
+and never advances on error. Foreign owner, lineage, material identity, chain, or marker conflicts
+fail closed rather than guessing.
+
+Terminal-envelope fill handling uses the same rule in both stores: the observed fill-source child
+is excluded from local cleanup, distinct safely local staged siblings are cancelled, and owner
+reconciliation runs once. This remains true for a late fill against an already-terminal envelope.
+
+Pins: `tests/test_wo0113_attribution_repair.py`
+(`test_unattributed_fill_is_applied_once_by_append_only_marker`,
+`test_record_first_keeps_one_fill_and_marker_alone_cannot_move_position`,
+`test_monitoring_replay_repairs_first_poll_without_parent`,
+`test_new_repair_rejects_an_existing_unreflected_marker`,
+`test_cadence_validates_direct_attributed_fill_chain`,
+`test_attribution_repair_uses_durable_tail_checkpoint`, plus the conflict matrix) and
+`tests/test_wo0113_safe_local_cancel.py::test_terminal_fill_excludes_source_cancels_sibling_and_reconciles_once`.
 
 ### 7. Disposition of the LASE v1 code
 

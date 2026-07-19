@@ -3,9 +3,8 @@
 A single asyncio task, started at app startup (see ``app/main.py``), that on a
 fixed cadence (D-011: REST polling, not websocket):
 
-1. **Submits** orders the approval flow created but that have not yet reached the
-   broker (orders at ``OrderStatus.CREATED`` — their candidate is ``ORDERED`` but
-   the order itself is freshly created), and
+1. **Submits** claim-eligible orders projected at ``OrderStatus.CREATED`` (including
+   a claim released after a definite transient failure), and
 2. **Reconciles** open orders (``SUBMITTED`` / ``PARTIALLY_FILLED``) by polling
    the broker, appending any fills (the store dedups by ``source_fill_id``),
    advancing the order's status, and surfacing orders that have sat unfilled
@@ -44,9 +43,11 @@ from app.broker.adapter import (
     TerminalBrokerError,
 )
 from app.config import Settings
+from app.events.projectors import reconcile_trading_state
 from app.features import session_type_for
 from app.marketdata.service import MarketDataService, MarketSnapshot
 from app.models import (
+    ACCEPTED_SUBMIT_UNPERSISTED_REASON,
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
     RECOVERY_RESOLVED,
@@ -71,7 +72,7 @@ from app.models import (
     TradingState,
     utcnow,
 )
-from app.policy import finite_number_reason
+from app.policy import canonical_accepted_submit_broker_id, finite_number_reason
 from app.position import NegativePositionError
 from app.protection import (
     FloorBreach,
@@ -106,6 +107,7 @@ from app.store.base import (
     OrderTransitionError,
     ProtectionHaltedError,
     RecoveryTransitionError,
+    RiskLimits,
     StateStore,
     UnknownEntityError,
 )
@@ -136,10 +138,24 @@ _OPEN_STATUSES = frozenset(
 # (it is already being wound down, not "stuck unfilled").
 _STALEABLE_STATUSES = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED})
 
+# Cadence repair work is page-bounded. A poison fact blocks only its current
+# page while every fully inspected earlier page retains a durable high-water.
+_EXECUTION_REPAIR_BATCH_SIZE = 256
+_REPAIR_CHECKPOINT_TYPES = frozenset(
+    {
+        ExecutionEventType.ENVELOPE_ATTRIBUTION_REPAIR_CHECKPOINT,
+        ExecutionEventType.SUBMIT_ACCEPTANCE_REPAIR_CHECKPOINT,
+    }
+)
+
 # Fill-append failures that are recoverable per-order (logged, then skipped).
 _FILL_ERRORS = (InvalidFillError, UnknownEntityError, NegativePositionError)
 # Order-transition failures that are recoverable per-order.
 _TRANSITION_ERRORS = (OrderTransitionError, InvalidOrderError, UnknownEntityError)
+
+
+class _ReconcileGateEstablishmentError(RuntimeError):
+    """The reconcile driver did not durably enter its required safe state."""
 
 
 def _protection_config(settings: Optional[Settings]) -> ProtectionConfig:
@@ -155,6 +171,19 @@ def _protection_config(settings: Optional[Settings]) -> ProtectionConfig:
         enabled=settings.protection_enabled,
         stop_loss_pct=settings.protection_stop_loss_pct,
         limit_buffer_pct=settings.protection_limit_buffer_pct,
+    )
+
+
+def _capi_risk_limits(settings: Optional[Settings]) -> RiskLimits:
+    """CAPI configuration used again at the final BUY submission claim."""
+
+    if settings is None:
+        return RiskLimits()
+    return RiskLimits(
+        max_shares_per_order=settings.capi_max_shares_per_order,
+        max_notional_per_order=settings.capi_max_notional_per_order,
+        max_total_exposure=settings.capi_max_total_exposure,
+        allowlist=settings.capi_trading_allowlist,
     )
 
 
@@ -255,10 +284,11 @@ async def cancel_open_buys(
     Position derives only from *filled* shares, so an open unfilled BUY is
     invisible to the exit size — leaving one live would let a BUY fill and a
     protective SELL execute at the same time (a self-cross), or re-grow the very
-    position being exited. A never-submitted ``CREATED`` buy is canceled locally;
-    a live ``SUBMITTED``/``PARTIALLY_FILLED`` buy is canceled at the broker and
-    moved to ``CANCEL_PENDING`` (a late fill still reconciles). Idempotent and
-    audited via the store's transitions; shared with the flatten route."""
+    position being exited. A projected ``CREATED`` buy is canceled locally only
+    when the store proves no broker id or open recovery owner; a live
+    ``SUBMITTED``/``PARTIALLY_FILLED`` buy is canceled at the broker and moved to
+    ``CANCEL_PENDING`` (a late fill still reconciles). Idempotent and audited via
+    the store's transitions; shared with the flatten route."""
 
     orders = await store.list_orders()
     for order in orders:
@@ -675,6 +705,308 @@ async def _envelope_id_for_order(store: StateStore, order_id: str) -> Optional[s
     return envelope_id
 
 
+async def _record_envelope_fill_for_parent(
+    store: StateStore,
+    *,
+    envelope_id: str,
+    order_id: str,
+    quantity: int,
+    dedupe_key: str,
+    price: float,
+    session_id: Optional[str],
+    ts_event: Optional[datetime] = None,
+    source: EventSource = EventSource.BROKER_REST,
+    authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    strict: bool = False,
+) -> bool:
+    """Apply one fill when lineage was already resolved for this batch."""
+
+    try:
+        await store.record_envelope_fill(
+            envelope_id,
+            quantity=quantity,
+            dedupe_key=dedupe_key,
+            price=price,
+            order_id=order_id,
+            session_id=session_id,
+            ts_event=ts_event,
+            source=source,
+            authority=authority,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - canonical fill ingestion remains first truth
+        _log.exception(
+            "envelope fill bridge failed for order %s; fill ingest/repair continues",
+            order_id,
+        )
+        if strict:
+            raise
+        return False
+
+
+def _repair_checkpoint_identity(
+    repair_name: str, up_to_sequence: int, audit_cursor: int
+) -> str:
+    return f"repair-checkpoint:{repair_name}:{up_to_sequence}:{audit_cursor}"
+
+
+def _repair_checkpoint_values(
+    checkpoint: ExecutionEvent,
+    *,
+    checkpoint_type: ExecutionEventType,
+    repair_name: str,
+) -> tuple[int, int]:
+    """Validate and decode one canonical execution-truth repair cursor."""
+
+    payload = checkpoint.payload or {}
+    up_to_sequence = payload.get("up_to_sequence")
+    audit_cursor = payload.get("audit_cursor")
+    valid_numbers = (
+        isinstance(up_to_sequence, int)
+        and not isinstance(up_to_sequence, bool)
+        and up_to_sequence >= 0
+        and isinstance(audit_cursor, int)
+        and not isinstance(audit_cursor, bool)
+        and audit_cursor >= 0
+    )
+    if not valid_numbers:
+        raise RecoveryTransitionError(
+            f"malformed {repair_name} checkpoint {checkpoint.id}"
+        )
+    assert isinstance(up_to_sequence, int)
+    assert isinstance(audit_cursor, int)
+    identity = _repair_checkpoint_identity(repair_name, up_to_sequence, audit_cursor)
+    if not (
+        checkpoint.event_type is checkpoint_type
+        and checkpoint.source is EventSource.ENGINE
+        and checkpoint.authority is EventAuthority.LOCAL
+        and checkpoint.id == identity
+        and checkpoint.dedupe_key == identity
+        and checkpoint.order_id is None
+        and checkpoint.envelope_id is None
+        and payload.get("repair") == repair_name
+        and up_to_sequence < checkpoint.sequence
+    ):
+        raise RecoveryTransitionError(
+            f"malformed {repair_name} checkpoint {checkpoint.id}"
+        )
+    return up_to_sequence, audit_cursor
+
+
+async def _execution_repair_cursor(
+    store: StateStore,
+    *,
+    checkpoint_type: ExecutionEventType,
+    repair_name: str,
+) -> tuple[Optional[ExecutionEvent], int, int]:
+    checkpoint = await store.get_latest_execution_event(checkpoint_type)
+    if checkpoint is None:
+        return None, 0, 0
+    high_water, audit_cursor = _repair_checkpoint_values(
+        checkpoint,
+        checkpoint_type=checkpoint_type,
+        repair_name=repair_name,
+    )
+    max_sequence = await store.get_max_execution_sequence()
+    if high_water > max_sequence:
+        raise RecoveryTransitionError(
+            f"{repair_name} checkpoint {high_water} exceeds execution log "
+            f"maximum {max_sequence}"
+        )
+    return checkpoint, high_water, audit_cursor
+
+
+async def _execution_repair_tail(
+    store: StateStore,
+    *,
+    checkpoint_type: ExecutionEventType,
+    repair_name: str,
+) -> tuple[Optional[ExecutionEvent], int, int, list[ExecutionEvent]]:
+    """Read one bounded durable execution-log page for a repair consumer.
+
+    Checkpoints are transport metadata, not repair work.  Skip complete pages
+    containing only either consumer's checkpoint so a historical checkpoint
+    chain cannot hide a later real fact; if the tail is checkpoint-only, report
+    it as idle without appending another event.
+    """
+
+    checkpoint, high_water, audit_cursor = await _execution_repair_cursor(
+        store,
+        checkpoint_type=checkpoint_type,
+        repair_name=repair_name,
+    )
+    scan_after = high_water
+    while True:
+        events = await store.get_execution_events(
+            after_sequence=scan_after,
+            limit=_EXECUTION_REPAIR_BATCH_SIZE,
+        )
+        if not events:
+            return checkpoint, high_water, audit_cursor, []
+        if any(event.event_type not in _REPAIR_CHECKPOINT_TYPES for event in events):
+            return checkpoint, high_water, audit_cursor, events
+        if len(events) < _EXECUTION_REPAIR_BATCH_SIZE:
+            return checkpoint, high_water, audit_cursor, []
+        scan_after = events[-1].sequence
+
+
+async def _advance_execution_repair_checkpoint(
+    store: StateStore,
+    *,
+    checkpoint_type: ExecutionEventType,
+    repair_name: str,
+    up_to_sequence: int,
+    audit_cursor: int = 0,
+    now: Optional[datetime] = None,
+) -> ExecutionEvent:
+    """Advance a repair cursor only after one complete selected page is clean."""
+
+    identity = _repair_checkpoint_identity(repair_name, up_to_sequence, audit_cursor)
+    stored = await store.append_execution_event(
+        ExecutionEvent(
+            id=identity,
+            event_type=checkpoint_type,
+            source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL,
+            dedupe_key=identity,
+            ts_event=now,
+            ts_init=now or utcnow(),
+            payload={
+                "repair": repair_name,
+                "up_to_sequence": up_to_sequence,
+                "audit_cursor": audit_cursor,
+            },
+        )
+    )
+    _repair_checkpoint_values(
+        stored,
+        checkpoint_type=checkpoint_type,
+        repair_name=repair_name,
+    )
+    return stored
+
+
+def _repair_page_needs_checkpoint(
+    events: list[ExecutionEvent], checkpoint_type: ExecutionEventType
+) -> bool:
+    """Advance a non-empty page selected by the repair-tail loader.
+
+    ``_execution_repair_tail`` guarantees a returned page contains real repair
+    input rather than checkpoint-only transport metadata.  The type argument
+    keeps each caller explicit about which durable cursor it owns.
+    """
+
+    _ = checkpoint_type
+    return bool(events)
+
+
+async def _repair_unattributed_envelope_fills(store: StateStore) -> None:
+    """Validate/repair envelope fill attribution from a durable log tail.
+
+    Terminal orders are no longer venue-polled, so an immutable envelope-less
+    FILL with one action parent is a repair seed. Direct-attributed FILLs and
+    attribution markers are replayed too so raw append-only corruption cannot
+    hide outside the orphan-only path. The checkpoint advances only after the
+    whole selected tail succeeds; a conflict is therefore retried after restart.
+    """
+
+    checkpoint_type = ExecutionEventType.ENVELOPE_ATTRIBUTION_REPAIR_CHECKPOINT
+    while True:
+        _checkpoint, _high_water, _audit_cursor, events = await _execution_repair_tail(
+            store,
+            checkpoint_type=checkpoint_type,
+            repair_name="envelope_attribution",
+        )
+        if not events:
+            return
+
+        for event in events:
+            if event.event_type in _REPAIR_CHECKPOINT_TYPES:
+                continue
+            canonical = event
+            envelope_id = event.envelope_id
+            repair_now = event.ts_init
+
+            if event.event_type is ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED:
+                fill_key = event.payload.get("fill_dedupe_key")
+                if not isinstance(fill_key, str) or not fill_key or envelope_id is None:
+                    raise InvalidFillError(
+                        f"attribution marker {event.id} has no repairable fill identity"
+                    )
+                matched = await store.get_execution_event_by_dedupe_key(fill_key)
+                if matched is None or matched.event_type is not ExecutionEventType.FILL:
+                    raise InvalidFillError(
+                        f"attribution marker {event.id} does not name one canonical FILL"
+                    )
+                canonical = matched
+            elif event.event_type is not ExecutionEventType.FILL:
+                continue
+
+            if (
+                canonical.dedupe_key is None
+                or canonical.order_id is None
+                or canonical.quantity is None
+                or canonical.price is None
+            ):
+                if envelope_id is None:
+                    # An ordinary/unscoped malformed FILL has no envelope ownership
+                    # claim for this repair consumer to act on.
+                    continue
+                raise InvalidFillError(
+                    f"direct-attributed FILL {canonical.id} is not repairable"
+                )
+
+            if envelope_id is None:
+                actions = [
+                    item
+                    for item in await store.get_order_execution_events(
+                        canonical.order_id
+                    )
+                    if item.event_type is ExecutionEventType.ENVELOPE_ACTION
+                ]
+                if not actions:
+                    # Ordinary order fill, outside envelope accounting.
+                    continue
+                parent_ids = {item.envelope_id for item in actions}
+                if None in parent_ids or len(parent_ids) != 1:
+                    raise InvalidFillError(
+                        f"fill {canonical.dedupe_key!r} has ambiguous envelope lineage"
+                    )
+                envelope_id = next(iter(parent_ids))
+                assert envelope_id is not None
+
+            try:
+                await store.record_envelope_fill(
+                    envelope_id,
+                    quantity=canonical.quantity,
+                    dedupe_key=canonical.dedupe_key,
+                    price=canonical.price,
+                    order_id=canonical.order_id,
+                    session_id=canonical.session_id,
+                    ts_event=canonical.ts_event,
+                    source=canonical.source,
+                    authority=canonical.authority,
+                    now=repair_now,
+                )
+            except Exception:  # noqa: BLE001 - poison keeps cursor stationary
+                _log.exception(
+                    "invalid envelope attribution blocks cadence for fill %s",
+                    canonical.dedupe_key,
+                )
+                raise
+
+        if _repair_page_needs_checkpoint(events, checkpoint_type):
+            await _advance_execution_repair_checkpoint(
+                store,
+                checkpoint_type=checkpoint_type,
+                repair_name="envelope_attribution",
+                up_to_sequence=events[-1].sequence,
+                now=events[-1].ts_init,
+            )
+        if len(events) < _EXECUTION_REPAIR_BATCH_SIZE:
+            return
+
+
 async def _envelope_order_ids(store: StateStore) -> set[str]:
     """Every order id minted by an envelope action (an ENVELOPE_ACTION event
     carrying an order id). These orders are driven ONLY by the
@@ -780,8 +1112,13 @@ async def _cancel_envelope_working_order(
     for order in targets.values():
         try:
             if order.status is OrderStatus.CREATED:
-                await store.transition_order(order.id, OrderStatus.CANCELED)
-                continue
+                order = await store.transition_order(
+                    order.id,
+                    OrderStatus.CANCELED,
+                    expected_from=OrderStatus.CREATED,
+                )
+                if order.status is OrderStatus.CANCELED:
+                    continue
             if (
                 order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
                 and order.broker_order_id is not None
@@ -1102,10 +1439,24 @@ async def run_startup_reconcile(
       ``Reducing`` (R3: never auto-``Halted`` — a held position stays exitable at
       boot) and the monitoring loop keeps re-checking each tick until parity.
 
-    No-op when reconciliation is disabled. Best-effort — never raises into startup."""
+    No-op when reconciliation is disabled. Failures are contained at startup only
+    after the effective state is verified reduce-only; failure to establish that
+    gate aborts startup. The normal cadence retries repair/reconciliation."""
 
     _log.info("startup reconcile: entering reduce-only until parity confirmed")
-    await _reconcile_and_gate(store, adapter, settings, reason="startup_pending")
+    try:
+        await _reconcile_and_gate(store, adapter, settings, reason="startup_pending")
+    except _ReconcileGateEstablishmentError:
+        # A kill switch may make the composed state HALTED even though the
+        # reconcile-driver write itself failed.  HALTED cannot be used as proof
+        # that the required startup gate was durably established.
+        raise
+    except Exception as exc:  # noqa: BLE001 - contain only behind a verified gate
+        if not await _effective_state_is_reduce_only(store):
+            raise _ReconcileGateEstablishmentError(
+                "startup could not establish the required reduce-only gate"
+            ) from exc
+        _log.exception("startup reconcile failed; trading remains reduce-only")
 
 
 async def on_stream_reconnect(
@@ -1121,10 +1472,23 @@ async def on_stream_reconnect(
     stream yet. This is the seam a real stream's reconnect callback WILL call; for now
     it is invoked deterministically from the sim/tests, and real-stream wiring is
     deferred with real creds (see docs/SPINE_PHASE4_PLAN.md R1). No-op when
-    reconciliation is disabled; best-effort (never raises into a callback)."""
+    reconciliation is disabled. Repair/reconcile faults are contained after the
+    effective state is verified reduce-only; failure to establish that gate raises
+    so the caller cannot treat an ACTIVE reconnect as safely handled."""
 
     _log.warning("stream reconnect — entering reduce-only + reconciling (§7 / wave 4g)")
-    await _reconcile_and_gate(store, adapter, settings, reason="stream_reconnect")
+    try:
+        await _reconcile_and_gate(store, adapter, settings, reason="stream_reconnect")
+    except _ReconcileGateEstablishmentError:
+        # See startup: a pre-existing HALTED control state does not prove the
+        # reconnect's reconcile-driver write committed.
+        raise
+    except Exception as exc:  # noqa: BLE001 - callback isolation behind a safe gate
+        if not await _effective_state_is_reduce_only(store):
+            raise _ReconcileGateEstablishmentError(
+                "stream reconnect could not establish the required reduce-only gate"
+            ) from exc
+        _log.exception("stream reconnect reconcile failed; trading remains reduce-only")
 
 
 async def _reconcile_and_gate(
@@ -1137,7 +1501,17 @@ async def _reconcile_and_gate(
 
     if not settings.reconciliation_enabled:
         return
-    await _safe_set_reconcile_state(store, TradingState.REDUCING, reason=reason)
+    set_succeeded = await _safe_set_reconcile_state(
+        store, TradingState.REDUCING, reason=reason
+    )
+    if not set_succeeded or not await _effective_state_is_reduce_only(store):
+        raise _ReconcileGateEstablishmentError(
+            "reconcile could not establish the required reduce-only gate"
+        )
+    # Repair durable broker acceptance before parity may lift REDUCING.
+    await _repair_unpersisted_submit_audits(store)
+    await _repair_unattributed_envelope_fills(store)
+
     budget = ReconcileQueryBudget(settings.reconcile_query_budget_per_min)
     await _run_reconciliation(store, adapter, settings, budget=budget, drive_state=True)
 
@@ -1162,6 +1536,26 @@ async def run_monitoring_tick(
     caller (tests, the Hypothesis state machine) is untouched; it feeds §5.4
     protective-sell order-type re-derivation and §7 fill-price fallback.
     """
+
+    # Repair durable broker acceptance before any new venue action this tick.
+    await _repair_unpersisted_submit_audits(store)
+    # A canonical FILL may survive a crash after position ingestion but before
+    # parent accounting. Repair terminal children before any new venue action.
+    await _repair_unattributed_envelope_fills(store)
+
+    # The loop-owned cadence establishes/refreshes reconciliation truth before
+    # any protection, envelope, or submission venue action.  A failed driver
+    # write or failed verification therefore aborts this tick while it is still
+    # side-effect-free at the venue.  Direct test/API ticks keep their historic
+    # end-of-pass observability reconcile and never drive the state machine.
+    if drive_reconcile_state:
+        await _run_reconciliation(
+            store,
+            adapter,
+            settings,
+            budget=reconcile_budget,
+            drive_state=True,
+        )
 
     # Phase 7: protection runs FIRST so a protective order it creates is claimed
     # + submitted in the SAME tick (no extra cadence of latency). No-op when there
@@ -1208,13 +1602,14 @@ async def run_monitoring_tick(
     # ``drive_reconcile_state`` (loop/startup only) lets it drive the §8 reconcile
     # TradingState driver (Reducing while divergent, Active on parity — wave 4f / R2);
     # direct tick callers leave it False, so the corpus never flips trading_state.
-    await _run_reconciliation(
-        store,
-        adapter,
-        settings,
-        budget=reconcile_budget,
-        drive_state=drive_reconcile_state,
-    )
+    if not drive_reconcile_state:
+        await _run_reconciliation(
+            store,
+            adapter,
+            settings,
+            budget=reconcile_budget,
+            drive_state=False,
+        )
 
 
 async def _submit_pending_orders(
@@ -1260,7 +1655,10 @@ async def _submit_pending_orders(
     blocked_already: Optional[set[str]] = None
 
     for order in created:
-        claim = await store.claim_order_for_submission(order.id)
+        claim = await store.claim_order_for_submission(
+            order.id,
+            risk_limits=_capi_risk_limits(settings),
+        )
         if claim.outcome == CLAIM_BLOCKED:
             # Held by a control — audited once per order (not per tick), matching
             # the prior behavior. The claim wrote no state change.
@@ -1322,6 +1720,7 @@ async def _submit_pending_orders(
                 raise BrokerError(
                     f"adapter returned an empty broker id for order {claimed.id}"
                 )
+            broker_order_id = broker_order_id.strip()
         except TerminalBrokerError as exc:
             # AIR-003 (review follow-up): a *definitive* broker rejection on the
             # first submit (403/422/delisted, or a duplicate whose lookup fails).
@@ -1357,28 +1756,25 @@ async def _submit_pending_orders(
                 claimed.symbol,
                 exc,
             )
-            try:
-                await store.quarantine_timed_out_order(
-                    claimed.id, reason="ambiguous_submit"
-                )
-            except _TRANSITION_ERRORS as q_exc:
-                # The order left SUBMITTING some other way (e.g. a manual cancel
-                # during the broker call) — nothing to quarantine. Safe to skip.
-                _log.warning(
-                    "could not quarantine ambiguous submit %s: %s", claimed.id, q_exc
-                )
+            await _quarantine_or_own_ambiguous_submit(
+                store,
+                claimed,
+                exc,
+                context="first_submit",
+            )
             continue
         except Exception as exc:  # noqa: BLE001 - release the claim, retry next tick
             # Releasing SUBMITTING -> CREATED lets the next tick re-run the full
             # gate. But if the order's OWN session closed during the submit await
-            # (session close skips SUBMITTING orders, so the claim shielded it
-            # from close's CREATED-order cancel), releasing to CREATED would
+            # (close skips SUBMITTING, so the claim shielded it from the safe-local
+            # CREATED-BUY sweep), releasing to CREATED would
             # strand a zombie CREATED order in a closed session forever — close
             # is one-shot and never runs again, and no other path cleans it up,
             # so it would count toward CAPI exposure indefinitely (regressing
-            # D-013a's no-zombie-CREATED-after-close invariant). In that case
-            # cancel it instead — exactly what close would have done to a CREATED
-            # order. A merely kill-switched/paused session still releases to
+            # D-013a's no-zombie-CREATED-after-close invariant). In that definite
+            # pre-ack failure case, cancel it instead — the same terminal
+            # disposition close applies to an eligible local CREATED buy. A merely
+            # kill-switched/paused session still releases to
             # CREATED (reversible: the next claim holds it until the stop clears).
             # §5.5 (side-aware release): a SELL is legitimately submittable in a
             # closed session (§5.2) and keeps reconciling post-close (D-011), so it
@@ -1417,7 +1813,7 @@ async def _submit_pending_orders(
             await store.transition_order(
                 claimed.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
             )
-        except _TRANSITION_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 - broker acceptance needs ownership
             # Broker accepted it but the store couldn't mark it SUBMITTED (most
             # often a manual cancel landing during the submit call: SUBMITTING →
             # CANCELED, so SUBMITTING → SUBMITTED is now illegal). The order is
@@ -1509,14 +1905,12 @@ async def _redrive_stale_submitting(
                     q_exc,
                 )
             continue
-        # Backstop: too many transient re-drive failures already → treat as a
-        # permanent failure the classifier missed and escalate rather than loop.
-        prior_attempts = await _order_event_count(
-            store, order.id, EventType.STALE_SUBMITTING_REDRIVE_DEFERRED.value
-        )
+        # Backstop: too many durable no-progress attempts (broker errors or an
+        # unpriceable snapshot) → escalate rather than loop indefinitely.
+        prior_attempts = await _stale_redrive_attempt_count(store, order.id)
         if prior_attempts >= max_attempts:
             _log.error(
-                "stale SUBMITTING order %s exhausted %s transient re-drive "
+                "stale SUBMITTING order %s exhausted %s no-progress re-drive "
                 "attempts; escalating to needs_review",
                 order.id,
                 prior_attempts,
@@ -1525,7 +1919,7 @@ async def _redrive_stale_submitting(
                 store,
                 order,
                 RuntimeError(
-                    f"exhausted {prior_attempts} transient re-drive attempts "
+                    f"exhausted {prior_attempts} no-progress re-drive attempts "
                     f"(>= max {max_attempts})"
                 ),
             )
@@ -1533,7 +1927,7 @@ async def _redrive_stale_submitting(
         # §5.4: re-derive a protective sell's order type at THIS submission too
         # (the stale-re-drive is one of the three submit choke points). An
         # un-priceable pre/after-hours sell is left SUBMITTING to retry next tick
-        # (identical to the transient-BrokerError disposition below).
+        # It consumes the same durable no-progress budget as BrokerError below.
         effective = await _effective_submit_order(order, market_data, settings)
         if effective is None:
             _log.info(
@@ -1542,6 +1936,18 @@ async def _redrive_stale_submitting(
                 order.id,
                 order.symbol,
             )
+            await _record_redrive_deferral(
+                store,
+                order,
+                prior_attempts + 1,
+                RuntimeError("no priceable snapshot"),
+                reason="unpriceable",
+            )
+            continue
+        # Write-ahead progress: never call the broker unless the durable attempt
+        # reservation commits. A broken audit store therefore fails closed on
+        # every cadence instead of silently reissuing the request forever.
+        if not await _record_redrive_attempt_started(store, order, prior_attempts + 1):
             continue
         try:
             broker_order_id = await adapter.submit_order(effective)
@@ -1550,6 +1956,7 @@ async def _redrive_stale_submitting(
                     f"adapter returned an empty broker id re-driving stale "
                     f"SUBMITTING order {order.id}"
                 )
+            broker_order_id = broker_order_id.strip()
         except TerminalBrokerError as exc:
             _log.error(
                 "stale SUBMITTING order %s could not be re-driven (terminal); "
@@ -1570,18 +1977,16 @@ async def _redrive_stale_submitting(
                 order.id,
                 exc,
             )
-            try:
-                await store.quarantine_timed_out_order(
-                    order.id, reason="ambiguous_submit"
-                )
-            except _TRANSITION_ERRORS as q_exc:
-                _log.warning(
-                    "could not quarantine ambiguous re-drive %s: %s", order.id, q_exc
-                )
+            await _quarantine_or_own_ambiguous_submit(
+                store,
+                order,
+                exc,
+                context="stale_redrive",
+            )
             continue
         except BrokerError as exc:
             # Transient — leave it SUBMITTING; the next tick re-drives idempotently.
-            # Record the attempt durably so the backstop above can bound it.
+            # The write-ahead STARTED fact already advanced the durable cap.
             _log.warning(
                 "stale SUBMITTING order %s re-drive failed (transient, attempt "
                 "%s/%s), will retry next tick: %s",
@@ -1590,7 +1995,6 @@ async def _redrive_stale_submitting(
                 max_attempts,
                 exc,
             )
-            await _record_redrive_deferral(store, order, prior_attempts + 1, exc)
             continue
 
         try:
@@ -1602,7 +2006,7 @@ async def _redrive_stale_submitting(
                 order.id,
                 broker_order_id,
             )
-        except _TRANSITION_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 - broker acceptance needs ownership
             # The order left SUBMITTING some other way (e.g. a manual cancel) while
             # we re-drove it — the broker order is live but locally terminal. Same
             # durable path as the primary submit's unpersisted case.
@@ -1792,6 +2196,64 @@ async def _record_timeout_query_deferral(
         )
 
 
+async def _quarantine_or_own_ambiguous_submit(
+    store: StateStore,
+    order: Order,
+    exc: AmbiguousBrokerError,
+    *,
+    context: str,
+) -> None:
+    """Make an unknown venue send durably unreachable by every resubmit path.
+
+    TIMEOUT_QUARANTINE is the normal owner because its targeted read-only query
+    can converge the order automatically.  A concurrent local transition can
+    make that projection write fail even though the broker outcome is still
+    unknown.  In that case an open ``needs_review`` recovery owns the exact
+    local/client identity before this function returns.  Recovery persistence
+    is deliberately strict: if both ownership writes fail, the tick aborts
+    instead of claiming the SUBMITTING row is safe to re-drive.
+    """
+
+    try:
+        await store.quarantine_timed_out_order(order.id, reason="ambiguous_submit")
+        return
+    except Exception as quarantine_exc:  # noqa: BLE001 - unknown send needs ownership
+        _log.warning(
+            "could not quarantine ambiguous %s for order %s; recording durable "
+            "needs_review ownership: %s",
+            context,
+            order.id,
+            quarantine_exc,
+        )
+
+    # Re-read after the failed transition so a concurrent local terminalization
+    # cannot be mistaken for resolution of the unknown broker send.  The
+    # immutable scope is taken from the current row when it still exists.
+    current = await store.get_order(order.id)
+    scoped = current if current is not None else order
+    await store.create_submit_recovery(
+        local_order_id=scoped.id,
+        broker_order_id=scoped.broker_order_id or "",
+        client_order_id=scoped.id,
+        symbol=scoped.symbol,
+        side=scoped.side,
+        quantity=scoped.quantity,
+        limit_price=scoped.limit_price,
+        failure_reason=(
+            f"ambiguous {context} could not enter timeout quarantine: {exc}"
+        ),
+        session_id=scoped.session_id,
+        candidate_id=scoped.candidate_id,
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+        event_type=EventType.SUBMIT_RECOVERY_NEEDS_REVIEW.value,
+        extra_payload={
+            "ambiguous_submit": True,
+            "context": context,
+            "quarantine_failed": True,
+        },
+    )
+
+
 async def _escalate_stale_submitting(
     store: StateStore, order: Order, exc: Exception
 ) -> None:
@@ -1825,10 +2287,14 @@ async def _escalate_stale_submitting(
 
 
 async def _record_redrive_deferral(
-    store: StateStore, order: Order, attempt: int, exc: Exception
+    store: StateStore,
+    order: Order,
+    attempt: int,
+    exc: Exception,
+    *,
+    reason: str,
 ) -> None:
-    """Durably record one transient re-drive deferral so the livelock backstop can
-    count them across ticks and restarts. Best-effort (never crashes the tick)."""
+    """Record one no-progress re-drive attempt for the durable shared cap."""
 
     try:
         await store.append_event(
@@ -1840,11 +2306,51 @@ async def _record_redrive_deferral(
             symbol=order.symbol,
             candidate_id=order.candidate_id,
             order_id=order.id,
-            payload={"attempt": attempt, "error": str(exc)},
+            payload={"attempt": attempt, "error": str(exc), "reason": reason},
             session_id=order.session_id,
         )
     except Exception:  # noqa: BLE001 - audit is best-effort on a failure path
         _log.exception("could not record re-drive deferral for order %s", order.id)
+
+
+async def _record_redrive_attempt_started(
+    store: StateStore, order: Order, attempt: int
+) -> bool:
+    """Reserve a broker re-drive durably before any venue action."""
+
+    try:
+        await store.append_event(
+            EventType.STALE_SUBMITTING_REDRIVE_STARTED.value,
+            message=(
+                f"stale SUBMITTING order {order.symbol} re-drive started "
+                f"(attempt {attempt})"
+            ),
+            symbol=order.symbol,
+            candidate_id=order.candidate_id,
+            order_id=order.id,
+            payload={"attempt": attempt, "reason": "broker_redrive"},
+            session_id=order.session_id,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - fail closed before the broker call
+        _log.exception(
+            "could not reserve stale SUBMITTING re-drive for order %s; "
+            "broker call suppressed",
+            order.id,
+        )
+        return False
+
+
+async def _stale_redrive_attempt_count(store: StateStore, order_id: str) -> int:
+    """Count old deferrals plus write-ahead attempts across upgrades/restarts."""
+
+    deferred = await _order_event_count(
+        store, order_id, EventType.STALE_SUBMITTING_REDRIVE_DEFERRED.value
+    )
+    started = await _order_event_count(
+        store, order_id, EventType.STALE_SUBMITTING_REDRIVE_STARTED.value
+    )
+    return deferred + started
 
 
 async def _order_event_count(store: StateStore, order_id: str, event_type: str) -> int:
@@ -1879,6 +2385,42 @@ async def _order_deferral_count(
     )
 
 
+async def _record_accepted_submit_uncertainty(
+    store: StateStore,
+    order: Order,
+    broker_order_id: str,
+    exc: Exception,
+) -> None:
+    """Last durable owner whenever recovery-ledger persistence fails."""
+
+    dedupe_key = f"accepted_submit_unpersisted:{order.id}:{broker_order_id}"
+    stored = await store.append_execution_event(
+        ExecutionEvent(
+            event_type=ExecutionEventType.UNKNOWN_RECONCILE_REQUIRED,
+            source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL,
+            dedupe_key=dedupe_key,
+            ts_init=order.updated_at,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            price=order.limit_price,
+            order_id=order.id,
+            session_id=order.session_id,
+            correlation_id=order.sell_intent_id or order.candidate_id,
+            payload={
+                "reason": ACCEPTED_SUBMIT_UNPERSISTED_REASON,
+                "broker_order_id": broker_order_id,
+                "error": str(exc),
+            },
+        )
+    )
+    if canonical_accepted_submit_broker_id(stored, order) != broker_order_id:
+        raise RecoveryTransitionError(
+            "accepted-submit uncertainty dedupe belongs to conflicting truth"
+        )
+
+
 async def _handle_unpersisted_submit(
     store: StateStore,
     adapter: BrokerAdapter,
@@ -1904,8 +2446,12 @@ async def _handle_unpersisted_submit(
       fails — an order we cannot track is safer cancelled than left live and
       invisible.
 
-    Best-effort and swallows its own errors — this runs on a failure path and
-    must not crash the loop.
+    The audit append is diagnostic and best-effort; it is not an execution
+    exposure owner. If recovery ownership cannot be committed, a separately
+    deduped UNKNOWN_RECONCILE_REQUIRED execution fact always retains exact
+    broker identity and blocks opposite-side work until repair, whether or not
+    the ordinary audit happened to succeed. Any recovery-write failure still
+    raises so the current cadence cannot continue into later venue actions.
     """
 
     _log.error(
@@ -1946,7 +2492,7 @@ async def _handle_unpersisted_submit(
             )
             _log.info("recovered unpersisted submit for order %s on retry", order.id)
             return
-        except _TRANSITION_ERRORS as retry_exc:
+        except Exception as retry_exc:  # noqa: BLE001 - fall through to recovery owner
             _log.error(
                 "retry to mark order %s SUBMITTED failed; recording recovery: %s",
                 order.id,
@@ -1968,12 +2514,176 @@ async def _handle_unpersisted_submit(
             session_id=order.session_id,
             candidate_id=order.candidate_id,
         )
-    except Exception:  # noqa: BLE001 - even the recovery write is best-effort here
+    except Exception as recovery_exc:  # noqa: BLE001 - fail closed below
         _log.exception(
             "could not write submit-recovery record for order %s (broker %s)",
             order.id,
             broker_order_id,
         )
+        await _record_accepted_submit_uncertainty(
+            store, order, broker_order_id, recovery_exc
+        )
+        raise RuntimeError(
+            "accepted broker submit has durable uncertainty but no recovery owner"
+        ) from recovery_exc
+
+
+async def _repair_accepted_submit_seed(
+    store: StateStore, seed_kind: str, event: Any
+) -> None:
+    """Repair one accepted-submit audit or canonical execution fallback."""
+
+    payload = event.payload or {}
+    raw_broker_order_id = payload.get("broker_order_id")
+    if (
+        not event.order_id
+        or not isinstance(raw_broker_order_id, str)
+        or not raw_broker_order_id.strip()
+    ):
+        raise RecoveryTransitionError(
+            f"accepted-submit {seed_kind} {event.id} has no repairable identity"
+        )
+    broker_order_id = raw_broker_order_id.strip()
+
+    # Legacy audits may legitimately outlive a lost order row after a recovery
+    # has already adopted the pair. Execution fallback truth is stricter: its
+    # complete immutable provenance must validate before any represented-owner
+    # release can make it disappear from venue-exposure scope.
+    represented = await store.get_submit_recovery_by_identity(
+        event.order_id, broker_order_id
+    )
+    if seed_kind == "audit" and represented is not None:
+        return
+
+    order = await store.get_order(event.order_id)
+    if order is None:
+        raise RecoveryTransitionError(
+            f"accepted-submit {seed_kind} {event.id} references missing order "
+            f"{event.order_id}"
+        )
+    if seed_kind == "execution_fallback":
+        canonical_broker_id = canonical_accepted_submit_broker_id(event, order)
+        if canonical_broker_id != broker_order_id:
+            raise RecoveryTransitionError(
+                f"accepted-submit execution fallback {event.id} has "
+                "conflicting scope or provenance"
+            )
+        if represented is not None:
+            return
+
+    # A successful retry permanently represents this broker acceptance,
+    # regardless of any later terminal lifecycle event.
+    if order.broker_order_id == broker_order_id:
+        return
+    if order.status is OrderStatus.SUBMITTING:
+        try:
+            await store.transition_order(
+                order.id,
+                OrderStatus.SUBMITTED,
+                broker_order_id=broker_order_id,
+            )
+            return
+        except Exception:  # noqa: BLE001 - recovery ledger owns failed adoption
+            pass
+
+    extra_payload: dict[str, Any] = {
+        "repaired_from_event_id": event.id,
+        "repair_seed": seed_kind,
+    }
+    for key in ("envelope_id", "kind"):
+        if key in payload:
+            extra_payload[key] = payload[key]
+    await store.create_submit_recovery(
+        local_order_id=order.id,
+        broker_order_id=broker_order_id,
+        client_order_id=order.id,
+        symbol=order.symbol,
+        side=order.side,
+        quantity=order.quantity,
+        limit_price=order.limit_price,
+        failure_reason=f"repaired from accepted-submit {seed_kind} {event.id}",
+        session_id=order.session_id,
+        candidate_id=order.candidate_id,
+        extra_payload=extra_payload,
+    )
+
+
+async def _repair_unpersisted_submit_audits(store: StateStore) -> None:
+    """Restore durable ownership from bounded audit/execution truth pages.
+
+    No broker call occurs here. Normal ``SUBMITTED`` identity is retried first;
+    a recovery record owns convergence when the local lifecycle cannot adopt
+    the accepted venue order. Global audit pages advance a durable cursor only
+    after every row in that page is inspected, so unrelated history is never
+    rescanned and a malformed seed remains stationary.
+    """
+
+    checkpoint_type = ExecutionEventType.SUBMIT_ACCEPTANCE_REPAIR_CHECKPOINT
+    _checkpoint, execution_high_water, audit_cursor = await _execution_repair_cursor(
+        store,
+        checkpoint_type=checkpoint_type,
+        repair_name="accepted_submit",
+    )
+
+    while True:
+        next_cursor, audits = await store.get_audit_event_page(
+            after_cursor=audit_cursor,
+            limit=_EXECUTION_REPAIR_BATCH_SIZE,
+        )
+        if not audits:
+            break
+        for event in audits:
+            if event.event_type == EventType.ORDER_SUBMIT_UNPERSISTED.value:
+                await _repair_accepted_submit_seed(store, "audit", event)
+        audit_cursor = next_cursor
+        await _advance_execution_repair_checkpoint(
+            store,
+            checkpoint_type=checkpoint_type,
+            repair_name="accepted_submit",
+            up_to_sequence=execution_high_water,
+            audit_cursor=audit_cursor,
+            now=audits[-1].created_at,
+        )
+        if len(audits) < _EXECUTION_REPAIR_BATCH_SIZE:
+            break
+
+    while True:
+        (
+            _checkpoint,
+            execution_high_water,
+            persisted_audit_cursor,
+            events,
+        ) = await _execution_repair_tail(
+            store,
+            checkpoint_type=checkpoint_type,
+            repair_name="accepted_submit",
+        )
+        audit_cursor = persisted_audit_cursor
+        if not events:
+            return
+        for execution_event in events:
+            if execution_event.event_type in _REPAIR_CHECKPOINT_TYPES:
+                continue
+            if (
+                execution_event.event_type
+                is ExecutionEventType.UNKNOWN_RECONCILE_REQUIRED
+                and execution_event.payload.get("reason")
+                == ACCEPTED_SUBMIT_UNPERSISTED_REASON
+            ):
+                await _repair_accepted_submit_seed(
+                    store, "execution_fallback", execution_event
+                )
+        if _repair_page_needs_checkpoint(events, checkpoint_type):
+            await _advance_execution_repair_checkpoint(
+                store,
+                checkpoint_type=checkpoint_type,
+                repair_name="accepted_submit",
+                up_to_sequence=events[-1].sequence,
+                audit_cursor=audit_cursor,
+                now=events[-1].ts_init,
+            )
+        if len(events) < _EXECUTION_REPAIR_BATCH_SIZE:
+            return
 
 
 def _broker_filled(update: BrokerOrderUpdate) -> int:
@@ -2286,32 +2996,46 @@ async def _apply_update(
     # the envelope's remaining decrements exactly once (INV-076). Fills without
     # a source_fill_id cannot be bridged deterministically (no venue identity
     # before the row exists) — production Alpaca fills always carry one.
-    envelope_id = await _envelope_id_for_order(store, order.id)
     rejected: list[dict[str, Any]] = []
+    envelope_id: Optional[str] = None
+    retry_parent_lookup = any(bf.source_fill_id is not None for bf in update.fills)
+    if retry_parent_lookup:
+        try:
+            # Every fill in one broker update belongs to the same order. Resolve
+            # its immutable ENVELOPE_ACTION lineage once, not once per fill.
+            envelope_id = await _envelope_id_for_order(store, order.id)
+        except Exception:  # noqa: BLE001 - canonical fill ingest still proceeds
+            _log.exception(
+                "envelope lineage lookup failed for order %s; retrying after ingest",
+                order.id,
+            )
+        else:
+            # A valid parent is stable for the batch. A missing parent gets one
+            # fresh post-ingest retry for the terminal first-observation fault.
+            retry_parent_lookup = envelope_id is None
     for bf in update.fills:
         # concurrency-0 root form (WO-0035): append_fill SELF-derives the
         # pre-fill position by excluding this fill's own dedupe identity from
         # the fold, so the record-first bridge below needs no prior-position
         # bookkeeping here (and no call site can fabricate the phantom
         # fill_overfill_quarantined by forgetting it).
-        if envelope_id is not None and bf.source_fill_id is not None:
-            try:
-                await store.record_envelope_fill(
-                    envelope_id,
-                    quantity=bf.quantity,
-                    dedupe_key=f"fill:{order.id}:{bf.source_fill_id}",
-                    price=bf.price,
-                    order_id=order.id,
-                    session_id=order.session_id,
-                    ts_event=bf.filled_at,
-                )
-            except Exception:  # noqa: BLE001 — never block fill ingest
-                _log.exception(
-                    "envelope fill bridge failed for order %s (envelope %s); "
-                    "fill ingest continues",
-                    order.id,
-                    envelope_id,
-                )
+        fill_key = (
+            f"fill:{order.id}:{bf.source_fill_id}"
+            if bf.source_fill_id is not None
+            else None
+        )
+        bridged = False
+        if fill_key is not None and envelope_id is not None:
+            bridged = await _record_envelope_fill_for_parent(
+                store,
+                envelope_id=envelope_id,
+                order_id=order.id,
+                quantity=bf.quantity,
+                dedupe_key=fill_key,
+                price=bf.price,
+                session_id=order.session_id,
+                ts_event=bf.filled_at,
+            )
         try:
             await store.append_fill(
                 order.id,
@@ -2338,6 +3062,34 @@ async def _apply_update(
                     "error": str(exc),
                 }
             )
+            continue
+
+        # Same-pass terminal repair runs outside append_fill's recoverable-error
+        # handler. Once the canonical FILL is durable, a conflicting attribution
+        # marker is durable corruption and must propagate instead of being
+        # misclassified as a rejected broker fill.
+        if fill_key is not None and not bridged:
+            if envelope_id is None and retry_parent_lookup:
+                retry_parent_lookup = False
+                try:
+                    envelope_id = await _envelope_id_for_order(store, order.id)
+                except Exception:  # noqa: BLE001 - cadence retries durable seed
+                    _log.exception(
+                        "post-ingest envelope lineage lookup failed for order %s",
+                        order.id,
+                    )
+            if envelope_id is not None:
+                await _record_envelope_fill_for_parent(
+                    store,
+                    envelope_id=envelope_id,
+                    order_id=order.id,
+                    quantity=bf.quantity,
+                    dedupe_key=fill_key,
+                    price=bf.price,
+                    session_id=order.session_id,
+                    ts_event=bf.filled_at,
+                    strict=True,
+                )
 
     recorded = sum(f.quantity for f in await store.list_fills(order_id=order.id))
     if update.filled_quantity > recorded:
@@ -2499,14 +3251,37 @@ def _has_unresolved_divergence(plan: ReconciliationPlan) -> bool:
 
 async def _safe_set_reconcile_state(
     store: StateStore, to: TradingState, *, reason: str
-) -> None:
+) -> bool:
     """Drive the reconcile TradingState driver (wave 4f / R2), best-effort — a store
-    error here must never crash the tick. Redundant sets are no-ops in the store."""
+    error here must never crash the ordinary tick.  The boolean lets startup and
+    reconnect require a committed REDUCING gate. Redundant sets are store no-ops."""
 
     try:
         await store.set_reconcile_trading_state(to, reason=reason)
-    except Exception:  # noqa: BLE001 - the FSM drive is non-fatal to the tick
+    except Exception:  # noqa: BLE001 - caller decides whether failure is fatal
         _log.exception("reconcile: could not drive trading_state -> %s", to.value)
+        return False
+    try:
+        session = await store.get_current_session()
+        events = await store.get_execution_events()
+    except Exception:  # noqa: BLE001 - inability to verify is not success
+        _log.exception("reconcile: could not verify the reconcile driver write")
+        return False
+    if reconcile_trading_state(events, session.id) is not to:
+        _log.error("reconcile: driver verification failed after write -> %s", to.value)
+        return False
+    return True
+
+
+async def _effective_state_is_reduce_only(store: StateStore) -> bool:
+    """Whether the composed trading state currently blocks new BUY intent."""
+
+    try:
+        state = await store.current_trading_state()
+    except Exception:  # noqa: BLE001 - inability to verify is not a safe gate
+        _log.exception("reconcile: could not verify effective trading state")
+        return False
+    return state in {TradingState.REDUCING, TradingState.HALTED}
 
 
 async def _run_reconciliation(
@@ -2553,6 +3328,22 @@ async def _run_reconciliation(
     # partial read) if the budget can't cover them — a skipped report is NOT flat.
     if budget is not None and not budget.try_consume(now, 2):
         _log.debug("reconciliation skipped this cycle: query budget exhausted")
+        if drive_state:
+            reducing_committed = await _safe_set_reconcile_state(
+                store,
+                TradingState.REDUCING,
+                reason="reconcile_budget_exhausted",
+            )
+            if not reducing_committed or not await _effective_state_is_reduce_only(
+                store
+            ):
+                raise RuntimeError(
+                    "reconcile query budget exhausted and reduce-only state "
+                    "could not be verified"
+                )
+            raise RuntimeError(
+                "reconcile query budget exhausted before a fresh parity check"
+            )
         return None
 
     try:
@@ -2575,7 +3366,7 @@ async def _run_reconciliation(
         await _resolve_reconcile_not_found(
             store, adapter, settings, plan.needs_targeted_query, budget=budget
         )
-        await _apply_inferred_fills(store, plan)
+        inferred_fills_persisted = await _apply_inferred_fills(store, plan)
         # `plan.resolutions` (a MATCHED order the mass report reports terminal) is
         # deliberately NOT applied here: a matched order carries a broker_order_id, so
         # the legacy per-order poll owns its terminal transition + fill ingestion —
@@ -2584,6 +3375,11 @@ async def _run_reconciliation(
         # order stays open locally one extra cycle if the poll is momentarily down (a
         # self-healing liveness gap, never an oversell). Observability-only on this path.
         if drive_state:
+            if not inferred_fills_persisted:
+                raise RuntimeError(
+                    "reconcile inferred fill persistence incomplete; "
+                    "parity cannot be established"
+                )
             # Wave 4h: surface broker-vs-local position drift as a durable
             # needs_review record (§7 — never a position overwrite). Gated by
             # drive_state (loop/startup) so a direct tick against an adapter that
@@ -2592,15 +3388,30 @@ async def _run_reconciliation(
             # Wave 4f / R2 gate: parity → Active (enable normal trading), any
             # unresolved divergence → Reducing (reduce-only until reconciled). Only
             # the loop / startup pass drive_state; direct tick callers (tests) don't.
-            await _safe_set_reconcile_state(
-                store,
+            target_state = (
                 TradingState.REDUCING
                 if _has_unresolved_divergence(plan)
-                else TradingState.ACTIVE,
+                else TradingState.ACTIVE
+            )
+            state_committed = await _safe_set_reconcile_state(
+                store,
+                target_state,
                 reason="reconcile_parity"
                 if not _has_unresolved_divergence(plan)
                 else "reconcile_divergence",
             )
+            if not state_committed:
+                raise RuntimeError(
+                    f"reconcile driver did not commit {target_state.value}"
+                )
+            if (
+                target_state is TradingState.REDUCING
+                and not await _effective_state_is_reduce_only(store)
+            ):
+                raise RuntimeError(
+                    "reconcile driver committed Reducing but effective state "
+                    "verification failed"
+                )
         return plan
     except Exception as exc:  # noqa: BLE001 - reconcile is non-fatal; a failure never flips truth
         _log.warning("reconciliation skipped this cycle (non-fatal): %s", exc)
@@ -2610,51 +3421,88 @@ async def _run_reconciliation(
             _log.error(
                 "reconcile failed — trading_state held at Reducing (reduce-only)"
             )
-            await _safe_set_reconcile_state(
+            reducing_committed = await _safe_set_reconcile_state(
                 store, TradingState.REDUCING, reason="reconcile_failed"
             )
+            if not reducing_committed or not await _effective_state_is_reduce_only(
+                store
+            ):
+                raise RuntimeError(
+                    "reconcile failure could not establish verified reduce-only state"
+                ) from exc
+            # The driver is safely REDUCING, but this cadence still stops.
+            # Startup/reconnect contain the error only because their gate was
+            # established before reconciliation began.
+            raise
         return None
 
 
-async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> None:
+async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> bool:
     """Append each reconciliation-inferred fill as a SYNTHETIC/RECONCILIATION fill
     (wave 4e-4). The engine only infers a fill from a PRICED execution in the mass
     report (never a $0 synthetic), and ``source_fill_id`` is the execution's OWN
     venue id — so a synthetic fill and the eventual real observation of the same
-    execution dedup to ONE (INV-5 / R8), never a double-count. Best-effort: a fill
-    the store rejects is logged, never crashes the tick."""
+    execution dedup to ONE (INV-5 / R8), never a double-count. Per-item faults are
+    isolated so later inferences still run, and the return value tells a driven
+    reconciliation gate whether every planned fill reached durable truth."""
+
+    parent_by_order: dict[str, Optional[str]] = {}
+    post_ingest_lookup_done: set[str] = set()
+    repair_needed = False
+    all_persisted = True
 
     for f in plan.inferred_fills:
         # WO-0025 (REV-0023 F5): the RECORD-FIRST bridge applies to inferred
-        # fills exactly as to streamed ones — an envelope-minted order's fill
-        # must decrement the envelope's remaining, with the SAME canonical
-        # dedupe key, or the human-approved qty ceiling silently re-arms
-        # (200 shares reached the venue under a 100-share ceiling in the
-        # REV-0023 repro). Inferred fills always carry a venue
-        # source_fill_id (the engine never infers without one).
+        # fills exactly as to streamed ones. Every operation for one inference,
+        # including its order lookup, is isolated so a transient fault cannot
+        # discard later independently valid items in the reconciliation batch.
         try:
-            envelope_id = await _envelope_id_for_order(store, f.order_id)
-            if envelope_id is not None and f.source_fill_id is not None:
-                await store.record_envelope_fill(
-                    envelope_id,
-                    quantity=f.quantity,
-                    dedupe_key=f"fill:{f.order_id}:{f.source_fill_id}",
-                    price=f.price,
-                    order_id=f.order_id,
-                    # Codex #7: this record-FIRST call writes the sole durable FILL
-                    # event (append_fill's shadow dedupes to it), so it must carry
-                    # the SYNTHETIC/RECONCILIATION provenance of an inferred fill —
-                    # not the BROKER_REST/BROKER_AUTHORITATIVE default that would
-                    # mis-state an engine-inferred fill as broker-observed.
-                    source=EventSource.RECONCILIATION,
-                    authority=EventAuthority.SYNTHETIC,
-                )
-        except Exception:  # noqa: BLE001 — never block fill ingest
+            inferred_order = await store.get_order(f.order_id)
+            inferred_session_id = (
+                inferred_order.session_id if inferred_order is not None else None
+            )
+        except Exception:  # noqa: BLE001 - one inference must not abort the batch
+            all_persisted = False
             _log.exception(
-                "envelope bridge for inferred fill on order %s failed; "
-                "fill ingest continues",
+                "reconcile: could not load order %s for inferred fill; skipping item",
                 f.order_id,
             )
+            continue
+
+        if f.order_id not in parent_by_order:
+            try:
+                parent_by_order[f.order_id] = await _envelope_id_for_order(
+                    store, f.order_id
+                )
+            except Exception:  # noqa: BLE001 - retry once after canonical ingest
+                _log.exception(
+                    "envelope lineage lookup for inferred fill on order %s failed",
+                    f.order_id,
+                )
+                parent_by_order[f.order_id] = None
+
+        fill_key = (
+            f"fill:{f.order_id}:{f.source_fill_id}"
+            if f.source_fill_id is not None
+            else None
+        )
+        bridged = False
+        envelope_id = parent_by_order[f.order_id]
+        if fill_key is not None and envelope_id is not None:
+            bridged = await _record_envelope_fill_for_parent(
+                store,
+                envelope_id=envelope_id,
+                quantity=f.quantity,
+                dedupe_key=fill_key,
+                price=f.price,
+                order_id=f.order_id,
+                session_id=inferred_session_id,
+                # The record-first call writes the sole canonical FILL event,
+                # so it carries inferred rather than broker provenance.
+                source=EventSource.RECONCILIATION,
+                authority=EventAuthority.SYNTHETIC,
+            )
+
         try:
             await store.append_fill(
                 f.order_id,
@@ -2663,16 +3511,60 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
                 f.quantity,
                 f.price,
                 source_fill_id=f.source_fill_id,
+                session_id=inferred_session_id,
                 source=EventSource.RECONCILIATION,
                 authority=EventAuthority.SYNTHETIC,
             )
         except _FILL_ERRORS as exc:
+            all_persisted = False
             _log.warning(
                 "reconcile: inferred fill for order %s (%s) rejected: %s",
                 f.order_id,
                 f.symbol,
                 exc,
             )
+            continue
+        except Exception:  # noqa: BLE001 - isolate unexpected per-item store faults
+            all_persisted = False
+            _log.exception(
+                "reconcile: inferred fill for order %s failed; continuing batch",
+                f.order_id,
+            )
+            continue
+
+        if fill_key is not None and not bridged:
+            if envelope_id is None and f.order_id not in post_ingest_lookup_done:
+                post_ingest_lookup_done.add(f.order_id)
+                try:
+                    envelope_id = await _envelope_id_for_order(store, f.order_id)
+                except Exception:  # noqa: BLE001 - cadence retries durable seed
+                    _log.exception(
+                        "post-ingest envelope lineage lookup failed for inferred "
+                        "fill on order %s",
+                        f.order_id,
+                    )
+                else:
+                    parent_by_order[f.order_id] = envelope_id
+            if envelope_id is not None:
+                bridged = await _record_envelope_fill_for_parent(
+                    store,
+                    envelope_id=envelope_id,
+                    quantity=f.quantity,
+                    dedupe_key=fill_key,
+                    price=f.price,
+                    order_id=f.order_id,
+                    session_id=inferred_session_id,
+                    source=EventSource.RECONCILIATION,
+                    authority=EventAuthority.SYNTHETIC,
+                    strict=True,
+                )
+            repair_needed = repair_needed or not bridged
+
+    # A batch performs at most one global durable-seed sweep, never one full-log
+    # scan per inferred item. Normal record-first/post-ingest success needs none.
+    if repair_needed:
+        await _repair_unattributed_envelope_fills(store)
+    return all_persisted
 
 
 async def _surface_external_orders(store: StateStore, plan: ReconciliationPlan) -> None:

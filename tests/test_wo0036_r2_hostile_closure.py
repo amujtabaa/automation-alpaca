@@ -2362,6 +2362,52 @@ async def test_supersede_rejects_unresolved_direct_sell_with_store_parity(any_st
     assert await any_store.get_envelope(successor.id) is None
 
 
+async def test_supersede_reports_exact_ambiguity_before_foreign_obligation(any_store):
+    """WO-0113 C2: both stores evaluate supersede blockers in one order."""
+
+    session, owner, envelope = await _activate(any_store)
+    await any_store.append_execution_event(
+        ExecutionEvent(
+            event_type=ExecutionEventType.ENVELOPE_ACTION,
+            source=EventSource.ENGINE,
+            authority=EventAuthority.LOCAL,
+            ts_event=NOW,
+            symbol="AAPL",
+            side=OrderSide.SELL,
+            quantity=100,
+            price=9.9,
+            order_id="wo0113-missing-exact-child",
+            envelope_id=envelope.id,
+            session_id=session.id,
+            correlation_id=owner.id,
+            payload={"action": "hostile-missing-child"},
+        )
+    )
+    foreign = _draft(owner.id, session_id=session.id).model_copy(
+        update={
+            "status": EnvelopeStatus.FROZEN,
+            "approved_at": NOW,
+            "activated_at": NOW,
+            "frozen_at": NOW,
+        }
+    )
+    _raw_insert_envelope(any_store, foreign)
+    successor = _draft(owner.id, session_id=session.id).model_copy(
+        update={"floor_price": 9.1}
+    )
+
+    with pytest.raises(EnvelopeTransitionError, match="ambiguous linked child"):
+        await any_store.supersede_envelope(
+            envelope.id,
+            successor,
+            actor="operator-a",
+            reason="canonical blocker precedence",
+        )
+
+    assert (await any_store.get_envelope(envelope.id)).status is EnvelopeStatus.ACTIVE
+    assert await any_store.get_envelope(successor.id) is None
+
+
 async def test_monitoring_fill_mapping_never_guesses_between_envelope_parents(
     any_store,
 ):
@@ -2737,9 +2783,9 @@ async def test_final_claim_rechecks_session_phase_after_staging(any_store, monke
 
 
 async def test_final_claim_rechecks_reduce_only_after_unrelated_fill(any_store):
-    session, _, envelope = await _activate(any_store)
-    staged = await _stage(any_store, envelope.id)
-    candidate = await any_store.create_candidate("AAPL", session_id=session.id)
+    await any_store.initialize()
+    session = await _hold(any_store)
+    candidate = (await any_store.list_candidates(session_id=session.id))[0]
     external_exit = await any_store.create_order_for_test(
         candidate.id,
         "AAPL",
@@ -2747,6 +2793,25 @@ async def test_final_claim_rechecks_reduce_only_after_unrelated_fill(any_store):
         60,
         session_id=session.id,
     )
+    external_exit = await any_store.transition_order(
+        external_exit.id, OrderStatus.CANCELED
+    )
+    assert external_exit.status is OrderStatus.CANCELED
+
+    intent = await any_store.create_sell_intent(
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
+    )
+    envelope = await any_store.approve_envelope_activation(
+        _draft(intent.id, session_id=session.id), actor="operator-a"
+    )
+    staged = await _stage(any_store, envelope.id)
+
+    # A venue-late fill from an unrelated, already-terminal SELL shrinks the
+    # position after this envelope staged. The final claim must re-read that
+    # fill-derived position instead of trusting the staging snapshot.
     await any_store.append_fill(
         external_exit.id,
         "AAPL",
@@ -3441,6 +3506,20 @@ async def test_only_fill_path_can_complete_envelope_with_zero_mutation_on_reject
     assert await any_store.get_execution_events() == before_execution
 
     staged = await _stage(any_store, envelope.id)
+    sibling = Order(
+        id="fill-only-completion-created-sibling",
+        sell_intent_id=intent.id,
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=100,
+        limit_price=9.8,
+        status=OrderStatus.CREATED,
+        session_id=staged.order.session_id,
+    )
+    _raw_insert_order(any_store, sibling)
+    _raw_append_execution(any_store, _action_event(envelope, sibling))
+
     completed = await any_store.record_envelope_fill(
         envelope.id,
         quantity=100,
@@ -3452,9 +3531,24 @@ async def test_only_fill_path_can_complete_envelope_with_zero_mutation_on_reject
     )
     assert completed.status is EnvelopeStatus.COMPLETED
     assert completed.remaining_quantity == 0
+    source_after = await any_store.get_order(staged.order.id)
+    sibling_after = await any_store.get_order(sibling.id)
+    assert source_after is not None and source_after.status is OrderStatus.CREATED
+    assert sibling_after is not None and sibling_after.status is OrderStatus.CANCELED
+
+    terminal_facts = [
+        event
+        for event in await any_store.get_execution_events()
+        if event.event_type is ExecutionEventType.CANCELED
+        and event.order_id in {staged.order.id, sibling.id}
+    ]
+    assert [event.order_id for event in terminal_facts] == [sibling.id]
+    # The fill source is not safe to cancel locally merely because its local
+    # row still says CREATED. Until broker lifecycle resolution arrives, owner
+    # reconciliation must retain the obligation instead of falsely expiring it.
     assert (
         await any_store.get_sell_intent(intent.id)
-    ).status is SellIntentStatus.EXPIRED
+    ).status is SellIntentStatus.APPROVED
 
 
 # --------------------------------------------------------------------------- #

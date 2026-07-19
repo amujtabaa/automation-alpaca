@@ -22,7 +22,9 @@ contract before Phase 3 makes a deliberate decision.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from datetime import date as date_cls
@@ -104,6 +106,8 @@ from app.store.base import (
     UnknownEntityError,
     normalize_symbol,
 )
+
+_log = logging.getLogger(__name__)
 
 # Order statuses that can no longer be cancelled — already resolved (was
 # ``routes_trading._TERMINAL_ORDER_STATUSES``; moved with the cancel command).
@@ -783,7 +787,34 @@ class StoreBackedCommandFacade:
             await self._store.create_order_for_candidate(
                 candidate_id, risk_limits=risk_limits
             )
-        except _APPROVE_MAPPED_ERRORS as exc:
+        except asyncio.CancelledError:
+            # Cancellation may land after gate.approve() has committed APPROVED but
+            # before order creation commits. Run the compensating transition in its
+            # own shielded task: a repeated cancellation request must not interrupt
+            # cleanup and strand the candidate. The original cancellation is always
+            # re-raised after the cleanup attempt, preserving task semantics.
+            cleanup_task = asyncio.create_task(
+                self._store.revert_candidate_approval(candidate_id)
+            )
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                cleanup_task.result()
+            except asyncio.CancelledError:
+                _log.error(
+                    "candidate %s approval cancellation cleanup was cancelled",
+                    candidate_id,
+                )
+            except Exception:  # noqa: BLE001 - preserve the original cancellation
+                _log.exception(
+                    "candidate %s approval cancellation cleanup failed",
+                    candidate_id,
+                )
+            raise
+        except Exception as exc:  # noqa: BLE001 - cleanup genuine dispatch bugs too
             # ANY post-approval dispatch failure reverts the approval to PENDING
             # (F-002 / D-013 race): OrderIntentBlocked/RiskLimitBlocked from a
             # control/limit that changed between the pre-check and the handoff, or
@@ -791,8 +822,13 @@ class StoreBackedCommandFacade:
             # no-op unless the candidate is genuinely stranded APPROVED-with-no-order
             # — so it is also safe when the failure came from gate.approve() itself
             # (the candidate never reached APPROVED).
-            await self._store.revert_candidate_approval(candidate_id)
-            raise _facade_error_for(exc) from exc
+            try:
+                await self._store.revert_candidate_approval(candidate_id)
+            except Exception:  # noqa: BLE001 - preserve the original failure
+                _log.exception("candidate %s approval cleanup failed", candidate_id)
+            if isinstance(exc, _APPROVE_MAPPED_ERRORS):
+                raise _facade_error_for(exc) from exc
+            raise
 
         refreshed = await self._store.get_candidate(candidate_id)
         assert refreshed is not None  # fetched above; candidates are never deleted
@@ -849,7 +885,12 @@ class StoreBackedCommandFacade:
         )
 
     async def _flatten_cancelling_open_buys(
-        self, key: str, *, actor: str
+        self,
+        key: str,
+        *,
+        actor: str,
+        emergency_override: bool = False,
+        session_id: Optional[str] = None,
     ) -> FlattenResult:
         """Option B (WO-0036 R2): call the store's atomic flatten decision; when it
         signals ``FLATTEN_BUYS_OPEN`` (a held position still has an open BUY),
@@ -860,14 +901,22 @@ class StoreBackedCommandFacade:
         decision on a stale out-of-lock read, and a MANUAL_FLATTEN SELL is never
         minted next to a genuinely-live BUY (the §5.3 self-cross). Bounded so a
         pathological buys-keep-reappearing case fails closed to a 409 rather than
-        looping. ``self._broker`` is guaranteed non-None by the public callers.
+        looping. Emergency callers also pass the immutable authorization
+        ``session_id`` through every retry, so no intervening broker await can
+        move the capability into a new session. ``self._broker`` is guaranteed
+        non-None by the public callers.
         """
         assert self._broker is not None
         attempts = 0
         while True:
             attempts += 1
             try:
-                result = await self._store.flatten_position(key, actor=actor)
+                result = await self._store.flatten_position(
+                    key,
+                    session_id=session_id,
+                    actor=actor,
+                    emergency_override=emergency_override,
+                )
             except (FlattenBlockedError, InvalidOrderError) as exc:
                 # ADR-003 Halted-deny / an oversell/unpriceable exit → 409. Any
                 # OTHER store error propagates raw (500), as the old route did.
@@ -975,9 +1024,23 @@ class StoreBackedCommandFacade:
 
         if order.broker_order_id is None:
             # Never submitted: nothing at the broker; cancel locally, terminal now.
-            return await self._cancel_transition(
-                order_id, OrderStatus.CANCELED, actor=actor
-            )
+            try:
+                canceled = await self._store.transition_order(
+                    order_id,
+                    OrderStatus.CANCELED,
+                    actor=actor,
+                    expected_from=OrderStatus.CREATED,
+                )
+            except UnknownEntityError as exc:  # pragma: no cover - fetched above
+                raise EntityNotFoundError(str(exc)) from exc
+            except OrderTransitionError as exc:
+                raise ConflictError(str(exc)) from exc
+            if canceled.status is not OrderStatus.CANCELED:
+                raise ConflictError(
+                    f"order {order_id} is no longer safely local-CREATED; "
+                    "reconcile its current venue/recovery state before canceling"
+                )
+            return canceled
 
         # Submitted/partially-filled: request the broker cancel FIRST; a genuine
         # broker failure surfaces as 502 with the order left unchanged (still open),
@@ -1061,7 +1124,9 @@ class StoreBackedCommandFacade:
         try:
             # EmergencyReduceBlockedError (not Halted / INV-3 quarantine / nothing
             # to flatten) → 409. Actor is the audited grantor.
-            await self._store.authorize_emergency_reduce_override(key, actor=actor)
+            authorization_session_id = (
+                await self._store.authorize_emergency_reduce_override(key, actor=actor)
+            )
         except EmergencyReduceBlockedError as exc:
             raise ConflictError(str(exc)) from exc
 
@@ -1072,7 +1137,12 @@ class StoreBackedCommandFacade:
         # cancelling + retrying, so the override grant — not consumed until an
         # authorized create/existing/flat outcome — still drives the retry.
         await cancel_open_buys(self._store, self._broker, key)
-        result = await self._flatten_cancelling_open_buys(key, actor=actor)
+        result = await self._flatten_cancelling_open_buys(
+            key,
+            actor=actor,
+            emergency_override=True,
+            session_id=authorization_session_id,
+        )
 
         if result.outcome == FLATTEN_FLAT:
             raise ConflictError(f"no open {key} position to flatten")

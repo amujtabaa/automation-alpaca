@@ -30,6 +30,7 @@ from app.models import (
     ExecutionEventType,
     Fill,
     OrderSide,
+    OrderStatus,
     Position,
 )
 from app.position import NegativePositionError, apply_fill
@@ -140,6 +141,10 @@ async def test_broker_overfill_blocks_autonomous_buy_for_the_symbol(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    # Model a venue-authoritative late fill on a locally terminal carrier.  A
+    # working SELL would correctly block candidate admission before quarantine
+    # gets a chance to prove its independent autonomous-BUY gate.
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
     )
@@ -189,6 +194,7 @@ async def _overfill_script(store):
     sell = await store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=sess.id
     )
+    await store.transition_order(sell.id, OrderStatus.CANCELED)
     await store.append_fill(
         sell.id,
         "AAPL",
@@ -338,6 +344,7 @@ async def test_covering_buy_does_not_lift_store_quarantine(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
     )
@@ -387,6 +394,7 @@ async def test_quarantine_holds_pre_existing_autonomous_buy_at_claim(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
     )
@@ -427,6 +435,7 @@ async def test_replayed_overfill_fill_is_idempotent(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
 
     first = await any_store.append_fill(
         sell.id,

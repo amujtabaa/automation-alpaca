@@ -323,9 +323,24 @@ async def test_intent_released_when_envelope_completes_with_no_live_child(any_st
 
     await any_store.initialize()
     intent, envelope = await open_mandate(any_store, quantity=50)
+    child = await submit_child(
+        any_store,
+        envelope,
+        limit_price=9.80,
+        quantity=50,
+    )
 
     completed = await any_store.record_envelope_fill(
-        envelope.id, quantity=50, dedupe_key="fill:o1:x1", price=9.80, order_id="o1"
+        envelope.id,
+        quantity=50,
+        dedupe_key=f"fill:{child.id}:x1",
+        price=9.80,
+        order_id=child.id,
+    )
+    await any_store.transition_order(
+        child.id,
+        OrderStatus.FILLED,
+        filled_quantity=50,
     )
     assert completed.status is S.COMPLETED
     assert completed.remaining_quantity == 0

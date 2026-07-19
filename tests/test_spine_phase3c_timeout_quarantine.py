@@ -352,7 +352,14 @@ async def _quarantined_via_tick(store, adapter, settings, symbol="AAPL", qty=10)
         symbol, suggested_quantity=qty, suggested_limit_price=1.0, session_id=sess.id
     )
     order = await store.create_order_for_test(
-        cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id
+        cand.id,
+        symbol,
+        OrderSide.BUY,
+        qty,
+        # WO-0113 rechecks CAPI at the final submission claim. Preserve this
+        # fixture's intended ambiguous-submit choke with a priceable LIMIT order.
+        limit_price=1.0,
+        session_id=sess.id,
     )
     adapter.fail_next_submit(AmbiguousBrokerError("simulated 504 timeout"))
     await run_monitoring_tick(store, adapter, settings)

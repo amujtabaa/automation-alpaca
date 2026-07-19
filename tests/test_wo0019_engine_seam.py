@@ -28,6 +28,7 @@ from app.models import (
     EnvelopeStatus,
     ExecutionEnvelope,
     ExecutionEventType,
+    Order,
     OrderSide,
     OrderStatus,
     SellReason,
@@ -128,6 +129,54 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
     )
 
 
+async def canceled_envelope_child(
+    store, env: ExecutionEnvelope, *, quantity: int
+) -> Order:
+    staged = await store.stage_envelope_action(
+        env.id,
+        planned(quantity=quantity),
+        snapshot_fingerprint=f"wo0019-fill-lineage:{env.id}",
+        now=later(),
+    )
+    return await store.transition_order(staged.order.id, OrderStatus.CANCELED)
+
+
+async def active_envelope_with_late_sell_source(
+    store, *, quantity: int
+) -> tuple[ExecutionEnvelope, Order]:
+    """Prepare a terminal SELL before the envelope owns the symbol.
+
+    Its later fill remains broker-authoritative without minting a fresh BUY
+    candidate through the envelope's same-symbol exit-preemption boundary.
+    """
+
+    await store.initialize()
+    session = await store.get_current_session()
+    seed = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        seed.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+    )
+    source_candidate = await store.create_candidate("AAPL", session_id=session.id)
+    late_sell = await store.create_order_for_test(
+        source_candidate.id,
+        "AAPL",
+        OrderSide.SELL,
+        quantity,
+        session_id=session.id,
+    )
+    await store.transition_order(late_sell.id, OrderStatus.CANCELED)
+    intent = await store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    envelope = await store.approve_envelope_activation(
+        make_draft(intent.id), actor="operator-a"
+    )
+    return envelope, late_sell
+
+
 async def envelope_events(store, envelope_id, event_type=None):
     return [
         e
@@ -201,8 +250,13 @@ async def test_write_time_stale_facts_refuse_without_freezing(any_store):
     UNTOUCHED, no order, zero venue calls; the policy replans next tick."""
 
     env = await active_envelope(any_store)
+    order = await canceled_envelope_child(any_store, env, quantity=95)
     await any_store.record_envelope_fill(
-        env.id, quantity=95, dedupe_key="fill:o:race", order_id="o", price=9.9
+        env.id,
+        quantity=95,
+        dedupe_key=f"fill:{order.id}:race",
+        order_id=order.id,
+        price=9.9,
     )  # remaining 100 -> 5; the plan below was sized against 100
     result = await any_store.stage_envelope_action(
         env.id, planned(quantity=10), snapshot_fingerprint=FP, now=later()
@@ -333,7 +387,7 @@ async def test_redrive_recheck_catches_position_shrink(any_store):
     shrinks while the order waits (transient release) — the redrive refuses
     and locally cancels; zero venue calls."""
 
-    env = await active_envelope(any_store)
+    env, late_sell = await active_envelope_with_late_sell_source(any_store, quantity=95)
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     released = await execute_envelope_action(
@@ -347,12 +401,13 @@ async def test_redrive_recheck_catches_position_shrink(any_store):
     assert released.outcome == ENVELOPE_EXEC_RELEASED
 
     session = await any_store.get_current_session()
-    flat_cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    sell = await any_store.create_order_for_test(
-        flat_cand.id, "AAPL", OrderSide.SELL, 95, session_id=session.id
-    )
     await any_store.append_fill(
-        sell.id, "AAPL", OrderSide.SELL, 95, 10.5, session_id=session.id
+        late_sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        95,
+        10.5,
+        session_id=session.id,
     )  # book: 100 -> 5
 
     fresh = MockBrokerAdapter()

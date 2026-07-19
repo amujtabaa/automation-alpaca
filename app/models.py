@@ -308,6 +308,10 @@ class EventType(str, Enum):
     # A stale SUBMITTING order's idempotent re-drive hit a transient broker error
     # and was deferred to the next tick (AIR-003). Counted to bound livelock.
     STALE_SUBMITTING_REDRIVE_DEFERRED = "stale_submitting_redrive_deferred"
+    # Write-ahead reservation for a stale SUBMITTING broker re-drive. The venue
+    # call is forbidden unless this durable fact commits, so an audit-store fault
+    # cannot erase progress and permit unbounded broker retries (WO-0113 C3).
+    STALE_SUBMITTING_REDRIVE_STARTED = "stale_submitting_redrive_started"
     # Ambiguous submit (timeout/504/transport) quarantined the order (ADR-002,
     # wave 3c); resolved once a targeted client_order_id query confirms venue
     # reality. ORDER_TIMEOUT_QUARANTINE_DEFERRED counts bounded query retries.
@@ -338,6 +342,11 @@ class EventType(str, Enum):
     # A broker/local fill divergence (broker filled > locally recorded) escalated
     # to a durable needs_review reconciliation record (AIR-002).
     FILL_RECONCILIATION_NEEDED = "fill_reconciliation_needed"
+    # Durable high-water mark for the cadence repair of canonical envelope
+    # fills.  It lets steady-state monitoring read only the execution-log tail;
+    # the payload carries the highest sequence successfully inspected.
+    ENVELOPE_ATTRIBUTION_REPAIR_CHECKPOINT = "envelope_attribution_repair_checkpoint"
+    SUBMIT_ACCEPTANCE_REPAIR_CHECKPOINT = "submit_acceptance_repair_checkpoint"
 
     FILL_APPENDED = "fill_appended"
     FILL_DUPLICATE_IGNORED = "fill_duplicate_ignored"
@@ -450,6 +459,15 @@ class ExecutionEventType(str, Enum):
     ENVELOPE_APPROVED = "envelope_approved"
     ENVELOPE_ACTIVATED = "envelope_activated"
     ENVELOPE_ACTION = "envelope_action"  # executor submit/reprice/resize/cancel
+    # Append-only bridge repair: applies one pre-existing, unattributed FILL to
+    # a uniquely bounded envelope without folding position quantity a second
+    # time (WO-0113 / INV-076).
+    ENVELOPE_FILL_ATTRIBUTED = "envelope_fill_attributed"
+    # Durable repair cursors live in execution truth so the existing
+    # (event_type, sequence) index can retrieve the latest high-water mark
+    # without repeatedly scanning the human-facing audit log.
+    ENVELOPE_ATTRIBUTION_REPAIR_CHECKPOINT = "envelope_attribution_repair_checkpoint"
+    SUBMIT_ACCEPTANCE_REPAIR_CHECKPOINT = "submit_acceptance_repair_checkpoint"
     ENVELOPE_COMPLETED = "envelope_completed"
     ENVELOPE_BREACHED = "envelope_breached"
     ENVELOPE_EXHAUSTED = "envelope_exhausted"
@@ -495,6 +513,12 @@ class EventAuthority(str, Enum):
 # the event envelope requires a migration path (§11). Bump on any incompatible
 # change to ``ExecutionEvent``'s persisted shape.
 EXECUTION_EVENT_SCHEMA_VERSION = 1
+
+# A broker acceptance whose recovery-ledger write fails is retained as
+# UNKNOWN_RECONCILE_REQUIRED execution truth with this reason, regardless of
+# whether its best-effort ordinary audit write succeeded. Both stores treat an
+# unrepresented fact as venue exposure until repair creates/adopts its owner.
+ACCEPTED_SUBMIT_UNPERSISTED_REASON = "accepted_submit_unpersisted"
 
 
 # --------------------------------------------------------------------------- #

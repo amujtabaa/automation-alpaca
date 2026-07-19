@@ -19,6 +19,7 @@ Key structural guarantees the interface is shaped to enforce:
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from app.models import (
     Event,
     ExecutionEnvelope,
     ExecutionEvent,
+    ExecutionEventType,
     Fill,
     Order,
     OrderSide,
@@ -95,6 +97,24 @@ class StoreError(Exception):
 
 class UnknownEntityError(StoreError):
     """Referenced entity (candidate, order, ...) does not exist."""
+
+
+class InvalidEventError(StoreError):
+    """An append-only audit/execution event violates the durable contract."""
+
+
+def normalize_json_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Validate and canonicalize a payload to SQLite's JSON serialization domain."""
+
+    try:
+        encoded = json.dumps(payload or {})
+        normalized = json.loads(encoded)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise InvalidEventError(
+            f"event payload must be JSON-serializable: {exc}"
+        ) from exc
+    assert isinstance(normalized, dict)
+    return normalized
 
 
 class CandidateTransitionError(StoreError):
@@ -289,20 +309,19 @@ class FillAppendResult:
 
 @dataclass(frozen=True)
 class RiskLimits:
-    """The Phase 6 CAPI limits for one :meth:`StateStore.create_order_for_candidate`
-    call (D-016). Bundled into one object — rather than four separate keyword
-    arguments threaded individually through the abstract method, both store
-    implementations, the shared planner, and the route (which needs the same
-    values twice: the pre-check and the authoritative call) — so a future
-    limit type is one field added in one place, not a signature edited in five.
+    """The Phase 6 CAPI limits for order mint and final BUY submission claim.
+    Bundled into one object (D-016) so both stores, the shared planner, and
+    production callers use one configuration shape. A future limit is one field,
+    not a signature edit at every choke point.
 
     Every field is independently optional: ``None`` means "not enforced." The
     zero-argument default, ``RiskLimits()``, is fully unenforced — this is what
     keeps ``create_order_for_candidate``'s ~20 pre-existing test call sites
     (written before Phase 6, none of which pass a ``risk_limits`` argument)
-    behaviorally unchanged. Production code (the approve route) always builds
-    one from ``Settings``, which rejects a non-finite/non-positive numeric
-    limit at load — see ``app.config.load_settings``.
+    behaviorally unchanged. Production code builds one at the approve route and
+    monitoring submission choke point from ``Settings``, which rejects a
+    non-finite/non-positive numeric limit at load — see
+    ``app.config.load_settings``.
     """
 
     max_shares_per_order: Optional[float] = None
@@ -648,6 +667,7 @@ class StateStore(ABC):
         *,
         session_id: Optional[str] = None,
         actor: str = COMMAND_ACTOR_SYSTEM,
+        emergency_override: bool = False,
     ) -> FlattenResult:
         """Atomically open (or return the existing) ``manual_flatten`` exit for
         ``symbol`` — the whole "read the live position, stand down any
@@ -689,9 +709,22 @@ class StateStore(ABC):
         sizing always reflects the live position — never oversized, never racing a
         partial fill.
 
-        Returns :class:`FlattenResult`. ``session_id`` seeds a freshly-created
-        intent only (ignored when returning an existing one). ``actor`` (P6-C
-        audit label, REV-0002 F-002) is stamped on the provenance event of
+        An active emergency-reduce grant is deliberately non-ambient:
+        ``emergency_override=True`` is the internal capability asserted only by
+        the explicit emergency command. Ordinary callers leave it false and
+        remain denied while HALTED even if a grant is awaiting an emergency
+        retry; they cannot consume or steal that grant. Conversely, asserting
+        ``emergency_override=True`` without an active current-session grant is
+        rejected even when ordinary flattening would be allowed. The explicit
+        command passes the session id returned by
+        :meth:`authorize_emergency_reduce_override`; a mismatch rejects the
+        operation instead of silently downgrading it after a calendar rollover.
+
+        Returns :class:`FlattenResult`. For an ordinary flatten, ``session_id``
+        seeds a freshly-created intent only (ignored when returning an existing
+        one); for an emergency flatten it binds the authorization scope as
+        described above. ``actor`` (P6-C audit label, REV-0002 F-002) is stamped
+        on the provenance event of
         whichever path runs — the created intent's ``sell_intent_created`` or the
         ``manual_flatten_deferred`` deferral event — recording who commanded the
         flatten; it defaults to ``COMMAND_ACTOR_SYSTEM`` for internal/test callers.
@@ -761,26 +794,32 @@ class StateStore(ABC):
         """Total current CAPI exposure (D-016b), read as one atomic snapshot.
 
         Every position's cost basis plus every non-terminal order's remaining
-        notional — see ``app.policy.existing_exposure`` for the pure
-        computation this wraps. Exists as its own store method (rather than
+        notional and any accepted BUY retained only by an open recovery or
+        fallback execution fact — see ``app.policy.existing_exposure`` and
+        ``unrepresented_accepted_buy_exposure``. Exists as its own store method (rather than
         making a caller combine ``list_positions()`` + ``list_orders()``
         itself) specifically so a caller *outside* the store's lock — the
-        approve route's risk-limit pre-check — gets one consistent snapshot
+        approve route or final claim — gets one consistent snapshot
         under a single lock acquisition, not a torn read across two separate
-        lock-acquire/release cycles. ``create_order_for_candidate``'s own
-        authoritative check computes this the same way, inside its own single
-        lock hold, for the same reason.
+        lock-acquire/release cycles. Order mint and final BUY claim both compute
+        it inside their own single lock hold for the same reason.
         """
 
     @abstractmethod
-    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
+    async def claim_order_for_submission(
+        self,
+        order_id: str,
+        *,
+        risk_limits: RiskLimits = RiskLimits(),
+    ) -> SubmissionClaim:
         """Atomically claim a ``CREATED`` order for submission (D-017).
 
         Under a **single lock hold** — mirroring ``set_kill_switch``'s idiom, not
         a new locking primitive — this re-reads the order, re-reads the current
         session **and** the order's own originating session, and re-checks every
-        control (kill-switch, buys-paused, session-closed, session-unknown, and
-        that the order is still ``CREATED``). Then:
+        control (kill-switch, buys-paused, session-closed, session-unknown, that
+        the order is still ``CREATED``), and the CAPI limits against a fresh
+        exposure snapshot. Then:
 
         * order no longer ``CREATED`` → ``SubmissionClaim(CLAIM_SKIPPED)``, no
           state change (a session close cancelled it, or it was already claimed);
@@ -861,6 +900,16 @@ class StateStore(ABC):
         surface passes ``RECOVERY_OPEN_STATUSES`` (unresolved **and**
         needs-review — everything still needing attention, since a needs-review
         record holds a real untracked position a human must reconcile).
+        """
+
+    @abstractmethod
+    async def get_submit_recovery_by_identity(
+        self, local_order_id: str, broker_order_id: str
+    ) -> Optional[SubmitRecoveryRecord]:
+        """The recovery owning this exact local/broker identity, if any.
+
+        Repair consumers use this selective lookup instead of materializing the
+        complete append-only recovery ledger on every cadence.
         """
 
     @abstractmethod
@@ -1115,6 +1164,18 @@ class StateStore(ABC):
         scroll a rare event out of) just to find it.
         """
 
+    @abstractmethod
+    async def get_audit_event_page(
+        self, *, after_cursor: int, limit: int
+    ) -> tuple[int, list[Event]]:
+        """Read the global audit log after an opaque append cursor.
+
+        The returned cursor covers every audit row in the returned page,
+        including event types a consumer does not select. Both arguments are
+        non-negative and ``limit`` must be positive. The cursor is durable only
+        when the consumer records it after successfully inspecting the page.
+        """
+
     # ------------------------------------------------------------------ #
     # Execution-event log (Spine v2 — Phase 2 event-sourcing scaffolding)
     #
@@ -1157,6 +1218,22 @@ class StateStore(ABC):
         ``out[:-1]`` drops the tail while SQL ``LIMIT -1`` means unlimited),
         violating the strict dual-store parity mandate.
         """
+
+    @abstractmethod
+    async def get_latest_execution_event(
+        self, event_type: ExecutionEventType
+    ) -> Optional[ExecutionEvent]:
+        """Latest execution event of one type, using the type/sequence index."""
+
+    @abstractmethod
+    async def get_execution_event_by_dedupe_key(
+        self, dedupe_key: str
+    ) -> Optional[ExecutionEvent]:
+        """Execution event with this unique non-null dedupe identity, if any."""
+
+    @abstractmethod
+    async def get_order_execution_events(self, order_id: str) -> list[ExecutionEvent]:
+        """Execution events for one order in ascending replay sequence."""
 
     @abstractmethod
     async def get_max_execution_sequence(self) -> int:
@@ -1268,11 +1345,11 @@ class StateStore(ABC):
         now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY ``remaining_quantity`` writer.
-        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
-        that fill was already counted (exactly-once, INV-5). Appends the FILL
-        execution event and, if the fill exhausts the mandate, chains the
-        terminal transition, atomically. Raises :class:`UnknownEntityError` for
-        an unknown id."""
+        A validated replay of an already-attributed fill applies nothing. An
+        unbound canonical ``FILL`` dedupe hit may instead append an attribution
+        marker and decrement the envelope exactly once. A new canonical fill,
+        its envelope decrement, and any terminal transition are committed
+        atomically. Raises :class:`UnknownEntityError` for an unknown id."""
 
     @abstractmethod
     async def stage_envelope_action(
@@ -1405,7 +1482,7 @@ class StateStore(ABC):
     @abstractmethod
     async def authorize_emergency_reduce_override(
         self, symbol: str, *, actor: str
-    ) -> None:
+    ) -> str:
         """Authorize an emergency reduce for ``symbol`` while ``Halted`` (ADR-003 /
         wave 3e). Atomically checks the ADR-003 preconditions and, if they hold,
         grants the scoped override so the subsequent flatten is permitted:
@@ -1417,10 +1494,12 @@ class StateStore(ABC):
         * there MUST be an open position (else nothing to reduce).
 
         On success first-writes the ``EMERGENCY_REDUCE_OVERRIDE`` grant (see
-        :meth:`grant_emergency_reduce_override`). The global ``TradingState`` stays
-        ``Halted``; the caller then runs the normal flatten, which sees the grant,
-        creates the reduce-only exit, and consumes the override in the same lock
-        hold."""
+        :meth:`grant_emergency_reduce_override`) and returns its immutable session
+        id. The global ``TradingState`` stays ``Halted``; the caller must pass that
+        session id into the subsequent emergency flatten so an await-boundary
+        calendar rollover cannot spend the command as an ordinary next-session
+        flatten. The flatten sees the grant, creates the reduce-only exit, and
+        consumes the override in the same lock hold."""
 
     @abstractmethod
     async def close_session(

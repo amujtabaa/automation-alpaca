@@ -105,28 +105,45 @@ reconciled — it is functionally lost. (AIR-001 / D-022 B1.)
 `CREATED → SUBMITTING` does not exist anywhere else in
 `ORDER_TRANSITIONS`; the claim's one atomic lock-held re-check (kill switch,
 buys-paused, session-closed, still-`CREATED`) is never bypassable by a second
-code path. (D-017, AIR-007 / D-023 A4.)
+code path. *WO-0113 implemented branch behavior — pending operator ratification
+and REV-0033 review:* a BUY claim also recomputes the current risk-limit
+exposure under that same lock/transaction, including exact accepted-submit
+UNKNOWN/recovery ownership that appeared after order mint. Before either side
+can enter `SUBMITTING`, a side-independent ownership rail also refuses a
+projected-`CREATED` order that already carries a concrete broker id or its own
+accepted-submit UNKNOWN fact; the same local id is never blindly submitted a
+second time. (D-017, AIR-007 / D-023 A4.)
 *Why:* this is what closes the F-001 kill-switch race and the F-002
 session-close orphan — a second path into `SUBMITTING` would silently
 reopen both.
 *Pinned by:* `tests/test_wave0_submission_claim.py`,
-`tests/test_air_remediation.py::TestAir007OnlyClaimEntersSubmitting`.
+`tests/test_air_remediation.py::TestAir007OnlyClaimEntersSubmitting`, and
+`tests/test_wo0113_capi_uncertainty.py::test_final_buy_claim_rechecks_uncertainty_created_after_order_mint`,
+plus `tests/test_wo0113_acceptance_identity.py::test_created_order_with_own_venue_identity_cannot_be_resubmitted`.
 
-**INV-022 — A live-at-broker order is never untracked.** Every broker order
-the adapter still considers live is referenced by either a local order row or
-an open (`unresolved`/`needs_review`) `SubmitRecoveryRecord`.
+**INV-022 — A live-at-broker order is never untracked.** Ordinarily, every broker
+order the adapter still considers live has one durable local owner: a local
+order row or an open (`unresolved`/`needs_review`) `SubmitRecoveryRecord`.
+*WO-0113 implemented branch behavior — pending operator ratification and
+REV-0033 review:* if neither ordinary owner can be written after acceptance, one
+exact canonical `UNKNOWN_RECONCILE_REQUIRED` execution fact temporarily owns
+the accepted broker identity until repair adopts it or creates that recovery;
+the ordinary acceptance audit may or may not already have succeeded.
 *Why:* an orphaned live order is real capital exposure the backend has lost
 visibility into (F-002).
 *Pinned by:* `no_live_untracked_broker_order` invariant
-(`tests/test_lifecycle_state_machine.py`), `tests/test_sim_chaos.py`.
+(`tests/test_lifecycle_state_machine.py`), `tests/test_sim_chaos.py`, and the
+exact provenance/identity pins in `tests/test_wo0113_submit_acceptance_fallback.py`.
 
 **INV-023 — A stale `SUBMITTING` order (crash between claim and broker
 persist) is recovered by idempotent re-drive, never left stranded, and never
 silently retried forever.** A `TerminalBrokerError` or
 `stale_submitting_max_redrive_attempts` exceeded escalates to a durable
-`needs_review` record; only a transient failure re-drives. (D-022 B2 + its
-Gate-B follow-up.)
-*Pinned by:* `tests/test_air_group_b.py::TestAir003StaleSubmittingRecovery`.
+`needs_review` record; every no-progress pass consumes that same durable cap,
+including an unpriceable MARKET order, while only a transient failure re-drives.
+(D-022 B2 + its Gate-B follow-up.)
+*Pinned by:* `tests/test_air_group_b.py::TestAir003StaleSubmittingRecovery` and
+`tests/test_wo0113_lifecycle_closure.py::test_unpriceable_stale_submitting_uses_durable_attempt_cap`.
 
 **INV-024 — A broker/local fill divergence is escalated durably, never
 silently dropped and never guessed at with a synthesized price.** The order
@@ -379,16 +396,29 @@ Option B) and `_submit_pending_orders`'s claim-then-call ordering (INV-021).
 
 ## Control surfaces / kill switch (Rule 8)
 
-**INV-060 — The kill switch blocks all new order intent, with exactly one
-narrow, enumerated exception (D-P2):** a SELL order whose owning sell-intent's
-`reason` is `manual_flatten` bypasses all controls; one whose reason is
-`protection_floor` bypasses buys-paused/closed-session but **not** the kill
-switch. No other bypass exists anywhere in the claim gate.
-*Why:* the exit carve-out exists so a human can always de-risk even during an
-emergency stop, but must never be widened into "buys still work" or "any sell
-always bypasses everything."
-*Pinned by:* `tests/test_phase7_routes.py::test_flatten_works_under_kill_switch`,
-`tests/test_store_core.py::TestPlanClaimSellGate`.
+**INV-060 — The kill switch blocks all new order intent; a Halted exit requires
+the explicit audited emergency-reduce capability.** Ordinary manual flatten,
+direct `MANUAL_FLATTEN` intent creation, autonomous protection, legacy SELL
+dispatch, and every new order-intent path remain blocked in `Halted`.
+*WO-0113 implemented branch behavior — pending operator ratification and
+REV-0033 review:* the emergency command alone may carry one active,
+symbol/session-scoped capability through the same reduce-only mint path; an
+ambient grant never authorizes an
+ordinary call. This scoped reducing authorization does not lift or transition
+the global composed state out of `Halted`. The authorized intent, order, and
+resolution remain bound to the same lock-held session as the grant: an explicit
+foreign `session_id` is rejected, and a clock rollover cannot rebind the
+outcome. This does not revoke an already-authorized `MANUAL_FLATTEN`
+order that was minted while Active: its later submission claim may finish under
+Halted (accepted D-P2 claim semantics), while a `PROTECTION_FLOOR` claim may
+bypass buys-paused/closed-session but never Halted.
+*Why:* the exit carve-out remains available without turning a durable grant
+into an invisible global bypass.
+*Pinned by:* `tests/test_wo0113_emergency_override.py`
+(`test_ordinary_flatten_cannot_consume_emergency_grant`) and
+`tests/test_wo0113_sell_boundary.py`
+(`test_direct_manual_intent_creation_is_denied_while_halted`,
+`test_direct_manual_dispatch_rechecks_halted_and_self_heals`).
 
 **INV-061 — Control-surface setters (`set_kill_switch`, `set_buys_paused`,
 `set_watchlist_armed`, `add_watchlist_symbol`'s `armed` field) accept only a
@@ -465,19 +495,39 @@ partial migration from regressing.
 
 ## Execution envelopes (ADR-010 / WO-0016)
 
-**INV-076 — An envelope's remaining quantity is decremented ONLY by deduped
-fill events.** `ExecutionEnvelope.remaining_quantity` starts at `qty_ceiling`
-and moves only through `record_envelope_fill` (both stores), which appends the
-FILL `ExecutionEvent` through the dedupe-aware writer and applies the decrement
-ONLY when the append actually wrote a new event — a replayed `dedupe_key` is
-counted exactly once. No other store operation touches the field; submitted/
-ack-shaped facts structurally cannot (the sell-side analogue of invariants 8/9).
+**INV-076 — An envelope's remaining quantity is charged ONLY by an exactly-once
+canonical fill fact.** `ExecutionEnvelope.remaining_quantity` starts at
+`qty_ceiling` and moves only through `record_envelope_fill` (both stores). The
+normal path appends a deduped FILL and decrements only when that event is new.
+If the same canonical FILL was already appended without envelope ownership, an
+append-only `ENVELOPE_FILL_ATTRIBUTED` marker may apply it once to one uniquely
+bounded envelope. The marker is globally deduped from the fill key, preserves
+the immutable FILL, and is ignored by position projection; a marker alone can
+never move shares. A supplied child id must name a real Order with exactly one
+matching `ENVELOPE_ACTION`. Before every NEW application, repair, or replay,
+all canonical envelope FILLs and markers must form one sequence-ordered,
+contiguous `remaining_before -> remaining_after` chain from `qty_ceiling`
+exactly to the stored remaining quantity. Cadence validates direct-attributed
+as well as uniquely parented orphan FILLs and propagates any identity/chain
+conflict before venue action. Its durable high-water checkpoint advances only
+after the selected execution-log tail validates completely; an error leaves it
+unchanged so restart retries the same facts. No submitted- or ack-shaped fact
+can move the field (the sell-side analogue of invariants 8/9).
+*WO-0113 recommended amendment — pending operator ratification and REV-0033
+review.*
 *Why:* the qty ceiling is the hard scope rail of the human's mandate (ADR-010
 §2); if anything but a fill fact could move it, the envelope could under- or
 over-report how much of the mandate is spent.
 *Pinned by:* `tests/test_wo0016_envelope_fills.py`
 (`test_duplicate_fill_is_counted_exactly_once`,
-`test_transitions_and_raw_event_appends_cannot_move_remaining`).
+`test_transitions_and_raw_event_appends_cannot_move_remaining`) and
+`tests/test_wo0113_attribution_repair.py`
+(`test_unattributed_fill_is_applied_once_by_append_only_marker`,
+`test_record_first_keeps_one_fill_and_marker_alone_cannot_move_position`, plus
+the identity/lineage conflict matrix,
+`test_new_repair_rejects_an_existing_unreflected_marker`,
+`test_cadence_validates_direct_attributed_fill_chain`, and
+`test_attribution_repair_uses_durable_tail_checkpoint`).
 
 **INV-077 — At most ONE envelope per sell intent is ACTIVE, with no observable
 two-ACTIVE window.** Activation checks the intent's other envelopes under the
@@ -615,6 +665,21 @@ verbatim. *Additional pins:*
 `tests/test_wo0036_r2_flatten_buys_open.py`,
 `tests/test_wo0036_r2_close_and_recovery_ownership.py`
 (`test_needs_review_retention_is_fail_closed_but_not_monopolizing`).
+*WO-0113 recommended amendment — pending operator ratification and REV-0033
+independent review:* exit
+preemption now closes the full proposal-to-order epoch. Candidate admission
+refuses during a same-symbol exit, final dispatch expires rather than parks a
+candidate that loses the race, and a successful exit stands down every
+PENDING/APPROVED candidate plus every safely local event-projected `CREATED`
+BUY. There is no `filled_quantity == 0` exception. A broker id or open recovery
+makes a projected-CREATED order ineligible for local cancel and remains
+venue-execution exposure; an accepted-submit uncertainty fact has the same
+local-cancel effect until ownership/reconciliation, including for direct SELL.
+Pins: `tests/test_wo0113_primary_remediation.py`
+(`test_exit_preempt_cancels_nonzero_filled_created_buy`,
+`test_envelope_stage_defers_without_canceling_recovery_owned_created_buy`,
+`test_candidate_creation_is_refused_during_exit_preemption`, and
+`test_exit_blocked_candidate_dispatch_expires_instead_of_reviving`).
 
 **INV-082 — Plan/write validator disagreement is a DEFECT signal: freeze +
 ENVELOPE_PLAN_DIVERGENCE, zero venue calls.** ``stage_envelope_action`` (both
@@ -891,6 +956,116 @@ the log for every Order. A dual-store selector matrix, exclusive immutable-key
 fixtures, a reduced-variable-limit SQLite pin, and a deterministic dual-store
 backfill work counter mutation-pin those mechanics; the retention semantics
 above remain unchanged.
+
+**INV-091 — Durable submit progress cannot disappear or be blindly repeated.**
+*WO-0113 implemented branch behavior — pending operator ratification and
+REV-0033 independent review.*
+Once `order_submit_unpersisted` commits, it is the ordinary restart-safe seed
+for an accepted broker id whose `SUBMITTED`/recovery writes did not converge.
+Whenever recovery ownership cannot be written, the engine appends an
+`ENGINE`/`LOCAL` `UNKNOWN_RECONCILE_REQUIRED` execution fact containing the
+exact local/broker identity whether or not the ordinary audit succeeded; every
+opposite-side boundary treats that fact as venue exposure until the same repair
+adopts it or creates a recovery. Before another tick performs venue work, and
+before reconciliation may lift
+`Reducing`, repair converges either seed without a broker call. A malformed seed
+fails closed, and an acceptance already represented by the order or recovery is
+idempotent. Same-side CAPI exposure counts each exact accepted BUY broker
+identity until it is broker-authoritatively resolved; an exact order, open
+recovery, and fallback for the same broker id coalesce as one accepted leg
+rather than releasing it. Two distinct broker ids tied to one local order remain
+two possible venue orders; canonical fills are allocated
+once across their aggregate, never once per identity. Malformed/legacy numeric
+owner scope cannot shrink the immutable referenced-order remainder: the
+conservative larger quantity/price wins, and an unbounded scope fails a
+configured risk gate closed. Overlap with the same non-terminal order/recovery
+is counted once. Routine claim/CAPI reads use a rollback/restart-safe
+accepted-fact cache, so unrelated historical UNKNOWN facts are not materialized
+at every choke. Global CAPI projects each order's lifecycle status from immutable
+events, not its driftable raw status column. Bounded accepted-submit and
+fill-attribution repair consumers skip checkpoint-only transport pages, so idle
+cadence converges without the two cursors appending for each other. A priceable stale redrive
+must first commit `STALE_SUBMITTING_REDRIVE_STARTED`; without that fact there is
+no venue call. An ambiguous send must commit either TIMEOUT_QUARANTINE or an
+open `needs_review` owner for the exact local/client identity, including across
+SQLite restart. Startup/reconnect must successfully write and verify the
+reconcile driver as `Reducing` before repair; a pre-existing composed `Halted`
+state cannot mask failure of that driver write. Only later repair/reconcile
+faults may be contained behind the verified gate. Every planned inferred-fill
+lookup and append is part of parity establishment: if either fails, driven
+reconciliation must keep/verify `Reducing`, refuse an `Active` classification,
+and stop the same tick before any venue action.
+*Pinned by:* `tests/test_wo0113_lifecycle_closure.py`
+(`test_unpersisted_submit_audit_repairs_failed_recovery_next_tick`,
+`test_sqlite_restart_repairs_unpersisted_submit_audit`,
+`test_repair_skips_submit_already_persisted_then_terminal`,
+`test_reconcile_gate_repairs_acceptance_before_it_can_lift_active`, and
+`test_startup_repair_failure_stays_reducing`), plus
+`test_first_submit_quarantine_fault_gets_durable_owner`,
+`test_stale_redrive_quarantine_fault_gets_durable_owner`,
+`test_ambiguous_owner_survives_sqlite_restart`, and
+`test_startup_aborts_when_reduce_only_gate_cannot_commit`, plus
+`tests/test_wo0113_submit_acceptance_fallback.py` and the gate-establishment
+fault pins in `tests/test_wo0113_monitoring_failclosed.py`, including
+`test_failed_inferred_fill_cannot_be_classified_as_parity`, plus the exact
+CAPI/dedup pins in `tests/test_wo0113_capi_uncertainty.py`. Broker-identity
+multiplicity, one-time fill allocation, conservative numeric scope,
+self-reclaim, normalization, and bounded-history cases are pinned in
+`tests/test_wo0113_acceptance_identity.py`; bounded repair selection is pinned
+in `tests/test_wo0113_repair_scaling.py`.
+
+**INV-092 — Local `CREATED → CANCELED` is one common proof, not a raw-status
+shortcut.** Under the deciding lock/transaction, event projection must still
+say `CREATED`, `broker_order_id` must be absent, no open `unresolved` or
+`needs_review` recovery may reference the order, and no accepted-submit fallback
+may own it. If eligible, row + audit +
+routine ExecutionEvent + owner reconciliation commit atomically at the injected
+logical time. Every direct cancel, exit stand-down, envelope cleanup,
+monitoring cancel, and session-close caller delegates this proof; a raced claim
+or recovery leaves the order non-terminal.
+*WO-0113 recommended amendment — pending operator ratification and REV-0033
+review.*
+*Pinned by:* `tests/test_wo0113_safe_local_cancel.py`
+(`test_direct_created_cancel_is_blocked_by_open_recovery`,
+`test_direct_created_cancel_uses_event_projection_not_raw_status`,
+`test_facade_created_cancel_loses_safely_to_submission_claim`,
+`test_terminal_cleanup_spares_recovery_owned_created_child`,
+`test_session_close_uses_projection_spares_recovery_and_counts_exactly`, and
+`test_local_created_cancel_rolls_back_row_audit_and_execution`), plus
+`tests/test_wo0113_acceptance_identity.py::test_accepted_direct_sell_cannot_be_canceled_as_local_created`.
+
+**INV-093 — A failed candidate dispatch cannot silently strand a consumed
+approval.** Every ordinary exception and `asyncio.CancelledError` after approval
+triggers the same guarded, cancellation-shielded APPROVED-with-no-order
+reversion to PENDING; known domain failures remain mapped and unexpected
+defects/cancellation propagate unchanged. If ordinary cleanup itself fails, the
+original dispatch defect remains the surfaced error and the durable APPROVED
+state remains visible for repair rather than being masked by cleanup telemetry.
+*Pinned by:* `tests/test_wo0113_lifecycle_closure.py`
+(`test_unexpected_candidate_dispatch_exception_reverts_approval` and
+`test_approval_cleanup_failure_preserves_original_dispatch_error`, plus
+`test_candidate_dispatch_cancellation_reverts_approval`).
+
+**INV-094 — Order mint/dispatch boundaries are symmetric across same-symbol
+opposite-side exposure.** BUY candidate admission and final dispatch refuse
+while an exit may execute. Legacy SELL dispatch, envelope stage/final claim,
+protection, flatten, and emergency reduce refuse while a BUY may execute by
+projected order, concrete broker identity, open recovery truth, or an
+unrepresented accepted-submit uncertainty fact. A successful direct SELL mint atomically
+expires the symbol's PENDING/APPROVED BUY candidates and safely cancels eligible
+projected-CREATED BUYs. Independently of direction, final claim refuses the
+order's own broker identity or accepted-submit fact before any venue call. Thus
+decomposing the normal facade flow cannot bypass either the cross-side rail or
+the one-local-id/one-submission ownership rail. An accepted direct SELL also
+remains in same-side single-flight at later intent-mint and final-claim choke
+points even if a local terminal fact masks its order row.
+*WO-0113 recommended amendment — pending operator ratification and REV-0033
+review.*
+*Pinned by:* `tests/test_wo0113_sell_boundary.py`,
+`tests/test_wo0113_submit_acceptance_fallback.py`,
+`tests/test_wo0113_acceptance_identity.py`,
+`tests/test_wo0113_primary_remediation.py`, and the existing final-claim pins in
+`tests/test_wo0109_round3_remediation.py`.
 
 ---
 

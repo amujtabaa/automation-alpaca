@@ -2486,6 +2486,7 @@ def plan_claim_order_for_submission(
     current_session: Optional[SessionRecord],
     sell_reason: Optional[SellReason] = None,
     quarantined: bool = False,
+    own_venue_uncertain: bool = False,
 ) -> ClaimPlan:
     """Decide whether a ``CREATED`` order may be claimed for submission.
 
@@ -2507,6 +2508,17 @@ def plan_claim_order_for_submission(
         # No longer submittable: a session close cancelled it, it was already
         # claimed, or it never existed. Nothing to do.
         return ClaimPlan(CLAIM_SKIPPED)
+
+    if order.broker_order_id is not None and order.broker_order_id.strip():
+        return ClaimPlan(
+            CLAIM_BLOCKED,
+            reason="order already has a concrete broker identity",
+        )
+    if own_venue_uncertain:
+        return ClaimPlan(
+            CLAIM_BLOCKED,
+            reason="order already has accepted-submit venue uncertainty",
+        )
 
     hold = _claim_hold_reason(
         order, own_session, current_session, sell_reason, quarantined=quarantined
@@ -2592,6 +2604,7 @@ def plan_transition_order(
     filled_quantity: Optional[int],
     broker_order_id: Optional[str],
     actor: str = COMMAND_ACTOR_SYSTEM,
+    now: Optional[datetime] = None,
 ) -> OrderTransitionPlan:
     """Decide an order transition — the shared logic (legality, monotonic
     filled-quantity, the true-no-op rule, and the D-008 ``order_transition`` vs
@@ -2677,6 +2690,7 @@ def plan_transition_order(
     if not status_changed and not qty_changed and not broker_changed:
         return OrderTransitionPlan(ORDER_TRANSITION_NOOP)
 
+    transition_now = now or utcnow()
     previous_filled = order.filled_quantity
     updated = order.model_copy(deep=True)
     if qty_changed:
@@ -2688,8 +2702,8 @@ def plan_transition_order(
         updated.status = new_status
         ts_field = ORDER_TIMESTAMP.get(new_status)
         if ts_field and getattr(updated, ts_field) is None:
-            setattr(updated, ts_field, utcnow())
-    updated.updated_at = utcnow()
+            setattr(updated, ts_field, transition_now)
+    updated.updated_at = transition_now
 
     if status_changed:
         event = EventSpec(
@@ -2748,13 +2762,13 @@ def plan_transition_order(
 # the same convention the rest of the log uses (`execution_event_for_fill`,
 # `plan_resolve_timeout_quarantine`, `plan_reconcile_resolve_order`):
 #   * ENGINE/LOCAL for the genuinely engine-local transitions — the claim
-#     (`CREATED -> SUBMITTING`, a pre-broker engine decision) and a `CANCELED` of
-#     an order the broker never confirmed (no `broker_order_id`): a never-submitted
-#     `CREATED` order cancelled locally (session close, flatten supersede, manual),
-#     OR the `SUBMITTING -> CANCELED` release when a submit failed before the venue
-#     returned an id — the no-zombie cancel of a BUY whose session closed mid-submit
-#     (`app/monitoring.py`). `broker_order_id` is assigned only when `SUBMITTED` is
-#     recorded, so its absence reliably means the broker never saw this order.
+#     (`CREATED -> SUBMITTING`, a pre-broker engine decision) and a `CANCELED` with
+#     no locally recorded `broker_order_id`: either a projected-CREATED order that
+#     the caller proved safely local (no broker id and no open recovery), or the
+#     `SUBMITTING -> CANCELED` release after a definite pre-ack submit failure. A
+#     broker accept whose id was not persisted is durable audit/recovery work and
+#     is repaired before new venue action; CREATED status by itself is never the
+#     local-cancel proof.
 #   * BROKER_REST/BROKER_AUTHORITATIVE for the broker-OBSERVED facts — `SUBMITTED`
 #     (only reached with a broker id, AIR-001), `PARTIALLY_FILLED`/`FILLED` (fills
 #     seen via the reconcile poll), `REJECTED` (broker rejection via poll/TQ), and
@@ -2794,14 +2808,12 @@ def _routine_event_provenance(
     """Faithful ``(source, authority)`` for a routine order-status event (WO-0009).
     See the PROVENANCE note above.
 
-    Engine-local iff the transition is the pre-broker claim, or a ``CANCELED`` of an
-    order the broker never confirmed — one with no ``broker_order_id``. That covers
-    both a never-submitted ``CREATED`` order (session close / flatten supersede /
-    manual never-submitted cancel) AND the ``SUBMITTING -> CANCELED`` release when a
-    submit failed before the venue returned an id (the no-zombie cancel of a BUY
-    whose session closed mid-submit — ``app/monitoring.py``). ``broker_order_id`` is
-    assigned only when ``SUBMITTED`` is recorded, so its absence reliably means the
-    broker never saw this order. Every other routine-emitted status
+    Engine-local iff the transition is the pre-broker claim, or a ``CANCELED`` with
+    no locally recorded ``broker_order_id``. For projected-CREATED cancellation the
+    caller additionally requires no open recovery owner; for
+    ``SUBMITTING -> CANCELED`` the broker failure was definite and returned no id.
+    Accepted-but-unpersisted ids are instead retained in audit/recovery truth and
+    repaired before subsequent venue work. Every other routine-emitted status
     (``SUBMITTED``/``PARTIALLY_FILLED``/``FILLED``/``REJECTED`` and a broker-confirmed
     ``CANCELED``) is a broker-observed fact.
 
@@ -3262,10 +3274,11 @@ def plan_close_session(
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
-    ``created_orders`` its still-CREATED (never-submitted) **BUY** orders (a
-    CREATED SELL is a protective/flatten exit that must remain submittable
-    post-close, Phase 7 — the store filters those out), ``open_sell_intents`` its
-    PENDING/APPROVED sell intents (expired like candidates), and
+    ``created_orders`` its projected-CREATED **BUY** orders that each store proved
+    safely local (no broker id or open recovery owner). A CREATED SELL is a
+    protective/flatten exit that must remain submittable post-close, Phase 7, so
+    the stores filter those out. ``open_sell_intents`` are its PENDING/APPROVED
+    sell intents (expired like candidates), and
     ``nonzero_positions`` every symbol with a nonzero derived position. The
     counts drive the summary event.
 
@@ -3631,6 +3644,226 @@ def plan_envelope_transition(
 ENVELOPE_FILL_REJECT = "reject"
 ENVELOPE_FILL_APPLY = "apply"
 
+ENVELOPE_FILL_NEW = "new_fill"
+ENVELOPE_FILL_REPAIR_ATTRIBUTION = "repair_attribution"
+ENVELOPE_FILL_ALREADY_APPLIED = "already_applied"
+ENVELOPE_FILL_ATTRIBUTION_CONFLICT = "attribution_conflict"
+
+
+def envelope_fill_attribution_dedupe_key(fill_dedupe_key: str) -> str:
+    """Global one-envelope attribution identity for one canonical FILL."""
+
+    return f"envelope_fill_attributed:{fill_dedupe_key}"
+
+
+@dataclass(frozen=True)
+class EnvelopeFillAttributionDecision:
+    outcome: str
+    marker_event: Optional[ExecutionEvent] = None
+    error: Optional[Exception] = None
+
+
+def decide_envelope_fill_attribution(
+    envelope: ExecutionEnvelope,
+    plan: "EnvelopeFillPlan",
+    *,
+    canonical_event: Optional[ExecutionEvent],
+    marker_event: Optional[ExecutionEvent],
+    attribution_events: Sequence[ExecutionEvent] = (),
+    now: Optional[datetime] = None,
+) -> EnvelopeFillAttributionDecision:
+    """Decide whether a planned envelope fill is new, repaired, or replayed.
+
+    A canonical ``FILL`` is immutable.  If it was appended before its envelope
+    bridge ran, a separate marker may apply it to exactly one uniquely bounded
+    envelope without changing the position projection a second time.
+    """
+
+    assert plan.fill_event is not None and plan.envelope is not None
+    proposed = plan.fill_event
+    marker_key = envelope_fill_attribution_dedupe_key(proposed.dedupe_key or "")
+
+    def conflict(detail: str) -> EnvelopeFillAttributionDecision:
+        return EnvelopeFillAttributionDecision(
+            ENVELOPE_FILL_ATTRIBUTION_CONFLICT,
+            error=InvalidFillError(
+                f"fill {proposed.dedupe_key!r} attribution conflict: {detail}"
+            ),
+        )
+
+    def has_valid_remaining_facts(event: ExecutionEvent) -> bool:
+        before = event.payload.get("remaining_before")
+        after = event.payload.get("remaining_after")
+        return (
+            type(before) is int
+            and type(after) is int
+            and 0 <= before <= envelope.qty_ceiling
+            and after == max(0, before - (event.quantity or 0))
+        )
+
+    def attribution_chain_is_reflected() -> bool:
+        """Prove persisted debits form the envelope's atomic write chain."""
+
+        running = envelope.qty_ceiling
+        for event in sorted(attribution_events, key=lambda item: item.sequence):
+            if event.envelope_id != envelope.id or event.event_type not in {
+                ExecutionEventType.FILL,
+                ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+            }:
+                continue
+            if (
+                event.symbol != envelope.symbol
+                or event.side is not OrderSide.SELL
+                or event.correlation_id != envelope.sell_intent_id
+                or type(event.quantity) is not int
+                or event.quantity <= 0
+                or not has_valid_remaining_facts(event)
+            ):
+                return False
+            if event.event_type is ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED and (
+                event.source is not EventSource.ENGINE
+                or event.authority is not EventAuthority.LOCAL
+            ):
+                return False
+            before = event.payload.get("remaining_before")
+            after = event.payload.get("remaining_after")
+            assert type(before) is int and type(after) is int
+            if before != running:
+                return False
+            running = after
+        return envelope.remaining_quantity == running
+
+    if canonical_event is None:
+        if marker_event is not None:
+            return conflict("attribution marker exists without its canonical FILL")
+        if not attribution_chain_is_reflected():
+            return conflict(
+                "existing attribution chain is not reflected in envelope state"
+            )
+        return EnvelopeFillAttributionDecision(ENVELOPE_FILL_NEW)
+
+    expected_material = (
+        proposed.dedupe_key,
+        proposed.order_id,
+        proposed.symbol,
+        proposed.side,
+        proposed.quantity,
+        proposed.price,
+        proposed.session_id,
+    )
+    actual_material = (
+        canonical_event.dedupe_key,
+        canonical_event.order_id,
+        canonical_event.symbol,
+        canonical_event.side,
+        canonical_event.quantity,
+        canonical_event.price,
+        canonical_event.session_id,
+    )
+    if canonical_event.event_type is not ExecutionEventType.FILL:
+        return conflict("canonical dedupe key belongs to a non-FILL event")
+    if actual_material != expected_material:
+        return conflict("canonical FILL identity does not match the observation")
+
+    if canonical_event.envelope_id == envelope.id:
+        if canonical_event.correlation_id != envelope.sell_intent_id:
+            return conflict("attributed FILL has a foreign owner")
+        if not has_valid_remaining_facts(canonical_event):
+            return conflict("attributed FILL has malformed remaining-quantity facts")
+        if marker_event is not None:
+            return conflict("an already-attributed FILL also has a repair marker")
+        if not attribution_chain_is_reflected():
+            return conflict(
+                "attributed FILL decrement chain is not reflected in envelope state"
+            )
+        return EnvelopeFillAttributionDecision(ENVELOPE_FILL_ALREADY_APPLIED)
+
+    if canonical_event.envelope_id is not None:
+        return conflict("canonical FILL is already attributed to another envelope")
+    if canonical_event.correlation_id is not None:
+        return conflict("unbound canonical FILL carries a foreign owner")
+    if proposed.order_id is None or not (proposed.dedupe_key or "").startswith(
+        f"fill:{proposed.order_id}:"
+    ):
+        return conflict("repair requires an order-scoped canonical fill identity")
+
+    if marker_event is not None:
+        expected_marker_material = (
+            ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+            marker_key,
+            canonical_event.order_id,
+            canonical_event.symbol,
+            canonical_event.side,
+            canonical_event.quantity,
+            canonical_event.price,
+            canonical_event.session_id,
+            envelope.id,
+            envelope.sell_intent_id,
+            EventSource.ENGINE,
+            EventAuthority.LOCAL,
+        )
+        actual_marker_material = (
+            marker_event.event_type,
+            marker_event.dedupe_key,
+            marker_event.order_id,
+            marker_event.symbol,
+            marker_event.side,
+            marker_event.quantity,
+            marker_event.price,
+            marker_event.session_id,
+            marker_event.envelope_id,
+            marker_event.correlation_id,
+            marker_event.source,
+            marker_event.authority,
+        )
+        if actual_marker_material != expected_marker_material:
+            return conflict("attribution marker identity is malformed or foreign")
+        if marker_event.payload.get("fill_dedupe_key") != canonical_event.dedupe_key:
+            return conflict("attribution marker references another canonical FILL")
+        if marker_event.payload.get("fill_event_id") != canonical_event.id:
+            return conflict("attribution marker references another FILL event")
+        if marker_event.payload.get("fill_event_sequence") != canonical_event.sequence:
+            return conflict("attribution marker references another FILL sequence")
+        if not has_valid_remaining_facts(marker_event):
+            return conflict("attribution marker has malformed remaining-quantity facts")
+        if not attribution_chain_is_reflected():
+            return conflict(
+                "attribution marker decrement chain is not reflected in envelope state"
+            )
+        return EnvelopeFillAttributionDecision(ENVELOPE_FILL_ALREADY_APPLIED)
+
+    if not attribution_chain_is_reflected():
+        return conflict("existing attribution chain is not reflected in envelope state")
+
+    ts = now if now is not None else utcnow()
+    marker = ExecutionEvent(
+        event_type=ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=marker_key,
+        ts_event=canonical_event.ts_event,
+        ts_init=ts,
+        symbol=canonical_event.symbol,
+        side=canonical_event.side,
+        quantity=canonical_event.quantity,
+        price=canonical_event.price,
+        order_id=canonical_event.order_id,
+        envelope_id=envelope.id,
+        session_id=canonical_event.session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload={
+            "fill_dedupe_key": canonical_event.dedupe_key,
+            "fill_event_id": canonical_event.id,
+            "fill_event_sequence": canonical_event.sequence,
+            "remaining_before": envelope.remaining_quantity or 0,
+            "remaining_after": plan.envelope.remaining_quantity or 0,
+            "repair": "missed_envelope_attribution",
+        },
+    )
+    return EnvelopeFillAttributionDecision(
+        ENVELOPE_FILL_REPAIR_ATTRIBUTION, marker_event=marker
+    )
+
 
 @dataclass(frozen=True)
 class EnvelopeFillPlan:
@@ -3873,11 +4106,11 @@ def plan_supersede_envelope(
     #     resting predecessor order is exactly the double exposure INV-077
     #     forbids in substance. The amendment flow cancels first (staged
     #     CREATED orders are swept locally by the store in this same unit).
-    # CREATED is deliberately NOT venue-live: a staged, never-submitted order
-    # is local truth only — the stores sweep it in the same atomic unit as
-    # the supersession (WO-0024 machinery). Anything that may rest at the
-    # venue (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/CANCEL_PENDING/quarantine)
-    # blocks.
+    # CREATED is deliberately outside the venue-live set. The stores may sweep
+    # a projected-CREATED child in the same atomic unit only after the common
+    # local-cancel predicate proves no broker id or open recovery owner. Anything
+    # that may rest at the venue (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/
+    # CANCEL_PENDING/quarantine) blocks.
     working_live = working_order is not None and working_order.status not in (
         OrderStatus.CREATED,
         OrderStatus.FILLED,

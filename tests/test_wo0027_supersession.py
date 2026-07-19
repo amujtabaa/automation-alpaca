@@ -102,6 +102,16 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
     )
 
 
+async def canceled_envelope_child(store, env: ExecutionEnvelope, *, quantity: int):
+    staged = await store.stage_envelope_action(
+        env.id,
+        planned(quantity=quantity),
+        snapshot_fingerprint=f"wo0027-fill-lineage:{env.id}",
+        now=later(),
+    )
+    return await store.transition_order(staged.order.id, OrderStatus.CANCELED)
+
+
 async def test_live_working_order_blocks_supersession(any_store):
     """The SPEC-02 repro inverted: with a SELL resting at the venue, the
     amendment must be REFUSED — never two live orders for one approval."""
@@ -126,8 +136,13 @@ async def test_live_working_order_blocks_supersession(any_store):
 
 async def test_conservation_binds_at_commit_time(any_store):
     env = await active_envelope(any_store)
+    order = await canceled_envelope_child(any_store, env, quantity=40)
     await any_store.record_envelope_fill(
-        env.id, quantity=40, dedupe_key="fill:o:1", order_id="o", price=9.9
+        env.id,
+        quantity=40,
+        dedupe_key=f"fill:{order.id}:1",
+        order_id=order.id,
+        price=9.9,
     )
     too_wide = make_draft(env.sell_intent_id, qty_ceiling=61)
     with pytest.raises(EnvelopeTransitionError, match="conserves"):

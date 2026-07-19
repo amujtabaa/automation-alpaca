@@ -9,7 +9,7 @@ replayed fill (same dedupe_key) is counted exactly once (INV-5).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,16 +22,19 @@ from app.models import (
     EventAuthority,
     EventSource,
     ExecutionEnvelope,
+    OrderSide,
+    OrderStatus,
     SellReason,
     SessionType,
-    utcnow,
 )
+from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import InvalidFillError, UnknownEntityError
 from app.transitions import ENVELOPE_TRANSITIONS
 
 pytestmark = pytest.mark.anyio
 
 S = EnvelopeStatus
+NOW = datetime(2026, 7, 17, 18, 0, tzinfo=timezone.utc)
 
 
 def make_draft(intent_id: str = "si-1", qty: int = 100) -> ExecutionEnvelope:
@@ -46,14 +49,33 @@ def make_draft(intent_id: str = "si-1", qty: int = 100) -> ExecutionEnvelope:
         aggressiveness=["passive"],
         cooldown_floor_ms=750,
         cancel_replace_budget=40,
-        expires_at=utcnow() + timedelta(hours=2),
-        allowed_session_phases=[SessionType.PRE_MARKET],
+        expires_at=NOW + timedelta(hours=2),
+        allowed_session_phases=[SessionType.REGULAR],
         expiry_disposition=EnvelopeExpiryDisposition.CANCEL_AND_RETURN,
         stale_data_disposition=EnvelopeStaleDataDisposition.CANCEL,
     )
 
 
 async def create_owned_envelope(store, *, qty: int = 100) -> ExecutionEnvelope:
+    session = await store.get_current_session()
+    candidate = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        candidate.id,
+        "AAPL",
+        OrderSide.BUY,
+        qty,
+        session_id=session.id,
+    )
+    await store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        qty,
+        10.0,
+        source_fill_id=f"wo0016-hold:{candidate.id}",
+        session_id=session.id,
+    )
+    await store.transition_order(buy.id, OrderStatus.CANCELED)
     draft = make_draft(qty=qty)
     owner = await store.create_sell_intent(
         symbol=draft.symbol,
@@ -67,24 +89,49 @@ async def create_owned_envelope(store, *, qty: int = 100) -> ExecutionEnvelope:
     )
 
 
-async def activate(store, env: ExecutionEnvelope) -> ExecutionEnvelope:
+async def activate(store, env: ExecutionEnvelope):
     await store.transition_envelope(env.id, S.APPROVED)
-    return await store.transition_envelope(env.id, S.ACTIVE)
+    await store.transition_envelope(env.id, S.ACTIVE)
+    staged = await store.stage_envelope_action(
+        env.id,
+        PlannedAction(
+            kind=ActionKind.SUBMIT,
+            limit_price=9.9,
+            quantity=env.qty_ceiling,
+            regime=None,
+            urgency=0.0,
+            working_stop=9.5,
+            atr=0.05,
+            tranche=False,
+            stop_triggered=False,
+        ),
+        snapshot_fingerprint=f"wo0016-fill:{env.id}",
+        now=NOW,
+    )
+    return staged.order
 
 
 async def test_fill_decrements_and_full_fill_completes(any_store):
     await any_store.initialize()
     env = await create_owned_envelope(any_store)
-    await activate(any_store, env)
+    order = await activate(any_store, env)
 
     after = await any_store.record_envelope_fill(
-        env.id, quantity=40, dedupe_key="fill:o1:x1", price=9.80, order_id="o1"
+        env.id,
+        quantity=40,
+        dedupe_key=f"fill:{order.id}:x1",
+        price=9.80,
+        order_id=order.id,
     )
     assert after.remaining_quantity == 60
     assert after.status is S.ACTIVE
 
     done = await any_store.record_envelope_fill(
-        env.id, quantity=60, dedupe_key="fill:o1:x2", price=9.75, order_id="o1"
+        env.id,
+        quantity=60,
+        dedupe_key=f"fill:{order.id}:x2",
+        price=9.75,
+        order_id=order.id,
     )
     assert done.remaining_quantity == 0
     assert done.status is S.COMPLETED
@@ -100,13 +147,21 @@ async def test_fill_decrements_and_full_fill_completes(any_store):
 async def test_duplicate_fill_is_counted_exactly_once(any_store):
     await any_store.initialize()
     env = await create_owned_envelope(any_store)
-    await activate(any_store, env)
+    order = await activate(any_store, env)
 
     await any_store.record_envelope_fill(
-        env.id, quantity=30, dedupe_key="fill:o1:dup", order_id="o1", price=9.9
+        env.id,
+        quantity=30,
+        dedupe_key=f"fill:{order.id}:dup",
+        order_id=order.id,
+        price=9.9,
     )
     again = await any_store.record_envelope_fill(
-        env.id, quantity=30, dedupe_key="fill:o1:dup", order_id="o1", price=9.9
+        env.id,
+        quantity=30,
+        dedupe_key=f"fill:{order.id}:dup",
+        order_id=order.id,
+        price=9.9,
     )
     assert again.remaining_quantity == 70  # NOT 40 — replay is a no-op
 
@@ -126,10 +181,14 @@ async def test_overfill_of_the_hard_ceiling_breaches(any_store):
 
     await any_store.initialize()
     env = await create_owned_envelope(any_store, qty=50)
-    await activate(any_store, env)
+    order = await activate(any_store, env)
 
     after = await any_store.record_envelope_fill(
-        env.id, quantity=80, dedupe_key="fill:o1:over", order_id="o1", price=9.9
+        env.id,
+        quantity=80,
+        dedupe_key=f"fill:{order.id}:over",
+        order_id=order.id,
+        price=9.9,
     )
     assert after.remaining_quantity == 0
     assert after.status is S.BREACHED
@@ -148,11 +207,15 @@ async def test_overfill_of_the_hard_ceiling_breaches(any_store):
 async def test_fill_while_frozen_decrements_but_never_unfreezes(any_store):
     await any_store.initialize()
     env = await create_owned_envelope(any_store)
-    await activate(any_store, env)
+    order = await activate(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN)
 
     after = await any_store.record_envelope_fill(
-        env.id, quantity=100, dedupe_key="fill:o1:frozen", order_id="o1", price=9.9
+        env.id,
+        quantity=100,
+        dedupe_key=f"fill:{order.id}:frozen",
+        order_id=order.id,
+        price=9.9,
     )
     assert after.remaining_quantity == 0
     assert after.status is S.FROZEN  # a fill NEVER exits a freeze
@@ -171,12 +234,16 @@ async def test_fill_while_frozen_decrements_but_never_unfreezes(any_store):
 async def test_late_fill_on_terminal_envelope_is_recorded_not_hidden(any_store):
     await any_store.initialize()
     env = await create_owned_envelope(any_store)
-    await activate(any_store, env)
+    order = await activate(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN)
     await any_store.transition_envelope(env.id, S.CANCELLED)
 
     after = await any_store.record_envelope_fill(
-        env.id, quantity=10, dedupe_key="fill:o1:late", order_id="o1", price=9.9
+        env.id,
+        quantity=10,
+        dedupe_key=f"fill:{order.id}:late",
+        order_id=order.id,
+        price=9.9,
     )
     assert after.status is S.CANCELLED  # terminal never changes
     assert after.remaining_quantity == 90

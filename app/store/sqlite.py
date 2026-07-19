@@ -94,6 +94,7 @@ from app.store.base import (
     FillAppendResult,
     FlattenBlockedError,
     FlattenResult,
+    InvalidEventError,
     InvalidFillError,
     InvalidOrderError,
     OrderIntentBlockedError,
@@ -106,6 +107,7 @@ from app.store.base import (
     StateStore,
     SubmissionClaim,
     UnknownEntityError,
+    normalize_json_payload,
     normalize_symbol,
 )
 from app.store.core import (
@@ -122,6 +124,10 @@ from app.store.core import (
     FLATTEN_DENIED_HALTED,
     FLATTEN_BLOCKING_BUY_STATUSES,
     FLATTEN_SUPERSEDE_AND_CREATE,
+    ENVELOPE_FILL_ALREADY_APPLIED,
+    ENVELOPE_FILL_ATTRIBUTION_CONFLICT,
+    ENVELOPE_FILL_NEW,
+    ENVELOPE_FILL_REPAIR_ATTRIBUTION,
     ENVELOPE_FILL_REJECT,
     ENVELOPE_TRANSITION_APPLY,
     STAGE_DIVERGENCE,
@@ -145,6 +151,8 @@ from app.store.core import (
     envelope_draft_reason,
     envelope_owner_binding_reason,
     envelope_owner_scope_reason,
+    decide_envelope_fill_attribution,
+    envelope_fill_attribution_dedupe_key,
     plan_envelope_fill,
     plan_envelope_transition,
     plan_supersede_envelope,
@@ -183,9 +191,13 @@ from app.transitions import (
 from app.policy import (
     MAY_EXECUTE_ORDER_STATUSES,
     NON_TERMINAL_ORDER_STATUSES,
+    accepted_submit_uncertainty_order_ids,
     candidate_numeric_reason,
     existing_exposure,
+    is_accepted_submit_uncertainty_event,
     order_candidate_match_reason,
+    risk_limit_reason,
+    unrepresented_accepted_buy_exposure,
     whole_count_reason,
 )
 
@@ -444,6 +456,8 @@ class SqliteStateStore(StateStore):
         self._db_path = Path(db_path)
         self._lock = asyncio.Lock()
         self._conn: Optional[sqlite3.Connection] = None
+        self._accepted_submit_uncertainty_events: list[ExecutionEvent] = []
+        self._accepted_submit_uncertainty_event_ids: set[str] = set()
 
     # ------------------------------------------------------------------ #
     # Connection / transactions
@@ -574,6 +588,18 @@ class SqliteStateStore(StateStore):
                     )
                 self._reconcile_envelope_symbol_conflicts_locked(cur, now=now)
             self._ensure_current_session_locked()
+            accepted_rows = self._read_all(
+                "SELECT * FROM execution_events WHERE event_type = ? ORDER BY sequence",
+                (ExecutionEventType.UNKNOWN_RECONCILE_REQUIRED.value,),
+            )
+            self._accepted_submit_uncertainty_events = [
+                event
+                for event in (self._execution_event(row) for row in accepted_rows)
+                if is_accepted_submit_uncertainty_event(event)
+            ]
+            self._accepted_submit_uncertainty_event_ids = {
+                event.id for event in self._accepted_submit_uncertainty_events
+            }
 
     def _backfill_order_status_events_locked(self) -> None:
         """WO-0007b read-flip migration (mirror of the in-memory backfill): an order
@@ -1072,7 +1098,7 @@ class SqliteStateStore(StateStore):
             candidate_id=candidate_id,
             order_id=order_id,
             fill_id=fill_id,
-            payload=payload or {},
+            payload=normalize_json_payload(payload),
             session_id=session_id,
             correlation_id=resolved_correlation_id,
         )
@@ -1313,6 +1339,15 @@ class SqliteStateStore(StateStore):
                 )
                 raise InvalidOrderError(
                     f"candidate {key} has an invalid {field} ({why}: {value!r})"
+                )
+            # Exit-preempt begins at candidate admission. Check before the
+            # active-candidate idempotency return so no proposal born (or handed
+            # back) under a working same-symbol SELL can revive after it clears.
+            exit_hit = self._same_symbol_exit_may_execute_locked(key)
+            if exit_hit is not None:
+                raise OrderIntentBlockedError(
+                    f"candidate for {key} refused: a same-symbol exit may execute "
+                    f"({exit_hit})"
                 )
             # W2-CAND (REV-0013/0014 / single-flight): refuse a SECOND active
             # (PENDING/APPROVED) candidate for the same symbol+session — return the
@@ -1844,12 +1879,17 @@ class SqliteStateStore(StateStore):
             # protection tick's own awaits cannot race the create (the tick's
             # pre-check can go stale). An already-active exit was returned above and
             # stays idempotent; manual flatten has its own Halted-deny.
-            if reason is SellReason.PROTECTION_FLOOR:
+            if reason in (SellReason.PROTECTION_FLOOR, SellReason.MANUAL_FLATTEN):
                 session = self._ensure_current_session_locked()
                 if (
                     self._current_trading_state_locked(session.id)
                     is TradingState.HALTED
                 ):
+                    if reason is SellReason.MANUAL_FLATTEN:
+                        raise FlattenBlockedError(
+                            f"manual flatten intent for {key} refused: trading "
+                            "halted (use the emergency reduce command)"
+                        )
                     raise ProtectionHaltedError(
                         f"autonomous protection exit for {key} refused: trading "
                         "halted (kill switch engaged)"
@@ -2880,7 +2920,11 @@ class SqliteStateStore(StateStore):
                     stored = self._apply_envelope_transition_locked(cur, chain)
                 elif terminal:
                     self._cancel_staged_envelope_orders_locked(
-                        cur, [stored.id], actor=actor
+                        cur,
+                        [stored.id],
+                        actor=actor,
+                        reconcile_owner=False,
+                        now=stored.updated_at,
                     )
                     self._reconcile_envelope_owner_locked(
                         cur, stored.sell_intent_id, now=stored.updated_at
@@ -2922,11 +2966,6 @@ class SqliteStateStore(StateStore):
                     raise EnvelopeTransitionError(
                         f"envelope {old.id} cannot be superseded: {direct_reason}"
                     )
-                foreign_reason = self._foreign_envelope_obligation_reason_locked(old)
-                if foreign_reason is not None:
-                    raise EnvelopeTransitionError(
-                        f"envelope {old.id} cannot be superseded: {foreign_reason}"
-                    )
                 old_obligation = self._envelope_obligation_locked(envelope_id=old.id)
                 ambiguous_ids = (
                     old_obligation.missing_envelope_ids
@@ -2945,6 +2984,11 @@ class SqliteStateStore(StateStore):
                         "order(s) "
                         + ", ".join(order.id for order in old_obligation.venue_orders)
                         + " may be live at the venue"
+                    )
+                foreign_reason = self._foreign_envelope_obligation_reason_locked(old)
+                if foreign_reason is not None:
+                    raise EnvelopeTransitionError(
+                        f"envelope {old.id} cannot be superseded: {foreign_reason}"
                     )
                 _, working = self._envelope_action_context_locked(cur, old)
                 plan = plan_supersede_envelope(
@@ -2984,7 +3028,11 @@ class SqliteStateStore(StateStore):
                 # refused by the planner — nothing of the old mandate
                 # survives).
                 self._cancel_staged_envelope_orders_locked(
-                    cur, [plan.old_envelope.id], actor=actor
+                    cur,
+                    [plan.old_envelope.id],
+                    actor=actor,
+                    reconcile_owner=False,
+                    now=plan.old_envelope.updated_at,
                 )
                 self._reconcile_envelope_owner_locked(
                     cur,
@@ -3008,8 +3056,9 @@ class SqliteStateStore(StateStore):
         now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY remaining_quantity writer.
-        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
-        that fill was already counted (exactly-once, INV-5)."""
+        A validated replay of an already-attributed fill applies nothing. An
+        unbound canonical dedupe hit may append its attribution marker and
+        decrement this envelope exactly once."""
 
         async with self._lock:
             with self._tx() as cur:
@@ -3029,27 +3078,24 @@ class SqliteStateStore(StateStore):
                     order_row = cur.execute(
                         "SELECT * FROM orders WHERE id = ?", (order_id,)
                     ).fetchone()
-                    if action_rows or order_row is not None:
-                        parent_ids = {
-                            action_row["envelope_id"] for action_row in action_rows
-                        }
-                        raw_order = (
-                            self._order(order_row) if order_row is not None else None
+                    parent_ids = {
+                        action_row["envelope_id"] for action_row in action_rows
+                    }
+                    raw_order = (
+                        self._order(order_row) if order_row is not None else None
+                    )
+                    projection = self._envelope_obligation_locked(envelope_id=env.id)
+                    if (
+                        raw_order is None
+                        or parent_ids != {env.id}
+                        or order_id in projection.invalid_order_ids
+                        or order_id in projection.missing_order_ids
+                        or projection.missing_envelope_ids
+                    ):
+                        raise InvalidFillError(
+                            f"fill order {order_id} is not a uniquely bounded "
+                            f"child of envelope {env.id}"
                         )
-                        projection = self._envelope_obligation_locked(
-                            envelope_id=env.id
-                        )
-                        if (
-                            raw_order is None
-                            or parent_ids != {env.id}
-                            or order_id in projection.invalid_order_ids
-                            or order_id in projection.missing_order_ids
-                            or projection.missing_envelope_ids
-                        ):
-                            raise InvalidFillError(
-                                f"fill order {order_id} is not a uniquely bounded "
-                                f"child of envelope {env.id}"
-                            )
                 plan = plan_envelope_fill(
                     env,
                     quantity=quantity,
@@ -3066,13 +3112,52 @@ class SqliteStateStore(StateStore):
                     assert plan.error is not None
                     raise plan.error
                 assert plan.envelope is not None and plan.fill_event is not None
-                already = cur.execute(
-                    "SELECT 1 FROM execution_events WHERE dedupe_key = ?",
+                canonical_row = cur.execute(
+                    "SELECT * FROM execution_events WHERE dedupe_key = ?",
                     (dedupe_key,),
                 ).fetchone()
-                if already is not None:
+                marker_row = cur.execute(
+                    "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                    (envelope_fill_attribution_dedupe_key(dedupe_key),),
+                ).fetchone()
+                attribution_rows = cur.execute(
+                    "SELECT * FROM execution_events WHERE envelope_id = ? "
+                    "AND event_type IN (?, ?) ORDER BY sequence",
+                    (
+                        env.id,
+                        ExecutionEventType.FILL.value,
+                        ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED.value,
+                    ),
+                ).fetchall()
+                decision = decide_envelope_fill_attribution(
+                    env,
+                    plan,
+                    canonical_event=(
+                        self._execution_event(canonical_row)
+                        if canonical_row is not None
+                        else None
+                    ),
+                    marker_event=(
+                        self._execution_event(marker_row)
+                        if marker_row is not None
+                        else None
+                    ),
+                    attribution_events=[
+                        self._execution_event(row) for row in attribution_rows
+                    ],
+                    now=now,
+                )
+                if decision.outcome == ENVELOPE_FILL_ATTRIBUTION_CONFLICT:
+                    assert decision.error is not None
+                    raise decision.error
+                if decision.outcome == ENVELOPE_FILL_ALREADY_APPLIED:
                     return env
-                self._insert_execution_event(cur, plan.fill_event)
+                if decision.outcome == ENVELOPE_FILL_NEW:
+                    self._insert_execution_event(cur, plan.fill_event)
+                else:
+                    assert decision.outcome == ENVELOPE_FILL_REPAIR_ATTRIBUTION
+                    assert decision.marker_event is not None
+                    self._insert_execution_event(cur, decision.marker_event)
                 self._update_envelope(cur, plan.envelope)
                 stored = plan.envelope
                 if plan.transition is not None:
@@ -3090,7 +3175,12 @@ class SqliteStateStore(StateStore):
                     )
                 if not ENVELOPE_TRANSITIONS.get(stored.status):
                     self._cancel_staged_envelope_orders_locked(
-                        cur, [stored.id], actor="engine"
+                        cur,
+                        [stored.id],
+                        actor="engine",
+                        exclude_order_ids={order_id} if order_id is not None else set(),
+                        reconcile_owner=False,
+                        now=stored.updated_at,
                     )
                     self._reconcile_envelope_owner_locked(
                         cur, stored.sell_intent_id, now=stored.updated_at
@@ -3217,6 +3307,13 @@ class SqliteStateStore(StateStore):
                     f"{pre_envelope.session_id!r}"
                 )
             session = self._ensure_current_session_locked()
+            buy_hit = self._same_symbol_buy_may_execute_locked(pre_envelope.symbol)
+            if buy_hit is not None:
+                raise EnvelopeActionPausedError(
+                    f"envelope {pre_envelope.id} is paused: same-symbol BUY may "
+                    f"execute ({buy_hit})"
+                )
+            action_now = now or utcnow()
             with self._tx() as cur:
                 row = cur.execute(
                     "SELECT * FROM execution_envelopes WHERE id = ?",
@@ -3252,6 +3349,12 @@ class SqliteStateStore(StateStore):
                     raise OrderIntentBlockedError(
                         "envelope action refused: trading halted (kill switch engaged)"
                     )
+                buy_hit = self._same_symbol_buy_may_execute_locked(env.symbol)
+                if buy_hit is not None:
+                    raise EnvelopeActionPausedError(
+                        f"envelope {env.id} is paused: same-symbol BUY may execute "
+                        f"({buy_hit})"
+                    )
                 actions, working = self._envelope_action_context_locked(cur, env)
                 # The current session controls the global kill state only. Child
                 # identity always comes from the Envelope's immutable scope.
@@ -3264,7 +3367,7 @@ class SqliteStateStore(StateStore):
                     session_id=sid,
                     snapshot_fingerprint=snapshot_fingerprint,
                     actor=actor,
-                    now=now,
+                    now=action_now,
                     # WO-0026: live fill-derived position, read inside the
                     # SAME transaction — the reduce-only hard rail's truth.
                     current_position=self._position_locked(env.symbol).quantity,
@@ -3309,7 +3412,7 @@ class SqliteStateStore(StateStore):
                 # and autonomous protection) so a proposed buy can never dispatch
                 # into the position the envelope is now exiting.
                 self._stand_down_symbol_buy_candidates_locked(
-                    cur, env.symbol, actor=actor
+                    cur, env.symbol, actor=actor, now=action_now
                 )
                 return EnvelopeActionStageResult(
                     STAGE_STAGED,
@@ -3515,13 +3618,22 @@ class SqliteStateStore(StateStore):
             )
 
     def _cancel_staged_envelope_orders_locked(
-        self, cur: sqlite3.Cursor, envelope_ids: list[str], *, actor: str
+        self,
+        cur: sqlite3.Cursor,
+        envelope_ids: list[str],
+        *,
+        actor: str,
+        exclude_order_ids: frozenset[str] | set[str] = frozenset(),
+        reconcile_owner: bool = True,
+        now: Optional[datetime] = None,
     ) -> None:
-        """Locally CANCEL every CREATED order staged by the given envelopes
-        (WO-0024), on the caller's open transaction. CREATED means never
-        venue-submitted, so this is a pure local-truth write — no venue call
-        belongs here. SUBMITTING/SUBMITTED orders are untouched: venue-side
-        wind-down stays with the monitoring loop."""
+        """Locally cancel safely local CREATED work staged by the envelopes.
+
+        Runs in the caller's transaction. The common predicate requires
+        projected CREATED, no broker id, and no open recovery; status alone never
+        proves venue absence. Venue-capable/recovery-owned orders remain for
+        monitoring to converge.
+        """
 
         if not envelope_ids:
             return
@@ -3535,6 +3647,8 @@ class SqliteStateStore(StateStore):
         ).fetchall()
         for row in rows:
             order_id = row["order_id"]
+            if order_id in exclude_order_ids:
+                continue
             order_row = cur.execute(
                 "SELECT * FROM orders WHERE id = ?", (order_id,)
             ).fetchone()
@@ -3543,35 +3657,12 @@ class SqliteStateStore(StateStore):
             raw_order = self._order(order_row)
             if not self._order_has_valid_envelope_link_locked(raw_order):
                 continue
-            order = self._project_order_locked(raw_order)
-            if order.status is not OrderStatus.CREATED:
-                continue
-            plan = plan_transition_order(
-                order=order,
-                new_status=OrderStatus.CANCELED,
-                filled_quantity=None,
-                broker_order_id=None,
+            self._cancel_local_created_order_locked(
+                cur,
+                raw_order.id,
                 actor=actor,
-            )
-            assert plan.outcome == ORDER_TRANSITION_APPLY
-            assert plan.order is not None and plan.event is not None
-            cur.execute(
-                "UPDATE orders SET status=?, canceled_at=?, updated_at=? WHERE id=?",
-                (
-                    OrderStatus.CANCELED.value,
-                    _dt(plan.order.canceled_at),
-                    _dt(plan.order.updated_at),
-                    plan.order.id,
-                ),
-            )
-            self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
-            exec_event = execution_event_for_routine_transition(
-                order, plan.order.status, plan.order.filled_quantity
-            )
-            if exec_event is not None:
-                self._insert_execution_event(cur, exec_event)
-            self._reconcile_envelope_owners_for_order_locked(
-                cur, order.id, now=plan.order.updated_at
+                now=now,
+                reconcile_owner=reconcile_owner,
             )
 
     def _dispatch_order_for_sell_intent_locked(
@@ -3581,6 +3672,8 @@ class SqliteStateStore(StateStore):
         order_type: OrderType,
         limit_price: Optional[float],
         cur: Optional[sqlite3.Cursor] = None,
+        allow_halted: bool = False,
+        decision_session: Optional[SessionRecord] = None,
     ) -> Order:
         """The plan+apply body of the APPROVED->ORDERED handoff (assumes the
         caller already holds ``self._lock`` — either the public
@@ -3618,6 +3711,42 @@ class SqliteStateStore(StateStore):
                 f"sell intent {intent.id} cannot dispatch while unresolved direct "
                 "SELL exposure exists (" + ", ".join(direct_ids) + ")"
             )
+        logical_now = utcnow()
+        session = decision_session or self._ensure_current_session_locked()
+        halted = not allow_halted and (
+            self._current_trading_state_locked(session.id) is TradingState.HALTED
+        )
+        buy_hit = self._same_symbol_buy_may_execute_locked(intent.symbol)
+        if halted or buy_hit is not None:
+            with nullcontext(cur) if cur is not None else self._tx() as c:
+                if intent.status in (
+                    SellIntentStatus.PENDING,
+                    SellIntentStatus.APPROVED,
+                ):
+                    self._transition_sell_intent_locked(
+                        c,
+                        intent,
+                        SellIntentStatus.EXPIRED,
+                        now=logical_now,
+                        reason=(
+                            "dispatch_halted"
+                            if halted
+                            else "same_symbol_buy_may_execute"
+                        ),
+                    )
+            if halted and intent.reason is SellReason.MANUAL_FLATTEN:
+                raise FlattenBlockedError(
+                    f"manual flatten dispatch for {intent.symbol} refused: "
+                    "trading halted (use the emergency reduce command)"
+                )
+            if halted:
+                raise ProtectionHaltedError(
+                    f"protection dispatch for {intent.symbol} refused: trading halted"
+                )
+            raise SellIntentTransitionError(
+                f"sell intent {intent.id} cannot dispatch: same-symbol BUY may "
+                f"execute ({buy_hit})"
+            )
         live_qty = self._position_locked(intent.symbol).quantity
         plan = plan_create_order_for_sell_intent(
             intent=intent,
@@ -3646,7 +3775,7 @@ class SqliteStateStore(StateStore):
             raise plan.error
         assert plan.order is not None  # non-REJECT dispatch sets the order
         order = plan.order
-        now = utcnow()
+        now = logical_now
         intent.status = SellIntentStatus.ORDERED
         intent.order_id = order.id
         intent.ordered_at = now
@@ -3656,6 +3785,12 @@ class SqliteStateStore(StateStore):
             self._update_sell_intent(c, intent)
             for event in plan.events:
                 self._insert_event(c, event.event_type, **event.as_kwargs())
+            self._stand_down_symbol_buy_candidates_locked(
+                c,
+                intent.symbol,
+                actor=COMMAND_ACTOR_SYSTEM,
+                now=now,
+            )
         return order
 
     async def create_order_for_sell_intent(
@@ -3797,7 +3932,10 @@ class SqliteStateStore(StateStore):
                     cur, intent, SellIntentStatus.APPROVED
                 )
                 order = self._dispatch_order_for_sell_intent_locked(
-                    intent, order_type=OrderType.MARKET, limit_price=None, cur=cur
+                    intent,
+                    order_type=OrderType.MARKET,
+                    limit_price=None,
+                    cur=cur,
                 )
                 self._insert_event(
                     cur,
@@ -3954,6 +4092,10 @@ class SqliteStateStore(StateStore):
                         for order in self._unresolved_direct_sell_orders_locked(symbol)
                     ),
                     *self._open_direct_sell_recovery_ids_locked(symbol),
+                    *self._accepted_submit_uncertainty_ids_locked(
+                        symbol,
+                        side=OrderSide.SELL,
+                    ),
                 )
             )
         )
@@ -3996,7 +4138,52 @@ class SqliteStateStore(StateStore):
                 recovery.symbol == symbol and recovery.side is OrderSide.SELL
             ) or recovery.local_order_id in sell_order_ids:
                 return recovery.local_order_id
+        uncertainty_ids = self._accepted_submit_uncertainty_ids_locked(
+            symbol,
+            side=OrderSide.SELL,
+            exclude_order_id=exclude_order_id,
+        )
+        if uncertainty_ids:
+            return uncertainty_ids[0]
         return None
+
+    def _accepted_submit_uncertainty_ids_locked(
+        self,
+        symbol: str,
+        *,
+        side: OrderSide,
+        exclude_order_id: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        """SQLite twin for unrepresented accepted-submit exposure."""
+
+        uncertainty_events = self._accepted_submit_uncertainty_events
+        if not uncertainty_events:
+            return ()
+        referenced_ids = {
+            event.order_id for event in uncertainty_events if event.order_id is not None
+        }
+        relevant_orders: list[Order] = []
+        relevant_recoveries: list[SubmitRecoveryRecord] = []
+        for order_id in sorted(referenced_ids):
+            order_row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
+            if order_row is not None:
+                relevant_orders.append(self._order(order_row))
+            relevant_recoveries.extend(
+                self._submit_recovery(row)
+                for row in self._read_all(
+                    "SELECT * FROM submit_recoveries "
+                    "WHERE local_order_id = ? ORDER BY rowid",
+                    (order_id,),
+                )
+            )
+        return accepted_submit_uncertainty_order_ids(
+            uncertainty_events,
+            relevant_orders,
+            relevant_recoveries,
+            symbol=symbol,
+            side=side,
+            exclude_order_id=exclude_order_id,
+        )
 
     def _same_symbol_buy_may_execute_locked(
         self, symbol: str, *, exclude_order_id: Optional[str] = None
@@ -4023,28 +4210,37 @@ class SqliteStateStore(StateStore):
     ) -> tuple[str, ...]:
         """SQLite twin of the shared order-plus-recovery BUY projection."""
 
+        all_orders = [
+            self._order(row)
+            for row in self._read_all("SELECT * FROM orders ORDER BY rowid")
+        ]
         ids: list[str] = []
-        for row in self._read_all(
-            "SELECT * FROM orders WHERE symbol = ? AND side = ? ORDER BY rowid",
-            (symbol, OrderSide.BUY.value),
-        ):
-            order = self._project_order_locked(self._order(row))
+        for raw_order in all_orders:
+            if raw_order.symbol != symbol or raw_order.side is not OrderSide.BUY:
+                continue
+            order = self._project_order_locked(raw_order)
             if order.id == exclude_order_id:
                 continue
-            if order.status in order_statuses:
+            if order.status in order_statuses or (
+                order.status is OrderStatus.CREATED and bool(order.broker_order_id)
+            ):
+                # CREATED is ordinarily safely local, but a concrete broker id
+                # proves this BUY crossed the venue boundary. It remains
+                # execution exposure until broker-authoritatively terminal.
                 ids.append(order.id)
         # PR #9 P1-c: declared OR referenced-order BUY scope — a legacy misscoped
         # open BUY recovery whose local_order_id points at this symbol's BUY order
         # (declaring another symbol/side) is still same-symbol BUY venue exposure.
         buy_order_ids = {
-            self._order(row).id
-            for row in self._read_all(
-                "SELECT * FROM orders WHERE symbol = ? AND side = ?",
-                (symbol, OrderSide.BUY.value),
-            )
+            order.id
+            for order in all_orders
+            if order.symbol == symbol and order.side is OrderSide.BUY
         }
-        for row in self._read_all("SELECT * FROM submit_recoveries ORDER BY rowid"):
-            recovery = self._submit_recovery(row)
+        all_recoveries = [
+            self._submit_recovery(row)
+            for row in self._read_all("SELECT * FROM submit_recoveries ORDER BY rowid")
+        ]
+        for recovery in all_recoveries:
             if (
                 recovery.local_order_id == exclude_order_id
                 or recovery.cleanup_status not in RECOVERY_OPEN_STATUSES
@@ -4054,6 +4250,13 @@ class SqliteStateStore(StateStore):
                 recovery.symbol == symbol and recovery.side is OrderSide.BUY
             ) or recovery.local_order_id in buy_order_ids:
                 ids.append(recovery.local_order_id)
+        ids.extend(
+            self._accepted_submit_uncertainty_ids_locked(
+                symbol,
+                side=OrderSide.BUY,
+                exclude_order_id=exclude_order_id,
+            )
+        )
         return tuple(dict.fromkeys(ids))
 
     def _cross_side_claim_block_reason_locked(self, order: Order) -> Optional[str]:
@@ -4072,14 +4275,19 @@ class SqliteStateStore(StateStore):
         return None
 
     def _stand_down_symbol_buy_candidates_locked(
-        self, cur: sqlite3.Cursor, symbol: str, *, actor: str
+        self,
+        cur: sqlite3.Cursor,
+        symbol: str,
+        *,
+        actor: str,
+        now: Optional[datetime] = None,
     ) -> None:
         """Exit-preempt: stand down every same-symbol BUY that could still reach
         the venue and re-grow the position the exit is closing — expire every
         PENDING/APPROVED BUY candidate AND cancel every already-dispatched but
         still-CREATED same-symbol BUY order (audited ``candidate_transition``,
         reason ``exit_preemption`` / order CANCELED). Mirrors the memory store."""
-        now = utcnow()
+        logical_now = now or utcnow()
         for row in self._read_all(
             "SELECT * FROM candidates WHERE symbol = ? AND status IN (?, ?) "
             "ORDER BY rowid",
@@ -4088,7 +4296,12 @@ class SqliteStateStore(StateStore):
             cand = self._candidate(row)
             cur.execute(
                 "UPDATE candidates SET status=?, expired_at=?, updated_at=? WHERE id=?",
-                (CandidateStatus.EXPIRED.value, _dt(now), _dt(now), cand.id),
+                (
+                    CandidateStatus.EXPIRED.value,
+                    _dt(logical_now),
+                    _dt(logical_now),
+                    cand.id,
+                ),
             )
             self._insert_event(
                 cur,
@@ -4107,55 +4320,40 @@ class SqliteStateStore(StateStore):
                 },
                 session_id=cand.session_id,
             )
-        self._stand_down_symbol_created_buys_locked(cur, symbol, actor=actor)
+        self._stand_down_symbol_created_buys_locked(
+            cur, symbol, actor=actor, now=logical_now
+        )
 
     def _stand_down_symbol_created_buys_locked(
-        self, cur: sqlite3.Cursor, symbol: str, *, actor: str
+        self, cur: sqlite3.Cursor, symbol: str, *, actor: str, now: datetime
     ) -> None:
-        """Locally CANCEL every same-symbol, still-unexecuted CREATED BUY order —
+        """Locally cancel every safely local, projected-CREATED BUY for ``symbol`` —
         the exit-preempt companion to the candidate stand-down (PR#9 Codex F3).
 
         A CREATED buy under an ORDERED candidate is neither expired above nor
         blocking to a same-symbol exit (``MAY_EXECUTE_ORDER_STATUSES`` excludes
         CREATED, by design), so after the exit SELL went terminal it could claim
         and re-grow the exited position — the §5.3 self-cross flatten already
-        prevents. CREATED == never venue-submitted (pure local write; the claim
-        rail owns venue-uncertain buys); ``filled_quantity == 0`` spares an
-        establishing-BUY stub parked in CREATED with its shares already folded.
+        prevents. The common local-cancel predicate, not CREATED or cached
+        ``filled_quantity`` alone, requires no broker id and no open recovery;
+        the claim/recovery rails retain venue-uncertain buys.
         Mirrors ``InMemoryStateStore._stand_down_symbol_created_buys_unlocked``."""
+        # Select by immutable scope only, then project from lifecycle events.
+        # The raw status column is a cache and may drift from event truth.
         rows = cur.execute(
-            "SELECT * FROM orders WHERE symbol = ? AND side = ? AND status = ? "
-            "ORDER BY rowid",
-            (symbol, OrderSide.BUY.value, OrderStatus.CREATED.value),
+            "SELECT * FROM orders WHERE symbol = ? AND side = ? ORDER BY rowid",
+            (symbol, OrderSide.BUY.value),
         ).fetchall()
         for order_row in rows:
             order = self._project_order_locked(self._order(order_row))
-            if order.status is not OrderStatus.CREATED or order.filled_quantity != 0:
+            if order.status is not OrderStatus.CREATED:
                 continue
-            plan = plan_transition_order(
-                order=order,
-                new_status=OrderStatus.CANCELED,
-                filled_quantity=None,
-                broker_order_id=None,
+            self._cancel_local_created_order_locked(
+                cur,
+                order.id,
                 actor=actor,
+                now=now,
             )
-            assert plan.outcome == ORDER_TRANSITION_APPLY
-            assert plan.order is not None and plan.event is not None
-            cur.execute(
-                "UPDATE orders SET status=?, canceled_at=?, updated_at=? WHERE id=?",
-                (
-                    OrderStatus.CANCELED.value,
-                    _dt(plan.order.canceled_at),
-                    _dt(plan.order.updated_at),
-                    plan.order.id,
-                ),
-            )
-            self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
-            exec_event = execution_event_for_routine_transition(
-                order, plan.order.status, plan.order.filled_quantity
-            )
-            if exec_event is not None:
-                self._insert_execution_event(cur, exec_event)
 
     def _symbol_sell_exposure_reason_locked(
         self,
@@ -4188,6 +4386,7 @@ class SqliteStateStore(StateStore):
         *,
         session_id: Optional[str] = None,
         actor: str = COMMAND_ACTOR_SYSTEM,
+        emergency_override: bool = False,
     ) -> FlattenResult:
         key = normalize_symbol(symbol)
         async with self._lock:
@@ -4313,7 +4512,25 @@ class SqliteStateStore(StateStore):
             # same continuous lock hold as the decision above.
             current_session = self._ensure_current_session_locked()
             trading_state = self._current_trading_state_locked(current_session.id)
-            override_active = key in self._active_overrides_locked(current_session.id)
+            active_overrides = self._active_overrides_locked(current_session.id)
+            if emergency_override:
+                if session_id is not None and session_id != current_session.id:
+                    raise InvalidOrderError(
+                        "emergency override session does not match the "
+                        "authorized current session"
+                    )
+                if key not in active_overrides:
+                    raise InvalidOrderError(
+                        "emergency flatten requires an active emergency override "
+                        "for the authorized current session"
+                    )
+                # Bind the entire authorized outcome to the same session read
+                # under this lock. A later clock read must not split the grant,
+                # resolution, intent, and order across a date rollover.
+                session_id = current_session.id
+                override_active = True
+            else:
+                override_active = False
 
             # Option B (WO-0036 R2) + WO-0108/REV-0029 P0-1: detect EVERY
             # non-terminal BUY under this same lock. The BLOCKING set is a
@@ -4347,20 +4564,19 @@ class SqliteStateStore(StateStore):
             # override (if any) must survive to authorize that retry.
             if plan.outcome == _PLAN_FLATTEN_BUYS_OPEN:
                 return FlattenResult(FLATTEN_BUYS_OPEN)
-            # ADR-003 / wave 3e (review MEDIUM fix): the override authorized THIS
-            # flatten call — spend it on ANY authorized outcome (create / existing /
-            # flat). Consuming only on the create branch leaked the grant when the
-            # flatten dedup'd, later letting an ordinary flatten slip past the
-            # Halted-deny.
-            if override_active:
-                self._write_emergency_reduce_override_locked(
-                    key, actor="engine", reason="flatten_authorized", resolved=True
-                )
-
             if plan.outcome == _PLAN_FLATTEN_FLAT:
                 # ADR-010 §4 / D-2: even with nothing to exit, a stale envelope
                 # must never outlive the human's direct backstop.
                 with self._tx() as cur:
+                    if override_active:
+                        self._write_emergency_reduce_override_locked(
+                            key,
+                            session=current_session,
+                            actor="engine",
+                            reason="flatten_authorized",
+                            resolved=True,
+                            cur=cur,
+                        )
                     self._cancel_symbol_envelopes_locked(
                         cur, key, actor=actor, reason="manual_flatten_preemption"
                     )
@@ -4368,9 +4584,20 @@ class SqliteStateStore(StateStore):
             if plan.outcome == _PLAN_FLATTEN_EXISTING:
                 # Provenance for a deferral to a live PROTECTION_FLOOR exit
                 # (INV-036): one audit row recording the human flatten was received
-                # and deferred, no state mutated — in this same lock hold.
-                if plan.deferral_event is not None:
-                    with self._tx() as cur:
+                # and deferred in this same lock hold. The capability resolution
+                # and any deferral audit share one transaction, so a later insert
+                # failure leaves the grant reusable.
+                with self._tx() as cur:
+                    if override_active:
+                        self._write_emergency_reduce_override_locked(
+                            key,
+                            session=current_session,
+                            actor="engine",
+                            reason="flatten_authorized",
+                            resolved=True,
+                            cur=cur,
+                        )
+                    if plan.deferral_event is not None:
                         self._insert_event(
                             cur,
                             plan.deferral_event.event_type,
@@ -4401,6 +4628,18 @@ class SqliteStateStore(StateStore):
             # (X-001) still provides the concurrency guarantee independently.
             superseded = False
             with self._tx() as cur:
+                # Consume the capability only if every downstream flatten write
+                # commits. The explicit session binding prevents a midnight
+                # rollover from resolving a different session's authorization.
+                if override_active:
+                    self._write_emergency_reduce_override_locked(
+                        key,
+                        session=current_session,
+                        actor="engine",
+                        reason="flatten_authorized",
+                        resolved=True,
+                        cur=cur,
+                    )
                 # ADR-010 §4: envelope preemption FIRST, same transaction —
                 # the preemption events sequence before the flatten's own
                 # supersede/create writes (asserted by WO-0017 tests).
@@ -4485,7 +4724,12 @@ class SqliteStateStore(StateStore):
                 # Dispatch joins THIS transaction (cur=cur) so a reject rolls the
                 # fresh intent's insert+approve back too — no stranded partial.
                 order = self._dispatch_order_for_sell_intent_locked(
-                    intent, order_type=OrderType.MARKET, limit_price=None, cur=cur
+                    intent,
+                    order_type=OrderType.MARKET,
+                    limit_price=None,
+                    cur=cur,
+                    allow_halted=override_active,
+                    decision_session=current_session,
                 )
             return FlattenResult(
                 FLATTEN_CREATED, intent=intent, order=order, superseded=superseded
@@ -4556,7 +4800,47 @@ class SqliteStateStore(StateStore):
                 )
             return order
 
-    def _current_exposure_locked(self) -> float:
+    def _project_orders_for_exposure_locked(self, orders: list[Order]) -> list[Order]:
+        """Bulk-project global CAPI order status from immutable lifecycle facts.
+
+        Exposure is a global aggregate, so selecting the global order set is
+        intentional.  Load the lifecycle subset once through the type/sequence
+        index instead of issuing one per-order projection query.
+        """
+
+        if not orders:
+            return []
+        status_types = tuple(
+            sorted((event_type.value for event_type in ORDER_STATUS_EVENT_TYPES))
+        )
+        placeholders = ",".join("?" for _ in status_types)
+        events_by_order: dict[str, list[ExecutionEvent]] = {}
+        order_ids = {order.id for order in orders}
+        for row in self._read_all(
+            "SELECT * FROM execution_events INDEXED BY "
+            "idx_exec_events_type_sequence "
+            f"WHERE event_type IN ({placeholders}) AND order_id IS NOT NULL "
+            "ORDER BY sequence",
+            status_types,
+        ):
+            order_id = row["order_id"]
+            if order_id in order_ids:
+                events_by_order.setdefault(order_id, []).append(
+                    self._execution_event(row)
+                )
+        projected: list[Order] = []
+        for order in orders:
+            status = project_order_status(
+                events_by_order.get(order.id, ()),
+                order.id,
+                order.quantity,
+            ).status
+            projected.append(order.model_copy(deep=True, update={"status": status}))
+        return projected
+
+    def _current_exposure_locked(
+        self, *, exclude_order_id: Optional[str] = None
+    ) -> float:
         positions = [
             self._position_locked(r["symbol"])
             for r in self._read_all(
@@ -4564,14 +4848,17 @@ class SqliteStateStore(StateStore):
                 "WHERE event_type = 'fill' ORDER BY symbol"
             )
         ]
-        non_terminal_placeholders = ",".join("?" * len(NON_TERMINAL_ORDER_STATUSES))
+        all_orders = self._project_orders_for_exposure_locked(
+            [
+                self._order(row)
+                for row in self._read_all("SELECT * FROM orders ORDER BY rowid")
+            ]
+        )
         open_orders = [
-            self._order(r)
-            for r in self._read_all(
-                f"SELECT * FROM orders WHERE status IN ({non_terminal_placeholders}) "
-                "ORDER BY rowid",
-                tuple(s.value for s in NON_TERMINAL_ORDER_STATUSES),
-            )
+            order
+            for order in all_orders
+            if order.id != exclude_order_id
+            and order.status in NON_TERMINAL_ORDER_STATUSES
         ]
         # Every fill, not just fills against open_orders — existing_exposure
         # derives each order's actual filled quantity from these directly
@@ -4580,7 +4867,47 @@ class SqliteStateStore(StateStore):
         fills = [
             self._fill(r) for r in self._read_all("SELECT * FROM fills ORDER BY rowid")
         ]
-        return existing_exposure(positions, open_orders, fills)
+        accepted_events = self._accepted_submit_uncertainty_events
+        open_statuses = tuple(sorted(RECOVERY_OPEN_STATUSES))
+        open_placeholders = ",".join("?" * len(open_statuses))
+        open_recoveries = [
+            self._submit_recovery(row)
+            for row in self._read_all(
+                "SELECT * FROM submit_recoveries WHERE cleanup_status IN "
+                f"({open_placeholders}) ORDER BY rowid",
+                open_statuses,
+            )
+        ]
+        ordinary_exposure = existing_exposure(positions, open_orders, fills)
+        if not accepted_events and not open_recoveries:
+            return ordinary_exposure
+
+        accepted_order_ids = {
+            event.order_id for event in accepted_events if event.order_id is not None
+        }
+        relevant_recoveries = {record.id: record for record in open_recoveries}
+        for order_id in sorted(accepted_order_ids):
+            for row in self._read_all(
+                "SELECT * FROM submit_recoveries "
+                "WHERE local_order_id = ? ORDER BY rowid",
+                (order_id,),
+            ):
+                record = self._submit_recovery(row)
+                relevant_recoveries[record.id] = record
+        relevant_order_ids = accepted_order_ids | {
+            record.local_order_id for record in relevant_recoveries.values()
+        }
+        relevant_orders_by_id = {
+            order.id: order for order in all_orders if order.id in relevant_order_ids
+        }
+        relevant_fills = [fill for fill in fills if fill.order_id in relevant_order_ids]
+        return ordinary_exposure + unrepresented_accepted_buy_exposure(
+            tuple(relevant_orders_by_id.values()),
+            tuple(relevant_recoveries.values()),
+            accepted_events,
+            relevant_fills,
+            exclude_order_id=exclude_order_id,
+        )
 
     async def current_exposure(self) -> float:
         async with self._lock:
@@ -4620,7 +4947,40 @@ class SqliteStateStore(StateStore):
             # fire->stand-down race). Never mint a crossing BUY. Mirrors memory.
             exit_hit = self._same_symbol_exit_may_execute_locked(candidate.symbol)
             if exit_hit is not None:
+                blocked_at = utcnow()
                 with self._tx() as cur:
+                    if candidate.status in (
+                        CandidateStatus.PENDING,
+                        CandidateStatus.APPROVED,
+                    ):
+                        cur.execute(
+                            "UPDATE candidates SET status=?, expired_at=?, "
+                            "updated_at=? WHERE id=?",
+                            (
+                                CandidateStatus.EXPIRED.value,
+                                _dt(blocked_at),
+                                _dt(blocked_at),
+                                candidate_id,
+                            ),
+                        )
+                        self._insert_event(
+                            cur,
+                            "candidate_transition",
+                            message=(
+                                f"candidate {candidate.symbol} "
+                                f"{candidate.status.value} -> expired "
+                                "(exit preemption)"
+                            ),
+                            symbol=candidate.symbol,
+                            candidate_id=candidate_id,
+                            payload={
+                                "from": candidate.status.value,
+                                "to": CandidateStatus.EXPIRED.value,
+                                "reason": "exit_preemption",
+                                "actor": COMMAND_ACTOR_SYSTEM,
+                            },
+                            session_id=candidate.session_id,
+                        )
                     self._insert_event(
                         cur,
                         "candidate_dispatch_blocked",
@@ -4854,8 +5214,14 @@ class SqliteStateStore(StateStore):
             return "another envelope lineage for the symbol retains its delegation"
         return None
 
-    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
+    async def claim_order_for_submission(
+        self,
+        order_id: str,
+        *,
+        risk_limits: RiskLimits = RiskLimits(),
+    ) -> SubmissionClaim:
         async with self._lock:
+            own_venue_uncertain = False
             row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
             order = self._order(row) if row is not None else None
             if order is not None:
@@ -4877,6 +5243,10 @@ class SqliteStateStore(StateStore):
                     "co-write invariant violated; refusing to avoid a blind re-submit"
                 )
                 order = projected
+                own_venue_uncertain = any(
+                    event.order_id == order.id
+                    for event in self._accepted_submit_uncertainty_events
+                )
                 envelope_block = self._envelope_submission_block_reason_locked(order)
                 if envelope_block is not None:
                     with self._tx() as cur:
@@ -4936,6 +5306,7 @@ class SqliteStateStore(StateStore):
                 current_session=current_session,
                 sell_reason=sell_reason,
                 quarantined=quarantined,
+                own_venue_uncertain=own_venue_uncertain,
             )
             if plan.outcome == CLAIM_CLAIMED:
                 # CLAIM_CLAIMED guarantees a claimable order + its plan artifacts
@@ -4953,6 +5324,54 @@ class SqliteStateStore(StateStore):
                 # kill switch) surface first; an order every earlier gate would
                 # claim is still blocked here if it would cross a live opposite-
                 # side order that may execute at the venue. Mirrors memory.
+                if order.side is OrderSide.BUY:
+                    limits_enabled = any(
+                        limit is not None
+                        for limit in (
+                            risk_limits.max_shares_per_order,
+                            risk_limits.max_notional_per_order,
+                            risk_limits.max_total_exposure,
+                        )
+                    ) or bool(risk_limits.allowlist)
+                    risk_block = None
+                    if limits_enabled and order.limit_price is None:
+                        risk_block = "nonfinite_risk_input_non_numeric"
+                    elif limits_enabled and order.limit_price is not None:
+                        risk_block = risk_limit_reason(
+                            symbol=order.symbol,
+                            order_quantity=order.quantity,
+                            order_limit_price=order.limit_price,
+                            exposure_before_order=self._current_exposure_locked(
+                                exclude_order_id=order.id
+                            ),
+                            max_shares_per_order=risk_limits.max_shares_per_order,
+                            max_notional_per_order=risk_limits.max_notional_per_order,
+                            max_total_exposure=risk_limits.max_total_exposure,
+                            allowlist=risk_limits.allowlist,
+                        )
+                    if risk_block is not None:
+                        reason = f"risk limit blocked: {risk_block}"
+                        with self._tx() as cur:
+                            self._insert_event(
+                                cur,
+                                "risk_limit_blocked",
+                                message=(
+                                    f"submission of {order.symbol} blocked: "
+                                    f"{risk_block}"
+                                ),
+                                symbol=order.symbol,
+                                candidate_id=order.candidate_id,
+                                order_id=order.id,
+                                payload={
+                                    "reason": risk_block,
+                                    "order_quantity": order.quantity,
+                                    "order_limit_price": order.limit_price,
+                                    "choke_point": "submission_claim",
+                                },
+                                session_id=order.session_id,
+                                correlation_id=order.candidate_id,
+                            )
+                        return SubmissionClaim(CLAIM_BLOCKED, reason=reason)
                 cross_side = self._cross_side_claim_block_reason_locked(order)
                 if cross_side is not None:
                     with self._tx() as cur:
@@ -5087,40 +5506,82 @@ class SqliteStateStore(StateStore):
                     f"{referenced_order.id} scope "
                     f"{referenced_order.symbol}/{referenced_order.side.value}"
                 )
-            record = SubmitRecoveryRecord(
-                local_order_id=local_order_id,
-                broker_order_id=broker_order_id,
-                client_order_id=client_order_id,
-                symbol=key,
-                side=recovery_side,
-                quantity=quantity,
-                limit_price=limit_price,
-                failure_reason=failure_reason,
-                cleanup_status=cleanup_status,
-                session_id=session_id,
-            )
-            lifecycle_rows = self._read_all(
-                "SELECT * FROM execution_events WHERE order_id = ? ORDER BY sequence",
-                (local_order_id,),
-            )
-            claim_occurrence = claim_occurrence_at(
-                [self._execution_event(row) for row in lifecycle_rows],
-                order_id=local_order_id,
-                at=record.created_at,
-            )
-            payload: dict[str, Any] = dict(extra_payload or {})
-            payload.update(
-                {
-                    "broker_order_id": broker_order_id,
-                    "recovery_id": record.id,
-                    "failure_reason": failure_reason,
-                    "cleanup_status": cleanup_status,
-                }
-            )
-            payload.pop("claim_occurrence", None)
-            if claim_occurrence is not None:
-                payload["claim_occurrence"] = claim_occurrence
             with self._tx() as cur:
+                owner_rows = cur.execute(
+                    "SELECT * FROM submit_recoveries "
+                    "WHERE local_order_id = ? "
+                    "OR (? <> '' AND broker_order_id = ?) ORDER BY rowid",
+                    (local_order_id, broker_order_id, broker_order_id),
+                ).fetchall()
+                if owner_rows:
+                    if len(owner_rows) != 1:
+                        raise RecoveryTransitionError(
+                            "submit recovery identity "
+                            f"{local_order_id}/{broker_order_id} conflicts with "
+                            "existing recovery ownership"
+                        )
+                    existing = self._submit_recovery(owner_rows[0])
+                    same_pair = (
+                        existing.local_order_id == local_order_id
+                        and existing.broker_order_id == broker_order_id
+                    )
+                    same_scope = (
+                        existing.client_order_id == client_order_id
+                        and existing.symbol == key
+                        and existing.side is recovery_side
+                        and existing.quantity == quantity
+                        and existing.limit_price == limit_price
+                        and existing.session_id == session_id
+                    )
+                    # The default unresolved request is also an idempotent
+                    # replay after the existing owner has reached a terminal
+                    # state. A different requested terminal state must use the
+                    # explicit update transition.
+                    compatible_status = (
+                        cleanup_status == RECOVERY_UNRESOLVED
+                        or cleanup_status == existing.cleanup_status
+                    )
+                    if not (same_pair and same_scope and compatible_status):
+                        raise RecoveryTransitionError(
+                            "submit recovery identity "
+                            f"{local_order_id}/{broker_order_id} conflicts with "
+                            f"existing recovery {existing.id}"
+                        )
+                    return existing
+                record = SubmitRecoveryRecord(
+                    local_order_id=local_order_id,
+                    broker_order_id=broker_order_id,
+                    client_order_id=client_order_id,
+                    symbol=key,
+                    side=recovery_side,
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    failure_reason=failure_reason,
+                    cleanup_status=cleanup_status,
+                    session_id=session_id,
+                )
+                lifecycle_rows = cur.execute(
+                    "SELECT * FROM execution_events WHERE order_id = ? "
+                    "ORDER BY sequence",
+                    (local_order_id,),
+                ).fetchall()
+                claim_occurrence = claim_occurrence_at(
+                    [self._execution_event(row) for row in lifecycle_rows],
+                    order_id=local_order_id,
+                    at=record.created_at,
+                )
+                payload: dict[str, Any] = dict(extra_payload or {})
+                payload.update(
+                    {
+                        "broker_order_id": broker_order_id,
+                        "recovery_id": record.id,
+                        "failure_reason": failure_reason,
+                        "cleanup_status": cleanup_status,
+                    }
+                )
+                payload.pop("claim_occurrence", None)
+                if claim_occurrence is not None:
+                    payload["claim_occurrence"] = claim_occurrence
                 self._insert_submit_recovery(cur, record)
                 self._insert_event(
                     cur,
@@ -5227,6 +5688,18 @@ class SqliteStateStore(StateStore):
                     tuple(wanted),
                 )
             return [self._submit_recovery(r) for r in rows]
+
+    async def get_submit_recovery_by_identity(
+        self, local_order_id: str, broker_order_id: str
+    ) -> Optional[SubmitRecoveryRecord]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM submit_recoveries "
+                "WHERE local_order_id = ? AND broker_order_id = ? "
+                "ORDER BY rowid LIMIT 1",
+                (local_order_id, broker_order_id),
+            )
+            return self._submit_recovery(row) if row is not None else None
 
     async def update_submit_recovery(
         self,
@@ -5443,6 +5916,79 @@ class SqliteStateStore(StateStore):
             row = self._read_one("SELECT * FROM orders WHERE id = ?", (order_id,))
             return self._project_order_locked(self._order(row)) if row else None
 
+    def _local_created_cancel_eligible_locked(
+        self, cur: sqlite3.Cursor | sqlite3.Connection, raw_order: Order
+    ) -> bool:
+        """Whether event truth plus broker/recovery ownership proves local-only."""
+
+        order = self._project_order_locked(raw_order)
+        if order.status is not OrderStatus.CREATED or order.broker_order_id is not None:
+            return False
+        marks = ",".join("?" for _ in RECOVERY_OPEN_STATUSES)
+        recovery = cur.execute(
+            "SELECT 1 FROM submit_recoveries WHERE local_order_id = ? "
+            f"AND cleanup_status IN ({marks}) LIMIT 1",
+            (order.id, *sorted(RECOVERY_OPEN_STATUSES)),
+        ).fetchone()
+        if recovery is not None:
+            return False
+        return not any(
+            event.order_id == order.id
+            for event in self._accepted_submit_uncertainty_events
+        )
+
+    def _cancel_local_created_order_locked(
+        self,
+        cur: sqlite3.Cursor,
+        order_id: str,
+        *,
+        actor: str,
+        now: Optional[datetime] = None,
+        reconcile_owner: bool = True,
+    ) -> tuple[Order, bool]:
+        """Local cancel primitive on the caller's lock-held transaction."""
+
+        row = cur.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if row is None:
+            raise UnknownEntityError(f"order {order_id} not found")
+        raw_order = self._order(row)
+        order = self._project_order_locked(raw_order)
+        if not self._local_created_cancel_eligible_locked(cur, raw_order):
+            return order, False
+        plan = plan_transition_order(
+            order=order,
+            new_status=OrderStatus.CANCELED,
+            filled_quantity=None,
+            broker_order_id=None,
+            actor=actor,
+            now=now,
+        )
+        assert (
+            plan.outcome == ORDER_TRANSITION_APPLY
+            and plan.order is not None
+            and plan.event is not None
+        )
+        cur.execute(
+            "UPDATE orders SET status=?, canceled_at=?, updated_at=? WHERE id=?",
+            (
+                plan.order.status.value,
+                _dt(plan.order.canceled_at),
+                _dt(plan.order.updated_at),
+                plan.order.id,
+            ),
+        )
+        self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
+        exec_event = execution_event_for_routine_transition(
+            order, plan.order.status, plan.order.filled_quantity
+        )
+        if exec_event is not None:
+            self._insert_execution_event(cur, exec_event)
+        if reconcile_owner:
+            self._reconcile_envelope_owners_for_order_locked(
+                cur, order.id, now=plan.order.updated_at
+            )
+        return plan.order, True
+
     def _released_terminal_envelope_child_can_cancel_locked(self, order: Order) -> bool:
         """Whether a just-released CREATED child is now purely local dead work."""
 
@@ -5501,6 +6047,15 @@ class SqliteStateStore(StateStore):
                 )
                 if order.status not in expected_statuses:
                     return order
+            if (
+                order.status is OrderStatus.CREATED
+                and new_status is OrderStatus.CANCELED
+            ):
+                with self._tx() as cur:
+                    canceled, _applied = self._cancel_local_created_order_locked(
+                        cur, order.id, actor=actor
+                    )
+                return canceled
             if (
                 order.status is OrderStatus.SUBMITTING
                 and new_status is OrderStatus.SUBMITTED
@@ -5604,47 +6159,12 @@ class SqliteStateStore(StateStore):
                 if self._released_terminal_envelope_child_can_cancel_locked(
                     final_order
                 ):
-                    cancel_plan = plan_transition_order(
-                        order=final_order,
-                        new_status=OrderStatus.CANCELED,
-                        filled_quantity=None,
-                        broker_order_id=None,
-                        actor=actor,
-                    )
-                    assert (
-                        cancel_plan.outcome == ORDER_TRANSITION_APPLY
-                        and cancel_plan.order is not None
-                        and cancel_plan.event is not None
-                    )
-                    cancel_event = execution_event_for_routine_transition(
-                        final_order,
-                        OrderStatus.CANCELED,
-                        cancel_plan.order.filled_quantity,
-                    )
-                    final_order = cancel_plan.order
-                    cur.execute(
-                        """UPDATE orders SET status=?, filled_quantity=?,
-                           broker_order_id=?, updated_at=?, submitted_at=?,
-                           filled_at=?, canceled_at=?, rejected_at=? WHERE id=?""",
-                        (
-                            final_order.status.value,
-                            final_order.filled_quantity,
-                            final_order.broker_order_id,
-                            _dt(final_order.updated_at),
-                            _dt(final_order.submitted_at),
-                            _dt(final_order.filled_at),
-                            _dt(final_order.canceled_at),
-                            _dt(final_order.rejected_at),
-                            final_order.id,
-                        ),
-                    )
-                    self._insert_event(
+                    final_order, _cancelled = self._cancel_local_created_order_locked(
                         cur,
-                        cancel_plan.event.event_type,
-                        **cancel_plan.event.as_kwargs(),
+                        final_order.id,
+                        actor=actor,
+                        reconcile_owner=False,
                     )
-                    if cancel_event is not None:
-                        self._insert_execution_event(cur, cancel_event)
                 self._reconcile_envelope_owners_for_order_locked(
                     cur, order_id, now=final_order.updated_at
                 )
@@ -5812,17 +6332,20 @@ class SqliteStateStore(StateStore):
             # prior_position), so no call site can reintroduce the phantom
             # fill_overfill_quarantined by forgetting a parameter. NULL-safe:
             # dedupe_key IS NULL rows must stay in the fold.
-            self_key = (
-                f"fill:{order_id}:{source_fill_id}"
-                if source_fill_id is not None
-                else ""
-            )
-            pos_rows = self._read_all(
-                "SELECT * FROM execution_events "
-                "WHERE symbol = ? AND event_type = 'fill' "
-                "AND (dedupe_key IS NULL OR dedupe_key != ?) ORDER BY sequence",
-                (key, self_key),
-            )
+            if source_fill_id is None:
+                pos_rows = self._read_all(
+                    "SELECT * FROM execution_events "
+                    "WHERE symbol = ? AND event_type = 'fill' ORDER BY sequence",
+                    (key,),
+                )
+            else:
+                self_key = f"fill:{order_id}:{source_fill_id}"
+                pos_rows = self._read_all(
+                    "SELECT * FROM execution_events "
+                    "WHERE symbol = ? AND event_type = 'fill' "
+                    "AND (dedupe_key IS NULL OR dedupe_key != ?) ORDER BY sequence",
+                    (key, self_key),
+                )
             overfill_position = project_symbol_position(
                 [self._execution_event(r) for r in pos_rows], key
             ).quantity
@@ -6008,6 +6531,22 @@ class SqliteStateStore(StateStore):
                 events = events[-limit:]
             return events
 
+    async def get_audit_event_page(
+        self, *, after_cursor: int, limit: int
+    ) -> tuple[int, list[Event]]:
+        if after_cursor < 0:
+            raise ValueError("after_cursor must be non-negative")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        async with self._lock:
+            rows = self._read_all(
+                "SELECT rowid AS audit_cursor, * FROM events "
+                "WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                (after_cursor, limit),
+            )
+            cursor = rows[-1]["audit_cursor"] if rows else after_cursor
+            return cursor, [self._event(row) for row in rows]
+
     # ------------------------------------------------------------------ #
     # Execution-event log (Spine v2 — Phase 2)
     # ------------------------------------------------------------------ #
@@ -6020,7 +6559,11 @@ class SqliteStateStore(StateStore):
         so the fill row and its shadow event commit in the same transaction
         (wave 3a)."""
 
-        dedupe_key = event.dedupe_key
+        candidate = event.model_copy(
+            deep=True,
+            update={"payload": normalize_json_payload(event.payload)},
+        )
+        dedupe_key = candidate.dedupe_key
         if dedupe_key is not None:
             existing = cur.execute(
                 "SELECT * FROM execution_events WHERE dedupe_key = ?",
@@ -6029,11 +6572,16 @@ class SqliteStateStore(StateStore):
             if existing is not None:
                 # INV-5: idempotent — no row written, no sequence consumed.
                 return self._execution_event(existing)
+        duplicate_id = cur.execute(
+            "SELECT 1 FROM execution_events WHERE id = ?", (candidate.id,)
+        ).fetchone()
+        if duplicate_id is not None:
+            raise InvalidEventError(f"execution event id {candidate.id} already exists")
         max_row = cur.execute(
             "SELECT MAX(sequence) AS m FROM execution_events"
         ).fetchone()
         next_sequence = (max_row["m"] or 0) + 1
-        stored = event.model_copy(update={"sequence": next_sequence})
+        stored = candidate.model_copy(update={"sequence": next_sequence})
         cur.execute(
             """INSERT INTO execution_events
                (id, sequence, schema_version, event_type, source,
@@ -6088,7 +6636,13 @@ class SqliteStateStore(StateStore):
                     self._reconcile_envelope_owner_locked(
                         cur, intent_id, now=stored.ts_event or stored.ts_init
                     )
-                return stored
+            if (
+                is_accepted_submit_uncertainty_event(stored)
+                and stored.id not in self._accepted_submit_uncertainty_event_ids
+            ):
+                self._accepted_submit_uncertainty_events.append(stored)
+                self._accepted_submit_uncertainty_event_ids.add(stored.id)
+            return stored
 
     async def get_execution_events(
         self, *, after_sequence: int = 0, limit: Optional[int] = None
@@ -6106,6 +6660,35 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             rows = self._read_all(sql, params)
             return [self._execution_event(r) for r in rows]
+
+    async def get_latest_execution_event(
+        self, event_type: ExecutionEventType
+    ) -> Optional[ExecutionEvent]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM execution_events "
+                "WHERE event_type = ? ORDER BY sequence DESC LIMIT 1",
+                (event_type.value,),
+            )
+            return self._execution_event(row) if row is not None else None
+
+    async def get_execution_event_by_dedupe_key(
+        self, dedupe_key: str
+    ) -> Optional[ExecutionEvent]:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                (dedupe_key,),
+            )
+            return self._execution_event(row) if row is not None else None
+
+    async def get_order_execution_events(self, order_id: str) -> list[ExecutionEvent]:
+        async with self._lock:
+            rows = self._read_all(
+                "SELECT * FROM execution_events WHERE order_id = ? ORDER BY sequence",
+                (order_id,),
+            )
+            return [self._execution_event(row) for row in rows]
 
     async def get_max_execution_sequence(self) -> int:
         async with self._lock:
@@ -6275,7 +6858,8 @@ class SqliteStateStore(StateStore):
                     # never auto-resumes (FROZEN -> ACTIVE is an explicit
                     # human action, itself refused while HALTED).
                     rows = cur.execute(
-                        "SELECT * FROM execution_envelopes WHERE status = ?",
+                        "SELECT * FROM execution_envelopes WHERE status = ? "
+                        "ORDER BY rowid",
                         (EnvelopeStatus.ACTIVE.value,),
                     ).fetchall()
                     frozen: list[str] = []
@@ -6351,9 +6935,15 @@ class SqliteStateStore(StateStore):
             return self._current_trading_state_locked(session.id)
 
     def _write_emergency_reduce_override_locked(
-        self, symbol: str, *, actor: str, reason: str, resolved: bool
+        self,
+        symbol: str,
+        *,
+        session: SessionRecord,
+        actor: str,
+        reason: str,
+        resolved: bool,
+        cur: Optional[sqlite3.Cursor] = None,
     ) -> None:
-        session = self._ensure_current_session_locked()
         event = emergency_reduce_override_event(
             session.id,
             symbol,
@@ -6361,10 +6951,11 @@ class SqliteStateStore(StateStore):
             reason=reason,
             resolved=resolved,
         )
-        with self._tx() as cur:
-            self._insert_execution_event(cur, event)
+        transaction = self._tx() if cur is None else nullcontext(cur)
+        with transaction as write_cur:
+            self._insert_execution_event(write_cur, event)
             self._insert_event(
-                cur,
+                write_cur,
                 "emergency_reduce_override_resolved"
                 if resolved
                 else "emergency_reduce_override_granted",
@@ -6381,16 +6972,26 @@ class SqliteStateStore(StateStore):
         self, symbol: str, *, actor: str, reason: str
     ) -> None:
         async with self._lock:
+            session = self._ensure_current_session_locked()
             self._write_emergency_reduce_override_locked(
-                normalize_symbol(symbol), actor=actor, reason=reason, resolved=False
+                normalize_symbol(symbol),
+                session=session,
+                actor=actor,
+                reason=reason,
+                resolved=False,
             )
 
     async def resolve_emergency_reduce_override(
         self, symbol: str, *, actor: str, reason: str
     ) -> None:
         async with self._lock:
+            session = self._ensure_current_session_locked()
             self._write_emergency_reduce_override_locked(
-                normalize_symbol(symbol), actor=actor, reason=reason, resolved=True
+                normalize_symbol(symbol),
+                session=session,
+                actor=actor,
+                reason=reason,
+                resolved=True,
             )
 
     async def list_emergency_reduce_overrides(self) -> set[str]:
@@ -6400,7 +7001,7 @@ class SqliteStateStore(StateStore):
 
     async def authorize_emergency_reduce_override(
         self, symbol: str, *, actor: str
-    ) -> None:
+    ) -> str:
         key = normalize_symbol(symbol)
         async with self._lock:
             session = self._ensure_current_session_locked()
@@ -6443,10 +7044,15 @@ class SqliteStateStore(StateStore):
             # preconditions above are re-validated every call, and one grant
             # authorizes exactly one exit (consumed on the first authorized flatten).
             if key in self._active_overrides_locked(session.id):
-                return
+                return session.id
             self._write_emergency_reduce_override_locked(
-                key, actor=actor, reason="emergency_reduce", resolved=False
+                key,
+                session=session,
+                actor=actor,
+                reason="emergency_reduce",
+                resolved=False,
             )
+            return session.id
 
     async def close_session(
         self,
@@ -6495,18 +7101,20 @@ class SqliteStateStore(StateStore):
                     ),
                 )
             ]
-            # Still-CREATED (never-submitted) **BUY** orders in this session are
-            # cancelled at close (D-013a) so they cannot sit submittable afterward;
-            # already-submitted orders are untouched and keep reconciling (D-011).
-            # A CREATED **SELL** is a protective/flatten exit that must remain
-            # submittable after close — protection is always-on (Phase 7 §5.2), so
-            # it is filtered out here, in SQL.
+            # Close cancels only projected-CREATED **BUY** orders that the common
+            # predicate proves safely local (no broker id/open recovery). Anything
+            # venue-capable keeps reconciling (D-011). A CREATED **SELL** remains
+            # submittable after close because protection is always-on (Phase 7
+            # §5.2), so it is filtered out here.
             created_orders = [
                 self._order(r)
                 for r in self._read_all(
-                    "SELECT * FROM orders WHERE session_id = ? AND status = ? "
-                    "AND side = ? ORDER BY rowid",
-                    (session.id, OrderStatus.CREATED.value, OrderSide.BUY.value),
+                    "SELECT * FROM orders WHERE session_id = ? AND side = ? "
+                    "ORDER BY rowid",
+                    (session.id, OrderSide.BUY.value),
+                )
+                if self._local_created_cancel_eligible_locked(
+                    self._connect(), self._order(r)
                 )
             ]
             # PENDING/APPROVED sell intents expire at close, like candidates —

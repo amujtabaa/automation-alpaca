@@ -159,7 +159,7 @@ class Settings:
     # An open order older than this is surfaced as a stale ``order_stale`` audit
     # event (D-011: surface only, no auto-cancel).
     unfilled_timeout_minutes: float = DEFAULT_UNFILLED_TIMEOUT_MINUTES
-    # AIR-003 backstop: consecutive transient re-drive failures a stale
+    # AIR-003 backstop: durably recorded no-progress re-drive attempts a stale
     # SUBMITTING order tolerates before escalation to a needs_review record.
     stale_submitting_max_redrive_attempts: int = (
         DEFAULT_STALE_SUBMITTING_MAX_REDRIVE_ATTEMPTS

@@ -128,6 +128,11 @@ async def test_kill_freezes_every_active_envelope_atomically(any_store):
     si_pending = await _protection_intent(any_store, "NVDA", 100)
     pending = await any_store.create_envelope(_bound_draft(si_pending))
 
+    # Force SQLite to expose any accidental reliance on its unordered scan.
+    # Memory preserves insertion order, so both stores must explicitly freeze
+    # AAPL then MSFT regardless of the query planner.
+    if hasattr(any_store, "_conn"):
+        any_store._conn.execute("PRAGMA reverse_unordered_selects = ON")
     await any_store.set_kill_switch(True, actor="operator-a")
 
     assert (await any_store.get_envelope(a.id)).status is S.FROZEN
@@ -142,6 +147,7 @@ async def test_kill_freezes_every_active_envelope_atomically(any_store):
         if e.event_type is ExecutionEventType.ENVELOPE_FROZEN
     ]
     assert {e.envelope_id for e in frozen_events} == {a.id, b.id}
+    assert [e.envelope_id for e in frozen_events] == [a.id, b.id]
     assert all(e.payload.get("reason") == "kill_switch" for e in frozen_events)
 
 

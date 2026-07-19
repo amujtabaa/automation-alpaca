@@ -4,7 +4,7 @@ title: Review Hardening — mechanical gates and blind-review rules for safety s
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-18
+last_verified: 2026-07-19
 tags: [review, safety, testing, adversarial, process]
 source_refs: [work/review/REV-0029/result.md, .ai-os/core/15_CROSS_MODEL_REVIEW.md, CLAUDE.md]
 supersedes: []
@@ -70,6 +70,32 @@ it. In-process lenses remain a cheap first-pass filter, not a safety net.
 - **T1.4 Repeated runs for timing-sensitive gate claims.** A gate claim over a suite containing
   wall-clock-sensitive tests requires N≥3 consecutive green runs (or an explicit flake
   disposition naming the test). One green run is a data point, not a gate.
+- **T1.5 Choke-point × property closure matrices.** A cross-cutting safety claim is reviewed at
+  every ingress, mint, claim, dispatch, cancellation, recovery, restart, and close boundary that
+  can create, retain, or release the hazard — on both stores. Every cell records either fresh
+  executable evidence or explicit `N/A because ...`; an N/A also names the boundary that makes it
+  irrelevant and any compensating control that carries the property instead. Blank, sampled, or
+  implicitly inherited cells remain open. A documented enum/status exclusion is not closed until
+  its compensating control is enumerated at every relevant choke point and mutation-pinned.
+- **T1.6 Dual-store decision-structure comparison.** Memory/SQLite twins are compared for raw-vs-
+  projected selection, predicate and branch ordering, cleanup/event triggers, rollback scope,
+  prerequisite session bootstrap, deterministic ordering, serialization, and domain exceptions.
+  Equal happy-path output is insufficient; the review constructs a state that distinguishes each
+  branch or ordering choice.
+- **T1.7 Consumable capability and append-only repair checks.** Every one-shot grant, claim, rail,
+  budget, or hold enumerates release/retention behavior for success, deferral, failure, and restart.
+  Ambient durable state must not silently authorize an ordinary caller: the explicit command
+  carries the capability, retries revalidate preconditions without stacking grants, and only the
+  authorized success consumes it in the same immutable session scope. Repair never rewrites an old event-log fact. It appends a
+  separately typed, globally deduped marker whose owner/identity is validated and whose projection
+  effects (especially whether it may fold position quantity) are explicitly mutation-pinned. The
+  complete ordered projection chain is validated before every new/replay repair. Durable repair
+  cursors advance only after the whole selected tail succeeds and restart from persisted high-water
+  truth after failure.
+- **T1.8 Last-write ownership fallback.** If a venue acceptance cannot reach either the primary
+  audit or recovery ledger, a separately projected durable uncertainty fact must retain the exact
+  identity and block sibling/opposite-side venue work until repair. Existing status composition
+  (including HALTED) never substitutes for proof that a required driver/gate write committed.
 
 ### Tier 2 — in-process lens structure
 
@@ -107,3 +133,10 @@ Applies to all review activity on this repo's human-gated surfaces (CLAUDE.md sa
 any WO whose done-when includes an independent review gate. The cross-model packet protocol
 (`.ai-os/core/15_CROSS_MODEL_REVIEW.md`, incl. the PROC-0001 probe obligation) is unchanged; this
 page hardens the in-process layer beneath it and adds the Tier-1 gates reviews check for.
+
+## Change log
+
+- 2026-07-19: WO-0113 added complete choke-point matrices with explicit N/A evidence,
+  decision-structure parity, session-bound one-shot capability checks, accepted-submit fallback
+  ownership, non-maskable gate establishment, and contiguous/checkpointed append-only repair rules.
+  Final WO implementation SHA pending close-out; independent result remains REV-0033.

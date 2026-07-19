@@ -563,7 +563,10 @@ async def test_emergency_reduce_under_halted_defers_to_resting_envelope_child(
         "AAPL", actor="oracle-operator"
     )
 
-    result = await oracle_store.flatten_position("AAPL", actor="oracle-operator")
+    # WO-0113 / REV-0031: bind the grant to this explicit emergency invocation.
+    result = await oracle_store.flatten_position(
+        "AAPL", actor="oracle-operator", emergency_override=True
+    )
 
     assert result.deferred is True
     assert result.intent.id == intent.id

@@ -111,7 +111,8 @@ class TestCharacterizeManualFlatten:
         # The audited override authorizes exactly one reduce-only exit; global
         # state stays HALTED throughout.
         await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-        result = await any_store.flatten_position("AAPL")
+        # WO-0113 / REV-0031: only the explicit emergency path may spend the grant.
+        result = await any_store.flatten_position("AAPL", emergency_override=True)
         assert result.intent.reason is SellReason.MANUAL_FLATTEN
         assert result.intent.status is SellIntentStatus.ORDERED
         assert await any_store.current_trading_state() is TradingState.HALTED

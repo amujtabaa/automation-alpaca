@@ -141,7 +141,11 @@ async def test_emergency_override_survives_buys_open_then_authorizes_retry(any_s
     await any_store.set_kill_switch(True)  # -> HALTED
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
 
-    signalled = await any_store.flatten_position("AAPL", actor="op")
+    # WO-0113 / REV-0031: both attempts carry the emergency capability; an
+    # ordinary flatten cannot steal the still-active grant between them.
+    signalled = await any_store.flatten_position(
+        "AAPL", actor="op", emergency_override=True
+    )
     assert signalled.outcome == FLATTEN_BUYS_OPEN
     assert signalled.intent is None and signalled.order is None
     # The single-use grant is UNSPENT — it must still authorize the retry.
@@ -150,7 +154,9 @@ async def test_emergency_override_survives_buys_open_then_authorizes_retry(any_s
     # The caller cancels the live buy (its job — a broker call), then retries: the
     # SAME grant now authorizes the mint, and is consumed exactly once.
     await any_store.transition_order(buy.id, OrderStatus.CANCELED)
-    retry = await any_store.flatten_position("AAPL", actor="op")
+    retry = await any_store.flatten_position(
+        "AAPL", actor="op", emergency_override=True
+    )
     assert retry.outcome == FLATTEN_CREATED
     assert retry.intent is not None and retry.intent.reason is SellReason.MANUAL_FLATTEN
     assert await any_store.list_emergency_reduce_overrides() == set()  # spent once
@@ -220,7 +226,9 @@ async def test_create_exit_fails_closed_if_buys_keep_reappearing(
     monkeypatch.setattr(monitoring, "session_type_for", lambda _t: SessionType.REGULAR)
     await any_store.initialize()
 
-    async def _always_buys_open(symbol, *, session_id=None, actor="system"):
+    async def _always_buys_open(
+        symbol, *, session_id=None, actor="system", emergency_override=False
+    ):
         return FlattenResult(FLATTEN_BUYS_OPEN)
 
     monkeypatch.setattr(any_store, "flatten_position", _always_buys_open)

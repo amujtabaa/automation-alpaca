@@ -192,7 +192,10 @@ async def test_finding2_reauthorize_reuses_active_grant_without_stacking(any_sto
     assert await any_store.list_emergency_reduce_overrides() == {"AAPL"}
 
     # And a single flatten still consumes the one grant (no leak, no double exit).
-    result = await any_store.flatten_position("AAPL", actor="op")
+    # WO-0113 / REV-0031 binds grant consumption to the explicit emergency path.
+    result = await any_store.flatten_position(
+        "AAPL", actor="op", emergency_override=True
+    )
     assert result.intent is not None
     assert result.intent.reason is SellReason.MANUAL_FLATTEN
     assert await any_store.list_emergency_reduce_overrides() == set()

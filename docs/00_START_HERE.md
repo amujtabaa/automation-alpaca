@@ -735,10 +735,12 @@ safety contract as `@invariant`s: position never negative, `filled_quantity`
 whole/bounded/equal to recorded fills, no candidate stranded `APPROVED`, every
 order has a resolvable session, and **no live-at-broker order is untracked** (the
 F-002 orphan guard — every `is_live` broker id must be referenced by a local
-order or an open recovery record). Runs against memory and SQLite as two
-`TestCase`s; the SQLite one closes its connection on teardown (ResourceWarning is
-a suite-wide error, F-008). Async-in-Hypothesis (rules are synchronous) is solved
-by giving each machine instance one persistent asyncio loop, so the store's
+order, an open recovery record, or the exact canonical WO-0113
+`UNKNOWN_RECONCILE_REQUIRED` accepted-submit owner while that branch behavior
+awaits operator ratification and REV-0033 review). Runs against memory and
+SQLite as two `TestCase`s; the SQLite one closes its connection on teardown
+(ResourceWarning is a suite-wide error, F-008). Async-in-Hypothesis (rules are
+synchronous) is solved by giving each machine instance one persistent asyncio loop, so the store's
 `asyncio.Lock` and SQLite connection stay valid across rules.
 
 For the orphan guard to be a *live* invariant and not a vacuous one, the machine
@@ -894,6 +896,27 @@ double-count the just-filled shares. `existing_exposure()` avoids this by
 summing each order's fills directly (available in the same lock hold that
 already reads `positions`), so both halves of the exposure sum are always
 grounded in the fill table, never a field that can lag it.
+
+**WO-0113 implemented branch behavior — pending operator ratification and
+REV-0033 review.** A broker-accepted BUY does not disappear from CAPI merely
+because its local order later becomes terminal: an exact accepted-submit
+`UNKNOWN_RECONCILE_REQUIRED` or open-recovery owner contributes the acceptance's
+remaining notional. Exposure is keyed by exact broker identity, not merely the
+local id: two broker acceptances remain two possible venue orders, while fills
+are allocated once across their aggregate. A malformed/legacy numeric owner
+cannot shrink immutable referenced-order scope. If the same acceptance is
+already represented by its non-terminal order, recovery, position, or canonical
+fills, only that true overlap is subtracted. The authoritative BUY submission
+claim recomputes this exposure with the current risk limits under the store
+lock/transaction from event-projected lifecycle status, never a driftable raw
+order-status scalar, closing the order-mint-to-claim interleaving; either side's
+claim independently refuses its own pre-existing broker id or accepted-submit
+fact. An accepted direct SELL fact likewise makes local CREATED cancel
+ineligible and remains same-side single-flight ownership, so a local terminal
+scalar/fact cannot authorize a replacement exit. Routine reads select a
+dedicated accepted-fact cache instead of decoding unrelated UNKNOWN history on
+every choke; bounded repair consumers ignore each other's checkpoint-only
+transport so idle cadence converges without append-only ping-pong.
 
 This approximation is **directional, not neutral**: cost basis over-counts a
 position that has since dropped in value (the cap binds *sooner* than
