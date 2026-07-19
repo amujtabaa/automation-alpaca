@@ -3756,6 +3756,31 @@ class SqliteStateStore(StateStore):
                     f"autonomous protection exit for {key} refused: trading "
                     "halted (kill switch engaged)"
                 )
+            # PR#9 Codex F1: fail CLOSED if a same-symbol BUY may execute
+            # (venue-uncertain — MAY_EXECUTE_ORDER_STATUSES; CREATED buys are
+            # stood down instead). Minting a PROTECTION_FLOOR SELL beside such a
+            # BUY would wedge behind the cross-side claim rail, and if the BUY then
+            # fills the exit is left sized to the pre-fill quantity. Defer (return
+            # None, audited) so the monitoring loop retries next tick. Mirrors the
+            # memory store; flatten fails closed the same way (FLATTEN_BLOCKING).
+            buy_hit = self._same_symbol_buy_may_execute_locked(key)
+            if buy_hit is not None:
+                with self._tx() as cur:
+                    self._insert_event(
+                        cur,
+                        "protection_open_deferred",
+                        message=(
+                            f"protection exit for {key} deferred: a same-symbol "
+                            f"BUY may execute ({buy_hit})"
+                        ),
+                        symbol=key,
+                        payload={
+                            "reason": "same_symbol_buy_may_execute",
+                            "buy_order_id": buy_hit,
+                        },
+                        session_id=session.id,
+                    )
+                return None
             if session_id is None:
                 session_id = session.id
             with self._tx() as cur:
@@ -4049,9 +4074,11 @@ class SqliteStateStore(StateStore):
     def _stand_down_symbol_buy_candidates_locked(
         self, cur: sqlite3.Cursor, symbol: str, *, actor: str
     ) -> None:
-        """Exit-preempt: expire every same-symbol PENDING/APPROVED BUY candidate
-        on the open ``_tx`` cursor (audited ``candidate_transition``,
-        reason ``exit_preemption``). Mirrors the memory store."""
+        """Exit-preempt: stand down every same-symbol BUY that could still reach
+        the venue and re-grow the position the exit is closing — expire every
+        PENDING/APPROVED BUY candidate AND cancel every already-dispatched but
+        still-CREATED same-symbol BUY order (audited ``candidate_transition``,
+        reason ``exit_preemption`` / order CANCELED). Mirrors the memory store."""
         now = utcnow()
         for row in self._read_all(
             "SELECT * FROM candidates WHERE symbol = ? AND status IN (?, ?) "
@@ -4080,6 +4107,55 @@ class SqliteStateStore(StateStore):
                 },
                 session_id=cand.session_id,
             )
+        self._stand_down_symbol_created_buys_locked(cur, symbol, actor=actor)
+
+    def _stand_down_symbol_created_buys_locked(
+        self, cur: sqlite3.Cursor, symbol: str, *, actor: str
+    ) -> None:
+        """Locally CANCEL every same-symbol, still-unexecuted CREATED BUY order —
+        the exit-preempt companion to the candidate stand-down (PR#9 Codex F3).
+
+        A CREATED buy under an ORDERED candidate is neither expired above nor
+        blocking to a same-symbol exit (``MAY_EXECUTE_ORDER_STATUSES`` excludes
+        CREATED, by design), so after the exit SELL went terminal it could claim
+        and re-grow the exited position — the §5.3 self-cross flatten already
+        prevents. CREATED == never venue-submitted (pure local write; the claim
+        rail owns venue-uncertain buys); ``filled_quantity == 0`` spares an
+        establishing-BUY stub parked in CREATED with its shares already folded.
+        Mirrors ``InMemoryStateStore._stand_down_symbol_created_buys_unlocked``."""
+        rows = cur.execute(
+            "SELECT * FROM orders WHERE symbol = ? AND side = ? AND status = ? "
+            "ORDER BY rowid",
+            (symbol, OrderSide.BUY.value, OrderStatus.CREATED.value),
+        ).fetchall()
+        for order_row in rows:
+            order = self._project_order_locked(self._order(order_row))
+            if order.status is not OrderStatus.CREATED or order.filled_quantity != 0:
+                continue
+            plan = plan_transition_order(
+                order=order,
+                new_status=OrderStatus.CANCELED,
+                filled_quantity=None,
+                broker_order_id=None,
+                actor=actor,
+            )
+            assert plan.outcome == ORDER_TRANSITION_APPLY
+            assert plan.order is not None and plan.event is not None
+            cur.execute(
+                "UPDATE orders SET status=?, canceled_at=?, updated_at=? WHERE id=?",
+                (
+                    OrderStatus.CANCELED.value,
+                    _dt(plan.order.canceled_at),
+                    _dt(plan.order.updated_at),
+                    plan.order.id,
+                ),
+            )
+            self._insert_event(cur, plan.event.event_type, **plan.event.as_kwargs())
+            exec_event = execution_event_for_routine_transition(
+                order, plan.order.status, plan.order.filled_quantity
+            )
+            if exec_event is not None:
+                self._insert_execution_event(cur, exec_event)
 
     def _symbol_sell_exposure_reason_locked(
         self,

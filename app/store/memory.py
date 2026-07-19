@@ -1852,13 +1852,21 @@ class InMemoryStateStore(StateStore):
                     stored = self._apply_envelope_transition_unlocked(
                         plan.transition, reconcile_owner=not terminal
                     )
-                    if terminal:
-                        self._cancel_staged_envelope_orders_unlocked(
-                            [stored.id], actor="engine"
-                        )
-                        self._reconcile_envelope_owner_unlocked(
-                            stored.sell_intent_id, now=stored.updated_at
-                        )
+                # PR#9 Codex F2: run the terminal cleanup whenever the STORED
+                # envelope is terminal — not only when THIS fill drove the
+                # transition. A late fill against an already-terminal envelope
+                # (plan.transition is None) must still cancel a lingering CREATED
+                # staged child and reconcile the owner, exactly as the SQLite twin
+                # does (sqlite.py record_envelope_fill). Keyed on stored.status so a
+                # terminal transition (which used reconcile_owner=False above)
+                # reconciles here exactly once — no double reconcile.
+                if not ENVELOPE_TRANSITIONS.get(stored.status):
+                    self._cancel_staged_envelope_orders_unlocked(
+                        [stored.id], actor="engine"
+                    )
+                    self._reconcile_envelope_owner_unlocked(
+                        stored.sell_intent_id, now=stored.updated_at
+                    )
             return stored.model_copy(deep=True)
 
     def _envelope_action_context_unlocked(
@@ -2403,6 +2411,31 @@ class InMemoryStateStore(StateStore):
                     f"autonomous protection exit for {key} refused: trading "
                     "halted (kill switch engaged)"
                 )
+            # PR#9 Codex F1: fail CLOSED if a same-symbol BUY may execute
+            # (venue-uncertain — MAY_EXECUTE_ORDER_STATUSES; CREATED buys are
+            # instead stood down below). Minting a PROTECTION_FLOOR SELL beside
+            # such a BUY would wedge behind the cross-side claim rail, and if the
+            # BUY then fills the exit is left sized to the pre-fill quantity.
+            # Defer (return None, audited) so the monitoring loop retries next
+            # tick — by which point the BUY is terminal and the exit sizes to the
+            # true position. Flatten fails closed the same way (FLATTEN_BLOCKING).
+            buy_hit = self._same_symbol_buy_may_execute_unlocked(key)
+            if buy_hit is not None:
+                with self._atomic():
+                    self._append_event_unlocked(
+                        "protection_open_deferred",
+                        message=(
+                            f"protection exit for {key} deferred: a same-symbol "
+                            f"BUY may execute ({buy_hit})"
+                        ),
+                        symbol=key,
+                        payload={
+                            "reason": "same_symbol_buy_may_execute",
+                            "buy_order_id": buy_hit,
+                        },
+                        session_id=session.id,
+                    )
+                return None
             if session_id is None:
                 session_id = session.id
             with self._atomic():
@@ -2713,10 +2746,13 @@ class InMemoryStateStore(StateStore):
     def _stand_down_symbol_buy_candidates_unlocked(
         self, symbol: str, *, actor: str
     ) -> None:
-        """Exit-preempt: an exit stands down every same-symbol PENDING/APPROVED
-        BUY candidate so it can never dispatch into a crossing BUY. Audited
-        ``candidate_transition`` (reason ``exit_preemption``), same atomic unit
-        as the exit's own writes."""
+        """Exit-preempt: an exit stands down every same-symbol BUY that could
+        still reach the venue and re-grow the position it is closing — (a) every
+        PENDING/APPROVED BUY candidate (expired before it can dispatch), and
+        (b) every already-dispatched but still-CREATED same-symbol BUY order
+        (locally CANCELED). Audited ``candidate_transition`` (reason
+        ``exit_preemption``) / order CANCELED, same atomic unit as the exit's own
+        writes."""
         now = utcnow()
         for cand in list(self._candidates.values()):
             if cand.symbol != symbol or cand.status not in (
@@ -2744,6 +2780,51 @@ class InMemoryStateStore(StateStore):
                 },
                 session_id=cand.session_id,
             )
+        self._stand_down_symbol_created_buys_unlocked(symbol, actor=actor)
+
+    def _stand_down_symbol_created_buys_unlocked(
+        self, symbol: str, *, actor: str
+    ) -> None:
+        """Locally CANCEL every same-symbol, still-unexecuted CREATED BUY order —
+        the exit-preempt companion to the candidate stand-down (PR#9 Codex F3).
+
+        A CREATED buy under an ORDERED candidate is neither expired by the
+        candidate loop above (its candidate is ORDERED, not PENDING/APPROVED) nor
+        blocking to a same-symbol exit (``MAY_EXECUTE_ORDER_STATUSES`` excludes
+        CREATED, by design), so after the exit SELL went terminal it could claim
+        and re-grow the exited position — the §5.3 self-cross flatten already
+        prevents (``FLATTEN_BLOCKING_BUY_STATUSES`` includes CREATED). CREATED
+        means never venue-submitted, so this is a pure local-truth write; no venue
+        call belongs here and SUBMITTING+ buys (venue-uncertain) are left to the
+        cross-side claim rail / fail-closed exit path. Restricted to
+        ``filled_quantity == 0`` so an establishing-BUY stub that ``append_fill``
+        parked in CREATED with its shares already folded is untouched — only a
+        buy's *future* execution is the re-grow risk this closes."""
+        for raw_order in list(self._orders.values()):
+            order = self._project_order_unlocked(raw_order)
+            if (
+                order.symbol != symbol
+                or order.side is not OrderSide.BUY
+                or order.status is not OrderStatus.CREATED
+                or order.filled_quantity != 0
+            ):
+                continue
+            plan = plan_transition_order(
+                order=order,
+                new_status=OrderStatus.CANCELED,
+                filled_quantity=None,
+                broker_order_id=None,
+                actor=actor,
+            )
+            assert plan.outcome == ORDER_TRANSITION_APPLY
+            assert plan.order is not None and plan.event is not None
+            self._orders[order.id] = plan.order
+            self._append_event_unlocked(plan.event.event_type, **plan.event.as_kwargs())
+            exec_event = execution_event_for_routine_transition(
+                order, plan.order.status, plan.order.filled_quantity
+            )
+            if exec_event is not None:
+                self._append_execution_event_unlocked(exec_event)
 
     async def flatten_position(
         self,
