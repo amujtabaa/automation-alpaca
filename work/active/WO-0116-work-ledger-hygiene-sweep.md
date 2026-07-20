@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Work-order / ledger hygiene sweep: flip, disposition, move, ledger — evidence-backed only"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0116
 wave: post-R2 beta-prep
 model_tier: mid
