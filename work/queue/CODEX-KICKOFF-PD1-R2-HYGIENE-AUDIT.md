@@ -13,9 +13,9 @@ blocks with root cause, dispositions on close. No completion claims without evid
 
 ## Setup and anchor
 
-- Fetch `master` (anchor `88833e3d`, PR #9 merge) and branch
-  `claude/pd1-r2-backfill-planning-wh78tv` (planning artifacts). Merge that branch into your
-  working branch (it contains only `work/queue/` planning files; no code).
+- Branch from current `master` — it already contains the planning artifacts
+  (`work/queue/WO-0114..0117` + `PD1-R2-PLANNING-PACKAGE.md`, merged 2026-07-20) and the code
+  anchor `88833e3d` (PR #9 merge; no app/test code has changed since).
 - Work on one feature branch. Never push to `master`. No PR unless I ask.
 - Paper-only posture: no live trading, no Alpaca credentials in this session at all — no lane
   below needs a broker.
