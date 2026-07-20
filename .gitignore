@@ -10,10 +10,31 @@ ENV/
 *.egg-info/
 .eggs/
 
-# Pytest temp basetemp (used on Windows when the default temp dir errors)
-.pytest_tmp/
-.pytest-tmp/
+# Pytest temp basetemp + agent ad-hoc scratch. Test runs pass repo-relative
+# basetemp/db paths (e.g. .pytest-tmp-wo0113-scope-1, .pytest-cache-r2-*), one
+# per run/shard/probe. Wildcards so uniquely-named dirs cannot accumulate in the
+# root or be swept into a commit (the .agents/.codex leak class, 06abd3f).
+.pytest_tmp*/
+.pytest-tmp*/
+.pytest-cache*/
+.pytest-run*/
+.pytest-agent*/
+.pytest-subagent*/
+.pytest-audit*/
+.pytest-chaos*/
+.pytest-r2*/
 .pytest_cache/
+.hostile-closure/
+
+# Tool caches (regenerable in CI; never committed)
+.mypy_cache/
+.ruff_cache/
+.grimp_cache/
+.import_linter_cache/
+.hypothesis/
+
+# Secondary review virtualenv (mirror of .venv for the review seat)
+.venv-review/
 
 # Coverage artifacts (measured in CI; not committed)
 .coverage
