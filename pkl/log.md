@@ -22,3 +22,12 @@
   Final implementation SHA `9a7af3b08a2d050e324a862d59548ff2da747c48`; exact-head GitHub
   Actions run #482 and automated Codex review are green, and REV-0033 is queued for independent
   review. PR #9 merge remains operator-gated.
+
+- 2026-07-20: REV-0033 returned ACCEPT-WITH-CHANGES and is dispositioned against implementation
+  `cdb7dd98c37e6b05f9e3e4567538f64187603df1`. ADR-001/INV-002 now state the operator-confirmed
+  permanent beta overfill latch; dynamic protective acknowledgements without current persisted
+  venue scope fail closed into uncertainty/recovery; ordinary accepted-submit recoveries carry
+  their client order id. F4 and all five WO-0113 RATIFIED_YES decisions are operator-confirmed;
+  F5(a)/(b) remain optional notes. The full local gate is green (3873 collected; 3861 passed,
+  11 skipped, 1 xfailed; 93.46% branch coverage; static/oracle/hardening/scaling/AI-OS green).
+  PR #9 remains unmerged pending exact-head CI.
