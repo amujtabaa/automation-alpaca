@@ -5234,13 +5234,7 @@ class SqliteStateStore(StateStore):
                 "SELECT * FROM sessions WHERE id = ?", (candidate.session_id,)
             )
             session = self._session(sess_row) if sess_row is not None else None
-            fill_event_rows = self._read_all(
-                "SELECT * FROM execution_events WHERE event_type = 'fill' "
-                "ORDER BY sequence"
-            )
-            quarantined = candidate.symbol in quarantined_symbols(
-                [self._execution_event(r) for r in fill_event_rows]
-            )
+            quarantined = candidate.symbol in self._quarantined_symbols_locked()
             plan = plan_create_order_for_candidate(
                 candidate=candidate,
                 session=session,
@@ -5518,13 +5512,7 @@ class SqliteStateStore(StateStore):
             # by a broker overfill (derived from the event log under this lock).
             quarantined = False
             if order is not None:
-                fill_event_rows = self._read_all(
-                    "SELECT * FROM execution_events WHERE event_type = 'fill' "
-                    "ORDER BY sequence"
-                )
-                quarantined = order.symbol in quarantined_symbols(
-                    [self._execution_event(r) for r in fill_event_rows]
-                )
+                quarantined = order.symbol in self._quarantined_symbols_locked()
             plan = plan_claim_order_for_submission(
                 order=order,
                 own_session=own_session,
@@ -6769,6 +6757,19 @@ class SqliteStateStore(StateStore):
         )
         return project_symbol_position([self._execution_event(r) for r in rows], symbol)
 
+    def _quarantined_symbols_locked(self) -> set[str]:
+        """Project every durable ADR-001 quarantine source under the store lock."""
+
+        rows = self._read_all(
+            "SELECT * FROM execution_events WHERE event_type IN (?, ?) "
+            "ORDER BY sequence",
+            (
+                ExecutionEventType.FILL.value,
+                ExecutionEventType.QUARANTINED.value,
+            ),
+        )
+        return quarantined_symbols([self._execution_event(row) for row in rows])
+
     async def get_position(self, symbol: str) -> Position:
         key = normalize_symbol(symbol)
         async with self._lock:
@@ -6784,12 +6785,7 @@ class SqliteStateStore(StateStore):
 
     async def list_quarantined_symbols(self) -> set[str]:
         async with self._lock:
-            rows = self._read_all(
-                "SELECT * FROM execution_events "
-                "WHERE event_type IN ('fill', 'quarantined') "
-                "ORDER BY sequence"
-            )
-            return quarantined_symbols([self._execution_event(r) for r in rows])
+            return self._quarantined_symbols_locked()
 
     # ------------------------------------------------------------------ #
     # Events

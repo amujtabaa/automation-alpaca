@@ -627,6 +627,11 @@ class InMemoryStateStore(StateStore):
         # for every fill row, so this reproduces the legacy fold exactly.
         return project_symbol_position(self._execution_events, symbol)
 
+    def _quarantined_symbols_unlocked(self) -> set[str]:
+        """Project every durable ADR-001 quarantine source under the store lock."""
+
+        return quarantined_symbols(self._execution_events)
+
     def _fill_event_symbols_unlocked(self) -> set[str]:
         return {
             e.symbol
@@ -3725,8 +3730,7 @@ class InMemoryStateStore(StateStore):
                 session=session,
                 exposure_before_order=self._current_exposure_unlocked(),
                 risk_limits=risk_limits,
-                quarantined=candidate.symbol
-                in quarantined_symbols(self._execution_events),
+                quarantined=candidate.symbol in self._quarantined_symbols_unlocked(),
             )
             if plan.outcome == CREATE_ORDER_REJECT:
                 # The kill-switch/pause block and the Phase 6 CAPI risk-limit
@@ -3993,8 +3997,9 @@ class InMemoryStateStore(StateStore):
                 sell_reason = intent.reason if intent is not None else None
             # ADR-001 (wave 3b): hold an autonomous BUY whose symbol is quarantined
             # by a broker overfill (derived from the event log under this lock).
-            quarantined = order is not None and order.symbol in quarantined_symbols(
-                self._execution_events
+            quarantined = (
+                order is not None
+                and order.symbol in self._quarantined_symbols_unlocked()
             )
             plan = plan_claim_order_for_submission(
                 order=order,
@@ -4956,7 +4961,7 @@ class InMemoryStateStore(StateStore):
 
     async def list_quarantined_symbols(self) -> set[str]:
         async with self._lock:
-            return quarantined_symbols(self._execution_events)
+            return self._quarantined_symbols_unlocked()
 
     # ------------------------------------------------------------------ #
     # Events

@@ -30,16 +30,16 @@ gated_surface: order submission/claim, candidate dispatch, manual flatten, auton
 
 ```yaml
 execution_checkpoint:
-  updated_at_utc: "2026-07-20T02:36:41Z"
+  updated_at_utc: "2026-07-20T03:53:15Z"
   repository: "amujtabaa/automation-alpaca"
   branch: "consolidate/r2-canonical"
-  local_head: "96d1c0242682a0cd8c197c1354c70857dd772fdb"
-  upstream_head: "96d1c0242682a0cd8c197c1354c70857dd772fdb"
+  local_head: "5ae2c75c1c4700364cf2c7337c9d05c876479b19"
+  upstream_head: "5ae2c75c1c4700364cf2c7337c9d05c876479b19"
   pr_number: 9
-  pr_head: "96d1c0242682a0cd8c197c1354c70857dd772fdb"
+  pr_head: "5ae2c75c1c4700364cf2c7337c9d05c876479b19"
   working_tree: DIRTY
   staged_paths: []
-  unstaged_paths:
+  implementation_commit_paths_at_5ae2c75:
     - "app/broker/adapter.py"
     - "app/broker/alpaca_paper.py"
     - "app/broker/mock.py"
@@ -97,8 +97,13 @@ execution_checkpoint:
     - "tests/test_wo0113_submit_acceptance_fallback.py"
     - "work/active/WO-0113-codex-primary-remediation.md"
     - "work/completed/delete-candidates/.gitkeep (deleted)"
-  current_phase: "local implementation verified; implementation commit freeze pending"
-  current_cluster: "pre-commit diff/evidence reconciliation, then exact-SHA remote gates"
+  unstaged_paths:
+    - "app/store/memory.py"
+    - "app/store/sqlite.py"
+    - "tests/test_spine_phase3b_overfill_quarantine.py"
+    - "work/active/WO-0113-codex-primary-remediation.md"
+  current_phase: "final-head automated-review P1 remediated and fully locally verified; remediation commit freeze pending"
+  current_cluster: "freeze/push the quarantine-gate remediation, then repeat exact-SHA CI and automated review"
   completed:
     - "Preflight reconciled local/upstream/PR head at 96d1c0242682a0cd8c197c1354c70857dd772fdb and base at 2aa377a35d35e85be120cf90cdb6c5bd85a8d546; exact-head CI was green."
     - "Mapped every accepted-submit producer and the fallback, repair, exposure, CAPI, claim, cancel, recovery-loop, and restart consumers."
@@ -121,10 +126,14 @@ execution_checkpoint:
     - "Exact Ruff check/format, mypy app (64 files), import-linter (6 kept/0 broken), and diff check are green. Ruff excludes only ignored .pytest* runtime artifacts after OS ACLs made those artifacts unreadable and undeletable."
     - "All 47 repository-suite regressions were traced to legacy fixtures/doubles that bypassed exact venue-scope semantics; no product defect was found. The 13-file repaired compatibility corpus passed 522/522, and the source-freeze corpus passed 598/598 again."
     - "Both conformance oracles are green (Codex 61/61; Claude 22 passed/6 documented skips), and review hardening is 12/12 green."
-    - "The scaling gate passed three consecutive runs with every gate true; runtime ratios were 0.9714, 0.8846, and 1.0153, startup elapsed ratios were 9.1098, 9.3970, and 8.2252, and startup select ratio remained 9.1022."
-    - "The final full suite passed three consecutive times on the unchanged tree in 388.2s, 359.5s, and 329.7s (3488 passed, 11 skipped, 1 xfailed each run)."
-    - "Final branch coverage passed at 93.49% against the configured 93.0% floor in 461.7s, with the same full-suite outcome."
+    - "The current scaling gate passed three consecutive runs with every gate true; runtime ratios were 1.3107, 0.8181, and 1.0266, startup elapsed ratios were 9.4612, 9.0201, and 8.8985, and startup select ratio remained 9.1022."
+    - "The current full suite passed three consecutive times on the unchanged product tree in 336.551s, 379.071s, and 385.331s (3859 passed, 11 skipped, 1 xfailed; 3871 collected each run)."
+    - "Current branch coverage passed at 93.50% against the configured 93.0% floor in 523.3s, with the same zero-failure full-suite outcome."
     - "AI-OS install/version/ledger/PKL/disposition/scope checks are green; context hygiene has zero violations and only the expected active-WO length advisory, which the required closeout move removes."
+    - "The automated Codex review of 5ae2c75 reproduced one P1: SQLite's candidate-admission and final-claim quarantine reads selected only FILL facts, omitting explicit positive-position QUARANTINED truth that memory and the public list already consumed."
+    - "Red-first dual-store pins failed exactly on SQLite at both gates (2 failed / 2 passed); the shared gate/list projection plus a SQLite reopen pin are 5/5 green, the complete Phase-3b file is 27/27, and independent admission/claim guard removals each failed only their SQLite node."
+    - "Fresh post-remediation gates are green: relevant 10-file cluster 274/274; complete WO/quarantine corpus 580/580; Ruff check/format, mypy 64 files, import-linter 6/0, both oracles 61/61 and 22 passed/6 skips, hardening 12/12, and scaling 3/3."
+    - "Fresh full suite passed three consecutive times: 3859 passed, 11 skipped, 1 xfailed (3871 collected) with XML suite times 336.551s, 379.071s, and 385.331s. Coverage repeated the full suite with zero failures/errors and met the 93.0% floor at 93.50% in 523.3s."
   active_findings:
     - id: "WO0113-SIBLING-DURABLE-VENUE-SCOPE-CORRELATION"
       severity: P1
@@ -181,21 +190,26 @@ execution_checkpoint:
       status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
       root_cause: "The concrete Alpaca adapter converted SDK ids with str() at four submit/replace success and duplicate-recovery exits; None became the apparently concrete identity 'None', while blank replace success was a retryable BrokerError."
       resolution: "One adapter-level canonical acknowledgement helper now returns a stripped concrete id or raises AmbiguousBrokerError at all four exits; 12 red-first and guard-removal cases pin None, empty, and whitespace responses."
+    - id: "PR9-5AE2C75-P1-SQLITE-EXPLICIT-QUARANTINE-GATES"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "SQLite's candidate-admission and final submission-claim gates independently selected only FILL facts before calling the shared quarantine projector. An explicit ADR-001 QUARANTINED fact for an order overfill that left position positive was therefore visible to list_quarantined_symbols and memory, but invisible to both SQLite autonomous-BUY gates."
+      resolution: "Both stores now expose one lock-held quarantine projection to candidate admission, final claim, and the public list; SQLite selects both FILL and QUARANTINED facts. Dual-store positive-position intent/claim pins, a SQLite reopen pin, and independent guard removals close both consumers."
   last_red:
-    command: ".venv/Scripts/python.exe -m pytest tests/test_wo0019_engine_seam.py::test_submit_scope_uses_the_injected_decision_clock -q --basetemp=.pytest-tmp-clock-red"
-    decisive_output: "2 failed: memory and SQLite both persisted extended_hours=false for an injected premarket decision because _drive_staged_order used wall-clock utcnow()."
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_spine_phase3b_overfill_quarantine.py::test_explicit_order_overfill_quarantine_blocks_new_buy_intent tests/test_spine_phase3b_overfill_quarantine.py::test_explicit_order_overfill_quarantine_blocks_existing_buy_claim --basetemp=<external>"
+    decisive_output: "2 failed / 2 passed: memory blocked both paths; SQLite minted the autonomous BUY and claimed the pre-existing BUY because its gate queries discarded explicit QUARANTINED truth."
   last_green:
-    command: ".venv/Scripts/python.exe -m pytest -q --cov=app --cov-branch --cov-report=term-missing --basetemp=<external>/pytest-coverage-final-a"
-    decisive_output: "3488 passed, 11 skipped, 1 xfailed; configured 93.0% branch floor met at 93.49%; exit 0 in 461.7 seconds."
+    command: ".venv/Scripts/python.exe -m pytest -q --cov=app --cov-branch --cov-report=term-missing --basetemp=<external>"
+    decisive_output: "3859 passed, 11 skipped, 1 xfailed (3871 collected); configured 93.0% branch floor met at 93.50%; zero failures/errors; exit 0 in 523.3 seconds."
   last_mutation:
-    mutation: "Removed advanced mass-material rejection, immutable scope-owner authentication, record-first overfill containment/quarantine-key validation, and ACK lifecycle validation in turn."
-    expected_test: "Each new safety pin must fail when its guarded branch is removed on every applicable ingress/store."
-    observed_result: "Advanced 1/1, scope poison 4/4, record-first quarantine 2/2, quarantine poison 4/4, and submit/replace ACK lifecycle 16/16 failed exactly; all same slices passed after in-place restoration. Earlier identity-normalization and accepted-ownership mutation evidence remains retained below."
+    mutation: "Disabled the shared explicit-quarantine projection at SQLite candidate admission and final claim independently; also reduced the shared SQLite projection to FILL-only."
+    expected_test: "Each gate-specific positive-position pin must fail only for SQLite when its own guard is removed; the shared projection mutation must fail every SQLite/list/restart consumer while memory stays green."
+    observed_result: "Admission mutation: 1 SQLite failure / 1 memory pass. Claim mutation: 1 SQLite failure / 1 memory pass. Shared FILL-only mutation: 3 exact SQLite failures. All edits restored in place; dual-store plus restart slice returned 5/5 green. Earlier mutation evidence remains retained below."
     restored_in_place: true
-  last_completed_command: "coverage: full suite green and 93.49% branch coverage; all local gates green"
-  next_exact_command: "git diff --check; inspect final status; create the implementation commit without closeout artifacts"
+  last_completed_command: "coverage: full suite green and 93.50% branch coverage; all post-review local gates green"
+  next_exact_command: "run final AI-OS/static residue checks; freeze and push the remediation implementation commit without closeout artifacts"
   pending_remote_checks:
-    - "Push the frozen implementation commit only on consolidate/r2-canonical; then triage exact-head CI and every automated review thread."
+    - "Push the frozen quarantine-gate remediation commit only on consolidate/r2-canonical; then triage exact-head CI and every automated review thread."
     - "Re-query exact-head CI and automated review after each authorized push."
   operator_decisions:
     created_buy_targeting: RATIFIED_YES
@@ -959,3 +973,34 @@ matrix row with its evidence is the deliverable.
   whose disposition now belongs to this WO's Phase-A review. Handoff point `194343c` verified: CI
   green (4/4), local full gate reproduced green. Codex subsequently moved this WO to
   `work/active/` and began Phase A, as recorded above.
+
+- **PR #9 FINAL-HEAD P1 REMEDIATED LOCALLY 2026-07-19** — automated review
+  `PRR_kwDOTCRcJM8AAAABGgvpCw` of exact implementation SHA
+  `5ae2c75c1c4700364cf2c7337c9d05c876479b19` reproduced a SQLite-only ADR-001
+  containment gap. Candidate admission and final submission claim each queried only `FILL` facts
+  before calling `quarantined_symbols()`. An order-level broker overfill can leave position
+  positive and express containment only through an explicit `QUARANTINED` fact, so SQLite could
+  report `AAPL` quarantined publicly while still minting or claiming an autonomous AAPL BUY;
+  memory consumed the full event log and blocked both.
+
+  Red-first evidence was exact: the two new dual-store nodes returned **2 failed / 2 passed**, with
+  only SQLite failing (unsafe mint and `claimed` rather than `blocked/symbol_quarantined`). The
+  remediation gives each store one lock-held quarantine projection used by candidate admission,
+  final claim, and the public list; SQLite selects both `FILL` and `QUARANTINED`. A SQLite close/
+  reopen pin proves both gates retain the explicit fact. Restored evidence: dual-store plus restart
+  **5/5**, complete Phase-3b **27/27**, relevant 10-file cluster **274/274**, and complete WO/
+  quarantine corpus **580/580**. Independent in-place guard removals failed only the SQLite
+  admission node **1/1** and claim node **1/1**; reducing the shared reader to FILL-only failed
+  **3/3** SQLite/list/restart consumers. Every mutation was restored.
+
+  Fresh unchanged-tree gates after the fix: Ruff check and format (**258 files**), mypy
+  (**64 source files**), import-linter (**6 kept / 0 broken**), Codex conformance **61/61**,
+  Claude conformance **22 passed / 6 documented skips**, hardening **12/12**, and scaling **3/3**
+  with runtime ratios **1.3107 / 0.8181 / 1.0266**, startup elapsed ratios
+  **9.4612 / 9.0201 / 8.8985**, and startup selects **9.1022**. The full suite passed three
+  consecutive times (**3859 passed, 11 skipped, 1 xfailed; 3871 collected**) with XML suite times
+  **336.551s / 379.071s / 385.331s**. Coverage repeated the same zero-failure suite and met the
+  configured 93.0% branch floor at **93.50%** in **523.3s**. One post-success Hypothesis
+  `StopTest` teardown diagnostic appeared after full run 3, did not affect exit/result, and did not
+  reproduce in the isolated property test or coverage rerun. The new remediation SHA still requires
+  push, exact-SHA CI, and a fresh automated review before close-out; no merge is authorized.
