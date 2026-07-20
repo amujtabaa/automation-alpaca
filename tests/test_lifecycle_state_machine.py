@@ -65,8 +65,10 @@ from app.models import (
     utcnow,
 )
 from app.monitoring import _run_protection, _submit_pending_orders, run_monitoring_tick
+from app.policy import canonical_accepted_submit_broker_id
 from app.store.base import (
     CLAIM_CLAIMED,
+    FLATTEN_BUYS_OPEN,
     FLATTEN_FLAT,
     CandidateTransitionError,
     InvalidOrderError,
@@ -545,18 +547,32 @@ class LifecycleMachine(RuleBasedStateMachine):
         """Model ``POST /positions/{symbol}/flatten`` (X-001) directly against
         the atomic store op — the route's own ``cancel_open_buys`` pre-step
         needs a real broker round-trip and is out of scope for this
-        store-level harness (``flatten_position`` re-reads the live position
-        under its own lock regardless, so skipping the cancel here never
-        affects correctness, only sizing against whatever buys are still
-        open). Checked INLINE rather than via a steady-state ``@invariant``
-        because X-001 is a guarantee about this call's return value, not a
-        property of the system at rest: every call must return either 'flat'
-        or an intent whose reason is ``MANUAL_FLATTEN`` — never a
-        silently-substituted ``protection_floor`` intent, even interleaved
-        with a concurrent ``protection_tick``."""
+        store-level harness. Under Option B (WO-0107) that pre-step is no
+        longer optional dressing: a HELD position with a still-open BUY makes
+        ``flatten_position`` return ``FLATTEN_BUYS_OPEN`` (minting nothing) so
+        the caller cancels the buys and retries, rather than minting a
+        ``MANUAL_FLATTEN`` SELL next to a live BUY (the §5.3 self-cross). That
+        outcome is handled below as a valid no-mint result. Checked INLINE
+        rather than via a steady-state ``@invariant`` because X-001 is a
+        guarantee about this call's return value, not a property of the system
+        at rest: every call must return 'flat', 'buys_open', or an intent whose
+        reason is ``MANUAL_FLATTEN`` — never a silently-substituted
+        ``protection_floor`` intent, even interleaved with a concurrent
+        ``protection_tick``."""
 
         result = self._run(self.store.flatten_position(symbol))
         if result.outcome == FLATTEN_FLAT:
+            return
+        if result.outcome == FLATTEN_BUYS_OPEN:
+            # Option B: the store declined to mint next to a live BUY. This is a
+            # SAFE no-mint outcome (the caller cancels the buys and retries via a
+            # broker round-trip, out of scope here); it cannot violate X-001
+            # because no intent was substituted. Affirm the store minted nothing.
+            assert result.intent is None and result.order is None, (
+                f"flatten_position({symbol}) signalled BUYS_OPEN but still minted "
+                f"next to a live buy (§5.3 self-cross): {result}"
+            )
+            _COVERAGE["flatten_buys_open"] += 1
             return
         assert result.intent is not None, (
             f"flatten_position({symbol}) returned a non-flat result with no intent "
@@ -754,23 +770,44 @@ class LifecycleMachine(RuleBasedStateMachine):
     @invariant()
     def no_live_untracked_broker_order(self):
         """Every broker order the sim still considers *live* must be tracked —
-        either a local order references it, or an open recovery record does.
+        a local order, an open recovery record, or the exact canonical
+        accepted-submit UNKNOWN fallback references it.
         This is the F-002 orphan guard: a live-at-broker order the local state
-        knows nothing about is the exact failure D-017 exists to prevent."""
+        knows nothing about is the exact failure D-017 exists to prevent.
+
+        The fallback disjunct is provenance- and identity-exact; malformed
+        UNKNOWN facts cannot weaken the guard. Producer/repair behavior is
+        pinned independently in ``test_wo0113_submit_acceptance_fallback.py``.
+        """
 
         orders = self._run(self.store.list_orders())
         recoveries = self._run(self.store.list_submit_recoveries())
+        execution_events = self._run(self.store.get_execution_events())
         tracked = {o.broker_order_id for o in orders if o.broker_order_id is not None}
         open_recovery = {
             r.broker_order_id
             for r in recoveries
             if r.cleanup_status in RECOVERY_OPEN_STATUSES
         }
+        orders_by_id = {order.id: order for order in orders}
+        canonical_unknown: set[str] = set()
+        for execution_event in execution_events:
+            order = orders_by_id.get(execution_event.order_id)
+            broker_order_id = canonical_accepted_submit_broker_id(
+                execution_event, order
+            )
+            if broker_order_id is not None:
+                canonical_unknown.add(broker_order_id)
         for broker_id in list(self.sim._broker_ids.values()):
             if self.sim.is_live(broker_id):
                 in_tracked = broker_id in tracked
-                assert in_tracked or broker_id in open_recovery, (
-                    f"live broker order {broker_id} is untracked (no order, no recovery)"
+                assert (
+                    in_tracked
+                    or broker_id in open_recovery
+                    or broker_id in canonical_unknown
+                ), (
+                    f"live broker order {broker_id} is untracked "
+                    "(no order, recovery, or canonical UNKNOWN owner)"
                 )
                 # AIR-010 coverage: record when the invariant is satisfied via the
                 # open-recovery DISJUNCT (a live broker order the local order state
@@ -866,5 +903,60 @@ def test_harness_rules_reach_recovery_branches(machine_cls):
             _COVERAGE["fill_divergence_needs_review"]
             > before["fill_divergence_needs_review"]
         ), "B3 fill divergence did not escalate to a needs_review record"
+    finally:
+        machine.teardown()
+
+
+@pytest.mark.parametrize(
+    "machine_cls", [MemoryLifecycleMachine, SqliteLifecycleMachine]
+)
+def test_flatten_rule_reaches_buys_open_branch(machine_cls):
+    """Option B (WO-0107): a HELD position that still carries an open BUY makes the
+    ``flatten`` rule take its ``FLATTEN_BUYS_OPEN`` branch — the store mints nothing
+    next to a live buy (the §5.3 self-cross guard) and signals the caller to cancel
+    the buys and retry. A random run reaches this only on a lucky seed (e.g. a
+    PARTIALLY_FILLED buy scripted by ``script_broker_fill``), so — matching the
+    deterministic-reachability discipline above — prove the branch is REACHABLE by
+    the harness's own rule here, seed-independently. Its own fresh machine, so the
+    seeded position never contaminates the shared-machine driver's rare-branch
+    checks."""
+
+    machine = machine_cls()
+    try:
+        before = _COVERAGE["flatten_buys_open"]
+
+        async def _seed_held_with_open_buy() -> None:
+            session = await machine.store.get_current_session()
+            establishing = await machine.store.create_candidate(
+                "AAPL", session_id=session.id
+            )
+            filled = await machine.store.create_order_for_test(
+                establishing.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+            )
+            await machine.store.append_fill(
+                filled.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+            )
+            # The establishing buy goes terminal (a realistic held position); the
+            # OPEN buy below is the live one flatten must refuse to mint beside.
+            await machine.store.transition_order(filled.id, OrderStatus.CANCELED)
+            resting = await machine.store.create_candidate(
+                "AAPL", session_id=session.id
+            )
+            open_buy = await machine.store.create_order_for_test(
+                resting.id, "AAPL", OrderSide.BUY, 40, session_id=session.id
+            )
+            claim = await machine.store.claim_order_for_submission(open_buy.id)
+            await machine.store.transition_order(
+                claim.order.id,
+                OrderStatus.SUBMITTED,
+                broker_order_id=f"broker-{open_buy.id}",
+            )
+
+        machine._run(_seed_held_with_open_buy())
+        machine.flatten("AAPL")
+        assert _COVERAGE["flatten_buys_open"] > before, (
+            "flatten rule did not take the Option B BUYS_OPEN branch on a held "
+            "position carrying an open buy (§5.3 self-cross guard unreachable)"
+        )
     finally:
         machine.teardown()

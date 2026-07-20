@@ -139,26 +139,26 @@ def project_symbol_position(events: Iterable[ExecutionEvent], symbol: str) -> Po
 
 
 def quarantined_symbols(events: Iterable[ExecutionEvent]) -> set[str]:
-    """Symbols quarantined by a broker-authoritative overfill (ADR-001): a
-    recorded ``FILL`` that crossed the long-only position through flat into short.
+    """Symbols quarantined by a broker-authoritative overfill (ADR-001).
+
+    Explicit ``QUARANTINED`` facts cover order-level overfills that can leave a
+    positive position; the legacy negative-position fold remains supported.
     Autonomous spawns are blocked and manual review is required.
 
     **Latched, not live.** A symbol is quarantined once its ``FILL``-event fold
     reaches a negative running quantity *at any point* — NOT merely when the
     *current* projected quantity is negative. A later covering BUY (from a
     pre-existing order, a reconciliation-inferred cover, or manual review) returns
-    the projection to ``>= 0`` but MUST NOT silently lift the quarantine: ADR-001
-    requires the symbol stay quarantined (autonomous trading halted) until an
-    audited reconciliation/review explicitly clears it, else covering the short
-    would resume autonomous trading from an unreconciled state ("The system must
-    not continue autonomous trading from such a state"). Deriving from the fold
-    *history* (a crossing that happened stays in the sequence) makes the latch
-    durable and replay-stable without a separate mutable flag.
+    the projection to ``>= 0`` but MUST NOT lift the quarantine: for beta,
+    ADR-001 defines a permanent, append-only, cross-session latch with no clear or
+    release event. Covering the short therefore cannot resume autonomous trading
+    from the unreconciled database. Deriving from the fold *history* (a crossing
+    that happened stays in the sequence) makes that permanent latch durable and
+    replay-stable without a separate mutable flag.
 
-    (The explicit operator/reconciliation *clear* path is Phase 4; until it
-    exists a quarantine is sticky for the session — the conservative,
-    capital-preserving default. §6 "stuck reconciliation" alerting is the
-    operator-visibility counterpart, also Phase 4.)
+    Operator visibility and alerting may surface the latch for remediation, but
+    they do not clear it. Any release design is separate, explicitly approved
+    future work rather than part of the beta projection model.
 
     Pure over the log (reuses ``apply_fill`` — the fold formula lives in one
     place), so it is replay-stable and identical across both stores. Events must
@@ -171,7 +171,12 @@ def quarantined_symbols(events: Iterable[ExecutionEvent]) -> set[str]:
         for e in events
         if e.event_type is ExecutionEventType.FILL and e.symbol is not None
     }
-    quarantined: set[str] = set()
+    quarantined = {
+        event.symbol
+        for event in events
+        if event.event_type is ExecutionEventType.QUARANTINED
+        and event.symbol is not None
+    }
     for symbol in symbols:
         position = Position(symbol=symbol)
         for event in events:

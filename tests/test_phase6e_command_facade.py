@@ -182,7 +182,12 @@ async def test_create_exit_race_to_flat_after_buy_cancel_is_409(any_store, monke
     await _hold(any_store, "AAPL", 100)  # pre-check passes (qty > 0)
     facade = _facade(any_store, broker=MockBrokerAdapter())
 
-    async def _flat(_symbol, *, actor="system"):
+    async def _flat(
+        _symbol, *, session_id=None, actor="system", emergency_override=False
+    ):
+        # WO-0113: ordinary flatten remains explicitly outside emergency scope.
+        assert session_id is None
+        assert emergency_override is False
         return SimpleNamespace(outcome=FLATTEN_FLAT, intent=None, order=None)
 
     monkeypatch.setattr(any_store, "flatten_position", _flat)
@@ -233,9 +238,15 @@ async def test_emergency_reduce_flatten_invalid_after_grant_is_409(
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
     await any_store.set_kill_switch(True)
+    authorized_session_id = (await any_store.get_current_session()).id
     facade = _facade(any_store, broker=MockBrokerAdapter())
 
-    async def _boom(_symbol, *, actor="system"):
+    async def _boom(
+        _symbol, *, session_id=None, actor="system", emergency_override=False
+    ):
+        # WO-0113: the facade must preserve the grant's immutable session scope.
+        assert session_id == authorized_session_id
+        assert emergency_override is True
         raise InvalidOrderError("unpriceable exit")
 
     monkeypatch.setattr(any_store, "flatten_position", _boom)

@@ -4,24 +4,20 @@ delta, f092ca7..HEAD).
 House pattern: a review pin starts as a strict xfail documenting the defect,
 then is FLIPPED to a hard assertion when the fix lands.
 
-The one CONFIRMED **P0** (completeness-0) has been FIXED by WO-0032 (per-symbol
-single-ACTIVE guard, INV-087), so its pin below is now an ordinary green
-regression (the session-boundary reproduction refuses the second activation).
+The one CONFIRMED **P0** (completeness-0) was first contained by WO-0032's
+per-symbol single-ACTIVE guard (INV-087). R2 closes the class at its root: a
+live Envelope delegation retains its APPROVED SellIntent across session close,
+so single-flight returns the same coherent owner and a second activation is
+still refused.
 The other nine Phase-A2 findings are recorded in
 ``work/review/REV-0023/phase-a2.md``; the non-gated ones were addressed by
 WO-0033 and the event-log ones by WO-0034.
 
 ------------------------------------------------------------------------------
-P0 — completeness-0: the single-ACTIVE-mandate invariant is scoped per
-``sell_intent_id``, not per ``symbol``, and ``close_session`` orphans an
-ACTIVE envelope by EXPIRing its backing intent. Reproduced (below) on BOTH
-stores: an APPROVED, session-stamped SellIntent backs an ACTIVE envelope; the
-session closes (the intent -> EXPIRED, the envelope stays ACTIVE with full
-remaining); next session a fresh ``create_sell_intent`` for the same symbol is
-no longer deduped (the old intent is EXPIRED), so a SECOND envelope activates
-for the same symbol/position -> two ACTIVE mandates, each independently able to
-stage a full-size SELL (each reduce-only check reads the still-100% position and
-cannot see the sibling's in-flight order).
+P0 — completeness-0: the single-ACTIVE-mandate invariant was scoped per
+``sell_intent_id``, not per ``symbol``, and ``close_session`` orphaned an
+ACTIVE Envelope by expiring its backing intent. R2's regression below pins
+both the root lifecycle link and the independent per-symbol backstop.
 
 REACHABILITY (verified by the implementer seat, recorded honestly): the defect
 requires the backing intent to be APPROVED (not ORDERED) AND carry the closing
@@ -33,11 +29,9 @@ single-mandate violation that becomes live the moment the envelope-native exit
 flow (create sell_intent -> approve an envelope for it, no legacy order
 dispatch) is wired. Treat as a MUST-FIX-BEFORE-WIRING / pre-T5-merge item.
 
-Fix direction is human-gated (order-intent + session-close semantics): options
-include per-symbol single-ACTIVE exclusivity at activation, and/or freezing (not
-orphaning) an envelope-backed intent's envelope at session close. This pin
-asserts the invariant that ANY chosen fix must satisfy: at most one ACTIVE
-envelope per symbol after the boundary.
+The pin asserts the full invariant after the boundary: the live mandate keeps
+its APPROVED owner, single-flight cannot mint a replacement owner, and at most
+one ACTIVE Envelope exists for the symbol.
 """
 
 from __future__ import annotations
@@ -52,6 +46,7 @@ from app.models import (
     EnvelopeStatus,
     ExecutionEnvelope,
     OrderSide,
+    SellIntentStatus,
     SellReason,
     SessionType,
 )
@@ -111,14 +106,26 @@ async def test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary
         target_quantity=100,
         session_id=session1.id,
     )
-    await any_store.approve_envelope_activation(_draft(si1.id), actor="operator-a")
+    env1 = await any_store.approve_envelope_activation(
+        _draft(
+            si1.id,
+            qty_ceiling=si1.target_quantity,
+            session_id=si1.session_id,
+        ),
+        actor="operator-a",
+    )
 
-    # Ordinary end-of-day close: expires si1, leaves the envelope ACTIVE (orphan).
+    # Ordinary end-of-day close must retain the owner of a live delegation.
     await any_store.close_session()
+    owner = await any_store.get_sell_intent(si1.id)
+    assert owner is not None
+    assert owner.status is SellIntentStatus.APPROVED
+    active_owner = await any_store.active_sell_intent_for("AAPL")
+    assert active_owner is not None and active_owner.id == si1.id
+    assert (await any_store.get_envelope(env1.id)).status is EnvelopeStatus.ACTIVE
 
-    # Next session, same still-held symbol: dedup is blind (si1 is EXPIRED), so a
-    # fresh intent is created — but the per-symbol single-ACTIVE guard now refuses
-    # a SECOND envelope for the symbol while the first is still ACTIVE.
+    # Next session, same still-held symbol: single-flight sees the retained owner
+    # and returns it instead of minting a replacement SellIntent.
     session2 = await any_store.get_current_session()
     si2 = await any_store.create_sell_intent(
         symbol="AAPL",
@@ -126,16 +133,28 @@ async def test_PIN_P0_no_two_active_envelopes_per_symbol_across_session_boundary
         target_quantity=100,
         session_id=session2.id,
     )
+    assert si2.id == si1.id
+    assert si2.session_id == session1.id
+    assert len(await any_store.list_sell_intents(symbol="AAPL")) == 1
+
+    # The per-symbol single-ACTIVE guard remains an independent backstop even if
+    # a caller attempts a second Envelope for the same coherent owner.
     with pytest.raises(EnvelopeTransitionError):
-        await any_store.approve_envelope_activation(_draft(si2.id), actor="operator-a")
+        await any_store.approve_envelope_activation(
+            _draft(
+                si2.id,
+                qty_ceiling=si2.target_quantity,
+                session_id=si2.session_id,
+            ),
+            actor="operator-a",
+        )
 
     active = [
         e
         for e in await any_store.list_envelopes(symbol="AAPL")
         if e.status is EnvelopeStatus.ACTIVE
     ]
-    # At most one live mandate per symbol — the orphaned env1 keeps working the
-    # exit; a redundant/conflicting second mandate can no longer double-book it.
+    # At most one live mandate per symbol; no owner or Envelope was orphaned.
     assert len(active) == 1, (
         f"expected exactly one ACTIVE envelope for AAPL, got {[e.id for e in active]}"
     )

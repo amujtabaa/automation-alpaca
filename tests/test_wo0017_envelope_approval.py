@@ -22,6 +22,7 @@ from app.models import (
     EnvelopeStatus,
     ExecutionEnvelope,
     ExecutionEventType,
+    SellReason,
     SessionType,
     utcnow,
 )
@@ -54,6 +55,26 @@ def make_draft(intent_id: str = "si-1", **overrides) -> ExecutionEnvelope:
     return ExecutionEnvelope(**base)
 
 
+async def seed_owner(store, *, symbol: str = "AAPL", quantity: int = 100):
+    session = await store.get_current_session()
+    return await store.create_sell_intent(
+        symbol=symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=quantity,
+        session_id=session.id,
+    )
+
+
+def make_owned_draft(owner, **overrides) -> ExecutionEnvelope:
+    binding = {
+        "symbol": owner.symbol,
+        "qty_ceiling": owner.target_quantity,
+        "session_id": owner.session_id,
+    }
+    binding.update(overrides)
+    return make_draft(owner.id, **binding)
+
+
 async def envelope_events(store, envelope_id):
     return [
         e for e in await store.get_execution_events() if e.envelope_id == envelope_id
@@ -62,7 +83,8 @@ async def envelope_events(store, envelope_id):
 
 async def test_approve_activation_is_one_atomic_unit_with_full_trail(any_store):
     await any_store.initialize()
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     active = await any_store.approve_envelope_activation(draft, actor="operator-ameen")
     assert active.status is S.ACTIVE
     assert active.approved_at is not None and active.activated_at is not None
@@ -82,7 +104,8 @@ async def test_approve_activation_is_one_atomic_unit_with_full_trail(any_store):
 
 async def test_reapprove_of_active_is_an_idempotent_noop(any_store):
     await any_store.initialize()
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     first = await any_store.approve_envelope_activation(draft, actor="operator-a")
     before = len(await envelope_events(any_store, draft.id))
     again = await any_store.approve_envelope_activation(draft, actor="operator-a")
@@ -95,7 +118,8 @@ async def test_approve_of_a_preexisting_pending_draft_completes_the_chain(
     any_store,
 ):
     await any_store.initialize()
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     await any_store.create_envelope(draft, actor="operator-a")
     active = await any_store.approve_envelope_activation(draft, actor="operator-a")
     assert active.status is S.ACTIVE
@@ -109,7 +133,8 @@ async def test_approve_of_a_preexisting_pending_draft_completes_the_chain(
 
 async def test_approve_of_a_terminal_envelope_is_illegal(any_store):
     await any_store.initialize()
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     await any_store.create_envelope(draft)
     await any_store.transition_envelope(draft.id, S.CANCELLED)
     with pytest.raises(EnvelopeTransitionError):
@@ -121,8 +146,9 @@ async def test_halted_blocks_approval_with_zero_artifacts(any_store):
     atomic with the would-be writes, so nothing exists afterwards."""
 
     await any_store.initialize()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     await any_store.set_kill_switch(True, actor="operator-a")
-    draft = make_draft()
     with pytest.raises(OrderIntentBlockedError):
         await any_store.approve_envelope_activation(draft, actor="operator-a")
     assert await any_store.get_envelope(draft.id) is None  # zero artifacts
@@ -145,7 +171,8 @@ async def test_kill_race_never_ends_with_an_active_envelope_under_halted(
     assertions fail loudly instead of silently passing.)"""
 
     await any_store.initialize()
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     kill = any_store.set_kill_switch(True, actor="operator-a")
     approve = any_store.approve_envelope_activation(draft, actor="operator-a")
     first, second = (kill, approve) if kill_first else (approve, kill)
@@ -171,7 +198,8 @@ async def test_kill_race_never_ends_with_an_active_envelope_under_halted(
 
 async def test_concurrent_approvals_of_one_intent_are_single_flight(any_store):
     await any_store.initialize()
-    drafts = [make_draft() for _ in range(5)]
+    owner = await seed_owner(any_store)
+    drafts = [make_owned_draft(owner) for _ in range(5)]
     results = await asyncio.gather(
         *(any_store.approve_envelope_activation(d, actor="operator-a") for d in drafts),
         return_exceptions=True,
@@ -179,13 +207,14 @@ async def test_concurrent_approvals_of_one_intent_are_single_flight(any_store):
     winners = [r for r in results if isinstance(r, ExecutionEnvelope)]
     losers = [r for r in results if isinstance(r, EnvelopeTransitionError)]
     assert len(winners) == 1 and len(losers) == 4
-    active = await any_store.list_envelopes(sell_intent_id="si-1", status=S.ACTIVE)
+    active = await any_store.list_envelopes(sell_intent_id=owner.id, status=S.ACTIVE)
     assert [e.id for e in active] == [winners[0].id]
 
 
 async def test_concurrent_same_draft_approvals_yield_one_trail(any_store):
     await any_store.initialize()
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     results = await asyncio.gather(
         *(
             any_store.approve_envelope_activation(draft, actor="operator-a")
@@ -207,7 +236,8 @@ async def test_tampered_non_pending_draft_is_rejected(any_store):
     from app.store.base import InvalidOrderError
 
     await any_store.initialize()
-    tampered = make_draft().model_copy(update={"status": S.APPROVED})
+    owner = await seed_owner(any_store)
+    tampered = make_owned_draft(owner).model_copy(update={"status": S.APPROVED})
     with pytest.raises(InvalidOrderError):
         await any_store.approve_envelope_activation(tampered, actor="operator-a")
 
@@ -232,7 +262,8 @@ def test_dispositions_are_structurally_mandatory_at_approval_time():
 async def test_envelope_gate_defers_evaluate_and_delegates_approve(any_store):
     await any_store.initialize()
     gate = EnvelopeApprovalGate(any_store)
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     assert await gate.evaluate(draft) is GateDecision.DEFER
     active = await gate.approve(draft, actor="operator-ameen")
     assert active.status is S.ACTIVE
@@ -241,7 +272,8 @@ async def test_envelope_gate_defers_evaluate_and_delegates_approve(any_store):
 async def test_envelope_gate_reject_cancels_a_pending_draft(any_store):
     await any_store.initialize()
     gate = EnvelopeApprovalGate(any_store)
-    draft = make_draft()
+    owner = await seed_owner(any_store)
+    draft = make_owned_draft(owner)
     await any_store.create_envelope(draft, actor="operator-a")
     rejected = await gate.reject(draft.id, actor="operator-a")
     assert rejected.status is S.CANCELLED
@@ -249,7 +281,8 @@ async def test_envelope_gate_reject_cancels_a_pending_draft(any_store):
     # a freeze/cancel through the precedence paths, not a gate rejection).
     again = await gate.reject(draft.id, actor="operator-a")
     assert again.status is S.CANCELLED
-    other = make_draft(intent_id="si-2")
+    other_owner = await seed_owner(any_store)
+    other = make_owned_draft(other_owner)
     await any_store.approve_envelope_activation(other, actor="operator-a")
     with pytest.raises(EnvelopeTransitionError):
         await gate.reject(other.id, actor="operator-a")

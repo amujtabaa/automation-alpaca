@@ -32,8 +32,14 @@ import math
 from typing import Optional, Sequence
 
 from app.models import (
+    ACCEPTED_SUBMIT_UNPERSISTED_REASON,
     RECOVERY_NEEDS_REVIEW,
+    RECOVERY_OPEN_STATUSES,
     Candidate,
+    EventAuthority,
+    EventSource,
+    ExecutionEvent,
+    ExecutionEventType,
     Fill,
     Order,
     OrderSide,
@@ -41,6 +47,7 @@ from app.models import (
     Position,
     SessionRecord,
     SessionStatus,
+    SubmitRecoveryRecord,
     TradingState,
 )
 from app.transitions import ORDER_TRANSITIONS
@@ -54,6 +61,346 @@ from app.transitions import ORDER_TRANSITIONS
 NON_TERMINAL_ORDER_STATUSES = frozenset(
     status for status, transitions in ORDER_TRANSITIONS.items() if transitions
 )
+
+# The subset of non-terminal statuses in which an order has PASSED the
+# submission claim gate and so may already be — or may still become — live AT
+# THE VENUE: SUBMITTING (an open claim, broker call pending/in flight),
+# SUBMITTED / PARTIALLY_FILLED (broker-working), and CANCEL_PENDING /
+# TIMEOUT_QUARANTINE (both nonterminal and both still accept a late fill). This
+# is the exact "may execute" set the REV-0029 P0-2 cross-side self-cross rail
+# keys on (result.md: "same_symbol_buy_may_execute must include open claims,
+# broker-working intervals, CANCEL_PENDING, and TIMEOUT_QUARANTINE").
+#
+# It is NON_TERMINAL minus CREATED: a projected CREATED order has no active
+# submission claim, so it cannot newly reach the venue until the claim gate
+# rechecks the same cross-side rail. Status alone is not proof that the venue
+# never saw the order: local cancellation separately requires no recorded broker
+# id and no open recovery ownership, while accepted-but-unpersisted audits are
+# repaired before new venue work. Exit admission/dispatch also stands down every
+# safely local CREATED BUY, the compensating control for this deliberate
+# exclusion. Deriving the set by subtraction keeps it in lockstep with the
+# transition table: any future non-terminal venue status is treated as
+# may-execute by default (fail-safe).
+MAY_EXECUTE_ORDER_STATUSES = NON_TERMINAL_ORDER_STATUSES - frozenset(
+    {OrderStatus.CREATED}
+)
+
+
+def is_accepted_submit_uncertainty_event(event: ExecutionEvent) -> bool:
+    """Whether ``event`` declares the reserved accepted-submit fallback fact."""
+
+    return (
+        event.event_type is ExecutionEventType.UNKNOWN_RECONCILE_REQUIRED
+        and event.payload.get("reason") == ACCEPTED_SUBMIT_UNPERSISTED_REASON
+    )
+
+
+def canonical_accepted_submit_broker_id(
+    event: ExecutionEvent,
+    referenced: Optional[Order],
+) -> Optional[str]:
+    """Return the broker id only for the engine's exact fallback fact shape.
+
+    A malformed fallback remains uncertainty; callers may release its exposure
+    only when this shared predicate returns the canonical broker identity.
+    """
+
+    broker_order_id = event.payload.get("broker_order_id")
+    canonical_broker_id = (
+        broker_order_id.strip()
+        if isinstance(broker_order_id, str) and broker_order_id.strip()
+        else None
+    )
+    if referenced is None or canonical_broker_id is None:
+        return None
+    expected_dedupe = (
+        f"accepted_submit_unpersisted:{event.order_id}:{canonical_broker_id}"
+    )
+    if not (
+        is_accepted_submit_uncertainty_event(event)
+        and event.order_id == referenced.id
+        and event.source is EventSource.ENGINE
+        and event.authority is EventAuthority.LOCAL
+        and event.dedupe_key == expected_dedupe
+        and event.symbol == referenced.symbol
+        and event.side is OrderSide(referenced.side)
+        and event.quantity == referenced.quantity
+        and event.price == referenced.limit_price
+        and event.session_id == referenced.session_id
+        and event.correlation_id
+        == (referenced.sell_intent_id or referenced.candidate_id)
+    ):
+        return None
+    return canonical_broker_id
+
+
+def accepted_submit_uncertainty_order_ids(
+    events: Sequence[ExecutionEvent],
+    orders: Sequence[Order],
+    recoveries: Sequence[SubmitRecoveryRecord],
+    *,
+    symbol: str,
+    side: OrderSide,
+    exclude_order_id: Optional[str] = None,
+) -> tuple[str, ...]:
+    """Orders named by an accepted-submit fact that still lacks an owner.
+
+    ``UNKNOWN_RECONCILE_REQUIRED`` is the last durable write boundary when a
+    broker acceptance cannot be recorded in either the ordinary audit log or
+    recovery ledger.  The fact stops contributing once the same broker id is
+    adopted by the order or represented by any recovery lifecycle; until then
+    declared *or referenced-order* scope remains venue exposure. Only exact
+    ENGINE/LOCAL provenance, reserved dedupe material, and immutable order scope
+    may take the represented-owner release; malformed truth stays exposure in
+    either scope so corruption cannot make a venue order disappear.
+    """
+
+    orders_by_id = {order.id: order for order in orders}
+    recovery_pairs = {
+        (record.local_order_id, record.broker_order_id) for record in recoveries
+    }
+    ids: list[str] = []
+    for event in events:
+        if (
+            not is_accepted_submit_uncertainty_event(event)
+            or not event.order_id
+            or event.order_id == exclude_order_id
+        ):
+            continue
+        referenced = orders_by_id.get(event.order_id)
+        declared_matches = event.symbol == symbol and event.side is side
+        referenced_matches = (
+            referenced is not None
+            and referenced.symbol == symbol
+            and OrderSide(referenced.side) is side
+        )
+        if not declared_matches and not referenced_matches:
+            continue
+        canonical_broker_id = canonical_accepted_submit_broker_id(event, referenced)
+        if canonical_broker_id is not None and referenced is not None:
+            if (referenced.broker_order_id == canonical_broker_id) or (
+                event.order_id,
+                canonical_broker_id,
+            ) in recovery_pairs:
+                continue
+        ids.append(event.order_id)
+    return tuple(dict.fromkeys(ids))
+
+
+def unrepresented_accepted_buy_exposure(
+    orders: Sequence[Order],
+    recoveries: Sequence[SubmitRecoveryRecord],
+    events: Sequence[ExecutionEvent],
+    fills: Sequence[Fill] = (),
+    *,
+    exclude_order_id: Optional[str] = None,
+) -> float:
+    """Remaining notional for accepted BUY venue identities not already counted.
+
+    The local order id is an idempotency key, not a venue-order identity: if a
+    broken submit path ever records two distinct broker ids for one local order,
+    both may still execute and therefore both count.  Conversely, an order row,
+    recovery row, and fallback fact naming the *same* broker id are one accepted
+    leg.  Known fills are allocated once across the complete per-order leg set,
+    never subtracted once per broker identity.
+
+    Malformed/legacy numeric scope cannot shrink immutable referenced-order
+    exposure.  Each leg uses the conservative maximum of its declared and
+    referenced quantity/price; an unpriceable or unsized leg returns infinite
+    exposure so the configured final CAPI gate fails closed.
+    """
+
+    orders_by_id = {order.id: order for order in orders}
+    filled_by_order: dict[str, int] = {}
+    for fill in fills:
+        if OrderSide(fill.side) is OrderSide.BUY:
+            filled_by_order[fill.order_id] = (
+                filled_by_order.get(fill.order_id, 0) + fill.quantity
+            )
+
+    # order id -> exact venue identity -> conservative (quantity, unit price).
+    # ``None`` means the accepted leg cannot be bounded numerically and must
+    # fail a configured risk gate closed.
+    legs_by_order: dict[str, dict[str, tuple[Optional[int], Optional[float]]]] = {}
+
+    def _positive_quantity(value: object) -> Optional[int]:
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else None
+        )
+
+    def _positive_price(value: object) -> Optional[float]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) and numeric > 0 else None
+
+    def _scope(
+        referenced: Optional[Order],
+        quantity: object,
+        price: object,
+    ) -> tuple[Optional[int], Optional[float]]:
+        quantities = [
+            candidate
+            for candidate in (
+                _positive_quantity(quantity),
+                _positive_quantity(referenced.quantity) if referenced else None,
+            )
+            if candidate is not None
+        ]
+        prices = [
+            candidate
+            for candidate in (
+                _positive_price(price),
+                _positive_price(referenced.limit_price) if referenced else None,
+            )
+            if candidate is not None
+        ]
+        return (
+            max(quantities) if quantities else None,
+            max(prices) if prices else None,
+        )
+
+    def _merge_scope(
+        prior: tuple[Optional[int], Optional[float]],
+        incoming: tuple[Optional[int], Optional[float]],
+    ) -> tuple[Optional[int], Optional[float]]:
+        # A duplicate identity carrying an unbounded field cannot be made safe by
+        # a better-looking sibling fact; retain the ambiguity fail-closed.
+        quantity = (
+            None
+            if prior[0] is None or incoming[0] is None
+            else max(prior[0], incoming[0])
+        )
+        price = (
+            None
+            if prior[1] is None or incoming[1] is None
+            else max(prior[1], incoming[1])
+        )
+        return quantity, price
+
+    def _retain(
+        order_id: str,
+        identity: str,
+        quantity: object,
+        price: object,
+    ) -> None:
+        referenced = orders_by_id.get(order_id)
+        incoming = _scope(referenced, quantity, price)
+        legs = legs_by_order.setdefault(order_id, {})
+        prior = legs.get(identity)
+        legs[identity] = incoming if prior is None else _merge_scope(prior, incoming)
+
+    recovery_pairs = {
+        (recovery.local_order_id, recovery.broker_order_id) for recovery in recoveries
+    }
+    for recovery in recoveries:
+        if recovery.cleanup_status not in RECOVERY_OPEN_STATUSES:
+            continue
+        referenced = orders_by_id.get(recovery.local_order_id)
+        if recovery.side is not OrderSide.BUY and not (
+            referenced is not None and OrderSide(referenced.side) is OrderSide.BUY
+        ):
+            continue
+        raw_identity = recovery.broker_order_id
+        identity = (
+            f"broker:{raw_identity}"
+            if isinstance(raw_identity, str) and raw_identity.strip()
+            else f"recovery:{recovery.id}"
+        )
+        _retain(
+            recovery.local_order_id,
+            identity,
+            recovery.quantity,
+            recovery.limit_price,
+        )
+
+    for event in events:
+        if not is_accepted_submit_uncertainty_event(event) or not event.order_id:
+            continue
+        referenced = orders_by_id.get(event.order_id)
+        if event.side is not OrderSide.BUY and not (
+            referenced is not None and OrderSide(referenced.side) is OrderSide.BUY
+        ):
+            continue
+        canonical_broker_id = canonical_accepted_submit_broker_id(event, referenced)
+        if canonical_broker_id is not None:
+            if (
+                referenced is not None
+                and referenced.broker_order_id == canonical_broker_id
+            ) or (event.order_id, canonical_broker_id) in recovery_pairs:
+                continue
+        event_identity_value = event.payload.get("broker_order_id")
+        identity = (
+            f"broker:{event_identity_value}"
+            if isinstance(event_identity_value, str) and event_identity_value.strip()
+            else f"event:{event.id}"
+        )
+        _retain(event.order_id, identity, event.quantity, event.price)
+
+    total_additional = 0.0
+    for order_id, legs in legs_by_order.items():
+        referenced = orders_by_id.get(order_id)
+        ordinary = (
+            referenced
+            if referenced is not None
+            and referenced.id != exclude_order_id
+            and OrderSide(referenced.side) is OrderSide.BUY
+            and referenced.status in NON_TERMINAL_ORDER_STATUSES
+            else None
+        )
+
+        if ordinary is not None:
+            ordinary_scope = _scope(ordinary, ordinary.quantity, ordinary.limit_price)
+            order_identity_value = ordinary.broker_order_id
+            if isinstance(order_identity_value, str) and order_identity_value.strip():
+                key = f"broker:{order_identity_value}"
+                prior = legs.get(key)
+                legs[key] = (
+                    ordinary_scope
+                    if prior is None
+                    else _merge_scope(prior, ordinary_scope)
+                )
+            elif legs:
+                # A SUBMITTING row with no broker id represents one of the known
+                # accepted legs, but cannot say which. Merge it with the smallest
+                # leg so the remaining aggregate is the conservative maximum.
+                def _nominal(item: tuple[str, tuple[Optional[int], Optional[float]]]):
+                    quantity, price = item[1]
+                    if quantity is None or price is None:
+                        return math.inf
+                    return quantity * price
+
+                key = min(legs.items(), key=_nominal)[0]
+                legs[key] = _merge_scope(legs[key], ordinary_scope)
+
+        scopes = list(legs.values())
+        if any(quantity is None or price is None for quantity, price in scopes):
+            return math.inf
+        bounded_scopes = [
+            (quantity, price)
+            for quantity, price in scopes
+            if quantity is not None and price is not None
+        ]
+        fills_remaining = max(0, filled_by_order.get(order_id, 0))
+        accepted_remaining = 0.0
+        # Consume known fills from the cheapest legs first, leaving the largest
+        # possible remaining accepted notional (the fail-closed allocation).
+        for quantity, price in sorted(bounded_scopes, key=lambda scope: scope[1]):
+            consumed = min(quantity, fills_remaining)
+            fills_remaining -= consumed
+            accepted_remaining += (quantity - consumed) * price
+
+        ordinary_remaining = 0.0
+        if ordinary is not None:
+            ordinary_remaining = max(
+                0,
+                ordinary.quantity - filled_by_order.get(order_id, 0),
+            ) * (ordinary.limit_price or 0.0)
+        total_additional += max(0.0, accepted_remaining - ordinary_remaining)
+
+    return total_additional
 
 
 def order_intent_block_reason(
@@ -329,20 +676,26 @@ def fill_order_match_reason(
     side: OrderSide,
     quantity: int,
     prior_filled_quantity: int,
+    *,
+    allow_cumulative_overfill: bool = False,
 ) -> Optional[str]:
     """Reject a fill that is inconsistent with the order it claims to fill.
 
     ``symbol`` must already be normalized. ``prior_filled_quantity`` is the sum
     of quantities of fills already recorded against this order (excluding this
     one and any duplicate). Cumulative fill quantity may not exceed the order's
-    quantity. Side must match — beta models no correction/reversal fill.
+    quantity unless the caller is ingesting a broker-authoritative fact under
+    ADR-001. Side must match — beta models no correction/reversal fill.
     """
 
     if order.symbol != symbol:
         return "symbol_mismatch"
     if OrderSide(order.side) is not OrderSide(side):
         return "side_mismatch"
-    if prior_filled_quantity + quantity > order.quantity:
+    if (
+        not allow_cumulative_overfill
+        and prior_filled_quantity + quantity > order.quantity
+    ):
         return "cumulative_exceeds_order_quantity"
     return None
 

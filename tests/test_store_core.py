@@ -12,6 +12,8 @@ from __future__ import annotations
 from app.models import (
     Candidate,
     CandidateStatus,
+    EventAuthority,
+    EventSource,
     Order,
     OrderSide,
     OrderStatus,
@@ -102,8 +104,15 @@ class TestPlanAppendFill:
         assert plan.event.event_type == "fill_duplicate_ignored"
         assert plan.error is None
 
-    def test_reject_overfill(self):
-        plan = self._call(prior_filled=95, quantity=10)  # 95 + 10 > 100
+    def test_reject_non_broker_overfill(self):
+        # ADR-001 records broker truth, but LOCAL/SYNTHETIC input may not invent
+        # quantity beyond the immutable order ceiling.
+        plan = self._call(
+            prior_filled=95,
+            quantity=10,
+            source=EventSource.RECONCILIATION,
+            authority=EventAuthority.SYNTHETIC,
+        )  # 95 + 10 > 100
         assert plan.outcome == core.FILL_REJECT
         assert plan.event.payload["reason"] == "cumulative_exceeds_order_quantity"
 
@@ -339,6 +348,10 @@ def test_plan_close_session_builds_events_snapshots_and_summary():
         "expired_candidates": 2,
         "canceled_orders": 1,
         "expired_sell_intents": 1,
+        # WO-0036 R2 P3a: envelope-spared intents count (0 here — no caller
+        # exclusion in this planner-level fixture; the spared path is pinned in
+        # tests/test_wo0036_r2_close_and_recovery_ownership.py).
+        "spared_sell_intents": 0,
         "position_snapshots": 1,
         # W2-SESS: the close is attributed; default "system" when no actor is passed.
         "actor": "system",

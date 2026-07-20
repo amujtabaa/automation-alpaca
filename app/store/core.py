@@ -27,12 +27,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from app.models import (
     Candidate,
     CandidateStatus,
     EnvelopeStatus,
+    Event,
     EventAuthority,
     EventSource,
     EventType,
@@ -47,12 +48,14 @@ from app.models import (
     Position,
     PositionSnapshot,
     RECOVERY_NEEDS_REVIEW,
+    RECOVERY_RESOLVED,
     RECOVERY_STATUSES,
     RECOVERY_TRANSITIONS,
     SellIntent,
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    SubmitRecoveryRecord,
     TradingState,
     utcnow,
 )
@@ -144,6 +147,7 @@ FILL_REJECT = "reject"  # write `event`; raise `error`
 FILL_DUPLICATE = (
     "duplicate"  # write `event`; return a FillAppendResult("duplicate", None, event)
 )
+FILL_CONFLICT = "conflict"  # write manual-review audit; do not mutate fill truth
 FILL_APPEND = (
     "append"  # atomically write `fill` (+dedup) and `event`; return "appended"
 )
@@ -154,9 +158,9 @@ class FillPlan:
     """Pure outcome of an :meth:`StateStore.append_fill` decision.
 
     ``outcome`` is one of :data:`FILL_REJECT` / :data:`FILL_DUPLICATE` /
-    :data:`FILL_APPEND`. ``event`` is always the audit event to write. ``error``
-    is the exception to raise (reject only). ``fill`` is the constructed row to
-    append (append only).
+    :data:`FILL_CONFLICT` / :data:`FILL_APPEND`. ``event`` is always the audit
+    event to write. ``error`` is the exception to raise (reject only). ``fill``
+    is the constructed row to append (append only).
     """
 
     outcome: str
@@ -170,6 +174,10 @@ class FillPlan:
     # persists as a parity-checked read model, kept in lockstep by the permanent
     # dual-store parity verifier. See pkl/process/migration-history.md.
     execution_event: Optional[ExecutionEvent] = None
+    # ADR-001 containment fact. A broker-authoritative order overfill can leave
+    # the symbol's position positive, so the negative-position fold alone cannot
+    # reconstruct quarantine. This separately-deduped fact latches it durably.
+    quarantine_event: Optional[ExecutionEvent] = None
 
 
 def execution_event_for_fill(
@@ -225,6 +233,225 @@ def execution_event_for_fill(
     )
 
 
+def overfill_quarantine_dedupe_key(fill_dedupe_key: str) -> str:
+    """Deterministic ADR-001 quarantine identity for one canonical FILL."""
+
+    return f"overfill-quarantine:{fill_dedupe_key}"
+
+
+def overfill_quarantine_event(
+    fill_event: ExecutionEvent,
+    *,
+    order_quantity: Optional[int],
+    prior_filled_quantity: int,
+    current_quantity: Optional[int],
+    order_overfill: bool,
+    position_overfill: bool,
+    envelope_overfill: bool = False,
+    remaining_before: Optional[int] = None,
+) -> ExecutionEvent:
+    """Build the explicit containment fact paired with an overfilling FILL.
+
+    Both ``append_fill`` and the record-first envelope boundary use this exact
+    producer. The shared deterministic key closes their crash gap: whichever
+    path records quarantine first owns the fact and the later bridge dedupes.
+    """
+
+    if fill_event.dedupe_key is None:
+        raise ValueError("an overfill quarantine requires a canonical fill key")
+    if (
+        fill_event.symbol is None
+        or fill_event.side is None
+        or fill_event.quantity is None
+        or fill_event.price is None
+    ):
+        raise ValueError("an overfill quarantine requires complete fill economics")
+    payload = {
+        "side": fill_event.side.value,
+        "quantity": fill_event.quantity,
+        "price": fill_event.price,
+        "order_quantity": order_quantity,
+        "prior_filled_quantity": prior_filled_quantity,
+        "cumulative_filled_quantity": (prior_filled_quantity + fill_event.quantity),
+        "current_quantity": current_quantity,
+        "attempted_sell": (
+            fill_event.quantity if fill_event.side is OrderSide.SELL else None
+        ),
+        "order_overfill": order_overfill,
+        "position_overfill": position_overfill,
+        "envelope_overfill": envelope_overfill,
+        "remaining_before": remaining_before,
+        "quarantined": True,
+        "manual_review_required": True,
+        "fill_dedupe_key": fill_event.dedupe_key,
+    }
+    return ExecutionEvent(
+        event_type=ExecutionEventType.QUARANTINED,
+        source=fill_event.source,
+        authority=fill_event.authority,
+        dedupe_key=overfill_quarantine_dedupe_key(fill_event.dedupe_key),
+        ts_event=fill_event.ts_event,
+        symbol=fill_event.symbol,
+        side=fill_event.side,
+        quantity=fill_event.quantity,
+        price=fill_event.price,
+        order_id=fill_event.order_id,
+        envelope_id=fill_event.envelope_id,
+        session_id=fill_event.session_id,
+        correlation_id=fill_event.correlation_id,
+        payload=payload,
+    )
+
+
+def overfill_quarantine_conflict_reason(
+    existing: Optional[ExecutionEvent], proposed: ExecutionEvent
+) -> Optional[str]:
+    """Validate an occupied quarantine identity before any fill truth mutates."""
+
+    if existing is None:
+        return None
+    expected_material = (
+        ExecutionEventType.QUARANTINED,
+        proposed.source,
+        proposed.authority,
+        proposed.dedupe_key,
+        proposed.order_id,
+        proposed.symbol,
+        proposed.side,
+        proposed.quantity,
+        proposed.price,
+        proposed.session_id,
+    )
+    actual_material = (
+        existing.event_type,
+        existing.source,
+        existing.authority,
+        existing.dedupe_key,
+        existing.order_id,
+        existing.symbol,
+        existing.side,
+        existing.quantity,
+        existing.price,
+        existing.session_id,
+    )
+    if actual_material != expected_material:
+        return "quarantine identity belongs to different event material"
+    expected_payload = proposed.payload
+    for payload_field in (
+        "fill_dedupe_key",
+        "side",
+        "quantity",
+        "price",
+        "quarantined",
+        "manual_review_required",
+    ):
+        if existing.payload.get(payload_field) != expected_payload.get(payload_field):
+            return f"quarantine payload field {payload_field!r} conflicts"
+    return None
+
+
+def _fill_economic_material(
+    *,
+    order_id: str,
+    symbol: str,
+    side: OrderSide,
+    quantity: int,
+    price: float,
+) -> tuple[str, str, OrderSide, int, float]:
+    """Immutable economics governed by one ``source_fill_id`` (INV-5).
+
+    ``filled_at`` and provenance are deliberately excluded: reconciliation may
+    observe the exact venue execution later with better timing/provenance, and
+    that exact synthetic-to-broker replay must remain idempotent.
+    """
+
+    return (order_id, symbol, OrderSide(side), quantity, price)
+
+
+def _fill_conflict_payload(
+    existing_fill: Optional[Fill],
+    existing_event: Optional[ExecutionEvent],
+    *,
+    order_id: str,
+    symbol: str,
+    side: OrderSide,
+    quantity: int,
+    price: float,
+    source_fill_id: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """Return durable conflict evidence, or ``None`` for an exact replay.
+
+    The fill row and canonical FILL event are both checked. This prevents a
+    corrupted event-log dedupe hit from silently blessing economics that differ
+    from the compatibility fill row (or vice versa).
+    """
+
+    incoming = _fill_economic_material(
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+    )
+    conflicts: list[dict[str, Any]] = []
+    if existing_fill is not None:
+        stored = _fill_economic_material(
+            order_id=existing_fill.order_id,
+            symbol=existing_fill.symbol,
+            side=existing_fill.side,
+            quantity=existing_fill.quantity,
+            price=existing_fill.price,
+        )
+        if stored != incoming:
+            conflicts.append(
+                {
+                    "representation": "fill_row",
+                    "symbol": existing_fill.symbol,
+                    "side": OrderSide(existing_fill.side).value,
+                    "quantity": existing_fill.quantity,
+                    "price": existing_fill.price,
+                }
+            )
+    if existing_event is not None:
+        event_matches = (
+            existing_event.event_type is ExecutionEventType.FILL
+            and existing_event.order_id == order_id
+            and existing_event.symbol == symbol
+            and existing_event.side is OrderSide(side)
+            and existing_event.quantity == quantity
+            and existing_event.price == price
+        )
+        if not event_matches:
+            conflicts.append(
+                {
+                    "representation": "execution_event",
+                    "event_type": existing_event.event_type.value,
+                    "symbol": existing_event.symbol,
+                    "side": (
+                        existing_event.side.value
+                        if existing_event.side is not None
+                        else None
+                    ),
+                    "quantity": existing_event.quantity,
+                    "price": existing_event.price,
+                }
+            )
+    if not conflicts:
+        return None
+    return {
+        "reason": "source_fill_id_economic_conflict",
+        "source_fill_id": source_fill_id,
+        "manual_review_required": True,
+        "observed": {
+            "symbol": symbol,
+            "side": OrderSide(side).value,
+            "quantity": quantity,
+            "price": price,
+        },
+        "conflicts": conflicts,
+    }
+
+
 def plan_append_fill(
     *,
     order_id: str,
@@ -239,6 +466,9 @@ def plan_append_fill(
     source_fill_id: Optional[str],
     filled_at: Optional[Any],
     session_id: Optional[str],
+    existing_fill: Optional[Fill] = None,
+    existing_execution_event: Optional[ExecutionEvent] = None,
+    existing_quarantine_event: Optional[ExecutionEvent] = None,
     source: EventSource = EventSource.BROKER_REST,
     authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
 ) -> FillPlan:
@@ -248,10 +478,13 @@ def plan_append_fill(
     ``symbol`` is already normalized and ``side`` already coerced by the caller.
     ``order`` is ``None`` when the referenced order does not exist.
     ``current_quantity`` is the symbol's derived position quantity.
-    ``is_duplicate`` is whether ``(order_id, source_fill_id)`` was already
-    recorded. The checks run in the same order the stores used, so a duplicate
-    still short-circuits before the cumulative/overfill check (never mistaken
-    for an overfill).
+    ``existing_fill`` and ``existing_execution_event`` carry the two durable
+    representations selected by ``(order_id, source_fill_id)``. The optional
+    quarantine event is the occupant of this fill's deterministic ADR-001 key;
+    an incompatible occupant rejects before fill truth mutates. An exact replay
+    short-circuits before the cumulative/overfill check; conflicting economics
+    are logged and dropped for manual review. ``is_duplicate`` remains the
+    compatibility flag for planner-only callers that do not provide the row.
 
     ``source``/``authority`` set the FILL ExecutionEvent provenance — the default
     is a normally-observed broker fill; a reconciliation-inferred fill (Phase 4)
@@ -297,9 +530,37 @@ def plan_append_fill(
             error=UnknownEntityError(f"order {order_id} not found"),
         )
 
-    # 3) Duplicate protection (makes append idempotent). A replay short-circuits
-    #    here before the cumulative check, so it is never mistaken for an overfill.
-    if is_duplicate:
+    # 3) INV-5 duplicate protection. The same source identity is benign only
+    #    when every persisted economic representation agrees with this
+    #    observation. A changed qty/price/side is durable conflict evidence, not
+    #    an idempotent replay. No fill/FILL/position mutation follows a conflict.
+    conflict_payload = _fill_conflict_payload(
+        existing_fill,
+        existing_execution_event,
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+        source_fill_id=source_fill_id,
+    )
+    if conflict_payload is not None:
+        return FillPlan(
+            FILL_CONFLICT,
+            EventSpec(
+                "fill_duplicate_conflict",
+                message=(
+                    f"fill {source_fill_id} for {symbol} conflicts with durable "
+                    "economics; dropped for manual review"
+                ),
+                symbol=symbol,
+                candidate_id=order.candidate_id,
+                order_id=order_id,
+                payload=conflict_payload,
+                session_id=session_id,
+            ),
+        )
+    if existing_fill is not None or is_duplicate:
         return FillPlan(
             FILL_DUPLICATE,
             EventSpec(
@@ -312,9 +573,19 @@ def plan_append_fill(
                 session_id=session_id,
             ),
         )
-
-    # 4) Symbol/side match + cumulative-quantity vs the order.
-    match_reason = fill_order_match_reason(order, symbol, side, quantity, prior_filled)
+    # 4) Symbol/side match + cumulative quantity versus the order. ADR-001 makes
+    #    broker reality authoritative: cumulative order excess is recorded and
+    #    quarantined. LOCAL/SYNTHETIC input retains the strict pre-append rail.
+    broker_authoritative = authority is EventAuthority.BROKER_AUTHORITATIVE
+    order_overfill = prior_filled + quantity > order.quantity
+    match_reason = fill_order_match_reason(
+        order,
+        symbol,
+        side,
+        quantity,
+        prior_filled,
+        allow_cumulative_overfill=broker_authoritative,
+    )
     if match_reason is not None:
         return FillPlan(
             FILL_REJECT,
@@ -339,16 +610,35 @@ def plan_append_fill(
             ),
         )
 
-    # 5) + 6) Append. A sell that crosses a long-only position through flat is a
-    #    broker-authoritative OVERFILL (ADR-001, wave 3b): intrinsic validity was
-    #    already checked (step 1), so this is broker REALITY, not malformed local
-    #    input. Rather than reject-and-drop it (the pre-wave-3b behavior), RECORD
-    #    the fill + its FILL event and QUARANTINE the symbol. Position now derives
-    #    from the event log, which projects the recorded short (apply_fill
-    #    allow_short); `create_order_for_candidate` blocks autonomous BUY intent
-    #    for a quarantined symbol, and the operator reconciles + manually reviews.
-    #    The store writes fill row + audit event + FILL event atomically.
-    is_overfill = would_go_negative(current_quantity, side, quantity)
+    position_overfill = would_go_negative(current_quantity, side, quantity)
+    if position_overfill and not broker_authoritative:
+        return FillPlan(
+            FILL_REJECT,
+            EventSpec(
+                "fill_rejected_negative_position",
+                message=(
+                    f"non-broker fill for {symbol} rejected: sell of {quantity} "
+                    f"exceeds current quantity {current_quantity}"
+                ),
+                symbol=symbol,
+                candidate_id=order.candidate_id,
+                order_id=order_id,
+                payload={
+                    "reason": "negative_position",
+                    "side": side.value,
+                    "quantity": quantity,
+                    "current_quantity": current_quantity,
+                },
+                session_id=session_id,
+            ),
+            error=InvalidFillError(
+                f"fill for {symbol} would create a negative position"
+            ),
+        )
+
+    # 5) + 6) Append. Either order-level cumulative excess or a SELL crossing
+    # flat is a broker-authoritative overfill. Record raw truth and quarantine.
+    is_overfill = order_overfill or position_overfill
     fill = Fill(
         order_id=order_id,
         symbol=symbol,
@@ -359,25 +649,54 @@ def plan_append_fill(
         session_id=session_id,
         filled_at=filled_at or utcnow(),
     )
+    fill_event = execution_event_for_fill(fill, source=source, authority=authority)
+    quarantine_event: Optional[ExecutionEvent] = None
     if is_overfill:
+        quarantine_event = overfill_quarantine_event(
+            fill_event,
+            order_quantity=order.quantity,
+            prior_filled_quantity=prior_filled,
+            current_quantity=current_quantity,
+            order_overfill=order_overfill,
+            position_overfill=position_overfill,
+        )
+        quarantine_conflict = overfill_quarantine_conflict_reason(
+            existing_quarantine_event, quarantine_event
+        )
+        if quarantine_conflict is not None:
+            return FillPlan(
+                FILL_REJECT,
+                EventSpec(
+                    "fill_quarantine_identity_conflict",
+                    message=(f"fill for {symbol} rejected: {quarantine_conflict}"),
+                    symbol=symbol,
+                    candidate_id=order.candidate_id,
+                    order_id=order_id,
+                    payload={
+                        "reason": quarantine_conflict,
+                        "quarantine_dedupe_key": quarantine_event.dedupe_key,
+                        "fill_dedupe_key": fill_event.dedupe_key,
+                        "manual_review_required": True,
+                    },
+                    session_id=session_id,
+                ),
+                error=InvalidFillError(
+                    f"overfill quarantine identity conflict: {quarantine_conflict}"
+                ),
+            )
+        overfill_payload = quarantine_event.payload
         event = EventSpec(
             "fill_overfill_quarantined",
             message=(
-                f"broker overfill: sell of {quantity} {symbol} exceeds current "
-                f"quantity {current_quantity} — recorded and quarantined (ADR-001)"
+                f"broker overfill for {symbol}: cumulative order fill "
+                f"{prior_filled + quantity}/{order.quantity}, position before "
+                f"fill {current_quantity}; recorded and quarantined (ADR-001)"
             ),
             symbol=symbol,
             candidate_id=order.candidate_id,
             order_id=order_id,
             fill_id=fill.id,
-            payload={
-                "side": side.value,
-                "quantity": quantity,
-                "price": price,
-                "attempted_sell": quantity,
-                "current_quantity": current_quantity,
-                "quarantined": True,
-            },
+            payload=overfill_payload,
             session_id=session_id,
         )
     else:
@@ -395,9 +714,8 @@ def plan_append_fill(
         FILL_APPEND,
         event,
         fill=fill,
-        execution_event=execution_event_for_fill(
-            fill, source=source, authority=authority
-        ),
+        execution_event=fill_event,
+        quarantine_event=quarantine_event,
     )
 
 
@@ -760,12 +1078,993 @@ _TERMINAL_ORDER_STATUSES = frozenset(
     {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
 )
 
+# An "open BUY" for the flatten decision (WO-0036 R2 consolidation, Option B).
+# Position derives ONLY from filled shares, so an unfilled BUY is invisible to
+# the exit size — leaving one live while a MANUAL_FLATTEN SELL is minted lets the
+# BUY fill and the SELL execute at once (a self-cross) or re-grow the very
+# position being exited (§5.3). ``flatten_position`` now DETECTS these under its
+# own lock and signals the caller to cancel them first, rather than relying on
+# callers to cancel buys beforehand. This is the single source of truth for the
+# set: ``app.monitoring.cancel_open_buys`` cancels EXACTLY this set, so the
+# store's "buys open" signal and the caller's cancel converge.
+OPEN_BUY_STATUSES = frozenset(
+    {OrderStatus.CREATED, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}
+)
+
+# WO-0108 / REV-0029 P0-1: the statuses that BLOCK a flatten are a strict
+# superset of the statuses the caller may safely CANCEL (OPEN_BUY_STATUSES,
+# above). A cancellation REQUEST is not convergence: the caller's own cancel
+# moves a live BUY to CANCEL_PENDING, where a late fill is still legal
+# (transitions.py: CANCEL_PENDING -> FILLED); SUBMITTING has a broker call
+# possibly in flight; TIMEOUT_QUARANTINE explicitly means "may be live or
+# filled" (ADR-002). Minting a MANUAL_FLATTEN SELL beside ANY of these is the
+# §5.3 self-cross. The store therefore signals FLATTEN_BUYS_OPEN for this whole
+# set, while the caller cancels only the cancellable subset and FAILS CLOSED
+# when venue-uncertain BUYs remain — ambiguity is quarantined, never acted on.
+FLATTEN_BLOCKING_BUY_STATUSES = OPEN_BUY_STATUSES | frozenset(
+    {
+        OrderStatus.SUBMITTING,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.TIMEOUT_QUARANTINE,
+    }
+)
+
+# An approved Envelope is a bounded delegation of its owning SellIntent.  These
+# statuses retain that delegation by themselves.  A terminal/SUPERSEDED envelope
+# can ALSO retain it when an action-linked child is unresolved (for example,
+# REST_AT_FLOOR or a cancel that has not converged yet).
+_ENVELOPE_DELEGATING_STATUSES = frozenset(
+    {EnvelopeStatus.APPROVED, EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN}
+)
+
+# Lifecycle facts that can change whether an action-linked child may still be
+# live.  This mirrors the order-status projector's vocabulary without importing
+# that module back into the store core.
+_ENVELOPE_CHILD_LIFECYCLE_EVENTS = frozenset(
+    {
+        ExecutionEventType.SUBMIT_PENDING,
+        ExecutionEventType.SUBMIT_RELEASED,
+        ExecutionEventType.SUBMITTED,
+        ExecutionEventType.PARTIALLY_FILLED,
+        ExecutionEventType.CANCEL_PENDING,
+        ExecutionEventType.FILLED,
+        ExecutionEventType.CANCELED,
+        ExecutionEventType.REJECTED,
+        ExecutionEventType.TIMEOUT_QUARANTINE,
+    }
+)
+_BROKER_WORKING_EVENTS = frozenset(
+    {ExecutionEventType.SUBMITTED, ExecutionEventType.PARTIALLY_FILLED}
+)
+_BROKER_TERMINAL_EVENTS = frozenset(
+    {
+        ExecutionEventType.FILLED,
+        ExecutionEventType.CANCELED,
+        ExecutionEventType.REJECTED,
+    }
+)
+
+# Two 30s policy ticks plus slack.  The final claim consumes this same ceiling
+# as redrive, so no alternate executor path can submit an indefinitely stale
+# staged decision.
+ENVELOPE_MAX_STAGED_AGE_S = 120.0
+
+_LOCAL_CHILD_LIFECYCLE_EVENTS = frozenset(
+    {
+        ExecutionEventType.SUBMIT_PENDING,
+        ExecutionEventType.SUBMIT_RELEASED,
+        ExecutionEventType.CANCEL_PENDING,
+        ExecutionEventType.TIMEOUT_QUARANTINE,
+    }
+)
+_BROKER_EVENT_SOURCES = frozenset({EventSource.BROKER_REST, EventSource.BROKER_STREAM})
+
+
+def _child_lifecycle_provenance_is_valid(event: ExecutionEvent) -> bool:
+    """Whether a child lifecycle event has a producible provenance pair.
+
+    Provenance is part of lifecycle identity, not decoration.  In particular,
+    a broker-authoritative ``SUBMIT_RELEASED`` must never close an engine-local
+    claim.  Deterministic pre-event-log status backfills are the sole synthetic
+    exception and are identified by their reserved key.
+    """
+
+    is_backfill = (
+        event.source is EventSource.RECONCILIATION
+        and event.authority is EventAuthority.SYNTHETIC
+        and event.order_id is not None
+        and event.dedupe_key == f"backfill_status:{event.order_id}"
+    )
+    if is_backfill:
+        return event.event_type is not ExecutionEventType.SUBMIT_RELEASED
+    if event.event_type in _LOCAL_CHILD_LIFECYCLE_EVENTS:
+        return (
+            event.source is EventSource.ENGINE
+            and event.authority is EventAuthority.LOCAL
+        )
+    if event.event_type is ExecutionEventType.CANCELED:
+        return (
+            event.source is EventSource.ENGINE
+            and event.authority is EventAuthority.LOCAL
+        ) or (
+            event.source in _BROKER_EVENT_SOURCES
+            and event.authority is EventAuthority.BROKER_AUTHORITATIVE
+        )
+    return (
+        event.source in _BROKER_EVENT_SOURCES
+        and event.authority is EventAuthority.BROKER_AUTHORITATIVE
+    )
+
+
+def _claim_occurrence_from_event(event: ExecutionEvent) -> Optional[int]:
+    """Occurrence named by a claim/recovery fact, when one is available."""
+
+    raw = event.payload.get("claim_occurrence")
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    if raw is not None:
+        return None
+    if event.dedupe_key is None:
+        return None
+    prefix = (
+        "submit_pending:"
+        if event.event_type is ExecutionEventType.SUBMIT_PENDING
+        else "release:"
+        if event.event_type is ExecutionEventType.SUBMIT_RELEASED
+        else None
+    )
+    if prefix is None or not event.dedupe_key.startswith(prefix):
+        return None
+    try:
+        occurrence = int(event.dedupe_key.rsplit(":", 1)[-1])
+    except ValueError:
+        return None
+    return occurrence if occurrence >= 0 else None
+
+
+def claim_occurrence_at(
+    events: Sequence[ExecutionEvent],
+    *,
+    order_id: str,
+    at: datetime,
+) -> Optional[int]:
+    """Latest claim occurrence durably present when a recovery was created.
+
+    Recovery rows predate an explicit occurrence column.  Their immutable
+    ``created_at`` plus the append-only claim log is nevertheless a durable
+    causal mapping: a later claim cannot be mistaken for the broker attempt that
+    produced the older recovery.  New store writes also snapshot this value in
+    the recovery audit payload; this helper is the legacy fallback.
+    """
+
+    latest: Optional[int] = None
+    next_occurrence = 0
+    for event in events:
+        if (
+            event.order_id != order_id
+            or event.event_type is not ExecutionEventType.SUBMIT_PENDING
+            or event.ts_init > at
+        ):
+            continue
+        occurrence = _claim_occurrence_from_event(event)
+        if occurrence is None:
+            occurrence = next_occurrence
+        next_occurrence = max(next_occurrence, occurrence + 1)
+        latest = occurrence
+    return latest
+
+
+def direct_sell_order_may_execute(
+    order: Order,
+    order_events: Sequence[ExecutionEvent],
+    *,
+    has_open_recovery: bool = False,
+    needs_review: bool = False,
+) -> bool:
+    """Fail-closed possibly-live projection for an unlinked direct SELL.
+
+    Direct protection/flatten orders share the same submit and broker windows as
+    Envelope children.  A terminal order column or local CANCELED event cannot
+    hide an open claim, broker-working interval, malformed lifecycle fact, or
+    recovery from symbol-level mint/flatten rails.
+    """
+
+    if has_open_recovery:
+        return True
+    claim_open: set[int] = set()
+    known_claim_occurrences: set[int] = set()
+    venue_open: set[Optional[int]] = set()
+    latest_occurrence: Optional[int] = None
+    next_occurrence = 0
+    for event in order_events:
+        if event.order_id != order.id or event.event_type not in (
+            _ENVELOPE_CHILD_LIFECYCLE_EVENTS
+        ):
+            continue
+        if not _child_lifecycle_provenance_is_valid(event):
+            return True
+        occurrence = _claim_occurrence_from_event(event)
+        if "claim_occurrence" in event.payload and occurrence is None:
+            return True
+        if (
+            event.symbol != order.symbol
+            or event.side is not OrderSide.SELL
+            or event.session_id != order.session_id
+            or (
+                event.correlation_id is not None
+                and event.correlation_id != order.sell_intent_id
+            )
+        ):
+            return True
+        if event.event_type is ExecutionEventType.SUBMIT_PENDING:
+            if occurrence is None:
+                occurrence = next_occurrence
+            elif occurrence != next_occurrence:
+                return True
+            if occurrence in known_claim_occurrences:
+                return True
+            known_claim_occurrences.add(occurrence)
+            next_occurrence = occurrence + 1
+            latest_occurrence = occurrence
+            claim_open.add(occurrence)
+            continue
+        if event.event_type is ExecutionEventType.SUBMIT_RELEASED:
+            occurrence = latest_occurrence if occurrence is None else occurrence
+            if occurrence is None or occurrence not in claim_open:
+                return True
+            claim_open.remove(occurrence)
+            continue
+        if event.authority is not EventAuthority.BROKER_AUTHORITATIVE:
+            continue
+        if occurrence is not None and occurrence not in known_claim_occurrences:
+            return True
+        if event.event_type in _BROKER_WORKING_EVENTS:
+            occurrence = latest_occurrence if occurrence is None else occurrence
+            venue_open.add(occurrence)
+            if occurrence is None:
+                claim_open.clear()
+            else:
+                claim_open.discard(occurrence)
+        elif event.event_type in _BROKER_TERMINAL_EVENTS:
+            if occurrence is None:
+                claim_open.clear()
+                venue_open.clear()
+            else:
+                claim_open.discard(occurrence)
+                venue_open.discard(occurrence)
+    # X-003 / INV-032: a human-escalated recovery stays prominently visible but
+    # no longer owns single-flight eligibility. Validate the persisted lifecycle
+    # above first, so malformed claim/scope identity still fails closed.
+    if needs_review:
+        return False
+    return (
+        bool(claim_open or venue_open) or order.status not in _TERMINAL_ORDER_STATUSES
+    )
+
+
+@dataclass(frozen=True)
+class EnvelopeObligationProjection:
+    """Single-source projection of an Envelope lineage's sell obligation.
+
+    ``linked`` means the SellIntent has crossed the human-approved delegation
+    boundary (or has an action child proving that it did).  ``retains_intent``
+    means that delegation is still outstanding: either an Envelope is itself
+    delegating, or at least one child may still execute.  Missing child rows are
+    deliberately ambiguous/fail-closed rather than treated as terminal.
+
+    ``venue_orders`` excludes CREATED children, which are local-only and can be
+    canceled atomically.  Every other unresolved order state may already be at
+    the venue, including SUBMITTING and TIMEOUT_QUARANTINE.
+    """
+
+    linked: bool
+    retains_intent: bool
+    unresolved_order_ids: tuple[str, ...] = ()
+    missing_envelope_ids: tuple[str, ...] = ()
+    missing_order_ids: tuple[str, ...] = ()
+    invalid_order_ids: tuple[str, ...] = ()
+    recovery_order_ids: tuple[str, ...] = ()
+    uncertain_claim_order_ids: tuple[str, ...] = ()
+    venue_orders: tuple[Order, ...] = ()
+    claimable_order_ids: tuple[str, ...] = ()
+    acknowledgeable_order_ids: tuple[str, ...] = ()
+    # WO-0036 R2 Part B P2 (operator-ratified, RATIFICATION-partb-completion.md
+    # D2): retention-source facts, exposed so consumers never re-derive envelope
+    # state ("no consumer gets to invent a neighboring definition"). Three
+    # predicates, one composition point (this function):
+    #   retains_intent        — release-prevention. Now ALSO true while a lineage
+    #                           child is latched needs_review (P-B: a stranded
+    #                           broker order that HAD fills is unresolved venue
+    #                           exposure, not proof of absence — the owner must
+    #                           not be released, else a SECOND automated SELL
+    #                           could be authorized against already-sold shares).
+    #   retains_intent_strict — the pre-P2 predicate (delegating | unresolved |
+    #                           malformed). Drives owner PROMOTION and RESTORE:
+    #                           needs-review retention HOLDS a live owner but
+    #                           never resurrects one a human stood down (the
+    #                           hold-vs-resurrect asymmetry — a flatten-
+    #                           superseded owner stays EXPIRED).
+    #   retains_across_close  — session-close sparing (P-A): bare pre-activation
+    #                           APPROVED delegation drops out (authorization is
+    #                           not a working mandate at the session boundary);
+    #                           ACTIVE/FROZEN, unresolved venue uncertainty,
+    #                           malformed ambiguity, and open needs_review
+    #                           exposure all still spare.
+    delegating: bool = False
+    active_delegating: bool = False
+    pre_activation_envelope_ids: tuple[str, ...] = ()
+    needs_review_child_order_ids: tuple[str, ...] = ()
+    retains_intent_strict: bool = False
+    retains_across_close: bool = False
+
+
+def project_envelope_obligation(
+    *,
+    envelopes: Sequence[ExecutionEnvelope],
+    action_events: Sequence[ExecutionEvent],
+    orders_by_id: Mapping[str, Order],
+    order_events: Sequence[ExecutionEvent] = (),
+    open_recovery_order_ids: frozenset[str] = frozenset(),
+    needs_review_order_ids: frozenset[str] = frozenset(),
+    known_envelopes_by_id: Optional[Mapping[str, ExecutionEnvelope]] = None,
+) -> EnvelopeObligationProjection:
+    """Project one SellIntent/symbol Envelope lineage from persisted facts.
+
+    Both stores call this exact function for single-flight eligibility, session
+    close, flatten deferral, legacy-dispatch exclusion, and terminal release.
+    That shared projection is the structural link: no consumer gets to invent a
+    neighboring definition of "live envelope".
+    """
+
+    envelopes_by_id = {envelope.id: envelope for envelope in envelopes}
+    envelope_ids = set(envelopes_by_id)
+    linked = any(
+        envelope.approved_at is not None
+        or envelope.status in _ENVELOPE_DELEGATING_STATUSES
+        for envelope in envelopes
+    )
+    delegating = any(
+        envelope.status in _ENVELOPE_DELEGATING_STATUSES for envelope in envelopes
+    )
+
+    order_ids: list[str] = []
+    seen: set[str] = set()
+    invalid_seen: set[str] = set()
+    invalid: list[str] = []
+    missing: list[str] = []
+    missing_seen: set[str] = set()
+    missing_envelopes: list[str] = []
+    missing_envelope_seen: set[str] = set()
+    envelope_universe = dict(known_envelopes_by_id or {})
+    envelope_universe.update(envelopes_by_id)
+
+    def retain_malformed_envelope(envelope_id: str) -> None:
+        nonlocal linked
+        if envelope_id not in missing_envelope_seen:
+            missing_envelope_seen.add(envelope_id)
+            missing_envelopes.append(envelope_id)
+        linked = True
+
+    # Supersession is a bidirectional, atomic transfer. Pre-R2 rows created by
+    # the old generic transition seam (or corrupt dangling/cross-scope links)
+    # must retain the original delegation rather than release it. COMPLETED is
+    # similarly causal: only fills may drive remaining quantity to zero.
+    for envelope in envelopes:
+        if (
+            envelope.status is EnvelopeStatus.COMPLETED
+            and (envelope.remaining_quantity or 0) != 0
+        ):
+            retain_malformed_envelope(envelope.id)
+        if envelope.status is EnvelopeStatus.SUPERSEDED:
+            successor = (
+                envelope_universe.get(envelope.superseded_by_id)
+                if envelope.superseded_by_id is not None
+                else None
+            )
+            if (
+                successor is None
+                or successor.supersedes_id != envelope.id
+                or successor.sell_intent_id != envelope.sell_intent_id
+                or successor.symbol != envelope.symbol
+                or successor.session_id != envelope.session_id
+            ):
+                retain_malformed_envelope(envelope.id)
+        if envelope.supersedes_id is not None:
+            predecessor = envelope_universe.get(envelope.supersedes_id)
+            if (
+                predecessor is None
+                or predecessor.status is not EnvelopeStatus.SUPERSEDED
+                or predecessor.superseded_by_id != envelope.id
+                or predecessor.sell_intent_id != envelope.sell_intent_id
+                or predecessor.symbol != envelope.symbol
+                or predecessor.session_id != envelope.session_id
+            ):
+                retain_malformed_envelope(envelope.id)
+    scopes: dict[str, ExecutionEnvelope] = {}
+    canonical_actions: dict[str, ExecutionEvent] = {}
+    for event in action_events:
+        if event.event_type is not ExecutionEventType.ENVELOPE_ACTION:
+            continue
+        refused_without_child = (
+            event.payload.get("action") == "refused_stale"
+            and event.quantity is None
+            and event.price is None
+        )
+        if event.order_id is None and not refused_without_child:
+            missing_id = f"<missing-order-id:{event.envelope_id or 'missing-envelope'}>"
+            if missing_id not in missing_seen:
+                missing_seen.add(missing_id)
+                missing.append(missing_id)
+            # The action fact proves that delegation crossed the boundary even
+            # though its child cannot be identified.  Dropping it would let a
+            # terminal envelope release its owner through corrupt lineage.
+            linked = True
+        if event.envelope_id not in envelope_ids:
+            missing_id = event.envelope_id or "<missing-envelope-id>"
+            if missing_id not in missing_envelope_seen:
+                missing_envelope_seen.add(missing_id)
+                missing_envelopes.append(missing_id)
+            if event.order_id is not None and event.order_id not in invalid_seen:
+                invalid_seen.add(event.order_id)
+                invalid.append(event.order_id)
+            linked = True
+            continue
+        if event.order_id is None:
+            continue
+        envelope = envelopes_by_id[event.envelope_id]
+        order_id = event.order_id
+        prior_action = canonical_actions.get(order_id)
+        duplicate_scope_conflict = prior_action is not None and (
+            event.envelope_id != prior_action.envelope_id
+            or event.source is not prior_action.source
+            or event.authority is not prior_action.authority
+            or event.symbol != prior_action.symbol
+            or event.side != prior_action.side
+            or event.correlation_id != prior_action.correlation_id
+            or event.session_id != prior_action.session_id
+            or event.quantity != prior_action.quantity
+            or event.price != prior_action.price
+            or event.ts_event != prior_action.ts_event
+            or event.payload != prior_action.payload
+        )
+        event_invalid = (
+            event.source is not EventSource.ENGINE
+            or event.authority is not EventAuthority.LOCAL
+            or event.payload.get("action") not in ("submit", "reprice")
+            or event.symbol != envelope.symbol
+            or event.side is not OrderSide.SELL
+            or event.correlation_id != envelope.sell_intent_id
+            or event.session_id != envelope.session_id
+            or event.quantity is None
+            or event.quantity <= 0
+            or event.quantity > envelope.qty_ceiling
+            or event.price is None
+            or event.price < envelope.floor_price
+            or (order_id in scopes and scopes[order_id].id != envelope.id)
+            or duplicate_scope_conflict
+        )
+        if event_invalid and order_id not in invalid_seen:
+            invalid_seen.add(order_id)
+            invalid.append(order_id)
+        if order_id in seen:
+            continue
+        seen.add(order_id)
+        scopes[order_id] = envelope
+        canonical_actions[order_id] = event
+        order_ids.append(order_id)
+
+    unresolved: list[str] = []
+    recovery: list[str] = []
+    uncertain_claims: list[str] = []
+    venue: list[Order] = []
+    claim_open_by_order: dict[str, set[int]] = {
+        order_id: set() for order_id in order_ids
+    }
+    venue_open_by_order: dict[str, set[Optional[int]]] = {
+        order_id: set() for order_id in order_ids
+    }
+    latest_claim_occurrence: dict[str, Optional[int]] = {
+        order_id: None for order_id in order_ids
+    }
+    next_claim_occurrence = {order_id: 0 for order_id in order_ids}
+    known_claim_occurrences: dict[str, set[int]] = {
+        order_id: set() for order_id in order_ids
+    }
+    for event in order_events:
+        if event.order_id not in claim_open_by_order:
+            continue
+        if event.event_type not in _ENVELOPE_CHILD_LIFECYCLE_EVENTS:
+            continue
+        order_id = event.order_id
+        assert order_id is not None
+        envelope = scopes[order_id]
+        if not _child_lifecycle_provenance_is_valid(event):
+            if order_id not in invalid_seen:
+                invalid_seen.add(order_id)
+                invalid.append(order_id)
+            continue
+        occurrence = _claim_occurrence_from_event(event)
+        malformed_occurrence = (
+            "claim_occurrence" in event.payload and occurrence is None
+        )
+        event_scope_invalid = (
+            event.symbol != envelope.symbol
+            or event.side is not OrderSide.SELL
+            or event.session_id != envelope.session_id
+            or (
+                event.correlation_id is not None
+                and event.correlation_id != envelope.sell_intent_id
+            )
+            or (event.envelope_id is not None and event.envelope_id != envelope.id)
+            or malformed_occurrence
+        )
+        if event_scope_invalid:
+            if order_id not in invalid_seen:
+                invalid_seen.add(order_id)
+                invalid.append(order_id)
+            continue
+
+        if event.event_type is ExecutionEventType.SUBMIT_PENDING:
+            if occurrence is None:
+                occurrence = next_claim_occurrence[order_id]
+            elif occurrence != next_claim_occurrence[order_id]:
+                if order_id not in invalid_seen:
+                    invalid_seen.add(order_id)
+                    invalid.append(order_id)
+                continue
+            if occurrence in known_claim_occurrences[order_id]:
+                if order_id not in invalid_seen:
+                    invalid_seen.add(order_id)
+                    invalid.append(order_id)
+                continue
+            if claim_open_by_order[order_id]:
+                # A legal re-claim is possible only after the prior occurrence
+                # was released. Two simultaneous claims are corrupt even when
+                # their occurrence numbers are gapless.
+                if order_id not in invalid_seen:
+                    invalid_seen.add(order_id)
+                    invalid.append(order_id)
+                continue
+            known_claim_occurrences[order_id].add(occurrence)
+            next_claim_occurrence[order_id] = occurrence + 1
+            latest_claim_occurrence[order_id] = occurrence
+            claim_open_by_order[order_id].add(occurrence)
+            continue
+
+        if event.event_type is ExecutionEventType.SUBMIT_RELEASED:
+            if occurrence is None:
+                occurrence = latest_claim_occurrence[order_id]
+            if occurrence is None or occurrence not in claim_open_by_order[order_id]:
+                if order_id not in invalid_seen:
+                    invalid_seen.add(order_id)
+                    invalid.append(order_id)
+                continue
+            claim_open_by_order[order_id].remove(occurrence)
+            # A local release says only that the claim writer stood down.  It
+            # cannot close a venue interval opened by broker authority.
+            continue
+
+        if event.authority is not EventAuthority.BROKER_AUTHORITATIVE:
+            # In particular, local CANCELED is not proof that a previously
+            # acknowledged broker order stopped working.
+            continue
+
+        if (
+            occurrence is not None
+            and occurrence not in known_claim_occurrences[order_id]
+        ):
+            if order_id not in invalid_seen:
+                invalid_seen.add(order_id)
+                invalid.append(order_id)
+            continue
+
+        if event.event_type in _BROKER_WORKING_EVENTS:
+            if occurrence is None:
+                occurrence = latest_claim_occurrence[order_id]
+            venue_open_by_order[order_id].add(occurrence)
+            if occurrence is None:
+                claim_open_by_order[order_id].clear()
+            else:
+                claim_open_by_order[order_id].discard(occurrence)
+            continue
+
+        if event.event_type in _BROKER_TERMINAL_EVENTS:
+            if occurrence is None:
+                # Ordinary broker terminal facts are order-wide. Recovery facts
+                # name an occurrence and close only that interval.
+                claim_open_by_order[order_id].clear()
+                venue_open_by_order[order_id].clear()
+            else:
+                claim_open_by_order[order_id].discard(occurrence)
+                venue_open_by_order[order_id].discard(occurrence)
+    # First validate every durable action -> order edge without consulting
+    # mutable lifecycle state.  In particular, ``payload.action`` and
+    # ``replaces_order_id`` are part of the persisted delegation identity: a
+    # legacy/corrupt row cannot relabel a replacement as a fresh submit (or
+    # point a replacement at an unrelated direct order) at the venue choke.
+    valid_orders: dict[str, Order] = {}
+    for order_id in order_ids:
+        if order_id in invalid_seen:
+            continue
+        order = orders_by_id.get(order_id)
+        if order is None:
+            if order_id not in missing_seen:
+                missing_seen.add(order_id)
+                missing.append(order_id)
+            continue
+        envelope = scopes[order_id]
+        action = canonical_actions[order_id]
+        action_kind = action.payload.get("action")
+        payload_predecessor = action.payload.get("replaces_order_id")
+        action_shape_invalid = (
+            action_kind == "submit"
+            and (order.replaces_order_id is not None or payload_predecessor is not None)
+        ) or (
+            action_kind == "reprice"
+            and (
+                not isinstance(payload_predecessor, str)
+                or not payload_predecessor
+                or order.replaces_order_id != payload_predecessor
+                or order.replaces_order_id == order.id
+            )
+        )
+        if (
+            order.sell_intent_id != envelope.sell_intent_id
+            or order.symbol != envelope.symbol
+            or order.side is not OrderSide.SELL
+            or order.order_type is not OrderType.LIMIT
+            or order.session_id != envelope.session_id
+            or order.quantity > envelope.qty_ceiling
+            or order.limit_price is None
+            or order.limit_price < envelope.floor_price
+            or order.quantity != action.quantity
+            or order.limit_price != action.price
+            or order.session_id != action.session_id
+            or action_shape_invalid
+        ):
+            invalid_seen.add(order_id)
+            invalid.append(order_id)
+            continue
+        valid_orders[order_id] = order
+
+    # Validate the complete replacement chain, not merely the current edge.
+    # Every predecessor must itself be an action-linked, bounded child of the
+    # same Envelope and must carry the broker id that made it replaceable.
+    # Production events have positive append-only sequences; compare them when
+    # available while retaining compatibility with pre-sequence fixtures.
+    lineage_validity: dict[str, bool] = {}
+
+    def replacement_lineage_is_valid(
+        order_id: str, visiting: frozenset[str] = frozenset()
+    ) -> bool:
+        cached = lineage_validity.get(order_id)
+        if cached is not None:
+            return cached
+        if order_id in visiting or order_id not in valid_orders:
+            return False
+        action = canonical_actions[order_id]
+        if action.payload.get("action") == "submit":
+            lineage_validity[order_id] = True
+            return True
+        predecessor_id = valid_orders[order_id].replaces_order_id
+        if predecessor_id is None or predecessor_id == order_id:
+            lineage_validity[order_id] = False
+            return False
+        predecessor = valid_orders.get(predecessor_id)
+        predecessor_action = canonical_actions.get(predecessor_id)
+        same_lineage = (
+            predecessor is not None
+            and predecessor_action is not None
+            and predecessor_action.envelope_id == action.envelope_id
+            and predecessor.broker_order_id is not None
+            and not (
+                predecessor_action.sequence > 0
+                and action.sequence > 0
+                and predecessor_action.sequence >= action.sequence
+            )
+        )
+        valid = bool(
+            same_lineage
+            and replacement_lineage_is_valid(
+                predecessor_id, visiting | frozenset({order_id})
+            )
+        )
+        lineage_validity[order_id] = valid
+        return valid
+
+    for order_id in order_ids:
+        if order_id in valid_orders and not replacement_lineage_is_valid(order_id):
+            invalid_seen.add(order_id)
+            invalid.append(order_id)
+
+    needs_review_children: list[str] = []
+    for order_id in order_ids:
+        if order_id in invalid_seen:
+            continue
+        order = valid_orders.get(order_id)
+        if order is None:
+            continue
+        if order_id in open_recovery_order_ids:
+            unresolved.append(order_id)
+            recovery.append(order_id)
+            venue.append(order)
+            continue
+        # P-B (operator-ratified D2): a needs_review child is collected as a
+        # RETENTION source (see `retains_intent` below) without joining
+        # ``unresolved`` — so it retains the owner but never re-enters the
+        # claimable/acknowledgeable venue-eligibility machinery below, and the
+        # X-003 property (human-escalated recovery does not monopolize the
+        # execution lanes) is preserved for everything except owner release.
+        if order_id in needs_review_order_ids:
+            needs_review_children.append(order_id)
+            continue
+        if claim_open_by_order[order_id]:
+            unresolved.append(order_id)
+            uncertain_claims.append(order_id)
+            venue.append(order)
+            continue
+        if venue_open_by_order[order_id]:
+            unresolved.append(order_id)
+            venue.append(order)
+            continue
+        if order.status in _TERMINAL_ORDER_STATUSES:
+            continue
+        unresolved.append(order_id)
+        if order.status is not OrderStatus.CREATED:
+            venue.append(order)
+
+    # Final venue eligibility is also a projection, never a path-local guess.
+    # A fresh submit must be the sole unresolved child.  A reprice may coexist
+    # only with its exact same-lineage predecessor, which must still be a
+    # broker-confirmed working order and not operator-owned recovery work.
+    unresolved_set = set(unresolved)
+    claimable: list[str] = []
+    acknowledgeable: list[str] = []
+    for order_id in unresolved:
+        order = valid_orders[order_id]
+        candidate_bucket: Optional[list[str]] = None
+        if order.status is OrderStatus.CREATED:
+            candidate_bucket = claimable
+        elif (
+            order.status is OrderStatus.SUBMITTING
+            and len(claim_open_by_order[order_id]) == 1
+            and not venue_open_by_order[order_id]
+            and order_id not in open_recovery_order_ids
+            and order_id not in needs_review_order_ids
+        ):
+            candidate_bucket = acknowledgeable
+        if candidate_bucket is None:
+            continue
+        action = canonical_actions[order_id]
+        if action.payload.get("action") == "submit":
+            if unresolved_set == {order_id}:
+                candidate_bucket.append(order_id)
+            continue
+        predecessor_id = order.replaces_order_id
+        predecessor_order = (
+            valid_orders.get(predecessor_id) if predecessor_id is not None else None
+        )
+        if (
+            predecessor_id is not None
+            and predecessor_order is not None
+            and unresolved_set == {order_id, predecessor_id}
+            and predecessor_order.status
+            in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+            and bool(venue_open_by_order[predecessor_id])
+            and predecessor_id not in open_recovery_order_ids
+            and predecessor_id not in needs_review_order_ids
+        ):
+            candidate_bucket.append(order_id)
+
+    # An action row is durable proof of delegation even for a malformed legacy
+    # envelope whose approved_at timestamp was absent.
+    linked = linked or bool(order_ids)
+    # P2 (operator-ratified D2) — the three retention predicates, composed once
+    # here (see the dataclass field docs for the semantics of each).
+    active_delegating = any(
+        envelope.status in (EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN)
+        for envelope in envelopes
+    )
+    pre_activation_envelope_ids = tuple(
+        envelope.id
+        for envelope in envelopes
+        if envelope.status is EnvelopeStatus.APPROVED
+    )
+    ambiguous_retention = bool(missing_envelopes) or bool(missing) or bool(invalid)
+    retains_strict = delegating or bool(unresolved) or ambiguous_retention
+    retains = retains_strict or bool(needs_review_children)
+    retains_across_close = (
+        active_delegating
+        or bool(unresolved)
+        or ambiguous_retention
+        or bool(needs_review_children)
+    )
+    return EnvelopeObligationProjection(
+        linked=linked,
+        retains_intent=retains,
+        unresolved_order_ids=tuple(unresolved),
+        missing_envelope_ids=tuple(missing_envelopes),
+        missing_order_ids=tuple(missing),
+        invalid_order_ids=tuple(invalid),
+        recovery_order_ids=tuple(recovery),
+        uncertain_claim_order_ids=tuple(uncertain_claims),
+        venue_orders=tuple(venue),
+        claimable_order_ids=tuple(claimable),
+        acknowledgeable_order_ids=tuple(acknowledgeable),
+        delegating=delegating,
+        active_delegating=active_delegating,
+        pre_activation_envelope_ids=pre_activation_envelope_ids,
+        needs_review_child_order_ids=tuple(needs_review_children),
+        retains_intent_strict=retains_strict,
+        retains_across_close=retains_across_close,
+    )
+
+
+def envelope_claim_hard_rail_reason(
+    *,
+    envelope: ExecutionEnvelope,
+    order: Order,
+    action_event: ExecutionEvent,
+    history: Sequence[ExecutionEvent],
+    current_position: int,
+    now: datetime,
+) -> Optional[str]:
+    """Re-check every mutable Envelope rail at the final venue claim.
+
+    Staging proves that an action was valid when it was minted; it does not
+    authorize that action forever.  A fill, TTL boundary, or session-phase
+    transition can land between staging and the broker call.  Both stores call
+    this pure helper while holding their claim serialization boundary, so the
+    venue authorization is made from one current Envelope/position snapshot.
+
+    The staged action itself is removed from ``history``: its budget/cooldown
+    charge was already committed by staging and must not reject its own first
+    execution.  All earlier actions remain, preserving the original hard-rail
+    semantics without creating a second implementation of them.
+    """
+
+    staged_at = action_event.ts_event or action_event.ts_init
+    age = (now - staged_at).total_seconds()
+    if age < 0:
+        return f"staleness: staged action is {-age:.0f}s in the future"
+    if age > ENVELOPE_MAX_STAGED_AGE_S:
+        return (
+            f"staleness: staged action is {age:.0f}s old "
+            f"(ceiling {ENVELOPE_MAX_STAGED_AGE_S:.0f}s)"
+        )
+
+    kind = (
+        _SellsideActionKind.REPRICE
+        if action_event.payload.get("action") == "reprice"
+        else _SellsideActionKind.SUBMIT
+    )
+    replayed = PlannedAction(
+        kind=kind,
+        limit_price=order.limit_price or 0.0,
+        quantity=order.quantity,
+        regime=None,
+        urgency=0.0,
+        working_stop=None,
+        atr=None,
+        tranche=bool(action_event.payload.get("tranche", False)),
+        stop_triggered=bool(action_event.payload.get("stop_triggered", False)),
+        clamps=(),
+    )
+    prior_history = [
+        event
+        for event in history
+        if not (
+            event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id == envelope.id
+            and event.order_id == order.id
+        )
+    ]
+    violation = _sellside_validate_action(
+        envelope, replayed, history=prior_history, now=now
+    )
+    if violation is not None:
+        return f"{violation.rail}: {violation.detail}"
+    live_quantity = max(0, current_position)
+    if order.quantity > live_quantity:
+        return (
+            f"reduce_only: SELL {order.quantity} exceeds live position {live_quantity}"
+        )
+    return None
+
+
+def envelope_action_logical_now(
+    action_event: ExecutionEvent, *, wall_now: datetime
+) -> tuple[Optional[datetime], Optional[str]]:
+    """Advance an injected action clock by real elapsed ingest time.
+
+    Envelope tests and replay inject ``ts_event``; production usually uses the
+    wall clock.  ``ts_init`` anchors when the local action was actually
+    persisted, letting claim and post-venue acknowledgement share one logical
+    clock without adding mutable state or widening the store interface.
+    """
+
+    event_at = action_event.ts_event
+    init_at = action_event.ts_init
+    if event_at is None:
+        return wall_now, None  # legacy action: current wall time is fail-safe
+    if event_at.tzinfo is None or init_at.tzinfo is None or wall_now.tzinfo is None:
+        return None, "staleness: action timestamps must be timezone-aware"
+    elapsed = wall_now - init_at
+    if elapsed.total_seconds() < 0:
+        # Deterministic tests/replay may patch the store clock back to the
+        # injected event clock while ``ts_init`` remains the real construction
+        # time. That is coherent only when the event is not in that logical
+        # clock's future.
+        if event_at > wall_now:
+            return None, "staleness: action event time is in the future"
+        return wall_now, None
+    if event_at > init_at:
+        return None, "staleness: action event time is later than local ingest time"
+    return event_at + elapsed, None
+
+
+def envelope_owner_scope_reason(
+    envelope: ExecutionEnvelope, intent: Optional[SellIntent]
+) -> Optional[str]:
+    """Why the immutable Envelope/owner scope is not a valid binding."""
+
+    if intent is None:
+        return f"envelope owner {envelope.sell_intent_id} not found"
+    if intent.id != envelope.sell_intent_id:
+        return (
+            f"envelope owner id mismatch ({envelope.sell_intent_id!r} != {intent.id!r})"
+        )
+    if intent.symbol != envelope.symbol:
+        return (
+            f"envelope owner symbol mismatch ({intent.symbol!r} != {envelope.symbol!r})"
+        )
+    if intent.reason is not SellReason.PROTECTION_FLOOR:
+        return (
+            f"envelope owner {intent.id} has reason {intent.reason.value}; "
+            "only protection_floor may delegate execution"
+        )
+    if envelope.qty_ceiling > intent.target_quantity:
+        return (
+            f"envelope owner {intent.id} authorizes {intent.target_quantity} "
+            f"shares but envelope ceiling is {envelope.qty_ceiling}"
+        )
+    if envelope.session_id != intent.session_id:
+        return (
+            f"envelope owner {intent.id} session mismatch "
+            f"({intent.session_id!r} != {envelope.session_id!r})"
+        )
+    return None
+
+
+def envelope_owner_binding_reason(
+    envelope: ExecutionEnvelope, intent: Optional[SellIntent]
+) -> Optional[str]:
+    """Why ``envelope`` cannot currently be delegated by ``intent``.
+
+    All ingress paths use this common validator.  The scope-only twin is used
+    by migration/release convergence so malformed legacy references never
+    mutate an unrelated owner.
+    """
+
+    reason = envelope_owner_scope_reason(envelope, intent)
+    if reason is not None:
+        return reason
+    assert intent is not None
+    if intent.status not in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
+        return (
+            f"envelope owner {intent.id} is {intent.status.value}; expected "
+            "pending or approved"
+        )
+    return None
+
 
 def sell_intent_is_active(
     intent: SellIntent,
     order: Optional[Order],
     *,
     order_needs_review: bool = False,
+    envelope_linked: bool = False,
+    envelope_obligation: bool = False,
 ) -> bool:
     """Whether a sell intent is still 'in flight' for the single-flight dedup /
     ``active_sell_intent_for``. Active = ``pending``/``approved`` (not yet
@@ -789,6 +2088,17 @@ def sell_intent_is_active(
     itself is fetched and passed in rather than looked up here.
     """
 
+    # Envelope-backed PENDING/APPROVED is governed by the delegation projection,
+    # not by the bare intent status.  This also repairs pre-R2 orphaned rows on
+    # read: an EXPIRED owner with a live child remains single-flight active, while
+    # an APPROVED owner whose whole lineage is terminal is eligible for release.
+    if envelope_obligation:
+        return True
+    if envelope_linked and intent.status in (
+        SellIntentStatus.PENDING,
+        SellIntentStatus.APPROVED,
+    ):
+        return False
     if intent.status in (SellIntentStatus.PENDING, SellIntentStatus.APPROVED):
         return True
     if intent.status is SellIntentStatus.ORDERED:
@@ -943,6 +2253,9 @@ FLATTEN_FLAT = "flat"  # no open position
 FLATTEN_EXISTING = "existing"  # return an existing intent as-is
 FLATTEN_SUPERSEDE_AND_CREATE = "supersede_and_create"  # stand down + create fresh
 FLATTEN_DENIED_HALTED = "denied_halted"  # ADR-003: Halted, no override
+FLATTEN_BUYS_OPEN = "buys_open"  # WO-0036 R2 Option B: open BUY(s) must be
+# cancelled first; the caller cancels them (a broker call, never under the store
+# lock) and RETRIES flatten_position. No intent/order is created on this outcome.
 
 
 @dataclass(frozen=True)
@@ -1008,6 +2321,8 @@ def plan_flatten_position(
     trading_state: TradingState = TradingState.ACTIVE,
     override_active: bool = False,
     actor: str = COMMAND_ACTOR_SYSTEM,
+    open_buy_order_ids: Sequence[str] = (),
+    deferral_via_envelope_child: bool = False,
 ) -> FlattenPlan:
     """Decide the manual-flatten outcome for one symbol.
 
@@ -1034,6 +2349,23 @@ def plan_flatten_position(
     command actor and hands it in, and it is only stamped into the
     ``manual_flatten_deferred`` event's payload here — this planner never resolves
     identity itself, keeping it a pure function of its inputs.
+
+    ``open_buy_order_ids`` (WO-0036 R2 consolidation, Option B) is the set of
+    still-open BUY orders for the symbol the store found under this same lock. A
+    non-empty set on a *held* position (``position.quantity > 0``) short-circuits
+    to ``FLATTEN_BUYS_OPEN``: the store cannot cancel a broker-live BUY under its
+    lock, so it signals the caller to cancel them (``cancel_open_buys``) and RETRY,
+    rather than minting a MANUAL_FLATTEN SELL alongside a live BUY (the §5.3
+    self-cross). Ordered AFTER the flat/halted gates on purpose: a genuinely-flat
+    symbol returns ``FLATTEN_FLAT`` with an unrelated resting BUY UNTOUCHED (the
+    long-standing behaviour), and a Halted-denied flatten never cancels buys.
+    ``deferral_via_envelope_child`` (WO-0036 R2 F.2 graft, P3b): the stores
+    substitute an Envelope lineage's live CHILD as ``active_order`` before
+    calling this planner; this flag records that substitution so the deferral
+    provenance event names the machinery that actually held the flatten —
+    ``deferred_to_live_envelope_child`` — instead of reusing the direct
+    protection-order reason. Audit-trail legibility only; every other output
+    is unchanged by the flag.
     """
 
     if position.quantity <= 0:
@@ -1041,6 +2373,15 @@ def plan_flatten_position(
 
     if trading_state is TradingState.HALTED and not override_active:
         return FlattenPlan(FLATTEN_DENIED_HALTED)
+
+    if open_buy_order_ids:
+        # A held position with an open BUY: the caller must cancel the BUY(s)
+        # first (a broker call, never under the store lock) then retry. No
+        # intent/order is created here. Placed before the existing/supersede
+        # logic so the BUYs are cleared even when the flatten will ultimately
+        # defer to a live protection exit (matching the pre-Option-B ordering,
+        # where the caller cancelled buys before every held-position flatten).
+        return FlattenPlan(FLATTEN_BUYS_OPEN, target_quantity=position.quantity)
 
     if active_intent is not None:
         if (
@@ -1069,16 +2410,28 @@ def plan_flatten_position(
             and active_order is not None
             and active_order.status is not OrderStatus.CREATED
         ):
+            # P3b (F.2 graft): name the machinery that actually held the
+            # flatten — an Envelope lineage's live child vs the intent's own
+            # in-flight protection order — so the audit trail is unambiguous.
+            deferral_target = (
+                "the live envelope child"
+                if deferral_via_envelope_child
+                else "the in-flight protection_floor exit"
+            )
             deferral_event = EventSpec(
                 EventType.MANUAL_FLATTEN_DEFERRED.value,
                 message=(
-                    f"manual flatten for {position.symbol} deferred to the in-flight "
-                    f"protection_floor exit (order {active_order.status.value})"
+                    f"manual flatten for {position.symbol} deferred to "
+                    f"{deferral_target} (order {active_order.status.value})"
                 ),
                 symbol=position.symbol,
                 order_id=active_order.id,
                 payload={
-                    "reason": "deferred_to_live_protection",
+                    "reason": (
+                        "deferred_to_live_envelope_child"
+                        if deferral_via_envelope_child
+                        else "deferred_to_live_protection"
+                    ),
                     "order_status": active_order.status.value,
                     "deferred_intent_reason": active_intent.reason.value,
                     # Who commanded the flatten (REV-0002 F-002) — passed IN by the
@@ -1225,6 +2578,112 @@ def recovery_status_event(prev_status: str, new_status: Optional[str]) -> Option
     return "submit_recovery_resolved"
 
 
+def recovery_resolution_execution_event(
+    record: SubmitRecoveryRecord,
+    *,
+    now: Optional[datetime] = None,
+    claim_occurrence: Optional[int] = None,
+) -> ExecutionEvent:
+    """Broker-authoritative cancel fact for one resolved submit recovery.
+
+    When ``claim_occurrence`` is supplied, the event closes only that occurrence.
+    This is required when an old recovery resolves after the same local order has
+    been claimed again; an order-id-global terminal fact would close the newer
+    possibly-live interval. Store call sites must persist the occurrence with the
+    recovery record and pass it back here on resolution.
+    """
+
+    assert record.cleanup_status == RECOVERY_RESOLVED
+    if claim_occurrence is not None and (
+        not isinstance(claim_occurrence, int)
+        or isinstance(claim_occurrence, bool)
+        or claim_occurrence < 0
+    ):
+        raise ValueError("claim_occurrence must be a non-negative integer")
+    payload: dict[str, Any] = {
+        "broker_order_id": record.broker_order_id,
+        "recovery_id": record.id,
+        "cleanup_status": record.cleanup_status,
+    }
+    if claim_occurrence is not None:
+        payload["claim_occurrence"] = claim_occurrence
+    return ExecutionEvent(
+        event_type=ExecutionEventType.CANCELED,
+        source=EventSource.BROKER_REST,
+        authority=EventAuthority.BROKER_AUTHORITATIVE,
+        dedupe_key=f"submit_recovery_resolved:{record.id}",
+        ts_event=now if now is not None else utcnow(),
+        symbol=record.symbol,
+        side=record.side,
+        quantity=record.quantity,
+        order_id=record.local_order_id,
+        session_id=record.session_id,
+        payload=payload,
+    )
+
+
+def recovery_terminal_fact_matches(
+    record: SubmitRecoveryRecord,
+    event: ExecutionEvent,
+    *,
+    claim_occurrence: Optional[int],
+) -> bool:
+    """Whether ``event`` is the broker terminal for this exact recovery scope.
+
+    A recovery id and local order id are not sufficient identity: corrupt or
+    legacy rows can disagree with the immutable order scope.  Such a terminal
+    must not suppress the scoped resolution fact for a different symbol/session
+    (which would make the recovery disappear from every retained projection).
+    """
+
+    payload = event.payload
+    if claim_occurrence is None:
+        occurrence_matches = "claim_occurrence" not in payload
+    else:
+        raw_occurrence = payload.get("claim_occurrence")
+        occurrence_matches = (
+            isinstance(raw_occurrence, int)
+            and not isinstance(raw_occurrence, bool)
+            and raw_occurrence == claim_occurrence
+        )
+    return (
+        event.order_id == record.local_order_id
+        and event.authority is EventAuthority.BROKER_AUTHORITATIVE
+        and event.event_type
+        in (
+            ExecutionEventType.CANCELED,
+            ExecutionEventType.REJECTED,
+        )
+        and event.symbol == record.symbol
+        and event.side is record.side
+        and event.session_id == record.session_id
+        and (event.quantity is None or event.quantity == record.quantity)
+        and payload.get("recovery_id") == record.id
+        and payload.get("broker_order_id") == record.broker_order_id
+        and payload.get("cleanup_status") == RECOVERY_RESOLVED
+        and occurrence_matches
+    )
+
+
+def recovery_creation_audit_matches(record: SubmitRecoveryRecord, event: Event) -> bool:
+    """Whether ``event`` is the immutable creation audit for ``record``.
+
+    Recovery occurrence is captured when the record is created.  Later audit
+    messages may legitimately mention the recovery id, but must never be able
+    to retarget that causal binding to a newer submission attempt.
+    """
+
+    return (
+        event.order_id == record.local_order_id
+        and event.symbol == record.symbol
+        and event.session_id == record.session_id
+        and event.payload.get("recovery_id") == record.id
+        and event.payload.get("broker_order_id") == record.broker_order_id
+        and event.payload.get("failure_reason") == record.failure_reason
+        and event.payload.get("cleanup_status") in RECOVERY_STATUSES
+    )
+
+
 # ---- claim_order_for_submission (D-017) ----------------------------------- #
 
 
@@ -1343,6 +2802,7 @@ def plan_claim_order_for_submission(
     current_session: Optional[SessionRecord],
     sell_reason: Optional[SellReason] = None,
     quarantined: bool = False,
+    own_venue_uncertain: bool = False,
 ) -> ClaimPlan:
     """Decide whether a ``CREATED`` order may be claimed for submission.
 
@@ -1364,6 +2824,17 @@ def plan_claim_order_for_submission(
         # No longer submittable: a session close cancelled it, it was already
         # claimed, or it never existed. Nothing to do.
         return ClaimPlan(CLAIM_SKIPPED)
+
+    if order.broker_order_id is not None and order.broker_order_id.strip():
+        return ClaimPlan(
+            CLAIM_BLOCKED,
+            reason="order already has a concrete broker identity",
+        )
+    if own_venue_uncertain:
+        return ClaimPlan(
+            CLAIM_BLOCKED,
+            reason="order already has accepted-submit venue uncertainty",
+        )
 
     hold = _claim_hold_reason(
         order, own_session, current_session, sell_reason, quarantined=quarantined
@@ -1449,6 +2920,7 @@ def plan_transition_order(
     filled_quantity: Optional[int],
     broker_order_id: Optional[str],
     actor: str = COMMAND_ACTOR_SYSTEM,
+    now: Optional[datetime] = None,
 ) -> OrderTransitionPlan:
     """Decide an order transition — the shared logic (legality, monotonic
     filled-quantity, the true-no-op rule, and the D-008 ``order_transition`` vs
@@ -1490,6 +2962,24 @@ def plan_transition_order(
                 ),
             )
 
+    # Venue identity is write-once. Repricing creates a new local Order; no
+    # legitimate lifecycle path retargets an accepted order to a different
+    # broker id. Such a mutation would make cancellation and reconciliation
+    # forget the original possibly-live venue order without a lifecycle fact.
+    if (
+        isinstance(order.broker_order_id, str)
+        and bool(order.broker_order_id.strip())
+        and broker_order_id is not None
+        and broker_order_id != order.broker_order_id
+    ):
+        return OrderTransitionPlan(
+            ORDER_TRANSITION_REJECT,
+            error=InvalidOrderError(
+                f"broker_order_id for order {order.id} is immutable once set "
+                f"({order.broker_order_id!r} != {broker_order_id!r})"
+            ),
+        )
+
     # Bound + monotonic filled_quantity (Fix 5). Out-of-range or backward progress
     # raises and writes nothing. Equality is allowed (handled as a no-op below).
     if filled_quantity is not None:
@@ -1516,6 +3006,7 @@ def plan_transition_order(
     if not status_changed and not qty_changed and not broker_changed:
         return OrderTransitionPlan(ORDER_TRANSITION_NOOP)
 
+    transition_now = now or utcnow()
     previous_filled = order.filled_quantity
     updated = order.model_copy(deep=True)
     if qty_changed:
@@ -1527,8 +3018,8 @@ def plan_transition_order(
         updated.status = new_status
         ts_field = ORDER_TIMESTAMP.get(new_status)
         if ts_field and getattr(updated, ts_field) is None:
-            setattr(updated, ts_field, utcnow())
-    updated.updated_at = utcnow()
+            setattr(updated, ts_field, transition_now)
+    updated.updated_at = transition_now
 
     if status_changed:
         event = EventSpec(
@@ -1587,13 +3078,13 @@ def plan_transition_order(
 # the same convention the rest of the log uses (`execution_event_for_fill`,
 # `plan_resolve_timeout_quarantine`, `plan_reconcile_resolve_order`):
 #   * ENGINE/LOCAL for the genuinely engine-local transitions — the claim
-#     (`CREATED -> SUBMITTING`, a pre-broker engine decision) and a `CANCELED` of
-#     an order the broker never confirmed (no `broker_order_id`): a never-submitted
-#     `CREATED` order cancelled locally (session close, flatten supersede, manual),
-#     OR the `SUBMITTING -> CANCELED` release when a submit failed before the venue
-#     returned an id — the no-zombie cancel of a BUY whose session closed mid-submit
-#     (`app/monitoring.py`). `broker_order_id` is assigned only when `SUBMITTED` is
-#     recorded, so its absence reliably means the broker never saw this order.
+#     (`CREATED -> SUBMITTING`, a pre-broker engine decision) and a `CANCELED` with
+#     no locally recorded `broker_order_id`: either a projected-CREATED order that
+#     the caller proved safely local (no broker id and no open recovery), or the
+#     `SUBMITTING -> CANCELED` release after a definite pre-ack submit failure. A
+#     broker accept whose id was not persisted is durable audit/recovery work and
+#     is repaired before new venue action; CREATED status by itself is never the
+#     local-cancel proof.
 #   * BROKER_REST/BROKER_AUTHORITATIVE for the broker-OBSERVED facts — `SUBMITTED`
 #     (only reached with a broker id, AIR-001), `PARTIALLY_FILLED`/`FILLED` (fills
 #     seen via the reconcile poll), `REJECTED` (broker rejection via poll/TQ), and
@@ -1633,14 +3124,12 @@ def _routine_event_provenance(
     """Faithful ``(source, authority)`` for a routine order-status event (WO-0009).
     See the PROVENANCE note above.
 
-    Engine-local iff the transition is the pre-broker claim, or a ``CANCELED`` of an
-    order the broker never confirmed — one with no ``broker_order_id``. That covers
-    both a never-submitted ``CREATED`` order (session close / flatten supersede /
-    manual never-submitted cancel) AND the ``SUBMITTING -> CANCELED`` release when a
-    submit failed before the venue returned an id (the no-zombie cancel of a BUY
-    whose session closed mid-submit — ``app/monitoring.py``). ``broker_order_id`` is
-    assigned only when ``SUBMITTED`` is recorded, so its absence reliably means the
-    broker never saw this order. Every other routine-emitted status
+    Engine-local iff the transition is the pre-broker claim, or a ``CANCELED`` with
+    no locally recorded ``broker_order_id``. For projected-CREATED cancellation the
+    caller additionally requires no open recovery owner; for
+    ``SUBMITTING -> CANCELED`` the broker failure was definite and returned no id.
+    Accepted-but-unpersisted ids are instead retained in audit/recovery truth and
+    repaired before subsequent venue work. Every other routine-emitted status
     (``SUBMITTED``/``PARTIALLY_FILLED``/``FILLED``/``REJECTED`` and a broker-confirmed
     ``CANCELED``) is a broker-observed fact.
 
@@ -2097,15 +3586,25 @@ def plan_close_session(
     nonzero_positions: list[Position],
     now: datetime,
     actor: str = COMMAND_ACTOR_SYSTEM,
+    spared_sell_intents: int = 0,
 ) -> SessionClosePlan:
     """Build the audit events + position snapshots for a session close (D-007 /
     D-013a). ``open_candidates`` are this session's PENDING/APPROVED candidates,
-    ``created_orders`` its still-CREATED (never-submitted) **BUY** orders (a
-    CREATED SELL is a protective/flatten exit that must remain submittable
-    post-close, Phase 7 — the store filters those out), ``open_sell_intents`` its
-    PENDING/APPROVED sell intents (expired like candidates), and
+    ``created_orders`` its projected-CREATED **BUY** orders that each store proved
+    safely local (no broker id or open recovery owner). A CREATED SELL is a
+    protective/flatten exit that must remain submittable post-close, Phase 7, so
+    the stores filter those out. ``open_sell_intents`` are its PENDING/APPROVED
+    sell intents (expired like candidates), and
     ``nonzero_positions`` every symbol with a nonzero derived position. The
     counts drive the summary event.
+
+    ``spared_sell_intents`` (WO-0036 R2 F.2 graft, P2/P3a) is the count of this
+    session's PENDING/APPROVED intents the stores EXCLUDED from
+    ``open_sell_intents`` because the shared projection's close predicate
+    (``retains_across_close``) spared them — a working ACTIVE/FROZEN mandate,
+    unresolved venue uncertainty, or an open needs_review child. Carried in the
+    summary payload so the close event is a complete account of the boundary
+    (the expired count alone under-reports when a mandate survives).
     """
 
     candidate_events = tuple(
@@ -2175,6 +3674,10 @@ def plan_close_session(
             "expired_candidates": len(open_candidates),
             "canceled_orders": len(created_orders),
             "expired_sell_intents": len(open_sell_intents),
+            # WO-0036 R2 (P2/P3a): intents whose envelope delegation spared them
+            # across the close (see the docstring) — kept beside the expired
+            # count so the boundary account is complete.
+            "spared_sell_intents": spared_sell_intents,
             "position_snapshots": len(snapshots),
             # W2-SESS (REV-0013): who closed the session — so the audit can
             # attribute a manual close to the operator (default "system" for an
@@ -2345,6 +3848,8 @@ def plan_envelope_transition(
     reason: Optional[str] = None,
     superseded_by_id: Optional[str] = None,
     now: Optional[datetime] = None,
+    _atomic_supersede: bool = False,
+    _fill_completion: bool = False,
 ) -> EnvelopeTransitionPlan:
     """Plan one status transition per ``ENVELOPE_TRANSITIONS`` (ADR-010 §3).
 
@@ -2360,6 +3865,21 @@ def plan_envelope_transition(
     current = envelope.status
     if new_status is current:
         return EnvelopeTransitionPlan(ENVELOPE_TRANSITION_NOOP)
+    if new_status is EnvelopeStatus.COMPLETED and not _fill_completion:
+        return EnvelopeTransitionPlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                "COMPLETED is reachable only from the fill-driven Envelope path"
+            ),
+        )
+    if new_status is EnvelopeStatus.SUPERSEDED and not _atomic_supersede:
+        return EnvelopeTransitionPlan(
+            ENVELOPE_TRANSITION_REJECT,
+            error=EnvelopeTransitionError(
+                "SUPERSEDED is reachable only through the atomic "
+                "supersede_envelope operation"
+            ),
+        )
     if new_status not in ENVELOPE_TRANSITIONS.get(current, set()):
         return EnvelopeTransitionPlan(
             ENVELOPE_TRANSITION_REJECT,
@@ -2440,6 +3960,226 @@ def plan_envelope_transition(
 ENVELOPE_FILL_REJECT = "reject"
 ENVELOPE_FILL_APPLY = "apply"
 
+ENVELOPE_FILL_NEW = "new_fill"
+ENVELOPE_FILL_REPAIR_ATTRIBUTION = "repair_attribution"
+ENVELOPE_FILL_ALREADY_APPLIED = "already_applied"
+ENVELOPE_FILL_ATTRIBUTION_CONFLICT = "attribution_conflict"
+
+
+def envelope_fill_attribution_dedupe_key(fill_dedupe_key: str) -> str:
+    """Global one-envelope attribution identity for one canonical FILL."""
+
+    return f"envelope_fill_attributed:{fill_dedupe_key}"
+
+
+@dataclass(frozen=True)
+class EnvelopeFillAttributionDecision:
+    outcome: str
+    marker_event: Optional[ExecutionEvent] = None
+    error: Optional[Exception] = None
+
+
+def decide_envelope_fill_attribution(
+    envelope: ExecutionEnvelope,
+    plan: "EnvelopeFillPlan",
+    *,
+    canonical_event: Optional[ExecutionEvent],
+    marker_event: Optional[ExecutionEvent],
+    attribution_events: Sequence[ExecutionEvent] = (),
+    now: Optional[datetime] = None,
+) -> EnvelopeFillAttributionDecision:
+    """Decide whether a planned envelope fill is new, repaired, or replayed.
+
+    A canonical ``FILL`` is immutable.  If it was appended before its envelope
+    bridge ran, a separate marker may apply it to exactly one uniquely bounded
+    envelope without changing the position projection a second time.
+    """
+
+    assert plan.fill_event is not None and plan.envelope is not None
+    proposed = plan.fill_event
+    marker_key = envelope_fill_attribution_dedupe_key(proposed.dedupe_key or "")
+
+    def conflict(detail: str) -> EnvelopeFillAttributionDecision:
+        return EnvelopeFillAttributionDecision(
+            ENVELOPE_FILL_ATTRIBUTION_CONFLICT,
+            error=InvalidFillError(
+                f"fill {proposed.dedupe_key!r} attribution conflict: {detail}"
+            ),
+        )
+
+    def has_valid_remaining_facts(event: ExecutionEvent) -> bool:
+        before = event.payload.get("remaining_before")
+        after = event.payload.get("remaining_after")
+        return (
+            type(before) is int
+            and type(after) is int
+            and 0 <= before <= envelope.qty_ceiling
+            and after == max(0, before - (event.quantity or 0))
+        )
+
+    def attribution_chain_is_reflected() -> bool:
+        """Prove persisted debits form the envelope's atomic write chain."""
+
+        running = envelope.qty_ceiling
+        for event in sorted(attribution_events, key=lambda item: item.sequence):
+            if event.envelope_id != envelope.id or event.event_type not in {
+                ExecutionEventType.FILL,
+                ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+            }:
+                continue
+            if (
+                event.symbol != envelope.symbol
+                or event.side is not OrderSide.SELL
+                or event.correlation_id != envelope.sell_intent_id
+                or type(event.quantity) is not int
+                or event.quantity <= 0
+                or not has_valid_remaining_facts(event)
+            ):
+                return False
+            if event.event_type is ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED and (
+                event.source is not EventSource.ENGINE
+                or event.authority is not EventAuthority.LOCAL
+            ):
+                return False
+            before = event.payload.get("remaining_before")
+            after = event.payload.get("remaining_after")
+            assert type(before) is int and type(after) is int
+            if before != running:
+                return False
+            running = after
+        return envelope.remaining_quantity == running
+
+    if canonical_event is None:
+        if marker_event is not None:
+            return conflict("attribution marker exists without its canonical FILL")
+        if not attribution_chain_is_reflected():
+            return conflict(
+                "existing attribution chain is not reflected in envelope state"
+            )
+        return EnvelopeFillAttributionDecision(ENVELOPE_FILL_NEW)
+
+    expected_material = (
+        proposed.dedupe_key,
+        proposed.order_id,
+        proposed.symbol,
+        proposed.side,
+        proposed.quantity,
+        proposed.price,
+        proposed.session_id,
+    )
+    actual_material = (
+        canonical_event.dedupe_key,
+        canonical_event.order_id,
+        canonical_event.symbol,
+        canonical_event.side,
+        canonical_event.quantity,
+        canonical_event.price,
+        canonical_event.session_id,
+    )
+    if canonical_event.event_type is not ExecutionEventType.FILL:
+        return conflict("canonical dedupe key belongs to a non-FILL event")
+    if actual_material != expected_material:
+        return conflict("canonical FILL identity does not match the observation")
+
+    if canonical_event.envelope_id == envelope.id:
+        if canonical_event.correlation_id != envelope.sell_intent_id:
+            return conflict("attributed FILL has a foreign owner")
+        if not has_valid_remaining_facts(canonical_event):
+            return conflict("attributed FILL has malformed remaining-quantity facts")
+        if marker_event is not None:
+            return conflict("an already-attributed FILL also has a repair marker")
+        if not attribution_chain_is_reflected():
+            return conflict(
+                "attributed FILL decrement chain is not reflected in envelope state"
+            )
+        return EnvelopeFillAttributionDecision(ENVELOPE_FILL_ALREADY_APPLIED)
+
+    if canonical_event.envelope_id is not None:
+        return conflict("canonical FILL is already attributed to another envelope")
+    if canonical_event.correlation_id is not None:
+        return conflict("unbound canonical FILL carries a foreign owner")
+    if proposed.order_id is None or not (proposed.dedupe_key or "").startswith(
+        f"fill:{proposed.order_id}:"
+    ):
+        return conflict("repair requires an order-scoped canonical fill identity")
+
+    if marker_event is not None:
+        expected_marker_material = (
+            ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+            marker_key,
+            canonical_event.order_id,
+            canonical_event.symbol,
+            canonical_event.side,
+            canonical_event.quantity,
+            canonical_event.price,
+            canonical_event.session_id,
+            envelope.id,
+            envelope.sell_intent_id,
+            EventSource.ENGINE,
+            EventAuthority.LOCAL,
+        )
+        actual_marker_material = (
+            marker_event.event_type,
+            marker_event.dedupe_key,
+            marker_event.order_id,
+            marker_event.symbol,
+            marker_event.side,
+            marker_event.quantity,
+            marker_event.price,
+            marker_event.session_id,
+            marker_event.envelope_id,
+            marker_event.correlation_id,
+            marker_event.source,
+            marker_event.authority,
+        )
+        if actual_marker_material != expected_marker_material:
+            return conflict("attribution marker identity is malformed or foreign")
+        if marker_event.payload.get("fill_dedupe_key") != canonical_event.dedupe_key:
+            return conflict("attribution marker references another canonical FILL")
+        if marker_event.payload.get("fill_event_id") != canonical_event.id:
+            return conflict("attribution marker references another FILL event")
+        if marker_event.payload.get("fill_event_sequence") != canonical_event.sequence:
+            return conflict("attribution marker references another FILL sequence")
+        if not has_valid_remaining_facts(marker_event):
+            return conflict("attribution marker has malformed remaining-quantity facts")
+        if not attribution_chain_is_reflected():
+            return conflict(
+                "attribution marker decrement chain is not reflected in envelope state"
+            )
+        return EnvelopeFillAttributionDecision(ENVELOPE_FILL_ALREADY_APPLIED)
+
+    if not attribution_chain_is_reflected():
+        return conflict("existing attribution chain is not reflected in envelope state")
+
+    ts = now if now is not None else utcnow()
+    marker = ExecutionEvent(
+        event_type=ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=marker_key,
+        ts_event=canonical_event.ts_event,
+        ts_init=ts,
+        symbol=canonical_event.symbol,
+        side=canonical_event.side,
+        quantity=canonical_event.quantity,
+        price=canonical_event.price,
+        order_id=canonical_event.order_id,
+        envelope_id=envelope.id,
+        session_id=canonical_event.session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload={
+            "fill_dedupe_key": canonical_event.dedupe_key,
+            "fill_event_id": canonical_event.id,
+            "fill_event_sequence": canonical_event.sequence,
+            "remaining_before": envelope.remaining_quantity or 0,
+            "remaining_after": plan.envelope.remaining_quantity or 0,
+            "repair": "missed_envelope_attribution",
+        },
+    )
+    return EnvelopeFillAttributionDecision(
+        ENVELOPE_FILL_REPAIR_ATTRIBUTION, marker_event=marker
+    )
+
 
 @dataclass(frozen=True)
 class EnvelopeFillPlan:
@@ -2455,6 +4195,7 @@ class EnvelopeFillPlan:
     error: Optional[Exception] = None
     envelope: Optional[ExecutionEnvelope] = None
     fill_event: Optional[ExecutionEvent] = None
+    quarantine_event: Optional[ExecutionEvent] = None
     # A status transition mechanically chained to this fill (ACTIVE envelope
     # completing at remaining==0, or breaching on overfill), planned against
     # the post-decrement envelope. None when the fill only decrements.
@@ -2472,6 +4213,10 @@ def plan_envelope_fill(
     ts_event: Optional[datetime] = None,
     source: EventSource = EventSource.BROKER_REST,
     authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    canonical_event_exists: bool = False,
+    order_quantity: Optional[int] = None,
+    prior_order_filled_quantity: int = 0,
+    existing_quarantine_event: Optional[ExecutionEvent] = None,
     now: Optional[datetime] = None,
 ) -> EnvelopeFillPlan:
     """Plan the ONLY operation that may decrement ``remaining_quantity``.
@@ -2518,6 +4263,14 @@ def plan_envelope_fill(
                 f"invalid envelope fill for {envelope.symbol}: {value_reason}"
             ),
         )
+    if session_id is not None and session_id != envelope.session_id:
+        return EnvelopeFillPlan(
+            ENVELOPE_FILL_REJECT,
+            error=InvalidFillError(
+                f"fill session {session_id!r} does not match immutable envelope "
+                f"session {envelope.session_id!r}"
+            ),
+        )
     if envelope.status in (EnvelopeStatus.PENDING, EnvelopeStatus.APPROVED):
         return EnvelopeFillPlan(
             ENVELOPE_FILL_REJECT,
@@ -2531,6 +4284,22 @@ def plan_envelope_fill(
     ts = now if now is not None else utcnow()
     remaining = envelope.remaining_quantity or 0
     overfill = quantity > remaining
+    order_overfill = (
+        order_quantity is not None
+        and prior_order_filled_quantity + quantity > order_quantity
+    )
+    if (
+        (overfill or order_overfill)
+        and authority is not EventAuthority.BROKER_AUTHORITATIVE
+        and not canonical_event_exists
+    ):
+        return EnvelopeFillPlan(
+            ENVELOPE_FILL_REJECT,
+            error=InvalidFillError(
+                f"non-broker fill of {quantity} exceeds remaining quantity/order "
+                f"capacity for envelope {envelope.id}"
+            ),
+        )
     new_remaining = max(0, remaining - quantity)
     terminal = ENVELOPE_TRANSITIONS[envelope.status] == set()
 
@@ -2561,10 +4330,34 @@ def plan_envelope_fill(
         price=price,
         order_id=order_id,
         envelope_id=envelope.id,
-        session_id=session_id if session_id is not None else envelope.session_id,
+        session_id=envelope.session_id,
         correlation_id=envelope.sell_intent_id,
         payload=payload,
     )
+    quarantine_event: Optional[ExecutionEvent] = None
+    if authority is EventAuthority.BROKER_AUTHORITATIVE and (
+        overfill or order_overfill
+    ):
+        quarantine_event = overfill_quarantine_event(
+            fill_event,
+            order_quantity=order_quantity,
+            prior_filled_quantity=prior_order_filled_quantity,
+            current_quantity=None,
+            order_overfill=order_overfill,
+            position_overfill=False,
+            envelope_overfill=overfill,
+            remaining_before=remaining,
+        )
+        quarantine_conflict = overfill_quarantine_conflict_reason(
+            existing_quarantine_event, quarantine_event
+        )
+        if quarantine_conflict is not None:
+            return EnvelopeFillPlan(
+                ENVELOPE_FILL_REJECT,
+                error=InvalidFillError(
+                    f"overfill quarantine identity conflict: {quarantine_conflict}"
+                ),
+            )
 
     transition: Optional[EnvelopeTransitionPlan] = None
     if envelope.status in (EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN):
@@ -2587,11 +4380,13 @@ def plan_envelope_fill(
                 actor="engine",
                 reason="quantity ceiling fully filled",
                 now=ts,
+                _fill_completion=True,
             )
     return EnvelopeFillPlan(
         ENVELOPE_FILL_APPLY,
         envelope=updated,
         fill_event=fill_event,
+        quarantine_event=quarantine_event,
         transition=transition,
     )
 
@@ -2673,11 +4468,11 @@ def plan_supersede_envelope(
     #     resting predecessor order is exactly the double exposure INV-077
     #     forbids in substance. The amendment flow cancels first (staged
     #     CREATED orders are swept locally by the store in this same unit).
-    # CREATED is deliberately NOT venue-live: a staged, never-submitted order
-    # is local truth only — the stores sweep it in the same atomic unit as
-    # the supersession (WO-0024 machinery). Anything that may rest at the
-    # venue (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/CANCEL_PENDING/quarantine)
-    # blocks.
+    # CREATED is deliberately outside the venue-live set. The stores may sweep
+    # a projected-CREATED child in the same atomic unit only after the common
+    # local-cancel predicate proves no broker id or open recovery owner. Anything
+    # that may rest at the venue (SUBMITTING/SUBMITTED/PARTIALLY_FILLED/
+    # CANCEL_PENDING/quarantine) blocks.
     working_live = working_order is not None and working_order.status not in (
         OrderStatus.CREATED,
         OrderStatus.FILLED,
@@ -2729,6 +4524,7 @@ def plan_supersede_envelope(
         reason=reason,
         superseded_by_id=linked.id,
         now=ts,
+        _atomic_supersede=True,
     )
     assert supersede_old.outcome == ENVELOPE_TRANSITION_APPLY  # ACTIVE checked above
     assert (

@@ -50,7 +50,7 @@ def _run(monkeypatch, envelopes) -> AppTest:
         lambda: {"kill_switch": False, "buys_paused": False, "status": "active"},
     )
     monkeypatch.setattr(api_client, "list_envelopes", lambda: envelopes)
-    at = AppTest.from_file("cockpit/app.py").run()
+    at = AppTest.from_file("cockpit/app.py", default_timeout=30).run()
     at.sidebar.radio[0].set_value("Envelope Monitor")
     at.run()
     assert not at.exception

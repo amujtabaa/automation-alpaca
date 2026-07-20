@@ -24,8 +24,9 @@ from app.broker.adapter import (
     BrokerOrderReport,
     BrokerOrderUpdate,
     BrokerPositionReport,
+    VenueOrderScope,
 )
-from app.models import Order, OrderSide, OrderStatus
+from app.models import Order, OrderSide, OrderStatus, OrderType
 
 
 def _broker_id(order_id: str) -> str:
@@ -53,6 +54,9 @@ class MockBrokerAdapter(BrokerAdapter):
         self._responses: dict[str, BrokerOrderUpdate] = {}
         # our order.id -> broker_order_id, so tests can set responses by order.
         self._broker_ids: dict[str, str] = {}
+        # Exact wire contract accepted for each client id.  The mass report must
+        # mirror the same surface production correlation validates.
+        self._venue_scopes: dict[str, VenueOrderScope] = {}
         # client_order_id (= order.id) -> the venue state a targeted query returns
         # (ADR-002). Seeded independently of submit_order so a test can simulate
         # "the ambiguous submit DID reach the venue" even though submit raised.
@@ -84,13 +88,17 @@ class MockBrokerAdapter(BrokerAdapter):
     # ------------------------------------------------------------------ #
     # BrokerAdapter
     # ------------------------------------------------------------------ #
-    async def submit_order(self, order: Order) -> str:
+    async def submit_order(
+        self, order: Order, *, venue_scope: Optional[VenueOrderScope] = None
+    ) -> str:
         self.submitted.append(order)
         if self._submit_error is not None:
             err, self._submit_error = self._submit_error, None
             raise err
         broker_order_id = _broker_id(order.id)
         self._broker_ids[order.id] = broker_order_id
+        if venue_scope is not None:
+            self._venue_scopes[order.id] = venue_scope
         # Default broker view of a freshly-submitted order: accepted, no fills.
         self._responses.setdefault(
             broker_order_id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])
@@ -103,6 +111,16 @@ class MockBrokerAdapter(BrokerAdapter):
         *,
         recorded_quantity: int = 0,
         fallback_price: Optional[float] = None,
+        expected_client_order_id: Optional[str] = None,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_quantity: Optional[int] = None,
+        expected_limit_price: Optional[float] = None,
+        expected_order_type: Optional[OrderType] = None,
+        expected_time_in_force: Optional[str] = None,
+        expected_order_class: Optional[str] = None,
+        expected_scope: Optional[VenueOrderScope] = None,
+        allow_dynamic_market_sell: bool = False,
     ) -> BrokerOrderUpdate:
         # The mock returns explicit per-execution fills the test queued, so it
         # ignores recorded_quantity (it never needs the cumulative->delta trick)
@@ -130,6 +148,12 @@ class MockBrokerAdapter(BrokerAdapter):
         broker_order_id: str,
         *,
         client_order_id: str,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_order_type: Optional[OrderType] = OrderType.LIMIT,
+        expected_time_in_force: Optional[str] = "day",
+        expected_order_class: Optional[str] = "simple",
+        venue_scope: Optional[VenueOrderScope] = None,
         limit_price: Optional[float] = None,
         quantity: Optional[int] = None,
     ) -> str:
@@ -150,13 +174,26 @@ class MockBrokerAdapter(BrokerAdapter):
         )
         new_broker_id = _broker_id(client_order_id)
         self._broker_ids[client_order_id] = new_broker_id
+        if venue_scope is not None:
+            self._venue_scopes[client_order_id] = venue_scope
         self._responses.setdefault(
             new_broker_id, BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, [])
         )
         return new_broker_id
 
     async def get_order_by_client_order_id(
-        self, client_order_id: str
+        self,
+        client_order_id: str,
+        *,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_quantity: Optional[int] = None,
+        expected_limit_price: Optional[float] = None,
+        expected_order_type: Optional[OrderType] = None,
+        expected_time_in_force: Optional[str] = None,
+        expected_order_class: Optional[str] = None,
+        expected_scope: Optional[VenueOrderScope] = None,
+        allow_dynamic_market_sell: bool = False,
     ) -> Optional[BrokerOrderUpdate]:
         # Read-only targeted query (ADR-002). Never mutates venue state.
         self.client_queries.append(client_order_id)
@@ -203,16 +240,49 @@ class MockBrokerAdapter(BrokerAdapter):
             if status in _VENUE_TERMINAL:
                 continue
             order = submitted_by_id.get(order_id)
-            if order is None:  # can't build a report without symbol/side
+            scope = self._venue_scopes.get(order_id)
+            if order is None and scope is None:  # can't build immutable scope
                 continue
+            if scope is not None:
+                symbol = scope.symbol
+                side = scope.side
+                quantity = scope.quantity
+                order_type = scope.order_type.value
+                limit_price = scope.limit_price
+                extended_hours = (
+                    scope.extended_hours if scope.extended_hours is not None else False
+                )
+            else:
+                assert order is not None
+                symbol = order.symbol
+                side = OrderSide(order.side)
+                quantity = order.quantity
+                order_type = OrderType(order.order_type).value
+                limit_price = order.limit_price
+                extended_hours = False
             reports.append(
                 BrokerOrderReport(
                     broker_order_id=broker_id,
                     client_order_id=order_id,
-                    symbol=order.symbol,
-                    side=OrderSide(order.side),
+                    symbol=symbol,
+                    side=side,
                     status=status,
                     filled_quantity=filled,
+                    quantity=quantity,
+                    order_type=order_type,
+                    limit_price=limit_price,
+                    time_in_force="day",
+                    order_class="simple",
+                    asset_class="us_equity",
+                    quantity_mode="qty",
+                    extended_hours=extended_hours,
+                    has_legs=False,
+                    position_intent=(
+                        "buy_to_open" if side is OrderSide.BUY else "sell_to_close"
+                    ),
+                    replaces_broker_order_id=(
+                        scope.replaces_broker_order_id if scope is not None else None
+                    ),
                 )
             )
         return reports

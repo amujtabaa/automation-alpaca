@@ -19,6 +19,7 @@ Key structural guarantees the interface is shaped to enforce:
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from app.models import (
     Event,
     ExecutionEnvelope,
     ExecutionEvent,
+    ExecutionEventType,
     Fill,
     Order,
     OrderSide,
@@ -89,12 +91,43 @@ def normalize_symbol(symbol: str) -> str:
     return normalized
 
 
+def normalize_broker_order_id(broker_order_id: str) -> str:
+    """Canonical opaque venue identity shared by every durable owner boundary.
+
+    Whitespace is transport noise, not identity. The empty result remains a
+    deliberate unknown-id sentinel for recovery rows; order lifecycle planners
+    independently reject it where a concrete broker id is required.
+    """
+
+    if not isinstance(broker_order_id, str):
+        raise ValueError("broker_order_id must be a string")
+    return broker_order_id.strip()
+
+
 class StoreError(Exception):
     """Base class for StateStore errors."""
 
 
 class UnknownEntityError(StoreError):
     """Referenced entity (candidate, order, ...) does not exist."""
+
+
+class InvalidEventError(StoreError):
+    """An append-only audit/execution event violates the durable contract."""
+
+
+def normalize_json_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Validate and canonicalize a payload to SQLite's JSON serialization domain."""
+
+    try:
+        encoded = json.dumps(payload or {})
+        normalized = json.loads(encoded)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise InvalidEventError(
+            f"event payload must be JSON-serializable: {exc}"
+        ) from exc
+    assert isinstance(normalized, dict)
+    return normalized
 
 
 class CandidateTransitionError(StoreError):
@@ -275,34 +308,33 @@ class EnvelopeTransitionError(ValueError):
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.
 
-    ``status`` is ``"appended"`` when a new fill row was written, or
-    ``"duplicate"`` when a fill with the same ``source_fill_id`` already existed
-    (no row written, position untouched, a duplicate-ignored audit event
-    recorded). A sell that would go negative does not return here — it raises
-    :class:`~app.position.NegativePositionError`.
+    ``status`` is ``"appended"`` when a new fill row was written,
+    ``"duplicate"`` when the same ``source_fill_id`` replays exact economics,
+    or ``"conflict"`` when that identity reappears with different economics.
+    Duplicate/conflict outcomes leave fill truth and position untouched; a
+    conflict records manual-review evidence.
     """
 
-    status: Literal["appended", "duplicate"]
+    status: Literal["appended", "duplicate", "conflict"]
     fill: Optional[Fill]
     event: Event
 
 
 @dataclass(frozen=True)
 class RiskLimits:
-    """The Phase 6 CAPI limits for one :meth:`StateStore.create_order_for_candidate`
-    call (D-016). Bundled into one object — rather than four separate keyword
-    arguments threaded individually through the abstract method, both store
-    implementations, the shared planner, and the route (which needs the same
-    values twice: the pre-check and the authoritative call) — so a future
-    limit type is one field added in one place, not a signature edited in five.
+    """The Phase 6 CAPI limits for order mint and final BUY submission claim.
+    Bundled into one object (D-016) so both stores, the shared planner, and
+    production callers use one configuration shape. A future limit is one field,
+    not a signature edit at every choke point.
 
     Every field is independently optional: ``None`` means "not enforced." The
     zero-argument default, ``RiskLimits()``, is fully unenforced — this is what
     keeps ``create_order_for_candidate``'s ~20 pre-existing test call sites
     (written before Phase 6, none of which pass a ``risk_limits`` argument)
-    behaviorally unchanged. Production code (the approve route) always builds
-    one from ``Settings``, which rejects a non-finite/non-positive numeric
-    limit at load — see ``app.config.load_settings``.
+    behaviorally unchanged. Production code builds one at the approve route and
+    monitoring submission choke point from ``Settings``, which rejects a
+    non-finite/non-positive numeric limit at load — see
+    ``app.config.load_settings``.
     """
 
     max_shares_per_order: Optional[float] = None
@@ -345,6 +377,10 @@ FLATTEN_EXISTING = "existing"  # an existing intent returned as-is (idempotent
 FLATTEN_CREATED = "created"  # a fresh manual_flatten intent was created + ordered
 # (superseding a non-live protection_floor exit first,
 # if one was active)
+FLATTEN_BUYS_OPEN = "buys_open"  # WO-0036 R2 Option B: the held position has an
+# open BUY that must be cancelled before a MANUAL_FLATTEN SELL is minted. No
+# intent/order was created. The caller cancels the buys (app.monitoring.
+# cancel_open_buys — a broker call, never under the store lock) and RETRIES.
 
 # P6-C minimal actor-audit: the default ``actor`` stamped on a control-command
 # audit event (kill switch / pause-buys — the sensitive ``/api/controls/*`` surface)
@@ -644,6 +680,7 @@ class StateStore(ABC):
         *,
         session_id: Optional[str] = None,
         actor: str = COMMAND_ACTOR_SYSTEM,
+        emergency_override: bool = False,
     ) -> FlattenResult:
         """Atomically open (or return the existing) ``manual_flatten`` exit for
         ``symbol`` — the whole "read the live position, stand down any
@@ -671,16 +708,36 @@ class StateStore(ABC):
 
         Does **not** cancel a LIVE (broker-submitted) BUY order — that needs a
         broker call, which must never happen while this lock is held (the
-        concurrency model: no network call under the store lock). Callers
-        cancel open buys via ``app.monitoring.cancel_open_buys`` (best-effort,
-        idempotent) BEFORE calling this method; this method re-reads the live
-        position under its own lock regardless, so sizing always reflects
-        whatever the buy-cancel step actually achieved — never oversized, never
-        racing a partial fill.
+        concurrency model: no network call under the store lock). Instead, when a
+        HELD position (``position.quantity > 0``) still has an open BUY, this
+        method DETECTS it under its own lock and returns
+        :data:`FLATTEN_BUYS_OPEN` (no intent/order created); the caller cancels
+        the buys via ``app.monitoring.cancel_open_buys`` (best-effort, idempotent)
+        and **retries**. This makes the store — not the caller — the single
+        authority on the flat/blocked/buys-open decision, so a caller can never
+        mint a MANUAL_FLATTEN SELL alongside a live BUY on a stale out-of-lock
+        read (WO-0036 R2 Option B; the §5.3 self-cross). A GENUINELY-flat symbol
+        returns :data:`FLATTEN_FLAT` and leaves an unrelated resting BUY untouched;
+        every read this decision depends on is taken under this one lock hold, so
+        sizing always reflects the live position — never oversized, never racing a
+        partial fill.
 
-        Returns :class:`FlattenResult`. ``session_id`` seeds a freshly-created
-        intent only (ignored when returning an existing one). ``actor`` (P6-C
-        audit label, REV-0002 F-002) is stamped on the provenance event of
+        An active emergency-reduce grant is deliberately non-ambient:
+        ``emergency_override=True`` is the internal capability asserted only by
+        the explicit emergency command. Ordinary callers leave it false and
+        remain denied while HALTED even if a grant is awaiting an emergency
+        retry; they cannot consume or steal that grant. Conversely, asserting
+        ``emergency_override=True`` without an active current-session grant is
+        rejected even when ordinary flattening would be allowed. The explicit
+        command passes the session id returned by
+        :meth:`authorize_emergency_reduce_override`; a mismatch rejects the
+        operation instead of silently downgrading it after a calendar rollover.
+
+        Returns :class:`FlattenResult`. For an ordinary flatten, ``session_id``
+        seeds a freshly-created intent only (ignored when returning an existing
+        one); for an emergency flatten it binds the authorization scope as
+        described above. ``actor`` (P6-C audit label, REV-0002 F-002) is stamped
+        on the provenance event of
         whichever path runs — the created intent's ``sell_intent_created`` or the
         ``manual_flatten_deferred`` deferral event — recording who commanded the
         flatten; it defaults to ``COMMAND_ACTOR_SYSTEM`` for internal/test callers.
@@ -750,26 +807,32 @@ class StateStore(ABC):
         """Total current CAPI exposure (D-016b), read as one atomic snapshot.
 
         Every position's cost basis plus every non-terminal order's remaining
-        notional — see ``app.policy.existing_exposure`` for the pure
-        computation this wraps. Exists as its own store method (rather than
+        notional and any accepted BUY retained only by an open recovery or
+        fallback execution fact — see ``app.policy.existing_exposure`` and
+        ``unrepresented_accepted_buy_exposure``. Exists as its own store method (rather than
         making a caller combine ``list_positions()`` + ``list_orders()``
         itself) specifically so a caller *outside* the store's lock — the
-        approve route's risk-limit pre-check — gets one consistent snapshot
+        approve route or final claim — gets one consistent snapshot
         under a single lock acquisition, not a torn read across two separate
-        lock-acquire/release cycles. ``create_order_for_candidate``'s own
-        authoritative check computes this the same way, inside its own single
-        lock hold, for the same reason.
+        lock-acquire/release cycles. Order mint and final BUY claim both compute
+        it inside their own single lock hold for the same reason.
         """
 
     @abstractmethod
-    async def claim_order_for_submission(self, order_id: str) -> SubmissionClaim:
+    async def claim_order_for_submission(
+        self,
+        order_id: str,
+        *,
+        risk_limits: RiskLimits = RiskLimits(),
+    ) -> SubmissionClaim:
         """Atomically claim a ``CREATED`` order for submission (D-017).
 
         Under a **single lock hold** — mirroring ``set_kill_switch``'s idiom, not
         a new locking primitive — this re-reads the order, re-reads the current
         session **and** the order's own originating session, and re-checks every
-        control (kill-switch, buys-paused, session-closed, session-unknown, and
-        that the order is still ``CREATED``). Then:
+        control (kill-switch, buys-paused, session-closed, session-unknown, that
+        the order is still ``CREATED``), and the CAPI limits against a fresh
+        exposure snapshot. Then:
 
         * order no longer ``CREATED`` → ``SubmissionClaim(CLAIM_SKIPPED)``, no
           state change (a session close cancelled it, or it was already claimed);
@@ -824,6 +887,20 @@ class StateStore(ABC):
         ``event_type`` names the creation audit event and ``extra_payload`` is
         merged into it (e.g. the broker/local fill counts for a divergence).
 
+        When ``local_order_id`` still exists, its immutable ``symbol``/``side``
+        scope must match the recovery under this method's store lock; a mismatch
+        raises :class:`RecoveryTransitionError` and writes nothing. A genuinely
+        missing local row remains valid recovery input because this ledger also
+        models orders whose local row was lost.
+
+        Recovery cardinality is one row per canonical ``(local_order_id,
+        broker_order_id)`` pair. Replaying that pair is idempotent. Order,
+        recovery, and canonical-fallback representations for the same pair may
+        overlap and coalesce as one accepted leg. Distinct concrete broker ids for
+        one local order remain distinct legs; a non-empty broker id cannot be
+        rebound to another local order in any representation. The empty unknown-id
+        sentinel is scoped per local order.
+
         ``candidate_id`` (D-020) correlates the creation event to the owning
         candidate's lifecycle. It is not stored on :class:`SubmitRecoveryRecord`
         itself (D-020 stays to one nullable ``Event`` field, not a new entity
@@ -844,6 +921,16 @@ class StateStore(ABC):
         surface passes ``RECOVERY_OPEN_STATUSES`` (unresolved **and**
         needs-review — everything still needing attention, since a needs-review
         record holds a real untracked position a human must reconcile).
+        """
+
+    @abstractmethod
+    async def get_submit_recovery_by_identity(
+        self, local_order_id: str, broker_order_id: str
+    ) -> Optional[SubmitRecoveryRecord]:
+        """The recovery owning this exact local/broker identity, if any.
+
+        Repair consumers use this selective lookup instead of materializing the
+        complete append-only recovery ledger on every cadence.
         """
 
     @abstractmethod
@@ -895,11 +982,18 @@ class StateStore(ABC):
         filled_quantity: Optional[int] = None,
         broker_order_id: Optional[str] = None,
         actor: str = COMMAND_ACTOR_SYSTEM,
+        expected_from: Optional[OrderStatus | frozenset[OrderStatus]] = None,
     ) -> Order:
-        """Atomically transition an order and write an audit event. ``actor``
-        stamps the ``order_transition`` audit event's provenance (UC-002) — a
-        human-triggered cancel passes the operator; routine engine transitions
-        default to ``COMMAND_ACTOR_SYSTEM``."""
+        """Atomically transition an order and write an audit event.
+
+        ``expected_from`` makes the transition conditional under the same store
+        lock/transaction: when the projected current status is outside the
+        expected set, nothing is written and the current order is returned. It
+        is the compare-and-swap seam for decisions made from an earlier snapshot.
+        ``actor`` stamps the ``order_transition`` audit event's provenance
+        (UC-002) — a human-triggered cancel passes the operator; routine engine
+        transitions default to ``COMMAND_ACTOR_SYSTEM``.
+        """
 
     # ------------------------------------------------------------------ #
     # Timeout-quarantine (ADR-002 / wave 3c) — evented order transitions
@@ -1007,12 +1101,12 @@ class StateStore(ABC):
         overfill DECISION/event — never the fold (position derives from the
         deduped FILL event log regardless).
 
-        * If ``source_fill_id`` duplicates an existing fill: no row is written,
-          position is untouched, a duplicate-ignored event is recorded, and the
-          result's ``status`` is ``"duplicate"``.
-        * If the fill is a sell that would drive the symbol's quantity below
-          zero: no row is written, a rejection event is recorded, and
-          :class:`~app.position.NegativePositionError` is raised.
+        * An exact ``source_fill_id`` replay returns ``"duplicate"``. Changed
+          quantity/price/side for that identity returns ``"conflict"`` and
+          records manual-review evidence. Neither mutates fill truth/position.
+        * Broker-authoritative overfill is recorded as raw truth and emits a
+          durable ``QUARANTINED`` fact. Equivalent LOCAL/SYNTHETIC input is
+          rejected before fill/event/position mutation.
         * Otherwise the fill is appended and ``status`` is ``"appended"``.
         """
 
@@ -1039,10 +1133,10 @@ class StateStore(ABC):
     @abstractmethod
     async def list_quarantined_symbols(self) -> set[str]:
         """Symbols quarantined by a broker-authoritative overfill (ADR-001,
-        Spine v2 wave 3b): a recorded FILL crossed the long-only position through
-        flat into short. Derived purely from the event log (a negative projected
-        position), so it is replay-stable. Autonomous BUY order intent for a
-        quarantined symbol is blocked until the operator reconciles and reviews.
+        Spine v2 wave 3b): either an explicit durable ``QUARANTINED`` fact exists
+        or a recorded FILL crossed the long-only position through flat into
+        short. Derived purely from the event log, so it is replay-stable.
+        Autonomous BUY order intent stays blocked pending operator review.
         """
 
     # ------------------------------------------------------------------ #
@@ -1091,6 +1185,18 @@ class StateStore(ABC):
         scroll a rare event out of) just to find it.
         """
 
+    @abstractmethod
+    async def get_audit_event_page(
+        self, *, after_cursor: int, limit: int
+    ) -> tuple[int, list[Event]]:
+        """Read the global audit log after an opaque append cursor.
+
+        The returned cursor covers every audit row in the returned page,
+        including event types a consumer does not select. Both arguments are
+        non-negative and ``limit`` must be positive. The cursor is durable only
+        when the consumer records it after successfully inspecting the page.
+        """
+
     # ------------------------------------------------------------------ #
     # Execution-event log (Spine v2 — Phase 2 event-sourcing scaffolding)
     #
@@ -1135,6 +1241,22 @@ class StateStore(ABC):
         """
 
     @abstractmethod
+    async def get_latest_execution_event(
+        self, event_type: ExecutionEventType
+    ) -> Optional[ExecutionEvent]:
+        """Latest execution event of one type, using the type/sequence index."""
+
+    @abstractmethod
+    async def get_execution_event_by_dedupe_key(
+        self, dedupe_key: str
+    ) -> Optional[ExecutionEvent]:
+        """Execution event with this unique non-null dedupe identity, if any."""
+
+    @abstractmethod
+    async def get_order_execution_events(self, order_id: str) -> list[ExecutionEvent]:
+        """Execution events for one order in ascending replay sequence."""
+
+    @abstractmethod
     async def get_max_execution_sequence(self) -> int:
         """The highest assigned ``sequence`` in the log, or ``0`` if empty."""
 
@@ -1176,6 +1298,16 @@ class StateStore(ABC):
     ) -> list[ExecutionEnvelope]:
         """Envelopes, optionally filtered by originating intent / symbol /
         status. ``status`` is validated as a real :class:`EnvelopeStatus`."""
+
+    @abstractmethod
+    async def envelope_obligation_ambiguity_for_symbol(
+        self, symbol: str
+    ) -> tuple[str, ...]:
+        """Missing/malformed ids from the shared symbol obligation projection.
+
+        This is a diagnostic-only view. Its symbol scope never grants authority
+        to mutate or cancel any projected child order.
+        """
 
     @abstractmethod
     async def transition_envelope(
@@ -1234,11 +1366,11 @@ class StateStore(ABC):
         now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY ``remaining_quantity`` writer.
-        A dedupe hit (same ``dedupe_key`` already in the log) applies NOTHING:
-        that fill was already counted (exactly-once, INV-5). Appends the FILL
-        execution event and, if the fill exhausts the mandate, chains the
-        terminal transition, atomically. Raises :class:`UnknownEntityError` for
-        an unknown id."""
+        A validated replay of an already-attributed fill applies nothing. An
+        unbound canonical ``FILL`` dedupe hit may instead append an attribution
+        marker and decrement the envelope exactly once. A new canonical fill,
+        its envelope decrement, and any terminal transition are committed
+        atomically. Raises :class:`UnknownEntityError` for an unknown id."""
 
     @abstractmethod
     async def stage_envelope_action(
@@ -1371,7 +1503,7 @@ class StateStore(ABC):
     @abstractmethod
     async def authorize_emergency_reduce_override(
         self, symbol: str, *, actor: str
-    ) -> None:
+    ) -> str:
         """Authorize an emergency reduce for ``symbol`` while ``Halted`` (ADR-003 /
         wave 3e). Atomically checks the ADR-003 preconditions and, if they hold,
         grants the scoped override so the subsequent flatten is permitted:
@@ -1383,10 +1515,12 @@ class StateStore(ABC):
         * there MUST be an open position (else nothing to reduce).
 
         On success first-writes the ``EMERGENCY_REDUCE_OVERRIDE`` grant (see
-        :meth:`grant_emergency_reduce_override`). The global ``TradingState`` stays
-        ``Halted``; the caller then runs the normal flatten, which sees the grant,
-        creates the reduce-only exit, and consumes the override in the same lock
-        hold."""
+        :meth:`grant_emergency_reduce_override`) and returns its immutable session
+        id. The global ``TradingState`` stays ``Halted``; the caller must pass that
+        session id into the subsequent emergency flatten so an await-boundary
+        calendar rollover cannot spend the command as an ordinary next-session
+        flatten. The flatten sees the grant, creates the reduce-only exit, and
+        consumes the override in the same lock hold."""
 
     @abstractmethod
     async def close_session(
@@ -1399,15 +1533,32 @@ class StateStore(ABC):
 
         1. Transition every ``PENDING``/``APPROVED`` candidate in this session
            to ``EXPIRED`` (terminal candidates are left untouched).
-        2. Cancel every still-``CREATED`` (never-submitted) order in this
-           session (D-013a) — a clean terminal state instead of a zombie
+        2. Cancel every still-``CREATED`` (never-submitted) **BUY** order in
+           this session (D-013a) — a clean terminal state instead of a zombie
            ``CREATED`` order the per-order-session submission gate would
-           otherwise hold forever. Already-``SUBMITTED`` orders are untouched
-           and keep reconciling after close (D-011).
-        3. Snapshot current positions — every symbol with a nonzero derived
+           otherwise hold forever. A ``CREATED`` SELL is a protective/flatten
+           exit and stays submittable (protection is always-on, Phase 7 §5.2);
+           already-``SUBMITTED`` orders are untouched and keep reconciling
+           after close (D-011).
+        3. Expire every ``PENDING``/``APPROVED`` sell intent in this session —
+           UNLESS the shared envelope-obligation projection **spares** it
+           (WO-0036 R2 P2, ``retains_across_close``): an owner whose envelope
+           is genuinely working (``ACTIVE``/``FROZEN``), or whose terminal
+           lineage still carries unresolved venue uncertainty (an unresolved or
+           ``needs_review`` recovery child, or malformed/ambiguous lineage
+           facts), survives the boundary — expiring it would orphan a working
+           mandate or real exposure. A **bare pre-activation** ``APPROVED``
+           envelope does NOT spare (authorization is not a working mandate):
+           its owner expires and the envelope itself is swept
+           ``APPROVED -> EXPIRED`` in the same atomic close, so no
+           **scope-valid** delegating envelope is ever left beside an expired
+           owner (a scope-INVALID legacy row naming the intent is outside the
+           owner projection by design — it cannot resurrect the owner and
+           keeps its symbol quarantined via the symbol-level obligation).
+        4. Snapshot current positions — every symbol with a nonzero derived
            quantity — into ``position_snapshots``, keyed by this session id.
-        4. Set ``status=CLOSED`` and ``closed_at=now``.
-        5. Write one audit event recording the close, how many candidates
+        5. Set ``status=CLOSED`` and ``closed_at=now``.
+        6. Write one audit event recording the close, how many candidates
            were expired, and how many orders were canceled.
 
         Raises :class:`SessionAlreadyClosedError` if the session is already

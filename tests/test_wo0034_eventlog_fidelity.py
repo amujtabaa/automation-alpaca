@@ -104,6 +104,36 @@ async def active_envelope(store, position: int = 100, **overrides):
     )
 
 
+async def active_envelope_with_late_sell_source(store, *, quantity: int):
+    """Prepare a terminal SELL before the envelope owns the symbol."""
+
+    await store.initialize()
+    session = await store.get_current_session()
+    seed = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        seed.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+    )
+    source_candidate = await store.create_candidate("AAPL", session_id=session.id)
+    late_sell = await store.create_order_for_test(
+        source_candidate.id,
+        "AAPL",
+        OrderSide.SELL,
+        quantity,
+        session_id=session.id,
+    )
+    await store.transition_order(late_sell.id, OrderStatus.CANCELED)
+    intent = await store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    envelope = await store.approve_envelope_activation(
+        make_draft(intent.id), actor="op"
+    )
+    return envelope, late_sell
+
+
 async def _submitted_envelope_order(store, env, quantity: int):
     """Stage + submit a SELL for the envelope via the real claim/submit path (an
     envelope-minted SUBMITTED order the fill bridge will attribute)."""
@@ -158,7 +188,7 @@ async def test_concurrency0_clean_full_exit_emits_no_overfill_event(any_store):
 
 
 async def test_concurrency0_real_overfill_via_bridge_still_quarantines(any_store):
-    env = await active_envelope(any_store)
+    env, late_sell = await active_envelope_with_late_sell_source(any_store, quantity=50)
     order = await _submitted_envelope_order(any_store, env, 100)
 
     # After submission the position drops to 50 (an unrelated exit), so when the
@@ -166,12 +196,13 @@ async def test_concurrency0_real_overfill_via_bridge_still_quarantines(any_store
     # genuine broker-authoritative overfill (ADR-001). The concurrency-0 fix must
     # NOT suppress it: the event fires and the symbol quarantines.
     session = await any_store.get_current_session()
-    cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    other = await any_store.create_order_for_test(
-        cand.id, "AAPL", OrderSide.SELL, 50, session_id=session.id
-    )
     await any_store.append_fill(
-        other.id, "AAPL", OrderSide.SELL, 50, 9.9, session_id=session.id
+        late_sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        50,
+        9.9,
+        session_id=session.id,
     )
 
     await _apply_update(
@@ -196,7 +227,7 @@ async def test_concurrency0_real_overfill_via_bridge_still_quarantines(any_store
 
 
 async def test_spec1_redrive_reduce_only_refusal_is_durably_evented(any_store):
-    env = await active_envelope(any_store)
+    env, late_sell = await active_envelope_with_late_sell_source(any_store, quantity=95)
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     released = await execute_envelope_action(
@@ -213,12 +244,13 @@ async def test_spec1_redrive_reduce_only_refusal_is_durably_evented(any_store):
     # fill, so validate_action(80 vs remaining 100) passes and the reduce_only
     # re-check (80 vs live position 5) is the refusing rail.
     session = await any_store.get_current_session()
-    cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    sell = await any_store.create_order_for_test(
-        cand.id, "AAPL", OrderSide.SELL, 95, session_id=session.id
-    )
     await any_store.append_fill(
-        sell.id, "AAPL", OrderSide.SELL, 95, 9.9, session_id=session.id
+        late_sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        95,
+        9.9,
+        session_id=session.id,
     )
     refused = await redrive_staged_envelope_action(
         any_store, MockBrokerAdapter(), env.id, now=later(60)
@@ -242,9 +274,14 @@ async def test_spec1_redrive_reduce_only_refusal_is_durably_evented(any_store):
 
 async def test_spec0_late_fill_on_terminal_envelope_is_recorded_not_breached(any_store):
     env = await active_envelope(any_store)
+    order = await _submitted_envelope_order(any_store, env, 100)
     # Clean completion first (ACTIVE -> COMPLETED at remaining 0).
     completed = await any_store.record_envelope_fill(
-        env.id, quantity=100, dedupe_key="fill:o:done", order_id="o", price=9.9
+        env.id,
+        quantity=100,
+        dedupe_key=f"fill:{order.id}:done",
+        order_id=order.id,
+        price=9.9,
     )
     assert completed.status is S.COMPLETED
 
@@ -253,7 +290,11 @@ async def test_spec0_late_fill_on_terminal_envelope_is_recorded_not_breached(any
     # (INV-085 narrowed to ACTIVE/FROZEN; the position-level ADR-001 quarantine
     # is the independent backstop for any real short).
     after = await any_store.record_envelope_fill(
-        env.id, quantity=20, dedupe_key="fill:o:late", order_id="o", price=9.9
+        env.id,
+        quantity=20,
+        dedupe_key=f"fill:{order.id}:late",
+        order_id=order.id,
+        price=9.9,
     )
     assert after.status is S.COMPLETED, (
         f"a late fill on a terminal envelope flipped status to {after.status}"

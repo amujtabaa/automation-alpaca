@@ -1,11 +1,12 @@
-"""Spine v2 Phase 4 wave 4e slice 4 — reconciliation-inferred synthetic fills +
+"""Spine v2 Phase 4 wave 4e slice 4 — reconciliation fill truth +
 the §7/§9 query throttle.
 
-* **Synthetic fills (INV-5 / R8):** when the venue's mass report carries a PRICED
-  execution the local log is missing, the acting reconcile appends it as a
-  SYNTHETIC/RECONCILIATION fill — moving position exactly once, and dedup-safe
-  against the eventual real observation of the same execution (same source_fill_id).
-  Never a $0 synthetic (the engine routes an unpriced delta to a targeted query).
+* **Reconciliation fills (INV-5 / R8):** when the venue's mass report carries a
+  PRICED execution the local log is missing, the acting reconcile appends the
+  broker-authoritative fact with RECONCILIATION source — moving position exactly
+  once and dedup-safe against a later direct observation of the same execution
+  (same source_fill_id). Never a $0 inferred fill (the engine routes an unpriced
+  delta to a targeted query).
 * **Query throttle (E6/E7):** a persistent per-minute `ReconcileQueryBudget` gates
   the reconcile REST calls. An exhausted budget SKIPS the cycle (never a partial read;
   never read as flat); a budget that covers the mass reports but not the targeted
@@ -13,6 +14,8 @@ the §7/§9 query throttle.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import pytest
 
@@ -53,12 +56,10 @@ async def _submitted_buy(store, *, symbol="AAPL", qty=100, limit=2.0):
     return order, adapter
 
 
-def _priced_report(adapter, order, *, filled, exec_id="v-exec-1", price=2.0):
-    return BrokerOrderReport(
-        broker_order_id=adapter.broker_id_for(order.id),
-        client_order_id=order.id,
-        symbol=order.symbol,
-        side=OrderSide.BUY,
+async def _priced_report(adapter, order, *, filled, exec_id="v-exec-1", price=2.0):
+    [venue_report] = await adapter.list_open_orders()
+    return replace(
+        venue_report,
         status=OrderStatus.PARTIALLY_FILLED,
         filled_quantity=filled,
         fills=[BrokerFill(exec_id, filled, price, utcnow())],
@@ -74,23 +75,23 @@ def _fill_events(events):
 # --------------------------------------------------------------------------- #
 async def test_inferred_priced_fill_moves_position_marked_synthetic(any_store):
     order, adapter = await _submitted_buy(any_store)
-    adapter.seed_open_orders([_priced_report(adapter, order, filled=40)])
+    adapter.seed_open_orders([await _priced_report(adapter, order, filled=40)])
 
     await _run_reconciliation(any_store, adapter, _NO_RECENT)
 
     assert (await any_store.get_position("AAPL")).quantity == 40
     fills = _fill_events(await any_store.get_execution_events())
     assert len(fills) == 1
-    assert fills[0].authority is EventAuthority.SYNTHETIC
+    assert fills[0].authority is EventAuthority.BROKER_AUTHORITATIVE
     assert fills[0].source is EventSource.RECONCILIATION
 
 
 async def test_synthetic_then_real_same_execution_dedups_no_double_count(any_store):
     order, adapter = await _submitted_buy(any_store)
     adapter.seed_open_orders(
-        [_priced_report(adapter, order, filled=40, exec_id="ex-9")]
+        [await _priced_report(adapter, order, filled=40, exec_id="ex-9")]
     )
-    await _run_reconciliation(any_store, adapter, _NO_RECENT)  # synthetic 40
+    await _run_reconciliation(any_store, adapter, _NO_RECENT)  # reconciliation 40
     assert (await any_store.get_position("AAPL")).quantity == 40
 
     # The per-order poll later observes the SAME execution (same source_fill_id).
@@ -112,15 +113,13 @@ async def test_priced_fill_without_source_id_is_not_inferred(any_store):
     # the targeted poll (which dedups by its own key) instead. Here the venue still
     # has the order, so nothing resolves and position is unmoved.
     order, adapter = await _submitted_buy(any_store)
+    [venue_report] = await adapter.list_open_orders()
     adapter.seed_open_orders(
         [
-            BrokerOrderReport(
-                adapter.broker_id_for(order.id),
-                order.id,
-                "AAPL",
-                OrderSide.BUY,
-                OrderStatus.PARTIALLY_FILLED,
-                40,
+            replace(
+                venue_report,
+                status=OrderStatus.PARTIALLY_FILLED,
+                filled_quantity=40,
                 fills=[BrokerFill("", 40, 2.0, utcnow())],  # priced, but no source id
             )
         ]

@@ -10,7 +10,7 @@ approval *flow* is WO-0017). Envelope FILL facts stay broker-authoritative
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -23,14 +23,19 @@ from app.models import (
     EventSource,
     ExecutionEnvelope,
     ExecutionEventType,
+    OrderSide,
+    OrderStatus,
+    SellReason,
     SessionType,
     utcnow,
 )
+from app.sellside.types import ActionKind, PlannedAction
 from app.store.sqlite import SqliteStateStore
 
 pytestmark = pytest.mark.anyio
 
 S = EnvelopeStatus
+NOW = datetime(2026, 7, 17, 10, 0, tzinfo=timezone.utc)
 
 
 def make_draft(intent_id: str = "si-1") -> ExecutionEnvelope:
@@ -51,6 +56,65 @@ def make_draft(intent_id: str = "si-1") -> ExecutionEnvelope:
         stale_data_disposition=EnvelopeStaleDataDisposition.LEAVE_RESTING,
         session_id="sess-1",
     )
+
+
+async def create_owned_envelope(store, *, actor: str = "system"):
+    draft = make_draft()
+    session = await store.get_current_session()
+    candidate = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        candidate.id,
+        "AAPL",
+        OrderSide.BUY,
+        draft.qty_ceiling,
+        session_id=session.id,
+    )
+    await store.append_fill(
+        buy.id,
+        "AAPL",
+        OrderSide.BUY,
+        draft.qty_ceiling,
+        10.0,
+        source_fill_id=f"wo0016-event-hold:{candidate.id}",
+        session_id=session.id,
+    )
+    await store.transition_order(buy.id, OrderStatus.CANCELED)
+    owner = await store.create_sell_intent(
+        symbol=draft.symbol,
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=draft.qty_ceiling,
+        session_id=session.id,
+    )
+    return await store.create_envelope(
+        draft.model_copy(
+            update={
+                "sell_intent_id": owner.id,
+                "session_id": session.id,
+                "expires_at": NOW + timedelta(hours=2),
+            }
+        ),
+        actor=actor,
+    )
+
+
+async def stage_child(store, env: ExecutionEnvelope):
+    staged = await store.stage_envelope_action(
+        env.id,
+        PlannedAction(
+            kind=ActionKind.SUBMIT,
+            limit_price=9.9,
+            quantity=env.qty_ceiling,
+            regime=None,
+            urgency=0.0,
+            working_stop=9.5,
+            atr=0.05,
+            tranche=False,
+            stop_triggered=False,
+        ),
+        snapshot_fingerprint=f"wo0016-events:{env.id}",
+        now=NOW,
+    )
+    return staged.order
 
 
 async def test_created_event_snapshots_full_bounds_with_operator_actor(any_store):
@@ -87,7 +151,7 @@ async def test_created_event_snapshots_full_bounds_with_operator_actor(any_store
 
 async def test_lifecycle_provenance_and_expiry_disposition_round_trip(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft(), actor="operator-ameen")
+    env = await create_owned_envelope(any_store, actor="operator-ameen")
     await any_store.transition_envelope(env.id, S.APPROVED, actor="operator-ameen")
     await any_store.transition_envelope(env.id, S.ACTIVE)
     await any_store.transition_envelope(env.id, S.EXPIRED, reason="ttl lapsed")
@@ -114,11 +178,16 @@ async def test_lifecycle_provenance_and_expiry_disposition_round_trip(any_store)
 
 async def test_fill_events_stay_broker_authoritative(any_store):
     await any_store.initialize()
-    env = await any_store.create_envelope(make_draft())
+    env = await create_owned_envelope(any_store)
     await any_store.transition_envelope(env.id, S.APPROVED)
     await any_store.transition_envelope(env.id, S.ACTIVE)
+    order = await stage_child(any_store, env)
     await any_store.record_envelope_fill(
-        env.id, quantity=10, dedupe_key="fill:o1:p1", price=9.9, order_id="o1"
+        env.id,
+        quantity=10,
+        dedupe_key=f"fill:{order.id}:p1",
+        price=9.9,
+        order_id=order.id,
     )
     fill = next(
         e
@@ -127,7 +196,7 @@ async def test_fill_events_stay_broker_authoritative(any_store):
     )
     assert fill.source is EventSource.BROKER_REST
     assert fill.authority is EventAuthority.BROKER_AUTHORITATIVE
-    assert fill.order_id == "o1"
+    assert fill.order_id == order.id
     assert fill.quantity == 10
 
 
@@ -139,11 +208,16 @@ async def test_envelope_survives_reopen_with_events_intact(tmp_path):
     path = tmp_path / "envelopes.db"
     store = SqliteStateStore(path)
     await store.initialize()
-    env = await store.create_envelope(make_draft(), actor="operator-ameen")
+    env = await create_owned_envelope(store, actor="operator-ameen")
     await store.transition_envelope(env.id, S.APPROVED)
     await store.transition_envelope(env.id, S.ACTIVE)
+    order = await stage_child(store, env)
     await store.record_envelope_fill(
-        env.id, quantity=25, dedupe_key="fill:o1:r1", order_id="o1", price=9.9
+        env.id,
+        quantity=25,
+        dedupe_key=f"fill:{order.id}:r1",
+        order_id=order.id,
+        price=9.9,
     )
     store._conn.close()
     store._conn = None
@@ -163,7 +237,11 @@ async def test_envelope_survives_reopen_with_events_intact(tmp_path):
 
     # Dedupe map survives restart: the same fill replayed is still a no-op.
     again = await reopened.record_envelope_fill(
-        env.id, quantity=25, dedupe_key="fill:o1:r1", order_id="o1", price=9.9
+        env.id,
+        quantity=25,
+        dedupe_key=f"fill:{order.id}:r1",
+        order_id=order.id,
+        price=9.9,
     )
     assert again.remaining_quantity == 75
 
@@ -173,6 +251,7 @@ async def test_envelope_survives_reopen_with_events_intact(tmp_path):
         ExecutionEventType.ENVELOPE_CREATED,
         ExecutionEventType.ENVELOPE_APPROVED,
         ExecutionEventType.ENVELOPE_ACTIVATED,
+        ExecutionEventType.ENVELOPE_ACTION,
         ExecutionEventType.FILL,
     ]
     reopened._conn.close()

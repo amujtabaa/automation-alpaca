@@ -99,10 +99,21 @@ async def _seed_position(store, quantity: int = 100):
 
 async def _active_envelope(store, intent_suffix="1"):
     await _seed_position(store, 100)
+    session = await store.get_current_session()
     si = await store.create_sell_intent(
-        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+        symbol="AAPL",
+        reason=SellReason.PROTECTION_FLOOR,
+        target_quantity=100,
+        session_id=session.id,
     )
-    return await store.approve_envelope_activation(_draft(si.id), actor="op")
+    return await store.approve_envelope_activation(
+        _draft(
+            si.id,
+            qty_ceiling=si.target_quantity,
+            session_id=si.session_id,
+        ),
+        actor="op",
+    )
 
 
 def _both_clocks(at):
@@ -119,12 +130,22 @@ async def test_F2_first_approval_of_a_new_day_does_not_crash(any_store):
     p1, p2 = _both_clocks(T_NOW)
     with p1, p2:
         await any_store.initialize()
+        session = await any_store.get_current_session()
+        si = await any_store.create_sell_intent(
+            symbol="AAPL",
+            reason=SellReason.PROTECTION_FLOOR,
+            target_quantity=100,
+            session_id=session.id,
+        )
+        draft = _draft(
+            si.id,
+            qty_ceiling=si.target_quantity,
+            session_id=si.session_id,
+        )
     # Next calendar day; NO other store call has bootstrapped the new session.
     p1, p2 = _both_clocks(NEXT_DAY)
     with p1, p2:
-        env = await any_store.approve_envelope_activation(
-            _draft("si-rollover"), actor="op"
-        )
+        env = await any_store.approve_envelope_activation(draft, actor="op")
         assert env.status is EnvelopeStatus.ACTIVE
         # and the new day's session actually exists (created, not skipped)
         assert len(await any_store.list_sessions()) == 2
@@ -134,7 +155,21 @@ async def test_F2_first_resume_of_a_new_day_does_not_crash(any_store):
     p1, p2 = _both_clocks(T_NOW)
     with p1, p2:
         await any_store.initialize()
-        env = await any_store.approve_envelope_activation(_draft("si-fz"), actor="op")
+        session = await any_store.get_current_session()
+        si = await any_store.create_sell_intent(
+            symbol="AAPL",
+            reason=SellReason.PROTECTION_FLOOR,
+            target_quantity=100,
+            session_id=session.id,
+        )
+        env = await any_store.approve_envelope_activation(
+            _draft(
+                si.id,
+                qty_ceiling=si.target_quantity,
+                session_id=si.session_id,
+            ),
+            actor="op",
+        )
         await any_store.transition_envelope(env.id, EnvelopeStatus.FROZEN, actor="op")
     p1, p2 = _both_clocks(NEXT_DAY)
     with p1, p2:

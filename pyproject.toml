@@ -41,8 +41,10 @@ fail_under = 93
 # The .ai-os/ (AI Project OS package) and .claude/ (ClaudeFast kit) trees are
 # VENDORED tooling with their own upstream style — not this repo's application
 # code — so `ruff check .` must not lint them. app/, tests/, cockpit/, harness/,
-# and conftest.py remain fully linted.
-extend-exclude = [".ai-os", ".claude"]
+# and conftest.py remain fully linted. Pytest basetemps/cache are ignored runtime
+# artifacts; excluding their entire basename class also keeps the exact Ruff
+# gates reproducible when a Windows test subprocess leaves an unreadable ACL.
+extend-exclude = [".ai-os", ".claude", ".pytest*"]
 
 [tool.mypy]
 # ADR-007: static typecheck gate over app/, introduced by baseline-and-ratchet.

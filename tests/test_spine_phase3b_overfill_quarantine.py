@@ -30,6 +30,7 @@ from app.models import (
     ExecutionEventType,
     Fill,
     OrderSide,
+    OrderStatus,
     Position,
 )
 from app.position import NegativePositionError, apply_fill
@@ -140,6 +141,10 @@ async def test_broker_overfill_blocks_autonomous_buy_for_the_symbol(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    # Model a venue-authoritative late fill on a locally terminal carrier.  A
+    # working SELL would correctly block candidate admission before quarantine
+    # gets a chance to prove its independent autonomous-BUY gate.
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
     )
@@ -189,6 +194,7 @@ async def _overfill_script(store):
     sell = await store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=sess.id
     )
+    await store.transition_order(sell.id, OrderStatus.CANCELED)
     await store.append_fill(
         sell.id,
         "AAPL",
@@ -338,6 +344,7 @@ async def test_covering_buy_does_not_lift_store_quarantine(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
     )
@@ -359,6 +366,40 @@ async def test_covering_buy_does_not_lift_store_quarantine(any_store):
     )
     await any_store.transition_candidate(blocked.id, CandidateStatus.APPROVED)
     with pytest.raises(OrderIntentBlockedError):
+        await any_store.create_order_for_candidate(blocked.id)
+
+
+async def test_explicit_order_overfill_quarantine_blocks_new_buy_intent(any_store):
+    """An order-level overfill can quarantine while position stays positive.
+
+    The autonomous-intent gate must therefore consume explicit ``QUARANTINED``
+    facts, not only infer quarantine from a negative running FILL fold.
+    """
+
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    seed = await any_store.create_candidate("AAPL", session_id=session.id)
+    seed_order = await any_store.create_order_for_test(
+        seed.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await any_store.append_fill(
+        seed_order.id,
+        "AAPL",
+        OrderSide.BUY,
+        150,
+        1.0,
+        source_fill_id="positive-order-overfill-intent-gate",
+        session_id=session.id,
+    )
+    assert (await any_store.get_position("AAPL")).quantity == 150
+    assert "AAPL" in await any_store.list_quarantined_symbols()
+    await any_store.transition_candidate(seed.id, CandidateStatus.REJECTED)
+
+    blocked = await any_store.create_candidate(
+        "AAPL", suggested_quantity=10, suggested_limit_price=1.0, session_id=session.id
+    )
+    await any_store.transition_candidate(blocked.id, CandidateStatus.APPROVED)
+    with pytest.raises(OrderIntentBlockedError, match="quarantined"):
         await any_store.create_order_for_candidate(blocked.id)
 
 
@@ -387,6 +428,7 @@ async def test_quarantine_holds_pre_existing_autonomous_buy_at_claim(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 150, 1.0, session_id=session.id
     )
@@ -402,6 +444,82 @@ async def test_quarantine_holds_pre_existing_autonomous_buy_at_claim(any_store):
     )
     mclaim = await any_store.claim_order_for_submission(mbuy.id)
     assert mclaim.outcome != CLAIM_BLOCKED
+
+
+async def test_explicit_order_overfill_quarantine_blocks_existing_buy_claim(any_store):
+    """The final BUY claim consumes explicit quarantine facts under its lock."""
+
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    candidate = await any_store.create_candidate("AAPL", session_id=session.id)
+    pre_existing = await any_store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 10, session_id=session.id
+    )
+    seed_order = await any_store.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await any_store.append_fill(
+        seed_order.id,
+        "AAPL",
+        OrderSide.BUY,
+        150,
+        1.0,
+        source_fill_id="positive-order-overfill-claim-gate",
+        session_id=session.id,
+    )
+    assert (await any_store.get_position("AAPL")).quantity == 150
+    assert "AAPL" in await any_store.list_quarantined_symbols()
+
+    claim = await any_store.claim_order_for_submission(pre_existing.id)
+    assert claim.outcome == CLAIM_BLOCKED
+    assert claim.reason == "symbol_quarantined"
+
+
+async def test_sqlite_restart_keeps_explicit_quarantine_in_both_buy_gates(tmp_path):
+    path = tmp_path / "explicit-order-overfill-gates.db"
+    first = SqliteStateStore(path)
+    await first.initialize()
+    session = await first.get_current_session()
+    candidate = await first.create_candidate("AAPL", session_id=session.id)
+    pre_existing = await first.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 10, session_id=session.id
+    )
+    seed_order = await first.create_order_for_test(
+        candidate.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await first.append_fill(
+        seed_order.id,
+        "AAPL",
+        OrderSide.BUY,
+        150,
+        1.0,
+        source_fill_id="positive-order-overfill-restart-gates",
+        session_id=session.id,
+    )
+    await first.transition_candidate(candidate.id, CandidateStatus.REJECTED)
+    await first.close()
+
+    reopened = SqliteStateStore(path)
+    await reopened.initialize()
+    try:
+        assert (await reopened.get_position("AAPL")).quantity == 150
+        assert await reopened.list_quarantined_symbols() == {"AAPL"}
+
+        blocked = await reopened.create_candidate(
+            "AAPL",
+            suggested_quantity=10,
+            suggested_limit_price=1.0,
+            session_id=session.id,
+        )
+        await reopened.transition_candidate(blocked.id, CandidateStatus.APPROVED)
+        with pytest.raises(OrderIntentBlockedError, match="quarantined"):
+            await reopened.create_order_for_candidate(blocked.id)
+
+        claim = await reopened.claim_order_for_submission(pre_existing.id)
+        assert claim.outcome == CLAIM_BLOCKED
+        assert claim.reason == "symbol_quarantined"
+    finally:
+        await reopened.close()
 
 
 # --- Fix 3: a replayed overfill fill is idempotent (INV-5 on the record path) - #
@@ -427,6 +545,7 @@ async def test_replayed_overfill_fill_is_idempotent(any_store):
     sell = await any_store.create_order_for_test(
         cand.id, "AAPL", OrderSide.SELL, 150, session_id=session.id
     )
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
 
     first = await any_store.append_fill(
         sell.id,

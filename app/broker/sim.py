@@ -32,9 +32,9 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Optional
 
-from app.broker.adapter import BrokerError, BrokerOrderUpdate
+from app.broker.adapter import BrokerError, BrokerOrderUpdate, VenueOrderScope
 from app.broker.mock import MockBrokerAdapter, _broker_id
-from app.models import Order, OrderStatus
+from app.models import Order, OrderSide, OrderStatus, OrderType
 
 # Statuses beyond which an order no longer needs watching (mirrors the set
 # implicit in OrderStatus's docstring: submitted/partially_filled/
@@ -84,7 +84,9 @@ class SimBrokerAdapter(MockBrokerAdapter):
     # ------------------------------------------------------------------ #
     # BrokerAdapter overrides
     # ------------------------------------------------------------------ #
-    async def submit_order(self, order: Order) -> str:
+    async def submit_order(
+        self, order: Order, *, venue_scope: Optional[VenueOrderScope] = None
+    ) -> str:
         call_index = self._submit_calls
         self._submit_calls += 1
 
@@ -100,7 +102,7 @@ class SimBrokerAdapter(MockBrokerAdapter):
         # attempt, mints+records the broker id, and seeds the default
         # SUBMITTED response. Either way broker_id_for/is_live are correct
         # the instant this returns.
-        broker_order_id = await super().submit_order(order)
+        broker_order_id = await super().submit_order(order, venue_scope=venue_scope)
 
         if self._on_submit is not None:
             await self._on_submit(order, broker_order_id)
@@ -112,6 +114,16 @@ class SimBrokerAdapter(MockBrokerAdapter):
         *,
         recorded_quantity: int = 0,
         fallback_price: Optional[float] = None,
+        expected_client_order_id: Optional[str] = None,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_quantity: Optional[int] = None,
+        expected_limit_price: Optional[float] = None,
+        expected_order_type: Optional[OrderType] = None,
+        expected_time_in_force: Optional[str] = None,
+        expected_order_class: Optional[str] = None,
+        expected_scope: Optional[VenueOrderScope] = None,
+        allow_dynamic_market_sell: bool = False,
     ) -> BrokerOrderUpdate:
         # fallback_price (§7) is accepted for interface parity and ignored: the
         # sim's scripted/queued fills always carry an explicit price.
@@ -137,7 +149,18 @@ class SimBrokerAdapter(MockBrokerAdapter):
         # 3. No script ever set for this id — inherited behavior (_responses
         #    or the default SUBMITTED/0). super() records status_queries.
         return await super().get_order_status(
-            broker_order_id, recorded_quantity=recorded_quantity
+            broker_order_id,
+            recorded_quantity=recorded_quantity,
+            expected_client_order_id=expected_client_order_id,
+            expected_symbol=expected_symbol,
+            expected_side=expected_side,
+            expected_quantity=expected_quantity,
+            expected_limit_price=expected_limit_price,
+            expected_order_type=expected_order_type,
+            expected_time_in_force=expected_time_in_force,
+            expected_order_class=expected_order_class,
+            expected_scope=expected_scope,
+            allow_dynamic_market_sell=allow_dynamic_market_sell,
         )
 
     async def cancel_order(self, broker_order_id: str) -> None:
@@ -193,6 +216,12 @@ class SimBrokerAdapter(MockBrokerAdapter):
         broker_order_id: str,
         *,
         client_order_id: str,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_order_type: Optional[OrderType] = OrderType.LIMIT,
+        expected_time_in_force: Optional[str] = "day",
+        expected_order_class: Optional[str] = "simple",
+        venue_scope: Optional[VenueOrderScope] = None,
         limit_price: Optional[float] = None,
         quantity: Optional[int] = None,
     ) -> str:
@@ -212,6 +241,12 @@ class SimBrokerAdapter(MockBrokerAdapter):
         return await super().replace_order(
             broker_order_id,
             client_order_id=client_order_id,
+            expected_symbol=expected_symbol,
+            expected_side=expected_side,
+            expected_order_type=expected_order_type,
+            expected_time_in_force=expected_time_in_force,
+            expected_order_class=expected_order_class,
+            venue_scope=venue_scope,
             limit_price=limit_price,
             quantity=quantity,
         )

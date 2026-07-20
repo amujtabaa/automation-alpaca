@@ -98,13 +98,12 @@ async def test_disabled_makes_no_report_calls(any_store):
 # --------------------------------------------------------------------------- #
 async def test_external_order_surfaced_without_absorbing(any_store):
     order, adapter = await _submitted_buy(any_store, symbol="AAPL")
-    managed = BrokerOrderReport(
-        adapter.broker_id_for(order.id),
-        order.id,
-        "AAPL",
-        OrderSide.BUY,
-        OrderStatus.SUBMITTED,
-        0,
+    # Use the mock's accepted wire-level report rather than a legacy partial
+    # row. Managed correlation now validates the complete durable venue scope.
+    managed = next(
+        report
+        for report in await adapter.list_open_orders()
+        if report.client_order_id == order.id
     )
     external = BrokerOrderReport(
         "venue-unmanaged",
@@ -156,6 +155,67 @@ async def test_venue_order_matching_a_known_terminal_order_is_not_external(any_s
     )
     await run_monitoring_tick(any_store, adapter, Settings())
     assert await _external_events(any_store) == []  # not flagged external
+
+
+async def test_conflicting_concrete_identity_is_surfaced_despite_known_client_id(
+    any_store,
+):
+    """A familiar client id cannot hide a foreign concrete broker identity."""
+
+    order, adapter = await _submitted_buy(any_store, symbol="AAPL")
+    adapter.seed_open_orders(
+        [
+            BrokerOrderReport(
+                "foreign-broker-id",
+                order.id,
+                "MSFT",
+                OrderSide.SELL,
+                OrderStatus.SUBMITTED,
+                0,
+            )
+        ]
+    )
+
+    plan = await _run_reconciliation(
+        any_store,
+        adapter,
+        Settings(reconcile_recent_threshold_ms=0),
+    )
+
+    assert plan is not None
+    assert [x.broker_order_id for x in plan.external_orders] == ["foreign-broker-id"]
+    events = await _external_events(any_store)
+    assert [e.payload["broker_order_id"] for e in events] == ["foreign-broker-id"]
+
+
+async def test_exact_broker_id_with_conflicting_scope_is_surfaced(any_store):
+    order, adapter = await _submitted_buy(any_store, symbol="AAPL")
+    broker_order_id = adapter.broker_id_for(order.id)
+    adapter.seed_open_orders(
+        [
+            BrokerOrderReport(
+                broker_order_id,
+                "foreign-client",
+                "MSFT",
+                OrderSide.SELL,
+                OrderStatus.SUBMITTED,
+                0,
+            )
+        ]
+    )
+
+    plan = await _run_reconciliation(
+        any_store,
+        adapter,
+        Settings(reconcile_recent_threshold_ms=0),
+    )
+
+    assert plan is not None
+    assert plan.needs_targeted_query == [order.id]
+    assert [x.broker_order_id for x in plan.external_orders] == [broker_order_id]
+    assert [
+        e.payload["broker_order_id"] for e in await _external_events(any_store)
+    ] == [broker_order_id]
 
 
 async def test_external_order_deduped_by_broker_id_across_ticks(any_store):

@@ -46,7 +46,7 @@ from app.reconciliation import (
 )
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import OrderIntentBlockedError
-from app.store.core import EnvelopeTransitionError
+from app.store.core import EnvelopeActionPausedError, EnvelopeTransitionError
 
 pytestmark = pytest.mark.anyio
 
@@ -126,6 +126,16 @@ async def _seed_position(store, quantity: int = 100):
     )
 
 
+async def _stage_child(store, env: ExecutionEnvelope, *, quantity: int = 100):
+    staged = await store.stage_envelope_action(
+        env.id,
+        planned(quantity=quantity),
+        snapshot_fingerprint=f"wo0023-lineage:{env.id}",
+        now=later(),
+    )
+    return staged.order
+
+
 async def _envelope_events(store, envelope_id, event_type=None):
     return [
         e
@@ -182,7 +192,11 @@ async def test_PIN_F3_redrive_respects_current_remaining(any_store):
     assert released.outcome == ENVELOPE_EXEC_RELEASED
 
     after_fill = await any_store.record_envelope_fill(
-        env.id, quantity=60, dedupe_key="fill:oW:exec1", order_id="oW", price=9.95
+        env.id,
+        quantity=60,
+        dedupe_key=f"fill:{released.order_id}:exec1",
+        order_id=released.order_id,
+        price=9.95,
     )
     assert after_fill.remaining_quantity == 40
     assert after_fill.status is S.ACTIVE  # a status-only guard would NOT stop this
@@ -205,7 +219,7 @@ async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
-    await execute_envelope_action(
+    released = await execute_envelope_action(
         any_store,
         adapter,
         env.id,
@@ -217,7 +231,11 @@ async def test_PIN_F3_redrive_gather_variant_fill_racing_redrive(any_store):
 
     async def fill():
         return await any_store.record_envelope_fill(
-            env.id, quantity=60, dedupe_key="fill:oW:g1", order_id="oW", price=9.95
+            env.id,
+            quantity=60,
+            dedupe_key=f"fill:{released.order_id}:g1",
+            order_id=released.order_id,
+            price=9.95,
         )
 
     async def redrive():
@@ -391,10 +409,15 @@ async def test_PIN_F6_supersede_conserves_remaining_fill_first(any_store):
     # and the stale 100-ceiling successor is REFUSED — the amendment re-drafts
     # against the truth instead of silently widening the live mandate.
     env = await active_envelope(any_store)
+    order = await _stage_child(any_store, env)
 
     async def fill():
         return await any_store.record_envelope_fill(
-            env.id, quantity=40, dedupe_key="fill:oA:s1", order_id="oA", price=9.9
+            env.id,
+            quantity=40,
+            dedupe_key=f"fill:{order.id}:s1",
+            order_id=order.id,
+            price=9.9,
         )
 
     successor = make_draft(env.sell_intent_id, qty_ceiling=100)
@@ -431,6 +454,7 @@ async def test_PIN_F6_supersede_first_late_fill_venue_followthrough(any_store):
     # RESET defect itself is still open — pinned by
     # test_PIN_F6_supersede_conserves_remaining_fill_first above (WO-0027).
     env = await active_envelope(any_store)  # helper seeds the 100-share book
+    order = await _stage_child(any_store, env)
     successor = make_draft(env.sell_intent_id, qty_ceiling=100)
 
     async def supersede():
@@ -441,7 +465,11 @@ async def test_PIN_F6_supersede_first_late_fill_venue_followthrough(any_store):
     async def fill():
         await asyncio.sleep(0)
         return await any_store.record_envelope_fill(
-            env.id, quantity=40, dedupe_key="fill:oA:s2", order_id="oA", price=9.9
+            env.id,
+            quantity=40,
+            dedupe_key=f"fill:{order.id}:s2",
+            order_id=order.id,
+            price=9.9,
         )
 
     new_env, _ = await asyncio.gather(supersede(), fill())
@@ -509,7 +537,11 @@ async def test_HELD_concurrent_double_stage_single_venue_order(any_store):
                 snapshot_fingerprint=FP,
                 now=now,
             )
-        except (OrderIntentBlockedError, EnvelopeTransitionError) as e:
+        except (
+            EnvelopeActionPausedError,
+            OrderIntentBlockedError,
+            EnvelopeTransitionError,
+        ) as e:
             return e
 
     await asyncio.gather(exec_one(a1, later()), exec_one(a2, later(60)))
@@ -518,10 +550,15 @@ async def test_HELD_concurrent_double_stage_single_venue_order(any_store):
 
 async def test_HELD_duplicate_fill_gather_exactly_once(any_store):
     env = await active_envelope(any_store)
+    order = await _stage_child(any_store, env)
 
     async def fill():
         return await any_store.record_envelope_fill(
-            env.id, quantity=30, dedupe_key="fill:oX:dup", order_id="oX", price=9.9
+            env.id,
+            quantity=30,
+            dedupe_key=f"fill:{order.id}:dup",
+            order_id=order.id,
+            price=9.9,
         )
 
     await asyncio.gather(fill(), fill())
@@ -530,10 +567,15 @@ async def test_HELD_duplicate_fill_gather_exactly_once(any_store):
 
 async def test_HELD_concurrent_overfill_breaches_never_negative(any_store):
     env = await active_envelope(any_store)
+    order = await _stage_child(any_store, env)
 
     async def f(k, q):
         return await any_store.record_envelope_fill(
-            env.id, quantity=q, dedupe_key=f"fill:o:{k}", order_id="o", price=9.9
+            env.id,
+            quantity=q,
+            dedupe_key=f"fill:{order.id}:{k}",
+            order_id=order.id,
+            price=9.9,
         )
 
     await asyncio.gather(f("a", 70), f("b", 70))
@@ -544,10 +586,15 @@ async def test_HELD_concurrent_overfill_breaches_never_negative(any_store):
 
 async def test_HELD_fill_vs_cancel_transition(any_store):
     env = await active_envelope(any_store)
+    order = await _stage_child(any_store, env)
 
     async def fill():
         return await any_store.record_envelope_fill(
-            env.id, quantity=25, dedupe_key="fill:o:late", order_id="o", price=9.9
+            env.id,
+            quantity=25,
+            dedupe_key=f"fill:{order.id}:late",
+            order_id=order.id,
+            price=9.9,
         )
 
     async def freeze_cancel():
@@ -563,9 +610,14 @@ async def test_HELD_fill_vs_cancel_transition(any_store):
 
 async def test_HELD_freeze_fill_to_zero_resume_storm(any_store):
     env = await active_envelope(any_store)
+    order = await _stage_child(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN, actor="op")
     frozen = await any_store.record_envelope_fill(
-        env.id, quantity=100, dedupe_key="fill:o:all", order_id="o", price=9.9
+        env.id,
+        quantity=100,
+        dedupe_key=f"fill:{order.id}:all",
+        order_id=order.id,
+        price=9.9,
     )
     assert frozen.status is S.FROZEN and frozen.remaining_quantity == 0
 
@@ -634,9 +686,14 @@ async def test_frozen_overfill_chains_breached_never_completed(any_store):
     resume of a breached envelope is structurally refused."""
 
     env = await active_envelope(any_store)
+    order = await _stage_child(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN, actor="op")
     breached = await any_store.record_envelope_fill(
-        env.id, quantity=150, dedupe_key="fill:o:over", order_id="o", price=9.9
+        env.id,
+        quantity=150,
+        dedupe_key=f"fill:{order.id}:over",
+        order_id=order.id,
+        price=9.9,
     )
     assert breached.remaining_quantity == 0  # floors, never negative
     assert breached.status is S.BREACHED, (
@@ -655,9 +712,14 @@ async def test_frozen_exact_fill_still_completes_on_resume(any_store):
     a breach — resume auto-completes exactly as before (INV-079 unchanged)."""
 
     env = await active_envelope(any_store)
+    order = await _stage_child(any_store, env)
     await any_store.transition_envelope(env.id, S.FROZEN, actor="op")
     frozen = await any_store.record_envelope_fill(
-        env.id, quantity=100, dedupe_key="fill:o:exact", order_id="o", price=9.9
+        env.id,
+        quantity=100,
+        dedupe_key=f"fill:{order.id}:exact",
+        order_id=order.id,
+        price=9.9,
     )
     assert frozen.status is S.FROZEN and frozen.remaining_quantity == 0
     await any_store.transition_envelope(env.id, S.ACTIVE, actor="op")

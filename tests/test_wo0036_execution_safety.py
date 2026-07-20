@@ -245,9 +245,7 @@ async def test_c_f3_noop_active_transition_does_not_mint_a_session_on_rollover(
         store._conn.execute("UPDATE sessions SET session_date = '2000-01-01'")
         store._conn.commit()
         before = len(await store.list_sessions())
-        out = await store.transition_envelope(
-            env.id, EnvelopeStatus.ACTIVE, actor="op"
-        )
+        out = await store.transition_envelope(env.id, EnvelopeStatus.ACTIVE, actor="op")
         assert out.status is EnvelopeStatus.ACTIVE  # idempotent NOOP
         assert len(await store.list_sessions()) == before, (
             "NOOP ACTIVE minted a session on a date rollover (parity break)"

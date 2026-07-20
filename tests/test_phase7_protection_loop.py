@@ -174,16 +174,16 @@ async def test_resume_emitted_when_paused_position_goes_flat(store):
     await _run_protection(store, MockBrokerAdapter(), md, Settings())  # paused
     assert len(await _events(store, EventType.PROTECTION_PAUSED.value, "AAPL")) == 1
 
-    # Flatten AAPL to zero via a manual-flatten exit that fills.
+    # Flatten AAPL to zero through the explicit Halted-only emergency capability,
+    # then record the venue fill.  A raw MANUAL_FLATTEN intent is correctly denied
+    # while Halted and must not be used as a test-only bypass.
     session = await store.get_current_session()
-    si = await store.create_sell_intent(
-        symbol="AAPL",
-        reason=SellReason.MANUAL_FLATTEN,
-        target_quantity=100,
-        session_id=session.id,
+    await store.authorize_emergency_reduce_override("AAPL", actor="test")
+    flattened = await store.flatten_position(
+        "AAPL", actor="test", emergency_override=True
     )
-    await store.transition_sell_intent(si.id, SellIntentStatus.APPROVED)
-    sell = await store.create_order_for_sell_intent(si.id, order_type=OrderType.MARKET)
+    assert flattened.order is not None
+    sell = flattened.order
     await store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 100, 9.0, session_id=session.id
     )

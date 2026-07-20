@@ -23,6 +23,7 @@ from app.broker.adapter import (
     BrokerFill,
     BrokerOrderUpdate,
     TerminalBrokerError,
+    VenueOrderScope,
 )
 from app.broker.mock import MockBrokerAdapter
 from app.broker.sim import SimBrokerAdapter
@@ -94,6 +95,64 @@ async def test_mock_replace_preserves_partial_fills_on_the_old_order():
     assert old.fills == [fill]  # the partial is never lost
 
 
+@pytest.mark.parametrize("adapter_type", [MockBrokerAdapter, SimBrokerAdapter])
+async def test_test_double_mass_report_replays_full_managed_venue_scope(adapter_type):
+    adapter = adapter_type()
+    order = make_order()
+    scope = VenueOrderScope(
+        client_order_id=order.id,
+        symbol=order.symbol,
+        side=OrderSide(order.side),
+        quantity=order.quantity,
+        order_type=OrderType(order.order_type),
+        limit_price=order.limit_price,
+        extended_hours=True,
+    )
+
+    broker_id = await adapter.submit_order(order, venue_scope=scope)
+    [report] = await adapter.list_open_orders()
+
+    assert report.broker_order_id == broker_id
+    assert report.client_order_id == order.id
+    assert report.order_type == "limit"
+    assert report.time_in_force == "day"
+    assert report.order_class == "simple"
+    assert report.asset_class == "us_equity"
+    assert report.quantity_mode == "qty"
+    assert report.extended_hours is True
+    assert report.has_legs is False
+
+
+@pytest.mark.parametrize("adapter_type", [MockBrokerAdapter, SimBrokerAdapter])
+async def test_test_double_mass_report_replays_replace_predecessor(adapter_type):
+    adapter = adapter_type()
+    original = make_order()
+    predecessor = await adapter.submit_order(original)
+    replacement_id = "replacement-client"
+    scope = VenueOrderScope(
+        client_order_id=replacement_id,
+        symbol=original.symbol,
+        side=OrderSide(original.side),
+        quantity=original.quantity,
+        order_type=OrderType(original.order_type),
+        limit_price=original.limit_price,
+        extended_hours=False,
+        replaces_broker_order_id=predecessor,
+    )
+
+    replacement = await adapter.replace_order(
+        predecessor,
+        client_order_id=replacement_id,
+        venue_scope=scope,
+        limit_price=scope.limit_price,
+        quantity=scope.quantity,
+    )
+    [report] = await adapter.list_open_orders()
+
+    assert report.broker_order_id == replacement
+    assert report.replaces_broker_order_id == predecessor
+
+
 async def test_mock_fail_next_replace_raises_then_clears():
     mock = MockBrokerAdapter()
     old_id = await mock.submit_order(make_order())
@@ -141,7 +200,24 @@ class TestAlpacaReplace:
         # replace_order_by_id / get_order_by_client_id, these tests FAIL
         # instead of silently passing against a method that no longer exists.
         client = create_autospec(TradingClient, instance=True)
-        client.replace_order_by_id.return_value = SimpleNamespace(id="new-venue-id")
+        client.replace_order_by_id.return_value = SimpleNamespace(
+            id="new-venue-id",
+            client_order_id="repl-a1",
+            symbol="AAPL",
+            side="sell",
+            qty=8,
+            type="limit",
+            time_in_force="day",
+            order_class="simple",
+            limit_price=10.25,
+            asset_class="us_equity",
+            notional=None,
+            legs=None,
+            extended_hours=False,
+            replaces="venue-1",
+            status="new",
+            filled_qty=0,
+        )
         adapter._client = client
         return adapter, client
 
@@ -169,6 +245,163 @@ class TestAlpacaReplace:
         assert req.client_order_id == "repl-a1"
         assert float(req.limit_price) == 10.25
         assert int(req.qty) == 8
+
+    @pytest.mark.parametrize("ingress", ["replace", "duplicate"])
+    @pytest.mark.parametrize("raw_client_id", [None, "", "different-replacement"])
+    async def test_response_client_identity_must_match_request(
+        self, ingress, raw_client_id
+    ):
+        from types import SimpleNamespace
+
+        adapter, client = self._adapter_and_mock()
+        response = SimpleNamespace(id="new-venue-id", client_order_id=raw_client_id)
+        if ingress == "replace":
+            client.replace_order_by_id.return_value = response
+        else:
+            client.replace_order_by_id.side_effect = self._api_error(
+                422, "duplicate client_order_id"
+            )
+            client.get_order_by_client_id.return_value = response
+
+        with pytest.raises(AmbiguousBrokerError, match="client_order_id"):
+            await adapter.replace_order(
+                "venue-1", client_order_id="expected-replacement"
+            )
+
+    @pytest.mark.parametrize("ingress", ["replace", "duplicate"])
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("symbol", "MSFT"),
+            ("side", "buy"),
+            ("qty", 80),
+            ("type", "market"),
+            ("time_in_force", "gtc"),
+            ("order_class", "bracket"),
+            ("limit_price", 999.0),
+        ],
+    )
+    async def test_response_scope_must_match_replace_request(
+        self, ingress, field, value
+    ):
+        from types import SimpleNamespace
+
+        adapter, client = self._adapter_and_mock()
+        response = SimpleNamespace(
+            id="new-venue-id",
+            client_order_id="expected-replacement",
+            symbol="AAPL",
+            side="sell",
+            qty=8,
+            type="limit",
+            time_in_force="day",
+            order_class="simple",
+            limit_price=10.25,
+            asset_class="us_equity",
+            notional=None,
+            legs=None,
+            extended_hours=False,
+            replaces="venue-1",
+            status="new",
+            filled_qty=0,
+        )
+        setattr(response, field, value)
+        if ingress == "replace":
+            client.replace_order_by_id.return_value = response
+        else:
+            client.replace_order_by_id.side_effect = self._api_error(
+                422, "duplicate client_order_id"
+            )
+            client.get_order_by_client_id.return_value = response
+
+        with pytest.raises(AmbiguousBrokerError, match="acknowledgement scope"):
+            await adapter.replace_order(
+                "venue-1",
+                client_order_id="expected-replacement",
+                expected_symbol="AAPL",
+                expected_side=OrderSide.SELL,
+                quantity=8,
+                limit_price=10.25,
+            )
+
+    @pytest.mark.parametrize("ingress", ["replace", "duplicate"])
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("status", "future_venue_state"),
+            ("filled_qty", None),
+            ("filled_qty", -1),
+            ("filled_qty", "0.5"),
+        ],
+    )
+    async def test_replace_ack_requires_recognized_nonnegative_whole_state(
+        self, ingress, field, value
+    ):
+        adapter, client = self._adapter_and_mock()
+        response = client.replace_order_by_id.return_value
+        setattr(response, field, value)
+        if ingress == "duplicate":
+            client.replace_order_by_id.side_effect = self._api_error(
+                422, "duplicate client_order_id"
+            )
+            client.get_order_by_client_id.return_value = response
+
+        with pytest.raises(AmbiguousBrokerError, match="acknowledgement state"):
+            await adapter.replace_order(
+                "venue-1",
+                client_order_id="repl-a1",
+                expected_symbol="AAPL",
+                expected_side=OrderSide.SELL,
+                quantity=8,
+                limit_price=10.25,
+            )
+
+    async def test_replace_ack_allows_broker_overfill_state(self):
+        adapter, client = self._adapter_and_mock()
+        response = client.replace_order_by_id.return_value
+        response.status = "filled"
+        response.filled_qty = 12
+
+        assert (
+            await adapter.replace_order(
+                "venue-1",
+                client_order_id="repl-a1",
+                expected_symbol="AAPL",
+                expected_side=OrderSide.SELL,
+                quantity=8,
+                limit_price=10.25,
+            )
+            == "new-venue-id"
+        )
+
+    @pytest.mark.parametrize("raw_id", [None, "", "   "])
+    async def test_success_response_without_concrete_id_is_ambiguous(self, raw_id):
+        """A malformed replace success is post-call ambiguity, never retryable."""
+
+        from types import SimpleNamespace
+
+        adapter, client = self._adapter_and_mock()
+        client.replace_order_by_id.return_value = SimpleNamespace(id=raw_id)
+
+        with pytest.raises(AmbiguousBrokerError, match="concrete broker id"):
+            await adapter.replace_order("venue-1", client_order_id="repl-missing")
+        client.replace_order_by_id.assert_called_once()
+
+    @pytest.mark.parametrize("raw_id", [None, "", "   "])
+    async def test_duplicate_recovery_without_concrete_id_is_ambiguous(self, raw_id):
+        """Duplicate recovery cannot return a fabricated or blank replacement id."""
+
+        from types import SimpleNamespace
+
+        adapter, client = self._adapter_and_mock()
+        client.replace_order_by_id.side_effect = self._api_error(
+            422, "duplicate client_order_id"
+        )
+        client.get_order_by_client_id.return_value = SimpleNamespace(id=raw_id)
+
+        with pytest.raises(AmbiguousBrokerError, match="concrete broker id"):
+            await adapter.replace_order("venue-1", client_order_id="repl-duplicate")
+        client.get_order_by_client_id.assert_called_once_with("repl-duplicate")
 
     async def test_definitive_4xx_is_terminal(self):
         adapter, client = self._adapter_and_mock()
@@ -207,17 +440,93 @@ class TestAlpacaReplace:
             422, "duplicate client_order_id"
         )
         client.get_order_by_client_id.return_value = SimpleNamespace(
-            id="already-created"
+            id="already-created",
+            client_order_id="repl-a6",
+            type="limit",
+            time_in_force="day",
+            order_class="simple",
+            symbol="AAPL",
+            side="sell",
+            qty=8,
+            limit_price=10.25,
+            asset_class="us_equity",
+            notional=None,
+            legs=None,
+            extended_hours=False,
+            replaces="venue-1",
+            status="new",
+            filled_qty=0,
         )
-        new_id = await adapter.replace_order("venue-1", client_order_id="repl-a6")
+        new_id = await adapter.replace_order(
+            "venue-1",
+            client_order_id="repl-a6",
+            expected_symbol="AAPL",
+            expected_side=OrderSide.SELL,
+            quantity=8,
+            limit_price=10.25,
+        )
         assert new_id == "already-created"
         client.get_order_by_client_id.assert_called_once_with("repl-a6")
 
-    async def test_duplicate_whose_lookup_fails_is_terminal(self):
+    @pytest.mark.parametrize("ingress", ["replace", "duplicate"])
+    async def test_replacement_cannot_reuse_predecessor_broker_identity(self, ingress):
+        adapter, client = self._adapter_and_mock()
+        response = client.replace_order_by_id.return_value
+        response.id = "venue-1"
+        response.client_order_id = "repl-same-id"
+        if ingress == "duplicate":
+            client.replace_order_by_id.side_effect = self._api_error(
+                422, "duplicate client_order_id"
+            )
+            client.get_order_by_client_id.return_value = response
+
+        with pytest.raises(AmbiguousBrokerError, match="predecessor broker identity"):
+            await adapter.replace_order(
+                "venue-1",
+                client_order_id="repl-same-id",
+                expected_symbol="AAPL",
+                expected_side=OrderSide.SELL,
+                quantity=8,
+                limit_price=10.25,
+            )
+
+    @pytest.mark.parametrize("ingress", ["replace", "duplicate"])
+    async def test_scoped_replace_ack_requires_exact_predecessor(self, ingress):
+        adapter, client = self._adapter_and_mock()
+        response = client.replace_order_by_id.return_value
+        response.client_order_id = "repl-missing-predecessor"
+        response.replaces = None
+        scope = VenueOrderScope(
+            client_order_id="repl-missing-predecessor",
+            symbol="AAPL",
+            side=OrderSide.SELL,
+            quantity=8,
+            order_type=OrderType.LIMIT,
+            limit_price=10.25,
+            extended_hours=False,
+            replaces_broker_order_id="venue-1",
+        )
+        if ingress == "duplicate":
+            client.replace_order_by_id.side_effect = self._api_error(
+                422, "duplicate client_order_id"
+            )
+            client.get_order_by_client_id.return_value = response
+
+        with pytest.raises(AmbiguousBrokerError, match="acknowledgement scope"):
+            await adapter.replace_order(
+                "venue-1",
+                client_order_id="repl-missing-predecessor",
+                venue_scope=scope,
+            )
+
+    async def test_duplicate_whose_lookup_fails_is_ambiguous(self):
+        # WO-0113 late root-class audit: duplicate confirms a replacement exists;
+        # a failed lookup cannot prove rejection. Terminal made the envelope mark
+        # its child REJECTED with no durable owner, so ambiguity is mandatory.
         adapter, client = self._adapter_and_mock()
         client.replace_order_by_id.side_effect = self._api_error(
             422, "duplicate client_order_id"
         )
         client.get_order_by_client_id.side_effect = RuntimeError("down")
-        with pytest.raises(TerminalBrokerError):
+        with pytest.raises(AmbiguousBrokerError):
             await adapter.replace_order("venue-1", client_order_id="repl-a7")

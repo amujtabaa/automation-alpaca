@@ -19,21 +19,26 @@ import pytest
 from app.broker.adapter import (
     AmbiguousBrokerError,
     BrokerError,
+    BrokerFill,
+    BrokerOrderUpdate,
     TerminalBrokerError,
 )
 from app.broker.mock import MockBrokerAdapter
+from app.config import Settings
 from app.models import (
     EnvelopeExpiryDisposition,
     EnvelopeStaleDataDisposition,
     EnvelopeStatus,
     ExecutionEnvelope,
     ExecutionEventType,
+    Order,
     OrderSide,
     OrderStatus,
     SellReason,
     SessionType,
     utcnow,
 )
+from app.monitoring import _cancel_envelope_working_order, _reconcile_open_orders
 from app.reconciliation import (
     ENVELOPE_EXEC_DIVERGENCE,
     ENVELOPE_EXEC_CANCELLED,
@@ -128,6 +133,54 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
     )
 
 
+async def canceled_envelope_child(
+    store, env: ExecutionEnvelope, *, quantity: int
+) -> Order:
+    staged = await store.stage_envelope_action(
+        env.id,
+        planned(quantity=quantity),
+        snapshot_fingerprint=f"wo0019-fill-lineage:{env.id}",
+        now=later(),
+    )
+    return await store.transition_order(staged.order.id, OrderStatus.CANCELED)
+
+
+async def active_envelope_with_late_sell_source(
+    store, *, quantity: int
+) -> tuple[ExecutionEnvelope, Order]:
+    """Prepare a terminal SELL before the envelope owns the symbol.
+
+    Its later fill remains broker-authoritative without minting a fresh BUY
+    candidate through the envelope's same-symbol exit-preemption boundary.
+    """
+
+    await store.initialize()
+    session = await store.get_current_session()
+    seed = await store.create_candidate("AAPL", session_id=session.id)
+    buy = await store.create_order_for_test(
+        seed.id, "AAPL", OrderSide.BUY, 100, session_id=session.id
+    )
+    await store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 10.0, session_id=session.id
+    )
+    source_candidate = await store.create_candidate("AAPL", session_id=session.id)
+    late_sell = await store.create_order_for_test(
+        source_candidate.id,
+        "AAPL",
+        OrderSide.SELL,
+        quantity,
+        session_id=session.id,
+    )
+    await store.transition_order(late_sell.id, OrderStatus.CANCELED)
+    intent = await store.create_sell_intent(
+        symbol="AAPL", reason=SellReason.PROTECTION_FLOOR, target_quantity=100
+    )
+    envelope = await store.approve_envelope_activation(
+        make_draft(intent.id), actor="operator-a"
+    )
+    return envelope, late_sell
+
+
 async def envelope_events(store, envelope_id, event_type=None):
     return [
         e
@@ -201,8 +254,13 @@ async def test_write_time_stale_facts_refuse_without_freezing(any_store):
     UNTOUCHED, no order, zero venue calls; the policy replans next tick."""
 
     env = await active_envelope(any_store)
+    order = await canceled_envelope_child(any_store, env, quantity=95)
     await any_store.record_envelope_fill(
-        env.id, quantity=95, dedupe_key="fill:o:race", order_id="o", price=9.9
+        env.id,
+        quantity=95,
+        dedupe_key=f"fill:{order.id}:race",
+        order_id=order.id,
+        price=9.9,
     )  # remaining 100 -> 5; the plan below was sized against 100
     result = await any_store.stage_envelope_action(
         env.id, planned(quantity=10), snapshot_fingerprint=FP, now=later()
@@ -303,6 +361,11 @@ async def test_position_shrink_between_plan_and_write_hits_reduce_only(any_store
     await any_store.append_fill(
         sell.id, "AAPL", OrderSide.SELL, 80, 10.5, session_id=session.id
     )  # book: 100 -> 20; envelope remaining untouched (100)
+    # This synthetic order is only the carrier for an already-observed external
+    # fill. Mark the never-submitted local row terminal so the independent
+    # direct-SELL claim/venue rail does not (correctly) treat it as still
+    # submittable and mask the reduce-only race this test isolates.
+    await any_store.transition_order(sell.id, OrderStatus.CANCELED)
 
     adapter = MockBrokerAdapter()
     result = await execute_envelope_action(
@@ -328,7 +391,7 @@ async def test_redrive_recheck_catches_position_shrink(any_store):
     shrinks while the order waits (transient release) — the redrive refuses
     and locally cancels; zero venue calls."""
 
-    env = await active_envelope(any_store)
+    env, late_sell = await active_envelope_with_late_sell_source(any_store, quantity=95)
     adapter = MockBrokerAdapter()
     adapter.fail_next_submit(BrokerError("transient"))
     released = await execute_envelope_action(
@@ -342,12 +405,13 @@ async def test_redrive_recheck_catches_position_shrink(any_store):
     assert released.outcome == ENVELOPE_EXEC_RELEASED
 
     session = await any_store.get_current_session()
-    flat_cand = await any_store.create_candidate("AAPL", session_id=session.id)
-    sell = await any_store.create_order_for_test(
-        flat_cand.id, "AAPL", OrderSide.SELL, 95, session_id=session.id
-    )
     await any_store.append_fill(
-        sell.id, "AAPL", OrderSide.SELL, 95, 10.5, session_id=session.id
+        late_sell.id,
+        "AAPL",
+        OrderSide.SELL,
+        95,
+        10.5,
+        session_id=session.id,
     )  # book: 100 -> 5
 
     fresh = MockBrokerAdapter()
@@ -424,7 +488,38 @@ async def test_submit_leg_end_to_end(any_store):
     assert actions[0].order_id == order.id
 
 
-async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
+async def test_submit_scope_uses_the_injected_decision_clock(any_store):
+    """Replay at a session boundary must persist the same exact wire scope."""
+
+    premarket = datetime(2026, 7, 15, 8, 30, 0, tzinfo=timezone.utc)
+    env = await active_envelope(
+        any_store,
+        allowed_session_phases=[SessionType.PRE_MARKET],
+    )
+    adapter = MockBrokerAdapter()
+
+    result = await execute_envelope_action(
+        any_store,
+        adapter,
+        env.id,
+        planned(),
+        snapshot_fingerprint="fp-injected-premarket",
+        now=premarket,
+    )
+
+    assert result.outcome == ENVELOPE_EXEC_SUBMITTED
+    scopes = [
+        event
+        for event in await any_store.get_order_execution_events(result.order_id)
+        if event.event_type is ExecutionEventType.VENUE_ORDER_SCOPE
+    ]
+    assert len(scopes) == 1
+    assert scopes[0].payload["extended_hours"] is True
+    [report] = await adapter.list_open_orders()
+    assert report.extended_hours is True
+
+
+async def test_reprice_leg_keeps_the_predecessor_pollable(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     first = await execute_envelope_action(
@@ -454,7 +549,101 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
     assert new_order.replaces_order_id == first.order_id
     assert client_id == new_order.id  # deterministic client id (ADR-002)
     old_order = await any_store.get_order(first.order_id)
-    assert old_order.status is OrderStatus.CANCELED  # venue-confirmed replace
+    # A replace acknowledgement is not proof that the predecessor cannot fill.
+    # It stays pollable until its own status confirms terminal venue truth.
+    assert old_order.status is OrderStatus.SUBMITTED
+
+
+async def test_replace_ack_late_old_fill_and_child_reject_are_both_reconciled(
+    any_store,
+):
+    """A replace ACK cannot hide the predecessor's last-moment execution.
+
+    Alpaca may accept the request, fill the predecessor before the replace
+    reaches the venue, and then reject the child.  Both local rows must remain
+    independently pollable so the old fill still reduces the real position.
+    """
+
+    env = await active_envelope(any_store)
+    adapter = MockBrokerAdapter()
+    first = await execute_envelope_action(
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
+    old = await any_store.get_order(first.order_id)
+    assert old is not None and old.broker_order_id is not None
+
+    second = await execute_envelope_action(
+        any_store,
+        adapter,
+        env.id,
+        planned(kind=ActionKind.REPRICE, limit_price=9.80),
+        snapshot_fingerprint="fp-late-old-fill",
+        now=later(60),
+    )
+    child = await any_store.get_order(second.order_id)
+    assert child is not None and child.broker_order_id is not None
+    assert (await any_store.get_order(old.id)).status is OrderStatus.SUBMITTED
+
+    late_fill = BrokerFill(
+        source_fill_id="old-filled-during-replace",
+        quantity=old.quantity,
+        price=9.85,
+        filled_at=utcnow(),
+    )
+    adapter.set_response(
+        old.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.FILLED, old.quantity, [late_fill]),
+    )
+    adapter.set_response(
+        child.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.REJECTED, 0, []),
+    )
+
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    assert (await any_store.get_order(old.id)).status is OrderStatus.FILLED
+    assert (await any_store.get_order(child.id)).status is OrderStatus.REJECTED
+    assert (await any_store.get_position("AAPL")).quantity == 90
+
+
+async def test_replace_child_reject_leaves_working_predecessor_cancellable(any_store):
+    env = await active_envelope(any_store)
+    adapter = MockBrokerAdapter()
+    first = await execute_envelope_action(
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
+    old = await any_store.get_order(first.order_id)
+    assert old is not None and old.broker_order_id is not None
+
+    second = await execute_envelope_action(
+        any_store,
+        adapter,
+        env.id,
+        planned(kind=ActionKind.REPRICE, limit_price=9.80),
+        snapshot_fingerprint="fp-rejected-child",
+        now=later(60),
+    )
+    child = await any_store.get_order(second.order_id)
+    assert child is not None and child.broker_order_id is not None
+
+    # The venue reports that the replace never displaced the predecessor.
+    adapter.set_response(
+        old.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, []),
+    )
+    adapter.set_response(
+        child.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.REJECTED, 0, []),
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    assert (await any_store.get_order(old.id)).status is OrderStatus.SUBMITTED
+    assert (await any_store.get_order(child.id)).status is OrderStatus.REJECTED
+
+    # The still-working predecessor remains a valid wind-down target.
+    await _cancel_envelope_working_order(any_store, adapter, env)
+    assert old.broker_order_id in adapter.canceled
+    assert (await any_store.get_order(old.id)).status is OrderStatus.CANCEL_PENDING
 
 
 # --- ambiguous replace: quarantine + pause + no budget double-spend ----------------- #
@@ -463,7 +652,7 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
 async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
-    await execute_envelope_action(
+    first = await execute_envelope_action(
         any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
     )
     adapter.fail_next_replace(AmbiguousBrokerError("504 mid-replace"))
@@ -493,7 +682,7 @@ async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
     await any_store.resolve_timeout_quarantine(
         quarantined.id, OrderStatus.SUBMITTED, broker_order_id="venue-recovered"
     )
-    # ... the envelope resumes, and the budget was spent EXACTLY ONCE for
+    # The envelope stays paused, but the budget was spent EXACTLY ONCE for
     # that reprice (the accounting event committed with the staging, and the
     # recovery consumed the SAME staged order — no re-stage).
     actions = await envelope_events(
@@ -501,6 +690,18 @@ async def test_ambiguous_replace_quarantines_and_pauses_the_envelope(any_store):
     )
     reprices = [e for e in actions if e.payload["action"] == "reprice"]
     assert len(reprices) == 1
+    # Resolving the replacement as SUBMITTED does not prove its predecessor is
+    # dead. Both may still be venue-live, so a third stage remains paused.
+    with pytest.raises(EnvelopeActionPausedError):
+        await any_store.stage_envelope_action(
+            env.id,
+            planned(kind=ActionKind.REPRICE, limit_price=9.70),
+            snapshot_fingerprint="fp-3-still-ambiguous",
+            now=later(75),
+        )
+
+    # Broker truth must converge the predecessor before delegation resumes.
+    await any_store.transition_order(first.order_id, OrderStatus.CANCELED)
     third = await any_store.stage_envelope_action(
         env.id,
         planned(kind=ActionKind.REPRICE, limit_price=9.70),

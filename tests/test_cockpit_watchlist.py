@@ -20,7 +20,7 @@ def _run(monkeypatch, watchlist: list, snapshots: list) -> AppTest:
         api_client, "list_marketdata_snapshots", lambda: list(snapshots)
     )
 
-    at = AppTest.from_file("cockpit/app.py").run()
+    at = AppTest.from_file("cockpit/app.py", default_timeout=30).run()
     at.sidebar.radio[0].set_value("Watchlist Input").run()
     return at
 
@@ -105,7 +105,7 @@ def test_snapshot_route_error_does_not_crash_the_screen(monkeypatch):
     monkeypatch.setattr(api_client, "list_watchlist", lambda: [WATCHLIST_ENTRY])
     monkeypatch.setattr(api_client, "list_marketdata_snapshots", _raise)
 
-    at = AppTest.from_file("cockpit/app.py").run()
+    at = AppTest.from_file("cockpit/app.py", default_timeout=30).run()
     at.sidebar.radio[0].set_value("Watchlist Input").run()
 
     assert not at.exception

@@ -55,7 +55,7 @@ Derive routine order-status event provenance in-store from the transition's endp
 | claim `CREATED → SUBMITTING` (`SUBMIT_PENDING`) | `ENGINE` / `LOCAL` | pre-broker engine decision |
 | claim release `SUBMITTING → CREATED` (`SUBMIT_RELEASED`) | `ENGINE` / `LOCAL` | an engine decision to return an unclaimed order to the pool; the broker never saw it (WO-0007b Stage A edge) |
 | cancel request `→ CANCEL_PENDING` (`CANCEL_PENDING`) | `ENGINE` / `LOCAL` | a cancel **requested** at the broker but not yet confirmed — an engine-initiated intent, not a broker fact (WO-0007b Stage A edge) |
-| `CANCELED` of an order with **no `broker_order_id`** | `ENGINE` / `LOCAL` | the broker never saw it — a never-submitted `CREATED` order cancelled locally (session close, flatten supersede, manual) OR the `SUBMITTING → CANCELED` release when a submit failed before the venue returned an id (`app/monitoring.py` no-zombie cancel) |
+| `CANCELED` of an order with **no `broker_order_id`** | `ENGINE` / `LOCAL` | the broker never saw it — a safely local, event-projected `CREATED` order with no open recovery **and no accepted-submit fallback** cancelled locally (session close, exit stand-down, flatten supersede, manual) OR the `SUBMITTING → CANCELED` release when a submit failed before the venue returned an id (`app/monitoring.py` no-zombie cancel) |
 | `SUBMITTED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` | `BROKER_REST` / `BROKER_AUTHORITATIVE` | broker-observed (SUBMITTED requires a broker id per AIR-001; fills/reject come from the reconcile poll) |
 | `CANCELED` of an order **with a `broker_order_id`** | `BROKER_REST` / `BROKER_AUTHORITATIVE` | broker-confirmed cancel of a live order |
 
@@ -63,6 +63,60 @@ The `CANCELED` discriminator is `broker_order_id is None` (assigned only at `SUB
 status `== CREATED`: the WO-0009 adversarial-verify pass found a reachable `SUBMITTING → CANCELED`
 engine-local release (submit failed for a BUY whose session closed mid-submit) that the old proxy
 would have stamped `BROKER_AUTHORITATIVE` — the exact over-claim direction this ADR forbids.
+
+**WO-0113 local-cancel clarification.** The provenance discriminator above describes how an applied
+transition is stamped; it is not sufficient cancel authority. A local `CREATED → CANCELED` may be
+applied only when event projection still says `CREATED`, no broker id exists, and no open
+`unresolved` or `needs_review` recovery references the order. Raw cached status alone never proves
+the broker did not see it. The common dual-store primitive applies the row, audit event, routine
+ExecutionEvent, and owner reconciliation atomically. Pins:
+`tests/test_wo0113_safe_local_cancel.py::test_direct_created_cancel_is_blocked_by_open_recovery`,
+`::test_direct_created_cancel_uses_event_projection_not_raw_status`, and
+`::test_local_created_cancel_rolls_back_row_audit_and_execution`.
+
+### WO-0113 operator-ratified behavior — pending REV-0033 independent review
+
+Whenever recovery ownership for accepted broker identity cannot be persisted, the last-write
+fallback is `UNKNOWN_RECONCILE_REQUIRED` with `ENGINE` / `LOCAL` provenance, whether or not the
+ordinary acceptance audit already succeeded. It is a local containment/ownership decision, not a
+broker lifecycle fact or fill: it folds neither order status nor position. Its payload retains the
+exact broker id for deterministic ownership repair; adapter output is trimmed at producer ingress,
+and durable order-transition, timeout-resolution, and recovery-creation boundaries canonicalize it
+again so direct callers cannot create aliases. The transition, fallback dedupe, recovery identity,
+and later broker lookup therefore use one canonical nonblank value. A blank result after the venue
+call is ambiguous acceptance and enters quarantine;
+it is never treated as a preflight rejection that may release the claim. Recovery truth retains
+one recovery row per exact local/broker pair. Order, recovery, and canonical-fallback
+representations for that same pair coalesce as one accepted leg. A concrete broker id cannot be
+assigned to a different local order through mutable order/recovery state. Conflicting cross-owner
+canonical fallback facts remain append-only evidence; they cannot be adopted or rebound and fail
+closed (including at SQLite restart). Distinct concrete broker acceptances for one local order
+remain distinct append-only legs and resolve independently. A final claim on either side refuses
+an order that already carries that broker id or its own fallback fact.
+For a direct SELL, that fallback also remains same-side single-flight ownership:
+a local terminal projection cannot erase the possible venue exit and authorize a
+replacement SELL.
+Concrete Alpaca submit/replace acknowledgements and targeted client-order lookups must correlate
+their returned `client_order_id` to the deterministic request. Per-order polling must correlate the
+returned broker id to the requested broker id before status/fill provenance is trusted.
+
+#### Append-only envelope attribution
+
+`ENVELOPE_FILL_ATTRIBUTED` is an `ENGINE` / `LOCAL` attribution decision, never a second broker fill
+fact. It references one pre-existing canonical `FILL` (whose original source and authority remain
+unchanged) and records that the fill now spends one uniquely bounded envelope mandate. Position
+projection ignores the marker. Its global dedupe identity is derived from the canonical fill key,
+so the same fill cannot be attributed to two envelopes; malformed or conflicting identity fails
+closed. Pins: `tests/test_wo0113_attribution_repair.py`
+(`test_unattributed_fill_is_applied_once_by_append_only_marker`,
+`test_record_first_keeps_one_fill_and_marker_alone_cannot_move_position`, and the conflict matrix).
+A supplied child must be an existing Order with exactly one matching envelope action. A raw marker
+is not trusted merely because its payload names the fill: before every NEW application, repair, or
+replay, all envelope FILL/marker facts must form a sequence-ordered contiguous remaining-quantity
+chain from the ceiling exactly to stored remaining. Cadence validates direct-attributed as well as
+uniquely parented orphan FILLs and propagates a durable conflict before later venue actions. Its
+durable high-water checkpoint advances only after the selected tail validates completely; failure
+leaves it unchanged for restart/retry. Malformed or foreign markers cannot suppress that check.
 
 **`SUBMIT_RELEASED` and `CANCEL_PENDING`** (the two lifecycle edges WO-0007b Stage A added so the log
 is complete enough for the projector to fold — REV-0001 F-003) are both `ENGINE` / `LOCAL` for

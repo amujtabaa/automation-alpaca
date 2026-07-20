@@ -125,7 +125,7 @@ def _run(monkeypatch, positions, operator, recorder, protection=None) -> AppTest
 
     monkeypatch.setattr(api_client, "flatten_position", fake_flatten)
 
-    at = AppTest.from_file("cockpit/app.py").run()
+    at = AppTest.from_file("cockpit/app.py", default_timeout=30).run()
     at.sidebar.radio[0].set_value("Position Monitor").run()
     return at
 

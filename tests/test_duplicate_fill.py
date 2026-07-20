@@ -9,7 +9,7 @@ from app.models import OrderSide
 pytestmark = pytest.mark.anyio
 
 
-async def test_duplicate_source_fill_id_is_ignored(store):
+async def test_source_fill_id_exact_replay_dedups_but_changed_economics_conflict(store):
     candidate = await store.create_candidate("AAPL")
     order = await store.create_order_for_test(candidate.id, "AAPL", OrderSide.BUY, 100)
 
@@ -18,19 +18,27 @@ async def test_duplicate_source_fill_id_is_ignored(store):
     )
     assert first.status == "appended"
 
-    # Same execution id observed again (e.g. overlapping poll / reconnect).
+    # The same execution id and economics observed again is an idempotent replay.
     dup = await store.append_fill(
-        order.id, "AAPL", OrderSide.BUY, 100, 9.99, source_fill_id="exec-1"
+        order.id, "AAPL", OrderSide.BUY, 100, 1.00, source_fill_id="exec-1"
     )
     assert dup.status == "duplicate"
     assert dup.fill is None
+
+    # Reusing that venue execution identity with a different price is not a
+    # benign duplicate. Preserve the first truth and surface manual review.
+    conflict = await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 100, 9.99, source_fill_id="exec-1"
+    )
+    assert conflict.status == "conflict"
+    assert conflict.fill is None
 
     # Exactly one fill row.
     fills = await store.list_fills(symbol="AAPL")
     assert len(fills) == 1
     assert fills[0].source_fill_id == "exec-1"
 
-    # Position reflects only the first fill (the duplicate's 9.99 is ignored).
+    # Position reflects only the first fill; replay/conflict never fold twice.
     position = await store.get_position("AAPL")
     assert position.quantity == 100
     assert position.average_price == pytest.approx(1.00)
@@ -41,6 +49,13 @@ async def test_duplicate_source_fill_id_is_ignored(store):
     ]
     assert len(dup_events) == 1
     assert dup_events[0].payload.get("source_fill_id") == "exec-1"
+    conflict_events = [
+        e
+        for e in await store.list_events()
+        if e.event_type == "fill_duplicate_conflict"
+    ]
+    assert len(conflict_events) == 1
+    assert conflict_events[0].payload.get("manual_review_required") is True
 
 
 async def test_distinct_source_fill_ids_both_append(store):

@@ -111,7 +111,9 @@ async def test_emergency_reduce_exits_while_halted_global_stays_halted(
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
     assert await any_store.list_emergency_reduce_overrides() == {"AAPL"}
 
-    result = await any_store.flatten_position("AAPL")
+    # WO-0113 / REV-0031: explicit capability binds the ambient grant to the
+    # emergency command; an ordinary flatten may not consume it.
+    result = await any_store.flatten_position("AAPL", emergency_override=True)
     assert result.intent.reason is SellReason.MANUAL_FLATTEN
     # Global TradingState never left Halted (scoped grant, not a global flip).
     assert await any_store.current_trading_state() is TradingState.HALTED
@@ -129,7 +131,7 @@ async def test_override_is_single_use(any_store):
     await _hold(any_store, "AAPL", 200)
     await any_store.set_kill_switch(True)
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-    await any_store.flatten_position("AAPL")  # consumes the override
+    await any_store.flatten_position("AAPL", emergency_override=True)
     # A second flatten under Halted is denied again — the grant did not persist.
     with pytest.raises(FlattenBlockedError):
         await any_store.flatten_position("AAPL")
@@ -144,13 +146,13 @@ async def test_override_consumed_on_existing_outcome_no_leak(any_store):
     await any_store.set_kill_switch(True)
 
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-    await any_store.flatten_position("AAPL")  # creates O1, consumes grant1
+    await any_store.flatten_position("AAPL", emergency_override=True)
     assert await any_store.list_emergency_reduce_overrides() == set()
 
     # A fresh authorization whose flatten dedup's to the existing O1 must still be
     # consumed (FLATTEN_EXISTING), leaving NO active grant.
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-    result = await any_store.flatten_position("AAPL")
+    result = await any_store.flatten_position("AAPL", emergency_override=True)
     assert result.outcome != "created"  # dedup'd to the existing exit
     assert await any_store.list_emergency_reduce_overrides() == set()  # no leak
 
@@ -159,14 +161,22 @@ async def test_override_consumed_on_existing_outcome_no_leak(any_store):
         await any_store.flatten_position("AAPL")
 
 
-async def test_double_authorize_without_flatten_refused(any_store):
-    # Never stack a second grant on an active one — one override authorizes one exit.
+async def test_reauthorize_reuses_active_grant_without_stacking(any_store):
+    # PR#9 Codex Finding 2 (amends the former test_double_authorize_without_flatten_
+    # refused): an override still authorizes exactly ONE reduce-only exit, but the
+    # store's WO-0108/REV-0029 hardening makes the flatten fail closed (409)
+    # whenever a venue-uncertain BUY remains — leaving the grant ACTIVE and
+    # un-consumed. The operator's documented "retry after reconciliation" must
+    # REUSE that grant, not wedge behind "an override is already active". So
+    # re-authorizing is idempotent: it does NOT raise, and it does NOT stack a
+    # second grant (exactly one stays active, consumed by the first authorized
+    # flatten). Raising here was the wedge; the single-grant invariant is kept.
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
     await any_store.set_kill_switch(True)
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-    with pytest.raises(EmergencyReduceBlockedError):
-        await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
+    await any_store.authorize_emergency_reduce_override("AAPL", actor="op")  # no raise
+    assert await any_store.list_emergency_reduce_overrides() == {"AAPL"}  # one, not two
 
 
 async def test_inv3_gate_is_symbol_specific(any_store):
@@ -185,7 +195,7 @@ async def test_inv3_gate_is_symbol_specific(any_store):
     await any_store.set_kill_switch(True)
     # AAPL is unaffected by the MSFT quarantine -> authorize succeeds + flatten runs.
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-    result = await any_store.flatten_position("AAPL")
+    result = await any_store.flatten_position("AAPL", emergency_override=True)
     assert result.intent.reason is SellReason.MANUAL_FLATTEN
 
 
@@ -258,7 +268,7 @@ async def test_replay_reproduces_override_lifecycle(any_store):
     await _hold(any_store, "AAPL", 100)
     await any_store.set_kill_switch(True)
     await any_store.authorize_emergency_reduce_override("AAPL", actor="op")
-    await any_store.flatten_position("AAPL")  # grant then consume
+    await any_store.flatten_position("AAPL", emergency_override=True)
 
     types = [
         e.event_type

@@ -23,7 +23,12 @@ from app.models import (
     SellIntentStatus,
     SellReason,
 )
-from app.store.base import FLATTEN_CREATED, FLATTEN_EXISTING, FLATTEN_FLAT
+from app.store.base import (
+    FLATTEN_CREATED,
+    FLATTEN_EXISTING,
+    FLATTEN_FLAT,
+    FlattenBlockedError,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -39,6 +44,16 @@ async def _hold(store, symbol, qty, avg=10.0, *, session_id=None):
     await store.append_fill(
         buy.id, symbol, OrderSide.BUY, qty, avg, session_id=session_id
     )
+    # The establishing BUY must reach a TERMINAL status, so the held position
+    # has no lingering "open buy" — the realistic state (a filled buy is done),
+    # and the one a real caller sees. Since WO-0036 R2 Option B, flatten_position
+    # detects a still-open BUY under its lock and returns FLATTEN_BUYS_OPEN
+    # (the caller cancels it and retries) rather than minting a SELL next to a
+    # live BUY; leaving this buy CREATED would exercise that signal instead of
+    # the flatten outcomes these X-001 tests pin. (Matches the terminalizing
+    # ``_hold`` in tests/test_phase6e_command_facade.py.) The Option B signal
+    # itself is pinned directly in test_wo0036_r2_flatten_buys_open.py.
+    await store.transition_order(buy.id, OrderStatus.CANCELED)
     return buy
 
 
@@ -433,6 +448,12 @@ async def test_flat_after_all_exits_terminal_returns_flat_not_stale(any_store):
     await any_store.initialize()
     await _hold(any_store, "AAPL", 100)
     result = await any_store.flatten_position("AAPL")
+    claim = await any_store.claim_order_for_submission(result.order.id)
+    await any_store.transition_order(
+        claim.order.id,
+        OrderStatus.SUBMITTED,
+        broker_order_id="broker-flatten-terminal",
+    )
     # Fully fill the flatten sell -> position goes flat.
     await any_store.append_fill(
         result.order.id,
@@ -441,6 +462,16 @@ async def test_flat_after_all_exits_terminal_returns_flat_not_stale(any_store):
         100,
         9.0,
         session_id=result.intent.session_id,
+    )
+    # FILL is position truth, not order-lifecycle truth. Mirror the production
+    # broker reconciliation sequence so the direct SELL no longer has an
+    # unresolved claim/venue identity when the second flatten observes flat.
+    with pytest.raises(FlattenBlockedError, match="unresolved direct SELL exposure"):
+        await any_store.flatten_position("AAPL")
+    await any_store.transition_order(
+        result.order.id,
+        OrderStatus.FILLED,
+        filled_quantity=100,
     )
     second = await any_store.flatten_position("AAPL")
     assert second.outcome == FLATTEN_FLAT

@@ -93,6 +93,8 @@ async def seeded_envelope(store, **overrides) -> ExecutionEnvelope:
     # Injected activation clock, anchored BEFORE the NOW-anchored tapes: the
     # policy's since-activation window (INV-086) must contain the tape rows
     # regardless of wall-clock time of day (see activate_envelope_at).
+    # (Merge note: the branch's raw poke anchored T0 == NOW - 1h — the same
+    # instant this helper injects through transition_envelope(now=...).)
     return await activate_envelope_at(store, draft, now=NOW - timedelta(hours=1))
 
 

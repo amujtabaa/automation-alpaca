@@ -115,6 +115,9 @@ async def _active_envelope(store, symbol="AAPL", **overrides):
     # Injected activation clock, anchored BEFORE the NOW-anchored tapes: the
     # policy's since-activation window (INV-086) must contain the tape rows
     # regardless of wall-clock time of day (see activate_envelope_at).
+    # (Merge note: the branch's raw activated_at poke anchored the SAME
+    # NOW-1h instant; master's helper does it through the public
+    # transition_envelope(now=...) API, so the poke is subsumed.)
     return await activate_envelope_at(
         store, make_draft(si.id, symbol, **overrides), now=NOW - timedelta(hours=1)
     )
@@ -135,6 +138,7 @@ def _wired(tape_snaps):
         ask=last.ask,
         volume=last.volume,
         prev_close=last.prev_close,
+        updated_at=last.updated_at,
     )
     return md, tapes
 
@@ -343,7 +347,7 @@ async def test_expiry_disposition_cancel_and_return(any_store):
     # test's TTLs are NOW-anchored, so a utcnow() comparison here is a
     # delayed-fuse time bomb (it held only until the wall clock crossed the
     # anchor date — same class as the activation-window fix above).
-    assert expired_env.expires_at > NOW  # not yet — so simulate via time
+    assert expired_env.expires_at > NOW  # not expired at the injected first-tick time
     # Rather than monkeypatching clocks store-deep, drive the pass directly
     # with an injected now PAST the TTL:
     await monitoring._run_envelopes(

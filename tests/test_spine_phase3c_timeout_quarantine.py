@@ -28,7 +28,7 @@ from app.broker.adapter import (
 )
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
-from app.monitoring import run_monitoring_tick
+from app.monitoring import _resolve_timeout_quarantine, run_monitoring_tick
 from app.events.projectors import timeout_quarantined_order_ids
 from app.models import (
     EventAuthority,
@@ -352,7 +352,14 @@ async def _quarantined_via_tick(store, adapter, settings, symbol="AAPL", qty=10)
         symbol, suggested_quantity=qty, suggested_limit_price=1.0, session_id=sess.id
     )
     order = await store.create_order_for_test(
-        cand.id, symbol, OrderSide.BUY, qty, session_id=sess.id
+        cand.id,
+        symbol,
+        OrderSide.BUY,
+        qty,
+        # WO-0113 rechecks CAPI at the final submission claim. Preserve this
+        # fixture's intended ambiguous-submit choke with a priceable LIMIT order.
+        limit_price=1.0,
+        session_id=sess.id,
     )
     adapter.fail_next_submit(AmbiguousBrokerError("simulated 504 timeout"))
     await run_monitoring_tick(store, adapter, settings)
@@ -382,6 +389,57 @@ async def test_ambiguous_submit_is_not_resubmitted_and_blocks_replacement(any_st
     # No replacement order for the candidate.
     orders = [o for o in await any_store.list_orders() if o.candidate_id == cand.id]
     assert [o.id for o in orders] == [order.id]
+
+
+async def test_targeted_query_none_id_cannot_escape_quarantine(any_store):
+    """An SDK-shaped ``id=None`` is query ambiguity, never the string ``'None'``."""
+
+    pytest.importorskip("alpaca")
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app.broker.alpaca_paper import AlpacaPaperAdapter
+
+    settings = Settings()
+    _, order = await _quarantined_via_tick(any_store, MockBrokerAdapter(), settings)
+    adapter = AlpacaPaperAdapter("fake-key", "fake-secret")
+    adapter._client.get_order_by_client_id = Mock(
+        return_value=SimpleNamespace(id=None, status="new", filled_qty=0)
+    )
+
+    await _resolve_timeout_quarantine(any_store, adapter, settings)
+
+    persisted = await any_store.get_order(order.id)
+    assert persisted.status is OrderStatus.TIMEOUT_QUARANTINE
+    assert persisted.broker_order_id is None
+
+
+async def test_targeted_query_foreign_scope_cannot_escape_quarantine(any_store):
+    pytest.importorskip("alpaca")
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app.broker.alpaca_paper import AlpacaPaperAdapter
+
+    settings = Settings()
+    _, order = await _quarantined_via_tick(any_store, MockBrokerAdapter(), settings)
+    adapter = AlpacaPaperAdapter("fake-key", "fake-secret")
+    adapter._client.get_order_by_client_id = Mock(
+        return_value=SimpleNamespace(
+            id="foreign-broker",
+            client_order_id=order.id,
+            symbol="MSFT",
+            side="sell",
+            status="canceled",
+            filled_qty=0,
+        )
+    )
+
+    await _resolve_timeout_quarantine(any_store, adapter, settings)
+
+    persisted = await any_store.get_order(order.id)
+    assert persisted.status is OrderStatus.TIMEOUT_QUARANTINE
+    assert persisted.broker_order_id is None
 
 
 async def test_resolution_adopts_a_filled_venue_order_via_submitted(any_store):
@@ -539,7 +597,12 @@ async def test_ambiguous_redrive_of_stale_submitting_quarantines(any_store):
         "AAPL", suggested_quantity=10, suggested_limit_price=1.0, session_id=sess.id
     )
     order = await any_store.create_order_for_test(
-        cand.id, "AAPL", OrderSide.BUY, 10, session_id=sess.id
+        cand.id,
+        "AAPL",
+        OrderSide.BUY,
+        10,
+        limit_price=1.0,
+        session_id=sess.id,
     )
     # Claim it to SUBMITTING with no broker id (the stale-redrive precondition).
     await any_store.claim_order_for_submission(order.id)

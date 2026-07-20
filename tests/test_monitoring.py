@@ -24,6 +24,7 @@ from app.models import (
     RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
     CandidateStatus,
+    ExecutionEventType,
     OrderStatus,
     utcnow,
 )
@@ -172,31 +173,75 @@ async def test_duplicate_fill_replay_is_ignored(any_store):
     assert len(dup_events) >= 1
 
 
+async def test_conflicting_duplicate_fill_is_dropped_and_needs_review(any_store):
+    order = await _created_order(any_store, qty=100, limit=2.0)
+    adapter = MockBrokerAdapter()
+    await _submit_pending_orders(any_store, adapter)
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.PARTIALLY_FILLED,
+        filled_quantity=40,
+        fills=[BrokerFill("exec-conflict", 40, 2.0, utcnow())],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    adapter.make_fill(
+        order.id,
+        status=OrderStatus.PARTIALLY_FILLED,
+        filled_quantity=40,
+        fills=[BrokerFill("exec-conflict", 40, 3.0, utcnow())],
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    fills = await any_store.list_fills(order_id=order.id)
+    assert [(fill.quantity, fill.price) for fill in fills] == [(40, 2.0)]
+    assert (await any_store.get_position("AAPL")).quantity == 40
+    assert any(
+        event.event_type == "fill_duplicate_conflict" and event.order_id == order.id
+        for event in await any_store.list_events()
+    )
+    recoveries = await any_store.list_submit_recoveries(
+        statuses={RECOVERY_NEEDS_REVIEW}
+    )
+    assert any(record.local_order_id == order.id for record in recoveries)
+
+
 # --------------------------------------------------------------------------- #
-# Reconcile: defensive — a glitchy broker value never corrupts the order
+# Reconcile: ADR-001 broker truth is recorded, bounded in the order read model,
+# and quarantined rather than hidden.
 # --------------------------------------------------------------------------- #
-async def test_overfill_report_is_rejected_not_corrupting(any_store):
+async def test_broker_authoritative_overfill_is_recorded_and_quarantined(any_store):
     order = await _created_order(any_store, qty=100, limit=2.0)
     adapter = MockBrokerAdapter()
     await _submit_pending_orders(any_store, adapter)
 
-    # Broker erroneously reports more filled than the order's quantity.
+    # ADR-001 is authoritative over the former rejection test: an unwelcome
+    # broker fact is still position truth, while the Order scalar stays bounded.
     adapter.make_fill(
         order.id,
         status=OrderStatus.FILLED,
         filled_quantity=150,
         fills=[BrokerFill("exec-bad", 150, 2.0, utcnow())],
     )
-    # Must not raise, must not corrupt.
     await _reconcile_open_orders(any_store, adapter, Settings())
 
     fresh = await any_store.get_order(order.id)
-    assert fresh.status is OrderStatus.SUBMITTED  # transition rejected
-    assert fresh.filled_quantity == 0
-    assert (await any_store.get_position("AAPL")).quantity == 0  # fill rejected
+    assert fresh.status is OrderStatus.FILLED
+    assert fresh.filled_quantity == 100
+    assert (await any_store.get_position("AAPL")).quantity == 150
+    assert (
+        sum(fill.quantity for fill in await any_store.list_fills(order_id=order.id))
+        == 150
+    )
+    assert "AAPL" in await any_store.list_quarantined_symbols()
     assert any(
-        e.event_type == "fill_rejected_invalid" and e.order_id == order.id
-        for e in await any_store.list_events()
+        event.event_type == "fill_overfill_quarantined" and event.order_id == order.id
+        for event in await any_store.list_events()
+    )
+    assert any(
+        event.event_type is ExecutionEventType.QUARANTINED
+        and event.order_id == order.id
+        for event in await any_store.get_order_execution_events(order.id)
     )
 
 
@@ -204,7 +249,21 @@ class _PollRaisesAdapter(MockBrokerAdapter):
     """Submits like the mock, but every status poll raises — to prove the loop
     logs-and-continues rather than crashing."""
 
-    async def get_order_status(self, broker_order_id, *, recorded_quantity=0):  # type: ignore[override]
+    async def get_order_status(  # type: ignore[override]
+        self,
+        broker_order_id,
+        *,
+        recorded_quantity=0,
+        fallback_price=None,
+        expected_client_order_id=None,
+        expected_symbol=None,
+        expected_side=None,
+        expected_quantity=None,
+        expected_limit_price=None,
+        expected_order_type=None,
+        expected_time_in_force=None,
+        expected_order_class=None,
+    ):
         raise BrokerError("poll endpoint down")
 
 
