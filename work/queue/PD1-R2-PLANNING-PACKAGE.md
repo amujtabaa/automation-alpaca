@@ -140,7 +140,8 @@ account identifiers, credentials, raw paper rows, or secrets.
 **Default (per handoff): report-only + stop beta reliance.** Every anomaly class becomes a
 proposed, separately named and separately authorized remediation WO. The already-visible
 candidate: an OBS-3 retroactive close sweep for legacy bare-APPROVED shapes (would be a new
-semantic on real data — candidate `WO-0116`, NOT created, NOT authorized).
+semantic on real data — a separately named future WO, id assigned at creation; NOT created,
+  NOT authorized. (WO-0116/0117 were later consumed by the hygiene sweep and audit charter.)
 - *Alternative — pre-authorize narrow mechanical remediations.* Faster, but each remediation is
   a new semantic against real economic records; rejected as default.
 
