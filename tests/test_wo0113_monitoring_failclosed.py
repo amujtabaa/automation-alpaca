@@ -14,7 +14,12 @@ from unittest.mock import Mock
 import pytest
 
 import app.monitoring as monitoring
-from app.broker.adapter import BrokerError, BrokerFill, BrokerOrderUpdate
+from app.broker.adapter import (
+    BrokerError,
+    BrokerFill,
+    BrokerOrderReport,
+    BrokerOrderUpdate,
+)
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.models import (
@@ -26,6 +31,7 @@ from app.models import (
     ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
+    Order,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -43,6 +49,7 @@ from app.reconciliation import (
     InferredFill,
     ReconcileQueryBudget,
     ReconciliationPlan,
+    plan_reconciliation,
     venue_order_scope_map,
 )
 from app.sellside.types import ActionKind, PlannedAction
@@ -179,6 +186,82 @@ async def test_venue_scope_selects_only_current_gapless_claim():
     )[order_id]
 
     assert scope.limit_price == 11.0
+
+
+async def test_dynamic_sell_without_current_scope_routes_report_to_recovery():
+    """REV-0033 F2: an old scope cannot authenticate a new claim occurrence."""
+
+    order_id = "order-dynamic-scope-gap"
+    first_claim = _scope_claim(order_id, 0).model_copy(update={"side": OrderSide.SELL})
+    first_scope = _scope_event(order_id, 0).model_copy(
+        update={
+            "side": OrderSide.SELL,
+            "price": None,
+            "payload": {
+                **_scope_event(order_id, 0).payload,
+                "side": OrderSide.SELL.value,
+                "order_type": OrderType.MARKET.value,
+                "limit_price": None,
+            },
+        }
+    )
+    second_claim = _scope_claim(order_id, 1).model_copy(
+        update={
+            "dedupe_key": f"submit_pending:{order_id}:1",
+            "side": OrderSide.SELL,
+        }
+    )
+    scopes = venue_order_scope_map([first_claim, first_scope, second_claim])
+    assert order_id not in scopes
+
+    order = Order(
+        id=order_id,
+        candidate_id=None,
+        sell_intent_id="intent-dynamic-scope-gap",
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        quantity=10,
+        order_type=OrderType.MARKET,
+        limit_price=None,
+        status=OrderStatus.SUBMITTED,
+        broker_order_id="broker-dynamic-scope-gap",
+        updated_at=NOW - timedelta(hours=1),
+    )
+    report = BrokerOrderReport(
+        broker_order_id="broker-dynamic-scope-gap",
+        client_order_id=order_id,
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        status=OrderStatus.SUBMITTED,
+        filled_quantity=0,
+        fills=[],
+        quantity=10,
+        order_type=OrderType.LIMIT.value,
+        limit_price=987.65,
+        time_in_force="day",
+        order_class="simple",
+        asset_class="us_equity",
+        quantity_mode="qty",
+        extended_hours=True,
+        has_legs=False,
+        position_intent="sell_to_close",
+    )
+
+    plan = plan_reconciliation(
+        local_open_orders=[order],
+        local_positions=[],
+        broker_orders=[report],
+        broker_positions=[],
+        now=NOW,
+        venue_scopes_by_order_id=scopes,
+    )
+
+    assert plan.resolutions == []
+    assert plan.inferred_fills == []
+    assert plan.needs_targeted_query == [order_id]
+    assert [item.broker_order_id for item in plan.external_orders] == [
+        report.broker_order_id
+    ]
 
 
 async def test_legacy_submitting_backfill_is_the_only_synthetic_claim_exception():

@@ -220,6 +220,15 @@ def _validate_ack_scope(
     """Reject a request-correlated acknowledgement with contradictory scope."""
 
     try:
+        if allow_dynamic_market_sell:
+            if expected_scope is None:
+                raise BrokerError(
+                    f"{context} acknowledgement scope is unavailable: dynamic "
+                    "order requires current persisted venue scope"
+                )
+            # A current rendered scope is exact authority.  Never let the legacy
+            # dynamic-type flag widen its order-type or limit-price checks.
+            allow_dynamic_market_sell = False
         if expected_scope is not None:
             expected_symbol = expected_scope.symbol
             expected_side = expected_scope.side

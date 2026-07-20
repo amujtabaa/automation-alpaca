@@ -54,7 +54,9 @@ is rejected before fill, event, envelope, or position mutation. An equivalent
 BROKER_AUTHORITATIVE fact is unwelcome reality: persist its raw `FILL`, append a
 durable `QUARANTINED` fact atomically, block candidate-origin BUY order mint and
 final submission claim through the shared quarantine projection, and require
-manual review—even when the resulting position remains positive.
+manual review—even when the resulting position remains positive. For beta, that
+fact is a permanent, append-only, cross-session latch: no covering fill, restart,
+or review action clears it because no release event exists.
 *Why:* beta is long-only, but hiding venue truth is more dangerous than projecting
 the contained exception; record-first envelope ingress must survive a crash before
 the compatibility fill row is bridged.

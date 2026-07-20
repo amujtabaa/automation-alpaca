@@ -4,7 +4,7 @@ title: Safety Invariants — Rationale
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-19
+last_verified: 2026-07-20
 tags: [safety, invariants, trading]
 source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md, docs/adr/ADR-001-overfill-quarantine.md, docs/adr/ADR-002-timeout-quarantine.md, docs/adr/ADR-003-manual-flatten-halted-reducing.md, docs/adr/ADR-008-order-status-event-provenance.md, docs/adr/ADR-010-execution-envelope.md]
 supersedes: []
@@ -32,6 +32,8 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
     only when its economics match; conflicting reuse is audited, dropped, and held for manual review.
     One lock-held quarantine projection feeds the public symbol list, candidate-origin BUY order
     mint, and final BUY submission claim in both stores, including SQLite restart reconstruction.
+    For beta, the append-only fact is a permanent cross-session latch with no clear or release
+    event; covering fills and manual review cannot restart autonomous work for that database.
   - **Manual flatten routing (ADR-003):** an emergency control that bypasses risk checks and logging is itself a hazard; the override exists but is explicit and audited.
   - **WO-0113 governance status:** the operator ratified YES the following capability,
     CREATED-exposure, accepted-submit, protection-deferral, and attribution behavior on 2026-07-19;
@@ -81,7 +83,9 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
     extended-hours decision, and replacement predecessor. Restart replays this scope instead of
     re-deriving session-sensitive intent. Direct, targeted, recovery, and mass consumers validate
     the same wire contract; managed mass rows cannot hide fractional cumulative fill, advanced
-    order material, or contradictory replacement lineage. The injected decision clock selects
+    order material, or contradictory replacement lineage. A dynamic protective SELL without its
+    current claim occurrence's persisted scope cannot authenticate any venue type or price and
+    remains on the uncertainty/recovery path. The injected decision clock selects
     new session scope, and broker overfill remains ADR-001 truth rather than a correlation reject.
   - **Append-only envelope attribution repair:** a canonical FILL is immutable and remains the sole
     position-quantity fact. If its envelope bridge was missed, a globally deduped

@@ -36,7 +36,11 @@ and economics all match; poison fails before any truth mutation.
 The system may project a quarantined negative or order-overfilled position when
 that reflects broker reality. Replay reproduces the raw truth and explicit latch
 from memory or SQLite. That is preferable to pretending the broker fact did not
-occur. The system must not continue autonomous trading from such a state.
+occur. For beta, this is a permanent, append-only, cross-session latch: there is
+no clear or release event, and a later covering fill or manual review does not
+remove the symbol from quarantine. The system must not continue autonomous
+trading from such a state. Any future release mechanism requires a separately
+approved contract and implementation.
 
 ## Required tests
 

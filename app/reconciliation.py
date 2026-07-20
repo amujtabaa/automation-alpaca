@@ -861,7 +861,13 @@ def venue_scope_matches_order(
     advanced_fields: Sequence[str] = (),
     expected_scope: Optional[VenueOrderScope] = None,
 ) -> bool:
-    """Compare venue scope without inventing a rendered protective-sell type."""
+    """Compare venue scope without inventing a rendered protective-sell type.
+
+    A protective MARKET sell can be rendered as MARKET or as a live-priced LIMIT
+    order.  Only the current claim occurrence's persisted ``VenueOrderScope`` can
+    authenticate that choice.  If the current occurrence has no scope, fail
+    closed so the report remains on the uncertainty/targeted-recovery path.
+    """
 
     type_value = (
         str(getattr(order_type, "value", order_type)).strip().lower()
@@ -888,14 +894,7 @@ def venue_scope_matches_order(
             and replaces_broker_order_id == expected_scope.replaces_broker_order_id
         )
     elif order_has_dynamic_venue_type(order):
-        type_and_price_match = (
-            type_value == OrderType.MARKET.value and limit_price is None
-        ) or (
-            type_value == OrderType.LIMIT.value
-            and limit_price is not None
-            and finite_number_reason(limit_price) is None
-            and limit_price > 0
-        )
+        type_and_price_match = False
     else:
         type_and_price_match = (
             type_value is None or type_value == OrderType(order.order_type).value

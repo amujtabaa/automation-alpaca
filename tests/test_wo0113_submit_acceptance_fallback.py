@@ -299,6 +299,7 @@ async def test_cancellation_after_possible_send_keeps_durable_owner(
         ]
         assert len(recoveries) == 1
         assert recoveries[0].broker_order_id == f"broker-{target_order_id}"
+        assert recoveries[0].client_order_id == target_order_id
     else:
         assert persisted.status is OrderStatus.CANCELED
         assert not [

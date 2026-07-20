@@ -222,6 +222,33 @@ class TestGetOrderStatus:
                 allow_dynamic_market_sell=True,
             )
 
+    async def test_dynamic_limit_response_requires_current_persisted_scope(self):
+        """REV-0033 F2: arbitrary limit prices cannot fill a scope crash gap."""
+
+        adapter = _adapter()
+        adapter._client.get_order_by_id = Mock(
+            return_value=_alpaca_order(
+                side="sell",
+                type="limit",
+                limit_price=987.65,
+                extended_hours=True,
+            )
+        )
+
+        with pytest.raises(BrokerError, match="acknowledgement scope") as caught:
+            await adapter.get_order_status(
+                "b1",
+                expected_client_order_id="local-order-1",
+                expected_symbol="AAPL",
+                expected_side="sell",
+                expected_quantity=100,
+                expected_time_in_force="day",
+                expected_order_class="simple",
+                allow_dynamic_market_sell=True,
+            )
+        assert caught.value.__cause__ is not None
+        assert "persisted venue scope" in str(caught.value.__cause__)
+
     async def test_network_failure_raises_brokererror(self):
         adapter = _adapter()
         adapter._client.get_order_by_id = Mock(side_effect=RuntimeError("timeout"))

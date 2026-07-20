@@ -2567,6 +2567,7 @@ async def _handle_unpersisted_submit(
         await store.create_submit_recovery(
             local_order_id=order.id,
             broker_order_id=broker_order_id,
+            client_order_id=order.id,
             symbol=order.symbol,
             side=order.side,
             quantity=order.quantity,
