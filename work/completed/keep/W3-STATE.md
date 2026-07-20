@@ -236,3 +236,9 @@ ruff 0.15.20 · mypy 2.2.0 · pytest 9.1.1 · import-linter 2.13 — all == cons
 Gate: `ruff check . && ruff format --check . && mypy app/ && lint-imports && pytest -q`
 (mypy invoked as `mypy app/` per CI; bare `mypy` has no default target in this repo).
 Contracts now 6 (sellside-is-a-pure-policy added in WO-0018).
+
+## Archive note (recorded 2026-07-20; not backdated)
+
+W3 is no longer an active wave: ADR-010 is accepted, the later R2/PR #9 chain is merged on
+`master` at `88833e3d`, and this note's branch-integration instructions are historical. The file is
+retained unchanged above and moved to `work/completed/keep/` as provenance; no deletion is implied.

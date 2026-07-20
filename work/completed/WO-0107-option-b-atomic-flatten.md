@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Option B — atomic flatten redesign (store detects live BUYs under its own lock; no self-cross mint)
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0107
 wave: R2 consolidation campaign (CAMPAIGN-0002), Part B — carved out of WO-0105's Part B umbrella
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen
 created: 2026-07-17
 gated_surface: manual flatten (the store's flat/blocked/buys-open decision — a human-gated surface)
@@ -137,3 +137,14 @@ forbidden_paths:
 
 RESULT_SUMMARY_KEPT (this WO + the decision memo are the durable record). Ledger row + status flip to
 CLOSED ship in the same commit that records the independent-review ACCEPT — not before.
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Implementation commits `6480984` and `d031a99` are ancestors of current `master`.
+- REV-0029 found follow-up defects rather than invalidating the ratified Option B decision; the
+  remediation chain continued through WO-0108..WO-0113. REV-0033's final disposition is
+  `RESOLVED`, and PR #9 merged at `88833e3d`.
+- ADR-010 §4 preserves WO-0107's Option B decision and records the later corrections separately.
+
+Recorded action: `CLOSED`; durable result retained. AUDIT-0002 separately checks the packet-chain
+integrity and current behavior rather than treating this bookkeeping close-out as adjudication.

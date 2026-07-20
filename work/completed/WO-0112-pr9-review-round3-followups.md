@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: PR #9 Codex-review round-3 follow-ups — exit-preempt CREATED-buy self-cross, protection fail-closed, late-fill cleanup parity
-status: COMPLETED
+status: CLOSED
 work_order_id: WO-0112
 wave: R2 consolidation campaign (CAMPAIGN-0002), PR #9 merge-review follow-up (round 3)
 model_tier: strong
@@ -89,3 +89,12 @@ gated_surface: exit-preempt / order cancellation, autonomous protection exit, en
 - [x] Full native gate + oracles + hardening gates + perf gate + AI-OS hygiene green.
 - [ ] Pushed to `consolidate/r2-canonical` (PR #9 head); Codex PR reviewer re-reviews the delta;
       operator ratifies the F1/F3 design choices and merges after the re-review is clean.
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Ledger line 62 already records WO-0112 as `CLOSED` with `RESULT_SUMMARY_KEPT`.
+- Implementation commit `194343c` is an ancestor of current `master`; REV-0032 is dispositioned
+  `RESOLVED`, with follow-up remediation independently gated by REV-0033; PR #9 merged at `88833e3d`.
+
+Recorded action: front matter normalized from noncanonical `COMPLETED` to ledger-backed `CLOSED`.
+No duplicate ledger row was appended.

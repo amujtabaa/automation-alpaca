@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: PR #9 Codex-review round-2 P1 follow-ups — monitoring supersession lineage + emergency-reduce retry wedge
-status: COMPLETED
+status: CLOSED
 work_order_id: WO-0111
 wave: R2 consolidation campaign (CAMPAIGN-0002), PR #9 merge-review follow-up (round 2)
 model_tier: strong
@@ -104,3 +104,12 @@ Honest disposition: both are correctness gaps outside the diff-scoped round-3 le
 - [x] Full native gate + oracles + hardening gates + perf gate + AI-OS hygiene green.
 - [ ] Pushed to `consolidate/r2-canonical` (PR #9 head) — Codex PR reviewer re-reviews the delta;
       operator merges after the re-review is clean.
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Ledger line 61 already records WO-0111 as `CLOSED` with `RESULT_SUMMARY_KEPT`.
+- Implementation commit `4d607da` is an ancestor of current `master`; REV-0031 is dispositioned
+  `RESOLVED`, with follow-up remediation independently gated by REV-0033; PR #9 merged at `88833e3d`.
+
+Recorded action: front matter normalized from noncanonical `COMPLETED` to ledger-backed `CLOSED`.
+No duplicate ledger row was appended.

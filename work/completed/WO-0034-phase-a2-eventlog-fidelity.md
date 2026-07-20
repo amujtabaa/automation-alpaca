@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: REV-0023 Phase A2 event-log fidelity (concurrency-0, spec-1) — HUMAN-GATED
-status: DRAFT — HUMAN APPROVAL REQUIRED (human-gated: event-log truth changes)
+status: CLOSED
 work_order_id: WO-0034
 wave: W3 remediation follow-up (REV-0023 Phase A2)
 model_tier: standard
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen
 created: 2026-07-14
 gated_surface: event-log truth (audit events written / suppressed)
@@ -90,3 +90,12 @@ Disposition: RESULT_SUMMARY_KEPT
   screen self-heals via raw-predecessor comparison. Pinned + mutation-checked in
   ``tests/test_puremath0_deviation_band.py``. The 0.25 calibration remains reviewable
   by the planning seat — one constant, one pin to update.
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Implementation commits `140e167` and `d74cdd4` are ancestors of current `master`.
+- `work/review/REV-0023/disposition.md` explicitly records Ameen's gated-surface approval trail and
+  clears the independent-review gate for WO-0034.
+- Fresh local probe across the four WO-0032..0035 pin files → `48 passed`.
+
+Recorded action: `CLOSED`; durable result retained. This is a planning-record correction only.

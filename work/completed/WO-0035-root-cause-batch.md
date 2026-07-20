@@ -1,8 +1,7 @@
 ---
 type: Work Order
 title: Root-cause batch — quarantine-treadmill audit residuals (F2 crash, F3 self-derivation, F1 clock, S1 venue reasons)
-status: EXECUTED (Ameen directive 2026-07-15: "ensure your fixes... were root cause fixes...
-  find remaining issues proactively and root-cause the quarantine treadmill")
+status: CLOSED
 work_order_id: WO-0035
 wave: W3 root-cause follow-up
 model_tier: strong
@@ -73,3 +72,12 @@ write. All reverted; suite re-verified green.
 
 ## Status: VERIFIED
 Disposition: RESULT_SUMMARY_KEPT
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Implementation commit `c03bbae` is an ancestor of current `master`.
+- The original body records Ameen's 2026-07-15 directive, the delivered root-cause batch, named
+  residual routing, and `Status: VERIFIED`.
+- Fresh local probe across the four WO-0032..0035 pin files → `48 passed`.
+
+Recorded action: noncanonical `EXECUTED (...)` normalized to `CLOSED`; durable result retained.

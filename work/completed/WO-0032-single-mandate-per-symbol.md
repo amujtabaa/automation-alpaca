@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Close the single-ACTIVE-mandate-per-symbol bypass (REV-0023 Phase A2 P0 / completeness-0)
-status: DRAFT — HUMAN APPROVAL REQUIRED (human-gated: order-intent + session-close semantics)
+status: CLOSED
 work_order_id: WO-0032
 wave: W3 remediation follow-up (REV-0023 Phase A2)
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen
 created: 2026-07-14
 gated_surface: order submission intent (new ACTIVE mandate) + session-close truth
@@ -88,3 +88,15 @@ taken), and a redundant/conflicting second mandate for the symbol is refused.
 
 ## Status: VERIFIED (code) — independent review gate STILL OPEN (human-gated surface)
 Disposition: RESULT_SUMMARY_KEPT
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Implementation commit `1aad3e5` is an ancestor of current `master`.
+- `work/review/REV-0023/disposition.md` records `ACCEPT-WITH-CHANGES`, `RESOLVED`, and explicitly
+  clears the independent-review gate for WO-0032 after retaining Ameen's approval trail.
+- Fresh local probe: `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+  tests/test_wo0032_per_symbol_mandate.py tests/test_wo0033_phase_a2_fixes.py
+  tests/test_wo0034_eventlog_fidelity.py tests/test_wo0035_root_causes.py` → `48 passed`.
+
+Recorded action: `CLOSED`; durable result retained. This records completion only and does not
+re-adjudicate the implementation's current correctness.

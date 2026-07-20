@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: PR #9 Codex-review P1 follow-ups — three exit-preempt/recovery-exposure twins
-status: COMPLETED
+status: CLOSED
 work_order_id: WO-0110
 wave: R2 consolidation campaign (CAMPAIGN-0002), PR #9 merge-review follow-up
 model_tier: strong
@@ -61,3 +61,11 @@ mutation-verified, both stores, full gate).
 - [x] Full gate green.
 - [ ] Pushed to `consolidate/r2-canonical` (PR #9 head) — Codex PR reviewer re-reviews the delta;
       operator merges after the re-review is clean.
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Ledger line 60 already records WO-0110 as `CLOSED` with `RESULT_SUMMARY_KEPT`.
+- Implementation commit `ae8c13a` is an ancestor of current `master`; PR #9 merged at `88833e3d`.
+
+Recorded action: front matter normalized from noncanonical `COMPLETED` to ledger-backed `CLOSED`.
+No duplicate ledger row was appended.
