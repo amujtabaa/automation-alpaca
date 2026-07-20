@@ -16,6 +16,8 @@ processed immediately (in production the 5s window defers a just-touched order).
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 
 from app.broker.adapter import BrokerError, BrokerFill, BrokerOrderUpdate
@@ -32,6 +34,7 @@ from app.monitoring import (
     _run_reconciliation,
     _submit_pending_orders,
 )
+from app.reconciliation import ReconcileQueryBudget
 
 pytestmark = pytest.mark.anyio
 
@@ -133,6 +136,108 @@ async def test_venue_has_the_order_so_it_is_never_resolved(any_store):
     assert await _deferrals(any_store, order.id) == []  # nothing deferred/rejected
 
 
+async def test_targeted_present_order_is_directly_polled_for_priced_fills(any_store):
+    """A client-id hit is not enough: immediately poll its concrete identity.
+
+    The targeted response carries cumulative state, not execution prices.  Returning
+    after that response would silently strand a fill whenever the order was missing
+    from the venue's open-order report (notably a just-terminal order).
+    """
+
+    await any_store.initialize()
+    order = await _absent_submitted(any_store)
+    submitted = await any_store.get_order(order.id)
+    assert submitted is not None and submitted.broker_order_id is not None
+
+    adapter = MockBrokerAdapter()
+    adapter.seed_venue_order(
+        order.id,
+        BrokerOrderUpdate(
+            OrderStatus.FILLED,
+            order.quantity,
+            [],
+            broker_order_id=submitted.broker_order_id,
+        ),
+    )
+    adapter.set_response(
+        submitted.broker_order_id,
+        BrokerOrderUpdate(
+            OrderStatus.FILLED,
+            order.quantity,
+            [BrokerFill("targeted-exec", order.quantity, 2.0, utcnow())],
+        ),
+    )
+
+    await _run_reconciliation(any_store, adapter, _settings(retries=1))
+
+    fresh = await any_store.get_order(order.id)
+    assert fresh is not None and fresh.status is OrderStatus.FILLED
+    assert fresh.filled_quantity == order.quantity
+    assert adapter.status_queries == [submitted.broker_order_id]
+    assert (
+        sum(fill.quantity for fill in await any_store.list_fills(order_id=order.id))
+        == order.quantity
+    )
+    assert (await any_store.get_position(order.symbol)).quantity == order.quantity
+
+
+async def test_targeted_present_direct_poll_respects_budget_then_converges(any_store):
+    """Budget exhaustion defers the second read; it never invents absence.
+
+    A later funded cycle must still poll the exact adopted identity and ingest the
+    priced execution, proving the safe deferral is convergent rather than a silent
+    scalar-only terminal observation.
+    """
+
+    await any_store.initialize()
+    order = await _absent_submitted(any_store)
+    submitted = await any_store.get_order(order.id)
+    assert submitted is not None and submitted.broker_order_id is not None
+
+    adapter = MockBrokerAdapter()
+    adapter.seed_venue_order(
+        order.id,
+        BrokerOrderUpdate(
+            OrderStatus.FILLED,
+            order.quantity,
+            [],
+            broker_order_id=submitted.broker_order_id,
+        ),
+    )
+    adapter.set_response(
+        submitted.broker_order_id,
+        BrokerOrderUpdate(
+            OrderStatus.FILLED,
+            order.quantity,
+            [BrokerFill("budgeted-exec", order.quantity, 2.0, utcnow())],
+        ),
+    )
+
+    # Two mass reads + one targeted read consume the three-token bucket.  The
+    # direct status read is skipped, and the order remains safely open locally.
+    await _run_reconciliation(
+        any_store,
+        adapter,
+        _settings(retries=1),
+        budget=ReconcileQueryBudget(3),
+    )
+    assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
+    assert adapter.status_queries == []
+    assert await any_store.list_fills(order_id=order.id) == []
+
+    # A later cycle with capacity for all four reads converges to broker truth.
+    await _run_reconciliation(
+        any_store,
+        adapter,
+        _settings(retries=1),
+        budget=ReconcileQueryBudget(4),
+    )
+    fresh = await any_store.get_order(order.id)
+    assert fresh is not None and fresh.status is OrderStatus.FILLED
+    assert adapter.status_queries == [submitted.broker_order_id]
+    assert (await any_store.get_position(order.symbol)).quantity == order.quantity
+
+
 # --------------------------------------------------------------------------- #
 # A query FAILURE is never read as absent (§7) — never rejects; flags needs_review.
 # --------------------------------------------------------------------------- #
@@ -154,6 +259,63 @@ async def test_query_failure_never_rejects_and_surfaces_needs_review(any_store):
         if (e.payload or {}).get("reason") == "query_error"
     ]
     assert errors and any((e.payload or {}).get("needs_review") for e in errors)
+
+
+async def test_malformed_none_targeted_response_never_confirms_absence(any_store):
+    """Only an HTTP 404 may advance the confirmed-not-found terminal bound."""
+
+    pytest.importorskip("alpaca")
+    from app.broker.alpaca_paper import AlpacaPaperAdapter
+
+    await any_store.initialize()
+    order = await _absent_submitted(any_store)
+    adapter = AlpacaPaperAdapter("fake-key", "fake-secret")
+    adapter._client.get_orders = Mock(return_value=[])
+    adapter._client.get_all_positions = Mock(return_value=[])
+    adapter._client.get_order_by_client_id = Mock(return_value=None)
+
+    await _run_reconciliation(any_store, adapter, _settings(retries=1))
+
+    assert (await any_store.get_order(order.id)).status is OrderStatus.SUBMITTED
+    errors = [
+        e
+        for e in await _deferrals(any_store, order.id)
+        if (e.payload or {}).get("reason") == "query_error"
+    ]
+    assert len(errors) == 1
+
+
+async def test_same_broker_id_foreign_scope_poll_cannot_apply_fills(any_store):
+    pytest.importorskip("alpaca")
+    from types import SimpleNamespace
+
+    from app.broker.alpaca_paper import AlpacaPaperAdapter
+
+    await any_store.initialize()
+    order = await _absent_submitted(any_store)
+    submitted = await any_store.get_order(order.id)
+    assert submitted is not None and submitted.broker_order_id is not None
+    adapter = AlpacaPaperAdapter("fake-key", "fake-secret")
+    adapter._client.get_order_by_id = Mock(
+        return_value=SimpleNamespace(
+            id=submitted.broker_order_id,
+            client_order_id="foreign-client",
+            symbol="MSFT",
+            side="sell",
+            status="filled",
+            filled_qty=submitted.quantity,
+            filled_avg_price="100.0",
+            limit_price="100.0",
+        )
+    )
+
+    await _reconcile_open_orders(any_store, adapter, _LEGACY)
+
+    fresh = await any_store.get_order(order.id)
+    assert fresh is not None and fresh.status is OrderStatus.SUBMITTED
+    assert fresh.filled_quantity == 0
+    assert (await any_store.get_position("AAPL")).quantity == 0
+    assert await any_store.list_fills(order_id=order.id) == []
 
 
 async def test_not_found_bound_is_consecutive_not_lifetime(any_store):

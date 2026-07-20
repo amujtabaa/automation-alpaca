@@ -147,6 +147,7 @@ FILL_REJECT = "reject"  # write `event`; raise `error`
 FILL_DUPLICATE = (
     "duplicate"  # write `event`; return a FillAppendResult("duplicate", None, event)
 )
+FILL_CONFLICT = "conflict"  # write manual-review audit; do not mutate fill truth
 FILL_APPEND = (
     "append"  # atomically write `fill` (+dedup) and `event`; return "appended"
 )
@@ -157,9 +158,9 @@ class FillPlan:
     """Pure outcome of an :meth:`StateStore.append_fill` decision.
 
     ``outcome`` is one of :data:`FILL_REJECT` / :data:`FILL_DUPLICATE` /
-    :data:`FILL_APPEND`. ``event`` is always the audit event to write. ``error``
-    is the exception to raise (reject only). ``fill`` is the constructed row to
-    append (append only).
+    :data:`FILL_CONFLICT` / :data:`FILL_APPEND`. ``event`` is always the audit
+    event to write. ``error`` is the exception to raise (reject only). ``fill``
+    is the constructed row to append (append only).
     """
 
     outcome: str
@@ -173,6 +174,10 @@ class FillPlan:
     # persists as a parity-checked read model, kept in lockstep by the permanent
     # dual-store parity verifier. See pkl/process/migration-history.md.
     execution_event: Optional[ExecutionEvent] = None
+    # ADR-001 containment fact. A broker-authoritative order overfill can leave
+    # the symbol's position positive, so the negative-position fold alone cannot
+    # reconstruct quarantine. This separately-deduped fact latches it durably.
+    quarantine_event: Optional[ExecutionEvent] = None
 
 
 def execution_event_for_fill(
@@ -228,6 +233,225 @@ def execution_event_for_fill(
     )
 
 
+def overfill_quarantine_dedupe_key(fill_dedupe_key: str) -> str:
+    """Deterministic ADR-001 quarantine identity for one canonical FILL."""
+
+    return f"overfill-quarantine:{fill_dedupe_key}"
+
+
+def overfill_quarantine_event(
+    fill_event: ExecutionEvent,
+    *,
+    order_quantity: Optional[int],
+    prior_filled_quantity: int,
+    current_quantity: Optional[int],
+    order_overfill: bool,
+    position_overfill: bool,
+    envelope_overfill: bool = False,
+    remaining_before: Optional[int] = None,
+) -> ExecutionEvent:
+    """Build the explicit containment fact paired with an overfilling FILL.
+
+    Both ``append_fill`` and the record-first envelope boundary use this exact
+    producer. The shared deterministic key closes their crash gap: whichever
+    path records quarantine first owns the fact and the later bridge dedupes.
+    """
+
+    if fill_event.dedupe_key is None:
+        raise ValueError("an overfill quarantine requires a canonical fill key")
+    if (
+        fill_event.symbol is None
+        or fill_event.side is None
+        or fill_event.quantity is None
+        or fill_event.price is None
+    ):
+        raise ValueError("an overfill quarantine requires complete fill economics")
+    payload = {
+        "side": fill_event.side.value,
+        "quantity": fill_event.quantity,
+        "price": fill_event.price,
+        "order_quantity": order_quantity,
+        "prior_filled_quantity": prior_filled_quantity,
+        "cumulative_filled_quantity": (prior_filled_quantity + fill_event.quantity),
+        "current_quantity": current_quantity,
+        "attempted_sell": (
+            fill_event.quantity if fill_event.side is OrderSide.SELL else None
+        ),
+        "order_overfill": order_overfill,
+        "position_overfill": position_overfill,
+        "envelope_overfill": envelope_overfill,
+        "remaining_before": remaining_before,
+        "quarantined": True,
+        "manual_review_required": True,
+        "fill_dedupe_key": fill_event.dedupe_key,
+    }
+    return ExecutionEvent(
+        event_type=ExecutionEventType.QUARANTINED,
+        source=fill_event.source,
+        authority=fill_event.authority,
+        dedupe_key=overfill_quarantine_dedupe_key(fill_event.dedupe_key),
+        ts_event=fill_event.ts_event,
+        symbol=fill_event.symbol,
+        side=fill_event.side,
+        quantity=fill_event.quantity,
+        price=fill_event.price,
+        order_id=fill_event.order_id,
+        envelope_id=fill_event.envelope_id,
+        session_id=fill_event.session_id,
+        correlation_id=fill_event.correlation_id,
+        payload=payload,
+    )
+
+
+def overfill_quarantine_conflict_reason(
+    existing: Optional[ExecutionEvent], proposed: ExecutionEvent
+) -> Optional[str]:
+    """Validate an occupied quarantine identity before any fill truth mutates."""
+
+    if existing is None:
+        return None
+    expected_material = (
+        ExecutionEventType.QUARANTINED,
+        proposed.source,
+        proposed.authority,
+        proposed.dedupe_key,
+        proposed.order_id,
+        proposed.symbol,
+        proposed.side,
+        proposed.quantity,
+        proposed.price,
+        proposed.session_id,
+    )
+    actual_material = (
+        existing.event_type,
+        existing.source,
+        existing.authority,
+        existing.dedupe_key,
+        existing.order_id,
+        existing.symbol,
+        existing.side,
+        existing.quantity,
+        existing.price,
+        existing.session_id,
+    )
+    if actual_material != expected_material:
+        return "quarantine identity belongs to different event material"
+    expected_payload = proposed.payload
+    for payload_field in (
+        "fill_dedupe_key",
+        "side",
+        "quantity",
+        "price",
+        "quarantined",
+        "manual_review_required",
+    ):
+        if existing.payload.get(payload_field) != expected_payload.get(payload_field):
+            return f"quarantine payload field {payload_field!r} conflicts"
+    return None
+
+
+def _fill_economic_material(
+    *,
+    order_id: str,
+    symbol: str,
+    side: OrderSide,
+    quantity: int,
+    price: float,
+) -> tuple[str, str, OrderSide, int, float]:
+    """Immutable economics governed by one ``source_fill_id`` (INV-5).
+
+    ``filled_at`` and provenance are deliberately excluded: reconciliation may
+    observe the exact venue execution later with better timing/provenance, and
+    that exact synthetic-to-broker replay must remain idempotent.
+    """
+
+    return (order_id, symbol, OrderSide(side), quantity, price)
+
+
+def _fill_conflict_payload(
+    existing_fill: Optional[Fill],
+    existing_event: Optional[ExecutionEvent],
+    *,
+    order_id: str,
+    symbol: str,
+    side: OrderSide,
+    quantity: int,
+    price: float,
+    source_fill_id: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """Return durable conflict evidence, or ``None`` for an exact replay.
+
+    The fill row and canonical FILL event are both checked. This prevents a
+    corrupted event-log dedupe hit from silently blessing economics that differ
+    from the compatibility fill row (or vice versa).
+    """
+
+    incoming = _fill_economic_material(
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+    )
+    conflicts: list[dict[str, Any]] = []
+    if existing_fill is not None:
+        stored = _fill_economic_material(
+            order_id=existing_fill.order_id,
+            symbol=existing_fill.symbol,
+            side=existing_fill.side,
+            quantity=existing_fill.quantity,
+            price=existing_fill.price,
+        )
+        if stored != incoming:
+            conflicts.append(
+                {
+                    "representation": "fill_row",
+                    "symbol": existing_fill.symbol,
+                    "side": OrderSide(existing_fill.side).value,
+                    "quantity": existing_fill.quantity,
+                    "price": existing_fill.price,
+                }
+            )
+    if existing_event is not None:
+        event_matches = (
+            existing_event.event_type is ExecutionEventType.FILL
+            and existing_event.order_id == order_id
+            and existing_event.symbol == symbol
+            and existing_event.side is OrderSide(side)
+            and existing_event.quantity == quantity
+            and existing_event.price == price
+        )
+        if not event_matches:
+            conflicts.append(
+                {
+                    "representation": "execution_event",
+                    "event_type": existing_event.event_type.value,
+                    "symbol": existing_event.symbol,
+                    "side": (
+                        existing_event.side.value
+                        if existing_event.side is not None
+                        else None
+                    ),
+                    "quantity": existing_event.quantity,
+                    "price": existing_event.price,
+                }
+            )
+    if not conflicts:
+        return None
+    return {
+        "reason": "source_fill_id_economic_conflict",
+        "source_fill_id": source_fill_id,
+        "manual_review_required": True,
+        "observed": {
+            "symbol": symbol,
+            "side": OrderSide(side).value,
+            "quantity": quantity,
+            "price": price,
+        },
+        "conflicts": conflicts,
+    }
+
+
 def plan_append_fill(
     *,
     order_id: str,
@@ -242,6 +466,9 @@ def plan_append_fill(
     source_fill_id: Optional[str],
     filled_at: Optional[Any],
     session_id: Optional[str],
+    existing_fill: Optional[Fill] = None,
+    existing_execution_event: Optional[ExecutionEvent] = None,
+    existing_quarantine_event: Optional[ExecutionEvent] = None,
     source: EventSource = EventSource.BROKER_REST,
     authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
 ) -> FillPlan:
@@ -251,10 +478,13 @@ def plan_append_fill(
     ``symbol`` is already normalized and ``side`` already coerced by the caller.
     ``order`` is ``None`` when the referenced order does not exist.
     ``current_quantity`` is the symbol's derived position quantity.
-    ``is_duplicate`` is whether ``(order_id, source_fill_id)`` was already
-    recorded. The checks run in the same order the stores used, so a duplicate
-    still short-circuits before the cumulative/overfill check (never mistaken
-    for an overfill).
+    ``existing_fill`` and ``existing_execution_event`` carry the two durable
+    representations selected by ``(order_id, source_fill_id)``. The optional
+    quarantine event is the occupant of this fill's deterministic ADR-001 key;
+    an incompatible occupant rejects before fill truth mutates. An exact replay
+    short-circuits before the cumulative/overfill check; conflicting economics
+    are logged and dropped for manual review. ``is_duplicate`` remains the
+    compatibility flag for planner-only callers that do not provide the row.
 
     ``source``/``authority`` set the FILL ExecutionEvent provenance — the default
     is a normally-observed broker fill; a reconciliation-inferred fill (Phase 4)
@@ -300,9 +530,37 @@ def plan_append_fill(
             error=UnknownEntityError(f"order {order_id} not found"),
         )
 
-    # 3) Duplicate protection (makes append idempotent). A replay short-circuits
-    #    here before the cumulative check, so it is never mistaken for an overfill.
-    if is_duplicate:
+    # 3) INV-5 duplicate protection. The same source identity is benign only
+    #    when every persisted economic representation agrees with this
+    #    observation. A changed qty/price/side is durable conflict evidence, not
+    #    an idempotent replay. No fill/FILL/position mutation follows a conflict.
+    conflict_payload = _fill_conflict_payload(
+        existing_fill,
+        existing_execution_event,
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+        source_fill_id=source_fill_id,
+    )
+    if conflict_payload is not None:
+        return FillPlan(
+            FILL_CONFLICT,
+            EventSpec(
+                "fill_duplicate_conflict",
+                message=(
+                    f"fill {source_fill_id} for {symbol} conflicts with durable "
+                    "economics; dropped for manual review"
+                ),
+                symbol=symbol,
+                candidate_id=order.candidate_id,
+                order_id=order_id,
+                payload=conflict_payload,
+                session_id=session_id,
+            ),
+        )
+    if existing_fill is not None or is_duplicate:
         return FillPlan(
             FILL_DUPLICATE,
             EventSpec(
@@ -315,8 +573,19 @@ def plan_append_fill(
                 session_id=session_id,
             ),
         )
-    # 4) Symbol/side match + cumulative-quantity vs the order.
-    match_reason = fill_order_match_reason(order, symbol, side, quantity, prior_filled)
+    # 4) Symbol/side match + cumulative quantity versus the order. ADR-001 makes
+    #    broker reality authoritative: cumulative order excess is recorded and
+    #    quarantined. LOCAL/SYNTHETIC input retains the strict pre-append rail.
+    broker_authoritative = authority is EventAuthority.BROKER_AUTHORITATIVE
+    order_overfill = prior_filled + quantity > order.quantity
+    match_reason = fill_order_match_reason(
+        order,
+        symbol,
+        side,
+        quantity,
+        prior_filled,
+        allow_cumulative_overfill=broker_authoritative,
+    )
     if match_reason is not None:
         return FillPlan(
             FILL_REJECT,
@@ -341,16 +610,35 @@ def plan_append_fill(
             ),
         )
 
-    # 5) + 6) Append. A sell that crosses a long-only position through flat is a
-    #    broker-authoritative OVERFILL (ADR-001, wave 3b): intrinsic validity was
-    #    already checked (step 1), so this is broker REALITY, not malformed local
-    #    input. Rather than reject-and-drop it (the pre-wave-3b behavior), RECORD
-    #    the fill + its FILL event and QUARANTINE the symbol. Position now derives
-    #    from the event log, which projects the recorded short (apply_fill
-    #    allow_short); `create_order_for_candidate` blocks autonomous BUY intent
-    #    for a quarantined symbol, and the operator reconciles + manually reviews.
-    #    The store writes fill row + audit event + FILL event atomically.
-    is_overfill = would_go_negative(current_quantity, side, quantity)
+    position_overfill = would_go_negative(current_quantity, side, quantity)
+    if position_overfill and not broker_authoritative:
+        return FillPlan(
+            FILL_REJECT,
+            EventSpec(
+                "fill_rejected_negative_position",
+                message=(
+                    f"non-broker fill for {symbol} rejected: sell of {quantity} "
+                    f"exceeds current quantity {current_quantity}"
+                ),
+                symbol=symbol,
+                candidate_id=order.candidate_id,
+                order_id=order_id,
+                payload={
+                    "reason": "negative_position",
+                    "side": side.value,
+                    "quantity": quantity,
+                    "current_quantity": current_quantity,
+                },
+                session_id=session_id,
+            ),
+            error=InvalidFillError(
+                f"fill for {symbol} would create a negative position"
+            ),
+        )
+
+    # 5) + 6) Append. Either order-level cumulative excess or a SELL crossing
+    # flat is a broker-authoritative overfill. Record raw truth and quarantine.
+    is_overfill = order_overfill or position_overfill
     fill = Fill(
         order_id=order_id,
         symbol=symbol,
@@ -361,25 +649,54 @@ def plan_append_fill(
         session_id=session_id,
         filled_at=filled_at or utcnow(),
     )
+    fill_event = execution_event_for_fill(fill, source=source, authority=authority)
+    quarantine_event: Optional[ExecutionEvent] = None
     if is_overfill:
+        quarantine_event = overfill_quarantine_event(
+            fill_event,
+            order_quantity=order.quantity,
+            prior_filled_quantity=prior_filled,
+            current_quantity=current_quantity,
+            order_overfill=order_overfill,
+            position_overfill=position_overfill,
+        )
+        quarantine_conflict = overfill_quarantine_conflict_reason(
+            existing_quarantine_event, quarantine_event
+        )
+        if quarantine_conflict is not None:
+            return FillPlan(
+                FILL_REJECT,
+                EventSpec(
+                    "fill_quarantine_identity_conflict",
+                    message=(f"fill for {symbol} rejected: {quarantine_conflict}"),
+                    symbol=symbol,
+                    candidate_id=order.candidate_id,
+                    order_id=order_id,
+                    payload={
+                        "reason": quarantine_conflict,
+                        "quarantine_dedupe_key": quarantine_event.dedupe_key,
+                        "fill_dedupe_key": fill_event.dedupe_key,
+                        "manual_review_required": True,
+                    },
+                    session_id=session_id,
+                ),
+                error=InvalidFillError(
+                    f"overfill quarantine identity conflict: {quarantine_conflict}"
+                ),
+            )
+        overfill_payload = quarantine_event.payload
         event = EventSpec(
             "fill_overfill_quarantined",
             message=(
-                f"broker overfill: sell of {quantity} {symbol} exceeds current "
-                f"quantity {current_quantity} — recorded and quarantined (ADR-001)"
+                f"broker overfill for {symbol}: cumulative order fill "
+                f"{prior_filled + quantity}/{order.quantity}, position before "
+                f"fill {current_quantity}; recorded and quarantined (ADR-001)"
             ),
             symbol=symbol,
             candidate_id=order.candidate_id,
             order_id=order_id,
             fill_id=fill.id,
-            payload={
-                "side": side.value,
-                "quantity": quantity,
-                "price": price,
-                "attempted_sell": quantity,
-                "current_quantity": current_quantity,
-                "quarantined": True,
-            },
+            payload=overfill_payload,
             session_id=session_id,
         )
     else:
@@ -397,9 +714,8 @@ def plan_append_fill(
         FILL_APPEND,
         event,
         fill=fill,
-        execution_event=execution_event_for_fill(
-            fill, source=source, authority=authority
-        ),
+        execution_event=fill_event,
+        quarantine_event=quarantine_event,
     )
 
 
@@ -3879,6 +4195,7 @@ class EnvelopeFillPlan:
     error: Optional[Exception] = None
     envelope: Optional[ExecutionEnvelope] = None
     fill_event: Optional[ExecutionEvent] = None
+    quarantine_event: Optional[ExecutionEvent] = None
     # A status transition mechanically chained to this fill (ACTIVE envelope
     # completing at remaining==0, or breaching on overfill), planned against
     # the post-decrement envelope. None when the fill only decrements.
@@ -3896,6 +4213,10 @@ def plan_envelope_fill(
     ts_event: Optional[datetime] = None,
     source: EventSource = EventSource.BROKER_REST,
     authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    canonical_event_exists: bool = False,
+    order_quantity: Optional[int] = None,
+    prior_order_filled_quantity: int = 0,
+    existing_quarantine_event: Optional[ExecutionEvent] = None,
     now: Optional[datetime] = None,
 ) -> EnvelopeFillPlan:
     """Plan the ONLY operation that may decrement ``remaining_quantity``.
@@ -3963,6 +4284,22 @@ def plan_envelope_fill(
     ts = now if now is not None else utcnow()
     remaining = envelope.remaining_quantity or 0
     overfill = quantity > remaining
+    order_overfill = (
+        order_quantity is not None
+        and prior_order_filled_quantity + quantity > order_quantity
+    )
+    if (
+        (overfill or order_overfill)
+        and authority is not EventAuthority.BROKER_AUTHORITATIVE
+        and not canonical_event_exists
+    ):
+        return EnvelopeFillPlan(
+            ENVELOPE_FILL_REJECT,
+            error=InvalidFillError(
+                f"non-broker fill of {quantity} exceeds remaining quantity/order "
+                f"capacity for envelope {envelope.id}"
+            ),
+        )
     new_remaining = max(0, remaining - quantity)
     terminal = ENVELOPE_TRANSITIONS[envelope.status] == set()
 
@@ -3997,6 +4334,30 @@ def plan_envelope_fill(
         correlation_id=envelope.sell_intent_id,
         payload=payload,
     )
+    quarantine_event: Optional[ExecutionEvent] = None
+    if authority is EventAuthority.BROKER_AUTHORITATIVE and (
+        overfill or order_overfill
+    ):
+        quarantine_event = overfill_quarantine_event(
+            fill_event,
+            order_quantity=order_quantity,
+            prior_filled_quantity=prior_order_filled_quantity,
+            current_quantity=None,
+            order_overfill=order_overfill,
+            position_overfill=False,
+            envelope_overfill=overfill,
+            remaining_before=remaining,
+        )
+        quarantine_conflict = overfill_quarantine_conflict_reason(
+            existing_quarantine_event, quarantine_event
+        )
+        if quarantine_conflict is not None:
+            return EnvelopeFillPlan(
+                ENVELOPE_FILL_REJECT,
+                error=InvalidFillError(
+                    f"overfill quarantine identity conflict: {quarantine_conflict}"
+                ),
+            )
 
     transition: Optional[EnvelopeTransitionPlan] = None
     if envelope.status in (EnvelopeStatus.ACTIVE, EnvelopeStatus.FROZEN):
@@ -4025,6 +4386,7 @@ def plan_envelope_fill(
         ENVELOPE_FILL_APPLY,
         envelope=updated,
         fill_event=fill_event,
+        quarantine_event=quarantine_event,
         transition=transition,
     )
 

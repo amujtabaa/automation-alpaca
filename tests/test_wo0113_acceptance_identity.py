@@ -249,6 +249,49 @@ async def test_distinct_broker_acceptances_for_one_order_are_distinct_exposure(
         )
 
 
+async def test_distinct_recovery_resolution_releases_only_its_exact_accepted_leg(
+    any_store: Any,
+) -> None:
+    """Resolved history represents one pair without hiding its live sibling."""
+
+    await any_store.initialize()
+    order = await _terminal_buy_with_fill(any_store)
+    broker_ids = [f"resolved-leg-a-{order.id}", f"resolved-leg-b-{order.id}"]
+    recoveries = []
+    for index, broker_id in enumerate(broker_ids):
+        await any_store.append_execution_event(
+            _accepted_event(
+                order,
+                broker_id,
+                event_id=f"resolved-leg-event-{index}-{order.id}",
+            )
+        )
+        recoveries.append(
+            await any_store.create_submit_recovery(
+                local_order_id=order.id,
+                broker_order_id=broker_id,
+                client_order_id=order.id,
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.quantity,
+                limit_price=order.limit_price,
+                failure_reason=f"accepted leg {index} needs recovery",
+                session_id=order.session_id,
+                candidate_id=order.candidate_id,
+            )
+        )
+
+    assert await any_store.current_exposure() == 200.0
+    await any_store.update_submit_recovery(
+        recoveries[0].id, cleanup_status=RECOVERY_RESOLVED
+    )
+    assert await any_store.current_exposure() == 100.0
+    await any_store.update_submit_recovery(
+        recoveries[1].id, cleanup_status=RECOVERY_RESOLVED
+    )
+    assert await any_store.current_exposure() == 40.0
+
+
 async def _produce_whitespace_fallback(
     store: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -259,8 +302,8 @@ async def _produce_whitespace_fallback(
     real_create_recovery = store.create_submit_recovery
     raw_broker_id = "  Paper-Opaque_ID:42  "
 
-    async def accept_then_cancel(submitted: Order) -> str:
-        await real_submit(submitted)
+    async def accept_then_cancel(submitted: Order, *, venue_scope) -> str:
+        await real_submit(submitted, venue_scope=venue_scope)
         await store.transition_order(submitted.id, OrderStatus.CANCELED)
         return raw_broker_id
 

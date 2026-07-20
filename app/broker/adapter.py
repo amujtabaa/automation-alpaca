@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from app.models import Order, OrderSide, OrderStatus
+from app.models import Order, OrderSide, OrderStatus, OrderType
 
 
 class BrokerError(Exception):
@@ -41,11 +41,10 @@ class BrokerError(Exception):
 class TerminalBrokerError(BrokerError):
     """A broker submit failed definitively and cannot be safely retried (AIR-003).
 
-    The submit was rejected in a way that will not succeed on retry, *or* the
-    order's fate cannot be confirmed (e.g. a duplicate ``client_order_id`` whose
-    existing order could not then be looked up). The stale-``SUBMITTING`` recovery
-    step does **not** keep re-driving one of these — it escalates the order to a
-    durable, operator-visible ``needs_review`` recovery record instead of guessing.
+    The submit was rejected in a way that will not succeed on retry. An outcome
+    whose fate cannot be confirmed (including a duplicate ``client_order_id``
+    whose existing order cannot be looked up) is
+    :class:`AmbiguousBrokerError`, because an order may already be live.
     """
 
 
@@ -111,6 +110,33 @@ class BrokerOrderUpdate:
 
 
 @dataclass(frozen=True)
+class VenueOrderScope:
+    """Durable wire-level scope for one managed venue request.
+
+    The persisted :class:`Order` is intent state, not always the exact request:
+    a protective MARKET sell is rendered as a live-priced LIMIT outside regular
+    hours.  This scope is written before the venue call and reused for duplicate
+    recovery, polling, targeted lookup, and mass-report correlation.
+    """
+
+    client_order_id: str
+    symbol: str
+    side: OrderSide
+    quantity: int
+    order_type: OrderType
+    limit_price: Optional[float]
+    # ``None`` is permitted only for a legacy replacement whose predecessor
+    # predates durable wire-scope capture.  New submissions always persist an
+    # exact bool before their venue call.
+    extended_hours: Optional[bool]
+    asset_class: str = "us_equity"
+    quantity_mode: str = "qty"
+    time_in_force: str = "day"
+    order_class: str = "simple"
+    replaces_broker_order_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class BrokerOrderReport:
     """One row of the broker's **mass** order-status report (§7 reconciliation).
 
@@ -129,8 +155,23 @@ class BrokerOrderReport:
     symbol: str
     side: OrderSide
     status: OrderStatus
-    filled_quantity: int
+    # Mass reports may legitimately contain unmanaged fractional orders.  They
+    # must be surfaced without aborting reconciliation; managed whole-share
+    # correlation validates exact integral values before acting.
+    filled_quantity: float
     fills: list[BrokerFill] = field(default_factory=list)
+    quantity: Optional[float] = None
+    order_type: Optional[str] = None
+    limit_price: Optional[float] = None
+    time_in_force: Optional[str] = None
+    order_class: Optional[str] = None
+    asset_class: Optional[str] = None
+    quantity_mode: Optional[str] = None
+    extended_hours: Optional[bool] = None
+    has_legs: Optional[bool] = None
+    position_intent: Optional[str] = None
+    replaces_broker_order_id: Optional[str] = None
+    advanced_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,18 +194,23 @@ class BrokerAdapter(ABC):
     """Abstract broker interface. All methods are async."""
 
     @abstractmethod
-    async def submit_order(self, order: Order) -> str:
+    async def submit_order(
+        self, order: Order, *, venue_scope: Optional[VenueOrderScope] = None
+    ) -> str:
         """Submit ``order`` to the broker. Returns the broker's order id.
 
-        **Contract (AIR-001):** an implementation MUST return a **non-empty**
-        ``str`` broker id, or raise :class:`BrokerError`. It must never return
+        **Contract (AIR-001):** an implementation MUST return a canonical
+        **non-empty** ``str`` broker id, or raise :class:`BrokerError`. It must never return
         ``None``, ``""``, or a whitespace-only string — the returned id is stored
         as ``broker_order_id`` and is the *only* key used to poll and cancel, so an
         empty id would create an untrackable "submitted" order. The store enforces
         the mirror of this invariant: a ``SUBMITTING → SUBMITTED`` transition with
         a missing/empty ``broker_order_id`` is rejected.
 
-        Raise :class:`BrokerError` for a transient failure (the caller leaves the
+        A missing/empty id in a response received after the venue call raises
+        :class:`AmbiguousBrokerError`: acceptance may have happened, so the caller
+        quarantines and must not release for another send. Raise plain
+        :class:`BrokerError` only for a provably pre-flight transient failure (the caller leaves the
         order unsubmitted / ``SUBMITTING`` and retries next tick) or
         :class:`TerminalBrokerError` for a definitive one (the caller escalates to
         a durable ``needs_review`` record rather than retrying).
@@ -183,6 +229,16 @@ class BrokerAdapter(ABC):
         *,
         recorded_quantity: int = 0,
         fallback_price: Optional[float] = None,
+        expected_client_order_id: Optional[str] = None,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_quantity: Optional[int] = None,
+        expected_limit_price: Optional[float] = None,
+        expected_order_type: Optional[OrderType] = None,
+        expected_time_in_force: Optional[str] = None,
+        expected_order_class: Optional[str] = None,
+        expected_scope: Optional[VenueOrderScope] = None,
+        allow_dynamic_market_sell: bool = False,
     ) -> BrokerOrderUpdate:
         """Poll the broker for the current state of an order.
 
@@ -192,7 +248,8 @@ class BrokerAdapter(ABC):
         per-execution fill ids ignores it; one that can only see the broker's
         *cumulative* filled amount uses it to emit a single fill for the **delta**
         (``cumulative - recorded_quantity``) rather than re-reporting the whole
-        cumulative (which the store would reject as an overfill). Raises
+        cumulative (which would duplicate already-recorded broker truth and could
+        trigger false overfill quarantine). Raises
         :class:`BrokerError` on failure.
 
         ``fallback_price`` (Phase 7 §7) is a last-resort *audit* price for a fill
@@ -204,6 +261,11 @@ class BrokerAdapter(ABC):
         dedup, would strand protection). A long-only fill's exact price does not
         change the quantity/cost-basis fold — it is for the record. Adapters whose
         fills always carry a real price (the mock/sim) accept and ignore it.
+
+        Concrete adapters use the optional expected client id, symbol, and side
+        to correlate a response before exposing status/fills. Monitoring supplies
+        all three from immutable local order scope; a mismatch is a failed poll,
+        never a mutation of the wrong local order.
         """
 
     @abstractmethod
@@ -221,6 +283,12 @@ class BrokerAdapter(ABC):
         broker_order_id: str,
         *,
         client_order_id: str,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_order_type: Optional[OrderType] = OrderType.LIMIT,
+        expected_time_in_force: Optional[str] = "day",
+        expected_order_class: Optional[str] = "simple",
+        venue_scope: Optional[VenueOrderScope] = None,
         limit_price: Optional[float] = None,
         quantity: Optional[int] = None,
     ) -> str:
@@ -230,14 +298,18 @@ class BrokerAdapter(ABC):
         One venue round-trip: the working order is replaced without a window
         in which zero orders (lost queue position, unprotected book) or two
         orders (double exposure) rest. Returns the broker id of the
-        **replacement** order (Alpaca's replace creates a new order); the old
-        ``broker_order_id`` becomes terminal at the venue.
+        **replacement** order (Alpaca's replace creates a new order). The
+        acknowledgement does not prove the predecessor terminal: it remains
+        pollable until its own venue status confirms cancel/reject/fill.
 
         **Contract (mirrors ``submit_order``):**
 
         * MUST return a non-empty ``str`` id for the replacement, never
           ``None``/empty (AIR-001 — the returned id becomes the only poll/
           cancel key for the working order).
+        * A missing/empty id in a post-call response is
+          :class:`AmbiguousBrokerError`, never a retryable plain
+          :class:`BrokerError`; the replacement may already be live.
         * ``client_order_id`` is REQUIRED and must be deterministic per
           replace attempt: it is the replacement's idempotency key, so a
           crash-then-retry of the SAME replace adopts the already-created
@@ -245,6 +317,10 @@ class BrokerAdapter(ABC):
           one, and an ambiguous outcome is resolvable by the existing
           read-only ``get_order_by_client_order_id`` query (ADR-002) — the
           caller must NEVER blind-re-replace.
+        * Concrete adapters correlate the acknowledgement to the replacement's
+          immutable symbol, side, quantity, and limit scope. A contradictory
+          acknowledgement is ambiguous because the replace request may still
+          have mutated venue state.
         * Error taxonomy is identical to submit: plain :class:`BrokerError`
           for a provably-pre-flight transient (e.g. 429), a
           :class:`TerminalBrokerError` for a definitive rejection, and
@@ -256,7 +332,18 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     async def get_order_by_client_order_id(
-        self, client_order_id: str
+        self,
+        client_order_id: str,
+        *,
+        expected_symbol: Optional[str] = None,
+        expected_side: Optional[OrderSide] = None,
+        expected_quantity: Optional[int] = None,
+        expected_limit_price: Optional[float] = None,
+        expected_order_type: Optional[OrderType] = None,
+        expected_time_in_force: Optional[str] = None,
+        expected_order_class: Optional[str] = None,
+        expected_scope: Optional[VenueOrderScope] = None,
+        allow_dynamic_market_sell: bool = False,
     ) -> Optional[BrokerOrderUpdate]:
         """Read-only targeted query by our deterministic ``client_order_id``
         (ADR-002 / Spine v2 wave 3c).

@@ -54,6 +54,7 @@ from app.reconciliation import (
     ENVELOPE_EXEC_SUBMITTED,
     _drive_staged_order,
     execute_envelope_action,
+    load_venue_order_scopes,
 )
 from app.store.sqlite import SqliteStateStore
 from app.store.base import (
@@ -2598,8 +2599,16 @@ async def test_executor_persisted_reprice_overrides_caller_submit_kind(any_store
     assert result.outcome == ENVELOPE_EXEC_REPRICED
     assert [order.id for order in adapter.submitted] == [predecessor.id]
     assert [call[0] for call in adapter.replaced] == [predecessor.broker_order_id]
-    assert (await any_store.get_order(predecessor.id)).status is OrderStatus.CANCELED
-    assert (await any_store.get_order(staged.order.id)).status is OrderStatus.SUBMITTED
+    replacement = await any_store.get_order(staged.order.id)
+    assert replacement is not None
+    scopes = await load_venue_order_scopes(any_store, [replacement])
+    assert (
+        scopes[replacement.id].replaces_broker_order_id == predecessor.broker_order_id
+    )
+    # A replace ACK authenticates the child; only a later authoritative status
+    # observation is allowed to terminalize the predecessor.
+    assert (await any_store.get_order(predecessor.id)).status is OrderStatus.SUBMITTED
+    assert replacement.status is OrderStatus.SUBMITTED
 
 
 async def test_executor_ignores_caller_working_order_for_persisted_predecessor(
@@ -2645,8 +2654,14 @@ async def test_executor_ignores_caller_working_order_for_persisted_predecessor(
     assert result.outcome == ENVELOPE_EXEC_REPRICED
     assert [call[0] for call in adapter.replaced] == [predecessor.broker_order_id]
     assert all(call[0] != wrong_working.broker_order_id for call in adapter.replaced)
-    assert (await any_store.get_order(predecessor.id)).status is OrderStatus.CANCELED
-    assert (await any_store.get_order(staged.order.id)).status is OrderStatus.SUBMITTED
+    replacement = await any_store.get_order(staged.order.id)
+    assert replacement is not None
+    scopes = await load_venue_order_scopes(any_store, [replacement])
+    assert (
+        scopes[replacement.id].replaces_broker_order_id == predecessor.broker_order_id
+    )
+    assert (await any_store.get_order(predecessor.id)).status is OrderStatus.SUBMITTED
+    assert replacement.status is OrderStatus.SUBMITTED
 
 
 async def test_executor_final_claim_blocks_stale_staged_action(any_store):

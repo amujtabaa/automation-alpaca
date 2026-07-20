@@ -139,8 +139,10 @@ def project_symbol_position(events: Iterable[ExecutionEvent], symbol: str) -> Po
 
 
 def quarantined_symbols(events: Iterable[ExecutionEvent]) -> set[str]:
-    """Symbols quarantined by a broker-authoritative overfill (ADR-001): a
-    recorded ``FILL`` that crossed the long-only position through flat into short.
+    """Symbols quarantined by a broker-authoritative overfill (ADR-001).
+
+    Explicit ``QUARANTINED`` facts cover order-level overfills that can leave a
+    positive position; the legacy negative-position fold remains supported.
     Autonomous spawns are blocked and manual review is required.
 
     **Latched, not live.** A symbol is quarantined once its ``FILL``-event fold
@@ -171,7 +173,12 @@ def quarantined_symbols(events: Iterable[ExecutionEvent]) -> set[str]:
         for e in events
         if e.event_type is ExecutionEventType.FILL and e.symbol is not None
     }
-    quarantined: set[str] = set()
+    quarantined = {
+        event.symbol
+        for event in events
+        if event.event_type is ExecutionEventType.QUARANTINED
+        and event.symbol is not None
+    }
     for symbol in symbols:
         position = Position(symbol=symbol)
         for event in events:

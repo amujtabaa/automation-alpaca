@@ -47,29 +47,42 @@ the whole persistence model depends on.
 `filled_quantity_bounded_and_whole` invariants in
 `tests/test_lifecycle_state_machine.py`.
 
-**INV-002 — A position quantity never goes negative.** A sell fill that would
-overdraw a position is a data-integrity error (rejected), never a silent short.
-*Why:* beta is long-only; a negative position has no defined meaning anywhere
-downstream (protection floor, CAPI exposure).
-*Pinned by:* `position_never_negative` invariant
-(`tests/test_lifecycle_state_machine.py`).
+**INV-002 — Local or synthetic logic never creates a negative/overfilled
+position; broker-authoritative excess is recorded and quarantined.** A
+LOCAL/SYNTHETIC fill that exceeds the order or would overdraw the long position
+is rejected before fill, event, envelope, or position mutation. An equivalent
+BROKER_AUTHORITATIVE fact is unwelcome reality: persist its raw `FILL`, append a
+durable `QUARANTINED` fact atomically, block autonomous spawn, and require manual
+review—even when the resulting position remains positive.
+*Why:* beta is long-only, but hiding venue truth is more dangerous than projecting
+the contained exception; record-first envelope ingress must survive a crash before
+the compatibility fill row is bridged.
+*Pinned by:* `tests/test_wo0113_store_parity.py` (dual-store order/envelope,
+dedupe-poison, and SQLite-reopen cases), `tests/test_monitoring.py::
+test_broker_authoritative_overfill_is_recorded_and_quarantined`, and
+`position_never_negative` for non-broker state-machine input.
 
-**INV-003 — A fill's `source_fill_id`, when present, is unique — a duplicate
-observation never appends a second fill row or mutates position.**
+**INV-003 — A fill's `source_fill_id`, when present, binds immutable economics.**
+An exact order/symbol/side/quantity/price replay is a duplicate no-op. Reusing the
+identity with changed economics is a durable `fill_duplicate_conflict` requiring
+manual review; it never appends a second fill/FILL or mutates position.
 *Why:* polling-based reconciliation can observe the same broker fill twice
 (overlapping poll, reconnect, replay); without this, position would silently
 double-count.
 *Pinned by:* `tests/test_duplicate_fill.py`, `tests/test_air_group_b.py` (B3),
 `tests/test_monitoring.py::test_duplicate_fill_replay_is_ignored`.
 
-**INV-004 — `Order.filled_quantity` and the fill table never disagree.**
-`filled_quantity` always equals the sum of that order's recorded fills.
-*Why:* `append_fill` and the later `transition_order(filled_quantity=...)`
-call are two separate atomic operations (see `02_DATA_AND_PERSISTENCE.md`) —
-a caller that reads the stale field between them (e.g. CAPI exposure) would
-double-count or under-count.
-*Pinned by:* `order_filled_matches_recorded_fills` invariant
-(`tests/test_lifecycle_state_machine.py`).
+**INV-004 — Raw fill truth is authoritative; the bounded Order progress scalar
+never exceeds its immutable quantity.** Normally `Order.filled_quantity` equals
+the order's recorded-fill sum. If broker-authoritative fills exceed the order,
+the raw fill/FILL and position retain the full quantity while the Order read model
+is `min(raw_sum, order.quantity)` and the symbol is quarantined. Adapter delta
+calculation always receives the raw recorded sum, never the capped scalar.
+*Why:* clipping broker truth would re-report/double-count fills; allowing the
+compatibility scalar past the order ceiling would violate lifecycle consumers.
+*Pinned by:* `tests/test_wo0113_store_parity.py`,
+`tests/test_monitoring.py::test_broker_authoritative_overfill_is_recorded_and_quarantined`,
+and `order_filled_matches_recorded_fills` for the non-quarantined state machine.
 
 ---
 
@@ -105,8 +118,8 @@ reconciled — it is functionally lost. (AIR-001 / D-022 B1.)
 `CREATED → SUBMITTING` does not exist anywhere else in
 `ORDER_TRANSITIONS`; the claim's one atomic lock-held re-check (kill switch,
 buys-paused, session-closed, still-`CREATED`) is never bypassable by a second
-code path. *WO-0113 implemented branch behavior — pending operator ratification
-and REV-0033 review:* a BUY claim also recomputes the current risk-limit
+code path. *WO-0113 operator-ratified branch behavior — pending REV-0033
+independent review:* a BUY claim also recomputes the current risk-limit
 exposure under that same lock/transaction, including exact accepted-submit
 UNKNOWN/recovery ownership that appeared after order mint. Before either side
 can enter `SUBMITTING`, a side-independent ownership rail also refuses a
@@ -124,8 +137,8 @@ plus `tests/test_wo0113_acceptance_identity.py::test_created_order_with_own_venu
 **INV-022 — A live-at-broker order is never untracked.** Ordinarily, every broker
 order the adapter still considers live has one durable local owner: a local
 order row or an open (`unresolved`/`needs_review`) `SubmitRecoveryRecord`.
-*WO-0113 implemented branch behavior — pending operator ratification and
-REV-0033 review:* if neither ordinary owner can be written after acceptance, one
+*WO-0113 operator-ratified branch behavior — pending REV-0033 independent
+review:* if neither ordinary owner can be written after acceptance, one
 exact canonical `UNKNOWN_RECONCILE_REQUIRED` execution fact temporarily owns
 the accepted broker identity until repair adopts it or creates that recovery;
 the ordinary acceptance audit may or may not already have succeeded.
@@ -400,8 +413,8 @@ Option B) and `_submit_pending_orders`'s claim-then-call ordering (INV-021).
 the explicit audited emergency-reduce capability.** Ordinary manual flatten,
 direct `MANUAL_FLATTEN` intent creation, autonomous protection, legacy SELL
 dispatch, and every new order-intent path remain blocked in `Halted`.
-*WO-0113 implemented branch behavior — pending operator ratification and
-REV-0033 review:* the emergency command alone may carry one active,
+*WO-0113 operator-ratified branch behavior — pending REV-0033 independent
+review:* the emergency command alone may carry one active,
 symbol/session-scoped capability through the same reduce-only mint path; an
 ambient grant never authorizes an
 ordinary call. This scoped reducing authorization does not lift or transition
@@ -513,8 +526,7 @@ conflict before venue action. Its durable high-water checkpoint advances only
 after the selected execution-log tail validates completely; an error leaves it
 unchanged so restart retries the same facts. No submitted- or ack-shaped fact
 can move the field (the sell-side analogue of invariants 8/9).
-*WO-0113 recommended amendment — pending operator ratification and REV-0033
-review.*
+*WO-0113 operator-ratified amendment — pending REV-0033 independent review.*
 *Why:* the qty ceiling is the hard scope rail of the human's mandate (ADR-010
 §2); if anything but a fill fact could move it, the envelope could under- or
 over-report how much of the mandate is spent.
@@ -665,8 +677,8 @@ verbatim. *Additional pins:*
 `tests/test_wo0036_r2_flatten_buys_open.py`,
 `tests/test_wo0036_r2_close_and_recovery_ownership.py`
 (`test_needs_review_retention_is_fail_closed_but_not_monopolizing`).
-*WO-0113 recommended amendment — pending operator ratification and REV-0033
-independent review:* exit
+*WO-0113 operator-ratified amendment — pending REV-0033 independent review:*
+exit
 preemption now closes the full proposal-to-order epoch. Candidate admission
 refuses during a same-symbol exit, final dispatch expires rather than parks a
 candidate that loses the race, and a successful exit stands down every
@@ -958,8 +970,8 @@ backfill work counter mutation-pin those mechanics; the retention semantics
 above remain unchanged.
 
 **INV-091 — Durable submit progress cannot disappear or be blindly repeated.**
-*WO-0113 implemented branch behavior — pending operator ratification and
-REV-0033 independent review.*
+*WO-0113 operator-ratified branch behavior — pending REV-0033 independent
+review.*
 Once `order_submit_unpersisted` commits, it is the ordinary restart-safe seed
 for an accepted broker id whose `SUBMITTED`/recovery writes did not converge.
 Whenever recovery ownership cannot be written, the engine appends an
@@ -973,8 +985,17 @@ fails closed, and an acceptance already represented by the order or recovery is
 idempotent. Same-side CAPI exposure counts each exact accepted BUY broker
 identity until it is broker-authoritatively resolved; an exact order, open
 recovery, and fallback for the same broker id coalesce as one accepted leg
-rather than releasing it. Two distinct broker ids tied to one local order remain
-two possible venue orders; canonical fills are allocated
+rather than releasing it. Recovery ownership is one row per exact canonical
+local/broker pair. Every durable assignment canonicalizes transport whitespace
+before identity comparison. Order, recovery, and canonical-fallback
+representations for that same pair coalesce as one accepted leg. One local order
+may own multiple distinct concrete broker acceptances. Concrete broker-id
+assignments in mutable order/recovery state are exclusive to one local order.
+Because canonical fallback events are append-only evidence, a conflicting
+fallback under another local order is retained rather than rewritten or silently
+dropped; it cannot be adopted or rebound, blocks repair/venue progress, and makes
+SQLite restart fail closed until the cross-owner evidence is dispositioned.
+Every leg is polled, canceled, and resolved independently. Canonical fills are allocated
 once across their aggregate, never once per identity. Malformed/legacy numeric
 owner scope cannot shrink the immutable referenced-order remainder: the
 conservative larger quantity/price wins, and an unbounded scope fails a
@@ -984,7 +1005,10 @@ accepted-fact cache, so unrelated historical UNKNOWN facts are not materialized
 at every choke. Global CAPI projects each order's lifecycle status from immutable
 events, not its driftable raw status column. Bounded accepted-submit and
 fill-attribution repair consumers skip checkpoint-only transport pages, so idle
-cadence converges without the two cursors appending for each other. A priceable stale redrive
+cadence converges without the two cursors appending for each other. The fallback
+itself blocks stale-claim reclaim before ownership repair. A broker call that
+returns an empty or whitespace-only id is post-call ambiguity and must enter
+quarantine rather than release the claim as a preflight rejection. A priceable stale redrive
 must first commit `STALE_SUBMITTING_REDRIVE_STARTED`; without that fact there is
 no venue call. An ambiguous send must commit either TIMEOUT_QUARANTINE or an
 open `needs_review` owner for the exact local/client identity, including across
@@ -995,6 +1019,16 @@ faults may be contained behind the verified gate. Every planned inferred-fill
 lookup and append is part of parity establishment: if either fails, driven
 reconciliation must keep/verify `Reducing`, refuse an `Active` classification,
 and stop the same tick before any venue action.
+Every submit/replace acknowledgement and targeted client-order lookup must echo
+the deterministic client-order id requested by the engine; missing or mismatched
+correlation is ambiguity, never an adoptable broker identity. A per-order status
+response must echo the exact requested broker id before its status or fills can
+mutate local truth. Mass reconciliation treats an existing local broker id as
+authoritative; only an id-less local order may fall back to a client-id match,
+and then only when immutable symbol and side also agree. Cancellation after a
+venue call may have crossed the send boundary, so accepted identity/quarantine
+finalization is shielded to durable completion before the original cancellation
+propagates.
 *Pinned by:* `tests/test_wo0113_lifecycle_closure.py`
 (`test_unpersisted_submit_audit_repairs_failed_recovery_next_tick`,
 `test_sqlite_restart_repairs_unpersisted_submit_audit`,
@@ -1011,8 +1045,10 @@ fault pins in `tests/test_wo0113_monitoring_failclosed.py`, including
 CAPI/dedup pins in `tests/test_wo0113_capi_uncertainty.py`. Broker-identity
 multiplicity, one-time fill allocation, conservative numeric scope,
 self-reclaim, normalization, and bounded-history cases are pinned in
-`tests/test_wo0113_acceptance_identity.py`; bounded repair selection is pinned
-in `tests/test_wo0113_repair_scaling.py`.
+`tests/test_wo0113_acceptance_identity.py`; store-boundary canonicalization,
+cross-representation conflict handling, and timeout-resolution ownership are pinned in
+`tests/test_wo0113_store_parity.py`; bounded repair selection is pinned in
+`tests/test_wo0113_repair_scaling.py`.
 
 **INV-092 — Local `CREATED → CANCELED` is one common proof, not a raw-status
 shortcut.** Under the deciding lock/transaction, event projection must still
@@ -1023,8 +1059,7 @@ routine ExecutionEvent + owner reconciliation commit atomically at the injected
 logical time. Every direct cancel, exit stand-down, envelope cleanup,
 monitoring cancel, and session-close caller delegates this proof; a raced claim
 or recovery leaves the order non-terminal.
-*WO-0113 recommended amendment — pending operator ratification and REV-0033
-review.*
+*WO-0113 operator-ratified amendment — pending REV-0033 independent review.*
 *Pinned by:* `tests/test_wo0113_safe_local_cancel.py`
 (`test_direct_created_cancel_is_blocked_by_open_recovery`,
 `test_direct_created_cancel_uses_event_projection_not_raw_status`,
@@ -1059,13 +1094,33 @@ decomposing the normal facade flow cannot bypass either the cross-side rail or
 the one-local-id/one-submission ownership rail. An accepted direct SELL also
 remains in same-side single-flight at later intent-mint and final-claim choke
 points even if a local terminal fact masks its order row.
-*WO-0113 recommended amendment — pending operator ratification and REV-0033
-review.*
+*WO-0113 operator-ratified amendment — pending REV-0033 independent review.*
 *Pinned by:* `tests/test_wo0113_sell_boundary.py`,
 `tests/test_wo0113_submit_acceptance_fallback.py`,
 `tests/test_wo0113_acceptance_identity.py`,
 `tests/test_wo0113_primary_remediation.py`, and the existing final-claim pins in
 `tests/test_wo0109_round3_remediation.py`.
+
+**INV-095 — Every managed venue response is correlated to one durable exact
+request scope.** Before a venue submit/replace, the engine appends one
+`ENGINE`/`LOCAL` `VENUE_ORDER_SCOPE` for the current gapless submission claim.
+It records client id, immutable owner identity/quantity, rendered type/price,
+asset/quantity mode, TIF/class, extended-hours eligibility, and replacement
+predecessor. Restart replays that scope; it never re-derives session-sensitive
+wire intent. Every loader authenticates it against the immutable Order or durable
+recovery owner before an adapter call. Direct ACK/status/targeted and mass-report
+paths compare the same scope, including exact replacement lineage; a managed
+mass `filled_quantity` must be finite, integral, and nonnegative (broker overfill
+above ordered quantity remains valid truth). Unknown lifecycle states, scope
+poison, foreign identity, and contradictory advanced-order fields fail closed.
+The injected decision clock—not ambient wall time—chooses a new envelope scope.
+*Why:* otherwise a restart, session boundary, poisoned event, or partial mass row
+can authenticate a different venue order and apply its status/fills locally.
+*Pinned by:* `tests/test_wo0113_monitoring_failclosed.py` (scope poison),
+`tests/test_alpaca_paper_submit.py`, `tests/test_alpaca_paper_order_status.py`,
+`tests/test_wo0019a_broker_replace.py`,
+`tests/test_spine_phase4_reconciliation_engine.py`, and
+`tests/test_wo0019_engine_seam.py::test_submit_scope_uses_the_injected_decision_clock`.
 
 ---
 

@@ -74,19 +74,31 @@ ExecutionEvent, and owner reconciliation atomically. Pins:
 `::test_direct_created_cancel_uses_event_projection_not_raw_status`, and
 `::test_local_created_cancel_rolls_back_row_audit_and_execution`.
 
-### WO-0113 implemented branch behavior — pending operator ratification and REV-0033 review
+### WO-0113 operator-ratified behavior — pending REV-0033 independent review
 
 Whenever recovery ownership for accepted broker identity cannot be persisted, the last-write
 fallback is `UNKNOWN_RECONCILE_REQUIRED` with `ENGINE` / `LOCAL` provenance, whether or not the
 ordinary acceptance audit already succeeded. It is a local containment/ownership decision, not a
 broker lifecycle fact or fill: it folds neither order status nor position. Its payload retains the
-exact broker id for deterministic ownership repair; adapter output is trimmed once at ingress so
-the transition, fallback dedupe, recovery identity, and later broker lookup all use one canonical
-nonblank value. A final claim on either side refuses an order that already carries that broker id
-or its own fallback fact.
+exact broker id for deterministic ownership repair; adapter output is trimmed at producer ingress,
+and durable order-transition, timeout-resolution, and recovery-creation boundaries canonicalize it
+again so direct callers cannot create aliases. The transition, fallback dedupe, recovery identity,
+and later broker lookup therefore use one canonical nonblank value. A blank result after the venue
+call is ambiguous acceptance and enters quarantine;
+it is never treated as a preflight rejection that may release the claim. Recovery truth retains
+one recovery row per exact local/broker pair. Order, recovery, and canonical-fallback
+representations for that same pair coalesce as one accepted leg. A concrete broker id cannot be
+assigned to a different local order through mutable order/recovery state. Conflicting cross-owner
+canonical fallback facts remain append-only evidence; they cannot be adopted or rebound and fail
+closed (including at SQLite restart). Distinct concrete broker acceptances for one local order
+remain distinct append-only legs and resolve independently. A final claim on either side refuses
+an order that already carries that broker id or its own fallback fact.
 For a direct SELL, that fallback also remains same-side single-flight ownership:
 a local terminal projection cannot erase the possible venue exit and authorize a
 replacement SELL.
+Concrete Alpaca submit/replace acknowledgements and targeted client-order lookups must correlate
+their returned `client_order_id` to the deterministic request. Per-order polling must correlate the
+returned broker id to the requested broker id before status/fill provenance is trusted.
 
 #### Append-only envelope attribution
 

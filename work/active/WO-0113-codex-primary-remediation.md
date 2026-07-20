@@ -26,6 +26,190 @@ gated_surface: order submission/claim, candidate dispatch, manual flatten, auton
 > below is ordinary defensive correctness engineering: confirm or refute a suspected bug with
 > evidence, fix what is real, and pin it with a test that provably fails without the fix.
 
+## Execution checkpoint
+
+```yaml
+execution_checkpoint:
+  updated_at_utc: "2026-07-20T02:36:41Z"
+  repository: "amujtabaa/automation-alpaca"
+  branch: "consolidate/r2-canonical"
+  local_head: "96d1c0242682a0cd8c197c1354c70857dd772fdb"
+  upstream_head: "96d1c0242682a0cd8c197c1354c70857dd772fdb"
+  pr_number: 9
+  pr_head: "96d1c0242682a0cd8c197c1354c70857dd772fdb"
+  working_tree: DIRTY
+  staged_paths: []
+  unstaged_paths:
+    - "app/broker/adapter.py"
+    - "app/broker/alpaca_paper.py"
+    - "app/broker/mock.py"
+    - "app/broker/sim.py"
+    - "app/events/projectors.py"
+    - "app/models.py"
+    - "app/monitoring.py"
+    - "app/policy.py"
+    - "app/reconciliation.py"
+    - "app/store/base.py"
+    - "app/store/core.py"
+    - "app/store/memory.py"
+    - "app/store/sqlite.py"
+    - "pyproject.toml"
+    - "docs/00_START_HERE.md"
+    - "docs/05_REVIEW_CHECKLIST.md"
+    - "docs/INVARIANTS.md"
+    - "docs/MIGRATION_MATRIX.md"
+    - "docs/adr/ADR-001-overfill-quarantine.md"
+    - "docs/adr/ADR-002-timeout-quarantine.md"
+    - "docs/adr/ADR-003-manual-flatten-halted-reducing.md"
+    - "docs/adr/ADR-008-order-status-event-provenance.md"
+    - "docs/adr/ADR-010-execution-envelope.md"
+    - "pkl/log.md"
+    - "pkl/process/migration-history.md"
+    - "pkl/safety/invariants-rationale.md"
+    - "tests/r2_conformance_oracle.py"
+    - "tests/test_air_group_b.py"
+    - "tests/test_alpaca_paper_order_status.py"
+    - "tests/test_alpaca_paper_submit.py"
+    - "tests/test_duplicate_fill.py"
+    - "tests/test_eng002_quarantine_budget.py"
+    - "tests/test_eng002b_quarantine_fairness.py"
+    - "tests/test_input_validation.py"
+    - "tests/test_monitoring.py"
+    - "tests/test_rev0023_phase_a_pins.py"
+    - "tests/test_spine_phase3c_timeout_quarantine.py"
+    - "tests/test_spine_phase4_reconcile_acting.py"
+    - "tests/test_spine_phase4_reconcile_event_truth.py"
+    - "tests/test_spine_phase4_reconcile_notfound.py"
+    - "tests/test_spine_phase4_reconcile_synthetic_throttle.py"
+    - "tests/test_spine_phase4_reconciliation_engine.py"
+    - "tests/test_sqlite_store.py"
+    - "tests/test_store_core.py"
+    - "tests/test_wave0_submission_claim.py"
+    - "tests/test_wo0019_engine_seam.py"
+    - "tests/test_wo0019a_broker_replace.py"
+    - "tests/test_wo0021_envelope_chaos.py"
+    - "tests/test_wo0036_r2_hostile_closure.py"
+    - "tests/test_wo0113_acceptance_identity.py"
+    - "tests/test_wo0113_attribution_repair.py"
+    - "tests/test_wo0113_lifecycle_closure.py"
+    - "tests/test_wo0113_monitoring_failclosed.py"
+    - "tests/test_wo0113_store_parity.py"
+    - "tests/test_wo0113_submit_acceptance_fallback.py"
+    - "work/active/WO-0113-codex-primary-remediation.md"
+    - "work/completed/delete-candidates/.gitkeep (deleted)"
+  current_phase: "local implementation verified; implementation commit freeze pending"
+  current_cluster: "pre-commit diff/evidence reconciliation, then exact-SHA remote gates"
+  completed:
+    - "Preflight reconciled local/upstream/PR head at 96d1c0242682a0cd8c197c1354c70857dd772fdb and base at 2aa377a35d35e85be120cf90cdb6c5bd85a8d546; exact-head CI was green."
+    - "Mapped every accepted-submit producer and the fallback, repair, exposure, CAPI, claim, cancel, recovery-loop, and restart consumers."
+    - "Centralized the canonical UNKNOWN fallback at the reconciliation dependency seam and routed ordinary plus envelope submit/replace acceptances through it."
+    - "Canonicalized broker ids at every producer ingress and durable assignment boundary; blank post-call identity is ambiguous and quarantined rather than released as preflight rejection."
+    - "Made canonical fallback ownership suppress stale SUBMITTING redrive before repair."
+    - "Changed recovery cardinality to one exact canonical local/broker pair per row: one local may retain multiple concrete venue legs; every concrete broker id remains globally exclusive across order, recovery, and canonical-fallback representations."
+    - "Pinned repair, SQLite restart, independent poll/cancel/resolve, and CAPI release 200->100->40 for distinct accepted legs."
+    - "Changed fill-divergence recovery dedupe from any-local to exact accepted identity."
+    - "Recorded all five operator semantic decisions RATIFIED_YES across the work order and affected ADR/INV/PKL/operator/review documentation."
+    - "Authoritative accepted-ownership slice is 228/228 green across six files; the complete 12-file WO corpus plus timeout quarantine is 421/421 green."
+    - "Concrete Alpaca direct and duplicate-recovery submit/replace acknowledgement handling is 48/48 green across its two complete adapter files."
+    - "Persisted exact venue scope now authenticates to immutable Order/recovery identity before every poll, targeted query, mass reconciliation, recovery, or external-order suppression consumer."
+    - "Mass reports preserve replace predecessor lineage and reject fractional managed fill levels; submit/replace ACKs reject unknown lifecycle or malformed cumulative state without rejecting broker overfill truth."
+    - "Envelope scope capture uses the injected decision clock; the new dual-store boundary pin was red 2/2 before the fix and green 2/2 after it."
+    - "ADR-001 broker-authoritative order/envelope overfill now records raw FILL plus explicit QUARANTINED truth atomically; exact fill replay dedupes, changed economics conflicts, LOCAL/SYNTHETIC excess rejects, and quarantine-key poison fails before mutation."
+    - "Fresh integrated evidence: venue/reconciliation cluster 353 passed; overfill/store/monitoring cluster 212 passed; store parity follow-up 57 passed; touched production static checks are green."
+    - "Source freeze declared after the final formatted 10-file corpus passed 598/598 on an external basetemp; the in-process independent source audit returned ACCEPT with no open P0/P1."
+    - "T1.2 guard removal proved four new safety rails can fail: advanced mass material 1/1 red, immutable venue-scope owner poison 4/4 red, record-first overfill quarantine 2/2 red plus quarantine-key poison 4/4 red, and submit/replace ACK lifecycle 16/16 red; every mutation was restored and its same slice returned green."
+    - "Exact Ruff check/format, mypy app (64 files), import-linter (6 kept/0 broken), and diff check are green. Ruff excludes only ignored .pytest* runtime artifacts after OS ACLs made those artifacts unreadable and undeletable."
+    - "All 47 repository-suite regressions were traced to legacy fixtures/doubles that bypassed exact venue-scope semantics; no product defect was found. The 13-file repaired compatibility corpus passed 522/522, and the source-freeze corpus passed 598/598 again."
+    - "Both conformance oracles are green (Codex 61/61; Claude 22 passed/6 documented skips), and review hardening is 12/12 green."
+    - "The scaling gate passed three consecutive runs with every gate true; runtime ratios were 0.9714, 0.8846, and 1.0153, startup elapsed ratios were 9.1098, 9.3970, and 8.2252, and startup select ratio remained 9.1022."
+    - "The final full suite passed three consecutive times on the unchanged tree in 388.2s, 359.5s, and 329.7s (3488 passed, 11 skipped, 1 xfailed each run)."
+    - "Final branch coverage passed at 93.49% against the configured 93.0% floor in 461.7s, with the same full-suite outcome."
+    - "AI-OS install/version/ledger/PKL/disposition/scope checks are green; context hygiene has zero violations and only the expected active-WO length advisory, which the required closeout move removes."
+  active_findings:
+    - id: "WO0113-SIBLING-DURABLE-VENUE-SCOPE-CORRELATION"
+      severity: P1
+      status: FIXED
+      root_cause: "The persisted Order row is intent, not the exact rendered venue request. Poll/targeted/mass/replace consumers re-derived or incompletely compared type, price, extended-hours, advanced fields, predecessor lineage, and immutable owner quantity, allowing restart drift or scope poison to authenticate a foreign venue row."
+      next_action: "Retain the source-frozen pins through repository-wide and exact-head remote gates."
+    - id: "WO0113-SIBLING-ADR001-OVERFILL-CONFLICT-TRUTH"
+      severity: P0
+      status: FIXED
+      root_cause: "Store twins rejected broker order excess, treated changed economics under one source_fill_id as a benign duplicate, and could persist record-first envelope overfill without explicit positive-position quarantine; a poisoned quarantine dedupe key could also suppress containment after raw truth mutation."
+      next_action: "Retain the source-frozen pins through repository-wide and exact-head remote gates."
+    - id: "WO0113-SIBLING-TARGETED-PRESENT-FILL-INGESTION"
+      severity: P1
+      status: FIXED
+      root_cause: "Not-found reconciliation returned after a targeted client-id hit even though that response carries cumulative state without priced executions; a terminal fill absent from the mass OPEN report could remain scalar-only forever."
+      next_action: "Retain the exact-identity direct-poll and budget-defer/converge pins in the final focused corpus."
+    - id: "PR9-96D1C02-P1-ENVELOPE-ACCEPT-OWNERSHIP"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "Envelope submit and replace duplicate accepted-ack finalization in reconciliation.py, while the canonical last-write UNKNOWN fallback lives only in monitoring.py's ordinary-submit handler. If SUBMITTED and recovery persistence both fail, the envelope path raises with no durable owner. The same ingress also preserves padded broker IDs instead of enforcing one canonical identity."
+      resolution: "Shared dependency-safe fallback, exact context, normalized identity, dual-store/restart pins."
+    - id: "WO0113-SIBLING-STALE-REDRIVE-FALLBACK"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "Stale SUBMITTING reclaim excluded open recoveries but not the canonical accepted-submit fallback, allowing a second venue call before repair."
+      resolution: "Selective canonical fallback lookup adds the order to already-covered ownership; guard-removal failed 2/2."
+    - id: "WO0113-SIBLING-MULTIPLE-ACCEPTED-LEGS"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "Both stores modeled recovery ownership as singular by local order even though INV-091 treats distinct broker ids as distinct possible venue legs."
+      resolution: "Exact-pair rows, globally exclusive concrete broker ids, plural local index in memory, selective SQLite lookup without schema migration, independent repair/recovery/restart/CAPI pins."
+    - id: "WO0113-SIBLING-FILL-DIVERGENCE-IDENTITY"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "Fill-divergence escalation deduped on any local recovery, so one broker leg could suppress required ownership for another."
+      resolution: "Exact local/broker identity lookup and dual-store mutation pin."
+    - id: "WO0113-SIBLING-BLANK-POSTCALL-BROKER-ID"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "A venue call returning blank identity was classified as BrokerError, releasing the claim even though acceptance may have occurred."
+      resolution: "Classify as AmbiguousBrokerError at ordinary first submit, stale redrive, envelope submit, and envelope reprice; dual-store empty/whitespace pins quarantine and suppress redrive."
+    - id: "WO0113-SIBLING-CROSS-REPRESENTATION-BROKER-IDENTITY"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "Concrete broker-id exclusivity was enforced only recovery-to-recovery, so an order or canonical fallback under one local id could be rebound through another representation to a different local id."
+      resolution: "Both stores now reject cross-local collisions across order, recovery, and canonical-fallback owners; same-pair representations coalesce and SQLite rebuilds both durable ownership indexes on restart."
+    - id: "WO0113-SIBLING-STORE-BOUNDARY-BROKER-CANONICALIZATION"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "Recovery and lifecycle store boundaries trusted already-normalized callers, so padded aliases could become distinct durable identities and whitespace-only recovery ids could appear concrete."
+      resolution: "One canonicalization helper now binds order transition, timeout resolution, and recovery creation in both stores; alias and sentinel cases are dual-store mutation-pinned."
+    - id: "WO0113-SIBLING-ALPACA-ACK-IDENTITY"
+      severity: P1
+      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      root_cause: "The concrete Alpaca adapter converted SDK ids with str() at four submit/replace success and duplicate-recovery exits; None became the apparently concrete identity 'None', while blank replace success was a retryable BrokerError."
+      resolution: "One adapter-level canonical acknowledgement helper now returns a stripped concrete id or raises AmbiguousBrokerError at all four exits; 12 red-first and guard-removal cases pin None, empty, and whitespace responses."
+  last_red:
+    command: ".venv/Scripts/python.exe -m pytest tests/test_wo0019_engine_seam.py::test_submit_scope_uses_the_injected_decision_clock -q --basetemp=.pytest-tmp-clock-red"
+    decisive_output: "2 failed: memory and SQLite both persisted extended_hours=false for an injected premarket decision because _drive_staged_order used wall-clock utcnow()."
+  last_green:
+    command: ".venv/Scripts/python.exe -m pytest -q --cov=app --cov-branch --cov-report=term-missing --basetemp=<external>/pytest-coverage-final-a"
+    decisive_output: "3488 passed, 11 skipped, 1 xfailed; configured 93.0% branch floor met at 93.49%; exit 0 in 461.7 seconds."
+  last_mutation:
+    mutation: "Removed advanced mass-material rejection, immutable scope-owner authentication, record-first overfill containment/quarantine-key validation, and ACK lifecycle validation in turn."
+    expected_test: "Each new safety pin must fail when its guarded branch is removed on every applicable ingress/store."
+    observed_result: "Advanced 1/1, scope poison 4/4, record-first quarantine 2/2, quarantine poison 4/4, and submit/replace ACK lifecycle 16/16 failed exactly; all same slices passed after in-place restoration. Earlier identity-normalization and accepted-ownership mutation evidence remains retained below."
+    restored_in_place: true
+  last_completed_command: "coverage: full suite green and 93.49% branch coverage; all local gates green"
+  next_exact_command: "git diff --check; inspect final status; create the implementation commit without closeout artifacts"
+  pending_remote_checks:
+    - "Push the frozen implementation commit only on consolidate/r2-canonical; then triage exact-head CI and every automated review thread."
+    - "Re-query exact-head CI and automated review after each authorized push."
+  operator_decisions:
+    created_buy_targeting: RATIFIED_YES
+    protection_deferral: RATIFIED_YES
+    append_only_attribution: RATIFIED_YES
+    emergency_capability: RATIFIED_YES
+    accepted_submit_fallback: RATIFIED_YES
+  blockers: []
+  resume_instructions:
+    - "Read CLAUDE.md, this checkpoint, and the latest progress-log entry."
+    - "Reconcile HEAD/upstream/PR head and verify no mutation residue."
+    - "Freeze the implementation commit, push only this branch, and verify exact-SHA CI plus automated review before writing closeout artifacts."
+```
+
 ## Goal
 
 The operator has moved the **primary implementation (coding) seat to Codex** — durably, not per-WO.
@@ -37,7 +221,7 @@ ends the treadmill in four phases:
 - **A.** Independently review the prior seat's two most recent change sets (WO-0111, WO-0112) via
   the queued packets REV-0031 and REV-0032.
 - **B.** Remediate every confirmed finding — from Phase A, and from any automated PR review of
-  subsequent commits — and resolve every final design choice queued for operator ratification.
+  subsequent commits — and implement every final design choice now ratified by the operator.
 - **C.** Run the **recurring-gap-class sweep** (§Phase C below): verify each cross-cutting
   correctness property at every choke point, both stores, so the remaining sibling gaps are closed
   **by property**, not instance-by-instance.
@@ -83,7 +267,8 @@ ends the treadmill in four phases:
   - `work/review/REV-0032/request.md` — WO-0112, range `ba6be70..194343c`.
   - Both say "produce findings only; do not push code." **Superseded by this WO**: record the
     findings first (the packet result is the durable record), then implement the fixes yourself.
-- **Operator decision queue (pending ratification, batch — do not block):** see §below.
+- **Operator decisions:** all five semantic recommendations were ratified YES by the operator's
+  2026-07-19 autonomous-completion mandate; see the durable record below.
 - **Parked, out of scope:** PD-1 (needs-review reconciliation release valve) is a post-merge WO;
   paper-broker backfill verification is a pre-beta task. Do not pull them in.
 
@@ -121,9 +306,16 @@ allowed_paths:
   - work/review/REV-0032/**
   - work/review/REV-0033/**                             # your implementation's review packet
   - work/ledger.jsonl
+  - work/completed/delete-candidates/.gitkeep       # flagged: remove the zero-byte placeholder so the canonical AI-OS delete-candidates hygiene gate can be green
   - tests/**
+  - pyproject.toml                                  # flagged: Ruff must exclude ignored OS-ACL-protected .pytest* artifacts so the exact repository-wide static gates remain reproducible
+  - app/broker/adapter.py                             # flagged: malformed post-call id is ambiguous in the abstract submit/replace contract
+  - app/broker/alpaca_paper.py                        # flagged: canonicalize and fail closed on malformed SDK success/duplicate-recovery ids
+  - app/broker/mock.py                                # flagged: keep the test adapter interface in parity with durable venue-scope correlation
+  - app/broker/sim.py                                 # flagged: keep the deterministic simulator interface in parity with durable venue-scope correlation
   - app/monitoring.py
   - app/reconciliation.py
+  - app/events/projectors.py                          # flagged: project accepted ADR-001 broker-authoritative overfill quarantine truth
   - app/transitions.py
   - app/policy.py
   - app/store/core.py
@@ -135,6 +327,7 @@ allowed_paths:
   - app/config.py                                      # flagged: stale-redrive setting comment must match the durable no-progress counter now enforced
   - docs/00_START_HERE.md                              # flagged: operator-facing lifecycle ownership summary must name the accepted-submit fallback
   - docs/05_REVIEW_CHECKLIST.md                        # flagged: review oracle must recognize the exact fallback owner
+  - docs/MIGRATION_MATRIX.md                           # flagged: retained migration evidence must no longer call projected fill progress or broker-authoritative reconciliation fills deferred/synthetic
   - docs/INVARIANTS.md
   - docs/adr/**
   - pkl/**
@@ -229,35 +422,35 @@ matrix row with its evidence is the deliverable.
   `work/completed/keep/`, ledger row appended, docs/INV/ADR/PKL claims current.
 - **No merge of PR #9. No push to any other branch.**
 
-## Operator decision queue (batch; deliver at close or when blocking)
+## Operator decisions (all ratified YES on 2026-07-19)
 
-1. **WO-0112 F3 targeting — RECOMMEND RATIFY** every recovery-free, event-projected CREATED BUY,
+1. **WO-0112 F3 targeting — RATIFIED YES** every recovery-free, event-projected CREATED BUY,
    regardless of cached `filled_quantity`. A CREATED scalar is not venue absence and a fill scalar
    is not lifecycle truth; broker identity/open recovery are the actual local-cancel exclusions,
    and projected-CREATED with a concrete broker id remains venue exposure at every SELL choke.
    Evidence: `test_wo0113_primary_remediation.py` and `test_wo0113_safe_local_cancel.py`.
-   **Operator ratification requested: YES / NO.**
-2. **WO-0112 F1 shape — RECOMMEND RATIFY** audited `None` plus next-tick recomputation when a
+   **Operator ratification: YES (2026-07-19 autonomous-completion mandate).**
+2. **WO-0112 F1 shape — RATIFIED YES** audited `None` plus next-tick recomputation when a
    same-symbol BUY is venue-uncertain. Raising would still leave the position without an exit;
    minting immediately can wedge or mis-size it. The durable deferral makes no SELL artifact and
    retries from the later live position. Evidence: protection/primary pins.
-   **Operator ratification requested: YES / NO.**
-3. **Append-only missed attribution — RECOMMEND RATIFY** `ENVELOPE_FILL_ATTRIBUTED` as a globally
+   **Operator ratification: YES (2026-07-19 autonomous-completion mandate).**
+3. **Append-only missed attribution — RATIFIED YES** `ENVELOPE_FILL_ATTRIBUTED` as a globally
    deduped, non-position-folding repair marker for one immutable order-scoped canonical `FILL` and
    one validated envelope. Every NEW/repair/replay validates the complete contiguous remaining-
    quantity chain; cadence also validates direct-attributed facts from a durable tail checkpoint
    that advances only after a clean batch. Alternative is permanent quarantine/manual accounting
    for every missed bridge. Evidence: attribution file **58 passed** and exact
    conflict/chain/direct/checkpoint mutations.
-   **Operator ratification requested: YES / NO.**
-4. **Emergency grant capability — RECOMMEND RATIFY** capability-bound reuse/consumption as the
+   **Operator ratification: YES (2026-07-19 autonomous-completion mandate).**
+4. **Emergency grant capability — RATIFIED YES** capability-bound reuse/consumption as the
    ADR-003 clarification: reauthorization rechecks all preconditions, creates no second grant, and
    only the explicit emergency path may observe/consume it. Grant, intent, order, and resolution
    remain bound to the same lock-held session; an explicit foreign session is rejected rather than
    coerced. Ordinary flatten stays denied Halted. Evidence: emergency override **20 passed** and
    the Phase-3e corpus.
-   **Operator ratification requested: YES / NO.**
-5. **Accepted-submit last-write ownership — RECOMMEND RATIFY** an `ENGINE`/`LOCAL`
+   **Operator ratification: YES (2026-07-19 autonomous-completion mandate).**
+5. **Accepted-submit last-write ownership — RATIFIED YES** an `ENGINE`/`LOCAL`
    `UNKNOWN_RECONCILE_REQUIRED` execution fact whenever accepted-submit recovery ownership cannot
    be written; the ordinary acceptance audit may or may not already have succeeded. It carries the
    exact local/broker identity, folds neither status nor position,
@@ -266,11 +459,11 @@ matrix row with its evidence is the deliverable.
    exact UNKNOWN/open-recovery owner contributes its remaining same-side CAPI exposure once per
    distinct broker identity; fills allocate once across identities and malformed numeric scope
    cannot shrink the referenced order. Either side's final claim refuses its own pre-existing
-   broker id/fallback fact. Evidence: fallback **20 passed**, acceptance identity **47 passed**,
-   CAPI **16 passed**, and repair scaling **13 passed**; producer, projection, claim, multiplicity,
+   broker id/fallback fact. Evidence: fallback **62 passed**, store parity **36 passed**,
+   acceptance identity **49 passed**, CAPI **16 passed**, and repair scaling **13 passed**; producer, projection, claim, multiplicity,
    normalization, cache, and repair guard-removal mutations each failed the exact pins. This is
-   implemented branch behavior, still pending operator ratification and REV-0033 independent
-   review. **Operator ratification requested: YES / NO.**
+   operator-ratified branch behavior; REV-0033 independent review remains required.
+   **Operator ratification: YES (2026-07-19 autonomous-completion mandate).**
 
 ## Done-when
 
@@ -282,7 +475,7 @@ matrix row with its evidence is the deliverable.
 - [ ] Full gate + both oracles + hardening gates + scaling gate + AI-OS hygiene green at final HEAD;
       PR #9 CI green.
 - [ ] `work/review/REV-0033/` queued for the independent seat; no self-certification.
-- [ ] Operator decision queue delivered as one batched list.
+- [x] Operator decision queue recorded as five RATIFIED_YES decisions.
 - [ ] Close-out shipped with the work (WO moved to completed/keep, ledger row, doc/INV/ADR/PKL flips).
 - [ ] No merge performed; no branch other than `consolidate/r2-canonical` pushed.
 
@@ -294,21 +487,67 @@ matrix row with its evidence is the deliverable.
   fable_gate:
     goal: "Independently review WO-0111/WO-0112, remediate every confirmed gap, close C1-C5 by property, and leave PR #9 merge-ready without merging it."
     assumptions:
-      - "The operator's 2026-07-19 engagement authorizes implementation on the named gated surfaces, but final semantic choices remain recorded for ratification."
-      - "Existing event-log facts are append-only; repair markers may add truth but may not rewrite an old FILL in place."
-      - "A BUY candidate born or blocked during an active exit-preemption epoch must not revive after that exit; a genuinely new candidate born after terminal convergence is outside that epoch."
+      - claim: "The operator's 2026-07-19 autonomous-completion mandate authorizes the named gated surfaces and ratifies all five recorded semantic choices YES."
+        status: VERIFIED
+        evidence: "Operator decisions and pre-authorizations in the autonomous-completion prompt."
+      - claim: "Existing event-log facts are append-only; repair markers may add truth but may not rewrite an old FILL in place."
+        status: VERIFIED
+        evidence: "INV-076/INV-091 and the dual-store execution-event append paths."
+      - claim: "A BUY candidate born or blocked during an active exit-preemption epoch must not revive after that exit; a genuinely new candidate born after terminal convergence is outside that epoch."
+        status: VERIFIED
+        evidence: "ADR-010 and the WO-0113 primary-remediation epoch pins."
     approach: "Phase A durable findings first; then red-first, dual-store property clusters with guard-removal checks; then C1-C5 matrices and the full final gate."
+    alternatives_considered:
+      - "Patch only the newest envelope exception path; rejected because ordinary, stale-redrive, direct-SELL, envelope, cancellation, restart, and repair paths share the accepted-ownership invariant."
+      - "Treat malformed or uncorrelated acknowledgements as retryable rejection; rejected because the venue call may already have accepted risk."
     out_of_scope:
       - "PD-1 needs-review release valve"
       - "paper-broker backfill verification"
       - "merging PR #9 or pushing any other branch"
     done_when:
-      - "REV-0031/0032 findings dispositioned and fixed"
-      - "C1-C5 matrices complete with every confirmed gap pinned"
-      - "full local/CI gates green and REV-0033 queued"
-      - "WO close-out, ledger, docs, and operator decision batch ship together"
+      - behavior: "REV-0031/0032 confirmed findings are dispositioned against the frozen implementation SHA."
+        test: "Both packet dispositions map every finding to executable evidence without changing request.md or result.md."
+        command: "git diff --check"
+      - behavior: "Every confirmed C1-C5 and accepted-submit sibling gap is pinned across its relevant producer/consumer/store/restart surface."
+        test: "Focused WO-0113, adapter, reconciliation, hardening, oracle, and full-suite gates pass on the final tree."
+        command: ".venv\\Scripts\\python.exe -m pytest -q"
+      - behavior: "The frozen implementation has green local gates and exact-SHA PR CI, and REV-0033 is queued without self-certification."
+        test: "Local/remote SHAs reconcile and work/review/REV-0033/request.md names the frozen implementation SHA."
+        command: "git rev-parse HEAD"
+      - behavior: "WO lifecycle, ledger, docs, PKL, ratifications, and Git state agree; PR #9 is not merged."
+        test: "AI-OS hygiene/scope checks and a clean-tree status pass after the closeout push."
+        command: "git status --short --branch"
     blast_radius: "order/fill/envelope/candidate/grant lifecycle behavior on both stores and their tests/docs"
+    rollback: "Revert only the additive WO-0113 implementation commit on consolidate/r2-canonical; retain append-only review/evidence records and do not rewrite broker/event truth."
   ```
+
+- **PR #9 exact-head P1 / SCOPE-TRACE-DIAGNOSE CONFIRMED 2026-07-19** - risk HIGH.
+  Scope: the primary seam is envelope venue-acceptance finalization in
+  `app/reconciliation.py`; the dependency-safe shared fallback and bounded repair tail also touch
+  `app/monitoring.py`. Inbound dependencies are the paper adapter, staged order/envelope facts,
+  state-store transition/recovery/event APIs, and accepted-event provenance policy. Outbound
+  consumers are restart repair, exposure projection, cross-side/same-side gates, BUY CAPI,
+  self-claim, and safe-local-cancel. Accepted-submit producers are ordinary candidate BUY,
+  direct SELL, protection/manual-flatten SELL, stale-SUBMITTING redrive, envelope initial submit,
+  and envelope replace/redrive; no live-trading surface exists or is enabled.
+
+  Trace: a durable envelope child reaches SUBMITTING; the paper venue returns a concrete broker
+  ID; the first SUBMITTED write fails; the best-effort audit may itself fail; the retry fails; and
+  submit-recovery creation fails. The envelope helper then raises without the canonical
+  UNKNOWN_RECONCILE_REQUIRED last-write fact. After restart the broker-accepted child can therefore
+  be invisible to ownership consumers. Submit and replace share this same helper. The adjacent
+  ingress also accepts whitespace-padded broker IDs, so event, recovery, order, and venue identity
+  need not be canonical.
+
+  Diagnose: this is not a store bug or an adapter fault. The earliest causal defect is duplicated
+  accepted-ack finalization: ordinary submissions own the canonical fallback in `monitoring.py`,
+  while envelope submissions in `reconciliation.py` stop after recovery failure. Moving that
+  writer to the lower dependency seam and calling it from both paths closes the producer class
+  without a reverse import. Red-first evidence after correcting an initially invalid weekend
+  fixture clock: exact envelope selection **14 failed** for only the intended reasons - zero
+  fallback facts in the 8 dual-store/audit variants and 2 SQLite restart variants, plus padded
+  identity in the 4 dual-store normalization variants. No production code was edited before this
+  decisive red.
 
 - **PHASE A COMPLETE 2026-07-19** — deposited `work/review/REV-0031/result.md`
   (`ACCEPT-WITH-CHANGES`) and `work/review/REV-0032/result.md` (`BLOCK`) before any
@@ -364,7 +603,8 @@ matrix row with its evidence is the deliverable.
   deterministically ordered; kill freeze order is explicit; SQLite supersede reports exact lineage
   ambiguity before a foreign obligation; and recovery ingress now gives each concrete
   broker/local identity one owner. Exact replays return the original row without another audit,
-  either concrete identifier rebound to another counterpart fails closed, and the empty unknown-id
+  each concrete broker id rebound to another local order fails closed, one local order may own
+  multiple distinct concrete broker legs, exact-pair replay is idempotent, and the empty unknown-id
   sentinel is deliberately local-order scoped rather than globally unique. Original distinguishing
   pins were red before each fix and `tests/test_wo0113_store_parity.py` is **28 passed**. Grouped
   guard removal produced **26 exact failures** (14 original parity/kill/supersede, 10 ownership,
@@ -397,16 +637,48 @@ matrix row with its evidence is the deliverable.
   lookup or append failure likewise forbids parity/ACTIVE classification, verifies REDUCING, and
   stops same-tick venue work. Then-current focused green: lifecycle **44**, monitoring fail-closed
   **20**, fallback/restart **3**. Final file totals after the sibling sweep are monitoring **24**,
-  fallback/restart **20**, acceptance identity **47**, CAPI **16**, and repair scaling **13**.
+  fallback/restart **49**, acceptance identity **49**, CAPI **16**, and repair scaling **13**.
   Producer, exposure,
   repair, early-reconcile, gate, budget, and generic-exception guard removals all failed their exact
   dual-store pins before restoration. The later fallback expansion separately made accepted-SELL
   projection fail **3/3**, the audit-only producer fail **4/4**, and malformed-truth rejection fail
   **8/8**; restoring each guard returned the then-current fallback file to **18/18**, and the final
-  file is **20/20**. The final sibling sweep also proved exact accepted-submit multiplicity,
+  file is **49/49**. The final sibling sweep also proved exact accepted-submit multiplicity,
   conservative immutable-order numeric scope,
   one-time fill allocation, self-owned broker/fallback claim refusal, canonical broker-id ingress,
   rollback-safe accepted-fact caches, and bounded repair/index paths on both stores.
+
+- **ACCEPTED-SUBMIT ROOT-CAUSE CLASS CLOSED LOCALLY 2026-07-19** - the exact-head PR finding
+  exposed duplicated accepted-ack ownership protocols: ordinary submits had a private
+  last-write fallback in monitoring, while envelope submit/replace raised after recovery failure
+  with no durable owner. The fallback now lives at the reconciliation dependency seam and every
+  acceptance producer uses it. The sibling sweep found and fixed seven additional manifestations:
+  blank post-call broker identity was released as a preflight error; fallback-owned stale claims
+  could redrive before repair; recovery storage incorrectly forced one concrete broker leg per
+  local order; fill-divergence escalation let one leg suppress another; cross-representation
+  collisions could bind an order or fallback's broker id to a different local order; and direct
+  store callers could persist padded identity aliases; and the concrete Alpaca adapter could turn
+  a missing SDK id into `"None"` or a retryable replace error at direct and duplicate-recovery
+  exits. The cardinality is now one exact canonical
+  local/broker pair per recovery, one local may own multiple concrete legs, each concrete broker id
+  is globally exclusive across order/recovery/fallback representations, and each leg survives
+  restart and polls/cancels/resolves independently. SQLite rebuilds bounded process-local ownership
+  indexes from durable rows on restart. No dependency or schema migration was added.
+
+  Red-first evidence covered envelope submit/reprice double-persistence failure and normalization
+  (**14 failed**), malformed post-call ids (**8 failed**), stale fallback redrive (**2 failed**),
+  distinct-leg repair/restart (**2 failed**), and exact fill-divergence ownership (**2 failed**).
+  Guard removal independently failed fallback creation (**10/10**), producer normalization
+  (**4/4**),
+  ambiguity classification (**8/8**), stale-redrive coverage (**2/2**), memory/SQLite exact-pair
+  cardinality, exact fill-divergence dedupe (**2/2**), and plural CAPI representation (memory failed
+  exactly at `200 != 100`; SQLite remained green). The later cross-representation audit separately
+  failed ordinary/stale malformed-id classification (**8/8**), global owner checks (**8/8**),
+  durable-boundary canonicalization (**4/4**), and SQLite order-owner restart reconstruction
+  (**1/1**). The adapter acknowledgement validator was red first and failed **12/12** again when
+  removed. Every mutation was restored in place. The accepted-ownership slice is **228/228
+  passed**; the complete 12-file WO-0113 corpus plus the legacy timeout-quarantine suite is
+  **421/421 passed**. Repository-wide gates remain pending.
 
 - **C4 APPEND-ONLY ATTRIBUTION REPAIR VERIFIED 2026-07-19** - a canonical `FILL` remains
   immutable. If record-first attribution was missed, a globally deduped
@@ -516,7 +788,7 @@ matrix row with its evidence is the deliverable.
   | Emergency reduce | V M/S: same status/broker-id/recovery/UNKNOWN BUY rails as flatten; `SELL->BUY` N/A at reduce-only choke (`emergency`, `sell`, `fallback`) | V M/S: recovery-aware flatten and timeout preconditions rechecked on every authorization (`emergency`) | V M/S: authorized flatten uses the same safe stand-down primitives (`emergency`, `primary`) | V M/S: one reusable active grant, one authorized exit, one resolution (`emergency`) | V M/S: only explicit capability may operate while Halted; grant/outcome share the lock-held session and foreign scope is rejected (`emergency`) | V M/S: unresolved timeout quarantine blocks grant/reuse (`emergency`, Phase-3e pins) |
   | Cancel paths | N/A M/S: cancellation removes exposure and never mints the opposite side | V M/S: local cancel refuses broker identity and unresolved/needs-review recovery; resolved recovery releases (`cancel`) | V M/S: one shared primitive covers direct, envelope, stand-down, and close paths (`cancel`) | V M/S: CANCELED/CANCEL_PENDING replay is idempotent; CAS loses safely to claim (`cancel`, legacy) | V M/S: risk-reducing cancel remains available across session/Halt state (`legacy`) | V M/S: timeout-quarantined order uses targeted reconcile, never blind local cancel (`cancel`, legacy) |
   | Accepted-submit fallback ingress | V M/S: accepted BUY blocks SELL and accepted SELL blocks BUY; every exact local/broker acceptance remains distinct, while BUY scope contributes conservative remaining notional to same-side CAPI (`fallback`, identity/CAPI pins) | V M/S: immutable referenced scope cannot be shrunk by malformed declared quantity/price; exact local/broker identity repairs into normal recovery ownership without a venue call (`fallback`, identity pins) | V M/S: the fallback makes local CREATED cancel ineligible on either side; it cannot be erased before ownership/reconciliation (`identity` cancel pin) | V M/S: same broker identity dedupes, distinct identities remain additive, known fills allocate once, accepted direct SELL remains in single-flight, and either side's own broker/fallback blocks reclaim (`fallback`, identity pins) | V M/S: ingress/repair cannot lift controls; startup gate precedes repair; rollback-safe accepted-fact caches exclude unrelated UNKNOWN history (`monitoring`, repair-scaling pins) | V M/S: uncertainty is an intentional fail-closed hold until exact ownership repair and broker-authoritative resolution (`fallback`) |
-  | Recovery ingress | N/A M/S: ingress records existing venue exposure; it cannot mint either side | V M/S: immutable referenced Order scope must match declared symbol/side; both identities remain visible for legacy rows (`recovery`) | N/A M/S: ingress deliberately retains uncertain work; stage/mint/claim rails stand down or refuse around it | V M/S: exact concrete broker/local pair replay is idempotent; either concrete identity cannot be rebound; empty unknown broker id is scoped by local order (`store-parity`) | V M/S: immutable session scope is retained; ingress does not lift Halt (`legacy`) | V M/S: recovery uncertainty feeds quarantine/exposure projections (`legacy`) |
+  | Recovery ingress | N/A M/S: ingress records existing venue exposure; it cannot mint either side | V M/S: immutable referenced Order scope must match declared symbol/side; both identities remain visible for legacy rows (`recovery`) | N/A M/S: ingress deliberately retains uncertain work; stage/mint/claim rails stand down or refuse around it | V M/S: exact canonical broker/local pair replay is idempotent; one local may own multiple concrete legs, but a concrete id is exclusive across order/recovery/fallback owner kinds and after restart; empty unknown id is local-scoped (`store-parity`, `fallback`) | V M/S: immutable session scope is retained; ingress does not lift Halt (`legacy`) | V M/S: recovery uncertainty feeds quarantine/exposure projections (`legacy`) |
   | Recovery resolution | V M/S: terminal resolution removes the relevant side exposure and allows the opposite side only afterward (`recovery`) | V M/S: resolution facts validate recovery id, claim occurrence, and immutable scope (`legacy`) | N/A M/S: resolution releases ownership; it does not cancel unrelated intent | V M/S: terminal recovery states cannot reopen; duplicate terminal facts validate identity (`legacy`) | V M/S: resolution does not alter control driver/session (`legacy`) | V M/S: only authoritative terminal evidence releases timeout/recovery holds (`legacy`) |
   | Session close | V M/S: closes establishing BUY work while sparing protective/reduce-only CREATED SELLs (`cancel`, session-close corpus) | V M/S: open recovery prevents local cancel and retains the owner; resolved recovery permits cleanup (`cancel`) | V M/S: projection-first candidate and safe CREATED BUY cleanup, exact counts (`cancel`) | V M/S: second close is rejected/idempotently terminal (`legacy`) | V M/S: immutable session scope closes once; no post-close BUY candidate/order (`legacy`) | V M/S: quarantined/recovery-owned work is retained for reconciliation, not silently canceled (`cancel`, legacy) |
 
@@ -534,14 +806,14 @@ matrix row with its evidence is the deliverable.
   | envelope create/transition/supersede/approve | identical owner/scope/direct/foreign/exact-ambiguity precedence | terminal/supersede safe-child cleanup and one owner reconcile | envelope audit + execution vocabulary | one lock/transaction; exact ambiguity precedes foreign obligation | V: hostile supersede distinguishing pin; full envelope transition corpus |
   | envelope fill/stage/final claim | same validation clock, position, projection, recovery, Halted and budget rails | source-excluding terminal cleanup; safe sibling cancel; stage BUY-epoch stand-down | canonical fill, attribution marker, repair checkpoint, action/transition/cancel facts | record + decrement + cleanup atomic; repair checkpoint advances only after the complete selected tail; action order stable | V: `primary`, attribution **58 passed**, `cancel`, WO-0016/19/36 corpus |
   | order creation: candidate/test/sell/protection/flatten | same numeric/risk/cross-side/recovery/session predicates, including concrete broker-owned CREATED and accepted-submit UNKNOWN exposure | safe stand-down at each SELL mint; projection on idempotent return; uncertain accepted BUY is retained | order row + audit/execution lifecycle facts | atomic link/write; memory protection return fixed to projected state | V: projection distinguishing pin plus `primary`/`sell`/`fallback`/legacy lifecycle tests |
-  | submission claim | same event-projected status, concrete broker identity, accepted-submit UNKNOWN/recovery exposure, current CAPI risk limits, and envelope hard rails | refusal leaves row unclaimed; accepted path owns SUBMITTING; failed recovery ownership leaves a durable UNKNOWN seed whether or not the ordinary audit succeeded | claim execution/audit facts or exact UNKNOWN fallback | CAS/transaction and sequence order; deterministic exact-identity fallback dedupe; distinct identities remain additive; fills allocate once; malformed scope is conservative; own identity and same-side direct SELL fallback refuse claim; CAPI projects lifecycle facts rather than raw status | V: claim gates, fallback **20**, identity **47**, CAPI **16**, stale-CAS, WO-0108/0110 recovery pins |
+  | submission claim | same event-projected status, concrete broker identity, accepted-submit UNKNOWN/recovery exposure, current CAPI risk limits, and envelope hard rails | refusal leaves row unclaimed; accepted path owns SUBMITTING; failed recovery ownership leaves a durable UNKNOWN seed whether or not the ordinary audit succeeded | claim execution/audit facts or exact UNKNOWN fallback | CAS/transaction and sequence order; deterministic exact-identity fallback dedupe; distinct identities remain additive; fills allocate once; malformed scope is conservative; own identity and same-side direct SELL fallback refuse claim; CAPI projects lifecycle facts rather than raw status | V: claim gates, fallback **62**, store parity **36**, identity **49**, CAPI **16**, stale-CAS, WO-0108/0110 recovery pins |
   | recovery create/update | declared scope must match referenced order; exact concrete broker/local identity is immutable; empty broker id is absence | owner reconcile on create/resolve; exact replay emits no duplicate audit | recovery row, creation/status/resolution facts with canonical JSON payload | ownership check+insert+facts atomic; claim occurrence deterministic | V: ownership/conflict/sentinel pins, scope-ingress, JSON, restart and terminal-fact corpus |
   | order transition/quarantine/resolve/reconcile | event projection first; common local CREATED eligibility; legal FSM | terminal envelope owner cleanup, timeout resolution, safe local cancel | audit plus execution transition facts | row+both logs atomic; injected transition clock | V: `cancel` including raw rollback; quarantine/reconcile corpus |
   | fill/audit/execution append | identical validation/dedupe/id-collision/JSON domain; complete attribution chain validated in sequence order | fill-only position fold; marker ignored by position; durable readers resume strictly after their high-water mark | append-only canonical records plus bounded repair checkpoints | caller-id conflict is domain error; poison leaves checkpoint stationary; sequence/row order explicit | V: JSON/id/source-less-fill pins; attribution **58 passed**; fill/oracle corpus |
   | kill/buys-paused/reconcile-state controls | boolean/state validation and event-derived precedence | kill freezes every active envelope and cancels only safe staged work; driven reconciliation must durably reach REDUCING before venue actions and cannot proceed on exhausted budget | control + trading-state + envelope facts | session bootstrap outside rollback; SQLite freeze `ORDER BY rowid`; state write is read back before continuation | V: rollover and reverse-unordered-selects pins; monitoring **24 passed**; Phase-3d corpus |
   | emergency grant/resolve/authorize | identical Halted, position, timeout, lock-held current-session, and active-grant reuse predicates; foreign explicit session rejected | authorized outcome consumes once; failure leaves reusable grant | grant/resolution audit + execution facts share the decided session | one atomic capability state; no stacked grant or cross-session outcome | V: emergency **20 passed** and Phase-3e corpus |
   | session close | projection-first BUY scope, owner retention, exact counts | candidate/safe BUY/pre-activation cleanup; protective SELL spared | close/snapshot/transition facts | one atomic close; immutable row order | V: `cancel` session-close distinguisher plus full close corpus |
-  | private seams: local cancel, staged cleanup, BUY stand-down, owner reconcile, raw event append, accepted-submit/attribution repair tails | same shared predicates/helpers and exact provenance validation | callers select source exclusions and reconcile exactly once; repair consumers use bounded durable tails and indexed exact lookups; checkpoint-only transport is never treated as new repair work | same helper-generated events and checkpoints | callers own rollback; sorted owner/order traversal; checkpoint after complete success only; accepted-fact indexes/caches restore on rollback; idle consumers converge across SQLite restart | V: grouped mutation failures (18, 10, 2), attribution **58 passed**, fallback **20 passed**, identity **47 passed**, repair scaling **13 passed**, multi-owner and payload pins |
+  | private seams: local cancel, staged cleanup, BUY stand-down, owner reconcile, raw event append, accepted-submit/attribution repair tails | same shared predicates/helpers and exact provenance validation | callers select source exclusions and reconcile exactly once; repair consumers use bounded durable tails and selective exact lookups; checkpoint-only transport is never treated as new repair work | same helper-generated events and checkpoints | callers own rollback; sorted owner/order traversal; checkpoint after complete success only; accepted-fact indexes/caches restore on rollback; idle consumers converge across SQLite restart | V: grouped mutation failures (18, 10, 2, 8, 8, 4, 1), attribution **58 passed**, fallback **62 passed**, store parity **36 passed**, identity **49 passed**, repair scaling **13 passed**, multi-owner and payload pins |
 
 - **PHASE C / C3 CONSUMABLE-STATE MATRIX COMPLETE 2026-07-19** - every failure, deferral, and
   restart exit has either an automatic durable release or an intentional operator/reconciliation
@@ -556,11 +828,11 @@ matrix row with its evidence is the deliverable.
   | Envelope action/tranche budget | validation divergence, transient submit release, stale redrive, cancel/replace refusal, restart | action fact atomically spends budget; transient release redrives; deterministic refusal cancels local child; exhausted budget terminalizes per disposition | V: WO-0019/21/36 engine/redrive/budget tests |
   | Cancel/replace claim | broker failure, late fill, CANCEL_PENDING restart | unchanged row retries; cancel intent reconciles; fills remain authoritative; terminal replay no-op | V: sim-chaos, envelope chaos, cancel file |
   | Timeout quarantine | query failure/not-found/recent ambiguity, generic quarantine-transition failure, `asyncio.CancelledError`, restart | targeted broker query/retry; generic transition failure creates a durable `needs_review` owner; cancellation propagates; only authoritative terminal fact resolves; needs-review is intentional human retention | V: monitoring **24 passed** plus Phase-3c/4 reconciliation corpus |
-  | Submit recovery hold | poll/cancel failure, terminal result, malformed scope, accepted-submit fallback seed, restart | cadence retries unresolved; each exact broker acceptance is adopted or converted to recovery without another venue call; terminal fact -> resolved; retry exhaustion -> needs-review; terminal states never reopen; own broker/fallback identity blocks blind reclaim; accepted direct SELL cannot be locally canceled or replaced | V: recovery ingress/terminal/restart, fallback **20 passed**, identity **47 passed** |
+  | Submit recovery hold | poll/cancel failure, terminal result, malformed scope, accepted-submit fallback seed, restart | cadence retries unresolved; each exact broker acceptance is adopted or converted to recovery without another venue call; terminal fact -> resolved; retry exhaustion -> needs-review; terminal states never reopen; own broker/fallback identity blocks blind reclaim; accepted direct SELL cannot be locally canceled or replaced | V: recovery ingress/terminal/restart, fallback **62 passed**, store parity **36 passed**, identity **49 passed** |
   | Attribution-repair checkpoint | malformed direct attribution, forged or incomplete marker chain, ambiguous lineage, generic repair fault, restart | validate every selected fact and the complete prior chain; append repairs first; advance high-water only after the whole tail succeeds; poison retries from the stationary checkpoint | V: attribution **58 passed**, including tail-seek and swallow/advance mutations |
-  | Accepted-submit repair checkpoint | malformed fallback provenance/scope, adoption/recovery write fault, restart, large unrelated UNKNOWN history, alternating idle repair consumers | retain the exact UNKNOWN seed and prior checkpoint; retry before ACTIVE/venue actions; select bounded accepted-fact pages and checkpoint only the completely repaired tail; poison keeps the checkpoint stationary; checkpoint-only pages are skipped without ping-pong writes | V: fallback **20 passed**, monitoring **24 passed**, repair scaling **13 passed** |
+  | Accepted-submit repair checkpoint | malformed fallback provenance/scope, adoption/recovery write fault, restart, large unrelated UNKNOWN history, alternating idle repair consumers | retain the exact UNKNOWN seed and prior checkpoint; retry before ACTIVE/venue actions; select bounded accepted-fact pages and checkpoint only the completely repaired tail; poison keeps the checkpoint stationary; checkpoint-only pages are skipped without ping-pong writes | V: fallback **62 passed**, monitoring **24 passed**, repair scaling **13 passed** |
   | Driven reconciliation gate/budget | state-write failure, composed HALTED state, budget below the two required calls, planned inferred-fill lookup/append failure | set and verify REDUCING before any venue action; HALTED cannot mask a failed write; exhausted budget or incomplete inference stops the tick before ACTIVE classification/submission | V: monitoring fail-closed and lifecycle pins, including `test_failed_inferred_fill_cannot_be_classified_as_parity` |
-  | Protection deferral (`None`) | same-symbol BUY may execute, no priceable snapshot | audited no order/no grant; next tick recomputes from live position after BUY converges | V: `primary` plus protection loop pins; operator recommendation remains ratification-pending |
+  | Protection deferral (`None`) | same-symbol BUY may execute, no priceable snapshot | audited no order/no grant; next tick recomputes from live position after BUY converges | V: `primary` plus protection loop pins; operator-ratified YES on 2026-07-19 |
 
 - **PHASE C / C4 PROJECTION-SCOPE MATRIX COMPLETE 2026-07-19** - selection universe and
   projection target are recorded separately; no caller feeds owner/symbol-wide facts into an exact
@@ -577,7 +849,7 @@ matrix row with its evidence is the deliverable.
   | Emergency/trading state | active session control/reconcile/grant execution facts | current session and normalized symbol capability | V: Phase-3d/e and emergency tests |
   | Timeout/quarantine/recovery | exact order id plus declared and referenced immutable scopes | order/symbol exposure; resolved terminal facts excluded from open set | V: C1 recovery pins and cancel eligibility tests |
   | Canonical fill + repair marker | global exact fill dedupe and global derived marker dedupe, selected through a durable bounded tail | one order-scoped canonical fill -> at most one validated envelope; every NEW/repair/replay must continue the exact quantity chain; marker excluded from position; orphan canonical fact remains a restart seed; poison cannot advance the checkpoint | V: attribution **58 passed**; grouped conflict/apply, remaining-fact, marker-as-fill, chain, tail-seek, and swallow/advance mutations failed exactly |
-  | Accepted-submit uncertainty | accepted UNKNOWN facts selected from the dedicated rollback-safe accepted-fact cache/index, plus event-projected represented orders, recoveries, and fills | an exact order/open recovery/fallback for one broker id coalesces as one accepted leg rather than releasing exposure; distinct broker identities are additive; opposite-side and same-side single-flight hold until ownership/reconciliation, while BUY CAPI uses conservative immutable-order scope and broker-authoritative resolution; known fills allocate once across the aggregate | V: fallback **20**, acceptance identity **47**, CAPI **16**, repair scaling **13** on both stores plus SQLite restart; producer, projection, repair, self-claim, direct-SELL ownership, multiplicity, numeric-scope, raw-status, cache, and no-double-count pins |
+  | Accepted-submit uncertainty | accepted UNKNOWN facts selected from the dedicated rollback-safe accepted-fact cache/index, plus event-projected represented orders, recoveries, and fills | an exact canonical order/open recovery/fallback for one broker id coalesces as one accepted leg rather than releasing exposure; a concrete id cannot move to another local owner kind; distinct broker identities are additive; opposite-side and same-side single-flight hold until ownership/reconciliation, while BUY CAPI uses conservative immutable-order scope and broker-authoritative resolution; known fills allocate once across the aggregate | V: fallback **62**, store parity **36**, acceptance identity **49**, CAPI **16**, repair scaling **13** on both stores plus SQLite restart; producer, projection, repair, self-claim, direct-SELL ownership, multiplicity, canonical-boundary, cross-owner, numeric-scope, raw-status, cache, and no-double-count pins |
 
 - **PHASE C / C5 EXCLUSION-COMPENSATION MATRIX COMPLETE 2026-07-19** - each deliberate exclusion
   has a named compensating control at every relevant choke point; mutation evidence above proves the
@@ -645,6 +917,37 @@ matrix row with its evidence is the deliverable.
   real finding; (3) freeze the final implementation SHA, write
   REV-0031/0032 dispositions and REV-0033 request, ledger/Fable close-out, move this WO to
   `work/completed/keep/`; (4) commit/push close-out and reverify PR #9 without merging.
+
+- **RECOVERY CHECKPOINT 3 2026-07-19 (cross-representation and adapter-boundary late audit;
+  supersedes checkpoint 2 for the current uncommitted tree)** — a final read-only root-class audit found four sibling gaps
+  after checkpoint 2: ordinary first-submit and stale-redrive malformed post-call ids were still
+  retryable/non-quarantined; concrete broker-id exclusivity did not span order, recovery, and
+  canonical-fallback owner kinds; store boundaries trusted caller-normalized identity; and the
+  Alpaca adapter converted malformed SDK acknowledgements at direct and duplicate-recovery
+  submit/replace exits (`None` became `"None"`, while blank replace was retryable). SQLite's
+  initial global recovery scan was also replaced with restart-rebuilt, process-local identity
+  indexes so the safety check adds no schema migration or unindexed per-create scan.
+
+  Red-first pins failed exactly on both stores. In-place guard removals then failed malformed-id
+  classification **8/8**, cross-owner checks **8/8**, canonical boundary normalization **4/4**,
+  SQLite order-owner restart reconstruction **1/1**, and adapter acknowledgement validation
+  **12/12**. The earlier SQLite recovery-cache restart
+  and query-plan mutations also failed their exact pins. Every mutation was restored; the combined
+  late orchestration/store guard set is **19/19 green**, the two changed store/fallback files are
+  **98/98 green**, and the complete adapter files are **48/48 green**. The six-file
+  accepted-ownership slice is **228/228 green** (49 identity + 44 lifecycle + 24 monitoring + 13
+  scaling + 36 store parity + 62 fallback), and the complete 12-file WO corpus plus legacy timeout
+  quarantine is **421/421 green** (376 + 45). Architecture, reviewer, PKL, and operator docs now
+  state all four producer paths, canonical durable boundaries, and cross-representation identity
+  exclusivity. Checkpoint 2's static/oracle/scaling/full-suite/coverage results are historical only;
+  the newest production and documentation changes require every repository-wide gate to run again.
+
+  **Resume sequence now:** (1) source-freeze review and fresh Ruff/format/mypy/import/static gates;
+  (2) both conformance oracles, hardening, three consecutive scaling runs, and AI-OS hygiene; (3)
+  three consecutive full-suite runs plus coverage; (4) implementation commit/push and exact-SHA
+  CI/automated-review disposition; (5) freeze that SHA, write REV-0031/0032 dispositions, queue
+  REV-0033, append ledger/Fable close-out, move this WO to `work/completed/keep/`, and push the
+  closeout commit. Do not merge.
 
 - **ACTIVE 2026-07-19** — Codex fetched `origin`, verified clean HEAD
   `8708f585c095222eb706407eb05a1f04d717a37b` on `consolidate/r2-canonical`, read the

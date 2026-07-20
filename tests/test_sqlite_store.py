@@ -60,10 +60,15 @@ async def test_duplicate_fill_protection_in_sqlite(tmp_path):
         order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="x"
     )
     dup = await store.append_fill(
-        order.id, "AAPL", OrderSide.BUY, 100, 9.0, source_fill_id="x"
+        order.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="x"
     )
     assert dup.status == "duplicate"
+    conflict = await store.append_fill(
+        order.id, "AAPL", OrderSide.BUY, 100, 9.0, source_fill_id="x"
+    )
+    assert conflict.status == "conflict"
     assert len(await store.list_fills(symbol="AAPL")) == 1
+    assert len(await store.list_events(event_type="fill_duplicate_conflict")) == 1
     await store.close()
 
 

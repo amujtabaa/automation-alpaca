@@ -16,7 +16,7 @@ Ambiguous submit outcomes move the spawned order to `TIMEOUT_QUARANTINE`, mark t
 
 Stable `client_order_id` is mandatory, but it is a deterministic reconciliation key, not a blind-redrive permission.
 
-### WO-0113 implemented branch behavior — pending operator ratification and REV-0033 review
+### WO-0113 operator-ratified behavior — pending REV-0033 independent review
 
 The same quarantine posture applies when the broker returns an acceptance but the local
 `SUBMITTED` write cannot be committed. Once `order_submit_unpersisted` durably records the
@@ -24,7 +24,13 @@ The same quarantine posture applies when the broker returns an acceptance but th
 if it cannot also establish recovery ownership. Before a later monitoring tick performs any venue
 action, and before startup reconciliation may lift `Reducing`, the engine repairs each seed without
 a broker call: it adopts the broker id on a still-`SUBMITTING` order or creates one
-`SubmitRecoveryRecord` for the exact pair. A malformed seed cannot be skipped to enable trading.
+`SubmitRecoveryRecord` for the exact pair. Recovery cardinality is one row per exact canonical
+`{local_order_id, broker_order_id}` pair: one local order may own multiple distinct concrete
+broker acceptances. Order, recovery, and canonical-fallback representations for the same pair
+coalesce. Mutable order/recovery assignments keep each nonblank broker id exclusive to one local
+order. A cross-owner canonical fallback is immutable conflict evidence: it is retained, cannot be
+adopted or rebound, blocks repair/venue progress, and makes SQLite restart fail closed.
+A malformed seed cannot be skipped to enable trading.
 Whenever recovery ownership cannot be written, the last-write boundary is an `ENGINE`/`LOCAL`
 `UNKNOWN_RECONCILE_REQUIRED` execution fact carrying the exact local/broker identity; the ordinary
 acceptance audit may or may not already have succeeded. The fact does not project order status or
@@ -32,6 +38,16 @@ position, but it remains opposite-side venue exposure until the same repair adop
 creates a recovery. For an accepted BUY, the exact UNKNOWN/open-recovery owner also contributes its
 remaining same-side CAPI exposure exactly once; overlap with its order, position, and canonical
 fills is subtracted rather than double-counted. Failure to append even that fallback is surfaced.
+The canonical fallback is itself durable submission ownership, so stale-claim recovery must not
+reclaim or resend that local order before the fallback is adopted or reconciled. Broker ids are
+trimmed at every producer ingress and again at durable store boundaries, so direct callers cannot
+create padded aliases. An empty or whitespace-only returned id is ambiguous
+post-call acceptance, not a preflight rejection, and therefore enters quarantine ownership rather
+than releasing the claim for another send.
+Submit/replace acknowledgements and targeted client-order lookup results must echo the exact
+deterministic client-order id. A missing or mismatched echo is ambiguity. Once a venue call may
+have started, task cancellation does not cancel ownership: shielded finalization must durably
+quarantine or retain the accepted identity before the original cancellation is re-raised.
 
 Every stale-claim pass that makes no progress consumes the same durable redrive budget, including
 the case where a MARKET order has no priceable snapshot. At the cap the claim becomes one
@@ -44,8 +60,8 @@ restart cannot resend it. Startup and reconnect must successfully write and veri
 driver as `Reducing` before these repairs; a pre-existing composed `Halted` state cannot mask a
 failed driver write. Only later repair/reconcile faults may be contained behind that verified gate.
 These are defensive realizations of this ADR's accepted no-blind-redrive decision, not a new
-permission to submit. The base decision remains accepted; this specific fallback-ownership and
-repair shape remains pending operator ratification and REV-0033 independent review.
+permission to submit. The operator ratified this fallback-ownership and repair shape YES on
+2026-07-19; REV-0033 independent review remains required.
 
 ## Consequences
 
@@ -67,6 +83,9 @@ The system may stall more often, but it avoids oversell/short-flip risk caused b
 - recovery-ownership failure leaves exact durable execution truth whether or not the audit already
   succeeded; that truth blocks opposite-side work and is repairable without another submit:
   `tests/test_wo0113_submit_acceptance_fallback.py`;
+- distinct concrete acceptances for one local order repair, persist across SQLite restart, poll,
+  cancel, and resolve independently without duplicate venue submission; the same file also pins
+  stale-redrive suppression and malformed post-call broker-id quarantine;
 - an unpriceable stale claim reaches the durable cap —
   `tests/test_wo0113_lifecycle_closure.py::test_unpriceable_stale_submitting_uses_durable_attempt_cap`;
 - ambiguous ownership survives quarantine faults and restart —

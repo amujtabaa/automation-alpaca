@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.models import CandidateStatus, OrderSide, OrderStatus
+from app.models import (
+    CandidateStatus,
+    EventAuthority,
+    EventSource,
+    OrderSide,
+    OrderStatus,
+)
 from app.store.base import (
     InvalidFillError,
     InvalidOrderError,
@@ -79,12 +85,21 @@ async def test_append_fill_side_mismatch_raises(any_store):
     assert await any_store.list_fills() == []
 
 
-async def test_append_fill_cumulative_over_quantity_raises(any_store):
+async def test_non_broker_fill_cumulative_over_quantity_raises(any_store):
     _, order = await _order(any_store, quantity=100)
     await any_store.append_fill(order.id, "AAPL", OrderSide.BUY, 60, 1.0)
-    # 60 + 50 = 110 > order quantity 100 -> the second fill is rejected.
+    # 60 + 50 = 110 > order quantity 100. Broker truth would be recorded under
+    # ADR-001; a SYNTHETIC inference is rejected before truth mutation.
     with pytest.raises(InvalidFillError):
-        await any_store.append_fill(order.id, "AAPL", OrderSide.BUY, 50, 1.0)
+        await any_store.append_fill(
+            order.id,
+            "AAPL",
+            OrderSide.BUY,
+            50,
+            1.0,
+            source=EventSource.RECONCILIATION,
+            authority=EventAuthority.SYNTHETIC,
+        )
 
     assert len(await any_store.list_fills(symbol="AAPL")) == 1
     assert (await any_store.get_position("AAPL")).quantity == 60
@@ -108,9 +123,13 @@ async def test_duplicate_and_overfill_paths(any_store):
     )
     assert first.status == "appended"
     dup = await any_store.append_fill(
-        buy.id, "AAPL", OrderSide.BUY, 100, 9.0, source_fill_id="x"
+        buy.id, "AAPL", OrderSide.BUY, 100, 1.0, source_fill_id="x"
     )
     assert dup.status == "duplicate"
+    conflict = await any_store.append_fill(
+        buy.id, "AAPL", OrderSide.BUY, 100, 9.0, source_fill_id="x"
+    )
+    assert conflict.status == "conflict"
     assert (await any_store.get_position("AAPL")).quantity == 100
 
     # A broker overfill (SELL crossing flat) is now RECORDED + quarantined.

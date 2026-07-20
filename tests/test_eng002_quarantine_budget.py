@@ -32,7 +32,20 @@ class _CountingAdapter(MockBrokerAdapter):
         super().__init__()
         self.query_count = 0
 
-    async def get_order_by_client_order_id(self, client_order_id):
+    async def get_order_by_client_order_id(
+        self,
+        client_order_id,
+        *,
+        expected_symbol=None,
+        expected_side=None,
+        expected_quantity=None,
+        expected_limit_price=None,
+        expected_order_type=None,
+        expected_time_in_force=None,
+        expected_order_class=None,
+        expected_scope=None,
+        allow_dynamic_market_sell=False,
+    ):
         self.query_count += 1
         return None  # venue confirms absent → deferred (not resolved), still a query
 

@@ -18,7 +18,7 @@ reduce override. The override supplies a scoped reducing authorization to the no
 execution path; it does not lift or transition the system out of the global composed `Halted`
 state.
 
-### WO-0113 implemented branch behavior — pending operator ratification and REV-0033 review
+### WO-0113 operator-ratified behavior — pending REV-0033 independent review
 
 An active emergency-reduce grant is a capability of the explicit emergency command, not ambient
 session state. Ordinary flatten, direct `MANUAL_FLATTEN` intent creation, and legacy SELL dispatch
@@ -32,8 +32,9 @@ under the authorization lock: an explicit foreign `session_id` is rejected, and 
 rollover cannot rebind any part of the outcome. A `MANUAL_FLATTEN` order already minted while Active
 retains the accepted D-P2 claim behavior if the system becomes Halted later; the capability gates new intent/minting,
 not retroactive revocation. The scoped authorization never changes the global composed state from
-`Halted`; it exists only inside the explicit emergency command. The branch implements this narrower
-capability interpretation for operator ratification; it does not create an ambient bypass.
+`Halted`; it exists only inside the explicit emergency command. The operator ratified this narrower
+capability interpretation YES on 2026-07-19; it does not create an ambient bypass. REV-0033
+independent review remains required.
 
 ## Consequences
 

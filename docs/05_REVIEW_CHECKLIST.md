@@ -261,7 +261,7 @@ Use when reviewing Codex or Claude Code output.
       resolvable session, and **no `is_live` broker order is untracked** (the
       F-002 orphan guard — referenced by a local order, an open recovery record,
       or the exact canonical WO-0113 `UNKNOWN_RECONCILE_REQUIRED`
-      accepted-submit owner pending operator ratification and REV-0033 review).
+      accepted-submit owner, operator-ratified YES and pending REV-0033 independent review).
 - [ ] The orphan guard is a **live** invariant, not a vacuous one: the machine
       actually reaches the orphan state via `arm_submit_cancel_race` (a one-shot
       mid-submit `set_on_submit` cancel) + `submit_pending_only` (submit phase in
@@ -292,9 +292,12 @@ Use when reviewing Codex or Claude Code output.
       — not a lone best-effort cancel (F-002). A `FILLED` stranded order is
       surfaced (`resolved_filled_needs_review`), never silently dropped.
 - [ ] Malformed `filled_quantity`/fill quantity/fill price
-      (NaN/Inf/fractional/bool/str/negative/overfill) is rejected cleanly and
-      **identically** in both stores with no persisted mutation (F-003), via one
-      shared `finite_number_reason`/`whole_count_reason` guard.
+      (NaN/Inf/fractional/bool/str/negative) is rejected cleanly and **identically**
+      in both stores with no persisted mutation (F-003), via shared
+      `finite_number_reason`/`whole_count_reason` guards. Authority matters for a
+      valid whole positive excess: LOCAL/SYNTHETIC overfill rejects before truth
+      mutation, while BROKER_AUTHORITATIVE overfill records raw FILL truth plus a
+      durable `QUARANTINED` fact (ADR-001), including record-first envelope ingress.
 - [ ] Non-finite market data produces **no** candidate (F-005): `features.py`
       returns `None`, and `strategy.evaluate` rejects a snapshot with any
       present-but-non-finite field (never `suggested_limit_price=inf`).
@@ -343,9 +346,11 @@ traceability. The build-round invariants a reviewer should re-verify:
       re-drive) — MARKET in regular hours, a live-priced LIMIT pre/after-hours,
       HELD when it can't be priced (no/stale/untrustworthy snapshot). The
       `AlpacaPaperAdapter` refuses a MARKET outside regular hours as a backstop.
-- [ ] **Side-aware transient release.** A SELL always releases `SUBMITTING→CREATED`
-      on submit failure (never CANCELED); only a BUY keeps the closed-session
-      no-zombie CANCELED (D-013a).
+- [ ] **Side-aware pre-acceptance/transient release.** A SELL releases
+      `SUBMITTING→CREATED` on a known transient submit failure (never CANCELED);
+      only a BUY keeps the closed-session no-zombie CANCELED (D-013a). A malformed
+      id returned after any venue call is not this path: either side enters
+      ambiguous quarantine and cannot be sent again blindly.
 - [ ] **Fill pricing (§7).** A MARKET protective sell's fill is priced off the
       reconcile-time snapshot `last_price` when the broker gives no price (else it
       would be withheld and, with single-flight dedup, strand protection); the
@@ -428,12 +433,44 @@ this remediation exists to close):
       fill before `Order.filled_quantity` does) before this fix landed.
       `tests/test_capi_order_gate.py::test_fill_without_order_transition_is_not_double_counted`
       pins the fixed behavior directly.
-- [ ] **WO-0113 branch behavior pending operator ratification and REV-0033:** an
+- [ ] **WO-0113 operator-ratified branch behavior pending REV-0033 independent review:** an
       accepted terminalized BUY's exact UNKNOWN/open-recovery owner contributes
       its remaining CAPI exposure once per distinct broker identity; fills are
       allocated once across those identities, and malformed numeric scope
       cannot shrink the immutable referenced-order remainder. Only exact overlap
       with its order/recovery/position/fills is subtracted.
+- [ ] Ordinary first submit, stale redrive, envelope submit, and envelope reprice
+      each treat empty/whitespace post-call broker identity as ambiguous,
+      quarantine the local order, and make no second venue call.
+- [ ] The concrete broker adapter enforces the same rule on direct success and
+      duplicate-id recovery for both submit and replace: `None`, empty, and
+      whitespace acknowledgements are `AmbiguousBrokerError`, never the string
+      `"None"` or a retryable plain `BrokerError`.
+- [ ] Every durable order-transition, timeout-resolution, and recovery-creation
+      boundary canonicalizes broker-id transport whitespace. Whitespace-only
+      recovery identity remains the local order's unknown-id sentinel.
+- [ ] Concrete broker-id assignments are exclusive across mutable order/recovery
+      state. Same-pair order/recovery/fallback representations coalesce and distinct
+      ids for one local remain distinct legs. A conflicting append-only fallback is
+      retained as evidence, cannot be adopted/rebound, blocks progress, and fails
+      SQLite restart closed.
+- [ ] Submit/replace acknowledgements and targeted client-id lookup correlate the
+      returned client id exactly; per-order status polling correlates the returned
+      broker id exactly. Mass reconciliation never lets a client-id collision
+      override a known broker id, and id-less fallback also requires symbol/side.
+- [ ] The final gapless submit claim has exactly one durable `VENUE_ORDER_SCOPE`
+      written before the venue call. Restart replays its rendered type/price and
+      extended-hours decision; the injected decision clock chooses new scope.
+      Every consumer authenticates scope to immutable owner id/symbol/side/quantity,
+      and ordinary non-dynamic orders also require exact type/price.
+- [ ] Direct and mass correlation cover the same wire contract: qty/type/price,
+      TIF/class, asset and quantity mode, extended hours, position intent, legs,
+      stop/trail/ratio material, and exact replace predecessor. Managed cumulative
+      fill is finite/nonnegative/whole (not capped—ADR-001 broker overfill is truth).
+      A contradictory row is targeted plus surfaced external, never absorbed.
+- [ ] Cancellation after a possible submit/replace send cannot abandon accepted
+      ownership; durable ambiguity/identity finalization completes before the
+      original cancellation propagates.
 - [ ] The final BUY submission claim recomputes current CAPI exposure and risk
       limits inside the same store lock/transaction, so uncertainty appearing
       after order mint cannot pass the venue choke point. Every order in that

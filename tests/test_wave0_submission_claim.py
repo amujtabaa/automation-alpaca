@@ -216,9 +216,10 @@ class _FlipKillDuringSubmit(MockBrokerAdapter):
         super().__init__()
         self._store = store
 
-    async def submit_order(self, order):
+    async def submit_order(self, order, *, venue_scope):
+        assert venue_scope is not None
         await self._store.set_kill_switch(True)
-        return await super().submit_order(order)
+        return await super().submit_order(order, venue_scope=venue_scope)
 
 
 async def test_kill_switch_flip_after_claim_still_submits():
@@ -246,7 +247,8 @@ class _CloseSessionThenFailSubmit(MockBrokerAdapter):
         super().__init__()
         self._store = store
 
-    async def submit_order(self, order):
+    async def submit_order(self, order, *, venue_scope):
+        assert venue_scope is not None
         self.submitted.append(order)  # record the attempt, as the real mock does
         await self._store.close_session()
         raise BrokerError("network blip during a closing session")

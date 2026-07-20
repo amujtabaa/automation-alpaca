@@ -41,6 +41,7 @@ from app.broker.adapter import (
     BrokerError,
     BrokerOrderUpdate,
     TerminalBrokerError,
+    VenueOrderScope,
 )
 from app.config import Settings
 from app.events.projectors import reconcile_trading_state
@@ -86,10 +87,22 @@ from app.reconciliation import (
     ReconcileFairnessCursor,
     ReconciliationPlan,
     ReconcileQueryBudget,
+    VenueScopeOwner,
+    accepted_broker_identity_is_durably_tracked,
+    accepted_broker_identity_is_tracked,
+    await_accepted_submit_finalizer,
+    current_venue_order_scope,
     execute_envelope_action,
+    get_or_record_venue_order_scope,
+    load_venue_order_scopes,
     market_snapshot_fingerprint,
+    order_has_dynamic_venue_type,
     plan_reconciliation,
+    quarantine_or_own_ambiguous_submit as _quarantine_or_own_ambiguous_submit,
+    record_accepted_submit_uncertainty as _record_accepted_submit_uncertainty,
     redrive_staged_envelope_action,
+    rendered_order_from_scope,
+    venue_scope_matches_order,
 )
 from app.sellside.policy import decide
 from app.sellside.types import (
@@ -191,6 +204,8 @@ async def _effective_submit_order(
     order: Order,
     market_data: Optional[MarketDataService],
     settings: Optional[Settings],
+    *,
+    submission_session: Optional[SessionType] = None,
 ) -> Optional[Order]:
     """The order to ACTUALLY submit (§5.4 / D-015 / Rule 12) — the single choke
     point where a protective sell's session-conditional order type is decided.
@@ -215,7 +230,8 @@ async def _effective_submit_order(
         return order
     if OrderType(order.order_type) is not OrderType.MARKET:
         return order
-    if session_type_for(utcnow()) is SessionType.REGULAR:
+    active_session = submission_session or session_type_for(utcnow())
+    if active_session is SessionType.REGULAR:
         return order
     snapshot = (
         await market_data.get_snapshot(order.symbol)
@@ -236,6 +252,44 @@ async def _effective_submit_order(
     downgraded.order_type = OrderType.LIMIT
     downgraded.limit_price = price
     return downgraded
+
+
+async def _prepare_managed_venue_order(
+    store: StateStore,
+    order: Order,
+    market_data: Optional[MarketDataService],
+    settings: Optional[Settings],
+) -> Optional[tuple[Order, VenueOrderScope]]:
+    """Replay or durably write the exact request before a submit venue call."""
+
+    existing = current_venue_order_scope(
+        await store.get_order_execution_events(order.id), order.id
+    )
+    if existing is not None:
+        return rendered_order_from_scope(order, existing), existing
+
+    submission_session = session_type_for(utcnow())
+    effective = await _effective_submit_order(
+        order,
+        market_data,
+        settings,
+        submission_session=submission_session,
+    )
+    if effective is None:
+        return None
+    extended_hours = OrderType(
+        effective.order_type
+    ) is OrderType.LIMIT and submission_session in {
+        SessionType.PRE_MARKET,
+        SessionType.AFTER_HOURS,
+    }
+    scope = await get_or_record_venue_order_scope(
+        store,
+        order=order,
+        rendered_order=effective,
+        extended_hours=extended_hours,
+    )
+    return rendered_order_from_scope(order, scope), scope
 
 
 async def _snapshot_fill_fallback(
@@ -1597,7 +1651,7 @@ async def run_monitoring_tick(
     # fully-reconciled post-tick state — a divergence it acts on is then one the
     # per-order poll structurally *couldn't* capture (an external venue order).
     # Slice 4e-2 surfaces external/unmanaged orders (non-mutating); later slices add
-    # not-found resolution (4e-3) + synthetic fills/parity/throttle (4e-4).
+    # not-found resolution (4e-3) + broker-authoritative fills/parity/throttle (4e-4).
     # Failure-isolated; gated by ``reconciliation_enabled`` (default on).
     # ``drive_reconcile_state`` (loop/startup only) lets it drive the §8 reconcile
     # TradingState driver (Reducing while divergent, Active on parity — wave 4f / R2);
@@ -1692,8 +1746,10 @@ async def _submit_pending_orders(
         # order type HERE, at the single submission choke point, not at creation.
         # A MARKET sell stays MARKET in regular hours, downgrades to a live-priced
         # LIMIT in pre/after-hours; an un-priceable pre/after-hours sell holds.
-        effective = await _effective_submit_order(claimed, market_data, settings)
-        if effective is None:
+        prepared = await _prepare_managed_venue_order(
+            store, claimed, market_data, settings
+        )
+        if prepared is None:
             _log.info(
                 "holding protective sell %s (%s): no priceable snapshot this tick; "
                 "releasing claim to retry",
@@ -1708,22 +1764,39 @@ async def _submit_pending_orders(
                     "could not release un-priceable sell %s: %s", claimed.id, rel_exc
                 )
             continue
+        effective, venue_scope = prepared
 
         try:
-            broker_order_id = await adapter.submit_order(effective)
+            broker_order_id = await adapter.submit_order(
+                effective, venue_scope=venue_scope
+            )
             # AIR-001: a well-behaved adapter returns a non-empty id or raises.
-            # Defend against a contract violation here too — an empty id must
-            # never reach the SUBMITTING -> SUBMITTED transition (it would strand
-            # an untrackable "submitted" order). Treat it as a submit failure so
-            # the claim releases and the next tick re-drives idempotently.
+            # The venue call already happened, so a malformed id is ambiguous
+            # acceptance, never a preflight failure that may release and resend.
             if not isinstance(broker_order_id, str) or not broker_order_id.strip():
-                raise BrokerError(
+                raise AmbiguousBrokerError(
                     f"adapter returned an empty broker id for order {claimed.id}"
                 )
             broker_order_id = broker_order_id.strip()
+        except asyncio.CancelledError:
+            # Cancellation during the adapter await is an unknown send: an SDK
+            # worker may still complete the venue mutation. Own that ambiguity
+            # before the monitoring task is allowed to terminate.
+            await await_accepted_submit_finalizer(
+                _quarantine_or_own_ambiguous_submit(
+                    store,
+                    claimed,
+                    AmbiguousBrokerError(
+                        "submit cancelled after its venue call may have started"
+                    ),
+                    context="first_submit_cancelled",
+                )
+            )
+            raise
         except TerminalBrokerError as exc:
             # AIR-003 (review follow-up): a *definitive* broker rejection on the
-            # first submit (403/422/delisted, or a duplicate whose lookup fails).
+            # first submit (403/422/delisted). A duplicate whose lookup fails is
+            # ambiguous because the venue confirmed an existing order.
             # Releasing SUBMITTING -> CREATED here would re-submit a doomed order
             # every tick forever (a CREATED<->SUBMITTING livelock hammering the
             # broker, never escalated) — the same class this wave closed on the
@@ -1756,11 +1829,13 @@ async def _submit_pending_orders(
                 claimed.symbol,
                 exc,
             )
-            await _quarantine_or_own_ambiguous_submit(
-                store,
-                claimed,
-                exc,
-                context="first_submit",
+            await await_accepted_submit_finalizer(
+                _quarantine_or_own_ambiguous_submit(
+                    store,
+                    claimed,
+                    exc,
+                    context="first_submit",
+                )
             )
             continue
         except Exception as exc:  # noqa: BLE001 - release the claim, retry next tick
@@ -1809,19 +1884,9 @@ async def _submit_pending_orders(
                     "could not release claim on order %s: %s", claimed.id, rel_exc
                 )
             continue
-        try:
-            await store.transition_order(
-                claimed.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
-            )
-        except Exception as exc:  # noqa: BLE001 - broker acceptance needs ownership
-            # Broker accepted it but the store couldn't mark it SUBMITTED (most
-            # often a manual cancel landing during the submit call: SUBMITTING →
-            # CANCELED, so SUBMITTING → SUBMITTED is now illegal). The order is
-            # live upstream but locally terminal — record it durably so the
-            # recovery loop cancels it, not a single best-effort attempt.
-            await _handle_unpersisted_submit(
-                store, adapter, claimed, broker_order_id, exc
-            )
+        await await_accepted_submit_finalizer(
+            _finalize_accepted_submit(store, adapter, claimed, broker_order_id)
+        )
 
 
 async def _redrive_stale_submitting(
@@ -1850,10 +1915,15 @@ async def _redrive_stale_submitting(
       then tracks it normally.
     * A transient :class:`BrokerError` → leave it ``SUBMITTING`` to retry next tick
       (idempotent, not a blind double-submit).
-    * A :class:`TerminalBrokerError` (or an empty id, or the store rejecting the
-      transition) → escalate to a durable ``needs_review`` recovery record rather
-      than guessing. Deduped: an order already carrying an open recovery record is
-      neither re-driven nor re-recorded.
+    * A :class:`TerminalBrokerError` → escalate to a durable ``needs_review``
+      recovery record rather than guessing.
+    * An empty or whitespace-only id returned *after* the venue call is an
+      :class:`AmbiguousBrokerError` → quarantine it; if quarantine persistence
+      itself fails, create the durable ``needs_review`` owner instead. It is never
+      released as a preflight failure.
+
+    Deduped: an order already carrying an open recovery record or canonical
+    accepted-submit fallback is neither re-driven nor re-recorded.
 
     **Livelock backstop (AIR-003 review).** The transient path retries every tick.
     A *permanent* broker rejection that a (buggy or unknown-error) adapter reports
@@ -1878,6 +1948,17 @@ async def _redrive_stale_submitting(
         statuses=RECOVERY_OPEN_STATUSES
     )
     already_covered = {r.local_order_id for r in open_recoveries}
+    # A canonical fallback is already durable proof that this local order was
+    # accepted at the venue.  Repair normally runs before redrive, but the
+    # producer boundary must remain safe under overlapping ticks/processes and
+    # direct recovery invocation: never call the venue again for that row.
+    for order in stale:
+        order_events = await store.get_order_execution_events(order.id)
+        if any(
+            canonical_accepted_submit_broker_id(event, order) is not None
+            for event in order_events
+        ):
+            already_covered.add(order.id)
     max_attempts = settings.stale_submitting_max_redrive_attempts
     # Codex PR#8 round-2 F1 (P1): envelope-minted orders must NEVER be blind
     # `submit_order`'d here (the SUBMITTING sibling of the CREATED-sweep exclusion
@@ -1928,8 +2009,10 @@ async def _redrive_stale_submitting(
         # (the stale-re-drive is one of the three submit choke points). An
         # un-priceable pre/after-hours sell is left SUBMITTING to retry next tick
         # It consumes the same durable no-progress budget as BrokerError below.
-        effective = await _effective_submit_order(order, market_data, settings)
-        if effective is None:
+        prepared = await _prepare_managed_venue_order(
+            store, order, market_data, settings
+        )
+        if prepared is None:
             _log.info(
                 "stale protective sell %s (%s): no priceable snapshot; leaving "
                 "SUBMITTING to retry next tick",
@@ -1944,19 +2027,34 @@ async def _redrive_stale_submitting(
                 reason="unpriceable",
             )
             continue
+        effective, venue_scope = prepared
         # Write-ahead progress: never call the broker unless the durable attempt
         # reservation commits. A broken audit store therefore fails closed on
         # every cadence instead of silently reissuing the request forever.
         if not await _record_redrive_attempt_started(store, order, prior_attempts + 1):
             continue
         try:
-            broker_order_id = await adapter.submit_order(effective)
+            broker_order_id = await adapter.submit_order(
+                effective, venue_scope=venue_scope
+            )
             if not isinstance(broker_order_id, str) or not broker_order_id.strip():
-                raise TerminalBrokerError(
+                raise AmbiguousBrokerError(
                     f"adapter returned an empty broker id re-driving stale "
                     f"SUBMITTING order {order.id}"
                 )
             broker_order_id = broker_order_id.strip()
+        except asyncio.CancelledError:
+            await await_accepted_submit_finalizer(
+                _quarantine_or_own_ambiguous_submit(
+                    store,
+                    order,
+                    AmbiguousBrokerError(
+                        "stale re-drive cancelled after its venue call may have started"
+                    ),
+                    context="stale_redrive_cancelled",
+                )
+            )
+            raise
         except TerminalBrokerError as exc:
             _log.error(
                 "stale SUBMITTING order %s could not be re-driven (terminal); "
@@ -1977,11 +2075,13 @@ async def _redrive_stale_submitting(
                 order.id,
                 exc,
             )
-            await _quarantine_or_own_ambiguous_submit(
-                store,
-                order,
-                exc,
-                context="stale_redrive",
+            await await_accepted_submit_finalizer(
+                _quarantine_or_own_ambiguous_submit(
+                    store,
+                    order,
+                    exc,
+                    context="stale_redrive",
+                )
             )
             continue
         except BrokerError as exc:
@@ -1997,22 +2097,14 @@ async def _redrive_stale_submitting(
             )
             continue
 
-        try:
-            await store.transition_order(
-                order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
-            )
-            _log.info(
-                "re-drove stale SUBMITTING order %s to SUBMITTED as broker %s",
-                order.id,
-                broker_order_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - broker acceptance needs ownership
-            # The order left SUBMITTING some other way (e.g. a manual cancel) while
-            # we re-drove it — the broker order is live but locally terminal. Same
-            # durable path as the primary submit's unpersisted case.
-            await _handle_unpersisted_submit(
-                store, adapter, order, broker_order_id, exc
-            )
+        await await_accepted_submit_finalizer(
+            _finalize_accepted_submit(store, adapter, order, broker_order_id)
+        )
+        _log.info(
+            "re-drove stale SUBMITTING order %s to SUBMITTED as broker %s",
+            order.id,
+            broker_order_id,
+        )
 
 
 # Venue-terminal statuses a targeted query can resolve a quarantine to directly
@@ -2058,6 +2150,7 @@ async def _resolve_timeout_quarantine(
 
     max_attempts = (settings or Settings()).timeout_quarantine_max_query_attempts
     quarantined = await store.list_timeout_quarantined_orders()
+    scope_by_order = await load_venue_order_scopes(store, quarantined)
     # PR #4 review (P2): round-robin the deterministic list so a limited budget
     # cannot let the earliest orders (persistently failing / escalated) starve the
     # later ones — resume just after the last order that consumed a token last tick.
@@ -2077,7 +2170,25 @@ async def _resolve_timeout_quarantine(
         if fairness is not None:
             fairness.record(order.id)
         try:
-            update = await adapter.get_order_by_client_order_id(order.id)
+            update = await adapter.get_order_by_client_order_id(
+                order.id,
+                expected_symbol=order.symbol,
+                expected_side=OrderSide(order.side),
+                expected_quantity=order.quantity,
+                expected_limit_price=order.limit_price,
+                expected_order_type=(
+                    None
+                    if order_has_dynamic_venue_type(order)
+                    else OrderType(order.order_type)
+                ),
+                expected_time_in_force="day",
+                expected_order_class="simple",
+                expected_scope=scope_by_order.get(order.id),
+                allow_dynamic_market_sell=(
+                    scope_by_order.get(order.id) is None
+                    and order_has_dynamic_venue_type(order)
+                ),
+            )
         except BrokerError as exc:
             # Inconclusive — a query FAILURE is NEVER read as "absent" (§7): it only
             # retries. Surface for manual review once we've failed to get a clean
@@ -2194,64 +2305,6 @@ async def _record_timeout_query_deferral(
         _log.exception(
             "could not record timeout-quarantine deferral for order %s", order.id
         )
-
-
-async def _quarantine_or_own_ambiguous_submit(
-    store: StateStore,
-    order: Order,
-    exc: AmbiguousBrokerError,
-    *,
-    context: str,
-) -> None:
-    """Make an unknown venue send durably unreachable by every resubmit path.
-
-    TIMEOUT_QUARANTINE is the normal owner because its targeted read-only query
-    can converge the order automatically.  A concurrent local transition can
-    make that projection write fail even though the broker outcome is still
-    unknown.  In that case an open ``needs_review`` recovery owns the exact
-    local/client identity before this function returns.  Recovery persistence
-    is deliberately strict: if both ownership writes fail, the tick aborts
-    instead of claiming the SUBMITTING row is safe to re-drive.
-    """
-
-    try:
-        await store.quarantine_timed_out_order(order.id, reason="ambiguous_submit")
-        return
-    except Exception as quarantine_exc:  # noqa: BLE001 - unknown send needs ownership
-        _log.warning(
-            "could not quarantine ambiguous %s for order %s; recording durable "
-            "needs_review ownership: %s",
-            context,
-            order.id,
-            quarantine_exc,
-        )
-
-    # Re-read after the failed transition so a concurrent local terminalization
-    # cannot be mistaken for resolution of the unknown broker send.  The
-    # immutable scope is taken from the current row when it still exists.
-    current = await store.get_order(order.id)
-    scoped = current if current is not None else order
-    await store.create_submit_recovery(
-        local_order_id=scoped.id,
-        broker_order_id=scoped.broker_order_id or "",
-        client_order_id=scoped.id,
-        symbol=scoped.symbol,
-        side=scoped.side,
-        quantity=scoped.quantity,
-        limit_price=scoped.limit_price,
-        failure_reason=(
-            f"ambiguous {context} could not enter timeout quarantine: {exc}"
-        ),
-        session_id=scoped.session_id,
-        candidate_id=scoped.candidate_id,
-        cleanup_status=RECOVERY_NEEDS_REVIEW,
-        event_type=EventType.SUBMIT_RECOVERY_NEEDS_REVIEW.value,
-        extra_payload={
-            "ambiguous_submit": True,
-            "context": context,
-            "quarantine_failed": True,
-        },
-    )
 
 
 async def _escalate_stale_submitting(
@@ -2385,40 +2438,33 @@ async def _order_deferral_count(
     )
 
 
-async def _record_accepted_submit_uncertainty(
+async def _finalize_accepted_submit(
     store: StateStore,
+    adapter: BrokerAdapter,
     order: Order,
     broker_order_id: str,
-    exc: Exception,
 ) -> None:
-    """Last durable owner whenever recovery-ledger persistence fails."""
+    """Adopt one accepted id or install recovery before control can unwind."""
 
-    dedupe_key = f"accepted_submit_unpersisted:{order.id}:{broker_order_id}"
-    stored = await store.append_execution_event(
-        ExecutionEvent(
-            event_type=ExecutionEventType.UNKNOWN_RECONCILE_REQUIRED,
-            source=EventSource.ENGINE,
-            authority=EventAuthority.LOCAL,
-            dedupe_key=dedupe_key,
-            ts_init=order.updated_at,
-            symbol=order.symbol,
-            side=order.side,
-            quantity=order.quantity,
-            price=order.limit_price,
-            order_id=order.id,
-            session_id=order.session_id,
-            correlation_id=order.sell_intent_id or order.candidate_id,
-            payload={
-                "reason": ACCEPTED_SUBMIT_UNPERSISTED_REASON,
-                "broker_order_id": broker_order_id,
-                "error": str(exc),
-            },
+    try:
+        await store.transition_order(
+            order.id, OrderStatus.SUBMITTED, broker_order_id=broker_order_id
         )
-    )
-    if canonical_accepted_submit_broker_id(stored, order) != broker_order_id:
-        raise RecoveryTransitionError(
-            "accepted-submit uncertainty dedupe belongs to conflicting truth"
-        )
+    except asyncio.CancelledError as exc:
+        # The shielded ownership task itself observed cancellation at the store
+        # boundary. Complete the same recovery path, then preserve cancellation.
+        try:
+            await _handle_unpersisted_submit(
+                store, adapter, order, broker_order_id, exc
+            )
+        except Exception:  # noqa: BLE001 - fallback may already be durable
+            _log.exception(
+                "accepted-submit cancellation recovery failed for order %s",
+                order.id,
+            )
+        raise
+    except Exception as exc:  # noqa: BLE001 - broker acceptance needs ownership
+        await _handle_unpersisted_submit(store, adapter, order, broker_order_id, exc)
 
 
 async def _handle_unpersisted_submit(
@@ -2426,7 +2472,7 @@ async def _handle_unpersisted_submit(
     adapter: BrokerAdapter,
     order: Order,
     broker_order_id: str,
-    exc: Exception,
+    exc: BaseException,
 ) -> None:
     """The broker accepted an order we then couldn't mark ``SUBMITTED``.
 
@@ -2484,6 +2530,12 @@ async def _handle_unpersisted_submit(
         current = None
     status = current.status if current is not None else None
 
+    if accepted_broker_identity_is_tracked(current, broker_order_id):
+        # The transition committed and only its response was lost. It is already
+        # a normal poll/cancel owner; a recovery row would later cancel it as an
+        # orphan and corrupt the valid local/venue state.
+        return
+
     if status is OrderStatus.SUBMITTING:
         # Order is legitimately open at the broker; retry recording SUBMITTED.
         try:
@@ -2493,6 +2545,15 @@ async def _handle_unpersisted_submit(
             _log.info("recovered unpersisted submit for order %s on retry", order.id)
             return
         except Exception as retry_exc:  # noqa: BLE001 - fall through to recovery owner
+            if await accepted_broker_identity_is_durably_tracked(
+                store, order.id, broker_order_id
+            ):
+                _log.info(
+                    "recovered unpersisted submit for order %s despite a lost "
+                    "retry response",
+                    order.id,
+                )
+                return
             _log.error(
                 "retry to mark order %s SUBMITTED failed; recording recovery: %s",
                 order.id,
@@ -2584,13 +2645,16 @@ async def _repair_accepted_submit_seed(
             )
             return
         except Exception:  # noqa: BLE001 - recovery ledger owns failed adoption
-            pass
+            if await accepted_broker_identity_is_durably_tracked(
+                store, order.id, broker_order_id
+            ):
+                return
 
     extra_payload: dict[str, Any] = {
         "repaired_from_event_id": event.id,
         "repair_seed": seed_kind,
     }
-    for key in ("envelope_id", "kind"):
+    for key in ("envelope_id", "kind", "replaces_order_id"):
         if key in payload:
             extra_payload[key] = payload[key]
     await store.create_submit_recovery(
@@ -2802,10 +2866,54 @@ async def _recover_unpersisted_submits(
     """
 
     records = await store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED})
+    scope_by_order = await load_venue_order_scopes(
+        store,
+        [
+            VenueScopeOwner(
+                order_id=record.local_order_id,
+                symbol=record.symbol,
+                side=OrderSide(record.side),
+                quantity=record.quantity,
+                order_type=(
+                    OrderType.LIMIT
+                    if record.limit_price is not None
+                    else OrderType.MARKET
+                ),
+                limit_price=record.limit_price,
+                allow_dynamic_venue_type=(
+                    record.limit_price is None
+                    and OrderSide(record.side) is OrderSide.SELL
+                ),
+            )
+            for record in records
+        ],
+    )
     for rec in records:
+        expected_client_order_id = rec.client_order_id or rec.local_order_id
         try:
             update = await adapter.get_order_status(
-                rec.broker_order_id, recorded_quantity=0
+                rec.broker_order_id,
+                recorded_quantity=0,
+                expected_client_order_id=expected_client_order_id,
+                expected_symbol=rec.symbol,
+                expected_side=OrderSide(rec.side),
+                expected_quantity=rec.quantity,
+                expected_limit_price=rec.limit_price,
+                expected_order_type=(
+                    None
+                    if rec.limit_price is None and OrderSide(rec.side) is OrderSide.SELL
+                    else OrderType.LIMIT
+                    if rec.limit_price is not None
+                    else OrderType.MARKET
+                ),
+                expected_time_in_force="day",
+                expected_order_class="simple",
+                expected_scope=scope_by_order.get(rec.local_order_id),
+                allow_dynamic_market_sell=(
+                    scope_by_order.get(rec.local_order_id) is None
+                    and rec.limit_price is None
+                    and OrderSide(rec.side) is OrderSide.SELL
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - retry next tick
             _log.warning(
@@ -2843,7 +2951,28 @@ async def _recover_unpersisted_submits(
         try:
             await adapter.cancel_order(rec.broker_order_id)
             confirm = await adapter.get_order_status(
-                rec.broker_order_id, recorded_quantity=0
+                rec.broker_order_id,
+                recorded_quantity=0,
+                expected_client_order_id=expected_client_order_id,
+                expected_symbol=rec.symbol,
+                expected_side=OrderSide(rec.side),
+                expected_quantity=rec.quantity,
+                expected_limit_price=rec.limit_price,
+                expected_order_type=(
+                    None
+                    if rec.limit_price is None and OrderSide(rec.side) is OrderSide.SELL
+                    else OrderType.LIMIT
+                    if rec.limit_price is not None
+                    else OrderType.MARKET
+                ),
+                expected_time_in_force="day",
+                expected_order_class="simple",
+                expected_scope=scope_by_order.get(rec.local_order_id),
+                allow_dynamic_market_sell=(
+                    scope_by_order.get(rec.local_order_id) is None
+                    and rec.limit_price is None
+                    and OrderSide(rec.side) is OrderSide.SELL
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - retry next tick
             _log.warning(
@@ -2890,6 +3019,7 @@ async def _reconcile_open_orders(
     open_orders = [o for o in await store.list_orders() if o.status in _OPEN_STATUSES]
     if not open_orders:
         return
+    scope_by_order = await load_venue_order_scopes(store, open_orders)
 
     already_stale = await _orders_with_event(store, EventType.ORDER_STALE.value)
     timeout = timedelta(minutes=settings.unfilled_timeout_minutes)
@@ -2912,10 +3042,34 @@ async def _reconcile_open_orders(
             try:
                 # Pass what we've already recorded so an adapter that only sees
                 # the broker's cumulative fill can emit a correct delta.
+                recorded_raw = sum(
+                    fill.quantity for fill in await store.list_fills(order_id=order.id)
+                )
                 update = await adapter.get_order_status(
                     order.broker_order_id,
-                    recorded_quantity=order.filled_quantity,
+                    recorded_quantity=recorded_raw,
                     fallback_price=fallback_price,
+                    expected_client_order_id=order.id,
+                    expected_symbol=order.symbol,
+                    expected_side=OrderSide(order.side),
+                    expected_quantity=order.quantity,
+                    expected_limit_price=(
+                        None
+                        if order_has_dynamic_venue_type(order)
+                        else order.limit_price
+                    ),
+                    expected_order_type=(
+                        None
+                        if order_has_dynamic_venue_type(order)
+                        else OrderType(order.order_type)
+                    ),
+                    expected_time_in_force="day",
+                    expected_order_class="simple",
+                    expected_scope=scope_by_order.get(order.id),
+                    allow_dynamic_market_sell=(
+                        scope_by_order.get(order.id) is None
+                        and order_has_dynamic_venue_type(order)
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 - skip this order, never crash
                 _log.warning(
@@ -2997,6 +3151,7 @@ async def _apply_update(
     # a source_fill_id cannot be bridged deterministically (no venue identity
     # before the row exists) — production Alpaca fills always carry one.
     rejected: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
     envelope_id: Optional[str] = None
     retry_parent_lookup = any(bf.source_fill_id is not None for bf in update.fills)
     if retry_parent_lookup:
@@ -3037,7 +3192,7 @@ async def _apply_update(
                 ts_event=bf.filled_at,
             )
         try:
-            await store.append_fill(
+            append_result = await store.append_fill(
                 order.id,
                 order.symbol,
                 order.side,
@@ -3062,6 +3217,19 @@ async def _apply_update(
                     "error": str(exc),
                 }
             )
+            continue
+
+        if append_result.status == "conflict":
+            conflicts.append(
+                {
+                    "source_fill_id": bf.source_fill_id,
+                    "quantity": bf.quantity,
+                    "price": bf.price,
+                    "reason": "source_fill_id_reused_with_conflicting_economics",
+                }
+            )
+            # Never attribute or repair a payload whose canonical identity
+            # already belongs to different fill economics.
             continue
 
         # Same-pass terminal repair runs outside append_fill's recoverable-error
@@ -3091,8 +3259,9 @@ async def _apply_update(
                     strict=True,
                 )
 
-    recorded = sum(f.quantity for f in await store.list_fills(order_id=order.id))
-    if update.filled_quantity > recorded:
+    recorded_raw = sum(f.quantity for f in await store.list_fills(order_id=order.id))
+    recorded_capped = min(recorded_raw, order.quantity)
+    if update.filled_quantity > recorded_raw or conflicts:
         # Broker executed more than we could record — a durable, unrecordable
         # divergence (AIR-002). Escalate and hold the order non-terminal so the
         # untracked position is never buried under a terminal state.
@@ -3101,30 +3270,37 @@ async def _apply_update(
             "to a needs_review reconciliation record.",
             order.id,
             update.filled_quantity,
-            recorded,
+            recorded_raw,
         )
-        await _escalate_fill_divergence(store, order, update, recorded, rejected)
-        target = _divergence_safe_status(order, recorded)
+        await _escalate_fill_divergence(
+            store,
+            order,
+            update,
+            recorded_raw,
+            rejected,
+            conflicts,
+        )
+        target = _divergence_safe_status(order, recorded_capped)
     else:
-        if update.filled_quantity != recorded:
+        if update.filled_quantity != recorded_raw:
             # recorded > broker (should not happen for a monotonic broker feed);
             # trust the recorded fills, which are the position's source of truth.
             _log.warning(
                 "order %s: recorded fills (%s) exceed broker filled (%s); "
                 "reconciling to recorded.",
                 order.id,
-                recorded,
+                recorded_raw,
                 update.filled_quantity,
             )
-        target = _reconciled_status(order, update.status, recorded)
+        target = _reconciled_status(order, update.status, recorded_capped)
     try:
-        await store.transition_order(order.id, target, filled_quantity=recorded)
+        await store.transition_order(order.id, target, filled_quantity=recorded_capped)
     except _TRANSITION_ERRORS as exc:
         _log.warning(
             "order %s reconcile to %s (recorded filled=%s) rejected: %s",
             order.id,
             target,
-            recorded,
+            recorded_capped,
             exc,
         )
 
@@ -3135,21 +3311,28 @@ async def _escalate_fill_divergence(
     update: BrokerOrderUpdate,
     recorded: int,
     rejected: list[dict[str, Any]],
+    conflicts: list[dict[str, Any]],
 ) -> None:
-    """Durably record a broker>local fill divergence as a ``needs_review``
-    reconciliation record (AIR-002). Deduped per order: an order already carrying
-    an open recovery record is not re-recorded on every subsequent diverging tick.
+    """Durably record an unrecorded or conflicting broker fill as needs-review.
+
+    Deduped by exact accepted broker leg: a
+    recovery for a distinct broker id on the same local order cannot own this
+    divergence, while the same pair is not re-recorded every diverging tick.
     """
 
     try:
-        open_recoveries = await store.list_submit_recoveries(
-            statuses=RECOVERY_OPEN_STATUSES
+        broker_order_id = order.broker_order_id or ""
+        represented = await store.get_submit_recovery_by_identity(
+            order.id, broker_order_id
         )
-        if any(r.local_order_id == order.id for r in open_recoveries):
+        if (
+            represented is not None
+            and represented.cleanup_status in RECOVERY_OPEN_STATUSES
+        ):
             return
         await store.create_submit_recovery(
             local_order_id=order.id,
-            broker_order_id=order.broker_order_id or "",
+            broker_order_id=broker_order_id,
             client_order_id=order.id,
             symbol=order.symbol,
             side=order.side,
@@ -3158,7 +3341,12 @@ async def _escalate_fill_divergence(
             failure_reason=(
                 f"broker/local fill divergence: broker reports filled="
                 f"{update.filled_quantity} ({update.status.value}) but only "
-                f"{recorded} shares recorded locally — a real untracked position"
+                f"{recorded} shares recorded locally"
+                + (
+                    "; duplicate fill identity carried conflicting economics"
+                    if conflicts
+                    else "; a real untracked position"
+                )
             ),
             session_id=order.session_id,
             candidate_id=order.candidate_id,
@@ -3169,6 +3357,7 @@ async def _escalate_fill_divergence(
                 "broker_filled_quantity": update.filled_quantity,
                 "recorded_filled_quantity": recorded,
                 "rejected_fills": rejected,
+                "conflicting_fills": conflicts,
             },
         )
     except Exception:  # noqa: BLE001 - escalation is best-effort; retried next tick
@@ -3298,7 +3487,8 @@ async def _run_reconciliation(
     * surface external/unmanaged venue orders (4e-2, non-mutating);
     * resolve open orders confirmed-absent at the venue → terminal (4e-3, the
       oversell-critical targeted-query-before-reject path);
-    * apply reconciliation-inferred synthetic fills (4e-4, dedup-safe — INV-5/R8).
+    * apply priced broker-authoritative reconciliation fills (4e-4, dedup-safe —
+      INV-5/R8).
 
     (Position parity surfacing is a deferred post-4e follow-up — an audit-only
     safeguard that never flips truth.)
@@ -3353,16 +3543,18 @@ async def _run_reconciliation(
             o for o in await store.list_orders() if o.status in _OPEN_STATUSES
         ]
         local_positions = await store.list_positions()
+        venue_scopes = await load_venue_order_scopes(store, local_open)
         plan = plan_reconciliation(
             local_open_orders=local_open,
             local_positions=local_positions,
             broker_orders=broker_orders,
             broker_positions=broker_positions,
             now=now,
+            venue_scopes_by_order_id=venue_scopes,
             recent_threshold_ms=settings.reconcile_recent_threshold_ms,
             avg_price_tolerance=settings.reconcile_avg_price_tolerance,
         )
-        await _surface_external_orders(store, plan)
+        await _surface_external_orders(store, plan, scope_by_order=venue_scopes)
         await _resolve_reconcile_not_found(
             store, adapter, settings, plan.needs_targeted_query, budget=budget
         )
@@ -3438,13 +3630,13 @@ async def _run_reconciliation(
 
 
 async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> bool:
-    """Append each reconciliation-inferred fill as a SYNTHETIC/RECONCILIATION fill
-    (wave 4e-4). The engine only infers a fill from a PRICED execution in the mass
-    report (never a $0 synthetic), and ``source_fill_id`` is the execution's OWN
-    venue id — so a synthetic fill and the eventual real observation of the same
-    execution dedup to ONE (INV-5 / R8), never a double-count. Per-item faults are
-    isolated so later inferences still run, and the return value tells a driven
-    reconciliation gate whether every planned fill reached durable truth."""
+    """Append each priced mass-report execution as broker-authoritative truth with
+    RECONCILIATION ingress provenance (wave 4e-4). The engine never fabricates a
+    zero-price fill, and ``source_fill_id`` is the execution's own venue id, so a
+    later direct observation dedups to ONE (INV-5 / R8), never a double-count.
+    Per-item faults are isolated so later observations still run, and the return
+    value tells a driven reconciliation gate whether every planned fill reached
+    durable truth."""
 
     parent_by_order: dict[str, Optional[str]] = {}
     post_ingest_lookup_done: set[str] = set()
@@ -3497,14 +3689,12 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
                 price=f.price,
                 order_id=f.order_id,
                 session_id=inferred_session_id,
-                # The record-first call writes the sole canonical FILL event,
-                # so it carries inferred rather than broker provenance.
                 source=EventSource.RECONCILIATION,
-                authority=EventAuthority.SYNTHETIC,
+                authority=f.authority,
             )
 
         try:
-            await store.append_fill(
+            append_result = await store.append_fill(
                 f.order_id,
                 f.symbol,
                 f.side,
@@ -3513,7 +3703,7 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
                 source_fill_id=f.source_fill_id,
                 session_id=inferred_session_id,
                 source=EventSource.RECONCILIATION,
-                authority=EventAuthority.SYNTHETIC,
+                authority=f.authority,
             )
         except _FILL_ERRORS as exc:
             all_persisted = False
@@ -3524,10 +3714,20 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
                 exc,
             )
             continue
+
         except Exception:  # noqa: BLE001 - isolate unexpected per-item store faults
             all_persisted = False
             _log.exception(
                 "reconcile: inferred fill for order %s failed; continuing batch",
+                f.order_id,
+            )
+            continue
+
+        if append_result.status == "conflict":
+            all_persisted = False
+            _log.error(
+                "reconcile: conflicting duplicate fill identity for order %s; "
+                "keeping parity gate reduce-only",
                 f.order_id,
             )
             continue
@@ -3555,7 +3755,7 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
                     order_id=f.order_id,
                     session_id=inferred_session_id,
                     source=EventSource.RECONCILIATION,
-                    authority=EventAuthority.SYNTHETIC,
+                    authority=f.authority,
                     strict=True,
                 )
             repair_needed = repair_needed or not bridged
@@ -3567,25 +3767,32 @@ async def _apply_inferred_fills(store: StateStore, plan: ReconciliationPlan) -> 
     return all_persisted
 
 
-async def _surface_external_orders(store: StateStore, plan: ReconciliationPlan) -> None:
+async def _surface_external_orders(
+    store: StateStore,
+    plan: ReconciliationPlan,
+    *,
+    scope_by_order: Optional[dict[str, VenueOrderScope]] = None,
+) -> None:
     """Surface each external/unmanaged venue order as a durable, deduped
     ``reconcile_external_order`` audit record (§7: surfaced, NEVER silently
     absorbed into managed state or folded into position). Deduped by
     ``broker_order_id`` — one record per external order, ever (survives restart via
     the persisted event log). Non-mutating: only an audit record is written.
 
-    Robustness: the engine already excludes venue rows matching a locally-*open*
-    order; here we ALSO exclude any that match a known local order in ANY state
-    (e.g. a terminal one the venue mirror hasn't caught up on) — an order we know
-    about is never "external/unmanaged", regardless of adapter/venue reporting lag."""
+    Robustness: suppress a lagging/terminal row only when its concrete broker id
+    is locally owned, or when an id-less local order has the same client id and
+    immutable symbol/side. A foreign identity or scope collision remains surfaced
+    evidence; a familiar client id alone never hides it."""
 
     if not plan.external_orders:
         return
 
     all_orders = await store.list_orders()
-    known_ids = {o.id for o in all_orders}
-    known_broker_ids = {
-        o.broker_order_id for o in all_orders if o.broker_order_id is not None
+    if scope_by_order is None:
+        scope_by_order = await load_venue_order_scopes(store, all_orders)
+    known_orders_by_id = {o.id: o for o in all_orders}
+    known_orders_by_broker_id = {
+        o.broker_order_id: o for o in all_orders if o.broker_order_id is not None
     }
     seen = {
         (e.payload or {}).get("broker_order_id")
@@ -3596,11 +3803,65 @@ async def _surface_external_orders(store: StateStore, plan: ReconciliationPlan) 
     for x in plan.external_orders:
         if x.broker_order_id in seen:
             continue
-        if x.broker_order_id in known_broker_ids or (
-            x.client_order_id is not None and x.client_order_id in known_ids
-        ):
-            # A venue order that ties back to a local order we know (any status) is
-            # managed, not external — never surface it.
+        client_match = (
+            known_orders_by_id.get(x.client_order_id)
+            if x.client_order_id is not None
+            else None
+        )
+        idless_immutable_match = (
+            client_match is not None
+            and client_match.broker_order_id is None
+            and venue_scope_matches_order(
+                client_match,
+                symbol=x.symbol,
+                side=x.side,
+                quantity=x.quantity,
+                filled_quantity=x.filled_quantity,
+                order_type=x.order_type,
+                limit_price=x.limit_price,
+                time_in_force=x.time_in_force,
+                order_class=x.order_class,
+                asset_class=x.asset_class,
+                quantity_mode=x.quantity_mode,
+                extended_hours=x.extended_hours,
+                has_legs=x.has_legs,
+                position_intent=x.position_intent,
+                replaces_broker_order_id=x.replaces_broker_order_id,
+                advanced_fields=x.advanced_fields,
+                expected_scope=scope_by_order.get(client_match.id),
+            )
+        )
+        broker_match = known_orders_by_broker_id.get(x.broker_order_id)
+        exact_broker_scope_match = (
+            broker_match is not None
+            and (
+                x.client_order_id == broker_match.id
+                if scope_by_order.get(broker_match.id) is not None
+                else x.client_order_id is None or x.client_order_id == broker_match.id
+            )
+            and venue_scope_matches_order(
+                broker_match,
+                symbol=x.symbol,
+                side=x.side,
+                quantity=x.quantity,
+                filled_quantity=x.filled_quantity,
+                order_type=x.order_type,
+                limit_price=x.limit_price,
+                time_in_force=x.time_in_force,
+                order_class=x.order_class,
+                asset_class=x.asset_class,
+                quantity_mode=x.quantity_mode,
+                extended_hours=x.extended_hours,
+                has_legs=x.has_legs,
+                position_intent=x.position_intent,
+                replaces_broker_order_id=x.replaces_broker_order_id,
+                advanced_fields=x.advanced_fields,
+                expected_scope=scope_by_order.get(broker_match.id),
+            )
+        )
+        if exact_broker_scope_match or idless_immutable_match:
+            # Suppress only an exact local owner. A client-id collision with a
+            # foreign broker id or immutable scope remains external evidence.
             continue
         await store.append_event(
             EventType.RECONCILE_EXTERNAL_ORDER.value,
@@ -3617,6 +3878,18 @@ async def _surface_external_orders(store: StateStore, plan: ReconciliationPlan) 
                 "side": x.side.value,
                 "status": x.status.value,
                 "filled_quantity": x.filled_quantity,
+                "quantity": x.quantity,
+                "order_type": x.order_type,
+                "limit_price": x.limit_price,
+                "time_in_force": x.time_in_force,
+                "order_class": x.order_class,
+                "asset_class": x.asset_class,
+                "quantity_mode": x.quantity_mode,
+                "extended_hours": x.extended_hours,
+                "has_legs": x.has_legs,
+                "position_intent": x.position_intent,
+                "replaces_broker_order_id": x.replaces_broker_order_id,
+                "advanced_fields": list(x.advanced_fields),
             },
         )
         seen.add(x.broker_order_id)
@@ -3710,9 +3983,15 @@ async def _resolve_reconcile_not_found(
 
     if not order_ids:
         return
-    retries = settings.reconcile_open_check_missing_retries
+    orders: list[Order] = []
     for order_id in order_ids:
         order = await store.get_order(order_id)
+        if order is not None and order.status in _RECONCILE_RESOLVABLE:
+            orders.append(order)
+    scope_by_order = await load_venue_order_scopes(store, orders)
+    retries = settings.reconcile_open_check_missing_retries
+    for order in orders:
+        order_id = order.id
         if order is None or order.status not in _RECONCILE_RESOLVABLE:
             # Left CANCEL_PENDING / already terminal / vanished — nothing to resolve.
             continue
@@ -3726,7 +4005,14 @@ async def _resolve_reconcile_not_found(
             )
             return
         try:
-            await _resolve_one_not_found(store, adapter, order, retries)
+            await _resolve_one_not_found(
+                store,
+                adapter,
+                order,
+                retries,
+                expected_scope=scope_by_order.get(order.id),
+                budget=budget,
+            )
         except Exception:  # noqa: BLE001 - one order's failure never stops the loop/tick
             _log.exception(
                 "reconcile: not-found resolution errored for order %s", order_id
@@ -3734,14 +4020,39 @@ async def _resolve_reconcile_not_found(
 
 
 async def _resolve_one_not_found(
-    store: StateStore, adapter: BrokerAdapter, order: Order, retries: int
+    store: StateStore,
+    adapter: BrokerAdapter,
+    order: Order,
+    retries: int,
+    *,
+    expected_scope: Optional[VenueOrderScope] = None,
+    budget: Optional[ReconcileQueryBudget] = None,
 ) -> None:
     """Run the READ-ONLY targeted query for one order absent from the mass report
     and resolve/defer it (see :func:`_resolve_reconcile_not_found`)."""
 
     order_id = order.id
     try:
-        update = await adapter.get_order_by_client_order_id(order_id)
+        update = await adapter.get_order_by_client_order_id(
+            order_id,
+            expected_symbol=order.symbol,
+            expected_side=OrderSide(order.side),
+            expected_quantity=order.quantity,
+            expected_limit_price=(
+                None if order_has_dynamic_venue_type(order) else order.limit_price
+            ),
+            expected_order_type=(
+                None
+                if order_has_dynamic_venue_type(order)
+                else OrderType(order.order_type)
+            ),
+            expected_time_in_force="day",
+            expected_order_class="simple",
+            expected_scope=expected_scope,
+            allow_dynamic_market_sell=(
+                expected_scope is None and order_has_dynamic_venue_type(order)
+            ),
+        )
     except BrokerError as exc:
         # A query FAILURE is inconclusive — NEVER read as absent (§7). Retry;
         # surface needs_review once persistently stuck (bounded so a venue outage
@@ -3762,13 +4073,90 @@ async def _resolve_one_not_found(
         return
 
     if update is not None:
-        # The venue HAS the order — it was not absent, only missing from this mass
-        # report. The per-order poll (holds the broker id) owns its status + fills; do
-        # NOT flip it here. RESET the consecutive not-found streak (record a clearing
-        # marker only if one had accrued) so the reject bound needs CONSECUTIVE
-        # confirmed-absents, not a lifetime sum of intermittent ones.
+        # The venue HAS the order. Adopt its concrete identity if this is a
+        # legacy id-less owner, then poll that identity immediately: a targeted
+        # lookup carries cumulative state but no priced fill executions, so merely
+        # returning here could strand a scalar fill forever.
+        broker_order_id = update.broker_order_id
+        if not isinstance(broker_order_id, str) or not broker_order_id.strip():
+            await _record_reconcile_deferral(
+                store,
+                order,
+                1,
+                "present_without_broker_identity",
+                needs_review=True,
+            )
+            return
+        broker_order_id = broker_order_id.strip()
+        if (
+            order.broker_order_id is not None
+            and order.broker_order_id != broker_order_id
+        ):
+            await _record_reconcile_deferral(
+                store,
+                order,
+                1,
+                "present_identity_conflict",
+                needs_review=True,
+                error=(
+                    f"local broker id {order.broker_order_id!r} != targeted "
+                    f"broker id {broker_order_id!r}"
+                ),
+            )
+            return
+        if order.broker_order_id is None:
+            order = await store.transition_order(
+                order.id,
+                order.status,
+                broker_order_id=broker_order_id,
+                expected_from=order.status,
+            )
+            if order.broker_order_id != broker_order_id:
+                raise RuntimeError("targeted broker identity adoption did not commit")
+
+        # RESET the consecutive not-found streak so the reject bound needs
+        # consecutive confirmed absences, not intermittent lifetime observations.
         if await _reconcile_not_found_streak(store, order_id) > 0:
             await _record_reconcile_streak_reset(store, order)
+        if budget is not None and not budget.try_consume(utcnow()):
+            return
+        recorded_raw = sum(
+            fill.quantity for fill in await store.list_fills(order_id=order.id)
+        )
+        try:
+            direct = await adapter.get_order_status(
+                broker_order_id,
+                recorded_quantity=recorded_raw,
+                expected_client_order_id=order.id,
+                expected_symbol=order.symbol,
+                expected_side=OrderSide(order.side),
+                expected_quantity=order.quantity,
+                expected_limit_price=(
+                    None if order_has_dynamic_venue_type(order) else order.limit_price
+                ),
+                expected_order_type=(
+                    None
+                    if order_has_dynamic_venue_type(order)
+                    else OrderType(order.order_type)
+                ),
+                expected_time_in_force="day",
+                expected_order_class="simple",
+                expected_scope=expected_scope,
+                allow_dynamic_market_sell=(
+                    expected_scope is None and order_has_dynamic_venue_type(order)
+                ),
+            )
+        except BrokerError as exc:
+            await _record_reconcile_deferral(
+                store,
+                order,
+                1,
+                "present_direct_poll_error",
+                needs_review=True,
+                error=str(exc),
+            )
+            return
+        await _apply_update(store, order, direct)
         return
 
     # Confirmed absent. The bound counts CONSECUTIVE confirmed-not-founds (reset by a

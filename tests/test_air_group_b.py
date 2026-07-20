@@ -104,7 +104,8 @@ class TestAir001NoSubmittedWithoutBrokerId:
         )
 
         class _EmptyIdAdapter(MockBrokerAdapter):
-            async def submit_order(self, order):  # noqa: D401
+            async def submit_order(self, order, *, venue_scope):  # noqa: D401
+                assert venue_scope is not None
                 self.submitted.append(order)
                 return ""  # contract violation
 
@@ -178,7 +179,8 @@ class TestAir003StaleSubmittingRecovery:
         )
 
         class _TerminalOnSubmit(MockBrokerAdapter):
-            async def submit_order(self, order):  # noqa: D401
+            async def submit_order(self, order, *, venue_scope):  # noqa: D401
+                assert venue_scope is not None
                 self.submitted.append(order)
                 raise TerminalBrokerError("403 restricted account")
 
@@ -204,7 +206,8 @@ class TestAir003StaleSubmittingRecovery:
         order = await _submitting_order(any_store)
 
         class _AlwaysTransient(MockBrokerAdapter):
-            async def submit_order(self, order):  # noqa: D401
+            async def submit_order(self, order, *, venue_scope):  # noqa: D401
+                assert venue_scope is not None
                 self.submitted.append(order)
                 raise BrokerError("permanent failure masquerading as transient")
 

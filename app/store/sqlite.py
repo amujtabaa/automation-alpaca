@@ -98,6 +98,7 @@ from app.store.base import (
     InvalidFillError,
     InvalidOrderError,
     OrderIntentBlockedError,
+    OrderTransitionError,
     ProtectionHaltedError,
     RecoveryTransitionError,
     RiskLimits,
@@ -107,17 +108,20 @@ from app.store.base import (
     StateStore,
     SubmissionClaim,
     UnknownEntityError,
+    normalize_broker_order_id,
     normalize_json_payload,
     normalize_symbol,
 )
 from app.store.core import (
     CREATE_ORDER_REJECT,
+    FILL_CONFLICT,
     FILL_DUPLICATE,
     FILL_REJECT,
     EnvelopeObligationProjection,
     execution_event_for_fill,
     execution_event_for_routine_transition,
     order_status_backfill_event,
+    overfill_quarantine_dedupe_key,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_BUYS_OPEN as _PLAN_FLATTEN_BUYS_OPEN,
@@ -192,8 +196,10 @@ from app.policy import (
     MAY_EXECUTE_ORDER_STATUSES,
     NON_TERMINAL_ORDER_STATUSES,
     accepted_submit_uncertainty_order_ids,
+    canonical_accepted_submit_broker_id,
     candidate_numeric_reason,
     existing_exposure,
+    fill_order_match_reason,
     is_accepted_submit_uncertainty_event,
     order_candidate_match_reason,
     risk_limit_reason,
@@ -458,6 +464,11 @@ class SqliteStateStore(StateStore):
         self._conn: Optional[sqlite3.Connection] = None
         self._accepted_submit_uncertainty_events: list[ExecutionEvent] = []
         self._accepted_submit_uncertainty_event_ids: set[str] = set()
+        self._accepted_submit_uncertainty_events_by_broker: dict[
+            str, list[ExecutionEvent]
+        ] = {}
+        self._submit_recovery_ids_by_broker: dict[str, list[str]] = {}
+        self._order_ids_by_broker: dict[str, list[str]] = {}
 
     # ------------------------------------------------------------------ #
     # Connection / transactions
@@ -600,6 +611,166 @@ class SqliteStateStore(StateStore):
             self._accepted_submit_uncertainty_event_ids = {
                 event.id for event in self._accepted_submit_uncertainty_events
             }
+            self._accepted_submit_uncertainty_events_by_broker = {}
+            for event in self._accepted_submit_uncertainty_events:
+                self._index_accepted_submit_uncertainty_locked(event)
+            recovery_identity_rows = self._read_all(
+                "SELECT id, broker_order_id FROM submit_recoveries ORDER BY rowid"
+            )
+            self._submit_recovery_ids_by_broker = {}
+            for row in recovery_identity_rows:
+                broker_order_id = normalize_broker_order_id(row["broker_order_id"])
+                if broker_order_id:
+                    self._submit_recovery_ids_by_broker.setdefault(
+                        broker_order_id, []
+                    ).append(row["id"])
+            order_identity_rows = self._read_all(
+                "SELECT id, broker_order_id FROM orders "
+                "WHERE broker_order_id IS NOT NULL ORDER BY rowid"
+            )
+            self._order_ids_by_broker = {}
+            for row in order_identity_rows:
+                broker_order_id = normalize_broker_order_id(row["broker_order_id"])
+                if broker_order_id:
+                    self._order_ids_by_broker.setdefault(broker_order_id, []).append(
+                        row["id"]
+                    )
+            self._validate_broker_identity_assignments_locked()
+
+    def _validate_broker_identity_assignments_locked(self) -> None:
+        """Fail startup on legacy concrete ids adopted by multiple local rows."""
+
+        owners_by_broker = {
+            broker_order_id: set(order_ids)
+            for broker_order_id, order_ids in self._order_ids_by_broker.items()
+        }
+        recovery_rows = self._read_all(
+            "SELECT local_order_id, broker_order_id FROM submit_recoveries "
+            "WHERE broker_order_id <> '' ORDER BY rowid"
+        )
+        for row in recovery_rows:
+            broker_order_id = normalize_broker_order_id(row["broker_order_id"])
+            if broker_order_id:
+                owners_by_broker.setdefault(broker_order_id, set()).add(
+                    row["local_order_id"]
+                )
+        for (
+            broker_order_id,
+            events,
+        ) in self._accepted_submit_uncertainty_events_by_broker.items():
+            for event in events:
+                if event.order_id is None:
+                    continue
+                referenced_row = self._read_one(
+                    "SELECT * FROM orders WHERE id = ?", (event.order_id,)
+                )
+                referenced = (
+                    self._order(referenced_row) if referenced_row is not None else None
+                )
+                if (
+                    canonical_accepted_submit_broker_id(event, referenced)
+                    == broker_order_id
+                ):
+                    owners_by_broker.setdefault(broker_order_id, set()).add(
+                        event.order_id
+                    )
+        collisions = {
+            broker_order_id: sorted(owner_ids)
+            for broker_order_id, owner_ids in owners_by_broker.items()
+            if len(owner_ids) > 1
+        }
+        if collisions:
+            raise RecoveryTransitionError(
+                f"broker identities have multiple local owners at startup: {collisions}"
+            )
+
+    def _broker_identity_conflict_locked(
+        self,
+        local_order_id: str,
+        broker_order_id: str,
+        *,
+        cur: Optional[sqlite3.Cursor] = None,
+    ) -> Optional[str]:
+        """Return a cross-owner conflict for one canonical concrete venue id."""
+
+        if not broker_order_id:
+            return None
+        foreign_orders = sorted(
+            order_id
+            for order_id in self._order_ids_by_broker.get(broker_order_id, [])
+            if order_id != local_order_id
+        )
+        recovery_ids = self._submit_recovery_ids_by_broker.get(broker_order_id, [])
+        foreign_recoveries: list[str] = []
+        if recovery_ids:
+            placeholders = ",".join("?" for _ in recovery_ids)
+            sql = (
+                "SELECT local_order_id FROM submit_recoveries "
+                f"WHERE id IN ({placeholders}) ORDER BY rowid"
+            )
+            rows = (
+                cur.execute(sql, tuple(recovery_ids)).fetchall()
+                if cur is not None
+                else self._read_all(sql, tuple(recovery_ids))
+            )
+            foreign_recoveries = sorted(
+                row["local_order_id"]
+                for row in rows
+                if row["local_order_id"] != local_order_id
+            )
+        foreign_fallbacks: list[str] = []
+        for event in self._accepted_submit_uncertainty_events_by_broker.get(
+            broker_order_id, []
+        ):
+            if event.order_id is None or event.order_id == local_order_id:
+                continue
+            raw_broker_order_id = event.payload.get("broker_order_id")
+            if (
+                not isinstance(raw_broker_order_id, str)
+                or normalize_broker_order_id(raw_broker_order_id) != broker_order_id
+            ):
+                continue
+            sql = "SELECT * FROM orders WHERE id = ?"
+            row = (
+                cur.execute(sql, (event.order_id,)).fetchone()
+                if cur is not None
+                else self._read_one(sql, (event.order_id,))
+            )
+            if row is None:
+                continue
+            referenced = self._order(row)
+            if (
+                canonical_accepted_submit_broker_id(event, referenced)
+                == broker_order_id
+            ):
+                foreign_fallbacks.append(event.order_id)
+        if not foreign_orders and not foreign_recoveries and not foreign_fallbacks:
+            return None
+        owners = sorted(set(foreign_orders + foreign_recoveries + foreign_fallbacks))
+        return (
+            f"broker identity {broker_order_id!r} conflicts with existing "
+            f"owners {owners}"
+        )
+
+    def _index_order_broker_identity_locked(self, order: Order) -> None:
+        if not isinstance(order.broker_order_id, str):
+            return
+        broker_order_id = normalize_broker_order_id(order.broker_order_id)
+        if not broker_order_id:
+            return
+        owner_ids = self._order_ids_by_broker.setdefault(broker_order_id, [])
+        if order.id not in owner_ids:
+            owner_ids.append(order.id)
+
+    def _index_accepted_submit_uncertainty_locked(self, event: ExecutionEvent) -> None:
+        raw_broker_order_id = event.payload.get("broker_order_id")
+        broker_order_id = (
+            raw_broker_order_id.strip() if isinstance(raw_broker_order_id, str) else ""
+        )
+        if broker_order_id:
+            self._accepted_submit_uncertainty_events_by_broker.setdefault(
+                broker_order_id, []
+            ).append(event)
 
     def _backfill_order_status_events_locked(self) -> None:
         """WO-0007b read-flip migration (mirror of the in-memory backfill): an order
@@ -3069,6 +3240,26 @@ class SqliteStateStore(StateStore):
                 if row is None:
                     raise UnknownEntityError(f"envelope {envelope_id} not found")
                 env = self._envelope(row)
+                canonical_row = cur.execute(
+                    "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                    (dedupe_key,),
+                ).fetchone()
+                canonical_event = (
+                    self._execution_event(canonical_row)
+                    if canonical_row is not None
+                    else None
+                )
+                quarantine_row = cur.execute(
+                    "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                    (overfill_quarantine_dedupe_key(dedupe_key),),
+                ).fetchone()
+                existing_quarantine_event = (
+                    self._execution_event(quarantine_row)
+                    if quarantine_row is not None
+                    else None
+                )
+                order_quantity: Optional[int] = None
+                prior_order_filled_quantity = 0
                 if order_id is not None:
                     action_rows = cur.execute(
                         "SELECT envelope_id FROM execution_events "
@@ -3096,6 +3287,42 @@ class SqliteStateStore(StateStore):
                             f"fill order {order_id} is not a uniquely bounded "
                             f"child of envelope {env.id}"
                         )
+                    order_quantity = raw_order.quantity
+                    if canonical_event is None:
+                        prior_row = cur.execute(
+                            "SELECT COALESCE(SUM(quantity), 0) AS total "
+                            "FROM execution_events WHERE event_type = ? "
+                            "AND order_id = ?",
+                            (ExecutionEventType.FILL.value, order_id),
+                        ).fetchone()
+                    else:
+                        prior_row = cur.execute(
+                            "SELECT COALESCE(SUM(quantity), 0) AS total "
+                            "FROM execution_events WHERE event_type = ? "
+                            "AND order_id = ? AND id != ?",
+                            (
+                                ExecutionEventType.FILL.value,
+                                order_id,
+                                canonical_event.id,
+                            ),
+                        ).fetchone()
+                    prior_order_filled_quantity = prior_row["total"] if prior_row else 0
+                    if canonical_event is None:
+                        match_reason = fill_order_match_reason(
+                            raw_order,
+                            env.symbol,
+                            OrderSide.SELL,
+                            quantity,
+                            prior_order_filled_quantity,
+                            allow_cumulative_overfill=(
+                                authority is EventAuthority.BROKER_AUTHORITATIVE
+                            ),
+                        )
+                        if match_reason is not None:
+                            raise InvalidFillError(
+                                f"invalid envelope fill for order {order_id}: "
+                                f"{match_reason}"
+                            )
                 plan = plan_envelope_fill(
                     env,
                     quantity=quantity,
@@ -3106,16 +3333,16 @@ class SqliteStateStore(StateStore):
                     ts_event=ts_event,
                     source=source,
                     authority=authority,
+                    canonical_event_exists=canonical_event is not None,
+                    order_quantity=order_quantity,
+                    prior_order_filled_quantity=prior_order_filled_quantity,
+                    existing_quarantine_event=existing_quarantine_event,
                     now=now,
                 )
                 if plan.outcome == ENVELOPE_FILL_REJECT:
                     assert plan.error is not None
                     raise plan.error
                 assert plan.envelope is not None and plan.fill_event is not None
-                canonical_row = cur.execute(
-                    "SELECT * FROM execution_events WHERE dedupe_key = ?",
-                    (dedupe_key,),
-                ).fetchone()
                 marker_row = cur.execute(
                     "SELECT * FROM execution_events WHERE dedupe_key = ?",
                     (envelope_fill_attribution_dedupe_key(dedupe_key),),
@@ -3132,11 +3359,7 @@ class SqliteStateStore(StateStore):
                 decision = decide_envelope_fill_attribution(
                     env,
                     plan,
-                    canonical_event=(
-                        self._execution_event(canonical_row)
-                        if canonical_row is not None
-                        else None
-                    ),
+                    canonical_event=canonical_event,
                     marker_event=(
                         self._execution_event(marker_row)
                         if marker_row is not None
@@ -3158,6 +3381,8 @@ class SqliteStateStore(StateStore):
                     assert decision.outcome == ENVELOPE_FILL_REPAIR_ATTRIBUTION
                     assert decision.marker_event is not None
                     self._insert_execution_event(cur, decision.marker_event)
+                if plan.quarantine_event is not None:
+                    self._insert_execution_event(cur, plan.quarantine_event)
                 self._update_envelope(cur, plan.envelope)
                 stored = plan.envelope
                 if plan.transition is not None:
@@ -5490,6 +5715,10 @@ class SqliteStateStore(StateStore):
     ) -> SubmitRecoveryRecord:
         require_recovery_status(cleanup_status)
         key = normalize_symbol(symbol)
+        try:
+            broker_order_id = normalize_broker_order_id(broker_order_id)
+        except ValueError as exc:
+            raise RecoveryTransitionError(str(exc)) from exc
         async with self._lock:
             recovery_side = OrderSide(side)
             order_row = self._read_one(
@@ -5507,12 +5736,41 @@ class SqliteStateStore(StateStore):
                     f"{referenced_order.symbol}/{referenced_order.side.value}"
                 )
             with self._tx() as cur:
-                owner_rows = cur.execute(
-                    "SELECT * FROM submit_recoveries "
-                    "WHERE local_order_id = ? "
-                    "OR (? <> '' AND broker_order_id = ?) ORDER BY rowid",
-                    (local_order_id, broker_order_id, broker_order_id),
-                ).fetchall()
+                identity_conflict = self._broker_identity_conflict_locked(
+                    local_order_id, broker_order_id, cur=cur
+                )
+                if identity_conflict is not None:
+                    raise RecoveryTransitionError(identity_conflict)
+                if broker_order_id:
+                    # A concrete broker identity is globally exclusive; this
+                    # rollback-safe process index avoids a global unindexed
+                    # table scan without adding a schema migration. Fetch the
+                    # indexed primary-key rows so current status/scope, rather
+                    # than a stale cached entity, decides replay compatibility.
+                    owner_ids = self._submit_recovery_ids_by_broker.get(
+                        broker_order_id, []
+                    )
+                    if owner_ids:
+                        placeholders = ",".join("?" for _ in owner_ids)
+                        owner_rows = cur.execute(
+                            "SELECT * FROM submit_recoveries "
+                            f"WHERE id IN ({placeholders}) ORDER BY rowid",
+                            tuple(owner_ids),
+                        ).fetchall()
+                    else:
+                        owner_rows = []
+                else:
+                    # Empty means unknown identity, scoped only by the local
+                    # order. Use the existing local-order index, then filter
+                    # the bounded result rather than scanning all empty ids.
+                    local_rows = cur.execute(
+                        "SELECT * FROM submit_recoveries "
+                        "WHERE local_order_id = ? ORDER BY rowid",
+                        (local_order_id,),
+                    ).fetchall()
+                    owner_rows = [
+                        row for row in local_rows if row["broker_order_id"] == ""
+                    ]
                 if owner_rows:
                     if len(owner_rows) != 1:
                         raise RecoveryTransitionError(
@@ -5617,6 +5875,10 @@ class SqliteStateStore(StateStore):
                 self._reconcile_envelope_owners_for_order_locked(
                     cur, local_order_id, now=record.created_at
                 )
+            if record.broker_order_id:
+                self._submit_recovery_ids_by_broker.setdefault(
+                    record.broker_order_id, []
+                ).append(record.id)
             return record
 
     def _recovery_claim_occurrence_locked(
@@ -5897,9 +6159,10 @@ class SqliteStateStore(StateStore):
         position. The ``orders.status`` column is a co-written read-model (WO-0007a
         co-write + init heal); a stale column can never surface as an order's status.
 
-        ``filled_quantity`` stays column-sourced (co-written, monotonic-bound-checked);
-        it is not universally the FILL-event sum, so event-sourcing it is a separate
-        follow-up — see the InMemoryStateStore counterpart + design-decision.md."""
+        ``filled_quantity`` preserves the monotonic column read-model while also
+        reflecting any larger FILL-event projection, capped by order quantity.
+        This records broker overfill truth without exposing impossible progress
+        above 100%; direct lifecycle progress remains supported."""
 
         rows = self._read_all(
             "SELECT * FROM execution_events WHERE order_id = ? ORDER BY sequence",
@@ -5909,6 +6172,7 @@ class SqliteStateStore(StateStore):
         proj = project_order_status(events, order.id, order.quantity)
         projected = order.model_copy(deep=True)
         projected.status = proj.status
+        projected.filled_quantity = max(projected.filled_quantity, proj.filled_quantity)
         return projected
 
     async def get_order(self, order_id: str) -> Optional[Order]:
@@ -6047,6 +6311,16 @@ class SqliteStateStore(StateStore):
                 )
                 if order.status not in expected_statuses:
                     return order
+            if broker_order_id is not None:
+                try:
+                    broker_order_id = normalize_broker_order_id(broker_order_id)
+                except ValueError as exc:
+                    raise OrderTransitionError(str(exc)) from exc
+                identity_conflict = self._broker_identity_conflict_locked(
+                    order_id, broker_order_id
+                )
+                if identity_conflict is not None:
+                    raise OrderTransitionError(identity_conflict)
             if (
                 order.status is OrderStatus.CREATED
                 and new_status is OrderStatus.CANCELED
@@ -6168,6 +6442,7 @@ class SqliteStateStore(StateStore):
                 self._reconcile_envelope_owners_for_order_locked(
                     cur, order_id, now=final_order.updated_at
                 )
+            self._index_order_broker_identity_locked(final_order)
             return final_order
 
     # ------------------------------------------------------------------ #
@@ -6218,6 +6493,7 @@ class SqliteStateStore(StateStore):
             self._reconcile_envelope_owners_for_order_locked(
                 cur, updated.id, now=updated.updated_at
             )
+        self._index_order_broker_identity_locked(updated)
         return updated
 
     async def quarantine_timed_out_order(
@@ -6244,6 +6520,16 @@ class SqliteStateStore(StateStore):
             if row is None:
                 raise UnknownEntityError(f"order {order_id} not found")
             order = self._project_order_locked(self._order(row))
+            if broker_order_id is not None:
+                try:
+                    broker_order_id = normalize_broker_order_id(broker_order_id)
+                except ValueError as exc:
+                    raise OrderTransitionError(str(exc)) from exc
+                identity_conflict = self._broker_identity_conflict_locked(
+                    order_id, broker_order_id
+                )
+                if identity_conflict is not None:
+                    raise OrderTransitionError(identity_conflict)
             plan = plan_resolve_timeout_quarantine(
                 order, new_status, broker_order_id=broker_order_id, reason=reason
             )
@@ -6316,15 +6602,40 @@ class SqliteStateStore(StateStore):
                 (order_id,),
             )
             prior_filled = prior_row["total"] if prior_row else 0
-            is_duplicate = False
+            existing_fill = None
+            existing_execution_event = None
+            existing_quarantine_event = None
+            self_key = None
             if source_fill_id is not None:
-                is_duplicate = (
-                    self._read_one(
-                        "SELECT 1 FROM fills WHERE order_id = ? AND source_fill_id = ?",
-                        (order_id, source_fill_id),
-                    )
-                    is not None
+                existing_fill_row = self._read_one(
+                    "SELECT * FROM fills WHERE order_id = ? AND source_fill_id = ?",
+                    (order_id, source_fill_id),
                 )
+                existing_fill = (
+                    self._fill(existing_fill_row)
+                    if existing_fill_row is not None
+                    else None
+                )
+                self_key = f"fill:{order_id}:{source_fill_id}"
+                existing_event_row = self._read_one(
+                    "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                    (self_key,),
+                )
+                existing_execution_event = (
+                    self._execution_event(existing_event_row)
+                    if existing_event_row is not None
+                    else None
+                )
+                existing_quarantine_row = self._read_one(
+                    "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                    (overfill_quarantine_dedupe_key(self_key),),
+                )
+                existing_quarantine_event = (
+                    self._execution_event(existing_quarantine_row)
+                    if existing_quarantine_row is not None
+                    else None
+                )
+            is_duplicate = existing_fill is not None
             # concurrency-0 ROOT form (WO-0035): overfill judged against the
             # position EXCLUDING this fill's own event — the record-first
             # envelope bridge may have already folded THIS fill under the same
@@ -6339,7 +6650,7 @@ class SqliteStateStore(StateStore):
                     (key,),
                 )
             else:
-                self_key = f"fill:{order_id}:{source_fill_id}"
+                assert self_key is not None
                 pos_rows = self._read_all(
                     "SELECT * FROM execution_events "
                     "WHERE symbol = ? AND event_type = 'fill' "
@@ -6362,6 +6673,9 @@ class SqliteStateStore(StateStore):
                 source_fill_id=source_fill_id,
                 filled_at=filled_at,
                 session_id=session_id,
+                existing_fill=existing_fill,
+                existing_execution_event=existing_execution_event,
+                existing_quarantine_event=existing_quarantine_event,
                 source=source,
                 authority=authority,
             )
@@ -6374,11 +6688,13 @@ class SqliteStateStore(StateStore):
                 assert plan.error is not None
                 raise plan.error
 
-            if plan.outcome == FILL_DUPLICATE:
+            if plan.outcome in {FILL_DUPLICATE, FILL_CONFLICT}:
                 with self._tx() as cur:
                     event = self._insert_event(
                         cur, plan.event.event_type, **plan.event.as_kwargs()
                     )
+                if plan.outcome == FILL_CONFLICT:
+                    return FillAppendResult(status="conflict", fill=None, event=event)
                 return FillAppendResult(status="duplicate", fill=None, event=event)
 
             # FILL_APPEND — one transaction: INSERT the fill row + its audit event
@@ -6410,6 +6726,8 @@ class SqliteStateStore(StateStore):
                 )
                 if plan.execution_event is not None:
                     self._insert_execution_event(cur, plan.execution_event)
+                if plan.quarantine_event is not None:
+                    self._insert_execution_event(cur, plan.quarantine_event)
             return FillAppendResult(status="appended", fill=fill, event=event)
 
     async def list_fills(
@@ -6467,7 +6785,8 @@ class SqliteStateStore(StateStore):
     async def list_quarantined_symbols(self) -> set[str]:
         async with self._lock:
             rows = self._read_all(
-                "SELECT * FROM execution_events WHERE event_type = 'fill' "
+                "SELECT * FROM execution_events "
+                "WHERE event_type IN ('fill', 'quarantined') "
                 "ORDER BY sequence"
             )
             return quarantined_symbols([self._execution_event(r) for r in rows])
@@ -6642,6 +6961,7 @@ class SqliteStateStore(StateStore):
             ):
                 self._accepted_submit_uncertainty_events.append(stored)
                 self._accepted_submit_uncertainty_event_ids.add(stored.id)
+                self._index_accepted_submit_uncertainty_locked(stored)
             return stored
 
     async def get_execution_events(

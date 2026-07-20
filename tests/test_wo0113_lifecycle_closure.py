@@ -122,8 +122,9 @@ async def test_first_submit_quarantine_fault_gets_durable_owner(
     adapter = MockBrokerAdapter()
     submit_calls = 0
 
-    async def always_ambiguous(_order):
+    async def always_ambiguous(_order, *, venue_scope):
         nonlocal submit_calls
+        assert venue_scope is not None
         submit_calls += 1
         raise AmbiguousBrokerError("injected unknown first-submit outcome")
 
@@ -151,8 +152,9 @@ async def test_stale_redrive_quarantine_fault_gets_durable_owner(
     adapter = MockBrokerAdapter()
     submit_calls = 0
 
-    async def always_ambiguous(_order):
+    async def always_ambiguous(_order, *, venue_scope):
         nonlocal submit_calls
+        assert venue_scope is not None
         submit_calls += 1
         raise AmbiguousBrokerError("injected unknown re-drive outcome")
 
@@ -202,8 +204,9 @@ async def test_ambiguous_owner_survives_sqlite_restart(tmp_path, monkeypatch):
     adapter = MockBrokerAdapter()
     submit_calls = 0
 
-    async def always_ambiguous(_order):
+    async def always_ambiguous(_order, *, venue_scope):
         nonlocal submit_calls
+        assert venue_scope is not None
         submit_calls += 1
         raise AmbiguousBrokerError("injected unknown first-submit outcome")
 
@@ -336,8 +339,9 @@ async def test_unpersisted_submit_audit_repairs_failed_recovery_next_tick(
     real_submit = adapter.submit_order
     real_create_recovery = any_store.create_submit_recovery
 
-    async def accept_then_cancel_local(submitted_order):
-        broker_id = await real_submit(submitted_order)
+    async def accept_then_cancel_local(submitted_order, *, venue_scope):
+        assert venue_scope is not None
+        broker_id = await real_submit(submitted_order, venue_scope=venue_scope)
         await any_store.transition_order(submitted_order.id, OrderStatus.CANCELED)
         return broker_id
 
@@ -401,8 +405,9 @@ async def test_sqlite_restart_repairs_unpersisted_submit_audit(tmp_path, monkeyp
     adapter = MockBrokerAdapter()
     real_submit = adapter.submit_order
 
-    async def accept_then_cancel_local(submitted_order):
-        broker_id = await real_submit(submitted_order)
+    async def accept_then_cancel_local(submitted_order, *, venue_scope):
+        assert venue_scope is not None
+        broker_id = await real_submit(submitted_order, venue_scope=venue_scope)
         await store.transition_order(submitted_order.id, OrderStatus.CANCELED)
         return broker_id
 

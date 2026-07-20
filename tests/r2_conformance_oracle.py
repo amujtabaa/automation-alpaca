@@ -230,10 +230,12 @@ async def _child_in_status(store, envelope_id: str, status: OrderStatus):
     if status is OrderStatus.SUBMITTED:
         return submitted
     if status is OrderStatus.PARTIALLY_FILLED:
+        source_fill_id = f"oracle-broker-fill-{submitted.id}"
+        fill_dedupe_key = f"fill:{submitted.id}:{source_fill_id}"
         await store.record_envelope_fill(
             envelope_id,
             quantity=10,
-            dedupe_key=f"oracle:envelope-fill:{submitted.id}",
+            dedupe_key=fill_dedupe_key,
             price=9.9,
             order_id=submitted.id,
             now=NOW,
@@ -244,7 +246,7 @@ async def _child_in_status(store, envelope_id: str, status: OrderStatus):
             OrderSide.SELL,
             10,
             9.9,
-            source_fill_id=f"oracle-broker-fill-{submitted.id}",
+            source_fill_id=source_fill_id,
         )
         return await store.transition_order(
             submitted.id, OrderStatus.PARTIALLY_FILLED, filled_quantity=10

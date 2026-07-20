@@ -46,7 +46,7 @@ from app.reconciliation import (
 )
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.base import OrderIntentBlockedError
-from app.store.core import EnvelopeTransitionError
+from app.store.core import EnvelopeActionPausedError, EnvelopeTransitionError
 
 pytestmark = pytest.mark.anyio
 
@@ -537,7 +537,11 @@ async def test_HELD_concurrent_double_stage_single_venue_order(any_store):
                 snapshot_fingerprint=FP,
                 now=now,
             )
-        except (OrderIntentBlockedError, EnvelopeTransitionError) as e:
+        except (
+            EnvelopeActionPausedError,
+            OrderIntentBlockedError,
+            EnvelopeTransitionError,
+        ) as e:
             return e
 
     await asyncio.gather(exec_one(a1, later()), exec_one(a2, later(60)))

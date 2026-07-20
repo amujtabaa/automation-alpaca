@@ -418,6 +418,10 @@ class ExecutionEventType(str, Enum):
     FILL = "fill"
     # Spawn/order venue lifecycle (§4 state model) — Phase 3 projectors.
     SUBMIT_PENDING = "submit_pending"
+    # Exact wire request scope committed before a managed submit/replace call.
+    # The persisted Order is intent state and may differ from the rendered venue
+    # request (protective MARKET -> LIMIT outside regular hours).
+    VENUE_ORDER_SCOPE = "venue_order_scope"
     # WO-0007b: the SUBMITTING -> CREATED release (claim released on a transient
     # submit failure). Completes the CREATED<->SUBMITTING cycle in the log so the
     # order-status projector's latest-event-wins fold can regress to CREATED
@@ -916,6 +920,12 @@ class SubmitRecoveryRecord(_Entity):
     tick's recovery step polls/cancels its ``broker_order_id`` on every cadence
     until it is confirmed resolved (not one attempt). Unresolved records are
     surfaced prominently to the operator.
+
+    Cardinality is one row per exact ``(local_order_id, broker_order_id)``
+    identity. One local row may therefore own multiple distinct concrete venue
+    acceptances; they are never merged. A non-empty broker id is globally bound
+    to one local order, while the empty unknown-id sentinel is scoped by local
+    order.
     """
 
     id: str = Field(default_factory=new_id)

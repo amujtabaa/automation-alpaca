@@ -12,6 +12,8 @@ from __future__ import annotations
 from app.models import (
     Candidate,
     CandidateStatus,
+    EventAuthority,
+    EventSource,
     Order,
     OrderSide,
     OrderStatus,
@@ -102,8 +104,15 @@ class TestPlanAppendFill:
         assert plan.event.event_type == "fill_duplicate_ignored"
         assert plan.error is None
 
-    def test_reject_overfill(self):
-        plan = self._call(prior_filled=95, quantity=10)  # 95 + 10 > 100
+    def test_reject_non_broker_overfill(self):
+        # ADR-001 records broker truth, but LOCAL/SYNTHETIC input may not invent
+        # quantity beyond the immutable order ceiling.
+        plan = self._call(
+            prior_filled=95,
+            quantity=10,
+            source=EventSource.RECONCILIATION,
+            authority=EventAuthority.SYNTHETIC,
+        )  # 95 + 10 > 100
         assert plan.outcome == core.FILL_REJECT
         assert plan.event.payload["reason"] == "cumulative_exceeds_order_quantity"
 

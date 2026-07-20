@@ -676,20 +676,26 @@ def fill_order_match_reason(
     side: OrderSide,
     quantity: int,
     prior_filled_quantity: int,
+    *,
+    allow_cumulative_overfill: bool = False,
 ) -> Optional[str]:
     """Reject a fill that is inconsistent with the order it claims to fill.
 
     ``symbol`` must already be normalized. ``prior_filled_quantity`` is the sum
     of quantities of fills already recorded against this order (excluding this
     one and any duplicate). Cumulative fill quantity may not exceed the order's
-    quantity. Side must match — beta models no correction/reversal fill.
+    quantity unless the caller is ingesting a broker-authoritative fact under
+    ADR-001. Side must match — beta models no correction/reversal fill.
     """
 
     if order.symbol != symbol:
         return "symbol_mismatch"
     if OrderSide(order.side) is not OrderSide(side):
         return "side_mismatch"
-    if prior_filled_quantity + quantity > order.quantity:
+    if (
+        not allow_cumulative_overfill
+        and prior_filled_quantity + quantity > order.quantity
+    ):
         return "cumulative_exceeds_order_quantity"
     return None
 

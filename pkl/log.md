@@ -17,6 +17,6 @@
   CREATED cancellation plus broker-owned CREATED exposure; session-bound emergency override
   reuse/consumption; durable accepted-submit UNKNOWN fallback ownership; non-maskable reconciliation
   gate establishment; and contiguous, tail-checkpointed append-only envelope-fill attribution
-  repair. These semantic shapes are implemented branch behavior pending the batched operator
-  ratification and REV-0033 independent review. The detailed C1-C5 evidence remains in the WO.
+  repair. The operator ratified all five semantic decisions YES on 2026-07-19; REV-0033
+  independent review remains pending. The detailed C1-C5 evidence remains in the WO.
   Final implementation SHA pending close-out; PR #9 merge remains operator-gated.

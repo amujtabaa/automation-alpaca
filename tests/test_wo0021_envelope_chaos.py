@@ -29,6 +29,7 @@ from app.monitoring import EnvelopeTapeBuffer
 from app.reconciliation import (
     ENVELOPE_EXEC_RELEASED,
     execute_envelope_action,
+    load_venue_order_scopes,
     redrive_staged_envelope_action,
 )
 from app.sellside.types import ActionKind, PlannedAction
@@ -109,6 +110,22 @@ async def active_envelope(store, **overrides) -> ExecutionEnvelope:
     return await activate_envelope_at(
         store, make_draft(si.id, **overrides), now=NOW - timedelta(hours=1)
     )
+
+
+async def _poll_replaced_predecessor_canceled(store, adapter, order_id: str) -> None:
+    """Apply the mock venue's authoritative terminal state before another reprice."""
+
+    predecessor = await store.get_order(order_id)
+    assert predecessor is not None
+    assert predecessor.broker_order_id is not None
+    scopes = await load_venue_order_scopes(store, [predecessor])
+    update = await adapter.get_order_status(
+        predecessor.broker_order_id,
+        expected_scope=scopes[predecessor.id],
+    )
+    assert update.status is OrderStatus.CANCELED
+    await monitoring._apply_update(store, predecessor, update)
+    assert (await store.get_order(order_id)).status is OrderStatus.CANCELED
 
 
 async def canceled_envelope_child(store, env: ExecutionEnvelope, *, quantity: int):
@@ -393,9 +410,11 @@ async def test_budget_drain_exhausts_and_survives_restart(tmp_path):
     env = await active_envelope(store)  # cancel_replace_budget = 2
     adapter = MockBrokerAdapter()
 
-    await execute_envelope_action(
+    first = await execute_envelope_action(
         store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later(1)
     )
+    assert first.order_id is not None
+    working_order_id = first.order_id
     for i, px in enumerate((9.85, 9.80)):
         result = await execute_envelope_action(
             store,
@@ -406,6 +425,9 @@ async def test_budget_drain_exhausts_and_survives_restart(tmp_path):
             now=later(10 + i * 10),
         )
         assert result.outcome == "repriced"
+        assert result.order_id is not None
+        await _poll_replaced_predecessor_canceled(store, adapter, working_order_id)
+        working_order_id = result.order_id
 
     # Budget (2) spent: the write-time rail refuses the third reprice.
     calls_before = len(adapter.replaced)
@@ -446,11 +468,13 @@ async def test_exhausted_signal_path_via_the_tick(any_store):
     # Drain clocks sit BEFORE the tick's NOW: ENVELOPE_ACTION events carry
     # the injected decision clock (WO-0024), so the tick's cooldown check
     # measures from the LAST of these.
-    await execute_envelope_action(
+    first = await execute_envelope_action(
         any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later(-120)
     )
+    assert first.order_id is not None
+    working_order_id = first.order_id
     for i, px in enumerate((9.85, 9.80)):
-        await execute_envelope_action(
+        result = await execute_envelope_action(
             any_store,
             adapter,
             env.id,
@@ -458,6 +482,10 @@ async def test_exhausted_signal_path_via_the_tick(any_store):
             snapshot_fingerprint=f"fp-{i}",
             now=later(-110 + i * 10),
         )
+        assert result.outcome == "repriced"
+        assert result.order_id is not None
+        await _poll_replaced_predecessor_canceled(any_store, adapter, working_order_id)
+        working_order_id = result.order_id
     # Now drive the REAL policy through a crashing tape so it WANTS a reprice
     # and finds the budget gone.
     import tests.test_wo0020_envelope_tick as T20

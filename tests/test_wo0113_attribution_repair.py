@@ -177,6 +177,7 @@ async def test_unattributed_fill_is_applied_once_by_append_only_marker(any_store
     await _append_unattributed_fill(any_store, order, source_fill_id=source_fill_id)
 
     assert (await any_store.get_position("AAPL")).quantity == 90
+    assert (await any_store.get_order(order.id)).filled_quantity == 10
     assert (await any_store.get_envelope(envelope.id)).remaining_quantity == 100
 
     repaired = await any_store.record_envelope_fill(
@@ -192,9 +193,9 @@ async def test_unattributed_fill_is_applied_once_by_append_only_marker(any_store
 
     assert repaired.remaining_quantity == 90
     assert (await any_store.get_position("AAPL")).quantity == 90
-    # Order fill-progress remains a lifecycle-column concern until the
-    # documented read flip; this repair must not synthesize such a transition.
-    assert (await any_store.get_order(order.id)).filled_quantity == 0
+    # The canonical FILL already projects order progress. The attribution marker
+    # repairs only envelope accounting and must not add another ten shares.
+    assert (await any_store.get_order(order.id)).filled_quantity == 10
     events = await any_store.get_execution_events()
     fills = [event for event in events if event.dedupe_key == fill_key]
     markers = [

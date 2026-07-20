@@ -266,9 +266,11 @@ three layers: (1) the `BrokerAdapter.submit_order` **contract** now documents th
 an implementation must return a non-empty `str` or raise; (2) the shared
 `plan_transition_order` **rejects** a status change *into* `SUBMITTED` without a
 non-empty effective broker id (`OrderTransitionError`) — so **both** stores
-enforce the invariant, not just the caller; (3) `monitoring._submit_pending_orders`
-**validates** the returned id and treats an empty one as a submit failure (release
-the claim, re-drive next tick) rather than persisting an untrackable order. The
+enforce the invariant, not just the caller; (3) every ordinary first-submit,
+stale-redrive, envelope-submit, and envelope-reprice producer **validates** the
+returned id. An empty or whitespace-only result after the venue call is ambiguous
+acceptance: it enters `TIMEOUT_QUARANTINE` (or a durable `needs_review` owner if
+quarantine persistence fails) and is never released for another send. The
 one store-core unit test that asserted the old `SUBMITTING → SUBMITTED, id=None`
 apply was rewritten to pass a real id (its real purpose was the `submitted_at`
 assertion).
@@ -285,8 +287,10 @@ of a restart) re-drives each such order through `adapter.submit_order`, which is
 inherently double-submit-safe: a fresh submit either creates the broker order or
 recovers the already-accepted one by client id. A non-empty id back →
 `SUBMITTING → SUBMITTED`; a transient `BrokerError` → left `SUBMITTING` to retry
-(idempotent, not a blind double-submit); a `TerminalBrokerError` / empty id / "can't
-confirm" → a durable `needs_review` recovery record (the loop does not guess).
+(idempotent, not a blind double-submit); a `TerminalBrokerError` → a durable
+`needs_review` recovery record; an empty/whitespace post-call id → ambiguous
+quarantine, with `needs_review` only as the persistence fallback (the loop does
+not guess).
 Deduped: an order already carrying an open recovery record is neither re-driven nor
 re-recorded. A new `TerminalBrokerError(BrokerError)` subclass makes the transient-
 vs-terminal distinction explicit (plain `BrokerError` stays transient-by-default).
@@ -736,8 +740,8 @@ whole/bounded/equal to recorded fills, no candidate stranded `APPROVED`, every
 order has a resolvable session, and **no live-at-broker order is untracked** (the
 F-002 orphan guard — every `is_live` broker id must be referenced by a local
 order, an open recovery record, or the exact canonical WO-0113
-`UNKNOWN_RECONCILE_REQUIRED` accepted-submit owner while that branch behavior
-awaits operator ratification and REV-0033 review). Runs against memory and
+`UNKNOWN_RECONCILE_REQUIRED` accepted-submit owner while that operator-ratified
+branch behavior awaits REV-0033 independent review). Runs against memory and
 SQLite as two `TestCase`s; the SQLite one closes its connection on teardown
 (ResourceWarning is a suite-wide error, F-008). Async-in-Hypothesis (rules are
 synchronous) is solved by giving each machine instance one persistent asyncio loop, so the store's
@@ -897,8 +901,8 @@ summing each order's fills directly (available in the same lock hold that
 already reads `positions`), so both halves of the exposure sum are always
 grounded in the fill table, never a field that can lag it.
 
-**WO-0113 implemented branch behavior — pending operator ratification and
-REV-0033 review.** A broker-accepted BUY does not disappear from CAPI merely
+**WO-0113 operator-ratified branch behavior — pending REV-0033 independent
+review.** A broker-accepted BUY does not disappear from CAPI merely
 because its local order later becomes terminal: an exact accepted-submit
 `UNKNOWN_RECONCILE_REQUIRED` or open-recovery owner contributes the acceptance's
 remaining notional. Exposure is keyed by exact broker identity, not merely the

@@ -13,9 +13,11 @@ projector is deferred, mirror of wave 3c C5).
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from app.broker.adapter import BrokerFill, BrokerOrderReport
+from app.broker.adapter import BrokerFill
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.events.replay import project_store_event_log
@@ -24,7 +26,6 @@ from app.models import (
     EventAuthority,
     EventSource,
     ExecutionEventType,
-    OrderSide,
     OrderStatus,
     utcnow,
 )
@@ -49,15 +50,13 @@ async def _submitted_buy(store, *, symbol="AAPL", qty=100):
 
 async def test_synthetic_fill_position_replays_from_the_event_log(any_store):
     order, adapter = await _submitted_buy(any_store)
+    [venue_report] = await adapter.list_open_orders()
     adapter.seed_open_orders(
         [
-            BrokerOrderReport(
-                adapter.broker_id_for(order.id),
-                order.id,
-                "AAPL",
-                OrderSide.BUY,
-                OrderStatus.PARTIALLY_FILLED,
-                40,
+            replace(
+                venue_report,
+                status=OrderStatus.PARTIALLY_FILLED,
+                filled_quantity=40,
                 fills=[BrokerFill("ex-1", 40, 2.0, utcnow())],
             )
         ]

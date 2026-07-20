@@ -19,9 +19,12 @@ import pytest
 from app.broker.adapter import (
     AmbiguousBrokerError,
     BrokerError,
+    BrokerFill,
+    BrokerOrderUpdate,
     TerminalBrokerError,
 )
 from app.broker.mock import MockBrokerAdapter
+from app.config import Settings
 from app.models import (
     EnvelopeExpiryDisposition,
     EnvelopeStaleDataDisposition,
@@ -35,6 +38,7 @@ from app.models import (
     SessionType,
     utcnow,
 )
+from app.monitoring import _cancel_envelope_working_order, _reconcile_open_orders
 from app.reconciliation import (
     ENVELOPE_EXEC_DIVERGENCE,
     ENVELOPE_EXEC_CANCELLED,
@@ -484,7 +488,38 @@ async def test_submit_leg_end_to_end(any_store):
     assert actions[0].order_id == order.id
 
 
-async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
+async def test_submit_scope_uses_the_injected_decision_clock(any_store):
+    """Replay at a session boundary must persist the same exact wire scope."""
+
+    premarket = datetime(2026, 7, 15, 8, 30, 0, tzinfo=timezone.utc)
+    env = await active_envelope(
+        any_store,
+        allowed_session_phases=[SessionType.PRE_MARKET],
+    )
+    adapter = MockBrokerAdapter()
+
+    result = await execute_envelope_action(
+        any_store,
+        adapter,
+        env.id,
+        planned(),
+        snapshot_fingerprint="fp-injected-premarket",
+        now=premarket,
+    )
+
+    assert result.outcome == ENVELOPE_EXEC_SUBMITTED
+    scopes = [
+        event
+        for event in await any_store.get_order_execution_events(result.order_id)
+        if event.event_type is ExecutionEventType.VENUE_ORDER_SCOPE
+    ]
+    assert len(scopes) == 1
+    assert scopes[0].payload["extended_hours"] is True
+    [report] = await adapter.list_open_orders()
+    assert report.extended_hours is True
+
+
+async def test_reprice_leg_keeps_the_predecessor_pollable(any_store):
     env = await active_envelope(any_store)
     adapter = MockBrokerAdapter()
     first = await execute_envelope_action(
@@ -514,7 +549,101 @@ async def test_reprice_leg_replaces_at_the_venue_and_cancels_the_old(any_store):
     assert new_order.replaces_order_id == first.order_id
     assert client_id == new_order.id  # deterministic client id (ADR-002)
     old_order = await any_store.get_order(first.order_id)
-    assert old_order.status is OrderStatus.CANCELED  # venue-confirmed replace
+    # A replace acknowledgement is not proof that the predecessor cannot fill.
+    # It stays pollable until its own status confirms terminal venue truth.
+    assert old_order.status is OrderStatus.SUBMITTED
+
+
+async def test_replace_ack_late_old_fill_and_child_reject_are_both_reconciled(
+    any_store,
+):
+    """A replace ACK cannot hide the predecessor's last-moment execution.
+
+    Alpaca may accept the request, fill the predecessor before the replace
+    reaches the venue, and then reject the child.  Both local rows must remain
+    independently pollable so the old fill still reduces the real position.
+    """
+
+    env = await active_envelope(any_store)
+    adapter = MockBrokerAdapter()
+    first = await execute_envelope_action(
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
+    old = await any_store.get_order(first.order_id)
+    assert old is not None and old.broker_order_id is not None
+
+    second = await execute_envelope_action(
+        any_store,
+        adapter,
+        env.id,
+        planned(kind=ActionKind.REPRICE, limit_price=9.80),
+        snapshot_fingerprint="fp-late-old-fill",
+        now=later(60),
+    )
+    child = await any_store.get_order(second.order_id)
+    assert child is not None and child.broker_order_id is not None
+    assert (await any_store.get_order(old.id)).status is OrderStatus.SUBMITTED
+
+    late_fill = BrokerFill(
+        source_fill_id="old-filled-during-replace",
+        quantity=old.quantity,
+        price=9.85,
+        filled_at=utcnow(),
+    )
+    adapter.set_response(
+        old.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.FILLED, old.quantity, [late_fill]),
+    )
+    adapter.set_response(
+        child.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.REJECTED, 0, []),
+    )
+
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    assert (await any_store.get_order(old.id)).status is OrderStatus.FILLED
+    assert (await any_store.get_order(child.id)).status is OrderStatus.REJECTED
+    assert (await any_store.get_position("AAPL")).quantity == 90
+
+
+async def test_replace_child_reject_leaves_working_predecessor_cancellable(any_store):
+    env = await active_envelope(any_store)
+    adapter = MockBrokerAdapter()
+    first = await execute_envelope_action(
+        any_store, adapter, env.id, planned(), snapshot_fingerprint=FP, now=later()
+    )
+    old = await any_store.get_order(first.order_id)
+    assert old is not None and old.broker_order_id is not None
+
+    second = await execute_envelope_action(
+        any_store,
+        adapter,
+        env.id,
+        planned(kind=ActionKind.REPRICE, limit_price=9.80),
+        snapshot_fingerprint="fp-rejected-child",
+        now=later(60),
+    )
+    child = await any_store.get_order(second.order_id)
+    assert child is not None and child.broker_order_id is not None
+
+    # The venue reports that the replace never displaced the predecessor.
+    adapter.set_response(
+        old.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, []),
+    )
+    adapter.set_response(
+        child.broker_order_id,
+        BrokerOrderUpdate(OrderStatus.REJECTED, 0, []),
+    )
+    await _reconcile_open_orders(any_store, adapter, Settings())
+
+    assert (await any_store.get_order(old.id)).status is OrderStatus.SUBMITTED
+    assert (await any_store.get_order(child.id)).status is OrderStatus.REJECTED
+
+    # The still-working predecessor remains a valid wind-down target.
+    await _cancel_envelope_working_order(any_store, adapter, env)
+    assert old.broker_order_id in adapter.canceled
+    assert (await any_store.get_order(old.id)).status is OrderStatus.CANCEL_PENDING
 
 
 # --- ambiguous replace: quarantine + pause + no budget double-spend ----------------- #

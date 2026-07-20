@@ -18,8 +18,8 @@ working-order predicate (WO-0025), §3 supersession (WO-0027), FROZEN→BREACHED
 split (WO-0029A, both text proposals accepted by Ameen 2026-07-12), INV-085 scope narrowed to
 ACTIVE/FROZEN (WO-0034, decision 3a).
 
-WO-0113's implemented hardening is recorded below as recommended amendments pending operator
-ratification and REV-0033 independent review. Those blocks describe current branch behavior without
+WO-0113's implemented hardening was operator-ratified YES on 2026-07-19 and is recorded below as
+amendments pending REV-0033 independent review. Those blocks describe current branch behavior without
 retroactively relabeling the accepted decisions above.
 
 ## Context
@@ -237,7 +237,7 @@ manual SELL beside possibly-already-sold shares is the same double-sell class, a
 resolves the recovery first. Neither qualification lets an envelope outlive the backstop: (i)
 retries into the normal preemption; (ii) quarantines the whole sell side pending the human.
 
-#### WO-0113 recommended amendment — pending operator ratification
+#### WO-0113 operator-ratified amendment — pending REV-0033 independent review
 
 The exclusion of `CREATED` from `MAY_EXECUTE_ORDER_STATUSES` is safe only while exit preemption
 closes the complete proposal-to-order epoch. Candidate admission refuses while a same-symbol exit
@@ -258,8 +258,33 @@ intent self-heals to EXPIRED. After a successful SELL mint, the candidate/CREATE
 the same atomic unit. The explicit emergency command is the only caller permitted to carry the
 ADR-003 override capability through that boundary.
 
+Envelope submit and atomic reprice use the same accepted-ack finalization protocol as ordinary
+submission. Every returned broker id is canonicalized before persistence; an empty or
+whitespace-only post-call id is ambiguous acceptance and enters quarantine rather than releasing
+the child for another venue call. If `SUBMITTED` and recovery ownership both fail, the shared
+canonical `UNKNOWN_RECONCILE_REQUIRED` fallback retains the exact local/broker identity for repair.
+Durable store boundaries canonicalize again and prevent a concrete broker id from being assigned
+to a different local order through mutable order/recovery state. A conflicting append-only
+canonical fallback remains immutable evidence, cannot be adopted/rebound, and fails repair and
+SQLite restart closed. The venue acknowledgement must echo the exact replacement/child
+`client_order_id`; missing or mismatched correlation is ambiguity. Cancellation cannot abandon a
+possibly accepted call: shielded ownership finalization completes before cancellation propagates.
+
+Before the venue call, the final gapless submission claim owns one durable
+`VENUE_ORDER_SCOPE`. It captures the deterministic client id, immutable
+symbol/side/quantity, rendered type/price, asset/quantity mode, TIF/class,
+extended-hours eligibility, and (for reprice) the exact predecessor broker id.
+The injected decision clock selects session-sensitive scope. Restart replays that
+fact rather than consulting the new wall clock. Every direct, targeted, recovery,
+and mass-report consumer authenticates the scope against its immutable Order or
+recovery owner before broker state can mutate local truth. Mass rows additionally
+retain replacement lineage and advanced-order material; a fractional managed fill
+level or unexpected stop/trail/leg/position-intent field is external divergence,
+not a managed match. Broker overfill above the ordered quantity remains valid
+ADR-001 truth and is handled by fill ingestion/quarantine.
+
 For autonomous protection, a same-symbol venue-uncertain or recovery-derived BUY remains the
-fail-closed `None` + audit + next-tick retry outcome. The recommendation endorses that bounded
+fail-closed `None` + audit + next-tick retry outcome. The operator-ratified decision endorses that bounded
 deferral over minting a potentially crossing or mis-sized SELL.
 
 Pins: `tests/test_wo0113_primary_remediation.py`
@@ -347,7 +372,7 @@ provenance payload distinguishes **`deferred_to_live_envelope_child`** from
 `deferred_to_live_protection` — the audit trail names which machinery held the human's flatten
 (the envelope lineage's live child vs the intent's own in-flight protection order).
 
-#### WO-0113 recommended amendment — pending operator ratification
+#### WO-0113 operator-ratified amendment — pending REV-0033 independent review
 
 The quantity rail is charged by one canonical fill fact exactly once, even if ingestion appended
 that canonical `FILL` before the envelope bridge ran. The canonical event stays immutable. For a

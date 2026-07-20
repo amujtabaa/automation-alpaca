@@ -14,8 +14,13 @@ from datetime import datetime, timedelta, timezone
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from app.broker.adapter import BrokerFill, BrokerOrderReport, BrokerPositionReport
-from app.models import Order, OrderSide, OrderStatus, Position
+from app.broker.adapter import (
+    BrokerFill,
+    BrokerOrderReport,
+    BrokerPositionReport,
+    VenueOrderScope,
+)
+from app.models import Order, OrderSide, OrderStatus, OrderType, Position
 from app.reconciliation import OPEN_STATUSES, plan_reconciliation
 
 _NOW = datetime(2026, 7, 7, 15, 30, tzinfo=timezone.utc)
@@ -53,13 +58,21 @@ def _report(**kw) -> BrokerOrderReport:
     return BrokerOrderReport(**defaults)
 
 
-def _plan(orders=None, positions=None, breports=None, bpositions=None, now=_NOW):
+def _plan(
+    orders=None,
+    positions=None,
+    breports=None,
+    bpositions=None,
+    now=_NOW,
+    scopes=None,
+):
     return plan_reconciliation(
         local_open_orders=orders or [],
         local_positions=positions or [],
         broker_orders=breports or [],
         broker_positions=bpositions or [],
         now=now,
+        venue_scopes_by_order_id=scopes,
     )
 
 
@@ -96,6 +109,134 @@ def test_matches_by_client_order_id_when_no_broker_id():
     order = _order(broker_order_id=None)
     plan = _plan([order], breports=[_report(status=OrderStatus.CANCELED)])
     assert plan.resolutions[0].new_status is OrderStatus.CANCELED
+
+
+def test_known_broker_id_rejects_foreign_report_even_when_client_id_matches():
+    report = _report(
+        broker_order_id="foreign-broker",
+        client_order_id="o1",
+        symbol="MSFT",
+        side=OrderSide.SELL,
+        status=OrderStatus.FILLED,
+        filled_quantity=100,
+        fills=[
+            BrokerFill(
+                source_fill_id="foreign-broker:100",
+                quantity=100,
+                price=321.0,
+                filled_at=_NOW,
+            )
+        ],
+    )
+
+    plan = _plan([_order(broker_order_id="expected-broker")], breports=[report])
+
+    assert plan.inferred_fills == []
+    assert plan.resolutions == []
+    assert plan.needs_targeted_query == ["o1"]
+    assert [external.broker_order_id for external in plan.external_orders] == [
+        "foreign-broker"
+    ]
+
+
+def test_exact_broker_id_requires_immutable_scope_and_client_correlation():
+    report = _report(
+        broker_order_id="b1",
+        client_order_id="foreign-client",
+        symbol="MSFT",
+        side=OrderSide.SELL,
+    )
+
+    plan = _plan([_order()], breports=[report])
+
+    assert plan.resolutions == []
+    assert plan.inferred_fills == []
+    assert plan.needs_targeted_query == ["o1"]
+    assert [external.broker_order_id for external in plan.external_orders] == ["b1"]
+
+
+def test_client_id_match_requires_symbol_and_side_agreement():
+    for incompatible_report in (
+        _report(broker_order_id="foreign-symbol", symbol="MSFT"),
+        _report(broker_order_id="foreign-side", side=OrderSide.SELL),
+    ):
+        plan = _plan(
+            [_order(broker_order_id=None)],
+            breports=[incompatible_report],
+        )
+
+        assert plan.resolutions == []
+        assert plan.needs_targeted_query == ["o1"]
+        assert [external.broker_order_id for external in plan.external_orders] == [
+            incompatible_report.broker_order_id
+        ]
+
+
+def test_mass_report_requires_exact_durable_replace_predecessor():
+    order = _order(limit_price=10.0)
+    scope = VenueOrderScope(
+        client_order_id=order.id,
+        symbol=order.symbol,
+        side=OrderSide(order.side),
+        quantity=order.quantity,
+        order_type=OrderType.LIMIT,
+        limit_price=10.0,
+        extended_hours=False,
+        replaces_broker_order_id="predecessor-broker",
+    )
+    exact = dict(
+        quantity=100,
+        order_type="limit",
+        limit_price=10.0,
+        time_in_force="day",
+        order_class="simple",
+        asset_class="us_equity",
+        quantity_mode="qty",
+        extended_hours=False,
+        has_legs=False,
+        position_intent="buy_to_open",
+    )
+
+    foreign = _report(
+        **exact,
+        replaces_broker_order_id="foreign-predecessor",
+    )
+    plan = _plan([order], breports=[foreign], scopes={order.id: scope})
+    assert plan.needs_targeted_query == [order.id]
+    assert [item.broker_order_id for item in plan.external_orders] == ["b1"]
+    assert plan.external_orders[0].replaces_broker_order_id == "foreign-predecessor"
+
+    matching = _report(
+        **exact,
+        replaces_broker_order_id="predecessor-broker",
+    )
+    matched = _plan([order], breports=[matching], scopes={order.id: scope})
+    assert matched.needs_targeted_query == []
+    assert matched.external_orders == []
+
+
+def test_fractional_managed_fill_level_cannot_drive_fill_truth():
+    report = _report(
+        filled_quantity=0.5,
+        fills=[BrokerFill("fractional-poison", 1, 10.0, _NOW)],
+    )
+
+    plan = _plan([_order()], breports=[report])
+
+    assert plan.inferred_fills == []
+    assert plan.needs_targeted_query == ["o1"]
+    assert [item.broker_order_id for item in plan.external_orders] == ["b1"]
+
+
+def test_advanced_mass_scope_cannot_be_absorbed_as_managed():
+    report = _report(advanced_fields=("stop_price",))
+
+    plan = _plan([_order()], breports=[report])
+
+    assert plan.inferred_fills == []
+    assert plan.resolutions == []
+    assert plan.needs_targeted_query == ["o1"]
+    assert [item.advanced_fields for item in plan.external_orders] == [("stop_price",)]
 
 
 # --------------------------------------------------------------------------- #
@@ -270,7 +411,8 @@ def test_property_deterministic_and_safe(orders, reports):
     plan2 = _plan(orders, breports=reports)
     assert plan1 == plan2  # deterministic (§12)
 
-    local_ids = {o.id for o in orders}
+    local_by_id = {o.id: o for o in orders}
+    local_ids = set(local_by_id)
     # Every targeted-query request is a real local open order — absence never
     # silently becomes anything else here.
     for oid in plan1.needs_targeted_query:
@@ -279,6 +421,16 @@ def test_property_deterministic_and_safe(orders, reports):
     # never FILLED/PARTIALLY_FILLED via a bare status flip (Rule 7).
     for res in plan1.resolutions:
         assert res.new_status in (OrderStatus.CANCELED, OrderStatus.REJECTED)
-    # An external order never overlaps a local order id.
+    # A report carrying a local client id is external only when its concrete broker
+    # identity conflicts or its immutable symbol/side scope does not agree.
     for ext in plan1.external_orders:
-        assert ext.client_order_id not in local_ids
+        local = local_by_id.get(ext.client_order_id)
+        if local is not None:
+            assert (
+                (
+                    local.broker_order_id is not None
+                    and local.broker_order_id != ext.broker_order_id
+                )
+                or ext.symbol != local.symbol
+                or ext.side != local.side
+            )

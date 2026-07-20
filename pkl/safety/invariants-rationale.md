@@ -26,10 +26,14 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
   - **Submitted ≠ filled; only fills move positions (inv 8–9):** the classic execution bug is counting intent as reality. Structural inability of `SUBMITTED`/`ACCEPTED` to change quantity makes the bug unrepresentable.
   - **Kill switch gates intent (inv 10):** halting must cut new risk at the front door, not race the pipeline.
   - **Quarantine over rejection (rails; ADR-001/002):** broker reality (overfills, ambiguous timeouts) must be recorded even when unwelcome — hiding it corrupts positions. Deterministic `client_order_id` makes reconciliation possible; blind resubmit makes duplicates possible.
+  - **Broker-overfill truth (ADR-001):** broker order/envelope excess retains raw fill/position
+    truth, caps only the compatibility Order progress scalar, and atomically latches explicit
+    `QUARANTINED` truth even while net position remains positive. Exact identity replay is a no-op
+    only when its economics match; conflicting reuse is audited, dropped, and held for manual review.
   - **Manual flatten routing (ADR-003):** an emergency control that bypasses risk checks and logging is itself a hazard; the override exists but is explicit and audited.
-  - **WO-0113 governance status:** the following capability, CREATED-exposure, accepted-submit,
-    and attribution bullets describe behavior implemented on the branch but still pending operator
-    ratification and REV-0033 independent review.
+  - **WO-0113 governance status:** the operator ratified YES the following capability,
+    CREATED-exposure, accepted-submit, protection-deferral, and attribution behavior on 2026-07-19;
+    REV-0033 independent review remains required.
   - **Capability-bound emergency override:** an active override grant is durable scope, not ambient
     permission. Only the explicit emergency command passes the internal capability to flatten;
     ordinary flatten/exit callers remain blocked while halted and cannot consume the grant. A
@@ -52,12 +56,31 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
     distinct acceptances are additive, known fills allocate once, and malformed numeric scope
     cannot shrink immutable referenced-order exposure. A CREATED order with its own broker id or
     fallback fact cannot be claimed again; an accepted direct SELL also remains same-side
-    single-flight ownership and cannot be locally canceled. Routine reads select accepted facts without decoding
+    single-flight ownership and cannot be locally canceled. Every durable boundary canonicalizes
+    broker-id transport whitespace. Order, recovery, and canonical-fallback representations for
+    the same local/id pair coalesce; one local order may own multiple distinct concrete recovery
+    legs. Mutable order/recovery assignments keep each concrete broker id exclusive to one local;
+    conflicting append-only fallback truth is retained as evidence, cannot be rebound, blocks
+    progress, and fails SQLite restart closed. Every leg is polled and resolved independently.
+    Venue acknowledgements/targeted lookups must echo the requested client id, status polls must
+    echo the requested broker id, and id-less mass-reconcile fallback additionally requires exact
+    symbol/side. Cancellation cannot abandon a possibly accepted send: shielded ownership
+    finalization completes before cancellation propagates. The fallback itself blocks stale redrive before
+    repair. Blank post-call broker identity is quarantined as ambiguity rather than released as a
+    preflight rejection. Routine reads select accepted facts without decoding
     unrelated UNKNOWN history, project CAPI order lifecycle from event truth, and skip
     checkpoint-only repair transport so idle consumers converge. Startup/reconnect must successfully establish
     the reconcile-driver REDUCING gate even when composed state was already HALTED. A failed
     planned inferred-fill lookup/append cannot be called parity: the verified REDUCING gate stays
     in force and same-tick venue work stops. Repair makes no broker call.
+  - **Durable exact venue scope:** the final gapless submit/reprice claim writes one authenticated
+    `VENUE_ORDER_SCOPE` before the broker call. It captures the exact client/owner identity,
+    symbol/side/quantity, rendered type/price, TIF/class, asset and quantity mode,
+    extended-hours decision, and replacement predecessor. Restart replays this scope instead of
+    re-deriving session-sensitive intent. Direct, targeted, recovery, and mass consumers validate
+    the same wire contract; managed mass rows cannot hide fractional cumulative fill, advanced
+    order material, or contradictory replacement lineage. The injected decision clock selects
+    new session scope, and broker overfill remains ADR-001 truth rather than a correlation reject.
   - **Append-only envelope attribution repair:** a canonical FILL is immutable and remains the sole
     position-quantity fact. If its envelope bridge was missed, a globally deduped
     `ENVELOPE_FILL_ATTRIBUTED` marker may apply that exact pre-existing fill to one uniquely bounded

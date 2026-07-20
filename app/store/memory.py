@@ -82,6 +82,7 @@ from app.store.base import (
     InvalidFillError,
     InvalidOrderError,
     OrderIntentBlockedError,
+    OrderTransitionError,
     ProtectionHaltedError,
     RecoveryTransitionError,
     RiskLimits,
@@ -91,17 +92,20 @@ from app.store.base import (
     StateStore,
     SubmissionClaim,
     UnknownEntityError,
+    normalize_broker_order_id,
     normalize_json_payload,
     normalize_symbol,
 )
 from app.store.core import (
     CREATE_ORDER_REJECT,
+    FILL_CONFLICT,
     FILL_DUPLICATE,
     FILL_REJECT,
     EnvelopeObligationProjection,
     execution_event_for_fill,
     execution_event_for_routine_transition,
     order_status_backfill_event,
+    overfill_quarantine_dedupe_key,
     FLATTEN_FLAT as _PLAN_FLATTEN_FLAT,
     FLATTEN_EXISTING as _PLAN_FLATTEN_EXISTING,
     FLATTEN_BUYS_OPEN as _PLAN_FLATTEN_BUYS_OPEN,
@@ -176,8 +180,10 @@ from app.policy import (
     MAY_EXECUTE_ORDER_STATUSES,
     NON_TERMINAL_ORDER_STATUSES,
     accepted_submit_uncertainty_order_ids,
+    canonical_accepted_submit_broker_id,
     candidate_numeric_reason,
     existing_exposure,
+    fill_order_match_reason,
     is_accepted_submit_uncertainty_event,
     order_candidate_match_reason,
     risk_limit_reason,
@@ -204,11 +210,14 @@ class InMemoryStateStore(StateStore):
         self._submit_recovery_by_identity: dict[
             tuple[str, str], SubmitRecoveryRecord
         ] = {}
-        self._submit_recovery_by_local_order: dict[str, SubmitRecoveryRecord] = {}
+        self._submit_recoveries_by_local_order: dict[
+            str, dict[str, SubmitRecoveryRecord]
+        ] = {}
         self._submit_recovery_by_broker: dict[str, SubmitRecoveryRecord] = {}
         self._submit_recoveries_by_status: dict[
             str, dict[str, SubmitRecoveryRecord]
         ] = {}
+        self._order_ids_by_broker: dict[str, list[str]] = {}
         self._sell_intents: dict[str, SellIntent] = {}  # Phase 7
         self._envelopes: dict[str, ExecutionEnvelope] = {}  # ADR-010 / WO-0016
         # Spine v2 execution-event log (Phase 2): append-only, sequence order.
@@ -222,6 +231,9 @@ class InMemoryStateStore(StateStore):
         ] = {}
         self._execution_events_by_order: dict[str, list[ExecutionEvent]] = {}
         self._accepted_submit_uncertainty_events: list[ExecutionEvent] = []
+        self._accepted_submit_uncertainty_events_by_broker: dict[
+            str, list[ExecutionEvent]
+        ] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -333,7 +345,7 @@ class InMemoryStateStore(StateStore):
         """Rebuild selective recovery indexes after an atomic rollback."""
 
         self._submit_recovery_by_identity = {}
-        self._submit_recovery_by_local_order = {}
+        self._submit_recoveries_by_local_order = {}
         self._submit_recovery_by_broker = {}
         self._submit_recoveries_by_status = {}
         for record in self._submit_recoveries:
@@ -343,12 +355,102 @@ class InMemoryStateStore(StateStore):
         self._submit_recovery_by_identity[
             (record.local_order_id, record.broker_order_id)
         ] = record
-        self._submit_recovery_by_local_order[record.local_order_id] = record
+        self._submit_recoveries_by_local_order.setdefault(record.local_order_id, {})[
+            record.id
+        ] = record
         if record.broker_order_id:
             self._submit_recovery_by_broker[record.broker_order_id] = record
         self._submit_recoveries_by_status.setdefault(record.cleanup_status, {})[
             record.id
         ] = record
+
+    def _rebuild_order_identity_index_unlocked(self) -> None:
+        self._order_ids_by_broker = {}
+        for order in self._orders.values():
+            self._index_order_broker_identity_unlocked(order)
+
+    def _index_order_broker_identity_unlocked(self, order: Order) -> None:
+        if not isinstance(order.broker_order_id, str):
+            return
+        broker_order_id = normalize_broker_order_id(order.broker_order_id)
+        if not broker_order_id:
+            return
+        owner_ids = self._order_ids_by_broker.setdefault(broker_order_id, [])
+        if order.id not in owner_ids:
+            owner_ids.append(order.id)
+
+    def _store_order_unlocked(self, order: Order) -> None:
+        """Replace one order and maintain its rollback-rebuilt identity index."""
+
+        prior = self._orders.get(order.id)
+        prior_broker_id = (
+            normalize_broker_order_id(prior.broker_order_id)
+            if prior is not None and isinstance(prior.broker_order_id, str)
+            else ""
+        )
+        broker_order_id = (
+            normalize_broker_order_id(order.broker_order_id)
+            if isinstance(order.broker_order_id, str)
+            else ""
+        )
+        if prior_broker_id and prior_broker_id != broker_order_id:
+            owner_ids = self._order_ids_by_broker.get(prior_broker_id, [])
+            if order.id in owner_ids:
+                owner_ids.remove(order.id)
+            if not owner_ids:
+                self._order_ids_by_broker.pop(prior_broker_id, None)
+        self._orders[order.id] = order
+        self._index_order_broker_identity_unlocked(order)
+
+    def _index_accepted_submit_uncertainty_unlocked(
+        self, event: ExecutionEvent
+    ) -> None:
+        raw_broker_order_id = event.payload.get("broker_order_id")
+        broker_order_id = (
+            raw_broker_order_id.strip() if isinstance(raw_broker_order_id, str) else ""
+        )
+        if broker_order_id:
+            self._accepted_submit_uncertainty_events_by_broker.setdefault(
+                broker_order_id, []
+            ).append(event)
+
+    def _broker_identity_conflict_unlocked(
+        self, local_order_id: str, broker_order_id: str
+    ) -> Optional[str]:
+        """Return a cross-owner conflict for one canonical concrete venue id."""
+
+        if not broker_order_id:
+            return None
+        foreign_orders = sorted(
+            order_id
+            for order_id in self._order_ids_by_broker.get(broker_order_id, [])
+            if order_id != local_order_id
+        )
+        recovery_owner = self._submit_recovery_by_broker.get(broker_order_id)
+        foreign_recoveries = (
+            [recovery_owner.local_order_id]
+            if recovery_owner is not None
+            and recovery_owner.local_order_id != local_order_id
+            else []
+        )
+        foreign_fallbacks = sorted(
+            event.order_id
+            for event in self._accepted_submit_uncertainty_events_by_broker.get(
+                broker_order_id, []
+            )
+            if event.order_id is not None
+            and event.order_id != local_order_id
+            and (referenced := self._orders.get(event.order_id)) is not None
+            and canonical_accepted_submit_broker_id(event, referenced)
+            == broker_order_id
+        )
+        if not foreign_orders and not foreign_recoveries and not foreign_fallbacks:
+            return None
+        owners = sorted(set(foreign_orders + foreign_recoveries + foreign_fallbacks))
+        return (
+            f"broker identity {broker_order_id!r} conflicts with existing "
+            f"owners {owners}"
+        )
 
     def _rebuild_execution_indexes_unlocked(self) -> None:
         """Rebuild append-only execution indexes after an atomic rollback."""
@@ -358,6 +460,7 @@ class InMemoryStateStore(StateStore):
         self._execution_events_by_type = {}
         self._execution_events_by_order = {}
         self._accepted_submit_uncertainty_events = []
+        self._accepted_submit_uncertainty_events_by_broker = {}
         for event in self._execution_events:
             self._execution_event_ids.add(event.id)
             if event.dedupe_key is not None:
@@ -371,6 +474,7 @@ class InMemoryStateStore(StateStore):
                 )
             if is_accepted_submit_uncertainty_event(event):
                 self._accepted_submit_uncertainty_events.append(event)
+                self._index_accepted_submit_uncertainty_unlocked(event)
 
     @contextlib.contextmanager
     def _atomic(self) -> Iterator[None]:
@@ -421,6 +525,7 @@ class InMemoryStateStore(StateStore):
             self._watchlist = saved_watchlist
             self._candidates = saved_candidates
             self._orders = saved_orders
+            self._rebuild_order_identity_index_unlocked()
             self._envelopes = saved_envelopes
             self._sell_intents = saved_sell_intents
             self._fills = saved_fills
@@ -560,8 +665,9 @@ class InMemoryStateStore(StateStore):
         }
         relevant_recoveries = {record.id: record for record in open_recoveries}
         for order_id in accepted_order_ids:
-            represented = self._submit_recovery_by_local_order.get(order_id)
-            if represented is not None:
+            for represented in self._submit_recoveries_by_local_order.get(
+                order_id, {}
+            ).values():
                 # A resolved recovery still represents its exact fallback fact;
                 # include only referenced history, never the whole old ledger.
                 relevant_recoveries[represented.id] = represented
@@ -1938,6 +2044,12 @@ class InMemoryStateStore(StateStore):
             env = self._envelopes.get(envelope_id)
             if env is None:
                 raise UnknownEntityError(f"envelope {envelope_id} not found")
+            canonical_event = self._execution_event_dedupe.get(dedupe_key)
+            existing_quarantine_event = self._execution_event_dedupe.get(
+                overfill_quarantine_dedupe_key(dedupe_key)
+            )
+            order_quantity: Optional[int] = None
+            prior_order_filled_quantity = 0
             if order_id is not None:
                 action_links = [
                     event
@@ -1959,6 +2071,30 @@ class InMemoryStateStore(StateStore):
                         f"fill order {order_id} is not a uniquely bounded child "
                         f"of envelope {env.id}"
                     )
+                order_quantity = raw_order.quantity
+                prior_order_filled_quantity = sum(
+                    event.quantity or 0
+                    for event in self._execution_events
+                    if event.event_type is ExecutionEventType.FILL
+                    and event.order_id == order_id
+                    and (canonical_event is None or event.id != canonical_event.id)
+                )
+                if canonical_event is None:
+                    match_reason = fill_order_match_reason(
+                        raw_order,
+                        env.symbol,
+                        OrderSide.SELL,
+                        quantity,
+                        prior_order_filled_quantity,
+                        allow_cumulative_overfill=(
+                            authority is EventAuthority.BROKER_AUTHORITATIVE
+                        ),
+                    )
+                    if match_reason is not None:
+                        raise InvalidFillError(
+                            f"invalid envelope fill for order {order_id}: "
+                            f"{match_reason}"
+                        )
             plan = plan_envelope_fill(
                 env,
                 quantity=quantity,
@@ -1969,13 +2105,16 @@ class InMemoryStateStore(StateStore):
                 ts_event=ts_event,
                 source=source,
                 authority=authority,
+                canonical_event_exists=canonical_event is not None,
+                order_quantity=order_quantity,
+                prior_order_filled_quantity=prior_order_filled_quantity,
+                existing_quarantine_event=existing_quarantine_event,
                 now=now,
             )
             if plan.outcome == ENVELOPE_FILL_REJECT:
                 assert plan.error is not None
                 raise plan.error
             assert plan.envelope is not None and plan.fill_event is not None
-            canonical_event = self._execution_event_dedupe.get(dedupe_key)
             marker_event = self._execution_event_dedupe.get(
                 envelope_fill_attribution_dedupe_key(dedupe_key)
             )
@@ -2008,6 +2147,8 @@ class InMemoryStateStore(StateStore):
                     assert decision.outcome == ENVELOPE_FILL_REPAIR_ATTRIBUTION
                     assert decision.marker_event is not None
                     self._append_execution_event_unlocked(decision.marker_event)
+                if plan.quarantine_event is not None:
+                    self._append_execution_event_unlocked(plan.quarantine_event)
                 stored = plan.envelope.model_copy(deep=True)
                 self._envelopes[stored.id] = stored
                 if plan.transition is not None:
@@ -2207,7 +2348,7 @@ class InMemoryStateStore(StateStore):
                     )
                 assert plan.order is not None and plan.action_event is not None
                 assert plan.audit_event is not None
-                self._orders[plan.order.id] = plan.order.model_copy(deep=True)
+                self._store_order_unlocked(plan.order.model_copy(deep=True))
                 self._append_execution_event_unlocked(plan.action_event)
                 self._append_event_unlocked(
                     plan.audit_event.event_type, **plan.audit_event.as_kwargs()
@@ -2526,7 +2667,7 @@ class InMemoryStateStore(StateStore):
         order = plan.order
         now = logical_now
         with self._atomic():
-            self._orders[order.id] = order
+            self._store_order_unlocked(order)
             intent.status = SellIntentStatus.ORDERED
             intent.order_id = order.id
             intent.ordered_at = now
@@ -2924,8 +3065,9 @@ class InMemoryStateStore(StateStore):
             tuple(
                 record
                 for order_id in referenced_ids
-                if (record := self._submit_recovery_by_local_order.get(order_id))
-                is not None
+                for record in self._submit_recoveries_by_local_order.get(
+                    order_id, {}
+                ).values()
             ),
             symbol=symbol,
             side=side,
@@ -3376,9 +3518,7 @@ class InMemoryStateStore(StateStore):
                         OrderStatus.CANCELED,
                         active_order.filled_quantity,
                     )
-                    self._orders[plan.supersede_order_cancel.id] = (
-                        plan.supersede_order_cancel
-                    )
+                    self._store_order_unlocked(plan.supersede_order_cancel)
                     self._append_event_unlocked(
                         plan.supersede_cancel_event.event_type,
                         **plan.supersede_cancel_event.as_kwargs(),
@@ -3481,7 +3621,7 @@ class InMemoryStateStore(StateStore):
                 else candidate.session_id,
             )
             with self._atomic():
-                self._orders[order.id] = order
+                self._store_order_unlocked(order)
                 self._append_event_unlocked(
                     "order_created",
                     message=f"order created for {key}",
@@ -3613,7 +3753,7 @@ class InMemoryStateStore(StateStore):
             updated.updated_at = now
             updated.ordered_at = now
             with self._atomic():
-                self._orders[order.id] = order
+                self._store_order_unlocked(order)
                 self._candidates[candidate_id] = updated
                 for event in plan.events:
                     self._append_event_unlocked(event.event_type, **event.as_kwargs())
@@ -3959,7 +4099,7 @@ class InMemoryStateStore(StateStore):
                     order, OrderStatus.SUBMITTING, None, occurrence=occurrence
                 )
                 with self._atomic():
-                    self._orders[order_id] = plan.order
+                    self._store_order_unlocked(plan.order)
                     self._append_event_unlocked(
                         plan.event.event_type, **plan.event.as_kwargs()
                     )
@@ -3991,6 +4131,10 @@ class InMemoryStateStore(StateStore):
     ) -> SubmitRecoveryRecord:
         require_recovery_status(cleanup_status)
         key = normalize_symbol(symbol)
+        try:
+            broker_order_id = normalize_broker_order_id(broker_order_id)
+        except ValueError as exc:
+            raise RecoveryTransitionError(str(exc)) from exc
         async with self._lock:
             recovery_side = OrderSide(side)
             referenced_order = self._orders.get(local_order_id)
@@ -4004,10 +4148,17 @@ class InMemoryStateStore(StateStore):
                     f"{referenced_order.id} scope "
                     f"{referenced_order.symbol}/{referenced_order.side.value}"
                 )
+            identity_conflict = self._broker_identity_conflict_unlocked(
+                local_order_id, broker_order_id
+            )
+            if identity_conflict is not None:
+                raise RecoveryTransitionError(identity_conflict)
             owners_by_id: dict[str, SubmitRecoveryRecord] = {}
-            local_owner = self._submit_recovery_by_local_order.get(local_order_id)
-            if local_owner is not None:
-                owners_by_id[local_owner.id] = local_owner
+            identity_owner = self._submit_recovery_by_identity.get(
+                (local_order_id, broker_order_id)
+            )
+            if identity_owner is not None:
+                owners_by_id[identity_owner.id] = identity_owner
             broker_owner = (
                 self._submit_recovery_by_broker.get(broker_order_id)
                 if broker_order_id
@@ -4320,12 +4471,10 @@ class InMemoryStateStore(StateStore):
         heal). Callers get the event-derived status, so a stale/corrupted column can
         never surface as an order's status.
 
-        ``filled_quantity`` stays column-sourced here (co-written, monotonic-bound-
-        checked by plan_transition_order). It is NOT universally the FILL-event sum
-        — the store lets a caller set it directly without matching fills — so
-        event-sourcing filled_quantity is a separate follow-up (design-decision.md);
-        the projector computes it (proven in Stage C1) but the read-flip does not
-        redirect it yet."""
+        ``filled_quantity`` preserves the monotonic column read-model while also
+        reflecting any larger FILL-event projection, capped by order quantity.
+        This records broker overfill truth without exposing impossible progress
+        above 100%; direct lifecycle progress remains supported."""
 
         proj = project_order_status(
             self._execution_events_by_order.get(order.id, ()),
@@ -4334,6 +4483,7 @@ class InMemoryStateStore(StateStore):
         )
         projected = order.model_copy(deep=True)
         projected.status = proj.status
+        projected.filled_quantity = max(projected.filled_quantity, proj.filled_quantity)
         return projected
 
     async def get_order(self, order_id: str) -> Optional[Order]:
@@ -4387,7 +4537,7 @@ class InMemoryStateStore(StateStore):
             and plan.order is not None
             and plan.event is not None
         )
-        self._orders[order.id] = plan.order
+        self._store_order_unlocked(plan.order)
         self._append_event_unlocked(plan.event.event_type, **plan.event.as_kwargs())
         exec_event = execution_event_for_routine_transition(
             order, plan.order.status, plan.order.filled_quantity
@@ -4423,6 +4573,16 @@ class InMemoryStateStore(StateStore):
                 )
                 if order.status not in expected_statuses:
                     return order.model_copy(deep=True)
+            if broker_order_id is not None:
+                try:
+                    broker_order_id = normalize_broker_order_id(broker_order_id)
+                except ValueError as exc:
+                    raise OrderTransitionError(str(exc)) from exc
+                identity_conflict = self._broker_identity_conflict_unlocked(
+                    order_id, broker_order_id
+                )
+                if identity_conflict is not None:
+                    raise OrderTransitionError(identity_conflict)
             if (
                 order.status is OrderStatus.CREATED
                 and new_status is OrderStatus.CANCELED
@@ -4511,7 +4671,7 @@ class InMemoryStateStore(StateStore):
             # (order_transition or order_fill_progress), plus the ExecutionEvent
             # (if any), atomically.
             with self._atomic():
-                self._orders[order_id] = plan.order
+                self._store_order_unlocked(plan.order)
                 self._append_event_unlocked(
                     plan.event.event_type, **plan.event.as_kwargs()
                 )
@@ -4555,7 +4715,7 @@ class InMemoryStateStore(StateStore):
             and plan.execution_event is not None
         )
         with self._atomic():
-            self._orders[plan.order.id] = plan.order
+            self._store_order_unlocked(plan.order)
             self._append_event_unlocked(
                 plan.audit_event.event_type, **plan.audit_event.as_kwargs()
             )
@@ -4589,6 +4749,16 @@ class InMemoryStateStore(StateStore):
             if raw_order is None:
                 raise UnknownEntityError(f"order {order_id} not found")
             order = self._project_order_unlocked(raw_order)
+            if broker_order_id is not None:
+                try:
+                    broker_order_id = normalize_broker_order_id(broker_order_id)
+                except ValueError as exc:
+                    raise OrderTransitionError(str(exc)) from exc
+                identity_conflict = self._broker_identity_conflict_unlocked(
+                    order_id, broker_order_id
+                )
+                if identity_conflict is not None:
+                    raise OrderTransitionError(identity_conflict)
             plan = plan_resolve_timeout_quarantine(
                 order, new_status, broker_order_id=broker_order_id, reason=reason
             )
@@ -4645,10 +4815,20 @@ class InMemoryStateStore(StateStore):
             prior_filled = sum(
                 f.quantity for f in self._fills if f.order_id == order_id
             )
-            is_duplicate = (
-                source_fill_id is not None
-                and (order_id, source_fill_id) in self._fill_source_ids
+            existing_fill = (
+                next(
+                    (
+                        fill
+                        for fill in self._fills
+                        if fill.order_id == order_id
+                        and fill.source_fill_id == source_fill_id
+                    ),
+                    None,
+                )
+                if source_fill_id is not None
+                else None
             )
+            is_duplicate = existing_fill is not None
             # concurrency-0 ROOT form (WO-0035): the overfill check evaluates
             # against the position EXCLUDING this fill's own event — the
             # record-first envelope bridge may have already folded THIS fill
@@ -4661,6 +4841,18 @@ class InMemoryStateStore(StateStore):
             self_key = (
                 f"fill:{order_id}:{source_fill_id}"
                 if source_fill_id is not None
+                else None
+            )
+            existing_execution_event = (
+                self._execution_event_dedupe.get(self_key)
+                if self_key is not None
+                else None
+            )
+            existing_quarantine_event = (
+                self._execution_event_dedupe.get(
+                    overfill_quarantine_dedupe_key(self_key)
+                )
+                if self_key is not None
                 else None
             )
             overfill_position = project_symbol_position(
@@ -4684,6 +4876,9 @@ class InMemoryStateStore(StateStore):
                 source_fill_id=source_fill_id,
                 filled_at=filled_at,
                 session_id=session_id,
+                existing_fill=existing_fill,
+                existing_execution_event=existing_execution_event,
+                existing_quarantine_event=existing_quarantine_event,
                 source=source,
                 authority=authority,
             )
@@ -4697,10 +4892,12 @@ class InMemoryStateStore(StateStore):
                 assert plan.error is not None
                 raise plan.error
 
-            if plan.outcome == FILL_DUPLICATE:
+            if plan.outcome in {FILL_DUPLICATE, FILL_CONFLICT}:
                 event = self._append_event_unlocked(
                     plan.event.event_type, **plan.event.as_kwargs()
                 )
+                if plan.outcome == FILL_CONFLICT:
+                    return FillAppendResult(status="conflict", fill=None, event=event)
                 return FillAppendResult(status="duplicate", fill=None, event=event)
 
             # FILL_APPEND — atomically append the fill + dedup key + audit event
@@ -4718,6 +4915,8 @@ class InMemoryStateStore(StateStore):
                 )
                 if plan.execution_event is not None:
                     self._append_execution_event_unlocked(plan.execution_event)
+                if plan.quarantine_event is not None:
+                    self._append_execution_event_unlocked(plan.quarantine_event)
             return FillAppendResult(
                 status="appended", fill=fill.model_copy(deep=True), event=event
             )
@@ -4857,6 +5056,7 @@ class InMemoryStateStore(StateStore):
             )
         if is_accepted_submit_uncertainty_event(stored):
             self._accepted_submit_uncertainty_events.append(stored)
+            self._index_accepted_submit_uncertainty_unlocked(stored)
         return stored.model_copy(deep=True)
 
     async def append_execution_event(self, event: ExecutionEvent) -> ExecutionEvent:

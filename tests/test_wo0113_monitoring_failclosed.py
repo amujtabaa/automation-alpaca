@@ -8,6 +8,8 @@ both implementations through ``any_store``.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -31,19 +33,224 @@ from app.models import (
     SessionType,
     TradingState,
 )
-from app.monitoring import _apply_update, run_monitoring_tick, run_startup_reconcile
+from app.monitoring import (
+    _apply_update,
+    _reconcile_open_orders,
+    run_monitoring_tick,
+    run_startup_reconcile,
+)
 from app.reconciliation import (
     InferredFill,
     ReconcileQueryBudget,
     ReconciliationPlan,
+    venue_order_scope_map,
 )
 from app.sellside.types import ActionKind, PlannedAction
-from app.store.base import CLAIM_CLAIMED, InvalidFillError
+from app.store.base import CLAIM_CLAIMED, InvalidFillError, RecoveryTransitionError
 
 pytestmark = pytest.mark.anyio
 
 NOW = datetime(2026, 7, 17, 18, 0, tzinfo=timezone.utc)
 FILL_TIME = NOW + timedelta(minutes=1)
+
+
+def _scope_claim(order_id: str, occurrence: int = 0) -> ExecutionEvent:
+    return ExecutionEvent(
+        event_type=ExecutionEventType.SUBMIT_PENDING,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=f"submit_pending:{order_id}:{occurrence}",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        order_id=order_id,
+        session_id="session-1",
+    )
+
+
+def _scope_event(order_id: str, occurrence: int = 0) -> ExecutionEvent:
+    return ExecutionEvent(
+        event_type=ExecutionEventType.VENUE_ORDER_SCOPE,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=f"venue_order_scope:{order_id}:{occurrence}",
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        quantity=10,
+        price=10.0,
+        order_id=order_id,
+        session_id="session-1",
+        payload={
+            "claim_occurrence": occurrence,
+            "client_order_id": order_id,
+            "symbol": "AAPL",
+            "side": "buy",
+            "quantity": 10,
+            "asset_class": "us_equity",
+            "quantity_mode": "qty",
+            "order_type": "limit",
+            "limit_price": 10.0,
+            "time_in_force": "day",
+            "order_class": "simple",
+            "extended_hours": False,
+            "replaces_broker_order_id": None,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [
+            _scope_claim("order-poison").model_copy(
+                update={
+                    "source": EventSource.BROKER_REST,
+                    "authority": EventAuthority.BROKER_AUTHORITATIVE,
+                }
+            ),
+            _scope_event("order-poison"),
+        ],
+        [_scope_claim("order-gap", 1), _scope_event("order-gap", 1)],
+        [
+            _scope_claim("order-duplicate"),
+            _scope_claim("order-duplicate"),
+            _scope_event("order-duplicate"),
+        ],
+        [
+            _scope_claim("order-scope-source"),
+            _scope_event("order-scope-source").model_copy(
+                update={
+                    "source": EventSource.BROKER_REST,
+                    "authority": EventAuthority.BROKER_AUTHORITATIVE,
+                }
+            ),
+        ],
+        [
+            _scope_claim("order-scope-top"),
+            _scope_event("order-scope-top").model_copy(update={"symbol": "MSFT"}),
+        ],
+        [
+            _scope_claim("order-scope-price"),
+            _scope_event("order-scope-price").model_copy(
+                update={
+                    "price": 0.0,
+                    "payload": {
+                        **_scope_event("order-scope-price").payload,
+                        "limit_price": 0.0,
+                    },
+                }
+            ),
+        ],
+        [
+            _scope_claim("order-scope-bool"),
+            _scope_event("order-scope-bool").model_copy(
+                update={
+                    "payload": {
+                        **_scope_event("order-scope-bool").payload,
+                        "extended_hours": 1,
+                    }
+                }
+            ),
+        ],
+    ],
+)
+async def test_venue_scope_poison_fails_closed(events):
+    with pytest.raises(RecoveryTransitionError):
+        venue_order_scope_map(events)
+
+
+async def test_venue_scope_selects_only_current_gapless_claim():
+    order_id = "order-current-scope"
+    first_claim = _scope_claim(order_id, 0)
+    first_scope = _scope_event(order_id, 0)
+    second_claim = _scope_claim(order_id, 1)
+    second_scope = _scope_event(order_id, 1).model_copy(
+        update={
+            "dedupe_key": f"venue_order_scope:{order_id}:1",
+            "price": 11.0,
+            "payload": {
+                **_scope_event(order_id, 1).payload,
+                "limit_price": 11.0,
+            },
+        }
+    )
+
+    scope = venue_order_scope_map(
+        [first_claim, first_scope, second_claim, second_scope]
+    )[order_id]
+
+    assert scope.limit_price == 11.0
+
+
+async def test_legacy_submitting_backfill_is_the_only_synthetic_claim_exception():
+    order_id = "order-legacy-backfill"
+    backfill = _scope_claim(order_id).model_copy(
+        update={
+            "source": EventSource.RECONCILIATION,
+            "authority": EventAuthority.SYNTHETIC,
+            "dedupe_key": f"backfill_status:{order_id}",
+        }
+    )
+
+    assert venue_order_scope_map([backfill]) == {}
+    scope = venue_order_scope_map([backfill, _scope_event(order_id)])[order_id]
+
+    assert scope.client_order_id == order_id
+
+
+@pytest.mark.parametrize(
+    ("scope_quantity", "scope_price"),
+    [(99, 10.0), (10, 99.0)],
+)
+async def test_scope_poison_cannot_override_immutable_order(
+    any_store, scope_quantity, scope_price
+):
+    """A self-consistent scope event still has to authenticate to its Order row."""
+
+    await any_store.initialize()
+    session = await any_store.get_current_session()
+    candidate = await any_store.create_candidate("AAPL", session_id=session.id)
+    order = await any_store.create_order_for_test(
+        candidate.id,
+        "AAPL",
+        OrderSide.BUY,
+        10,
+        limit_price=10.0,
+        session_id=session.id,
+    )
+    claim = await any_store.claim_order_for_submission(order.id)
+    assert claim.outcome == CLAIM_CLAIMED and claim.order is not None
+
+    poisoned = _scope_event(order.id).model_copy(
+        update={
+            "quantity": scope_quantity,
+            "price": scope_price,
+            "session_id": session.id,
+            "payload": {
+                **_scope_event(order.id).payload,
+                "quantity": scope_quantity,
+                "limit_price": scope_price,
+            },
+        }
+    )
+    await any_store.append_execution_event(poisoned)
+    await any_store.transition_order(
+        order.id,
+        OrderStatus.SUBMITTED,
+        broker_order_id=f"broker-{order.id}",
+    )
+
+    adapter = MockBrokerAdapter()
+    adapter.set_response(
+        f"broker-{order.id}",
+        BrokerOrderUpdate(OrderStatus.SUBMITTED, 0, []),
+    )
+    with pytest.raises(RecoveryTransitionError, match="immutable order"):
+        await _reconcile_open_orders(
+            any_store,
+            adapter,
+            Settings(reconciliation_enabled=False),
+        )
+    assert adapter.status_queries == []
 
 
 @pytest.fixture(autouse=True)
@@ -344,6 +551,99 @@ async def test_driven_reconcile_query_failure_stops_before_submit(any_store):
         )
 
     assert adapter.submitted == []
+    assert await any_store.current_trading_state() is TradingState.REDUCING
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "orders_none",
+        "positions_none",
+        "fractional_order",
+        "fractional_position",
+        "invalid_average_price",
+        "unknown_side",
+        "terminal_open_order",
+        "duplicate_broker_id",
+        "duplicate_client_id",
+        "duplicate_position_symbol",
+    ],
+)
+async def test_malformed_alpaca_mass_report_cannot_lift_reducing(
+    any_store, malformation
+):
+    pytest.importorskip("alpaca")
+    from app.broker.alpaca_paper import AlpacaPaperAdapter
+
+    await any_store.initialize()
+    await any_store.set_reconcile_trading_state(
+        TradingState.REDUCING, reason="malformed-report-pin"
+    )
+    adapter = AlpacaPaperAdapter("fake-key", "fake-secret")
+    order_row = SimpleNamespace(
+        id="broker-1",
+        client_order_id="local-1",
+        symbol="AAPL",
+        side="buy",
+        status="new",
+        filled_qty=0,
+        qty=10,
+        type="limit",
+        time_in_force="day",
+        order_class="simple",
+        limit_price=10.0,
+    )
+    position_row = SimpleNamespace(symbol="AAPL", qty="10", avg_entry_price="10.0")
+    orders = []
+    positions = []
+    if malformation == "orders_none":
+        orders = None
+    elif malformation == "positions_none":
+        positions = None
+    elif malformation == "fractional_order":
+        orders = [SimpleNamespace(**{**vars(order_row), "filled_qty": "0.9"})]
+    elif malformation == "fractional_position":
+        positions = [SimpleNamespace(**{**vars(position_row), "qty": "0.9"})]
+    elif malformation == "invalid_average_price":
+        positions = [
+            SimpleNamespace(**{**vars(position_row), "avg_entry_price": "nan"})
+        ]
+    elif malformation == "unknown_side":
+        orders = [SimpleNamespace(**{**vars(order_row), "side": "garbage"})]
+    elif malformation == "terminal_open_order":
+        orders = [SimpleNamespace(**{**vars(order_row), "status": "filled"})]
+    elif malformation == "duplicate_broker_id":
+        orders = [
+            order_row,
+            SimpleNamespace(
+                **{
+                    **vars(order_row),
+                    "client_order_id": "local-2",
+                    "symbol": "MSFT",
+                }
+            ),
+        ]
+    elif malformation == "duplicate_client_id":
+        orders = [
+            order_row,
+            SimpleNamespace(**{**vars(order_row), "id": "broker-2"}),
+        ]
+    else:
+        positions = [
+            position_row,
+            SimpleNamespace(**{**vars(position_row), "symbol": " aapl "}),
+        ]
+    adapter._client.get_orders = Mock(return_value=orders)
+    adapter._client.get_all_positions = Mock(return_value=positions)
+
+    with pytest.raises(BrokerError):
+        await monitoring._run_reconciliation(
+            any_store,
+            adapter,
+            Settings(),
+            drive_state=True,
+        )
+
     assert await any_store.current_trading_state() is TradingState.REDUCING
 
 

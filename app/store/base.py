@@ -91,6 +91,19 @@ def normalize_symbol(symbol: str) -> str:
     return normalized
 
 
+def normalize_broker_order_id(broker_order_id: str) -> str:
+    """Canonical opaque venue identity shared by every durable owner boundary.
+
+    Whitespace is transport noise, not identity. The empty result remains a
+    deliberate unknown-id sentinel for recovery rows; order lifecycle planners
+    independently reject it where a concrete broker id is required.
+    """
+
+    if not isinstance(broker_order_id, str):
+        raise ValueError("broker_order_id must be a string")
+    return broker_order_id.strip()
+
+
 class StoreError(Exception):
     """Base class for StateStore errors."""
 
@@ -295,14 +308,14 @@ class EnvelopeTransitionError(ValueError):
 class FillAppendResult:
     """Outcome of :meth:`StateStore.append_fill`.
 
-    ``status`` is ``"appended"`` when a new fill row was written, or
-    ``"duplicate"`` when a fill with the same ``source_fill_id`` already existed
-    (no row written, position untouched, a duplicate-ignored audit event
-    recorded). A sell that would go negative does not return here — it raises
-    :class:`~app.position.NegativePositionError`.
+    ``status`` is ``"appended"`` when a new fill row was written,
+    ``"duplicate"`` when the same ``source_fill_id`` replays exact economics,
+    or ``"conflict"`` when that identity reappears with different economics.
+    Duplicate/conflict outcomes leave fill truth and position untouched; a
+    conflict records manual-review evidence.
     """
 
-    status: Literal["appended", "duplicate"]
+    status: Literal["appended", "duplicate", "conflict"]
     fill: Optional[Fill]
     event: Event
 
@@ -880,6 +893,14 @@ class StateStore(ABC):
         missing local row remains valid recovery input because this ledger also
         models orders whose local row was lost.
 
+        Recovery cardinality is one row per canonical ``(local_order_id,
+        broker_order_id)`` pair. Replaying that pair is idempotent. Order,
+        recovery, and canonical-fallback representations for the same pair may
+        overlap and coalesce as one accepted leg. Distinct concrete broker ids for
+        one local order remain distinct legs; a non-empty broker id cannot be
+        rebound to another local order in any representation. The empty unknown-id
+        sentinel is scoped per local order.
+
         ``candidate_id`` (D-020) correlates the creation event to the owning
         candidate's lifecycle. It is not stored on :class:`SubmitRecoveryRecord`
         itself (D-020 stays to one nullable ``Event`` field, not a new entity
@@ -1080,12 +1101,12 @@ class StateStore(ABC):
         overfill DECISION/event — never the fold (position derives from the
         deduped FILL event log regardless).
 
-        * If ``source_fill_id`` duplicates an existing fill: no row is written,
-          position is untouched, a duplicate-ignored event is recorded, and the
-          result's ``status`` is ``"duplicate"``.
-        * If the fill is a sell that would drive the symbol's quantity below
-          zero: no row is written, a rejection event is recorded, and
-          :class:`~app.position.NegativePositionError` is raised.
+        * An exact ``source_fill_id`` replay returns ``"duplicate"``. Changed
+          quantity/price/side for that identity returns ``"conflict"`` and
+          records manual-review evidence. Neither mutates fill truth/position.
+        * Broker-authoritative overfill is recorded as raw truth and emits a
+          durable ``QUARANTINED`` fact. Equivalent LOCAL/SYNTHETIC input is
+          rejected before fill/event/position mutation.
         * Otherwise the fill is appended and ``status`` is ``"appended"``.
         """
 
@@ -1112,10 +1133,10 @@ class StateStore(ABC):
     @abstractmethod
     async def list_quarantined_symbols(self) -> set[str]:
         """Symbols quarantined by a broker-authoritative overfill (ADR-001,
-        Spine v2 wave 3b): a recorded FILL crossed the long-only position through
-        flat into short. Derived purely from the event log (a negative projected
-        position), so it is replay-stable. Autonomous BUY order intent for a
-        quarantined symbol is blocked until the operator reconciles and reviews.
+        Spine v2 wave 3b): either an explicit durable ``QUARANTINED`` fact exists
+        or a recorded FILL crossed the long-only position through flat into
+        short. Derived purely from the event log, so it is replay-stable.
+        Autonomous BUY order intent stays blocked pending operator review.
         """
 
     # ------------------------------------------------------------------ #
