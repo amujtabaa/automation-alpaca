@@ -90,7 +90,7 @@ counts. Builder map to honor (extend it with evidence as you go):
 - **Tier 3 — queue/backlog currency:** WO-0022 (superseded by executed reviews?), WO-0029
   (placeholder needing re-cut — verify its DONE/PARTIAL cross-references), WO-0102/0103/0104
   (are the REV-0022 remediation gates actually cleared or still standing?), W3/W4 seed notes.
-  Plus two stranded lines preserved as archive tags during the 2026-07-20 branch cleanup:
+  Plus two stranded lines preserved as `archive/*` branches during the 2026-07-20 cleanup:
   `archive/claude-wo-0001-install-checks-2x5ys8` (tip `fc81951` — 47 commits of finished
   WO-0102 auto-review work, ancestors of nothing on master: is the "WO-0102 is complete"
   claim in WO-0104's banner satisfied on master, or stranded on that line?) and
