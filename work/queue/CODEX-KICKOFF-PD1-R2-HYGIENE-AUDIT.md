@@ -20,6 +20,20 @@ blocks with root cause, dispositions on close. No completion claims without evid
 - Paper-only posture: no live trading, no Alpaca credentials in this session at all — no lane
   below needs a broker.
 
+## Mode notes (Codex Local vs Codex Cloud)
+
+- **Local (Windows, the operator's clone):** use the existing `.venv`. Lane B's real-DB
+  artifact is reachable here (the D-BF-5 default keeps it on this machine) and the
+  planning-package §5 runbook is PowerShell-native. Keep ALL pytest scratch in the OS temp
+  dir (pytest's default basetemp) — never create repo-root scratch dirs (the `.pytest-tmp-*`
+  class; gitignored since 68f5cfe, but the tree stays clean).
+- **Cloud (GitHub):** bootstrap first — Python 3.12 venv, install the project + dev tools per
+  `pyproject.toml`, then run a baseline gate (`ruff check . && mypy app/ && pytest -q
+  --collect-only`) before any lane and paste it as your environment evidence. Treat Lane B's
+  artifact as unavailable unless my launch message explicitly provides it into the cloud
+  environment — the D-BF-5 default keeps real paper data off remote runners, so expect Lane B
+  to end `NEEDS-INPUT` here. Translate runbook commands to bash command-for-command.
+
 ## Your four lanes, in order
 
 **Lane H — hygiene sweep (`work/queue/WO-0116-work-ledger-hygiene-sweep.md`). Start here.**
