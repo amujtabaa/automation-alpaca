@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: Codex primary-seat engagement — review the prior seat's WO-0111/WO-0112, remediate all findings, close the recurring gap classes, reach merge-readiness
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0113
 wave: R2 consolidation campaign (CAMPAIGN-0002), merge-readiness (Codex primary seat)
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Ameen
 implementer_seat: Codex (primary implementation seat — durable operator decision, 2026-07-19)
 review_seat: Claude or human (independent — NOT the implementer; REV-0033)
@@ -30,16 +30,35 @@ gated_surface: order submission/claim, candidate dispatch, manual flatten, auton
 
 ```yaml
 execution_checkpoint:
-  updated_at_utc: "2026-07-20T03:53:15Z"
+  updated_at_utc: "2026-07-20T04:19:22Z"
   repository: "amujtabaa/automation-alpaca"
   branch: "consolidate/r2-canonical"
-  local_head: "5ae2c75c1c4700364cf2c7337c9d05c876479b19"
-  upstream_head: "5ae2c75c1c4700364cf2c7337c9d05c876479b19"
+  local_head: "9a7af3b08a2d050e324a862d59548ff2da747c48"
+  upstream_head: "9a7af3b08a2d050e324a862d59548ff2da747c48"
   pr_number: 9
-  pr_head: "5ae2c75c1c4700364cf2c7337c9d05c876479b19"
+  pr_head: "9a7af3b08a2d050e324a862d59548ff2da747c48"
   working_tree: DIRTY
-  staged_paths: []
-  implementation_commit_paths_at_5ae2c75:
+  working_tree_detail: "closeout-only changes staged; no source or test changes after the frozen implementation SHA"
+  checkpoint_scope: "snapshot immediately before the closeout commit; final delivery checks are reported outside this frozen checkpoint"
+  staged_paths:
+    - "docs/05_REVIEW_CHECKLIST.md"
+    - "docs/INVARIANTS.md"
+    - "docs/adr/ADR-001-overfill-quarantine.md"
+    - "pkl/log.md"
+    - "pkl/safety/invariants-rationale.md"
+    - "work/completed/keep/WO-0113-codex-primary-remediation.md"
+    - "work/ledger.jsonl"
+    - "work/review/REV-0031/disposition.md"
+    - "work/review/REV-0032/disposition.md"
+    - "work/review/REV-0033/request.md"
+  unstaged_paths: []
+  final_implementation_range:
+    base_sha: "194343c2cd2d5d96d4bf073cfc4e945dd43d71ab"
+    head_sha: "9a7af3b08a2d050e324a862d59548ff2da747c48"
+    changed_path_count: 86
+    authoritative_inventory_command: "git diff --name-only 194343c2cd2d5d96d4bf073cfc4e945dd43d71ab..9a7af3b08a2d050e324a862d59548ff2da747c48"
+  final_implementation_path_excerpt_note: "navigation excerpt only; the command and count above are authoritative"
+  final_implementation_path_excerpt:
     - "app/broker/adapter.py"
     - "app/broker/alpaca_paper.py"
     - "app/broker/mock.py"
@@ -76,6 +95,7 @@ execution_checkpoint:
     - "tests/test_input_validation.py"
     - "tests/test_monitoring.py"
     - "tests/test_rev0023_phase_a_pins.py"
+    - "tests/test_spine_phase3b_overfill_quarantine.py"
     - "tests/test_spine_phase3c_timeout_quarantine.py"
     - "tests/test_spine_phase4_reconcile_acting.py"
     - "tests/test_spine_phase4_reconcile_event_truth.py"
@@ -97,13 +117,19 @@ execution_checkpoint:
     - "tests/test_wo0113_submit_acceptance_fallback.py"
     - "work/active/WO-0113-codex-primary-remediation.md"
     - "work/completed/delete-candidates/.gitkeep (deleted)"
-  unstaged_paths:
-    - "app/store/memory.py"
-    - "app/store/sqlite.py"
-    - "tests/test_spine_phase3b_overfill_quarantine.py"
-    - "work/active/WO-0113-codex-primary-remediation.md"
-  current_phase: "final-head automated-review P1 remediated and fully locally verified; remediation commit freeze pending"
-  current_cluster: "freeze/push the quarantine-gate remediation, then repeat exact-SHA CI and automated review"
+  closeout_paths_in_progress:
+    - "docs/05_REVIEW_CHECKLIST.md"
+    - "docs/INVARIANTS.md"
+    - "docs/adr/ADR-001-overfill-quarantine.md"
+    - "pkl/log.md"
+    - "pkl/safety/invariants-rationale.md"
+    - "work/ledger.jsonl"
+    - "work/review/REV-0031/disposition.md"
+    - "work/review/REV-0032/disposition.md"
+    - "work/review/REV-0033/request.md"
+    - "work/completed/keep/WO-0113-codex-primary-remediation.md"
+  current_phase: "final implementation frozen and remotely verified; closeout artifacts authored and REV-0033 queued"
+  current_cluster: "validate, commit, and push closeout only; verify exact closeout CI without merging"
   completed:
     - "Preflight reconciled local/upstream/PR head at 96d1c0242682a0cd8c197c1354c70857dd772fdb and base at 2aa377a35d35e85be120cf90cdb6c5bd85a8d546; exact-head CI was green."
     - "Mapped every accepted-submit producer and the fallback, repair, exposure, CAPI, claim, cancel, recovery-loop, and restart consumers."
@@ -134,6 +160,8 @@ execution_checkpoint:
     - "Red-first dual-store pins failed exactly on SQLite at both gates (2 failed / 2 passed); the shared gate/list projection plus a SQLite reopen pin are 5/5 green, the complete Phase-3b file is 27/27, and independent admission/claim guard removals each failed only their SQLite node."
     - "Fresh post-remediation gates are green: relevant 10-file cluster 274/274; complete WO/quarantine corpus 580/580; Ruff check/format, mypy 64 files, import-linter 6/0, both oracles 61/61 and 22 passed/6 skips, hardening 12/12, and scaling 3/3."
     - "Fresh full suite passed three consecutive times: 3859 passed, 11 skipped, 1 xfailed (3871 collected) with XML suite times 336.551s, 379.071s, and 385.331s. Coverage repeated the full suite with zero failures/errors and met the 93.0% floor at 93.50% in 523.3s."
+    - "Frozen final implementation SHA 9a7af3b08a2d050e324a862d59548ff2da747c48 is pushed on consolidate/r2-canonical; GitHub Actions run #482 succeeded on that exact SHA."
+    - "Automated final-head review comment 5018668794 reviewed 9a7af3b08a and reported no major issues; all nine historical review threads remain resolved."
   active_findings:
     - id: "WO0113-SIBLING-DURABLE-VENUE-SCOPE-CORRELATION"
       severity: P1
@@ -152,47 +180,47 @@ execution_checkpoint:
       next_action: "Retain the exact-identity direct-poll and budget-defer/converge pins in the final focused corpus."
     - id: "PR9-96D1C02-P1-ENVELOPE-ACCEPT-OWNERSHIP"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "Envelope submit and replace duplicate accepted-ack finalization in reconciliation.py, while the canonical last-write UNKNOWN fallback lives only in monitoring.py's ordinary-submit handler. If SUBMITTED and recovery persistence both fail, the envelope path raises with no durable owner. The same ingress also preserves padded broker IDs instead of enforcing one canonical identity."
       resolution: "Shared dependency-safe fallback, exact context, normalized identity, dual-store/restart pins."
     - id: "WO0113-SIBLING-STALE-REDRIVE-FALLBACK"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "Stale SUBMITTING reclaim excluded open recoveries but not the canonical accepted-submit fallback, allowing a second venue call before repair."
       resolution: "Selective canonical fallback lookup adds the order to already-covered ownership; guard-removal failed 2/2."
     - id: "WO0113-SIBLING-MULTIPLE-ACCEPTED-LEGS"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "Both stores modeled recovery ownership as singular by local order even though INV-091 treats distinct broker ids as distinct possible venue legs."
       resolution: "Exact-pair rows, globally exclusive concrete broker ids, plural local index in memory, selective SQLite lookup without schema migration, independent repair/recovery/restart/CAPI pins."
     - id: "WO0113-SIBLING-FILL-DIVERGENCE-IDENTITY"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "Fill-divergence escalation deduped on any local recovery, so one broker leg could suppress required ownership for another."
       resolution: "Exact local/broker identity lookup and dual-store mutation pin."
     - id: "WO0113-SIBLING-BLANK-POSTCALL-BROKER-ID"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "A venue call returning blank identity was classified as BrokerError, releasing the claim even though acceptance may have occurred."
       resolution: "Classify as AmbiguousBrokerError at ordinary first submit, stale redrive, envelope submit, and envelope reprice; dual-store empty/whitespace pins quarantine and suppress redrive."
     - id: "WO0113-SIBLING-CROSS-REPRESENTATION-BROKER-IDENTITY"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "Concrete broker-id exclusivity was enforced only recovery-to-recovery, so an order or canonical fallback under one local id could be rebound through another representation to a different local id."
       resolution: "Both stores now reject cross-local collisions across order, recovery, and canonical-fallback owners; same-pair representations coalesce and SQLite rebuilds both durable ownership indexes on restart."
     - id: "WO0113-SIBLING-STORE-BOUNDARY-BROKER-CANONICALIZATION"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "Recovery and lifecycle store boundaries trusted already-normalized callers, so padded aliases could become distinct durable identities and whitespace-only recovery ids could appear concrete."
       resolution: "One canonicalization helper now binds order transition, timeout resolution, and recovery creation in both stores; alias and sentinel cases are dual-store mutation-pinned."
     - id: "WO0113-SIBLING-ALPACA-ACK-IDENTITY"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "The concrete Alpaca adapter converted SDK ids with str() at four submit/replace success and duplicate-recovery exits; None became the apparently concrete identity 'None', while blank replace success was a retryable BrokerError."
       resolution: "One adapter-level canonical acknowledgement helper now returns a stripped concrete id or raises AmbiguousBrokerError at all four exits; 12 red-first and guard-removal cases pin None, empty, and whitespace responses."
     - id: "PR9-5AE2C75-P1-SQLITE-EXPLICIT-QUARANTINE-GATES"
       severity: P1
-      status: FIXED_LOCAL_VERIFIED_PENDING_REMOTE
+      status: FIXED
       root_cause: "SQLite's candidate-admission and final submission-claim gates independently selected only FILL facts before calling the shared quarantine projector. An explicit ADR-001 QUARANTINED fact for an order overfill that left position positive was therefore visible to list_quarantined_symbols and memory, but invisible to both SQLite autonomous-BUY gates."
       resolution: "Both stores now expose one lock-held quarantine projection to candidate admission, final claim, and the public list; SQLite selects both FILL and QUARANTINED facts. Dual-store positive-position intent/claim pins, a SQLite reopen pin, and independent guard removals close both consumers."
   last_red:
@@ -206,22 +234,23 @@ execution_checkpoint:
     expected_test: "Each gate-specific positive-position pin must fail only for SQLite when its own guard is removed; the shared projection mutation must fail every SQLite/list/restart consumer while memory stays green."
     observed_result: "Admission mutation: 1 SQLite failure / 1 memory pass. Claim mutation: 1 SQLite failure / 1 memory pass. Shared FILL-only mutation: 3 exact SQLite failures. All edits restored in place; dual-store plus restart slice returned 5/5 green. Earlier mutation evidence remains retained below."
     restored_in_place: true
-  last_completed_command: "coverage: full suite green and 93.50% branch coverage; all post-review local gates green"
-  next_exact_command: "run final AI-OS/static residue checks; freeze and push the remediation implementation commit without closeout artifacts"
+  last_completed_command: "exact implementation SHA 9a7af3b: GitHub Actions #482 SUCCESS and automated final-head review clean"
+  next_exact_command: 'git commit -m "WO-0113 close root-cause remediation packet" -m "Record dispositions, independent review handoff, and durable evidence without merging."'
   pending_remote_checks:
-    - "Push the frozen quarantine-gate remediation commit only on consolidate/r2-canonical; then triage exact-head CI and every automated review thread."
-    - "Re-query exact-head CI and automated review after each authorized push."
+    - "Push the closeout-only commit on consolidate/r2-canonical and verify exact-head CI remains green."
+    - "Re-query PR head, open/unmerged state, mergeability, review threads, and automated review status after the closeout push."
   operator_decisions:
     created_buy_targeting: RATIFIED_YES
     protection_deferral: RATIFIED_YES
     append_only_attribution: RATIFIED_YES
     emergency_capability: RATIFIED_YES
     accepted_submit_fallback: RATIFIED_YES
+  pending_operator_items: []
   blockers: []
   resume_instructions:
-    - "Read CLAUDE.md, this checkpoint, and the latest progress-log entry."
-    - "Reconcile HEAD/upstream/PR head and verify no mutation residue."
-    - "Freeze the implementation commit, push only this branch, and verify exact-SHA CI plus automated review before writing closeout artifacts."
+    - "Treat 9a7af3b08a2d050e324a862d59548ff2da747c48 as the frozen implementation SHA; do not change source or tests during closeout."
+    - "Validate the dispositions, REV-0033 request, docs, PKL, ledger, Fable DONE, and completed/keep disposition."
+    - "Push only the closeout commit on consolidate/r2-canonical, verify exact-head CI, and stop before merge."
 ```
 
 ## Goal
@@ -481,17 +510,17 @@ matrix row with its evidence is the deliverable.
 
 ## Done-when
 
-- [ ] REV-0031 and REV-0032 `result.md` deposited, per-finding evidence + verdicts; every confirmed
+- [x] REV-0031 and REV-0032 `result.md` deposited, per-finding evidence + verdicts; every confirmed
       finding remediated (or replaced with a better shape, cited).
-- [ ] All automated PR-review findings on new commits triaged: fixed or refuted with evidence.
-- [ ] C1–C5 sweeps executed; matrices with per-cell outcomes recorded in the progress log; every
+- [x] All automated PR-review findings on new commits triaged: fixed or refuted with evidence.
+- [x] C1–C5 sweeps executed; matrices with per-cell outcomes recorded in the progress log; every
       confirmed gap fixed with red-first, guard-removal-checked, dual-store pins.
-- [ ] Full gate + both oracles + hardening gates + scaling gate + AI-OS hygiene green at final HEAD;
+- [x] Full gate + both oracles + hardening gates + scaling gate + AI-OS hygiene green at final HEAD;
       PR #9 CI green.
-- [ ] `work/review/REV-0033/` queued for the independent seat; no self-certification.
+- [x] `work/review/REV-0033/` queued for the independent seat; no self-certification.
 - [x] Operator decision queue recorded as five RATIFIED_YES decisions.
-- [ ] Close-out shipped with the work (WO moved to completed/keep, ledger row, doc/INV/ADR/PKL flips).
-- [ ] No merge performed; no branch other than `consolidate/r2-canonical` pushed.
+- [x] Close-out shipped with the work (WO moved to completed/keep, ledger row, doc/INV/ADR/PKL flips).
+- [x] No merge performed; no branch other than `consolidate/r2-canonical` pushed.
 
 ## Progress log
 
@@ -792,9 +821,9 @@ matrix row with its evidence is the deliverable.
 
   | Choke point | Cross-side exposure, both directions | Recovery declared + referenced scope | Candidate / CREATED stand-down | Single-flight / one active | Session / Halt | Quarantine |
   |---|---|---|---|---|---|---|
-  | Candidate dispatch | V M/S: `SELL->BUY` exit predicate blocks; `BUY->SELL` N/A here (BUY-only choke), covered at SELL mints (`primary`, WO-0110) | V M/S: open SELL recovery matches declared or referenced Order scope (`recovery`) | V M/S: dispatch-time refusal expires the proposal; successful SELL paths expire pending proposals (`primary`, `sell`) | V M/S: symbol/session candidate idempotency plus dispatch CAS (`legacy`) | V M/S: close and control state block BUY dispatch (`legacy`) | V M/S: quarantined symbol cannot mint the BUY order (`phase3b`, claim pins) |
-  | Order mint | V M/S: BUY mint rechecks exit; SELL mint rechecks projected/broker-owned/UNKNOWN BUY exposure (`primary`, `sell`, `fallback`) | V M/S: both direct SELL and BUY exposure helpers include declared/referenced recovery (`sell`, `recovery`) | V M/S: candidate mint closes its own proposal; SELL mint closes same-symbol BUY epoch (`primary`, `sell`) | V M/S: candidate/sell-intent links permit one linked order (`legacy`) | V M/S: BUY controls and SELL Halted rails are lock/transaction local (`sell`, `legacy`) | V M/S: autonomous BUY blocked; deliberate reduce-only SELL remains allowed unless ambiguity prevents safe sizing (`phase3b`, `sell`) |
-  | Submission claim | V M/S: final BUY claim sees exits and exact-identity accepted BUY CAPI exposure; final SELL claim sees status, broker-id, recovery, and accepted-UNKNOWN BUY exposure (`primary`, `sell`, `fallback`, identity/CAPI pins) | V M/S: own/sibling open recovery, an order's own concrete broker id or accepted fallback fact, and declared/referenced scope block claims on both sides (`recovery`, identity pins) | N/A M/S: claim never cleans unrelated intent; preceding mint/stage stand-down plus refusal is the compensating control | V M/S: CREATED->SUBMITTING CAS, event projection, and rollback-safe accepted-fact cache make repeated claim idempotent without decoding unrelated UNKNOWN history (`legacy`, repair-scaling pins) | V M/S: BUY claim obeys control/session/risk-limit gates; authorized reduce-only SELL is explicit (`legacy`, CAPI pins) | V M/S: timeout/symbol quarantine refuses blind claim (`legacy`) |
+  | Candidate dispatch | V M/S: `SELL->BUY` exit predicate blocks; `BUY->SELL` N/A here (BUY-only choke), covered at SELL mints (`primary`, WO-0110) | V M/S: open SELL recovery matches declared or referenced Order scope (`recovery`) | V M/S: dispatch-time refusal expires the proposal; successful SELL paths expire pending proposals (`primary`, `sell`) | V M/S: symbol/session candidate idempotency plus dispatch CAS (`legacy`) | V M/S: close and control state block BUY dispatch (`legacy`) | V M/S: the shared FILL+explicit-`QUARANTINED` projection prevents the dispatch from minting a BUY (`phase3b` 5/5) |
+  | Order mint | V M/S: BUY mint rechecks exit; SELL mint rechecks projected/broker-owned/UNKNOWN BUY exposure (`primary`, `sell`, `fallback`) | V M/S: both direct SELL and BUY exposure helpers include declared/referenced recovery (`sell`, `recovery`) | V M/S: candidate mint closes its own proposal; SELL mint closes same-symbol BUY epoch (`primary`, `sell`) | V M/S: candidate/sell-intent links permit one linked order (`legacy`) | V M/S: BUY controls and SELL Halted rails are lock/transaction local (`sell`, `legacy`) | V M/S: candidate-origin BUY mint consumes the shared FILL+explicit-`QUARANTINED` projection; deliberate reduce-only SELL remains allowed unless ambiguity prevents safe sizing (`phase3b` 5/5, `sell`) |
+  | Submission claim | V M/S: final BUY claim sees exits and exact-identity accepted BUY CAPI exposure; final SELL claim sees status, broker-id, recovery, and accepted-UNKNOWN BUY exposure (`primary`, `sell`, `fallback`, identity/CAPI pins) | V M/S: own/sibling open recovery, an order's own concrete broker id or accepted fallback fact, and declared/referenced scope block claims on both sides (`recovery`, identity pins) | N/A M/S: claim never cleans unrelated intent; preceding mint/stage stand-down plus refusal is the compensating control | V M/S: CREATED->SUBMITTING CAS, event projection, and rollback-safe accepted-fact cache make repeated claim idempotent without decoding unrelated UNKNOWN history (`legacy`, repair-scaling pins) | V M/S: BUY claim obeys control/session/risk-limit gates; authorized reduce-only SELL is explicit (`legacy`, CAPI pins) | V M/S: final candidate-origin BUY claim consumes the same shared FILL+explicit-`QUARANTINED` projection under the claim lock/transaction; restart stays blocked with `symbol_quarantined` (`phase3b` 5/5) |
   | Envelope stage | V M/S: `BUY->SELL` status/broker-id/recovery/UNKNOWN rail; `SELL->BUY` N/A at this SELL-only choke, covered by candidate dispatch (`primary`, `sell`, `fallback`) | V M/S: BUY recovery declared/referenced scope pauses stage (`primary`, `recovery`) | V M/S: successful stage expires candidates and cancels safe local CREATED BUYs in one unit (`primary`) | V M/S: one valid envelope action child/budget claim (`legacy`) | V M/S: session phase and Halted checked before/inside transaction (`legacy`) | V M/S: timeout/needs-review/ambiguous lineage pauses stage (`legacy`) |
   | Envelope final claim | V M/S: `BUY->SELL` status/broker-id/recovery/UNKNOWN exposure rechecked after staging; `SELL->BUY` N/A for envelope child, covered by BUY claim (`sell`, `fallback`) | V M/S: exact/sibling recovery and claim uncertainty block (`recovery`) | N/A M/S: final claim refuses rather than mutating siblings; stage/terminal cleanup own stand-down | V M/S: event-owned child and claim CAS prevent double submit (`legacy`) | V M/S: Halted and immutable session/action rails rechecked (`legacy`) | V M/S: timeout/lineage ambiguity refuses claim (`legacy`) |
   | Manual flatten | V M/S: `BUY->SELL` all status/broker-id/recovery/UNKNOWN BUYs block; `SELL->BUY` N/A at SELL-only choke (`sell`, `fallback`) | V M/S: declared/referenced BUY recovery blocks sizing; direct SELL recovery preserves one-exit rule (`sell`, `recovery`) | V M/S: successful flatten cancels safe CREATED BUYs and candidates (`primary`, `legacy`) | V M/S: atomic existing-intent/position decision returns one exit (`legacy`) | V M/S: ordinary flatten denied Halted (`sell`, ADR-003 corpus) | V M/S: unresolved timeout/overfill ambiguity fails closed; reduce-only exit otherwise remains available (`legacy`) |
@@ -819,8 +848,8 @@ matrix row with its evidence is the deliverable.
   | sell-intent create/transition | one active symbol, direct/envelope exposure, Halted reason | refusal self-heals PENDING/APPROVED; owner reconciliation | same transition reason/actor/correlation | atomic in both; newest/owner selection deterministic | V: `sell`, sell-intent and hostile-closure corpus |
   | envelope create/transition/supersede/approve | identical owner/scope/direct/foreign/exact-ambiguity precedence | terminal/supersede safe-child cleanup and one owner reconcile | envelope audit + execution vocabulary | one lock/transaction; exact ambiguity precedes foreign obligation | V: hostile supersede distinguishing pin; full envelope transition corpus |
   | envelope fill/stage/final claim | same validation clock, position, projection, recovery, Halted and budget rails | source-excluding terminal cleanup; safe sibling cancel; stage BUY-epoch stand-down | canonical fill, attribution marker, repair checkpoint, action/transition/cancel facts | record + decrement + cleanup atomic; repair checkpoint advances only after the complete selected tail; action order stable | V: `primary`, attribution **58 passed**, `cancel`, WO-0016/19/36 corpus |
-  | order creation: candidate/test/sell/protection/flatten | same numeric/risk/cross-side/recovery/session predicates, including concrete broker-owned CREATED and accepted-submit UNKNOWN exposure | safe stand-down at each SELL mint; projection on idempotent return; uncertain accepted BUY is retained | order row + audit/execution lifecycle facts | atomic link/write; memory protection return fixed to projected state | V: projection distinguishing pin plus `primary`/`sell`/`fallback`/legacy lifecycle tests |
-  | submission claim | same event-projected status, concrete broker identity, accepted-submit UNKNOWN/recovery exposure, current CAPI risk limits, and envelope hard rails | refusal leaves row unclaimed; accepted path owns SUBMITTING; failed recovery ownership leaves a durable UNKNOWN seed whether or not the ordinary audit succeeded | claim execution/audit facts or exact UNKNOWN fallback | CAS/transaction and sequence order; deterministic exact-identity fallback dedupe; distinct identities remain additive; fills allocate once; malformed scope is conservative; own identity and same-side direct SELL fallback refuse claim; CAPI projects lifecycle facts rather than raw status | V: claim gates, fallback **62**, store parity **36**, identity **49**, CAPI **16**, stale-CAS, WO-0108/0110 recovery pins |
+  | order creation: candidate/test/sell/protection/flatten | same numeric/risk/cross-side/recovery/session predicates, including concrete broker-owned CREATED, accepted-submit UNKNOWN exposure, and the shared FILL+explicit-`QUARANTINED` projection before candidate-origin BUY mint | safe stand-down at each SELL mint; projection on idempotent return; uncertain accepted BUY is retained | order row + audit/execution lifecycle facts | atomic link/write; memory protection return fixed to projected state; SQLite reopen reconstructs explicit quarantine | V: projection distinguishing pin plus `primary`/`sell`/`fallback`/legacy lifecycle tests and Phase-3b 5/5 |
+  | submission claim | same event-projected status, concrete broker identity, accepted-submit UNKNOWN/recovery exposure, current CAPI risk limits, envelope hard rails, and shared FILL+explicit-`QUARANTINED` projection | refusal leaves row unclaimed; explicit quarantine returns `symbol_quarantined`; accepted path owns SUBMITTING; failed recovery ownership leaves a durable UNKNOWN seed whether or not the ordinary audit succeeded | claim execution/audit facts or exact UNKNOWN fallback | CAS/transaction and sequence order; quarantine is reprojected under the deciding lock/transaction and after SQLite restart; deterministic exact-identity fallback dedupe; distinct identities remain additive; fills allocate once; malformed scope is conservative; own identity and same-side direct SELL fallback refuse claim; CAPI projects lifecycle facts rather than raw status | V: claim gates, fallback **62**, store parity **36**, identity **49**, CAPI **16**, stale-CAS, WO-0108/0110 recovery pins, and Phase-3b 5/5 |
   | recovery create/update | declared scope must match referenced order; exact concrete broker/local identity is immutable; empty broker id is absence | owner reconcile on create/resolve; exact replay emits no duplicate audit | recovery row, creation/status/resolution facts with canonical JSON payload | ownership check+insert+facts atomic; claim occurrence deterministic | V: ownership/conflict/sentinel pins, scope-ingress, JSON, restart and terminal-fact corpus |
   | order transition/quarantine/resolve/reconcile | event projection first; common local CREATED eligibility; legal FSM | terminal envelope owner cleanup, timeout resolution, safe local cancel | audit plus execution transition facts | row+both logs atomic; injected transition clock | V: `cancel` including raw rollback; quarantine/reconcile corpus |
   | fill/audit/execution append | identical validation/dedupe/id-collision/JSON domain; complete attribution chain validated in sequence order | fill-only position fold; marker ignored by position; durable readers resume strictly after their high-water mark | append-only canonical records plus bounded repair checkpoints | caller-id conflict is domain error; poison leaves checkpoint stationary; sequence/row order explicit | V: JSON/id/source-less-fill pins; attribution **58 passed**; fill/oracle corpus |
@@ -856,6 +885,7 @@ matrix row with its evidence is the deliverable.
   |---|---|---|---|
   | Per-order lifecycle | all execution facts for exact `order_id`, sequence ordered | one immutable Order; scalar status ignored when event truth exists | V: event/read-flip corpus and protection idempotent-return pin |
   | Symbol position | all `FILL` events for normalized symbol | one symbol; optional exact self-dedupe exclusion only for overfill pre-state | V: position/fill oracles; source-less SQLite distinguisher |
+  | Symbol quarantine projection | memory's complete execution log; SQLite's selected `FILL` + explicit `QUARANTINED` facts | one normalized symbol set shared by the public quarantine list, candidate-origin BUY order mint, and final BUY submission claim; SQLite reopen reconstructs all three consumers | V: Phase-3b dual-store/restart **5/5**; independent admission and claim mutations each failed the SQLite node, and the FILL-only shared-reader mutation failed **3/3** SQLite consumers |
   | Exact envelope obligation | exact envelope plus directly linked lineage neighbours, action children, referenced orders/recoveries | one envelope id; foreign parents diagnosed, never adopted | V: hostile exact-lineage corpus |
   | Owner-lineage obligation | envelopes/actions/orders for one sell-intent identity | one owner; parented known sibling action excluded from exact child ownership | V: WO-0111 supersession tests and REV-0031 probes |
   | Symbol diagnostic obligation | immutable envelope/action/order symbol arms | diagnostic symbol only; never grants cancel authority | V: WO-0109 symbol-only hostile tests |
@@ -876,7 +906,7 @@ matrix row with its evidence is the deliverable.
   | CREATED envelope children outside venue-working sets | no broker cancel is valid without venue identity | common local-only proof; recovery/claim uncertainty retains owner; redrive and terminal cleanup use exact source exclusions | `cancel` recovery-owned terminal child and CAS race pins |
   | CREATED SELL spared at session close | protective/reduce-only exits remain available after the bell | all SELL mints remain reduce-only, cross-side/recovery/single-flight gated; BUY close selection is projection-first | session-close and sell-boundary tests |
   | Broker identity/open recovery excluded from local cancel | local cancellation cannot prove venue absence | facade/monitoring route to broker cancel or targeted recovery/reconcile; local primitive refuses | `cancel` identity and unresolved/needs-review pins |
-  | Autonomous BUY blocked by symbol quarantine; reduce-only SELL not categorically blocked | containment must not prevent lowering a known long position | SELL sizing uses live position and all cross-side/recovery/timeout rails; ambiguous exits fail closed | Phase-3b overfill, flatten/protection/emergency tests |
+  | Autonomous BUY blocked by symbol quarantine; reduce-only SELL not categorically blocked | containment must not prevent lowering a known long position | public listing, candidate-origin BUY order mint, and final BUY claim consume one lock-held FILL+explicit-`QUARANTINED` projection in both stores and after SQLite reopen; SELL sizing uses live position and all cross-side/recovery/timeout rails; ambiguous exits fail closed | Phase-3b exact **5/5**; independent consumer mutations plus FILL-only reader mutation (**3/3** SQLite red); flatten/protection/emergency tests |
   | Terminal envelope excluded from `BREACHED` transition | immutable terminal disposition is historical truth even if a cancel raced a fill | late fill is still recorded/decrements remaining; position overfill quarantine is independent; safe sibling cleanup still runs | WO-0034 late-fill and WO-0112/0113 source-sibling pins |
   | `needs_review` may release one owner monopoly while retaining execution exposure | human review cannot fabricate a working mandate, but broker exposure may remain | stage/claim/flatten/close projections retain recovery/uncertain order exposure by declared and referenced scope | WO-0036 hostile closure and C1 recovery pins |
   | Accepted-submit UNKNOWN outside ordinary order-status sets | local SUBMITTED persistence may have failed after venue acceptance, so no projected status can represent the exposure | accepted BUY blocks SELL and accepted SELL blocks BUY; each exact broker/local identity feeds same-side single-flight, cannot be locally canceled or blindly reclaimed, and accepted BUY contributes conservative remaining CAPI; exact order/recovery/fallback coalesce one leg, distinct acceptances remain additive, fills allocate once, and bounded repair adopts ownership without another submit | fallback/restart, acceptance-identity, CAPI, and repair-scaling producer/projection/repair/local-cancel/self-claim/single-flight/multiplicity/numeric/cache/no-double-count pins |
@@ -974,7 +1004,7 @@ matrix row with its evidence is the deliverable.
   green (4/4), local full gate reproduced green. Codex subsequently moved this WO to
   `work/active/` and began Phase A, as recorded above.
 
-- **PR #9 FINAL-HEAD P1 REMEDIATED LOCALLY 2026-07-19** — automated review
+- **PR #9 FINAL-HEAD P1 REMEDIATED AND REMOTELY VERIFIED 2026-07-19** — automated review
   `PRR_kwDOTCRcJM8AAAABGgvpCw` of exact implementation SHA
   `5ae2c75c1c4700364cf2c7337c9d05c876479b19` reproduced a SQLite-only ADR-001
   containment gap. Candidate admission and final submission claim each queried only `FILL` facts
@@ -1002,5 +1032,45 @@ matrix row with its evidence is the deliverable.
   **336.551s / 379.071s / 385.331s**. Coverage repeated the same zero-failure suite and met the
   configured 93.0% branch floor at **93.50%** in **523.3s**. One post-success Hypothesis
   `StopTest` teardown diagnostic appeared after full run 3, did not affect exit/result, and did not
-  reproduce in the isolated property test or coverage rerun. The new remediation SHA still requires
-  push, exact-SHA CI, and a fresh automated review before close-out; no merge is authorized.
+  reproduce in the isolated property test or coverage rerun. The frozen remediation implementation
+  SHA is `9a7af3b08a2d050e324a862d59548ff2da747c48`; GitHub Actions run #482 succeeded on that exact SHA.
+  Automated final-head review comment 5018668794 reviewed `9a7af3b08a` and reported no major issues.
+  All nine historical review threads are resolved; no merge is authorized.
+
+- **CLOSEOUT ARTIFACTS COMPLETE / INDEPENDENT REVIEW QUEUED 2026-07-19** — REV-0031 and REV-0032 retain
+  their independent `result.md` verdicts and now have separate per-finding dispositions that map all
+  twelve accepted findings to the frozen implementation. REV-0033 requests a fresh independent
+  spec-first review of `194343c2cd2d5d96d4bf073cfc4e945dd43d71ab..9a7af3b08a2d050e324a862d59548ff2da747c48`
+  and instructs that seat to create only `result.md`. INV-002, ADR-001, the review checklist, and PKL
+  now name the shared public-list/candidate-BUY-mint/final-BUY-claim quarantine projection. The
+  ledger and completion disposition record `PKL_UPDATED` plus `RESULT_SUMMARY_KEPT`. The frozen
+  implementation remains unchanged; PR #9 remains open, unmerged, and explicitly operator-gated.
+
+```yaml
+fable_done:
+  task: "WO-0113 root-cause remediation, recurring-gap closure, and independent-review handoff"
+  done_when_results:
+    - item: "REV-0031 and REV-0032 findings dispositioned and every confirmed finding remediated"
+      status: MET
+      evidence: "Separate dispositions map all 12 findings to frozen SHA 9a7af3b08a2d050e324a862d59548ff2da747c48"
+    - item: "C1-C5 and accepted-submit sibling sweeps completed with load-bearing dual-store evidence"
+      status: MET
+      evidence: "580/580 focused; final explicit-quarantine slice 5/5; guard removals and three-node shared-reader mutation failed exactly"
+    - item: "Full local verification and exact implementation-head remote gates green"
+      status: MET
+      evidence: "Three full runs at 3859 passed/11 skipped/1 xfailed; 93.50% coverage; oracles, hardening, scaling, static and AI-OS green; CI #482 SUCCESS; automated final-head review clean"
+    - item: "Operator decisions durably recorded"
+      status: MET
+      evidence: "All five decisions are RATIFIED_YES in the WO, affected ADR/INV/PKL text, and REV-0033 request"
+    - item: "Independent review queued without self-certification or merge"
+      status: MET
+      evidence: "REV-0033 targets the frozen 194343c..9a7af3b range; PR #9 remains open and unmerged"
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "No new product debt; one non-result-affecting Hypothesis teardown diagnostic is disclosed for independent assessment"
+  deferred:
+    - "Independent REV-0033 result and disposition"
+    - "Explicit operator merge of PR #9"
+  status: VERIFIED
+```

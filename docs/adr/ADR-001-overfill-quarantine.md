@@ -44,7 +44,9 @@ occur. The system must not continue autonomous trading from such a state.
 - broker-authoritative overfill recorded and quarantined;
 - positive-position order/envelope overfill explicitly quarantined at record-first ingress;
 - broker-authoritative negative-position effect recorded and quarantined;
-- no new spawn while primary quarantined;
-- replay reproduces quarantine across memory and SQLite;
+- no candidate-origin BUY order mint while the symbol is quarantined;
+- no pre-existing candidate-origin BUY final claim while the symbol is quarantined;
+- replay/reopen reproduces the public quarantine list, BUY-mint block, and
+  final-claim block across memory and SQLite;
 - exact duplicate fills remain idempotent and changed economics conflict;
 - quarantine-key poison causes zero fill/FILL/envelope/position mutation.

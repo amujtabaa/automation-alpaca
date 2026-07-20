@@ -30,6 +30,8 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
     truth, caps only the compatibility Order progress scalar, and atomically latches explicit
     `QUARANTINED` truth even while net position remains positive. Exact identity replay is a no-op
     only when its economics match; conflicting reuse is audited, dropped, and held for manual review.
+    One lock-held quarantine projection feeds the public symbol list, candidate-origin BUY order
+    mint, and final BUY submission claim in both stores, including SQLite restart reconstruction.
   - **Manual flatten routing (ADR-003):** an emergency control that bypasses risk checks and logging is itself a hazard; the override exists but is explicit and audited.
   - **WO-0113 governance status:** the operator ratified YES the following capability,
     CREATED-exposure, accepted-submit, protection-deferral, and attribution behavior on 2026-07-19;

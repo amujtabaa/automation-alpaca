@@ -19,4 +19,6 @@
   gate establishment; and contiguous, tail-checkpointed append-only envelope-fill attribution
   repair. The operator ratified all five semantic decisions YES on 2026-07-19; REV-0033
   independent review remains pending. The detailed C1-C5 evidence remains in the WO.
-  Final implementation SHA pending close-out; PR #9 merge remains operator-gated.
+  Final implementation SHA `9a7af3b08a2d050e324a862d59548ff2da747c48`; exact-head GitHub
+  Actions run #482 and automated Codex review are green, and REV-0033 is queued for independent
+  review. PR #9 merge remains operator-gated.

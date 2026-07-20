@@ -298,6 +298,10 @@ Use when reviewing Codex or Claude Code output.
       valid whole positive excess: LOCAL/SYNTHETIC overfill rejects before truth
       mutation, while BROKER_AUTHORITATIVE overfill records raw FILL truth plus a
       durable `QUARANTINED` fact (ADR-001), including record-first envelope ingress.
+- [ ] One lock-held quarantine projection feeds the public symbol list,
+      candidate-origin BUY order mint, and final BUY submission claim in both
+      stores; SQLite selects both `FILL` and explicit `QUARANTINED` truth and
+      reconstructs all three consumers after reopen.
 - [ ] Non-finite market data produces **no** candidate (F-005): `features.py`
       returns `None`, and `strategy.evaluate` rejects a snapshot with any
       present-but-non-finite field (never `suggested_limit_price=inf`).

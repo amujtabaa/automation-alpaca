@@ -52,15 +52,19 @@ position; broker-authoritative excess is recorded and quarantined.** A
 LOCAL/SYNTHETIC fill that exceeds the order or would overdraw the long position
 is rejected before fill, event, envelope, or position mutation. An equivalent
 BROKER_AUTHORITATIVE fact is unwelcome reality: persist its raw `FILL`, append a
-durable `QUARANTINED` fact atomically, block autonomous spawn, and require manual
-review—even when the resulting position remains positive.
+durable `QUARANTINED` fact atomically, block candidate-origin BUY order mint and
+final submission claim through the shared quarantine projection, and require
+manual review—even when the resulting position remains positive.
 *Why:* beta is long-only, but hiding venue truth is more dangerous than projecting
 the contained exception; record-first envelope ingress must survive a crash before
 the compatibility fill row is bridged.
 *Pinned by:* `tests/test_wo0113_store_parity.py` (dual-store order/envelope,
-dedupe-poison, and SQLite-reopen cases), `tests/test_monitoring.py::
-test_broker_authoritative_overfill_is_recorded_and_quarantined`, and
-`position_never_negative` for non-broker state-machine input.
+dedupe-poison, and SQLite-reopen cases),
+`tests/test_spine_phase3b_overfill_quarantine.py::test_explicit_order_overfill_quarantine_blocks_new_buy_intent`,
+`tests/test_spine_phase3b_overfill_quarantine.py::test_explicit_order_overfill_quarantine_blocks_existing_buy_claim`,
+and `tests/test_spine_phase3b_overfill_quarantine.py::test_sqlite_restart_keeps_explicit_quarantine_in_both_buy_gates`,
+`tests/test_monitoring.py::test_broker_authoritative_overfill_is_recorded_and_quarantined`,
+and `position_never_negative` for non-broker state-machine input.
 
 **INV-003 — A fill's `source_fill_id`, when present, binds immutable economics.**
 An exact order/symbol/side/quantity/price replay is a duplicate no-op. Reusing the
