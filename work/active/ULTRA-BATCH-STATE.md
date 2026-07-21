@@ -47,7 +47,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 |---|---|---|---|
 | WO-0114 | REVIEW | `f3be6e3` activation; `b6d4fb0` red-first contract; `759eff0` review-stage | Implementation/evidence complete; REV-0035 staged for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
-| WO-0118 | ACTIVE | activation: this commit | Lane 3 started on `codex/wo-0118` after WO-0114 REVIEW-stage integration; Phase 1 measurement precedes any implementation. |
+| WO-0118 | CLOSED | `644fe9d` activation; `617c865` budget contract; close-out: this commit | VERIFIED: three-run target and 10x stress evidence showed near-linear post-Cluster-E scaling; Phase 2 skipped with no store/DDL/index changes; unchanged 3x/12x/2 MiB limits frozen, dispositioned, and moved to `work/completed/keep/`. |
 | WO-0119 | CLOSED | `966b1a7` activation; `5f715a8` implementation; `7387199` close-out | Bootstrapper, Python 3.12 devcontainer, and environment pointer verified in a disposable OS-temp checkout; fresh + rerun smoke gates green; dispositioned and moved to `work/completed/`. |
 | WO-0120 | CLOSED | `ecfc2f3` activation; `3a27ec8` checker; `325433f` close-out | VERIFIED: records reconciled, folder-aware checker red/green, 160 passed + 1 expected xfail, five AI-OS checks green. |
 | WO-0121 | REVIEW | `b03c0e9` activation; `07f7159` annotations; `36538e8` review-stage | Annotation-only safety-record reconciliation frozen; REV-0036 staged against integrated semantic head `07f7159`; no ledger/disposition until independent review + human disposition. |

@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "P1-3 closure: re-measure R2 scaling on current master; bound stress-scale startup; set beta-scale budget"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0118
 wave: post-R2 beta-prep
 model_tier: mid
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 owner: Ameen (batched at REV-0029 disposition) / implementer: Codex session 2
 created: 2026-07-20
 gated_surface: none expected; any new index/DDL or gate-limit change requires explicit operator approval (D9 precedent)
@@ -93,40 +93,42 @@ forbidden_paths:
 
 ## Required behavior
 
-- [ ] **Phase 1 — measure (always runs):** on current master, fresh venv, record with pasted
+- [x] **Phase 1 — measure (always runs):** on current master, fresh venv, record with pasted
       output: (a) `python -m tests.performance.r2_scaling_gate` (target scale, 3 runs — report
       spread, not one lucky run); (b) the same with `R2_STRESS=1` (the 1,000-symbol corpus);
       (c) the Claude-ported gate; (d) SELECT counts + `EXPLAIN QUERY PLAN` confirming no
       unrelated full scans. The REV-0029 stress numbers predate Cluster E — this phase
       establishes whether the convexity still exists at all.
-- [ ] **Phase 2 — optimize (ONLY if Phase 1 shows material stress convexity, e.g. startup
+- [x] **Phase 2 — optimize (ONLY if Phase 1 shows material stress convexity, e.g. startup
       scaling far superlinear in corpus size):** behavior-preserving changes per the Cluster E
       contract — no retention predicate, action authority, scaling threshold, or human-gated
       transition may change; dual-store parity maintained; every change mutation-pinned or
       covered by the existing parity/oracle corpus. Any NEW index or DDL requires an explicit
       recorded operator approval line before it lands (D9 precedent).
-- [ ] **Phase 3 — budget (always runs):** record the beta-scale performance budget: expected
+      **Outcome: condition not triggered; Phase 2 was intentionally skipped.**
+- [x] **Phase 3 — budget (always runs):** record the beta-scale performance budget: expected
       real-data cardinality (cross-reference WO-0115's inventory if available), the measured
       headroom against it, and a stress budget in the gate (as a NEW `R2_STRESS` assertion or
       documented threshold). **Raising or loosening ANY existing limit is operator-gated and
       requires independent review — "no re-budget, no silent green" (REV-0029 disposition).**
-- [ ] Full native gate green: `ruff` + `mypy app/` + `lint-imports` + `pytest -q` + both
+- [x] Full native gate green: `ruff` + `mypy app/` + `lint-imports` + `pytest -q` + both
       oracles + hardening gates + the scaling gate itself.
-- [ ] Close-out ships with the work; REV-0029 P1-3 line updated from "→ perf WO (batched)" to
+- [x] Close-out ships with the work; REV-0029 P1-3 line updated from "→ perf WO (batched)" to
       closed-with-evidence in the disposition's successor record (a dated note in this WO's
       close-out + ledger row; do not rewrite the historical disposition file).
 
 ## Acceptance criteria
 
-- [ ] Phase 1 evidence pasted for all three gates + plans; a clear statement of whether the
+- [x] Phase 1 evidence pasted for all three gates + plans; a clear statement of whether the
       stress convexity survived Cluster E.
-- [ ] If Phase 2 ran: red-first/mutation evidence that semantics are unchanged (parity suite,
+- [x] If Phase 2 ran: red-first/mutation evidence that semantics are unchanged (parity suite,
       oracles, hostile corpus all green; no gate limit touched).
-- [ ] Beta-scale budget recorded in `pkl/architecture/testing-model.md` + the gate.
-- [ ] Independent review queued if ANY `app/store/*` line changed (Cluster E precedent:
+- [x] Beta-scale budget recorded in `pkl/architecture/testing-model.md` + the gate.
+- [x] Independent review queued if ANY `app/store/*` line changed (Cluster E precedent:
       store-surface perf work rides the review gate before beta reliance). Measurement-only
       outcome (no code change) needs no REV packet — the evidence table is the deliverable.
-- [ ] Fable DONE block: `VERIFIED` with pasted evidence, or `BLOCKED` naming the wall.
+      **Outcome: not applicable; no `app/store/*` line changed.**
+- [x] Fable DONE block: `VERIFIED` with pasted evidence, or `BLOCKED` naming the wall.
 
 ## Stop conditions
 
@@ -221,6 +223,91 @@ POST-CHANGE GATES: canonical target/stress and ported target/stress all exit 0;
   cardinality gates=true, stress contract complete=true, limits_changed=false.
 ```
 
+### Full validation and close-out gates
+
+All Python validation used the fresh OS-temp CPython 3.12 environment and OS-temp pytest
+scratch; the repository root received no pytest cache or basetemp directory.
+
+```text
+ruff check .
+  All checks passed.
+
+ruff format --check tests/performance/r2_scaling_budget.py
+  tests/performance/r2_scaling_gate.py
+  tests/performance/r2_scaling_gate_claude_ported.py
+  tests/performance/test_r2_scaling_budget.py
+  4 files already formatted.
+
+mypy app/
+  Success: no issues found in 70 source files.
+
+lint-imports
+  Contracts: 6 kept, 0 broken; analyzed 99 files and 484 dependencies.
+
+pytest -q tests/r2_conformance_oracle.py
+  61 passed.
+
+pytest -q tests/test_r2_conformance_oracle_claude.py
+  22 passed, 6 skipped.
+
+pytest -q tests/test_review_hardening_gates.py
+  14 passed.
+
+pytest -q tests/performance/test_r2_scaling_budget.py
+  6 passed.
+
+full pytest, cache disabled, OS-temp basetemp
+  3980 collected; 3968 passed, 11 skipped, 1 xfailed in 309.3s.
+
+AI-OS close-out tree
+  INSTALL CHECK PASSED
+  VERSION CHECK PASSED: v0.9.1
+  LEDGER CHECK PASSED
+  PKL CHECK PASSED
+  DISPOSITION CHECK PASSED
+  SCOPE CHECK PASSED
+  HYGIENE REPORT: 0 violations, 3 pre-existing active-WO size advisories
+  git diff --check: clean
+```
+
+Repository-wide `ruff format --check .` remained non-green at six files already present at
+the `f4104fe` branch base: `app/recorder/__init__.py`, `app/recorder/models.py`,
+`app/recorder/store.py`, `harness/bootstrap.py`, `tests/test_tape_recorder.py`, and
+`work/review/AUDIT-0002-priorwork/probe_review_integrity.py`. They are outside WO-0118's
+edits; none was reformatted. The four changed Python files passed the scoped format check.
+The hygiene advisories name review-gated WO-0114, WO-0121, and WO-0127; no hygiene violation
+was introduced.
+
+## Fable done
+
+```yaml
+fable_done:
+  task: "WO-0118 performance stress-scale closure and beta budget"
+  done_when_results:
+    - item: "Three-run target and stress evidence plus both gate implementations establish current scaling behavior."
+      status: MET
+    - item: "The post-Cluster-E convexity decision follows repeated evidence without an unapproved store, schema, DDL, or index change."
+      status: MET
+    - item: "One failure-capable shared contract freezes target/stress cardinality and unchanged 3x, 12x, and 2 MiB limits in code and PKL."
+      status: MET
+    - item: "Native, oracle, hardening, full-suite, AI-OS, scope, disposition, ledger, PKL, and hygiene gates have fresh evidence."
+      status: MET
+    - item: "Status, disposition, ledger, batch scoreboard, and file move close atomically."
+      status: MET
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+    app_store_changes: false
+    schema_or_index_changes: false
+  evidence:
+    - "Canonical target and stress measurements passed 3 of 3 runs each; both Claude-ported runs passed."
+    - "Stress startup spread 10.807658-11.480315x; SELECT growth 9.901363x; unrelated scans empty."
+    - "Budget pin was red first, green at 6 passed, mutation-red at 1 failed and 1 passed, and restored green."
+    - "Full OS-temp suite: 3980 collected; 3968 passed, 11 skipped, 1 expected xfail."
+    - "AI-OS install, version, ledger, PKL, disposition, scope, and hygiene checks passed with zero violations."
+  status: VERIFIED
+```
+
 ## Completion disposition
 
-Expected: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`.
+Applied: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`.
