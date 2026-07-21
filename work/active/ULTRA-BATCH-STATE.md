@@ -53,7 +53,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0121 | REVIEW | `b03c0e9` activation; `07f7159` annotations; `36538e8` review-stage | Annotation-only safety-record reconciliation frozen; REV-0036 staged against integrated semantic head `07f7159`; no ledger/disposition until independent review + human disposition. |
 | WO-0122 | CLOSED | `114e5c3` activation; `9370311` implementation; `4bfeb55` close-out | VERIFIED: additive 61-case CI oracle, dual-store mutation-proven INV-051/052 pins, stale fixture repaired; 3867 passed, 11 skipped, 1 expected xfail. |
 | WO-0123 | CLOSED | `635127b` activation; `710ed09` recorder; `6c072d8` boundary pin; `e4d805b` close-out | Read-only, flag-off-by-default recorder with separate bounded tape store, replay documentation, failure-capable zero-order-flow spy, and green full suite; dispositioned and moved to `work/completed/`. |
-| WO-0124 | QUEUED | — | Lane 3; elevated effort; review-gated to REV-0037. |
+| WO-0124 | QUEUED / NEEDS-INPUT | — | Lane 3 after WO-0118; D-0124 requires `_BUDGET_ACTIONS` and model-comment alignment in paths the WO does not allow; do not activate without a narrow scope amendment. |
 | WO-0125 | CLOSED | `9dec106` activation; `81a5e64` implementation; `2b39830` close-out | VERIFIED: explicit full envelope vocabulary fold, dual-store read-model parity, two mutation-red pins; 3881 passed, 11 skipped, 1 expected xfail. |
 | WO-0126 | QUEUED / NEEDS-INPUT | — | Shared-file prerequisites landed, but D-0126 field removal requires `app/store/core.py` and `app/store/sqlite.py`, which the WO forbids; do not activate without a scope amendment. |
 | WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
@@ -78,3 +78,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
   `app/store/sqlite.py`, remove every application read/write, and leave the historical SQLite
   column as an inert compatibility tombstone (no DDL/migration). Physical column removal would
   instead require explicit schema/migration approval and a review posture.
+- WO-0124 — ratified reprice-only budget semantics require changing
+  `app/sellside/policy.py::_BUDGET_ACTIONS`, and the corresponding accounting comment in
+  `app/models.py` is outside that path's current qualifier. Preferred amendment: allow the policy
+  file and that narrow comment-only model edit; no field, enum, schema, or migration change.
