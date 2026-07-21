@@ -180,6 +180,16 @@ exposure without an auth layer is forbidden.
 Sequencing: D-HOST-1 (choose) → Lane B verification on a copy (the cutover gate) → migrate.
 Nothing implements without the ADR when the VPS path is chosen.
 
+**2026-07-20 operator direction:** Ameen prefers the **VPS endgame** (shared hosting evaluated
+and rejected — long-running engine + monitoring loops are a daemon, not a website; root-less
+shared plans kill background processes and mis-handle SQLite locking). Sizing note recorded:
+smallest VPS tier (20-25 GB) is ~100x headroom — the event log grows append-only by design
+but linearly (~1 KB/event; the perf suite's 100k-event STRESS corpus ≈ 0.1 GB); growth cost
+is policed by the CI scaling gate + WO-0118's beta budget; any future compaction is an
+ADR-gated event-log-truth decision. Prerequisites before exposure stand: auth layer ADR +
+deployment ADR + Lane B as the migration cutover gate. Interim access (Tailscale) remains
+available meanwhile without any repo change.
+
 ## 3. Dependency and sequencing note
 
 The WOs are **independent by construction** and must stay so:
