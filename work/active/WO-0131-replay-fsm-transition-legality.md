@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Envelope replay must fail closed on FSM-illegal lifecycle transitions"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0131
 wave: ultra-batch remediation (post-review)
 model_tier: strong
