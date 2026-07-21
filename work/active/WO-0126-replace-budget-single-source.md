@@ -185,3 +185,30 @@ evidence:
     result: PASS
     decisive_output: "Ruff passed; mypy found no issues in 70 files; 6 import contracts kept with 0 broken."
 ```
+
+## Validation checkpoint — inherited batch coverage blocker
+
+```yaml
+evidence:
+  - command: "tests/r2_conformance_oracle.py with addopts cleared, cache disabled, and unique OS-temp basetemp"
+    result: VERIFIED
+    decisive_output: "61 passed in 4.33s."
+  - command: "ruff check .; scoped ruff format --check; mypy app/; lint-imports"
+    result: VERIFIED
+    decisive_output: "Ruff passed; 13 files already formatted; mypy found no issues in 70 files; all 6 import contracts kept."
+  - command: "full pytest with branch coverage, addopts cleared, cache disabled, OS-temp basetemp and COVERAGE_FILE"
+    result: BLOCKED
+    decisive_output: "3980 passed, 11 skipped, 1 xfailed; 11456/12145 statements and 3864/4410 branches covered; coverage.py reports 92.540018% against 93% (pytest process exit 0 despite the textual FAIL)."
+  - command: "same full coverage suite against exact pre-WO base fbb2887 in a disposable OS-temp export"
+    result: BLOCKED
+    decisive_output: "3968 passed, 11 skipped, 1 xfailed; inherited coverage was already 92.53%. WO-0126 is non-regressive at 92.54%."
+  - command: "coverage JSON plus git-blame attribution"
+    result: VERIFIED
+    decisive_output: "WO-0126 semantic commits own 18 executable statements and 4 branch arcs, all covered (100%). True 93.0% requires 77 more covered units; surviving WO-0114-authored code owns 116 missing units."
+  - command: "five AI-OS checks; context hygiene"
+    result: VERIFIED
+    decisive_output: "Install, version, ledger, PKL, and disposition checks passed; hygiene reported 0 violations and 3 unrelated review-WO size advisories."
+artifact:
+  retained_coverage_json: "C:/Users/amujt/AppData/Local/Temp/wo0126-current-coverage-a3792d63/coverage.json"
+status: "ACTIVE / BLOCKED — do not close, disposition, append the ledger, or move until the inherited batch coverage gate is restored."
+```
