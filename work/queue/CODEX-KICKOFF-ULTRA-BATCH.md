@@ -157,5 +157,6 @@ Envelope (post-Signal-Seat; corpus accrues via WO-0123 meanwhile).
    immediately.
 4. Evidence discipline: VERIFIED / UNVERIFIED / BLOCKED / NEEDS-INPUT only, fresh pasted
    output. Never weaken an existing test.
-5. End-of-session deliverable: per-WO status table (with commit ids), the three staged review
-   packets, the NEEDS-INPUT batch, branch pushed. Nothing merged.
+5. End-of-session deliverable: the final state-file scoreboard (per-WO status + commit ids),
+   the staged review packets (REV-0034/0035/0036/0037 as reached), the NEEDS-INPUT batch,
+   branch pushed. Nothing merged.
