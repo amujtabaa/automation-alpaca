@@ -36,6 +36,13 @@
 > command); D-PD1-4 = default (separate ingestion + valve commands, both in WO-0114).
 > WO-0114 is updated to match (banner + allowed paths).
 >
+> **Operator execution preference (2026-07-20):** Codex Cloud lacks the strongest available
+> model (5.6 SOL is local-only; cloud runs 5.5). The hardest / most perilous surfaces —
+> human-gated event-truth or execution work (WO-0114 Lane P, Signal Seat store/model
+> integration, the future Entry Envelope) — run in **Codex Local on the strongest model**.
+> Mid-tier work (WO-0118 Phase 1 measurement, WO-0119 bootstrap, bookkeeping WO-0120/0122)
+> may run in Codex Cloud. When in doubt, gated surface ⇒ local.
+>
 > **2026-07-20 (second batch):** D-BF-5 = **(c) no artifact yet** — Lane B ends `NEEDS-INPUT`
 > at the intake gate until an artifact is supplied; D-BF-6 = default (yes, gated fixtures);
 > D-BF-7 = default (report-only). Ameen's B-1 rationale raised a NEW decision — remote access
