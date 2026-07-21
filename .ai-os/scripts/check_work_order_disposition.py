@@ -2,6 +2,7 @@
 """Check completed work-order disposition hygiene (real implementation, WO-0603).
 
 Failures (exit 1):
+- a work order filed under work/completed has a non-completed status
 - a completed work order (MERGED/CLOSED/ABANDONED/SUPERSEDED) has an empty disposition
 - any disposition value is outside rules/ai-os-rules.yaml valid_work_order_dispositions
 - a DELETED disposition has no matching work/ledger.jsonl entry
@@ -105,7 +106,12 @@ def analyze(root: Path) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
     for record in scan_work_orders(root):
         rel = record["path"]
-        if record["status"] in COMPLETED and not record["dispositions"]:
+        filed_as_completed = record["folder"] == "completed"
+        if filed_as_completed and record["status"] not in COMPLETED:
+            failures.append(
+                f"{record['id']}: non-completed status {record['status']!r} in completed folder ({rel})"
+            )
+        if (filed_as_completed or record["status"] in COMPLETED) and not record["dispositions"]:
             failures.append(f"{record['id']}: completed ({record['status']}) with empty disposition ({rel})")
         for d in record["dispositions"]:
             if valid and d not in valid:
