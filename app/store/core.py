@@ -2869,10 +2869,11 @@ def validate_recovery_fill_facts(
             f"capacity {record.quantity}"
         )
     if exact_replay:
-        if cumulative != canonical_filled_quantity:
-            raise RecoveryTransitionError(
-                "existing operator fill identity does not match canonical cumulative truth"
-            )
+        # The stores compare the replay against the exact durable event + fill
+        # identity before returning ``duplicate``.  Later fills legitimately
+        # advance the broker leg's canonical cumulative quantity, so comparing
+        # an older command's historical cumulative value with the latest total
+        # would make an exact retry non-idempotent.
         return
     expected = canonical_filled_quantity + command.fill_quantity
     if cumulative != expected:
@@ -2880,6 +2881,35 @@ def validate_recovery_fill_facts(
             "fill cumulative parity failed: "
             f"expected {expected} from canonical truth, got {cumulative}"
         )
+
+
+def recovery_fill_row_matches(
+    fill: Fill,
+    record: SubmitRecoveryRecord,
+    command: SubmitRecoveryFillCommand,
+    *,
+    source_fill_id: str,
+) -> bool:
+    """Return whether the compatibility fill row is this exact command fact."""
+
+    return (
+        _fill_economic_material(
+            order_id=fill.order_id,
+            symbol=fill.symbol,
+            side=fill.side,
+            quantity=fill.quantity,
+            price=fill.price,
+        )
+        == _fill_economic_material(
+            order_id=record.local_order_id,
+            symbol=record.symbol,
+            side=record.side,
+            quantity=command.fill_quantity,
+            price=command.price,
+        )
+        and fill.source_fill_id == source_fill_id
+        and fill.session_id == record.session_id
+    )
 
 
 def recovery_resolution_execution_event(

@@ -171,6 +171,7 @@ from app.store.core import (
     canonical_recovery_fill_quantity,
     recovery_attestation_payload,
     recovery_fill_payload,
+    recovery_fill_row_matches,
     recovery_operator_execution_event,
     validate_recovery_attested_facts,
     validate_recovery_fill_facts,
@@ -4518,10 +4519,11 @@ class InMemoryStateStore(StateStore):
                             "conflicting human-attested fill replay"
                         )
                     if existing_fill is not None:
-                        if (
-                            existing_fill.quantity != command.fill_quantity
-                            or existing_fill.price != command.price
-                            or existing_fill.side is not record.side
+                        if not recovery_fill_row_matches(
+                            existing_fill,
+                            record,
+                            command,
+                            source_fill_id=source_fill_id,
                         ):
                             raise RecoveryTransitionError(
                                 "conflicting fill-row replay for recovery command"
