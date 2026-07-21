@@ -609,8 +609,13 @@ async def test_direct_cancel_retries_are_bounded_then_escalate_once(any_store):
     [OrderStatus.CANCELED, OrderStatus.FILLED],
     ids=["cancel-ack", "fill"],
 )
+@pytest.mark.parametrize(
+    "response_lost",
+    [False, True],
+    ids=["adapter-returned", "adapter-raised-after-terminal"],
+)
 async def test_third_cancel_transition_race_revalidates_terminal_truth(
-    any_store, terminal_status
+    any_store, terminal_status, response_lost
 ):
     envelope, order = await _submitted_child(any_store)
     await any_store.transition_envelope(
@@ -653,6 +658,8 @@ async def test_third_cancel_transition_race_revalidates_terminal_truth(
                 )
             else:
                 await any_store.transition_order(order.id, OrderStatus.CANCELED)
+            if response_lost:
+                raise BrokerError("injected lost response after terminal truth")
 
     adapter = TerminalOnThirdCancelAdapter()
     for _ in range(4):
