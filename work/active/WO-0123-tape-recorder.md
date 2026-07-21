@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Real-tape recorder: capture extended-hours market data + derived events for replay validation"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0123
 wave: post-R2 beta-prep (Entry-Envelope enabler; runs early to accumulate corpus)
 model_tier: mid
