@@ -1178,7 +1178,6 @@ def _stored_cancel_attempt_matches(
             stored.source is draft.source,
             stored.authority is draft.authority,
             stored.dedupe_key == draft.dedupe_key,
-            stored.ts_event == draft.ts_event,
             stored.symbol == draft.symbol,
             stored.side is draft.side,
             stored.quantity == draft.quantity,
