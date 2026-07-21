@@ -710,7 +710,8 @@ class ExecutionEnvelope(_Entity):
 
     # --- Rate (hard rails) -------------------------------------------------- #
     cooldown_floor_ms: int  # min ms between reprices
-    cancel_replace_budget: int  # lifetime budget; exhaustion → EXHAUSTED
+    # Lifetime reprice budget; disposition wind-down cancels do not spend it.
+    cancel_replace_budget: int  # exhaustion → EXHAUSTED
     max_outstanding_children: int = 1  # v1: 1
 
     # --- Time / data (hard rails) -------------------------------------------#

@@ -68,8 +68,9 @@ MAX_STEP_DEVIATION = 0.25
 TRANCHE_EXTENSION_MULT = 1.5
 # First-objective tranche fraction of the remaining quantity.
 TRANCHE_FRACTION = 0.5
-# Budget-consuming actions (a cancel/replace pair or an explicit cancel).
-_BUDGET_ACTIONS = frozenset({"reprice", "cancel"})
+# D-0124: the lifetime budget bounds reprice aggression. Disposition cancels
+# wind exposure down and are durable/audited, but never spend reprice budget.
+_BUDGET_ACTIONS = frozenset({"reprice"})
 _WORKING_ACTIONS = frozenset({"submit", "reprice"})
 
 

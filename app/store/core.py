@@ -1505,6 +1505,7 @@ def project_envelope_obligation(
                 retain_malformed_envelope(envelope.id)
     scopes: dict[str, ExecutionEnvelope] = {}
     canonical_actions: dict[str, ExecutionEvent] = {}
+    cancel_actions: dict[str, list[ExecutionEvent]] = {}
     for event in action_events:
         if event.event_type is not ExecutionEventType.ENVELOPE_ACTION:
             continue
@@ -1536,6 +1537,51 @@ def project_envelope_obligation(
             continue
         envelope = envelopes_by_id[event.envelope_id]
         order_id = event.order_id
+        action_kind = event.payload.get("action")
+        if action_kind == "cancel":
+            cancel_actions.setdefault(order_id, []).append(event)
+            disposition = event.payload.get("disposition")
+            attempt = event.payload.get("attempt")
+            broker_order_id = event.payload.get("broker_order_id")
+            cancel_invalid = (
+                event.source is not EventSource.ENGINE
+                or event.authority is not EventAuthority.LOCAL
+                or event.symbol != envelope.symbol
+                or event.side is not OrderSide.SELL
+                or event.correlation_id != envelope.sell_intent_id
+                or event.session_id != envelope.session_id
+                or event.quantity is None
+                or event.quantity <= 0
+                or event.quantity > envelope.qty_ceiling
+                or event.price is None
+                or event.price < envelope.floor_price
+                or event.ts_event is None
+                or event.payload.get("actor") != "engine"
+                or disposition not in ("expiry_cancel_and_return", "stale_data_cancel")
+                or not isinstance(broker_order_id, str)
+                or not broker_order_id
+                or not isinstance(attempt, int)
+                or isinstance(attempt, bool)
+                or attempt <= 0
+                or set(event.payload)
+                != {
+                    "action",
+                    "actor",
+                    "disposition",
+                    "broker_order_id",
+                    "attempt",
+                }
+                or event.dedupe_key
+                != (
+                    f"envelope:{envelope.id}:disposition_cancel:"
+                    f"{order_id}:{disposition}:{attempt}"
+                )
+            )
+            if cancel_invalid and order_id not in invalid_seen:
+                invalid_seen.add(order_id)
+                invalid.append(order_id)
+            linked = True
+            continue
         prior_action = canonical_actions.get(order_id)
         duplicate_scope_conflict = prior_action is not None and (
             event.envelope_id != prior_action.envelope_id
@@ -1575,6 +1621,51 @@ def project_envelope_obligation(
         scopes[order_id] = envelope
         canonical_actions[order_id] = event
         order_ids.append(order_id)
+
+    # A disposition cancel is a non-minting intent/attempt fact. It may only
+    # follow the canonical submit/reprice edge for the exact existing child;
+    # it never becomes ``canonical_actions[order_id]`` and therefore cannot
+    # invent a second obligation. Attempts are one contiguous, single-reason
+    # sequence whose venue identity must match the durable Order row.
+    for order_id, attempts in cancel_actions.items():
+        canonical = canonical_actions.get(order_id)
+        order = orders_by_id.get(order_id)
+        if canonical is None:
+            if order_id not in invalid_seen:
+                invalid_seen.add(order_id)
+                invalid.append(order_id)
+            continue
+        if order is None:
+            continue
+        disposition = attempts[0].payload.get("disposition")
+        prior_sequence = canonical.sequence
+        cancel_lineage_invalid = order.broker_order_id is None
+        for expected_attempt, event in enumerate(attempts, start=1):
+            event_attempt = event.payload.get("attempt")
+            cancel_lineage_invalid = cancel_lineage_invalid or (
+                event.envelope_id != canonical.envelope_id
+                or event.source is not canonical.source
+                or event.authority is not canonical.authority
+                or event.symbol != canonical.symbol
+                or event.side is not canonical.side
+                or event.correlation_id != canonical.correlation_id
+                or event.session_id != canonical.session_id
+                or event.quantity != order.quantity
+                or event.price != order.limit_price
+                or event.payload.get("broker_order_id") != order.broker_order_id
+                or event.payload.get("disposition") != disposition
+                or event_attempt != expected_attempt
+                or (
+                    event.sequence > 0
+                    and prior_sequence > 0
+                    and event.sequence <= prior_sequence
+                )
+            )
+            if event.sequence > 0:
+                prior_sequence = event.sequence
+        if cancel_lineage_invalid and order_id not in invalid_seen:
+            invalid_seen.add(order_id)
+            invalid.append(order_id)
 
     unresolved: list[str] = []
     recovery: list[str] = []

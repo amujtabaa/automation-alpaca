@@ -151,6 +151,17 @@ _OPEN_STATUSES = frozenset(
 # (it is already being wound down, not "stuck unfilled").
 _STALEABLE_STATUSES = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED})
 
+# WO-0124 / D-0124: disposition cancels are exact-child, durable attempts. The
+# event is written before venue IO and is the only retry counter, so restart and
+# store implementations cannot disagree. Three persisted direct attempts
+# exhaust automatic authority; the tracked order is then latched needs_review.
+_DISPOSITION_CANCEL_RETRY_LIMIT = 3
+_EXPIRY_DISPOSITION_CANCEL = "expiry_cancel_and_return"
+_STALE_DATA_DISPOSITION_CANCEL = "stale_data_cancel"
+_DISPOSITION_CANCEL_KINDS = frozenset(
+    {_EXPIRY_DISPOSITION_CANCEL, _STALE_DATA_DISPOSITION_CANCEL}
+)
+
 # Cadence repair work is page-bounded. A poison fact blocks only its current
 # page while every fully inspected earlier page retains a durable high-water.
 _EXECUTION_REPAIR_BATCH_SIZE = 256
@@ -1074,8 +1085,144 @@ async def _envelope_order_ids(store: StateStore) -> set[str]:
     }
 
 
+def _disposition_cancel_events(
+    events: list[ExecutionEvent], *, envelope_id: str, order_id: str
+) -> list[ExecutionEvent]:
+    """Durable cancel-attempt facts for one exact envelope child."""
+
+    return [
+        event
+        for event in events
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope_id
+        and event.order_id == order_id
+        and event.payload.get("action") == "cancel"
+    ]
+
+
+def _stored_cancel_attempt_matches(
+    stored: ExecutionEvent, draft: ExecutionEvent
+) -> bool:
+    """A dedupe replay may authorize IO only when its immutable scope matches."""
+
+    return all(
+        (
+            stored.event_type is draft.event_type,
+            stored.source is draft.source,
+            stored.authority is draft.authority,
+            stored.dedupe_key == draft.dedupe_key,
+            stored.ts_event == draft.ts_event,
+            stored.symbol == draft.symbol,
+            stored.side is draft.side,
+            stored.quantity == draft.quantity,
+            stored.price == draft.price,
+            stored.order_id == draft.order_id,
+            stored.envelope_id == draft.envelope_id,
+            stored.session_id == draft.session_id,
+            stored.correlation_id == draft.correlation_id,
+            stored.payload == draft.payload,
+        )
+    )
+
+
+async def _persist_disposition_cancel_attempt(
+    store: StateStore,
+    *,
+    envelope: ExecutionEnvelope,
+    order: Order,
+    disposition: str,
+    events: list[ExecutionEvent],
+) -> Optional[int]:
+    """Append the next exact cancel attempt before IO.
+
+    ``None`` means another caller won the same dedupe key. That caller alone
+    owns the venue call; a later cadence derives the next attempt from the log.
+    """
+
+    existing = _disposition_cancel_events(
+        events, envelope_id=envelope.id, order_id=order.id
+    )
+    effective_disposition = (
+        str(existing[0].payload["disposition"]) if existing else disposition
+    )
+    attempt = len(existing) + 1
+    if attempt > _DISPOSITION_CANCEL_RETRY_LIMIT:
+        return None
+    now = utcnow()
+    draft = ExecutionEvent(
+        event_type=ExecutionEventType.ENVELOPE_ACTION,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=(
+            f"envelope:{envelope.id}:disposition_cancel:"
+            f"{order.id}:{effective_disposition}:{attempt}"
+        ),
+        ts_event=now,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        quantity=order.quantity,
+        price=order.limit_price,
+        order_id=order.id,
+        envelope_id=envelope.id,
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload={
+            "action": "cancel",
+            "actor": "engine",
+            "disposition": effective_disposition,
+            "broker_order_id": order.broker_order_id,
+            "attempt": attempt,
+        },
+    )
+    stored = await store.append_execution_event(draft)
+    if not _stored_cancel_attempt_matches(stored, draft):
+        raise RecoveryTransitionError(
+            "disposition-cancel dedupe identity conflicts with persisted fact "
+            f"for envelope {envelope.id} child {order.id} attempt {attempt}"
+        )
+    if stored.id != draft.id:
+        return None
+    events.append(stored)
+    return attempt
+
+
+async def _escalate_disposition_cancel_exhausted(
+    store: StateStore,
+    *,
+    envelope: ExecutionEnvelope,
+    order: Order,
+    disposition: str,
+) -> None:
+    """Latch one tracked, exact child for human review after direct retries."""
+
+    await store.create_submit_recovery(
+        local_order_id=order.id,
+        broker_order_id=order.broker_order_id or "",
+        client_order_id=order.id,
+        symbol=order.symbol,
+        side=order.side,
+        quantity=order.quantity,
+        limit_price=order.limit_price,
+        failure_reason="envelope_disposition_cancel_exhausted",
+        session_id=order.session_id,
+        candidate_id=order.candidate_id,
+        cleanup_status=RECOVERY_NEEDS_REVIEW,
+        event_type=EventType.SUBMIT_RECOVERY_NEEDS_REVIEW.value,
+        extra_payload={
+            "envelope_id": envelope.id,
+            "action_kind": "envelope_disposition_cancel_exhausted",
+            "disposition": disposition,
+            "attempts": _DISPOSITION_CANCEL_RETRY_LIMIT,
+        },
+    )
+
+
 async def _cancel_envelope_working_order(
-    store: StateStore, adapter: BrokerAdapter, envelope: ExecutionEnvelope
+    store: StateStore,
+    adapter: BrokerAdapter,
+    envelope: ExecutionEnvelope,
+    *,
+    disposition: str = _EXPIRY_DISPOSITION_CANCEL,
 ) -> None:
     """Best-effort cancel of every projection-valid child obligation.
 
@@ -1086,7 +1233,10 @@ async def _cancel_envelope_working_order(
     valid target is isolated so one failed cancel cannot strand its sibling.
     """
 
-    loaded = await _validated_envelope_lineage(store, envelope.id)
+    if disposition not in _DISPOSITION_CANCEL_KINDS:
+        raise ValueError(f"unknown envelope cancel disposition {disposition!r}")
+    all_events = await store.get_execution_events()
+    loaded = await _validated_envelope_lineage(store, envelope.id, events=all_events)
     if loaded is None:
         # WO-0036 R2 consolidation (E.3.2): fail closed loudly, not silently.
         # `envelope` was handed in already-loaded (by _converge_expired_envelope_
@@ -1177,8 +1327,43 @@ async def _cancel_envelope_working_order(
                 order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
                 and order.broker_order_id is not None
             ):
-                await adapter.cancel_order(order.broker_order_id)
-                await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+                prior_attempts = _disposition_cancel_events(
+                    all_events, envelope_id=reloaded.id, order_id=order.id
+                )
+                effective_disposition = (
+                    str(prior_attempts[0].payload["disposition"])
+                    if prior_attempts
+                    else disposition
+                )
+                if len(prior_attempts) >= _DISPOSITION_CANCEL_RETRY_LIMIT:
+                    await _escalate_disposition_cancel_exhausted(
+                        store,
+                        envelope=reloaded,
+                        order=order,
+                        disposition=effective_disposition,
+                    )
+                    continue
+                attempt = await _persist_disposition_cancel_attempt(
+                    store,
+                    envelope=reloaded,
+                    order=order,
+                    disposition=effective_disposition,
+                    events=all_events,
+                )
+                if attempt is None:
+                    continue
+                try:
+                    await adapter.cancel_order(order.broker_order_id)
+                    await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+                except (BrokerError, *_TRANSITION_ERRORS):
+                    if attempt == _DISPOSITION_CANCEL_RETRY_LIMIT:
+                        await _escalate_disposition_cancel_exhausted(
+                            store,
+                            envelope=reloaded,
+                            order=order,
+                            disposition=effective_disposition,
+                        )
+                    raise
                 continue
             if (
                 order.broker_order_id is not None
@@ -1190,6 +1375,17 @@ async def _cancel_envelope_working_order(
                 # recovery owner *before* the best-effort cancel call. The
                 # recovery loop then polls/cancels until broker terminal truth
                 # closes the interval.
+                # This locally-terminal branch really is an otherwise-untracked
+                # venue interval, so its existing unresolved recovery owner is
+                # correct. Persist disposition provenance before either the
+                # recovery write or the best-effort venue call.
+                attempt = await _persist_disposition_cancel_attempt(
+                    store,
+                    envelope=reloaded,
+                    order=order,
+                    disposition=disposition,
+                    events=all_events,
+                )
                 await store.create_submit_recovery(
                     local_order_id=order.id,
                     broker_order_id=order.broker_order_id,
@@ -1209,7 +1405,8 @@ async def _cancel_envelope_working_order(
                         "action_kind": "cancel_terminal_venue_interval",
                     },
                 )
-                await adapter.cancel_order(order.broker_order_id)
+                if attempt is not None:
+                    await adapter.cancel_order(order.broker_order_id)
         except (BrokerError, *_TRANSITION_ERRORS) as exc:
             _log.warning(
                 "envelope %s: child %s cancel failed (%s); reconcile will converge it",
@@ -1219,32 +1416,60 @@ async def _cancel_envelope_working_order(
             )
 
 
-# Terminal CANCEL_AND_RETURN convergence reuses the projection-wide cancel
-# seam, including safe cleanup of legacy lineages with multiple venue children.
+# A persisted cancel event remains a convergence obligation after stale data
+# clears or a process restarts. EXPIRED envelopes also enter here when a crash
+# landed between their transition and the first durable attempt.
+async def _converge_envelope_disposition_cancels(
+    store: StateStore, adapter: BrokerAdapter
+) -> None:
+    """Re-drive exact, durable expiry and stale-data cancel obligations."""
+
+    try:
+        envelopes = await store.list_envelopes()
+        events = await store.get_execution_events()
+    except Exception:  # noqa: BLE001 — never crash the tick
+        _log.exception("envelope disposition cancel-convergence: listing failed")
+        return
+
+    persisted_by_envelope: dict[str, str] = {}
+    for event in events:
+        if (
+            event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id is not None
+            and event.payload.get("action") == "cancel"
+        ):
+            raw_disposition = event.payload.get("disposition")
+            persisted_by_envelope.setdefault(
+                event.envelope_id,
+                raw_disposition
+                if isinstance(raw_disposition, str)
+                and raw_disposition in _DISPOSITION_CANCEL_KINDS
+                else _EXPIRY_DISPOSITION_CANCEL,
+            )
+
+    for env in envelopes:
+        disposition = persisted_by_envelope.get(env.id)
+        if disposition is None and (
+            env.status is EnvelopeStatus.EXPIRED
+            and env.expiry_disposition is EnvelopeExpiryDisposition.CANCEL_AND_RETURN
+        ):
+            disposition = _EXPIRY_DISPOSITION_CANCEL
+        if disposition is None:
+            continue
+        try:
+            await _cancel_envelope_working_order(
+                store, adapter, env, disposition=disposition
+            )
+        except Exception:  # noqa: BLE001 — isolate per envelope
+            _log.exception("envelope %s: disposition cancel-convergence failed", env.id)
+
+
 async def _converge_expired_envelope_cancels(
     store: StateStore, adapter: BrokerAdapter
 ) -> None:
-    """R6 / Codex PR#8 #3: an EXPIRED ``CANCEL_AND_RETURN`` envelope's one-shot
-    working-order cancel can fail transiently (``BrokerError``), leaving the SELL
-    LIVE at the venue — and a terminal envelope is no longer visited by
-    ``_run_envelopes``, so the approved cancel disposition would never complete.
-    Re-drive the idempotent cancel each tick until the order converges (terminal
-    or CANCEL_PENDING, which the reconcile poll then confirms). Scoped to the ONE
-    terminal state carrying a cancel intent: REST_AT_FLOOR keeps its order by
-    design, and BREACHED/EXHAUSTED never cancelled one."""
+    """Compatibility seam; convergence now includes persisted stale cancels."""
 
-    try:
-        expired = await store.list_envelopes(status=EnvelopeStatus.EXPIRED)
-    except Exception:  # noqa: BLE001 — never crash the tick
-        _log.exception("envelope cancel-convergence: listing EXPIRED failed")
-        return
-    for env in expired:
-        if env.expiry_disposition is not EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
-            continue
-        try:
-            await _cancel_envelope_working_order(store, adapter, env)
-        except Exception:  # noqa: BLE001 — isolate per envelope
-            _log.exception("envelope %s: expiry cancel-convergence failed", env.id)
+    await _converge_envelope_disposition_cancels(store, adapter)
 
 
 async def _run_envelopes(
@@ -1338,6 +1563,41 @@ async def _run_one_envelope(
     if snapshot is not None:
         tapes.append(snapshot)
 
+    events = await store.get_execution_events()
+    cancel_events = [
+        event
+        for event in events
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope.id
+        and event.payload.get("action") == "cancel"
+    ]
+    if cancel_events:
+        # A stale-data decision survives restart and data recovery. Do not let
+        # fresh policy work overtake it while its exact child is still live,
+        # recovery-owned, or malformed. Once broker-terminal truth closes that
+        # child, an ACTIVE envelope may resume from the same durable history.
+        loaded = await _validated_envelope_lineage(store, envelope.id, events=events)
+        if loaded is None:
+            return
+        _, projection, _ = loaded
+        cancel_order_ids = {
+            event.order_id for event in cancel_events if event.order_id is not None
+        }
+        cancel_unresolved_ids = {
+            *projection.unresolved_order_ids,
+            *projection.recovery_order_ids,
+            *projection.uncertain_claim_order_ids,
+            *projection.needs_review_child_order_ids,
+        }
+        if (
+            any(event.order_id is None for event in cancel_events)
+            or projection.missing_envelope_ids
+            or projection.missing_order_ids
+            or projection.invalid_order_ids
+            or bool(cancel_order_ids & cancel_unresolved_ids)
+        ):
+            return
+
     # A staged-but-unexecuted action (transient release / crash between
     # staging and the venue call) resumes FIRST, with no new accounting —
     # the budget was spent when it was staged (INV-083).
@@ -1353,7 +1613,6 @@ async def _run_one_envelope(
     ):
         return  # one venue action per envelope per tick
 
-    events = await store.get_execution_events()
     # WO-0025: the policy's working-order predicate needs the envelope's
     # ORDERS' lifecycle events too (FILLED/CANCELED/REJECTED terminals carry
     # order_id but no envelope_id) — include them alongside the envelope's
@@ -1410,14 +1669,24 @@ async def _run_one_envelope(
             now=now,  # Codex #2
         )
         if decision.disposition is EnvelopeExpiryDisposition.CANCEL_AND_RETURN:
-            await _cancel_envelope_working_order(store, adapter, envelope)
+            await _cancel_envelope_working_order(
+                store,
+                adapter,
+                envelope,
+                disposition=_EXPIRY_DISPOSITION_CANCEL,
+            )
         # REST_AT_FLOOR: the working order deliberately keeps resting.
     elif isinstance(decision, StaleDataSignal):
         # Fail closed: repricing already stopped (the policy returned no
         # plan). The envelope stays ACTIVE — staleness is transient — and the
         # approval-time choice decides the resting order's fate.
         if decision.disposition is EnvelopeStaleDataDisposition.CANCEL:
-            await _cancel_envelope_working_order(store, adapter, envelope)
+            await _cancel_envelope_working_order(
+                store,
+                adapter,
+                envelope,
+                disposition=_STALE_DATA_DISPOSITION_CANCEL,
+            )
     # NoAction (monitoring / cooldown / warmup / out-of-phase): nothing.
 
 
@@ -1645,7 +1914,7 @@ async def run_monitoring_tick(
     # Codex #3 (R6): re-drive any EXPIRED CANCEL_AND_RETURN envelope whose
     # working-order cancel didn't complete — AFTER reconcile so a CANCEL_PENDING
     # from a prior tick is confirmed first (and this arm no-ops once terminal).
-    await _converge_expired_envelope_cancels(store, adapter)
+    await _converge_envelope_disposition_cancels(store, adapter)
     await _recover_unpersisted_submits(store, adapter)
     # Phase 4 wave 4e: the ACTING §7 mass-report reconcile. Runs LAST so it sees the
     # fully-reconciled post-tick state — a divergence it acts on is then one the
