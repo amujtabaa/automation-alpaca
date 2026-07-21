@@ -44,7 +44,7 @@ from app.models import (
     SessionType,
 )
 from app.sellside.types import ActionKind, PlannedAction
-from app.store.base import CLAIM_BLOCKED
+from app.store.base import CLAIM_BLOCKED, RecoveryTransitionError
 from app.store.sqlite import SqliteStateStore
 
 pytestmark = pytest.mark.anyio
@@ -1172,7 +1172,7 @@ async def test_brokerless_request_never_retargets_a_later_claim_occurrence(
 
 @pytest.mark.parametrize(
     "target_shape",
-    ["empty", "duplicate", "foreign-superset"],
+    ["empty", "duplicate", "unsorted", "non-string", "foreign-superset"],
 )
 async def test_malformed_brokerless_request_scope_fails_closed_without_io(
     any_store, monkeypatch, target_shape
@@ -1190,6 +1190,10 @@ async def test_malformed_brokerless_request_scope_fails_closed_without_io(
         target_order_ids = []
     elif target_shape == "duplicate":
         target_order_ids = [child.id, child.id]
+    elif target_shape == "unsorted":
+        target_order_ids = [child.id, "aa-foreign-order"]
+    elif target_shape == "non-string":
+        target_order_ids = [child.id, 7]
     else:
         target_order_ids = sorted([child.id, "zz-foreign-order"])
     await any_store.append_execution_event(
@@ -1329,6 +1333,52 @@ async def test_concurrent_brokerless_request_accepts_dedupe_winner_timestamp(
         and event.payload.get("action") == "cancel_request"
     ]
     assert len(requests) == 1
+
+
+async def test_brokerless_request_rejects_invalid_arguments_and_scope_collision(
+    any_store,
+):
+    """Timestamp tolerance never weakens request shape or material identity."""
+
+    envelope, child = await _active_envelope_with_created_child(any_store)
+    events = await any_store.get_execution_events()
+    common = {
+        "envelope": envelope,
+        "order": child,
+        "disposition": "stale_data_cancel",
+        "events": list(events),
+        "target_order_ids": (child.id,),
+    }
+    with pytest.raises(RecoveryTransitionError, match="non-negative claim occurrence"):
+        await monitoring._persist_disposition_cancel_request(
+            any_store,
+            **common,
+            claim_occurrence=-1,
+        )
+    with pytest.raises(RecoveryTransitionError, match="complete local target scope"):
+        await monitoring._persist_disposition_cancel_request(
+            any_store,
+            **{**common, "target_order_ids": ()},
+            claim_occurrence=0,
+        )
+
+    stored = await monitoring._persist_disposition_cancel_request(
+        any_store,
+        **common,
+        claim_occurrence=0,
+    )
+    assert stored.payload["target_order_ids"] == [child.id]
+    conflicting_order = child.model_copy(update={"quantity": child.quantity - 1})
+    with pytest.raises(RecoveryTransitionError, match="dedupe identity conflicts"):
+        await monitoring._persist_disposition_cancel_request(
+            any_store,
+            envelope=envelope,
+            order=conflicting_order,
+            disposition="stale_data_cancel",
+            events=[],
+            target_order_ids=(child.id,),
+            claim_occurrence=0,
+        )
 
 
 async def test_terminal_fill_excludes_source_cancels_sibling_and_reconciles_once(
