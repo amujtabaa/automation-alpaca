@@ -39,13 +39,16 @@ _SANCTIONED_ALPACA_IMPORTERS = {
 
 # The full set of modules allowed to TRANSITIVELY reach the SDK: the two direct
 # importers above, the two credential-safe factories that build them, and the
-# composition root that wires everything (ADR-006 Finding 1 — the factories were
+# two composition roots that wire them: the application and the separate,
+# read-only tape-recorder launcher. (ADR-006 Finding 1 — the factories were
 # lifted out of the package __init__ so the bare `app.broker`/`app.marketdata`
-# packages, and thus the abstract port, never reach alpaca).
+# packages, and thus the abstract port, never reach alpaca.)
 _SANCTIONED_ALPACA_REACHERS = _SANCTIONED_ALPACA_IMPORTERS | {
     "app.broker.factory",
     "app.marketdata.factory",
     "app.main",
+    "app.recorder.__main__",
+    "app.recorder.runner",
 }
 
 # Concrete venue implementations the venue-agnostic engine must never reach
@@ -132,7 +135,7 @@ def test_cockpit_imports_no_backend_code():
 def test_only_sanctioned_modules_transitively_reach_the_alpaca_sdk():
     """INI-independent, TRANSITIVE strengthening of INV-070 / ADR-006 Finding 1:
     the set of modules that reach ``alpaca`` by ANY import chain is exactly the two
-    concrete ports + the two factories + the composition root. This catches an
+    concrete ports + the two factories + the composition roots. This catches an
     indirect leak (e.g. an engine module importing the bare `app.broker` factory
     package) that the direct-import contract, with ``allow_indirect_imports``, does
     not — the exact hole the review found."""
