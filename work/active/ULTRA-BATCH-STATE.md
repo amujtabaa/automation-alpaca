@@ -55,7 +55,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0123 | CLOSED | `635127b` activation; `710ed09` recorder; `6c072d8` boundary pin; `e4d805b` close-out | Read-only, flag-off-by-default recorder with separate bounded tape store, replay documentation, failure-capable zero-order-flow spy, and green full suite; dispositioned and moved to `work/completed/`. |
 | WO-0124 | QUEUED / NEEDS-INPUT | — | Lane 3 after WO-0118; D-0124 requires `_BUDGET_ACTIONS` and model-comment alignment in paths the WO does not allow; do not activate without a narrow scope amendment. |
 | WO-0125 | CLOSED | `9dec106` activation; `81a5e64` implementation; `2b39830` close-out | VERIFIED: explicit full envelope vocabulary fold, dual-store read-model parity, two mutation-red pins; 3881 passed, 11 skipped, 1 expected xfail. |
-| WO-0126 | QUEUED / NEEDS-INPUT | — | Shared-file prerequisites landed, but D-0126 field removal requires `app/store/core.py` and `app/store/sqlite.py`, which the WO forbids; do not activate without a scope amendment. |
+| WO-0126 | ACTIVE | activation commit pending | D-0126 is the exact narrow scope update: remove domain/core/SQLite application dependencies while leaving the historical column inert; no DDL/migration. Red-first implementation in isolated worktree. |
 | WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
 | WO-0128 | CLOSED / RED-STAGING | `e16866f` activation; `24d3746` close-out on `codex/signal-tests-staging` | VERIFIED intentional RED: 51 tests collected; 10 planned R4/R5 ImportErrors only; never merge until mapped slices turn green. |
 | WO-0129 | CLOSED | `094f0df` activation; `6aa678f` close-out | Complete 40/40 configuration sweep after WO-0123; primer and P-1/P-2 protocol landed. |
@@ -74,12 +74,6 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
   `harness/bootstrap.py`, `tests/test_tape_recorder.py`, and the reviewer-owned
   `work/review/AUDIT-0002-priorwork/probe_review_integrity.py`. WO-0114's scoped format check is
   green; do not absorb those changes into this lane.
-- WO-0126 — ratified removal of the stored `replaces_used` domain field cannot satisfy the WO's
-  current `app/store/**` prohibition: SQLite schema hydration/writes and the shared draft guard
-  still consume the field. Preferred amendment: allow `app/store/core.py` and
-  `app/store/sqlite.py`, remove every application read/write, and leave the historical SQLite
-  column as an inert compatibility tombstone (no DDL/migration). Physical column removal would
-  instead require explicit schema/migration approval and a review posture.
 - WO-0124 — ratified reprice-only budget semantics require changing
   `app/sellside/policy.py::_BUDGET_ACTIONS`, and the corresponding accounting comment in
   `app/models.py` is outside that path's current qualifier. Preferred amendment: allow the policy
