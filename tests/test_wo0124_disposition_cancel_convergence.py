@@ -18,7 +18,7 @@ from app.broker.adapter import BrokerError
 from app.broker.mock import MockBrokerAdapter
 from app.marketdata.fake import FakeMarketDataFeed
 from app.models import (
-    RECOVERY_UNRESOLVED,
+    RECOVERY_NEEDS_REVIEW,
     EnvelopeExpiryDisposition,
     EnvelopeStaleDataDisposition,
     EnvelopeStatus,
@@ -399,10 +399,20 @@ async def test_direct_cancel_retries_are_bounded_then_escalate_once(any_store):
         await any_store.get_execution_events(), envelope.id, order.id
     )
     assert [event.payload["attempt"] for event in attempts] == [1, 2, 3]
-    recoveries = await any_store.list_submit_recoveries(statuses={RECOVERY_UNRESOLVED})
+    recoveries = await any_store.list_submit_recoveries(
+        statuses={RECOVERY_NEEDS_REVIEW}
+    )
     assert len(recoveries) == 1
-    assert recoveries[0].local_order_id == order.id
-    assert recoveries[0].broker_order_id == order.broker_order_id
+    [recovery] = recoveries
+    assert recovery.cleanup_status == RECOVERY_NEEDS_REVIEW
+    assert recovery.local_order_id == order.id
+    assert recovery.broker_order_id == order.broker_order_id
+    assert recovery.session_id == order.session_id == envelope.session_id
+    assert recovery.symbol == order.symbol == envelope.symbol
+    assert recovery.side is order.side is OrderSide.SELL
+    assert recovery.quantity == order.quantity
+    assert recovery.limit_price == order.limit_price
+    assert recovery.failure_reason == "envelope_disposition_cancel_exhausted"
 
     audits = [
         event
@@ -411,3 +421,8 @@ async def test_direct_cancel_retries_are_bounded_then_escalate_once(any_store):
     ]
     assert len(audits) == 1
     assert audits[0].payload["envelope_id"] == envelope.id
+
+    # A terminal human-review latch is visible but excluded from the automatic
+    # submit-recovery loop, whose semantics are for otherwise-untracked submits.
+    await monitoring._recover_unpersisted_submits(any_store, adapter)
+    assert adapter.canceled == [order.broker_order_id] * 3
