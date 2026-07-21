@@ -1,9 +1,10 @@
 # Codex kickoff — ULTRA-batch review remediation (local, strongest model)
 
-> Paste into a FRESH local Codex session. FIRST: `git checkout codex/ultra-beta-batch &&
-> git pull` — the planning seat pushed the four review results + these remediation WOs onto
-> this branch. Work CONTINUES on `codex/ultra-beta-batch` (the remediation must sit on top of
-> the batch code it fixes). Never push master. No PR.
+> Paste into a FRESH local Codex session — no operator pre-steps needed: the session syncs
+> itself (Setup step 0) and fail-closes if the review files aren't present. The planning seat
+> pushed the four review results + these remediation WOs onto `codex/ultra-beta-batch` at
+> `8d589fe`. Work CONTINUES on that branch (the remediation must sit on top of the batch code
+> it fixes). Never push master. No PR.
 
 ---
 
@@ -20,10 +21,17 @@ FIRST commit: `work/active/REMEDIATION-STATE.md` with the per-WO scoreboard. Upd
 WO boundary. After any pause/compaction re-read: this kickoff → the state file → the active WO
 → `git log`/`git status`. Never re-derive from memory.
 
-## Setup
+## Setup — YOU sync first, verify, then work
 
-- Continue on `codex/ultra-beta-batch` (pulled current). One branch. Never push master.
-- Paper-only; zero credentials/broker/live. Pytest scratch in OS temp, never repo-root.
+- **Step 0 (execute these yourself; do not assume the operator pre-pulled):**
+  `git status --short` (tree must be clean — if not, STOP and report; never stash blindly) →
+  `git fetch origin` → `git checkout codex/ultra-beta-batch` →
+  `git pull --ff-only origin codex/ultra-beta-batch` (must land `8d589fe` or later).
+- **Precondition guard (fail closed):** confirm `work/queue/REVIEW-REMEDIATION-BATCH.md` AND
+  all four `work/review/REV-0034..0037/result.md` files exist. If ANY is missing, the sync
+  failed — STOP and report. Never remediate from a stale tree.
+- One branch. Never push master. Paper-only; zero credentials/broker/live. Pytest scratch in
+  OS temp, never repo-root.
 - Strongest local model — two of these touch gated surfaces (release valve, event-log truth).
 
 ## The work (see each WO file for its full contract)
