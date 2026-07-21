@@ -3100,7 +3100,20 @@ async def test_cancel_and_return_cancels_every_valid_legacy_venue_child(
         now=NOW,
     )
     assert expired.expiry_disposition is EnvelopeExpiryDisposition.CANCEL_AND_RETURN
-    adapter = MockBrokerAdapter()
+
+    class PreIoScopeAdapter(MockBrokerAdapter):
+        async def cancel_order(self, broker_order_id: str) -> None:
+            cancel_order_ids = {
+                event.order_id
+                for event in await any_store.get_execution_events()
+                if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+                and event.envelope_id == envelope.id
+                and event.payload.get("action") == "cancel"
+            }
+            assert cancel_order_ids == {first.id, second.id}
+            await super().cancel_order(broker_order_id)
+
+    adapter = PreIoScopeAdapter()
     if fail_first:
         adapter.fail_next_cancel(BrokerError("isolated first-child cancel failure"))
 
