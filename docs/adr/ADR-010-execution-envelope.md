@@ -363,11 +363,42 @@ to this snapshot. `EXPIRED + CANCEL_AND_RETURN` independently discovers the then
 child only to repair a crash before its first cancel fact, then persists that exact identity before
 IO. The event records cancel intent/attempt, never broker-terminal or fill truth. Restart derives
 retry state from these facts.
+
+A safely-local child that is `CREATED`, or a claimed `SUBMITTING` child that does not yet have a
+broker id, is first protected by a distinct payload action, `cancel_request`. This is a local
+selection hold only: it contains no broker id, has no positive attempt number, spends no reprice
+budget, and grants no venue authority. Its immutable identity binds the exact envelope, child,
+session, intent, material order fields, disposition, one submit-claim occurrence, and a sorted,
+unique, non-empty `target_order_ids` list containing the complete local-plus-venue selection at
+the decision boundary. Monitoring disposition policy is its sole producer; the shared obligation
+projection is its validating consumer.
+
+The append and submit claim serialize through the store. If the request commits first, it pre-arms
+the next exact occurrence and blocks a later claim while the local compare-and-swap completes. If
+the claim commits first, the request may follow that same highest occurrence even when its broker
+acknowledgement or terminal fact also wins before the append; it never retargets a later claim
+occurrence. A crash after the first request append can therefore recover every selected sibling,
+including an already-broker-backed sibling, while excluding any child created later. Empty,
+duplicate, unsorted, foreign, expanded, or occurrence-mismatched request scope fails the lineage
+closed. Broker IO still requires fresh, validated, non-terminal lineage plus a newly persisted
+normal `action=cancel` attempt for the exact current `(order_id, broker_order_id)` and its canonical
+`target_snapshot`. If expiry later overlaps the same child, that attempt retains the disposition
+of the earlier request rather than relabelling durable history. Concurrent identical request or
+attempt writers accept the already-persisted dedupe winner's timestamp; every authority-bearing
+field and payload must still match, and only the normal-attempt winner may perform venue IO.
+
 Direct cancel authority is bounded at three persisted attempts. A third failed attempt creates
 one exact-pair, terminal `needs_review` recovery-ledger latch with reason
 `envelope_disposition_cancel_exhausted`; it is visible to the human and retains the owner but is
 excluded from automatic submit-recovery work. The still-tracked order remains on ordinary
-broker-authoritative reconciliation, and no later direct disposition cancel is issued.
+broker-authoritative reconciliation, and no later direct disposition cancel is issued. A pending
+snapshot target also blocks fresh envelope policy until every target named by that snapshot has
+become terminal or converging; one terminal sibling cannot release another unresolved sibling.
+If a safely-local `CREATED` cancellation loses its compare-and-swap, the engine reloads the full
+validated lineage before deciding venue authority, so a broker-terminal winner is never canceled
+from the stale projection. After a venue call or terminal-attempt broker error, transition races
+are likewise classified from fresh durable lineage: terminal or already-`CANCEL_PENDING` truth
+suppresses a false `needs_review` latch, while a still-open third-attempt target is escalated.
 
 **Amended 2026-07-11 (WO-0016 gate):** `envelope_activated`, `envelope_completed`, and
 `envelope_cancelled` added to the family. As drafted, the §3 machine's `APPROVED → ACTIVE`,

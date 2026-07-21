@@ -783,7 +783,16 @@ one exact-pair terminal `needs_review` recovery latch with reason
 `envelope_disposition_cancel_exhausted`. That latch is operator-visible and excluded from the
 automatic submit-recovery loop; no fourth direct cancel occurs. *Pinned by:*
 `tests/test_wo0124_disposition_cancel_convergence.py` and the amended
-`tests/test_wo0126_replace_budget_single_source.py` corpus.
+`tests/test_wo0126_replace_budget_single_source.py` corpus. A `CREATED` cancel that loses its
+compare-and-swap grants no venue authority from the stale projection: the complete lineage is
+reloaded first, and broker-terminal truth produces no cancel. After a venue-call return or
+terminal-attempt broker error, fresh durable terminal or `CANCEL_PENDING` truth suppresses a false
+human-review latch; only a still-open exact target may be escalated.
+A payload-only `action=cancel_request` pre-arms one exact brokerless submit occurrence and the
+complete sorted local-order selection before that compare-and-swap. It contains no broker id or
+positive attempt, is non-minting, and spends zero budget. Only a later normal exact broker-backed
+cancel attempt may acquire venue authority. Its single production constructor and zero-budget
+classification are pinned in `tests/test_wo0113_safe_local_cancel.py`.
 
 **INV-084 — Reduce-only is enforced against the live fill-derived position at
 every pre-venue seam.** ``stage_envelope_action`` (both stores) reads the
@@ -1032,13 +1041,35 @@ crash before its first event, but must persist that exact identity before IO. Ca
 replace the canonical child edge or create another obligation. Missing, foreign, future-expanded,
 reordered, mixed-disposition, or otherwise malformed cancel provenance marks the exact child
 invalid and therefore fails cancellation closed; symbol equality alone still grants no authority.
+Every unresolved, recovery-owned, uncertain, or `needs_review` target named anywhere in a valid
+snapshot blocks fresh policy for that envelope. Resolving one sibling cannot let policy overtake a
+different still-open sibling from the same pre-IO decision.
+For a safely-local or brokerless claimed child, a separate `action=cancel_request` is a
+selection-only projection hold. It must preserve exact material/correlation scope, name one
+non-negative submit-claim occurrence, and carry a sorted, unique, non-empty `target_order_ids`
+list containing its anchor and every selected local or venue sibling. It contains neither broker
+identity nor an attempt number and never authorizes IO. Request-first serialization pre-arms the
+next occurrence and removes every named `CREATED` child from `claimable_order_ids`; claim-first
+serialization may bind only the same highest occurrence, even if acknowledgement or terminal
+truth precedes the request append. A later occurrence cannot inherit it. The complete first
+request survives partial append and SQLite restart, recovers the pre-decision A/B scope, and never
+expands to later C. Empty, duplicate, unsorted, foreign/superset, or occurrence-mismatched scope
+marks the anchor invalid and fails closed. A normal cancel attempt may follow only fresh validated
+broker-backed truth for its exact current broker id. If `EXPIRED + CANCEL_AND_RETURN` overlaps a
+prior stale-data request for the same child, the first normal attempt preserves the request's
+original disposition. Concurrent identical writers converge on the stored dedupe winner even when
+their caller-local timestamps differ; all scope and payload fields still match exactly, and the
+normal-attempt loser performs no IO.
 At the three-attempt bound, the exact child's terminal `needs_review` latch composes
 through this same projection's widened retention while the normal tracked-order reconciliation
 remains the only automatic observer of broker/fill truth. *Pinned by:*
 `tests/test_wo0124_disposition_cancel_convergence.py` (dual-store positive, non-minting, exact
 broker-identity negative, restart, historical-child exclusion, and recovery-authority controls)
-plus `tests/test_wo0036_r2_hostile_closure.py` (legacy multi-child pre-IO and partial-snapshot
-restart controls).
+plus `tests/test_wo0036_r2_hostile_closure.py` (legacy multi-child pre-IO, partial-snapshot,
+brokerless pre-CAS, mixed local/venue scope, sibling claim-block, and restart/later-child
+exclusion controls) and `tests/test_wo0113_safe_local_cancel.py` (both serialization orders,
+pre-existing claim, expiry overlap, malformed/superset scope, exact-occurrence rejection, and
+single-producer controls).
 
 **INV-091 — Durable submit progress cannot disappear or be blindly repeated.**
 *WO-0113 operator-ratified branch behavior — pending REV-0033 independent
