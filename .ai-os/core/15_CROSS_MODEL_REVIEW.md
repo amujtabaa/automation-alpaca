@@ -24,6 +24,16 @@ Contents:
 - `result.md` — Inbound findings written by the independent reviewer.
 - `disposition.md` — Author records what was accepted, fixed, or disputed.
 
+## Packet Ownership and PR-Thread Record (P-1/P-2, adopted 2026-07-21)
+
+- **P-1:** A reviewed party never edits a reviewer-owned `result.md` in place. If a correction,
+  clarification, or rebuttal is needed, add a separate disclosed addendum in the same packet that
+  identifies its author, date, and relationship to the reviewer result. Preserve the original
+  result unchanged.
+- **P-2:** Every human-gated-surface change receives a tracked `REV-*` packet even when review
+  discussion occurs in PR threads. The packet request or disposition records the PR/thread
+  verdict and links or identifies the review record; PR discussion alone is not the packet.
+
 ## Review Lenses (Optional but Recommended)
 When creating `request.md`, consider asking the reviewer to analyze through relevant lenses:
 - Correctness & Edge Cases

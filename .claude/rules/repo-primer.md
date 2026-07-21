@@ -1,270 +1,114 @@
 # Repository Primer
 
-<!--
-  QUICK START: Minimum viable primer - fill in "What This Repo Is", "Tech Stack",
-  and "Build Commands". Expand from there as you learn what context Claude needs most.
--->
-
-<!--
-  This file tells Claude about YOUR repository. Fill in each section below with
-  your project's specifics. Delete sections that don't apply. The more accurate
-  and detailed this file is, the better Claude will understand your codebase and
-  make correct decisions without asking unnecessary questions.
--->
-
-## Operator working preferences
-
-Durable preference from the repo owner (Ameen) on how to run multi-step work — captured at his request:
-
-- **Drive autonomously; minimize stops.** Prefer running through the task list end-to-end over a
-  start-stop, one-approval-per-step cadence. Don't pause to ask when the request, the code, or a
-  sensible default already answers the question.
-- **Work concurrently where it's safe.** Let read-only synthesis and independent fixes progress in
-  parallel (e.g. background analysis workflows while foreground code changes land), sequencing only
-  what would otherwise cause a harmful file/state conflict.
-- **Isolate ambiguity instead of blocking on it.** When one thread genuinely needs a human decision,
-  set it aside and keep the other threads moving; **batch** the human-only decisions and surface them
-  together rather than halting the whole effort for each one.
-- **Hard limit:** this preference governs *velocity and structure only*. It never overrides the
-  `CLAUDE.md` safety core, the invariants, or the human-gated surfaces — those still stop and wait for
-  explicit human approval, always. Autonomy means fewer needless pauses, not auto-approving gated actions.
-- **Continuity protocol for long or compaction-prone sessions** (adopted 2026-07-20, ULTRA batch;
-  apply to ANY batch — or single work order — expected to outlive its context window):
-  1. **FIRST commit** of the session: a state file in `work/active/` (e.g. `<BATCH>-STATE.md`)
-     holding the operator's ratified decision block **verbatim** (the pasted version is
-     authoritative over any repo copy) plus a per-WO scoreboard (WO → status → commits → notes).
-  2. Update the scoreboard at every WO activation and close-out; clearly-marked WIP checkpoint
-     commits are allowed so no work is ever unrecoverable.
-  3. **After ANY pause, resume, or compaction:** re-read, in order, the session contract
-     (kickoff file) → the state file → the active WO's file, and verify position with
-     `git log`/`git status` — never conversation memory (AGENTS.md rule 9).
-  4. Decisions are re-derived ONLY from the state file, never from memory; a WO the scoreboard
-     shows closed is never reopened.
-  5. At session end the state file's final scoreboard IS the status-table deliverable; it moves
-     out of `work/active/` in the last commit.
-
 ## What This Repo Is
 
-<!-- REPLACE: 1-3 sentences describing what this project does, who it serves, and its primary purpose. -->
-
-<!-- Examples (delete these and write your own):
-  - "A B2B SaaS dashboard for fleet management companies to track vehicles, drivers, and maintenance schedules."
-  - "An open-source CLI tool that generates TypeScript types from OpenAPI specifications."
-  - "An e-commerce storefront with a React frontend, Node.js API, and PostgreSQL database."
--->
+`automation-alpaca` is a browser-operated, paper-first Alpaca trading platform for one local
+beta operator. FastAPI is the durable backend; Streamlit is only a thin cockpit client. No live
+trading belongs in beta: credentials, when deliberately configured, are Alpaca **Paper** only.
 
 ## Product / Feature Structure
 
-<!-- REPLACE: Describe the main products, features, or modules in your application. Delete this section if not applicable. -->
+| Module | Responsibility |
+| --- | --- |
+| Cockpit | Displays backend state and submits typed intents through the API client. |
+| Backend | Owns candidate, approval, order, fill, position, reconciliation, and kill-switch rules. |
+| Broker adapter | The only Alpaca SDK boundary; paper adapter or credential-free mock. |
+| Strategy/CAPI | Produces candidates and applies pre-trade risk limits; it does not bypass approval. |
+| Tape recorder | Optional, read-only market-data corpus capture; it has no order-flow or StateStore access. |
 
-<!-- Example format (delete and replace with your own):
+## Tech Stack and Boundaries
 
-| Feature / Module | Route / Entry Point | Description                              |
-| ---------------- | ------------------- | ---------------------------------------- |
-| **Dashboard**    | `/dashboard`        | Main analytics view for logged-in users  |
-| **Public API**   | `/api/v2/`          | REST API consumed by mobile apps         |
-| **Admin Panel**  | `/admin`            | Internal tool for support team           |
+- Python 3.12, FastAPI, Streamlit, SQLite, and an in-memory store for tests; dependencies are
+  pinned by `constraints.txt`. A new dependency needs an ADR first.
+- Required flow: `ui → api → facade → engine → adapter/store`. Imports cross only approved seams;
+  `alpaca-py` stays in the adapter and Streamlit imports only the typed API client.
+- The execution engine is the single writer. Submitted is not filled; only deduplicated fills
+  change position quantity. The kill switch blocks new order intent.
+- No authentication, billing, or public production ingress is part of this beta. Do not add one
+  without its own approved architecture decision.
 
--->
+## Project Structure
 
-## Tech Stack
-
-### Core Framework
-
-<!-- REPLACE: List your primary frameworks, language, and runtime. -->
-
-<!-- Examples (delete and replace):
-- **Next.js 15** with App Router
-- **Python 3.12** with FastAPI
-- **Go 1.22** with Chi router
-- **TypeScript** strict mode
-- **pnpm** / **npm** / **yarn** / **cargo** / **poetry** (your package manager)
--->
-
-### Project Structure
-
-<!-- REPLACE: Show your folder layout. Adjust for monorepo or single-app as needed. -->
-
-<!-- Example for a monorepo (delete and replace):
+```text
+app/                 FastAPI backend, engine, adapters, stores, configuration
+cockpit/             Streamlit thin client and typed API client
+tests/               Unit, integration, import-boundary, oracle, and mutation pins
+audit_harness/        Replay/parity and audit utilities
+docs/                Invariants, specifications, and accepted/proposed ADRs
+pkl/                 Project knowledge and architecture/process records
+work/                Work orders, review packets, append-only ledger, completed artifacts
+harness/bootstrap.py Fresh-clone environment bootstrap and smoke gate
 ```
-apps/
-  web/              # Next.js frontend
-  api/              # Express API server
-packages/
-  shared/           # Shared types and utilities
-  ui/               # Component library
-  db/               # Database schema and migrations
-```
--->
-
-<!-- Example for a single app (delete and replace):
-```
-src/
-  app/              # Route handlers / pages
-  components/       # Reusable UI components
-  lib/              # Business logic and utilities
-  db/               # Database models and migrations
-  tests/            # Test files
-```
--->
-
-### Database
-
-<!-- REPLACE: List your database(s), ORM, and migration tool. Delete if no database. -->
-
-<!-- Examples (delete and replace):
-- **PostgreSQL 16** via Supabase
-- **Prisma** ORM with migrations in `prisma/migrations/`
-- **Redis** for session cache and job queues
--->
-
-### Authentication
-
-<!-- REPLACE: Describe your auth system. Delete if no auth. -->
-
-<!-- Examples (delete and replace):
-- **NextAuth.js** with GitHub and Google OAuth providers
-- **Clerk** for user management and session handling
-- **Custom JWT** - tokens issued by `/api/auth/login`, verified via middleware
--->
-
-### Payments / Billing
-
-<!-- REPLACE: Describe your payment integration. Delete if no payments. -->
-
-<!-- Examples (delete and replace):
-- **Stripe** for subscriptions, webhooks at `/api/webhooks/stripe`
-- **LemonSqueezy** for one-time purchases
--->
-
-### Analytics / Monitoring
-
-<!-- REPLACE: List analytics and monitoring tools. Delete if none. -->
-
-<!-- Examples (delete and replace):
-- **PostHog** for product analytics
-- **Sentry** for error tracking (DSN in env vars)
-- **Vercel Analytics** for web vitals
--->
-
-### Styling
-
-<!-- REPLACE: Describe your styling approach. Delete if not a frontend project. -->
-
-<!-- Examples (delete and replace):
-- **Tailwind CSS 4** with custom design tokens in `tailwind.config.ts`
-- **shadcn/ui** components in `src/components/ui/`
-- **CSS Modules** with PostCSS
--->
-
-### Key Architectural Decisions
-
-<!-- REPLACE: Document any non-obvious patterns or deviations from framework defaults that Claude needs to know about. These are the things that would trip up someone new to the codebase. Delete if none. -->
-
-<!-- Examples (delete and replace):
-- "All API routes use a shared middleware chain defined in `src/middleware/chain.ts` - never create raw route handlers"
-- "Navigation is driven by `config/nav.ts`, not by filesystem routing - update that file when adding pages"
-- "We use barrel exports (`index.ts`) in every module - always export new files through the barrel"
--->
 
 ## Important Paths
 
-<!-- REPLACE: List the files and directories Claude will need to reference most often. Focus on config files, entry points, and anything non-obvious. -->
-
 | Path | Purpose |
-| ---- | ------- |
+| --- | --- |
+| `CLAUDE.md` | Binding safety core and repository-wide engineering contract. |
+| `AGENTS.md` | AI Project OS adapter and independent-review rules. |
+| `app/config.py` | Complete runtime configuration inventory and validation. |
+| `docs/INVARIANTS.md` | Living invariant registry and review oracle. |
+| `docs/adr/` | Architecture decisions; amendments require a tracked review packet. |
+| `.ai-os/core/15_CROSS_MODEL_REVIEW.md` | Packet ownership and review-disposition protocol. |
+| `.env.example` | Safe, complete configuration template; `.env` is ignored. |
+| `work/ledger.jsonl` | Append-only evidence ledger; close-outs retain every line. |
 
-<!-- Examples (delete and replace):
-| `src/app/layout.tsx`         | Root layout with providers and global styles  |
-| `src/lib/db/schema.ts`      | Database schema (Drizzle / Prisma)             |
-| `src/middleware.ts`          | Auth and routing middleware                    |
-| `.env.example`              | Template for required environment variables     |
-| `docker-compose.yml`        | Local development services (DB, Redis, etc.)   |
--->
+## Build and Verification Commands
 
-## Build Commands
+Run `python harness/bootstrap.py` for a fresh clone. It creates/refreshes `.venv`, installs pinned
+dependencies, and executes a smoke gate without reading credentials, state files, or databases.
 
-<!-- REPLACE: List the commands needed to develop, build, test, and deploy. -->
-
-```bash
-# Examples (delete and replace with your actual commands):
-
-# Development
-npm run dev               # Start dev server
-npm run db:migrate        # Run database migrations
-npm run db:seed           # Seed database with test data
-
-# Testing
-npm run test              # Run unit tests
-npm run test:e2e          # Run end-to-end tests
-npm run lint              # Lint and type-check
-
-# Production
-npm run build             # Production build
-npm run start             # Start production server
-
-# Utilities
-npm run generate          # Generate types from schema
-npm run db:studio         # Open database GUI
+```powershell
+ruff check .
+ruff format --check .
+mypy app/
+lint-imports
+pytest -q --basetemp (Join-Path ([System.IO.Path]::GetTempPath()) 'pytest-<unique-id>')
+python tests/r2_conformance_oracle.py
+pytest -q tests/test_wo0113_repair_scaling.py
 ```
+
+Use an explicit unique OS-temp `--basetemp` on Windows; never create pytest scratch under the
+repository root. The conformance oracle is an AST/spec check, not a substitute for behavioral
+tests. The scaling gate is structural plus measured evidence; do not claim capacity from a passing
+unit test alone.
 
 ## Environment Variables
 
-<!-- REPLACE: List environment variables grouped by importance. Never put actual secret values here - just the variable names and descriptions. -->
-
-**Required for build:**
-
-<!-- Examples (delete and replace):
-- `DATABASE_URL` - PostgreSQL connection string
-- `NEXTAUTH_SECRET` - Session encryption key
-- `NEXTAUTH_URL` - Canonical app URL (e.g., http://localhost:3000)
--->
-
-**Required for full functionality:**
-
-<!-- Examples (delete and replace):
-- `STRIPE_SECRET_KEY` - Stripe API key for server-side operations
-- `STRIPE_WEBHOOK_SECRET` - Webhook signature verification
-- `RESEND_API_KEY` - Transactional email sending
-- `SENTRY_DSN` - Error reporting endpoint
--->
-
-**Optional:**
-
-<!-- Examples (delete and replace):
-- `ANALYTICS_ID` - PostHog project ID (analytics disabled if missing)
-- `LOG_LEVEL` - Defaults to "info" in production, "debug" in development
--->
+All configuration reads are documented in `.env.example`. With both paper keys blank,
+`BROKER_ADAPTER=auto` and `MARKET_DATA_FEED=auto` remain credential-free mock paths. `STATE_STORE`
+defaults to SQLite; use `memory` only for tests. Keep `ENABLE_TAPE_RECORDER=false` unless a
+deliberate corpus capture supplies `TAPE_RECORDER_SYMBOLS`; recorder output is separate from
+execution truth. Never commit `.env`, credentials, or a live-key variable.
 
 ## Common Gotchas
 
-<!-- REPLACE: List the things that regularly trip people up in this codebase. These save Claude (and your future self) hours of debugging. -->
+1. Test state changes on both in-memory and SQLite stores; dual-store parity is mandatory for
+   order/fill/position/reconciliation/kill-switch behavior.
+2. Inject clocks and deterministic IDs/queues in engine tests; no bare wall-clock calls or
+   unseeded randomness.
+3. Human-gated surfaces are order submission, cancel/replace, kill switch, flatten, live/shadow
+   config, schema/migration, event-log truth, and test/doc/ADR deletion. Stop for explicit scope
+   approval beyond the ratified decision block.
+4. Close a work order atomically: status, allowed disposition, ledger line, required knowledge
+   update, and file move ship in the finishing commit. A green change without that ratchet is open.
 
-<!-- Examples (delete and replace):
-1. **Env vars require restart** - Next.js caches env vars at build time. After changing `.env.local`, restart the dev server.
-2. **Migration order matters** - Always run `db:migrate` before `db:seed`. Seeds depend on the latest schema.
-3. **Port conflicts** - The API runs on :3001 and the frontend on :3000. Docker Compose maps Redis to :6380 (not default 6379) to avoid conflicts.
-4. **Generated files** - Files in `src/generated/` are auto-created by `npm run generate`. Never edit them directly.
-5. **Import aliases** - Use `@/` for `src/` imports. Absolute paths break in the test runner.
--->
+## Working Protocol
 
-## Workflows
+1. Read `AGENTS.md`, `CLAUDE.md`, the assigned work order, and only its linked context. Apply
+   Fable v3: GATE, red-first proof, implementation, FIX root cause, fresh evidence, then DONE.
+2. Use isolated worktrees for safe parallel work and serialize work orders sharing a file or ledger
+   append conflict. Preserve both append-only ledger lines when resolving a conflict.
+3. After pause or compaction, re-read the batch kickoff, state file, active WO, then verify
+   `git log` and `git status`; the state file's pasted decision block is authoritative.
+4. A reviewer owns `work/review/REV-*/result.md`: the reviewed party never edits it in place.
+   Corrections are separate disclosed addenda. Every gated-surface change receives a tracked
+   `REV-*` packet even if review discussion occurs in PR threads; record that PR verdict there.
 
-<!-- REPLACE: Describe any recurring development workflows or team conventions. -->
+## Execution Preference
 
-<!-- Examples (delete and replace):
-1. Feature branches follow `feature/<ticket-id>-<short-description>` naming
-2. PRs require passing CI checks and one approval before merge
-3. Database changes always need a migration file, never manual schema edits
-4. New API endpoints require corresponding integration tests in `tests/api/`
--->
+Use the locally strongest model for human-gated, event-truth, execution, and other perilous work.
+Cloud is suitable for bounded mid-tier documentation, bootstrap, or bookkeeping work. When in
+doubt, treat a gated surface as local work; never use an archive-only `recommended_model`
+frontmatter convention as an execution decision.
 
-## Notes
-
-<!-- REPLACE: Any additional context that doesn't fit above. Delete if nothing to add. -->
-
-<!-- Examples (delete and replace):
-1. The staging environment uses a separate database - never point local dev at staging.
-2. We vendor the `@internal/legacy-sdk` package because upstream is unmaintained. Source is in `packages/legacy-sdk/`.
-3. The `/health` endpoint is called by the load balancer every 10 seconds - keep it fast and side-effect-free.
--->
