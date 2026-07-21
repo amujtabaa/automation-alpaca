@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 
 from app.api.deps import get_actor, get_command_facade, get_query_facade
 from app.api.schemas import ReconciliationStatusResponse
@@ -20,7 +20,7 @@ from app.facade.dtos import (
     OperatorOrdersResponse,
     ProtectionStatusResponse,
 )
-from app.facade.errors import FacadeError
+from app.facade.errors import FacadeError, InvalidInputError
 from app.facade.http_mapping import facade_error_to_http
 
 from app.facade.queries import ExecutionQueryFacade
@@ -32,6 +32,9 @@ from app.models import (
     Order,
     Position,
     SellIntent,
+    SubmitRecoveryAttestation,
+    SubmitRecoveryFillCommand,
+    SubmitRecoveryFillResult,
     SubmitRecoveryRecord,
 )
 
@@ -194,7 +197,8 @@ async def list_order_recoveries(
     the recovery loop is actively working (``unresolved``) **and** records it has
     escalated because the broker order had fills (``needs_review`` — a real
     untracked position a human must reconcile). Both must stay visible to the
-    operator; only cleanly-cancelled records (``resolved_canceled``) drop out.
+    operator. Terminal records (cleanly cancelled or explicitly
+    ``operator_reconciled``) drop out of the open view but remain in full history.
     ``open_only=false`` returns the full history. This is the minimal Wave 0
     surface; a full operational-status classification endpoint is Wave 2 (D-020).
     Defined before ``/orders/{order_id}`` so the literal path isn't captured as
@@ -202,6 +206,58 @@ async def list_order_recoveries(
     """
 
     return await query_facade.list_submit_recoveries(open_only=open_only)
+
+
+@router.post(
+    "/order-recoveries/{recovery_id}/fills",
+    response_model=SubmitRecoveryFillResult,
+)
+async def ingest_submit_recovery_fill(
+    recovery_id: str,
+    command: SubmitRecoveryFillCommand,
+    command_facade: ExecutionCommandFacade = Depends(get_command_facade),
+    actor: str = Header(..., alias="X-Actor", min_length=1),
+) -> SubmitRecoveryFillResult:
+    """Ingest one evidenced venue execution before releasing quarantine."""
+
+    if recovery_id != command.recovery_id:
+        raise facade_error_to_http(
+            InvalidInputError(
+                "path recovery_id does not match the echoed recovery identity"
+            )
+        )
+    try:
+        return await command_facade.ingest_submit_recovery_fill(
+            command=command, actor=actor
+        )
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
+
+
+@router.post(
+    "/order-recoveries/{recovery_id}/reconcile",
+    response_model=SubmitRecoveryRecord,
+)
+async def reconcile_submit_recovery(
+    recovery_id: str,
+    attestation: SubmitRecoveryAttestation,
+    command_facade: ExecutionCommandFacade = Depends(get_command_facade),
+    actor: str = Header(..., alias="X-Actor", min_length=1),
+) -> SubmitRecoveryRecord:
+    """Release one needs-review contribution; this command writes no fill."""
+
+    if recovery_id != attestation.recovery_id:
+        raise facade_error_to_http(
+            InvalidInputError(
+                "path recovery_id does not match the echoed recovery identity"
+            )
+        )
+    try:
+        return await command_facade.reconcile_submit_recovery(
+            attestation=attestation, actor=actor
+        )
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
 
 
 @router.get("/operator/orders", response_model=OperatorOrdersResponse)

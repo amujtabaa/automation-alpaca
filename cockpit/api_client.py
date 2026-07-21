@@ -153,6 +153,32 @@ def list_order_recoveries(open_only: bool = True) -> list[dict]:
     return _request("GET", "/api/order-recoveries", params=params)
 
 
+def ingest_submit_recovery_fill(
+    recovery_id: str, payload: dict, *, actor: str = "cockpit"
+) -> dict:
+    """POST one evidenced canonical fill through the typed backend command."""
+
+    return _request(
+        "POST",
+        f"/api/order-recoveries/{recovery_id}/fills",
+        json=payload,
+        headers={"X-Actor": actor},
+    )
+
+
+def reconcile_submit_recovery(
+    recovery_id: str, payload: dict, *, actor: str = "cockpit"
+) -> dict:
+    """POST the human attestation that releases one recovery contribution."""
+
+    return _request(
+        "POST",
+        f"/api/order-recoveries/{recovery_id}/reconcile",
+        json=payload,
+        headers={"X-Actor": actor},
+    )
+
+
 def list_operator_orders() -> dict:
     """The operator's single source of order-lifecycle truth (D-020).
 

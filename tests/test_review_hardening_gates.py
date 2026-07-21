@@ -19,7 +19,15 @@ from pathlib import Path
 
 import pytest
 
-from app.models import OrderStatus
+from app.models import (
+    RECOVERY_NEEDS_REVIEW,
+    RECOVERY_OPEN_STATUSES,
+    RECOVERY_OPERATOR_RECONCILED,
+    RECOVERY_STATUSES,
+    RECOVERY_TRANSITIONS,
+    ExecutionEventType,
+    OrderStatus,
+)
 from app.policy import MAY_EXECUTE_ORDER_STATUSES, NON_TERMINAL_ORDER_STATUSES
 from app.store.core import FLATTEN_BLOCKING_BUY_STATUSES, OPEN_BUY_STATUSES
 
@@ -76,6 +84,18 @@ def test_t1_1_may_execute_is_total_over_order_status():
     terminal = {s for s in OrderStatus if s not in NON_TERMINAL_ORDER_STATUSES}
     classified = MAY_EXECUTE_ORDER_STATUSES | {OrderStatus.CREATED} | terminal
     assert classified == set(OrderStatus)
+
+
+def test_t1_1_recovery_statuses_and_transitions_are_total():
+    """Every recovery state is classified and every edge stays in vocabulary."""
+
+    assert set(RECOVERY_TRANSITIONS) == set(RECOVERY_STATUSES)
+    assert {
+        target for targets in RECOVERY_TRANSITIONS.values() for target in targets
+    } <= set(RECOVERY_STATUSES)
+    assert RECOVERY_OPERATOR_RECONCILED not in RECOVERY_OPEN_STATUSES
+    assert RECOVERY_TRANSITIONS[RECOVERY_NEEDS_REVIEW] == {RECOVERY_OPERATOR_RECONCILED}
+    assert RECOVERY_TRANSITIONS[RECOVERY_OPERATOR_RECONCILED] == frozenset()
 
 
 # --------------------------------------------------------------------------- #
@@ -263,6 +283,19 @@ def _app_source(relative_path: str) -> str:
     return (_APP / relative_path).read_text(encoding="utf-8")
 
 
+def _function_loads_enum_member(
+    source: str, *, function_name: str, enum_name: str, member_name: str
+) -> bool:
+    function = _function_node(source, function_name)
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == member_name
+        and isinstance(node.value, ast.Name)
+        and node.value.id == enum_name
+        for node in ast.walk(function)
+    )
+
+
 def test_t1_3_needs_review_child_order_ids_has_real_producer():
     """The projection field must be assigned from the computed child set."""
 
@@ -272,6 +305,33 @@ def test_t1_3_needs_review_child_order_ids_has_real_producer():
         call_name="EnvelopeObligationProjection",
         keyword_name="needs_review_child_order_ids",
         loaded_name="needs_review_children",
+    )
+
+
+def test_t1_3_operator_reconciliation_fact_has_real_producer_and_consumers():
+    source = _app_source("store/core.py")
+    member = "SUBMIT_RECOVERY_OPERATOR_RECONCILED"
+    assert _function_loads_enum_member(
+        source,
+        function_name="recovery_operator_execution_event",
+        enum_name="ExecutionEventType",
+        member_name=member,
+    )
+    assert _function_loads_enum_member(
+        source,
+        function_name="direct_sell_order_may_execute",
+        enum_name="ExecutionEventType",
+        member_name=member,
+    )
+    assert _function_loads_enum_member(
+        source,
+        function_name="project_envelope_obligation",
+        enum_name="ExecutionEventType",
+        member_name=member,
+    )
+    assert (
+        ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED.value
+        == "submit_recovery_operator_reconciled"
     )
 
 

@@ -999,6 +999,11 @@ the log for every Order. A dual-store selector matrix, exclusive immutable-key
 fixtures, a reduced-variable-limit SQLite pin, and a deterministic dual-store
 backfill work counter mutation-pin those mechanics; the retention semantics
 above remain unchanged.
+*WO-0114 proposed amendment — pending ADR-012 acceptance and REV-0035:* an exact
+`needs_review → operator_reconciled` attestation removes only that recovery
+record's widened-retention contribution and closes only its durable submission-
+claim occurrence. Every other strict, malformed, recovery, venue, timeout, and
+ADR-001 predicate remains composed by this same projection. See INV-096.
 
 **INV-091 — Durable submit progress cannot disappear or be blindly repeated.**
 *WO-0113 operator-ratified branch behavior — pending REV-0033 independent
@@ -1167,6 +1172,32 @@ can authenticate a different venue order and apply its status/fills locally.
 `tests/test_wo0019a_broker_replace.py`,
 `tests/test_spine_phase4_reconciliation_engine.py`, and
 `tests/test_wo0019_engine_seam.py::test_submit_scope_uses_the_injected_decision_clock`.
+
+**INV-096 — Human release of `needs_review` never manufactures or globally
+clears economic truth.** The only release edge is the terminal
+`needs_review → operator_reconciled` transition through the evidence-bearing
+typed command. Under one store lock/transaction it revalidates the full
+recovery/order/client/owner/envelope identity, binds the recovery to its durable
+submission-claim occurrence, requires a terminal paper-venue state, and proves
+the attested cumulative quantity equals canonical `FILL` truth for that exact
+broker-order leg. The transition itself writes no fill and cannot move position
+or envelope remaining quantity. Missing executions enter first through the
+separate canonical fill command with `OPERATOR` / `HUMAN_ATTESTED` provenance;
+that authority is non-broker, so order overfill and a SELL crossing below zero
+are rejected. Exact command replay is write-free and conflicting replay fails
+closed. Release removes one open-recovery contribution only: another recovery,
+malformed or venue-live envelope truth, timeout quarantine, strict retention,
+or ADR-001's permanent overfill latch continues to block. Neither command makes
+a venue call, and the cockpit reaches both only through the typed FastAPI
+facade.
+*Why:* a permanent `needs_review` state wedges a reconciled symbol, but treating
+an operator status flip as a fill or symbol-wide clear would silently replace
+broker/event truth with human intent. The two-command, exact-leg design keeps
+the safe intermediate state quarantined and makes the truth boundary
+structural.
+*Pinned by:* `tests/test_wo0114_pd1_release_valve.py`,
+`tests/test_wo0114_cockpit_release.py`, and the enum/producer/consumer matrix in
+`tests/test_review_hardening_gates.py` (both stores plus SQLite reopen).
 
 ### Proposed Signal Seat cross-reference (non-normative; WO-0127)
 

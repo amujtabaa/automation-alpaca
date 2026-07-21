@@ -24,6 +24,7 @@ from typing import Any, Iterable, Iterator, Optional
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
+    RECOVERY_OPERATOR_RECONCILED,
     RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
     Candidate,
@@ -32,6 +33,7 @@ from app.models import (
     EventSource,
     CandidateStatus,
     Event,
+    EventType,
     ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
@@ -47,6 +49,9 @@ from app.models import (
     SellReason,
     SessionRecord,
     SessionStatus,
+    SubmitRecoveryAttestation,
+    SubmitRecoveryFillCommand,
+    SubmitRecoveryFillResult,
     SubmitRecoveryRecord,
     TradingMode,
     TradingState,
@@ -163,6 +168,13 @@ from app.store.core import (
     recovery_status_event,
     recovery_resolution_execution_event,
     recovery_creation_audit_matches,
+    canonical_recovery_fill_quantity,
+    recovery_attestation_payload,
+    recovery_fill_payload,
+    recovery_operator_execution_event,
+    validate_recovery_attested_facts,
+    validate_recovery_fill_facts,
+    validate_submit_recovery_identity,
     recovery_terminal_fact_matches,
     claim_occurrence_at,
     direct_sell_order_may_execute,
@@ -195,6 +207,7 @@ from app.policy import (
 class InMemoryStateStore(StateStore):
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
+        self._recovery_truth_lock = asyncio.Lock()
         self._watchlist: dict[str, WatchlistSymbol] = {}
         self._candidates: dict[str, Candidate] = {}
         self._orders: dict[str, Order] = {}
@@ -2038,6 +2051,7 @@ class InMemoryStateStore(StateStore):
         ts_event: Optional[datetime] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        execution_payload: Optional[dict[str, Any]] = None,
         now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY remaining_quantity writer.
@@ -2114,6 +2128,7 @@ class InMemoryStateStore(StateStore):
                 order_quantity=order_quantity,
                 prior_order_filled_quantity=prior_order_filled_quantity,
                 existing_quarantine_event=existing_quarantine_event,
+                execution_payload=execution_payload,
                 now=now,
             )
             if plan.outcome == ENVELOPE_FILL_REJECT:
@@ -4328,6 +4343,360 @@ class InMemoryStateStore(StateStore):
             )
             return record.model_copy(deep=True) if record is not None else None
 
+    def _submit_recovery_lineage_unlocked(
+        self, record: SubmitRecoveryRecord
+    ) -> tuple[
+        Optional[Order], Optional[str], Optional[str], Optional[str], Optional[str]
+    ]:
+        """Resolve the immutable order/owner/envelope echo under ``_lock``."""
+
+        order = self._orders.get(record.local_order_id)
+        if order is None:
+            return None, None, None, None, "referenced local order is missing"
+        candidate_id = order.candidate_id
+        sell_intent_id = order.sell_intent_id
+        if candidate_id is not None and candidate_id not in self._candidates:
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                None,
+                "candidate owner is missing",
+            )
+        if sell_intent_id is not None and sell_intent_id not in self._sell_intents:
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                None,
+                "sell-intent owner is missing",
+            )
+
+        action_links = [
+            event
+            for event in self._execution_events
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.order_id == order.id
+        ]
+        if not action_links:
+            return order, candidate_id, sell_intent_id, None, None
+        parent_ids = {event.envelope_id for event in action_links}
+        if None in parent_ids or len(parent_ids) != 1:
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                None,
+                "ambiguous envelope parent",
+            )
+        envelope_id = next(iter(parent_ids))
+        assert envelope_id is not None
+        envelope = self._envelopes.get(envelope_id)
+        if envelope is None:
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                envelope_id,
+                "envelope is missing",
+            )
+        projection = self._envelope_obligation_unlocked(envelope_id=envelope_id)
+        if (
+            order.id in projection.invalid_order_ids
+            or order.id in projection.missing_order_ids
+            or projection.missing_envelope_ids
+            or envelope.sell_intent_id != sell_intent_id
+            or envelope.symbol != order.symbol
+            or envelope.session_id != order.session_id
+        ):
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                envelope_id,
+                "envelope projection does not uniquely bind the order and owner",
+            )
+        return order, candidate_id, sell_intent_id, envelope_id, None
+
+    def _recovery_known_broker_ids_unlocked(
+        self, record: SubmitRecoveryRecord, order: Order
+    ) -> list[str]:
+        values = [
+            recovery.broker_order_id
+            for recovery in self._submit_recoveries
+            if recovery.local_order_id == record.local_order_id
+        ]
+        if order.broker_order_id is not None:
+            values.append(order.broker_order_id)
+        return values
+
+    async def ingest_submit_recovery_fill(
+        self,
+        command: SubmitRecoveryFillCommand,
+        *,
+        actor: str,
+    ) -> SubmitRecoveryFillResult:
+        """Human-attested fill ingestion, serialized against valve release."""
+
+        async with self._recovery_truth_lock:
+            async with self._lock:
+                record = next(
+                    (r for r in self._submit_recoveries if r.id == command.recovery_id),
+                    None,
+                )
+                if record is None:
+                    raise UnknownEntityError(
+                        f"submit recovery {command.recovery_id} not found"
+                    )
+                order, candidate_id, sell_intent_id, envelope_id, lineage_error = (
+                    self._submit_recovery_lineage_unlocked(record)
+                )
+                validate_submit_recovery_identity(
+                    record,
+                    order,
+                    command,
+                    expected_candidate_id=candidate_id,
+                    expected_sell_intent_id=sell_intent_id,
+                    expected_envelope_id=envelope_id,
+                    lineage_error=lineage_error,
+                )
+                assert order is not None
+                claim_occurrence = self._recovery_claim_occurrence_unlocked(record)
+                if claim_occurrence is None:
+                    raise RecoveryTransitionError(
+                        "recovery cannot be bound to a durable submission claim occurrence"
+                    )
+                payload = recovery_fill_payload(record, command, actor=actor)
+                payload["claim_occurrence"] = claim_occurrence
+                source_fill_id = (
+                    f"{record.broker_order_id}:{command.cumulative_filled_quantity}"
+                )
+                dedupe_key = f"fill:{order.id}:{source_fill_id}"
+                existing_event = self._execution_event_dedupe.get(dedupe_key)
+                existing_fill = next(
+                    (
+                        fill
+                        for fill in self._fills
+                        if fill.order_id == order.id
+                        and fill.source_fill_id == source_fill_id
+                    ),
+                    None,
+                )
+                exact_replay = existing_event is not None
+                canonical_quantity = canonical_recovery_fill_quantity(
+                    self._execution_events,
+                    record,
+                    known_broker_order_ids=self._recovery_known_broker_ids_unlocked(
+                        record, order
+                    ),
+                )
+                validate_recovery_fill_facts(
+                    command,
+                    record,
+                    canonical_filled_quantity=canonical_quantity,
+                    exact_replay=exact_replay,
+                )
+                if exact_replay:
+                    assert existing_event is not None
+                    expected_fields = (
+                        existing_event.event_type is ExecutionEventType.FILL
+                        and existing_event.source is EventSource.OPERATOR
+                        and existing_event.authority is EventAuthority.HUMAN_ATTESTED
+                        and existing_event.symbol == record.symbol
+                        and existing_event.side is record.side
+                        and existing_event.quantity == command.fill_quantity
+                        and existing_event.price == command.price
+                        and existing_event.order_id == order.id
+                        and existing_event.envelope_id == envelope_id
+                        and all(
+                            existing_event.payload.get(k) == v
+                            for k, v in payload.items()
+                        )
+                    )
+                    if not expected_fields:
+                        raise RecoveryTransitionError(
+                            "conflicting human-attested fill replay"
+                        )
+                    if existing_fill is not None:
+                        if (
+                            existing_fill.quantity != command.fill_quantity
+                            or existing_fill.price != command.price
+                            or existing_fill.side is not record.side
+                        ):
+                            raise RecoveryTransitionError(
+                                "conflicting fill-row replay for recovery command"
+                            )
+                        return SubmitRecoveryFillResult(
+                            status="duplicate",
+                            recovery=record.model_copy(deep=True),
+                            fill=existing_fill.model_copy(deep=True),
+                        )
+                elif record.cleanup_status != RECOVERY_NEEDS_REVIEW:
+                    raise RecoveryTransitionError(
+                        f"recovery {record.id} is {record.cleanup_status}; "
+                        "new fill ingestion requires needs_review"
+                    )
+                if (
+                    not exact_replay
+                    and record.side is OrderSide.SELL
+                    and self._position_unlocked(record.symbol).quantity
+                    < command.fill_quantity
+                ):
+                    raise RecoveryTransitionError(
+                        "human-attested sell fill would create a negative position"
+                    )
+
+            if envelope_id is not None:
+                await self.record_envelope_fill(
+                    envelope_id,
+                    quantity=command.fill_quantity,
+                    dedupe_key=dedupe_key,
+                    price=command.price,
+                    order_id=order.id,
+                    session_id=record.session_id,
+                    ts_event=command.filled_at,
+                    source=EventSource.OPERATOR,
+                    authority=EventAuthority.HUMAN_ATTESTED,
+                    execution_payload=payload,
+                )
+            result = await self.append_fill(
+                order.id,
+                record.symbol,
+                record.side,
+                command.fill_quantity,
+                command.price,
+                source_fill_id=source_fill_id,
+                filled_at=command.filled_at,
+                session_id=record.session_id,
+                source=EventSource.OPERATOR,
+                authority=EventAuthority.HUMAN_ATTESTED,
+                execution_payload=payload,
+            )
+            if result.status == "conflict":
+                raise RecoveryTransitionError(
+                    "conflicting durable fill identity during recovery ingestion"
+                )
+            return SubmitRecoveryFillResult(
+                status=result.status,
+                recovery=record.model_copy(deep=True),
+                fill=result.fill,
+            )
+
+    async def reconcile_submit_recovery(
+        self,
+        attestation: SubmitRecoveryAttestation,
+        *,
+        actor: str,
+    ) -> SubmitRecoveryRecord:
+        """Atomically apply or idempotently replay one operator attestation."""
+
+        async with self._recovery_truth_lock:
+            async with self._lock:
+                idx = next(
+                    (
+                        i
+                        for i, record in enumerate(self._submit_recoveries)
+                        if record.id == attestation.recovery_id
+                    ),
+                    None,
+                )
+                if idx is None:
+                    raise UnknownEntityError(
+                        f"submit recovery {attestation.recovery_id} not found"
+                    )
+                record = self._submit_recoveries[idx]
+                order, candidate_id, sell_intent_id, envelope_id, lineage_error = (
+                    self._submit_recovery_lineage_unlocked(record)
+                )
+                validate_submit_recovery_identity(
+                    record,
+                    order,
+                    attestation,
+                    expected_candidate_id=candidate_id,
+                    expected_sell_intent_id=sell_intent_id,
+                    expected_envelope_id=envelope_id,
+                    lineage_error=lineage_error,
+                )
+                assert order is not None
+                claim_occurrence = self._recovery_claim_occurrence_unlocked(record)
+                if claim_occurrence is None:
+                    raise RecoveryTransitionError(
+                        "recovery cannot be bound to a durable submission claim occurrence"
+                    )
+                payload = recovery_attestation_payload(record, attestation, actor=actor)
+                payload["claim_occurrence"] = claim_occurrence
+                prior_audit = next(
+                    (
+                        event
+                        for event in self._events
+                        if event.event_type
+                        == EventType.SUBMIT_RECOVERY_RECONCILED.value
+                        and event.payload.get("recovery_id") == record.id
+                    ),
+                    None,
+                )
+                if record.cleanup_status == RECOVERY_OPERATOR_RECONCILED:
+                    if prior_audit is not None and prior_audit.payload == payload:
+                        return record.model_copy(deep=True)
+                    raise RecoveryTransitionError(
+                        f"conflicting re-attestation for released recovery {record.id}"
+                    )
+                if record.cleanup_status != RECOVERY_NEEDS_REVIEW:
+                    raise RecoveryTransitionError(
+                        f"recovery {record.id} is {record.cleanup_status}; "
+                        "operator release requires needs_review"
+                    )
+                canonical_quantity = canonical_recovery_fill_quantity(
+                    self._execution_events,
+                    record,
+                    known_broker_order_ids=self._recovery_known_broker_ids_unlocked(
+                        record, order
+                    ),
+                )
+                validate_recovery_attested_facts(
+                    attestation,
+                    record,
+                    canonical_filled_quantity=canonical_quantity,
+                )
+                updated = record.model_copy(
+                    deep=True,
+                    update={"cleanup_status": RECOVERY_OPERATOR_RECONCILED},
+                )
+                execution_event = recovery_operator_execution_event(
+                    record, order, payload
+                )
+                with self._atomic():
+                    self._submit_recoveries[idx] = updated
+                    self._rebuild_submit_recovery_indexes_unlocked()
+                    self._append_event_unlocked(
+                        EventType.SUBMIT_RECOVERY_RECONCILED.value,
+                        message=(
+                            f"operator reconciled broker order "
+                            f"{record.broker_order_id} recovery"
+                        ),
+                        symbol=record.symbol,
+                        candidate_id=order.candidate_id,
+                        order_id=order.id,
+                        payload=payload,
+                        session_id=record.session_id,
+                    )
+                    stored = self._append_execution_event_unlocked(execution_event)
+                    if (
+                        stored.event_type is not execution_event.event_type
+                        or stored.source is not execution_event.source
+                        or stored.authority is not execution_event.authority
+                        or stored.order_id != execution_event.order_id
+                        or stored.envelope_id != execution_event.envelope_id
+                        or stored.payload != execution_event.payload
+                    ):
+                        raise RecoveryTransitionError(
+                            "operator reconciliation execution-event identity conflict"
+                        )
+                    self._reconcile_envelope_owners_for_order_unlocked(
+                        order.id, now=execution_event.ts_event or utcnow()
+                    )
+                return updated.model_copy(deep=True)
+
     async def update_submit_recovery(
         self,
         recovery_id: str,
@@ -4347,6 +4716,11 @@ class InMemoryStateStore(StateStore):
             if idx is None:
                 raise UnknownEntityError(f"submit recovery {recovery_id} not found")
             record = self._submit_recoveries[idx]
+            if cleanup_status == RECOVERY_OPERATOR_RECONCILED:
+                raise RecoveryTransitionError(
+                    "operator_reconciled requires the evidence-bearing operator "
+                    "attestation command"
+                )
             terminal_event = recovery_status_event(
                 record.cleanup_status, cleanup_status
             )
@@ -4809,6 +5183,7 @@ class InMemoryStateStore(StateStore):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        execution_payload: Optional[dict[str, Any]] = None,
     ) -> FillAppendResult:
         key = normalize_symbol(symbol)
         side = OrderSide(side)
@@ -4886,6 +5261,7 @@ class InMemoryStateStore(StateStore):
                 existing_quarantine_event=existing_quarantine_event,
                 source=source,
                 authority=authority,
+                execution_payload=execution_payload,
             )
 
             if plan.outcome == FILL_REJECT:

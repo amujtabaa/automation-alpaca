@@ -6,7 +6,7 @@ authority: high
 owner: Ameen
 last_verified: 2026-07-20
 tags: [safety, invariants, trading]
-source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md, docs/adr/ADR-001-overfill-quarantine.md, docs/adr/ADR-002-timeout-quarantine.md, docs/adr/ADR-003-manual-flatten-halted-reducing.md, docs/adr/ADR-008-order-status-event-provenance.md, docs/adr/ADR-010-execution-envelope.md]
+source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md, docs/adr/ADR-001-overfill-quarantine.md, docs/adr/ADR-002-timeout-quarantine.md, docs/adr/ADR-003-manual-flatten-halted-reducing.md, docs/adr/ADR-008-order-status-event-provenance.md, docs/adr/ADR-010-execution-envelope.md, docs/adr/ADR-012-submit-recovery-operator-release.md]
 supersedes: []
 superseded_by: null
 ---
@@ -94,6 +94,15 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
     remaining-quantity chain, never folds position again, and conflicts rather than guessing when
     existing truth is malformed or foreign. Cadence validates direct-attributed facts too; its
     durable tail checkpoint advances only after a clean batch and never on error.
+  - **Human-attested recovery release (ADR-012, proposed):** a `needs_review` recovery can leave
+    quarantine only through a full-identity, evidence-bearing, terminal-state attestation whose
+    cumulative quantity exactly matches canonical event truth for that broker leg. Missing fills
+    enter through a separate canonical command with explicitly non-broker `HUMAN_ATTESTED`
+    authority and strict capacity/negative-position rails. The release is position-neutral,
+    occurrence-scoped, atomic, and write-free on exact replay; it removes no other recovery,
+    envelope, timeout, or permanent ADR-001 predicate. Typed FastAPI remains the sole cockpit
+    command boundary and neither path calls the venue. ADR acceptance and REV-0035 remain required
+    before beta reliance.
   - **Fail-fast market data:** garbage quotes driving sizing is a silent capital risk; halting is the safe failure mode.
 - Human-gated surfaces (order submission, cancel/replace, kill switch, flatten, mode config, migrations, event-log truth, deletions of tests/docs/ADRs) exist because LLM auto-approval hooks optimize for flow, and flow is the wrong objective on these surfaces.
 
@@ -117,3 +126,5 @@ Safety rules survive by being cheap to obey and expensive to miss. Keeping them 
   CREATED exposure, durable accepted-submit fallback ownership, non-maskable reconciliation
   gating, and contiguous/checkpointed append-only envelope attribution repair. Final WO
   implementation SHA pending close-out.
+- 2026-07-20: WO-0114 proposed the exact-leg human-attested recovery release valve and separate
+  operator fill-ingestion truth path; pending ADR-012 acceptance and REV-0035.

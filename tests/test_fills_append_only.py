@@ -4,6 +4,7 @@ the SQLite implementation.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -15,20 +16,23 @@ pytestmark = pytest.mark.anyio
 
 
 def test_interface_has_no_fill_mutators():
-    # The only writer of the append-only FILLS TABLE is append_fill (list_fills
-    # is its read side). ``record_envelope_fill`` also matches the "fill"
-    # substring — WO-0030 lifted the envelope API onto this ABC, making it
-    # visible to ``dir`` — but it is NOT a fills-table mutator: it records an
-    # execution-fill FACT into the event log and decrements an envelope's
-    # remaining_quantity; it never inserts/updates/deletes a fills row. So it is
-    # enumerated here for honesty but is neither append_fill's peer nor a
-    # forbidden mutator (asserted disjoint below and by the SQLite-source test).
+    # ``append_fill`` remains the sole primitive that writes the append-only
+    # FILLS TABLE (``list_fills`` is its read side). ``record_envelope_fill``
+    # writes event/envelope truth, not a fills row. WO-0114 deliberately adds
+    # ``ingest_submit_recovery_fill`` as an evidence-bearing command boundary;
+    # the structural test below pins that both stores delegate its economic
+    # write to the canonical primitives instead of opening a second table writer.
     fill_methods = {
         name
         for name in dir(StateStore)
         if "fill" in name.lower() and not name.startswith("__")
     }
-    assert fill_methods == {"append_fill", "list_fills", "record_envelope_fill"}
+    assert fill_methods == {
+        "append_fill",
+        "ingest_submit_recovery_fill",
+        "list_fills",
+        "record_envelope_fill",
+    }
     forbidden = {
         "update_fill",
         "delete_fill",
@@ -38,6 +42,18 @@ def test_interface_has_no_fill_mutators():
         "mutate_fill",
     }
     assert forbidden.isdisjoint(set(dir(StateStore)))
+
+
+def test_recovery_fill_command_uses_only_canonical_fill_writers():
+    from app.store.memory import InMemoryStateStore
+    from app.store.sqlite import SqliteStateStore
+
+    for store_type in (InMemoryStateStore, SqliteStateStore):
+        source = inspect.getsource(store_type.ingest_submit_recovery_fill)
+        assert "await self.append_fill(" in source
+        assert "await self.record_envelope_fill(" in source
+        assert "self._fills.append(" not in source
+        assert "INSERT INTO fills" not in source
 
 
 def test_sqlite_source_never_updates_or_deletes_fills():

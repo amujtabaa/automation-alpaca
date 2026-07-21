@@ -48,6 +48,9 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    SubmitRecoveryAttestation,
+    SubmitRecoveryFillCommand,
+    SubmitRecoveryFillResult,
     SubmitRecoveryRecord,
     TradingState,
     WatchlistSymbol,
@@ -949,6 +952,34 @@ class StateStore(ABC):
         """
 
     @abstractmethod
+    async def ingest_submit_recovery_fill(
+        self,
+        command: SubmitRecoveryFillCommand,
+        *,
+        actor: str,
+    ) -> SubmitRecoveryFillResult:
+        """Ingest one human-attested venue execution for a needs-review row.
+
+        The command uses the canonical fill planner with OPERATOR /
+        HUMAN_ATTESTED provenance.  It is separate from the release command:
+        fills legitimately move position; release never does.
+        """
+
+    @abstractmethod
+    async def reconcile_submit_recovery(
+        self,
+        attestation: SubmitRecoveryAttestation,
+        *,
+        actor: str,
+    ) -> SubmitRecoveryRecord:
+        """Release one needs-review contribution after exact event-truth parity.
+
+        Implementations re-read and validate under their store lock/transaction,
+        then co-write the status, audit event, and non-economic execution event.
+        Exact replay is a write-free success; conflicting replay is refused.
+        """
+
+    @abstractmethod
     async def revert_candidate_approval(self, candidate_id: str) -> Candidate:
         """Atomically revert ``APPROVED → PENDING`` when dispatch was refused.
 
@@ -1078,6 +1109,7 @@ class StateStore(ABC):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        execution_payload: Optional[dict[str, Any]] = None,
     ) -> FillAppendResult:
         """Append a fill atomically (append + dedup check + audit event).
 
@@ -1363,6 +1395,7 @@ class StateStore(ABC):
         ts_event: Optional[datetime] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        execution_payload: Optional[dict[str, Any]] = None,
         now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY ``remaining_quantity`` writer.

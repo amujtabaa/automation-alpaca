@@ -518,8 +518,9 @@ def screen_positions() -> None:
     if recoveries:
         st.error(
             f"⚠️ {len(recoveries)} broker order(s) need recovery — accepted by the "
-            "broker but not tracked locally. The monitoring loop is cancelling "
-            "them; verify at the broker if this persists."
+            "broker but not fully reconciled locally. Unresolved records remain "
+            "with the recovery loop; needs-review records require evidenced "
+            "operator reconciliation."
         )
         for rec in recoveries:
             record = rec.get("record", {})
@@ -529,6 +530,135 @@ def screen_positions() -> None:
                 f"{rec.get('operational_status', '—')} "
                 f"(attempts: {record.get('retry_count', 0)})"
             )
+            if record.get("cleanup_status") != "needs_review":
+                continue
+            recovery_id = str(record.get("id", ""))
+            if not recovery_id:
+                st.error("Recovery payload is missing its durable id; cannot act.")
+                continue
+            if not rec.get("lineage_valid", False):
+                st.error(
+                    "Recovery lineage is not commandable: "
+                    f"{rec.get('lineage_error') or 'backend did not validate it'}"
+                )
+                continue
+
+            identity = {
+                "recovery_id": recovery_id,
+                "local_order_id": record.get("local_order_id"),
+                "broker_order_id": record.get("broker_order_id"),
+                "client_order_id": record.get("client_order_id"),
+                "symbol": record.get("symbol"),
+                "side": record.get("side"),
+                "candidate_id": rec.get("candidate_id"),
+                "sell_intent_id": rec.get("sell_intent_id"),
+                "envelope_id": rec.get("envelope_id"),
+            }
+            with st.expander(
+                f"Reconcile {record.get('symbol', '—')} · {recovery_id}",
+                expanded=True,
+            ):
+                st.warning(
+                    "Verify Alpaca Paper evidence first. Import every discovered "
+                    "fill before releasing this quarantine contribution."
+                )
+                fill_cols = st.columns(3)
+                fill_quantity = fill_cols[0].number_input(
+                    "Fill quantity",
+                    min_value=1,
+                    step=1,
+                    key=f"recovery_fill_quantity_{recovery_id}",
+                )
+                fill_cumulative = fill_cols[1].number_input(
+                    "Cumulative venue filled",
+                    min_value=1,
+                    step=1,
+                    key=f"recovery_fill_cumulative_{recovery_id}",
+                )
+                fill_price = fill_cols[2].number_input(
+                    "Fill price",
+                    min_value=0.01,
+                    step=0.01,
+                    format="%.4f",
+                    key=f"recovery_fill_price_{recovery_id}",
+                )
+                fill_reason = st.text_input(
+                    "Fill ingestion reason",
+                    key=f"recovery_fill_reason_{recovery_id}",
+                )
+                fill_evidence = st.text_input(
+                    "Fill evidence reference",
+                    key=f"recovery_fill_evidence_{recovery_id}",
+                )
+                if st.button(
+                    "Import evidenced fill",
+                    key=f"ingest_recovery_fill_{recovery_id}",
+                ):
+                    try:
+                        result = api_client.ingest_submit_recovery_fill(
+                            recovery_id,
+                            {
+                                **identity,
+                                "fill_quantity": int(fill_quantity),
+                                "cumulative_filled_quantity": int(fill_cumulative),
+                                "price": float(fill_price),
+                                "reason": fill_reason,
+                                "evidence_ref": fill_evidence,
+                            },
+                            actor="cockpit",
+                        )
+                    except BackendError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(
+                            "Backend classified fill ingestion: "
+                            f"{result.get('status', 'accepted')}"
+                        )
+
+                st.divider()
+                terminal_state = st.selectbox(
+                    "Attested broker terminal state",
+                    ["canceled", "rejected", "filled"],
+                    key=f"recovery_terminal_{recovery_id}",
+                )
+                release_cumulative = st.number_input(
+                    "Attested cumulative venue filled",
+                    min_value=0,
+                    step=1,
+                    key=f"recovery_release_cumulative_{recovery_id}",
+                )
+                release_reason = st.text_input(
+                    "Release reason",
+                    key=f"recovery_release_reason_{recovery_id}",
+                )
+                release_evidence = st.text_input(
+                    "Release evidence reference",
+                    key=f"recovery_release_evidence_{recovery_id}",
+                )
+                if st.button(
+                    "Release reconciled recovery",
+                    key=f"reconcile_recovery_{recovery_id}",
+                    type="primary",
+                ):
+                    try:
+                        released = api_client.reconcile_submit_recovery(
+                            recovery_id,
+                            {
+                                **identity,
+                                "broker_terminal_state": terminal_state,
+                                "cumulative_filled_quantity": int(release_cumulative),
+                                "reason": release_reason,
+                                "evidence_ref": release_evidence,
+                            },
+                            actor="cockpit",
+                        )
+                    except BackendError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(
+                            "Backend classified recovery: "
+                            f"{released.get('cleanup_status', 'accepted')}"
+                        )
 
     if not order_views:
         st.caption("No open orders.")

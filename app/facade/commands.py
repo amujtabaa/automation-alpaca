@@ -26,7 +26,13 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from app.models import ExecutionEnvelope
+from app.models import (
+    ExecutionEnvelope,
+    SubmitRecoveryAttestation,
+    SubmitRecoveryFillCommand,
+    SubmitRecoveryFillResult,
+    SubmitRecoveryRecord,
+)
 
 __all__ = ["ExecutionCommandFacade"]
 
@@ -145,4 +151,22 @@ class ExecutionCommandFacade(Protocol):
         CANCELLED). An ACTIVE mandate is deliberately NOT cancellable here
         (409) — stopping a live mandate is the kill switch's or the flatten's
         job. ``POST /api/envelopes/{id}/cancel``; 404 if unknown."""
+        ...
+
+    async def ingest_submit_recovery_fill(
+        self,
+        *,
+        command: SubmitRecoveryFillCommand,
+        actor: str,
+    ) -> SubmitRecoveryFillResult:
+        """Ingest one evidenced canonical fill before recovery release."""
+        ...
+
+    async def reconcile_submit_recovery(
+        self,
+        *,
+        attestation: SubmitRecoveryAttestation,
+        actor: str,
+    ) -> SubmitRecoveryRecord:
+        """Release one needs-review contribution after event-truth parity."""
         ...

@@ -45,7 +45,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 
 | WO | Status | Branch commits | Notes |
 |---|---|---|---|
-| WO-0114 | ACTIVE | HEAD (activation commit) | Lane 1 active; FULL/DIRECT gate passed; red-first implementation next; review-gated to REV-0035. |
+| WO-0114 | REVIEW | `f991196`, `a3cd2a6`, HEAD (review-stage commit) | Implementation/evidence complete; REV-0035 staged for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
 | WO-0118 | QUEUED | — | Lane 3; after WO-0114 lands. |
 | WO-0119 | CLOSED | `966b1a7` activation; `5f715a8` implementation; `7387199` close-out | Bootstrapper, Python 3.12 devcontainer, and environment pointer verified in a disposable OS-temp checkout; fresh + rerun smoke gates green; dispositioned and moved to `work/completed/`. |
@@ -63,3 +63,12 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 ## Running NEEDS-INPUT list
 
 - WO-0115 — source paper database path is blank and D-BF-NOW is unchecked. Keep queued.
+- WO-0114 integration — `docs/00_START_HERE.md:394` still states a three-value recovery FSM and
+  both automatic outcomes terminal. A separately authorized correction must add
+  `needs_review -> operator_reconciled` as the sole human-gated edge; generic updates cannot take it.
+- WO-0114 integration — `docs/00_START_HERE.md:840` must name the separate canonical-fill command
+  plus exact full-identity/terminal/cumulative-parity attestation before one record leaves the open
+  view. WO-0114 did not cross its allowed documentation paths.
+- Repository-wide `ruff format --check .` — pre-existing
+  `work/review/AUDIT-0002-priorwork/probe_review_integrity.py` would reformat. WO-0114's scoped
+  format check is green; do not edit the prior review artifact from this lane.

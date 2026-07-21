@@ -305,6 +305,10 @@ class EventType(str, Enum):
     SUBMIT_RECOVERY_NEEDS_REVIEW = (
         "submit_recovery_needs_review"  # stranded order had fills
     )
+    # Human-attested release of one needs_review recovery contribution.  This
+    # is not a fill or broker-terminal fact; the paired ExecutionEvent carries
+    # ENGINE/LOCAL provenance and the attestation evidence (ADR-012 / INV-096).
+    SUBMIT_RECOVERY_RECONCILED = "submit_recovery_reconciled"
     # A stale SUBMITTING order's idempotent re-drive hit a transient broker error
     # and was deferred to the next tick (AIR-003). Counted to bound livelock.
     STALE_SUBMITTING_REDRIVE_DEFERRED = "stale_submitting_redrive_deferred"
@@ -483,6 +487,9 @@ class ExecutionEventType(str, Enum):
     # Plan-time vs write-time validator disagreement (ADR-010 §5, D-3): a
     # software-defect tripwire, distinct from ENVELOPE_BREACHED.
     ENVELOPE_PLAN_DIVERGENCE = "envelope_plan_divergence"
+    # One operator attestation released one submit-recovery contribution after
+    # exact venue-fill parity was proven.  This event never changes position.
+    SUBMIT_RECOVERY_OPERATOR_RECONCILED = "submit_recovery_operator_reconciled"
 
 
 class EventSource(str, Enum):
@@ -496,6 +503,7 @@ class EventSource(str, Enum):
     BROKER_STREAM = "broker_stream"  # Alpaca trade-update websocket
     BROKER_REST = "broker_rest"  # Alpaca REST (status/position fetch)
     RECONCILIATION = "reconciliation"  # inferred by the reconciliation engine
+    OPERATOR = "operator"  # explicit human-supplied venue evidence
 
 
 class EventAuthority(str, Enum):
@@ -511,6 +519,9 @@ class EventAuthority(str, Enum):
     BROKER_AUTHORITATIVE = "broker_authoritative"
     LOCAL = "local"
     SYNTHETIC = "synthetic"
+    # Human-attested economic truth.  It is intentionally non-broker authority:
+    # strict pre-append overfill/negative-position guards remain in force.
+    HUMAN_ATTESTED = "human_attested"
 
 
 # Replay is only valid within a single schema version; a semantics change to
@@ -887,6 +898,7 @@ RECOVERY_UNRESOLVED = "unresolved"  # the recovery loop is still working it
 RECOVERY_RESOLVED = "resolved_canceled"  # cleanly cancelled at the broker — no position
 RECOVERY_NEEDS_REVIEW = "needs_review"  # the broker order had fills — a real untracked
 # position exists; a human must reconcile it
+RECOVERY_OPERATOR_RECONCILED = "operator_reconciled"
 # Statuses the operator must still SEE (not cleanly resolved). The recovery loop
 # itself acts only on RECOVERY_UNRESOLVED — a needs_review record is done being
 # worked automatically and must not be re-cancelled.
@@ -894,18 +906,23 @@ RECOVERY_OPEN_STATUSES = frozenset({RECOVERY_UNRESOLVED, RECOVERY_NEEDS_REVIEW})
 
 # The complete, closed set of legal cleanup_status values, and the allowed
 # transitions between them (AIR-004). Free-form status strings are gone: an
-# unknown value ("typo_resolved") or a silent reopen of a terminal record
-# (resolved_canceled/needs_review -> unresolved) is a RecoveryTransitionError, not
-# a hidden mutation. Only the recovery loop's two automatic outcomes are legal
-# moves; both terminal states stay terminal (no automatic un-resolve path — a
-# human clearing a needs_review record is out of band and not modeled in beta).
+# unknown value ("typo_resolved") or a silent reopen of a terminal record is a
+# RecoveryTransitionError, not a hidden mutation. The only human edge is the
+# attestation-gated ``needs_review -> operator_reconciled`` release; every
+# resolved state stays terminal and cannot reopen to ``unresolved``.
 RECOVERY_STATUSES = frozenset(
-    {RECOVERY_UNRESOLVED, RECOVERY_RESOLVED, RECOVERY_NEEDS_REVIEW}
+    {
+        RECOVERY_UNRESOLVED,
+        RECOVERY_RESOLVED,
+        RECOVERY_NEEDS_REVIEW,
+        RECOVERY_OPERATOR_RECONCILED,
+    }
 )
 RECOVERY_TRANSITIONS: dict[str, frozenset[str]] = {
     RECOVERY_UNRESOLVED: frozenset({RECOVERY_RESOLVED, RECOVERY_NEEDS_REVIEW}),
     RECOVERY_RESOLVED: frozenset(),
-    RECOVERY_NEEDS_REVIEW: frozenset(),
+    RECOVERY_NEEDS_REVIEW: frozenset({RECOVERY_OPERATOR_RECONCILED}),
+    RECOVERY_OPERATOR_RECONCILED: frozenset(),
 }
 
 
@@ -948,6 +965,53 @@ class SubmitRecoveryRecord(_Entity):
     session_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
     last_attempt_at: Optional[datetime] = None
+
+
+class SubmitRecoveryIdentity(_Entity):
+    """Full operator echo of one immutable recovery/order/owner identity.
+
+    Nullable fields intentionally have no defaults: JSON callers must send
+    them explicitly as either their durable value or ``null``.  Omitting a
+    lineage field is not equivalent to attesting that it is absent.
+    """
+
+    recovery_id: str = Field(min_length=1)
+    local_order_id: str = Field(min_length=1)
+    broker_order_id: str = Field(min_length=1)
+    client_order_id: Optional[str]
+    symbol: str = Field(min_length=1)
+    side: OrderSide
+    candidate_id: Optional[str]
+    sell_intent_id: Optional[str]
+    envelope_id: Optional[str]
+
+
+class SubmitRecoveryAttestation(SubmitRecoveryIdentity):
+    """Operator evidence required to release one ``needs_review`` record."""
+
+    broker_terminal_state: OrderStatus
+    cumulative_filled_quantity: int = Field(ge=0, strict=True)
+    reason: str = Field(min_length=1)
+    evidence_ref: str = Field(min_length=1)
+
+
+class SubmitRecoveryFillCommand(SubmitRecoveryIdentity):
+    """Separate human-attested ingestion of one canonical venue execution."""
+
+    fill_quantity: int = Field(gt=0, strict=True)
+    cumulative_filled_quantity: int = Field(gt=0, strict=True)
+    price: ResponseSafeRequiredFloat = Field(gt=0, allow_inf_nan=False, strict=True)
+    reason: str = Field(min_length=1)
+    evidence_ref: str = Field(min_length=1)
+    filled_at: Optional[datetime] = None
+
+
+class SubmitRecoveryFillResult(_Entity):
+    """Typed result returned by the ingestion store/facade/API boundary."""
+
+    status: str
+    recovery: SubmitRecoveryRecord
+    fill: Optional[Fill] = None
 
 
 class Event(_Entity):

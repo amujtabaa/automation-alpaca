@@ -64,6 +64,26 @@ status `== CREATED`: the WO-0009 adversarial-verify pass found a reachable `SUBM
 engine-local release (submit failed for a BUY whose session closed mid-submit) that the old proxy
 would have stamped `BROKER_AUTHORITATIVE` — the exact over-claim direction this ADR forbids.
 
+### WO-0114 human-attestation provenance — proposed, pending REV-0035
+
+ADR-012 adds two deliberately different provenance shapes. The non-economic
+`SUBMIT_RECOVERY_OPERATOR_RECONCILED` lifecycle event is an engine-applied operator command and is
+therefore `ENGINE` / `LOCAL`, matching envelope approval and emergency-reduce control events. Its
+payload carries the operator, reason, evidence reference, full recovery/owner identity, attested
+terminal facts, and exact submission-claim occurrence; it is not a broker-terminal fact and never
+changes position.
+
+Only a separately ingested operator-supplied `FILL` is stamped with the additive values
+`OPERATOR` / `HUMAN_ATTESTED`. Human-attested authority is explicitly non-broker: it cannot use the
+ADR-001 overfill-recording exception, cannot cross position below zero, and never satisfies a
+broker-terminal requirement. The same canonical fill dedupe and position projector apply, so
+provenance does not create a second economic lane.
+
+The new enum members are compatible vocabulary expansion. The persisted `ExecutionEvent` shape is
+unchanged and `EXECUTION_EVENT_SCHEMA_VERSION` remains 1; SQLite recovery status is unconstrained
+`TEXT`, so no DDL or migration accompanies `operator_reconciled`. These semantics require ADR-012
+acceptance and REV-0035 before beta reliance.
+
 **WO-0113 local-cancel clarification.** The provenance discriminator above describes how an applied
 transition is stamped; it is not sufficient cancel authority. A local `CREATED → CANCELED` may be
 applied only when event projection still says `CREATED`, no broker id exists, and no open
@@ -196,3 +216,7 @@ regardless of which model is chosen.
   `BROKER_AUTHORITATIVE` `FILLED` then a `LOCAL` `CANCEL_PENDING` folds to `cancel_pending`; normal
   order folds to `filled`), so the ADR's stated contract cannot silently drift toward
   authority-weighting.
+- **WO-0114 proposed amendment:** `tests/test_wo0114_pd1_release_valve.py` pins human-attested fill
+  provenance, strict non-broker capacity/position behavior, evidence-bearing `ENGINE`/`LOCAL`
+  release, exact replay, and zero position movement; `tests/test_review_hardening_gates.py` pins the
+  new event's executable producer and lifecycle consumers.

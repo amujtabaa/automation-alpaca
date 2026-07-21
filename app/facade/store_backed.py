@@ -58,12 +58,16 @@ from app.models import (
     Event,
     EventType,
     ExecutionEnvelope,
+    ExecutionEventType,
     Order,
     OrderStatus,
     Position,
     SellIntent,
     SessionRecord,
     SessionStatus,
+    SubmitRecoveryAttestation,
+    SubmitRecoveryFillCommand,
+    SubmitRecoveryFillResult,
     SubmitRecoveryRecord,
     TradingState,
     WatchlistSymbol,
@@ -452,16 +456,47 @@ class StoreBackedQueryFacade:
             for order in non_terminal
         ]
 
-        recovery_views = [
-            OperatorRecoveryView(
-                record=record,
-                operational_status=recovery_operational_status(record.cleanup_status),
-                reason=record.failure_reason,
+        orders_by_id = {order.id: order for order in orders}
+        envelope_ids_by_order: dict[str, set[str | None]] = {}
+        for execution_event in await self._store.get_execution_events():
+            if (
+                execution_event.event_type is ExecutionEventType.ENVELOPE_ACTION
+                and execution_event.order_id is not None
+            ):
+                envelope_ids_by_order.setdefault(execution_event.order_id, set()).add(
+                    execution_event.envelope_id
+                )
+
+        recovery_views: list[OperatorRecoveryView] = []
+        for record in await self._store.list_submit_recoveries(
+            statuses=RECOVERY_OPEN_STATUSES
+        ):
+            order = orders_by_id.get(record.local_order_id)
+            parent_ids = envelope_ids_by_order.get(record.local_order_id, set())
+            lineage_error: Optional[str] = None
+            envelope_id: Optional[str] = None
+            if order is None:
+                lineage_error = "referenced local order is missing"
+            elif None in parent_ids or len(parent_ids) > 1:
+                lineage_error = "envelope lineage is ambiguous"
+            elif parent_ids:
+                envelope_id = next(iter(parent_ids))
+            recovery_views.append(
+                OperatorRecoveryView(
+                    record=record,
+                    operational_status=recovery_operational_status(
+                        record.cleanup_status
+                    ),
+                    reason=record.failure_reason,
+                    candidate_id=(order.candidate_id if order is not None else None),
+                    sell_intent_id=(
+                        order.sell_intent_id if order is not None else None
+                    ),
+                    envelope_id=envelope_id,
+                    lineage_valid=lineage_error is None,
+                    lineage_error=lineage_error,
+                )
             )
-            for record in await self._store.list_submit_recoveries(
-                statuses=RECOVERY_OPEN_STATUSES
-            )
-        ]
 
         return OperatorOrdersResponse(orders=order_views, recoveries=recovery_views)
 
@@ -648,6 +683,41 @@ class StoreBackedCommandFacade:
         self._market_data = market_data
         self._approval_gate = approval_gate
         self._settings = settings
+
+    @staticmethod
+    def _require_recovery_command_text(value: str, field: str) -> None:
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidInputError(
+                f"submit recovery operator command requires non-empty {field}"
+            )
+
+    async def ingest_submit_recovery_fill(
+        self,
+        *,
+        command: SubmitRecoveryFillCommand,
+        actor: str,
+    ) -> SubmitRecoveryFillResult:
+        """Typed facade boundary for human-attested fill ingestion."""
+
+        self._require_recovery_command_text(actor, "actor")
+        self._require_recovery_command_text(command.reason, "reason")
+        self._require_recovery_command_text(command.evidence_ref, "evidence_ref")
+        with _translate_store_errors():
+            return await self._store.ingest_submit_recovery_fill(command, actor=actor)
+
+    async def reconcile_submit_recovery(
+        self,
+        *,
+        attestation: SubmitRecoveryAttestation,
+        actor: str,
+    ) -> SubmitRecoveryRecord:
+        """Typed facade boundary for the human-gated PD-1 release valve."""
+
+        self._require_recovery_command_text(actor, "actor")
+        self._require_recovery_command_text(attestation.reason, "reason")
+        self._require_recovery_command_text(attestation.evidence_ref, "evidence_ref")
+        with _translate_store_errors():
+            return await self._store.reconcile_submit_recovery(attestation, actor=actor)
 
     async def pause_buys(self, *, actor: str) -> SessionRecord:
         """Wrap of ``StateStore.set_buys_paused(True)`` — the exact call

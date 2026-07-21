@@ -192,6 +192,13 @@ class OperatorRecoveryView(BaseModel):
     record: SubmitRecoveryRecord
     operational_status: str
     reason: Optional[str] = None
+    # Additive convenience echo for the cockpit.  The store revalidates every
+    # field under its write lock; this view never authorizes the command.
+    candidate_id: Optional[str] = None
+    sell_intent_id: Optional[str] = None
+    envelope_id: Optional[str] = None
+    lineage_valid: bool = True
+    lineage_error: Optional[str] = None
 
 
 class OperatorOrdersResponse(BaseModel):

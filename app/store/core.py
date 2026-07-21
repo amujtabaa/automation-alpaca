@@ -48,6 +48,7 @@ from app.models import (
     Position,
     PositionSnapshot,
     RECOVERY_NEEDS_REVIEW,
+    RECOVERY_OPERATOR_RECONCILED,
     RECOVERY_RESOLVED,
     RECOVERY_STATUSES,
     RECOVERY_TRANSITIONS,
@@ -55,6 +56,9 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    SubmitRecoveryAttestation,
+    SubmitRecoveryFillCommand,
+    SubmitRecoveryIdentity,
     SubmitRecoveryRecord,
     TradingState,
     utcnow,
@@ -185,6 +189,7 @@ def execution_event_for_fill(
     *,
     source: EventSource = EventSource.BROKER_REST,
     authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    payload: Optional[Mapping[str, Any]] = None,
 ) -> ExecutionEvent:
     """The ``FILL`` ExecutionEvent that mirrors a fill row.
 
@@ -230,6 +235,7 @@ def execution_event_for_fill(
         price=fill.price,
         order_id=fill.order_id,
         session_id=fill.session_id,
+        payload=dict(payload or {}),
     )
 
 
@@ -471,6 +477,7 @@ def plan_append_fill(
     existing_quarantine_event: Optional[ExecutionEvent] = None,
     source: EventSource = EventSource.BROKER_REST,
     authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+    execution_payload: Optional[Mapping[str, Any]] = None,
 ) -> FillPlan:
     """Decide the outcome of appending one fill — the shared logic that was
     duplicated between the two stores.
@@ -649,7 +656,12 @@ def plan_append_fill(
         session_id=session_id,
         filled_at=filled_at or utcnow(),
     )
-    fill_event = execution_event_for_fill(fill, source=source, authority=authority)
+    fill_event = execution_event_for_fill(
+        fill,
+        source=source,
+        authority=authority,
+        payload=execution_payload,
+    )
     quarantine_event: Optional[ExecutionEvent] = None
     if is_overfill:
         quarantine_event = overfill_quarantine_event(
@@ -1124,6 +1136,7 @@ _ENVELOPE_CHILD_LIFECYCLE_EVENTS = frozenset(
     {
         ExecutionEventType.SUBMIT_PENDING,
         ExecutionEventType.SUBMIT_RELEASED,
+        ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED,
         ExecutionEventType.SUBMITTED,
         ExecutionEventType.PARTIALLY_FILLED,
         ExecutionEventType.CANCEL_PENDING,
@@ -1153,6 +1166,7 @@ _LOCAL_CHILD_LIFECYCLE_EVENTS = frozenset(
     {
         ExecutionEventType.SUBMIT_PENDING,
         ExecutionEventType.SUBMIT_RELEASED,
+        ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED,
         ExecutionEventType.CANCEL_PENDING,
         ExecutionEventType.TIMEOUT_QUARANTINE,
     }
@@ -1313,6 +1327,15 @@ def direct_sell_order_may_execute(
             if occurrence is None or occurrence not in claim_open:
                 return True
             claim_open.remove(occurrence)
+            continue
+        if event.event_type is ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED:
+            occurrence = latest_occurrence if occurrence is None else occurrence
+            if occurrence is None:
+                claim_open.clear()
+                venue_open.clear()
+            else:
+                claim_open.discard(occurrence)
+                venue_open.discard(occurrence)
             continue
         if event.authority is not EventAuthority.BROKER_AUTHORITATIVE:
             continue
@@ -1642,6 +1665,20 @@ def project_envelope_obligation(
             claim_open_by_order[order_id].remove(occurrence)
             # A local release says only that the claim writer stood down.  It
             # cannot close a venue interval opened by broker authority.
+            continue
+
+        if event.event_type is ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED:
+            # ADR-012: this is explicitly not broker authority.  It is the
+            # evidence-bearing human reconciliation of the exact recovery
+            # occurrence, and therefore closes only that claim/venue interval.
+            if occurrence is None:
+                occurrence = latest_claim_occurrence[order_id]
+            if occurrence is None:
+                claim_open_by_order[order_id].clear()
+                venue_open_by_order[order_id].clear()
+            else:
+                claim_open_by_order[order_id].discard(occurrence)
+                venue_open_by_order[order_id].discard(occurrence)
             continue
 
         if event.authority is not EventAuthority.BROKER_AUTHORITATIVE:
@@ -2575,7 +2612,274 @@ def recovery_status_event(prev_status: str, new_status: Optional[str]) -> Option
         )
     if new_status == RECOVERY_NEEDS_REVIEW:
         return "submit_recovery_needs_review"
+    if new_status == RECOVERY_OPERATOR_RECONCILED:
+        return EventType.SUBMIT_RECOVERY_RECONCILED.value
     return "submit_recovery_resolved"
+
+
+RECOVERY_BROKER_TERMINAL_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}
+)
+
+
+def require_recovery_evidence(
+    *, actor: str, reason: str, evidence_ref: str
+) -> dict[str, str]:
+    """Validate and normalize the non-optional human evidence fields."""
+
+    normalized = {
+        "actor": actor.strip() if isinstance(actor, str) else "",
+        "reason": reason.strip() if isinstance(reason, str) else "",
+        "evidence_ref": evidence_ref.strip() if isinstance(evidence_ref, str) else "",
+    }
+    for label, value in normalized.items():
+        if not value:
+            raise RecoveryTransitionError(
+                f"submit recovery operator command requires non-empty {label}"
+            )
+    return normalized
+
+
+def validate_submit_recovery_identity(
+    record: SubmitRecoveryRecord,
+    order: Optional[Order],
+    identity: SubmitRecoveryIdentity,
+    *,
+    expected_candidate_id: Optional[str],
+    expected_sell_intent_id: Optional[str],
+    expected_envelope_id: Optional[str],
+    lineage_error: Optional[str] = None,
+) -> None:
+    """Fail closed unless every echoed durable identity/lineage field matches."""
+
+    if lineage_error is not None:
+        raise RecoveryTransitionError(
+            f"recovery lineage is not trustworthy: {lineage_error}"
+        )
+    if order is None:
+        raise RecoveryTransitionError(
+            f"recovery {record.id} references missing local order {record.local_order_id}"
+        )
+    expected = {
+        "recovery_id": record.id,
+        "local_order_id": record.local_order_id,
+        "broker_order_id": record.broker_order_id,
+        "client_order_id": record.client_order_id,
+        "symbol": record.symbol,
+        "side": record.side,
+        "candidate_id": expected_candidate_id,
+        "sell_intent_id": expected_sell_intent_id,
+        "envelope_id": expected_envelope_id,
+    }
+    for label, durable in expected.items():
+        echoed = getattr(identity, label)
+        if echoed != durable:
+            raise RecoveryTransitionError(
+                f"recovery identity mismatch for {label}: echoed {echoed!r}, "
+                f"durable {durable!r}"
+            )
+    if (
+        order.id != record.local_order_id
+        or order.symbol != record.symbol
+        or order.side is not record.side
+        or order.candidate_id != expected_candidate_id
+        or order.sell_intent_id != expected_sell_intent_id
+    ):
+        raise RecoveryTransitionError(
+            f"recovery {record.id} no longer matches its durable local order scope"
+        )
+
+
+def recovery_attestation_payload(
+    record: SubmitRecoveryRecord,
+    attestation: SubmitRecoveryAttestation,
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    """Canonical durable representation used for audit and exact replay."""
+
+    evidence = require_recovery_evidence(
+        actor=actor, reason=attestation.reason, evidence_ref=attestation.evidence_ref
+    )
+    return {
+        "recovery_id": record.id,
+        "local_order_id": record.local_order_id,
+        "broker_order_id": record.broker_order_id,
+        "client_order_id": record.client_order_id,
+        "symbol": record.symbol,
+        "side": record.side.value,
+        "candidate_id": attestation.candidate_id,
+        "sell_intent_id": attestation.sell_intent_id,
+        "envelope_id": attestation.envelope_id,
+        "broker_terminal_state": attestation.broker_terminal_state.value,
+        "cumulative_filled_quantity": attestation.cumulative_filled_quantity,
+        "cleanup_status": RECOVERY_OPERATOR_RECONCILED,
+        **evidence,
+    }
+
+
+def validate_recovery_attested_facts(
+    attestation: SubmitRecoveryAttestation,
+    record: SubmitRecoveryRecord,
+    *,
+    canonical_filled_quantity: int,
+) -> None:
+    if attestation.broker_terminal_state not in RECOVERY_BROKER_TERMINAL_STATUSES:
+        raise RecoveryTransitionError(
+            "attested broker state must be terminal "
+            f"({sorted(status.value for status in RECOVERY_BROKER_TERMINAL_STATUSES)})"
+        )
+    quantity = attestation.cumulative_filled_quantity
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
+        raise RecoveryTransitionError(
+            "attested cumulative_filled_quantity must be a non-negative whole number"
+        )
+    if (
+        attestation.broker_terminal_state is OrderStatus.FILLED
+        and quantity < record.quantity
+    ):
+        raise RecoveryTransitionError(
+            "attested FILLED state contradicts cumulative quantity below the "
+            f"immutable order quantity ({quantity} < {record.quantity})"
+        )
+    if quantity != canonical_filled_quantity:
+        raise RecoveryTransitionError(
+            "attested cumulative fill parity failed: "
+            f"attested {quantity}, canonical event truth {canonical_filled_quantity}"
+        )
+
+
+def canonical_recovery_fill_quantity(
+    events: Sequence[ExecutionEvent],
+    record: SubmitRecoveryRecord,
+    *,
+    known_broker_order_ids: Sequence[str],
+) -> int:
+    """Sum canonical FILL truth for one exact local/broker-order leg.
+
+    New operator events carry an explicit broker id.  Historical recovery fills
+    use the adapter's ``<broker_order_id>:<cumulative>`` source identity.  A
+    legacy unscoped fill is safe to attribute only when the local order has one
+    concrete venue leg; with multiple legs it is an ambiguity and release fails
+    closed.
+    """
+
+    concrete_ids = {value for value in known_broker_order_ids if value}
+    total = 0
+    prefix = f"fill:{record.local_order_id}:"
+    for event in events:
+        if event.event_type is not ExecutionEventType.FILL:
+            continue
+        if event.order_id != record.local_order_id:
+            continue
+        explicit = event.payload.get("broker_order_id")
+        if isinstance(explicit, str) and explicit:
+            if explicit == record.broker_order_id:
+                total += event.quantity or 0
+            continue
+        source_fill_id = (
+            event.dedupe_key[len(prefix) :]
+            if event.dedupe_key is not None and event.dedupe_key.startswith(prefix)
+            else ""
+        )
+        if source_fill_id.startswith(f"{record.broker_order_id}:"):
+            total += event.quantity or 0
+            continue
+        if any(
+            source_fill_id.startswith(f"{broker_id}:") for broker_id in concrete_ids
+        ):
+            continue
+        if len(concrete_ids) <= 1:
+            total += event.quantity or 0
+            continue
+        raise RecoveryTransitionError(
+            "canonical fill truth is ambiguous across multiple broker-order legs "
+            f"for local order {record.local_order_id}"
+        )
+    return total
+
+
+def recovery_operator_execution_event(
+    record: SubmitRecoveryRecord,
+    order: Order,
+    payload: Mapping[str, Any],
+) -> ExecutionEvent:
+    """Non-economic execution truth paired with the release audit event."""
+
+    return ExecutionEvent(
+        event_type=ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=f"submit-recovery-operator-reconciled:{record.id}",
+        ts_event=utcnow(),
+        symbol=record.symbol,
+        side=record.side,
+        order_id=record.local_order_id,
+        envelope_id=payload.get("envelope_id"),
+        session_id=record.session_id,
+        correlation_id=order.candidate_id or order.sell_intent_id,
+        payload=dict(payload),
+    )
+
+
+def recovery_fill_payload(
+    record: SubmitRecoveryRecord,
+    command: SubmitRecoveryFillCommand,
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    """Canonical provenance payload for one human-attested FILL."""
+
+    evidence = require_recovery_evidence(
+        actor=actor, reason=command.reason, evidence_ref=command.evidence_ref
+    )
+    return {
+        "recovery_id": record.id,
+        "broker_order_id": record.broker_order_id,
+        "client_order_id": record.client_order_id,
+        "cumulative_filled_quantity": command.cumulative_filled_quantity,
+        **evidence,
+    }
+
+
+def validate_recovery_fill_facts(
+    command: SubmitRecoveryFillCommand,
+    record: SubmitRecoveryRecord,
+    *,
+    canonical_filled_quantity: int,
+    exact_replay: bool,
+) -> None:
+    """Validate one incremental fill against broker-leg cumulative truth."""
+
+    bad = fill_value_reason(command.fill_quantity, command.price)
+    if bad is not None:
+        raise RecoveryTransitionError(f"invalid human-attested fill: {bad}")
+    cumulative = command.cumulative_filled_quantity
+    if (
+        isinstance(cumulative, bool)
+        or not isinstance(cumulative, int)
+        or cumulative <= 0
+    ):
+        raise RecoveryTransitionError(
+            "fill cumulative_filled_quantity must be a positive whole number"
+        )
+    if cumulative > record.quantity:
+        raise RecoveryTransitionError(
+            f"fill cumulative quantity {cumulative} exceeds recovery/order "
+            f"capacity {record.quantity}"
+        )
+    if exact_replay:
+        if cumulative != canonical_filled_quantity:
+            raise RecoveryTransitionError(
+                "existing operator fill identity does not match canonical cumulative truth"
+            )
+        return
+    expected = canonical_filled_quantity + command.fill_quantity
+    if cumulative != expected:
+        raise RecoveryTransitionError(
+            "fill cumulative parity failed: "
+            f"expected {expected} from canonical truth, got {cumulative}"
+        )
 
 
 def recovery_resolution_execution_event(
@@ -4217,6 +4521,7 @@ def plan_envelope_fill(
     order_quantity: Optional[int] = None,
     prior_order_filled_quantity: int = 0,
     existing_quarantine_event: Optional[ExecutionEvent] = None,
+    execution_payload: Optional[Mapping[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> EnvelopeFillPlan:
     """Plan the ONLY operation that may decrement ``remaining_quantity``.
@@ -4304,6 +4609,7 @@ def plan_envelope_fill(
     terminal = ENVELOPE_TRANSITIONS[envelope.status] == set()
 
     payload: dict[str, Any] = {
+        **dict(execution_payload or {}),
         "remaining_before": remaining,
         "remaining_after": new_remaining,
     }

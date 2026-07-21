@@ -40,6 +40,7 @@ from typing import Any, Iterable, Iterator, Optional
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     RECOVERY_OPEN_STATUSES,
+    RECOVERY_OPERATOR_RECONCILED,
     RECOVERY_RESOLVED,
     RECOVERY_UNRESOLVED,
     Candidate,
@@ -48,6 +49,7 @@ from app.models import (
     EventSource,
     CandidateStatus,
     Event,
+    EventType,
     ExecutionEnvelope,
     ExecutionEvent,
     ExecutionEventType,
@@ -63,6 +65,9 @@ from app.models import (
     SellReason,
     SessionRecord,
     SessionStatus,
+    SubmitRecoveryAttestation,
+    SubmitRecoveryFillCommand,
+    SubmitRecoveryFillResult,
     SubmitRecoveryRecord,
     TradingMode,
     TradingState,
@@ -178,6 +183,13 @@ from app.store.core import (
     require_status_enum,
     recovery_resolution_execution_event,
     recovery_creation_audit_matches,
+    canonical_recovery_fill_quantity,
+    recovery_attestation_payload,
+    recovery_fill_payload,
+    recovery_operator_execution_event,
+    validate_recovery_attested_facts,
+    validate_recovery_fill_facts,
+    validate_submit_recovery_identity,
     recovery_terminal_fact_matches,
     recovery_status_event,
     claim_occurrence_at,
@@ -461,6 +473,7 @@ class SqliteStateStore(StateStore):
     def __init__(self, db_path: Path | str) -> None:
         self._db_path = Path(db_path)
         self._lock = asyncio.Lock()
+        self._recovery_truth_lock = asyncio.Lock()
         self._conn: Optional[sqlite3.Connection] = None
         self._accepted_submit_uncertainty_events: list[ExecutionEvent] = []
         self._accepted_submit_uncertainty_event_ids: set[str] = set()
@@ -3224,6 +3237,7 @@ class SqliteStateStore(StateStore):
         ts_event: Optional[datetime] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        execution_payload: Optional[dict[str, Any]] = None,
         now: Optional[datetime] = None,
     ) -> ExecutionEnvelope:
         """Apply one deduped fill fact — the ONLY remaining_quantity writer.
@@ -3337,6 +3351,7 @@ class SqliteStateStore(StateStore):
                     order_quantity=order_quantity,
                     prior_order_filled_quantity=prior_order_filled_quantity,
                     existing_quarantine_event=existing_quarantine_event,
+                    execution_payload=execution_payload,
                     now=now,
                 )
                 if plan.outcome == ENVELOPE_FILL_REJECT:
@@ -5951,6 +5966,396 @@ class SqliteStateStore(StateStore):
             )
             return self._submit_recovery(row) if row is not None else None
 
+    def _submit_recovery_lineage_locked(
+        self, record: SubmitRecoveryRecord, cur: sqlite3.Cursor
+    ) -> tuple[
+        Optional[Order], Optional[str], Optional[str], Optional[str], Optional[str]
+    ]:
+        order_row = cur.execute(
+            "SELECT * FROM orders WHERE id = ?", (record.local_order_id,)
+        ).fetchone()
+        if order_row is None:
+            return None, None, None, None, "referenced local order is missing"
+        order = self._order(order_row)
+        candidate_id = order.candidate_id
+        sell_intent_id = order.sell_intent_id
+        if candidate_id is not None:
+            exists = cur.execute(
+                "SELECT 1 FROM candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+            if exists is None:
+                return (
+                    order,
+                    candidate_id,
+                    sell_intent_id,
+                    None,
+                    "candidate owner is missing",
+                )
+        if sell_intent_id is not None:
+            exists = cur.execute(
+                "SELECT 1 FROM sell_intents WHERE id = ?", (sell_intent_id,)
+            ).fetchone()
+            if exists is None:
+                return (
+                    order,
+                    candidate_id,
+                    sell_intent_id,
+                    None,
+                    "sell-intent owner is missing",
+                )
+        action_rows = cur.execute(
+            "SELECT * FROM execution_events WHERE event_type = ? AND order_id = ? "
+            "ORDER BY sequence",
+            (ExecutionEventType.ENVELOPE_ACTION.value, order.id),
+        ).fetchall()
+        if not action_rows:
+            return order, candidate_id, sell_intent_id, None, None
+        parent_ids = {row["envelope_id"] for row in action_rows}
+        if None in parent_ids or len(parent_ids) != 1:
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                None,
+                "ambiguous envelope parent",
+            )
+        envelope_id = next(iter(parent_ids))
+        assert envelope_id is not None
+        envelope_row = cur.execute(
+            "SELECT * FROM execution_envelopes WHERE id = ?", (envelope_id,)
+        ).fetchone()
+        if envelope_row is None:
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                envelope_id,
+                "envelope is missing",
+            )
+        envelope = self._envelope(envelope_row)
+        projection = self._envelope_obligation_locked(envelope_id=envelope_id)
+        if (
+            order.id in projection.invalid_order_ids
+            or order.id in projection.missing_order_ids
+            or projection.missing_envelope_ids
+            or envelope.sell_intent_id != sell_intent_id
+            or envelope.symbol != order.symbol
+            or envelope.session_id != order.session_id
+        ):
+            return (
+                order,
+                candidate_id,
+                sell_intent_id,
+                envelope_id,
+                "envelope projection does not uniquely bind the order and owner",
+            )
+        return order, candidate_id, sell_intent_id, envelope_id, None
+
+    @staticmethod
+    def _recovery_known_broker_ids_locked(
+        record: SubmitRecoveryRecord, order: Order, cur: sqlite3.Cursor
+    ) -> list[str]:
+        rows = cur.execute(
+            "SELECT broker_order_id FROM submit_recoveries WHERE local_order_id = ?",
+            (record.local_order_id,),
+        ).fetchall()
+        values = [row["broker_order_id"] for row in rows]
+        if order.broker_order_id is not None:
+            values.append(order.broker_order_id)
+        return values
+
+    async def ingest_submit_recovery_fill(
+        self,
+        command: SubmitRecoveryFillCommand,
+        *,
+        actor: str,
+    ) -> SubmitRecoveryFillResult:
+        """Human-attested fill ingestion, serialized against valve release."""
+
+        async with self._recovery_truth_lock:
+            async with self._lock:
+                with self._tx() as cur:
+                    recovery_row = cur.execute(
+                        "SELECT * FROM submit_recoveries WHERE id = ?",
+                        (command.recovery_id,),
+                    ).fetchone()
+                    if recovery_row is None:
+                        raise UnknownEntityError(
+                            f"submit recovery {command.recovery_id} not found"
+                        )
+                    record = self._submit_recovery(recovery_row)
+                    order, candidate_id, sell_intent_id, envelope_id, lineage_error = (
+                        self._submit_recovery_lineage_locked(record, cur)
+                    )
+                    validate_submit_recovery_identity(
+                        record,
+                        order,
+                        command,
+                        expected_candidate_id=candidate_id,
+                        expected_sell_intent_id=sell_intent_id,
+                        expected_envelope_id=envelope_id,
+                        lineage_error=lineage_error,
+                    )
+                    assert order is not None
+                    claim_occurrence = self._recovery_claim_occurrence_locked(record)
+                    if claim_occurrence is None:
+                        raise RecoveryTransitionError(
+                            "recovery cannot be bound to a durable submission claim "
+                            "occurrence"
+                        )
+                    payload = recovery_fill_payload(record, command, actor=actor)
+                    payload["claim_occurrence"] = claim_occurrence
+                    source_fill_id = (
+                        f"{record.broker_order_id}:{command.cumulative_filled_quantity}"
+                    )
+                    dedupe_key = f"fill:{order.id}:{source_fill_id}"
+                    event_row = cur.execute(
+                        "SELECT * FROM execution_events WHERE dedupe_key = ?",
+                        (dedupe_key,),
+                    ).fetchone()
+                    existing_event = (
+                        self._execution_event(event_row)
+                        if event_row is not None
+                        else None
+                    )
+                    fill_row = cur.execute(
+                        "SELECT * FROM fills WHERE order_id = ? AND source_fill_id = ?",
+                        (order.id, source_fill_id),
+                    ).fetchone()
+                    existing_fill = (
+                        self._fill(fill_row) if fill_row is not None else None
+                    )
+                    event_rows = cur.execute(
+                        "SELECT * FROM execution_events WHERE order_id = ? "
+                        "ORDER BY sequence",
+                        (order.id,),
+                    ).fetchall()
+                    canonical_quantity = canonical_recovery_fill_quantity(
+                        [self._execution_event(row) for row in event_rows],
+                        record,
+                        known_broker_order_ids=self._recovery_known_broker_ids_locked(
+                            record, order, cur
+                        ),
+                    )
+                    exact_replay = existing_event is not None
+                    validate_recovery_fill_facts(
+                        command,
+                        record,
+                        canonical_filled_quantity=canonical_quantity,
+                        exact_replay=exact_replay,
+                    )
+                    if exact_replay:
+                        assert existing_event is not None
+                        expected_fields = (
+                            existing_event.event_type is ExecutionEventType.FILL
+                            and existing_event.source is EventSource.OPERATOR
+                            and existing_event.authority
+                            is EventAuthority.HUMAN_ATTESTED
+                            and existing_event.symbol == record.symbol
+                            and existing_event.side is record.side
+                            and existing_event.quantity == command.fill_quantity
+                            and existing_event.price == command.price
+                            and existing_event.order_id == order.id
+                            and existing_event.envelope_id == envelope_id
+                            and all(
+                                existing_event.payload.get(key) == value
+                                for key, value in payload.items()
+                            )
+                        )
+                        if not expected_fields:
+                            raise RecoveryTransitionError(
+                                "conflicting human-attested fill replay"
+                            )
+                        if existing_fill is not None:
+                            if (
+                                existing_fill.quantity != command.fill_quantity
+                                or existing_fill.price != command.price
+                                or existing_fill.side is not record.side
+                            ):
+                                raise RecoveryTransitionError(
+                                    "conflicting fill-row replay for recovery command"
+                                )
+                            return SubmitRecoveryFillResult(
+                                status="duplicate",
+                                recovery=record,
+                                fill=existing_fill,
+                            )
+                    elif record.cleanup_status != RECOVERY_NEEDS_REVIEW:
+                        raise RecoveryTransitionError(
+                            f"recovery {record.id} is {record.cleanup_status}; "
+                            "new fill ingestion requires needs_review"
+                        )
+                    if not exact_replay and record.side is OrderSide.SELL:
+                        position = self._position_locked(record.symbol)
+                        if position.quantity < command.fill_quantity:
+                            raise RecoveryTransitionError(
+                                "human-attested sell fill would create a negative position"
+                            )
+
+            if envelope_id is not None:
+                await self.record_envelope_fill(
+                    envelope_id,
+                    quantity=command.fill_quantity,
+                    dedupe_key=dedupe_key,
+                    price=command.price,
+                    order_id=order.id,
+                    session_id=record.session_id,
+                    ts_event=command.filled_at,
+                    source=EventSource.OPERATOR,
+                    authority=EventAuthority.HUMAN_ATTESTED,
+                    execution_payload=payload,
+                )
+            result = await self.append_fill(
+                order.id,
+                record.symbol,
+                record.side,
+                command.fill_quantity,
+                command.price,
+                source_fill_id=source_fill_id,
+                filled_at=command.filled_at,
+                session_id=record.session_id,
+                source=EventSource.OPERATOR,
+                authority=EventAuthority.HUMAN_ATTESTED,
+                execution_payload=payload,
+            )
+            if result.status == "conflict":
+                raise RecoveryTransitionError(
+                    "conflicting durable fill identity during recovery ingestion"
+                )
+            return SubmitRecoveryFillResult(
+                status=result.status,
+                recovery=record,
+                fill=result.fill,
+            )
+
+    async def reconcile_submit_recovery(
+        self,
+        attestation: SubmitRecoveryAttestation,
+        *,
+        actor: str,
+    ) -> SubmitRecoveryRecord:
+        """Atomically apply or idempotently replay one operator attestation."""
+
+        async with self._recovery_truth_lock:
+            async with self._lock:
+                with self._tx() as cur:
+                    recovery_row = cur.execute(
+                        "SELECT * FROM submit_recoveries WHERE id = ?",
+                        (attestation.recovery_id,),
+                    ).fetchone()
+                    if recovery_row is None:
+                        raise UnknownEntityError(
+                            f"submit recovery {attestation.recovery_id} not found"
+                        )
+                    record = self._submit_recovery(recovery_row)
+                    order, candidate_id, sell_intent_id, envelope_id, lineage_error = (
+                        self._submit_recovery_lineage_locked(record, cur)
+                    )
+                    validate_submit_recovery_identity(
+                        record,
+                        order,
+                        attestation,
+                        expected_candidate_id=candidate_id,
+                        expected_sell_intent_id=sell_intent_id,
+                        expected_envelope_id=envelope_id,
+                        lineage_error=lineage_error,
+                    )
+                    assert order is not None
+                    claim_occurrence = self._recovery_claim_occurrence_locked(record)
+                    if claim_occurrence is None:
+                        raise RecoveryTransitionError(
+                            "recovery cannot be bound to a durable submission claim "
+                            "occurrence"
+                        )
+                    payload = recovery_attestation_payload(
+                        record, attestation, actor=actor
+                    )
+                    payload["claim_occurrence"] = claim_occurrence
+                    prior_row = cur.execute(
+                        "SELECT * FROM events WHERE event_type = ? AND order_id = ? "
+                        "ORDER BY rowid",
+                        (
+                            EventType.SUBMIT_RECOVERY_RECONCILED.value,
+                            record.local_order_id,
+                        ),
+                    ).fetchall()
+                    prior_audit = next(
+                        (
+                            self._event(row)
+                            for row in prior_row
+                            if self._event(row).payload.get("recovery_id") == record.id
+                        ),
+                        None,
+                    )
+                    if record.cleanup_status == RECOVERY_OPERATOR_RECONCILED:
+                        if prior_audit is not None and prior_audit.payload == payload:
+                            return record
+                        raise RecoveryTransitionError(
+                            f"conflicting re-attestation for released recovery {record.id}"
+                        )
+                    if record.cleanup_status != RECOVERY_NEEDS_REVIEW:
+                        raise RecoveryTransitionError(
+                            f"recovery {record.id} is {record.cleanup_status}; "
+                            "operator release requires needs_review"
+                        )
+                    event_rows = cur.execute(
+                        "SELECT * FROM execution_events WHERE order_id = ? "
+                        "ORDER BY sequence",
+                        (order.id,),
+                    ).fetchall()
+                    canonical_quantity = canonical_recovery_fill_quantity(
+                        [self._execution_event(row) for row in event_rows],
+                        record,
+                        known_broker_order_ids=self._recovery_known_broker_ids_locked(
+                            record, order, cur
+                        ),
+                    )
+                    validate_recovery_attested_facts(
+                        attestation,
+                        record,
+                        canonical_filled_quantity=canonical_quantity,
+                    )
+                    updated = record.model_copy(
+                        deep=True,
+                        update={"cleanup_status": RECOVERY_OPERATOR_RECONCILED},
+                    )
+                    cur.execute(
+                        "UPDATE submit_recoveries SET cleanup_status = ? WHERE id = ?",
+                        (RECOVERY_OPERATOR_RECONCILED, record.id),
+                    )
+                    self._insert_event(
+                        cur,
+                        EventType.SUBMIT_RECOVERY_RECONCILED.value,
+                        message=(
+                            f"operator reconciled broker order "
+                            f"{record.broker_order_id} recovery"
+                        ),
+                        symbol=record.symbol,
+                        candidate_id=order.candidate_id,
+                        order_id=order.id,
+                        payload=payload,
+                        session_id=record.session_id,
+                    )
+                    execution_event = recovery_operator_execution_event(
+                        record, order, payload
+                    )
+                    stored = self._insert_execution_event(cur, execution_event)
+                    if (
+                        stored.event_type is not execution_event.event_type
+                        or stored.source is not execution_event.source
+                        or stored.authority is not execution_event.authority
+                        or stored.order_id != execution_event.order_id
+                        or stored.envelope_id != execution_event.envelope_id
+                        or stored.payload != execution_event.payload
+                    ):
+                        raise RecoveryTransitionError(
+                            "operator reconciliation execution-event identity conflict"
+                        )
+                    self._reconcile_envelope_owners_for_order_locked(
+                        cur, order.id, now=execution_event.ts_event or utcnow()
+                    )
+                    return updated
+
     async def update_submit_recovery(
         self,
         recovery_id: str,
@@ -5965,6 +6370,11 @@ class SqliteStateStore(StateStore):
             if row is None:
                 raise UnknownEntityError(f"submit recovery {recovery_id} not found")
             record = self._submit_recovery(row)
+            if cleanup_status == RECOVERY_OPERATOR_RECONCILED:
+                raise RecoveryTransitionError(
+                    "operator_reconciled requires the evidence-bearing operator "
+                    "attestation command"
+                )
             terminal_event = recovery_status_event(
                 record.cleanup_status, cleanup_status
             )
@@ -6575,6 +6985,7 @@ class SqliteStateStore(StateStore):
         session_id: Optional[str] = None,
         source: EventSource = EventSource.BROKER_REST,
         authority: EventAuthority = EventAuthority.BROKER_AUTHORITATIVE,
+        execution_payload: Optional[dict[str, Any]] = None,
     ) -> FillAppendResult:
         key = normalize_symbol(symbol)
         side = OrderSide(side)
@@ -6666,6 +7077,7 @@ class SqliteStateStore(StateStore):
                 existing_quarantine_event=existing_quarantine_event,
                 source=source,
                 authority=authority,
+                execution_payload=execution_payload,
             )
 
             if plan.outcome == FILL_REJECT:
