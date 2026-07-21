@@ -8,6 +8,7 @@ session-close choke points on both stores.
 
 from __future__ import annotations
 
+import asyncio
 import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1272,6 +1273,62 @@ async def test_brokerless_cancel_request_has_one_production_constructor():
                         )
 
     assert producers == [("app/monitoring.py", "_persist_disposition_cancel_request")]
+
+
+async def test_concurrent_brokerless_request_accepts_dedupe_winner_timestamp(
+    any_store, monkeypatch
+):
+    """Concurrent identical holds converge on one event without faulting a caller."""
+
+    envelope, child = await _active_envelope_with_created_child(any_store)
+    events = await any_store.get_execution_events()
+    original_append = any_store.append_execution_event
+    arrivals = 0
+    release = asyncio.Event()
+    clock_tick = 0
+
+    def advancing_clock():
+        nonlocal clock_tick
+        value = RACE_NOW + timedelta(microseconds=clock_tick)
+        clock_tick += 1
+        return value
+
+    async def collide_after_both_drafts_exist(event: ExecutionEvent):
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals == 2:
+            release.set()
+        await release.wait()
+        return await original_append(event)
+
+    monkeypatch.setattr(monitoring, "utcnow", advancing_clock)
+    monkeypatch.setattr(
+        any_store, "append_execution_event", collide_after_both_drafts_exist
+    )
+    calls = [
+        monitoring._persist_disposition_cancel_request(
+            any_store,
+            envelope=envelope,
+            order=child,
+            disposition="stale_data_cancel",
+            events=list(events),
+            target_order_ids=(child.id,),
+            claim_occurrence=0,
+        )
+        for _ in range(2)
+    ]
+
+    first, second = await asyncio.gather(*calls)
+
+    assert first.id == second.id
+    requests = [
+        event
+        for event in await any_store.get_execution_events()
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.order_id == child.id
+        and event.payload.get("action") == "cancel_request"
+    ]
+    assert len(requests) == 1
 
 
 async def test_terminal_fill_excludes_source_cancels_sibling_and_reconciles_once(

@@ -9,6 +9,7 @@ direct attempts.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -237,6 +238,66 @@ async def test_cancel_event_is_durable_before_venue_io_and_replayable(any_store)
     assert event.envelope_id == envelope.id
     assert event.order_id == order.id
     assert (await any_store.get_order(order.id)).status is OrderStatus.CANCEL_PENDING
+
+
+async def test_concurrent_exact_cancel_attempt_accepts_dedupe_winner_timestamp(
+    any_store, monkeypatch
+):
+    """A benign same-key loser must stand down, not turn into a policy fault."""
+
+    envelope, order = await _submitted_child(any_store)
+    assert order.broker_order_id is not None
+    events = await any_store.get_execution_events()
+    original_append = any_store.append_execution_event
+    arrivals = 0
+    release = asyncio.Event()
+    clock_tick = 0
+
+    def advancing_clock():
+        nonlocal clock_tick
+        value = NOW + timedelta(microseconds=clock_tick)
+        clock_tick += 1
+        return value
+
+    async def collide_after_both_drafts_exist(event: ExecutionEvent):
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals == 2:
+            release.set()
+        await release.wait()
+        return await original_append(event)
+
+    monkeypatch.setattr(monitoring, "utcnow", advancing_clock)
+    monkeypatch.setattr(
+        any_store, "append_execution_event", collide_after_both_drafts_exist
+    )
+    target_snapshot = ((order.id, order.broker_order_id),)
+
+    results = await asyncio.gather(
+        monitoring._persist_disposition_cancel_attempt(
+            any_store,
+            envelope=envelope,
+            order=order,
+            disposition=STALE_CANCEL,
+            events=list(events),
+            target_snapshot=target_snapshot,
+        ),
+        monitoring._persist_disposition_cancel_attempt(
+            any_store,
+            envelope=envelope,
+            order=order,
+            disposition=STALE_CANCEL,
+            events=list(events),
+            target_snapshot=target_snapshot,
+        ),
+    )
+
+    assert sorted(results, key=lambda item: item is None) == [1, None]
+    attempts = _cancel_events(
+        await any_store.get_execution_events(), envelope.id, order.id
+    )
+    assert len(attempts) == 1
+    assert attempts[0].payload["attempt"] == 1
 
 
 async def test_cancel_event_is_non_minting_and_preserves_exact_child_projection(
