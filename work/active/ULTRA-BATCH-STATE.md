@@ -51,7 +51,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0119 | QUEUED | — | Lane 2; mechanical bootstrap. |
 | WO-0120 | CLOSED | `e653a24` activation; `ad7c9fd` checker; close-out: this commit | VERIFIED: records reconciled, folder-aware checker red/green, 160 passed + 1 expected xfail, five AI-OS checks green. |
 | WO-0121 | QUEUED | — | Lane 2; serialize after WO-0127 on `docs/INVARIANTS.md`; review-gated to REV-0036. |
-| WO-0122 | ACTIVE | activation: this commit | Lane 2; additive CI and failure-capable lock-liveness pins; Fable GATE recorded. |
+| WO-0122 | CLOSED | `4eb89a6` activation; `fb6a5c7` implementation; close-out: this commit | VERIFIED: additive 61-case CI oracle, dual-store mutation-proven INV-051/052 pins, stale fixture repaired; 3867 passed, 11 skipped, 1 expected xfail. |
 | WO-0123 | QUEUED | — | Lane 2; tape recorder. |
 | WO-0124 | QUEUED | — | Lane 3; elevated effort; review-gated to REV-0037. |
 | WO-0125 | QUEUED | — | Lane 2; serialize before WO-0126 on `app/events/**`. |
