@@ -322,6 +322,29 @@ def _raw_seed_live_child(store, envelope: ExecutionEnvelope, *, order_id: str) -
     return order
 
 
+def _raw_seed_created_child(
+    store, envelope: ExecutionEnvelope, *, order_id: str
+) -> Order:
+    """Seed a projection-valid child before its first submission claim."""
+
+    order = Order(
+        id=order_id,
+        sell_intent_id=envelope.sell_intent_id,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=envelope.qty_ceiling,
+        limit_price=9.9,
+        status=OrderStatus.CREATED,
+        session_id=envelope.session_id,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    _raw_insert_order(store, order)
+    _raw_append_execution(store, _action_event(envelope, order))
+    return order
+
+
 def _terminal_envelope(intent_id: str, *, session_id: str | None) -> ExecutionEnvelope:
     return _draft(intent_id, session_id=session_id).model_copy(
         update={
@@ -3304,6 +3327,249 @@ async def test_partial_cancel_scope_persist_recovers_exact_snapshot_after_restar
         assert (
             await reopened.get_order(second.id)
         ).status is OrderStatus.CANCEL_PENDING
+        assert (await reopened.get_order(future.id)).status is OrderStatus.SUBMITTED
+        assert not any(
+            event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.order_id == future.id
+            and event.payload.get("action") == "cancel"
+            for event in await reopened.get_execution_events()
+        )
+    finally:
+        await reopened.close()
+
+
+async def test_brokerless_request_scope_blocks_every_created_sibling_after_crash(
+    any_store, monkeypatch
+):
+    """The first durable request must hold the complete pre-CAS decision scope."""
+
+    _, _, envelope = await _activate(any_store)
+    first = _raw_seed_created_child(
+        any_store, envelope, order_id="brokerless-request-scope-a"
+    )
+    second = _raw_seed_created_child(
+        any_store, envelope, order_id="brokerless-request-scope-b"
+    )
+    original_append = any_store.append_execution_event
+    request_committed = False
+
+    async def crash_after_first_request_commit(event):
+        nonlocal request_committed
+        stored = await original_append(event)
+        if (
+            not request_committed
+            and event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.payload.get("action") == "cancel_request"
+        ):
+            request_committed = True
+            raise RuntimeError("crash after first brokerless request commit")
+        return stored
+
+    monkeypatch.setattr(
+        any_store, "append_execution_event", crash_after_first_request_commit
+    )
+    before_crash = MockBrokerAdapter()
+    with pytest.raises(RuntimeError, match="first brokerless request commit"):
+        await _cancel_envelope_working_order(
+            any_store,
+            before_crash,
+            envelope,
+            disposition="stale_data_cancel",
+        )
+    monkeypatch.setattr(any_store, "append_execution_event", original_append)
+
+    assert request_committed
+    assert before_crash.canceled == []
+    requests = [
+        event
+        for event in await any_store.get_execution_events()
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope.id
+        and event.payload.get("action") == "cancel_request"
+    ]
+    assert len(requests) == 1
+    assert requests[0].payload["target_order_ids"] == sorted([first.id, second.id])
+
+    request_anchor = first if requests[0].order_id == first.id else second
+    sibling = second if request_anchor.id == first.id else first
+    terminal = await any_store.transition_order(
+        request_anchor.id,
+        OrderStatus.CANCELED,
+        expected_from=OrderStatus.CREATED,
+    )
+    assert terminal.status is OrderStatus.CANCELED
+    claim = await any_store.claim_order_for_submission(sibling.id)
+    assert claim.outcome == CLAIM_BLOCKED
+    assert claim.order is None
+
+    after_crash = MockBrokerAdapter()
+    await _converge_envelope_disposition_cancels(any_store, after_crash)
+
+    assert after_crash.canceled == []
+    assert (await any_store.get_order(sibling.id)).status is OrderStatus.CANCELED
+    assert not any(
+        event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope.id
+        and event.payload.get("action") == "cancel"
+        for event in await any_store.get_execution_events()
+    )
+
+
+async def test_brokerless_request_pre_cas_crash_survives_sqlite_restart(
+    tmp_path, monkeypatch
+):
+    """A committed pre-arm survives restart and never becomes venue authority."""
+
+    db_path = tmp_path / "wo0124-brokerless-request-pre-cas.db"
+    first_store = SqliteStateStore(db_path)
+    _, _, envelope = await _activate(first_store)
+    first = _raw_seed_created_child(
+        first_store, envelope, order_id="brokerless-restart-scope-a"
+    )
+    second = _raw_seed_created_child(
+        first_store, envelope, order_id="brokerless-restart-scope-b"
+    )
+    original_append = first_store.append_execution_event
+    request_committed = False
+
+    async def crash_after_first_request_commit(event):
+        nonlocal request_committed
+        stored = await original_append(event)
+        if (
+            not request_committed
+            and event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.payload.get("action") == "cancel_request"
+        ):
+            request_committed = True
+            raise RuntimeError("restart after brokerless request commit")
+        return stored
+
+    monkeypatch.setattr(
+        first_store, "append_execution_event", crash_after_first_request_commit
+    )
+    try:
+        with pytest.raises(RuntimeError, match="brokerless request commit"):
+            await _cancel_envelope_working_order(
+                first_store,
+                MockBrokerAdapter(),
+                envelope,
+                disposition="stale_data_cancel",
+            )
+        requests = [
+            event
+            for event in await first_store.get_execution_events()
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id == envelope.id
+            and event.payload.get("action") == "cancel_request"
+        ]
+        assert len(requests) == 1
+        assert requests[0].payload["target_order_ids"] == sorted([first.id, second.id])
+        request_order_id = requests[0].order_id
+    finally:
+        await first_store.close()
+
+    reopened = SqliteStateStore(db_path)
+    await reopened.initialize()
+    try:
+        for order_id in (first.id, second.id):
+            claim = await reopened.claim_order_for_submission(order_id)
+            assert claim.outcome == CLAIM_BLOCKED
+            assert claim.order is None
+
+        assert request_order_id is not None
+        terminal = await reopened.transition_order(
+            request_order_id,
+            OrderStatus.CANCELED,
+            expected_from=OrderStatus.CREATED,
+        )
+        assert terminal.status is OrderStatus.CANCELED
+        sibling_id = second.id if request_order_id == first.id else first.id
+        adapter = MockBrokerAdapter()
+        await _converge_envelope_disposition_cancels(reopened, adapter)
+
+        assert adapter.canceled == []
+        assert (await reopened.get_order(sibling_id)).status is OrderStatus.CANCELED
+        assert not any(
+            event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id == envelope.id
+            and event.payload.get("action") == "cancel"
+            for event in await reopened.get_execution_events()
+        )
+    finally:
+        await reopened.close()
+
+
+async def test_brokerless_request_mixed_scope_recovers_only_pre_crash_targets(
+    tmp_path, monkeypatch
+):
+    """One pre-arm covers local A and venue B without authorizing later C."""
+
+    db_path = tmp_path / "wo0124-brokerless-request-mixed-scope.db"
+    first_store = SqliteStateStore(db_path)
+    _, _, envelope = await _activate(first_store)
+    local = _raw_seed_created_child(
+        first_store, envelope, order_id="brokerless-mixed-local-a"
+    )
+    venue = _raw_seed_live_child(
+        first_store, envelope, order_id="brokerless-mixed-venue-b"
+    )
+    original_append = first_store.append_execution_event
+    request_committed = False
+
+    async def crash_after_request_commit(event):
+        nonlocal request_committed
+        stored = await original_append(event)
+        if (
+            not request_committed
+            and event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.payload.get("action") == "cancel_request"
+        ):
+            request_committed = True
+            raise RuntimeError("crash after mixed-scope request commit")
+        return stored
+
+    monkeypatch.setattr(
+        first_store, "append_execution_event", crash_after_request_commit
+    )
+    try:
+        before_crash = MockBrokerAdapter()
+        with pytest.raises(RuntimeError, match="mixed-scope request commit"):
+            await _cancel_envelope_working_order(
+                first_store,
+                before_crash,
+                envelope,
+                disposition="stale_data_cancel",
+            )
+        assert before_crash.canceled == []
+        requests = [
+            event
+            for event in await first_store.get_execution_events()
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id == envelope.id
+            and event.payload.get("action") == "cancel_request"
+        ]
+        assert len(requests) == 1
+        assert requests[0].order_id == local.id
+        assert requests[0].payload["target_order_ids"] == sorted([local.id, venue.id])
+    finally:
+        await first_store.close()
+
+    reopened = SqliteStateStore(db_path)
+    await reopened.initialize()
+    try:
+        claim = await reopened.claim_order_for_submission(local.id)
+        assert claim.outcome == CLAIM_BLOCKED
+        assert claim.order is None
+
+        future = _raw_seed_live_child(
+            reopened, envelope, order_id="brokerless-mixed-future-c"
+        )
+        adapter = MockBrokerAdapter()
+        await _converge_envelope_disposition_cancels(reopened, adapter)
+
+        assert adapter.canceled == [venue.broker_order_id]
+        assert (await reopened.get_order(local.id)).status is OrderStatus.CANCELED
+        assert (await reopened.get_order(venue.id)).status is OrderStatus.CANCEL_PENDING
         assert (await reopened.get_order(future.id)).status is OrderStatus.SUBMITTED
         assert not any(
             event.event_type is ExecutionEventType.ENVELOPE_ACTION

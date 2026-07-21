@@ -158,6 +158,7 @@ _STALEABLE_STATUSES = frozenset({OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FI
 _DISPOSITION_CANCEL_RETRY_LIMIT = 3
 _EXPIRY_DISPOSITION_CANCEL = "expiry_cancel_and_return"
 _STALE_DATA_DISPOSITION_CANCEL = "stale_data_cancel"
+_DISPOSITION_CANCEL_REQUEST_ACTION = "cancel_request"
 _DISPOSITION_CANCEL_KINDS = frozenset(
     {_EXPIRY_DISPOSITION_CANCEL, _STALE_DATA_DISPOSITION_CANCEL}
 )
@@ -1139,6 +1140,24 @@ def _cancel_target_snapshot_from_event(
     return tuple(parsed)
 
 
+def _cancel_request_target_order_ids(
+    event: ExecutionEvent,
+) -> Optional[tuple[str, ...]]:
+    """Parse the local-only scope held by a brokerless cancel request."""
+
+    raw = event.payload.get("target_order_ids")
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or any(not isinstance(order_id, str) or not order_id for order_id in raw)
+    ):
+        return None
+    parsed = tuple(raw)
+    if parsed != tuple(sorted(parsed)) or len(set(parsed)) != len(parsed):
+        return None
+    return parsed
+
+
 def _cancel_target_snapshot_payload(
     snapshot: _CancelTargetSnapshot,
 ) -> list[dict[str, str]]:
@@ -1173,6 +1192,81 @@ def _stored_cancel_attempt_matches(
     )
 
 
+async def _persist_disposition_cancel_request(
+    store: StateStore,
+    *,
+    envelope: ExecutionEnvelope,
+    order: Order,
+    disposition: str,
+    events: list[ExecutionEvent],
+    target_order_ids: tuple[str, ...],
+    claim_occurrence: int,
+) -> ExecutionEvent:
+    """Hold a disposition while one exact submit claim has no broker id.
+
+    This is not a venue attempt and grants no cancel authority.  It only keeps
+    the already-made disposition decision durable until accepted-submit truth
+    either supplies a concrete broker identity or proves that the claim ended
+    without acceptance.
+    """
+
+    if (
+        not isinstance(claim_occurrence, int)
+        or isinstance(claim_occurrence, bool)
+        or claim_occurrence < 0
+    ):
+        raise RecoveryTransitionError(
+            "brokerless disposition-cancel request requires a non-negative "
+            f"claim occurrence for envelope {envelope.id} child {order.id}"
+        )
+    if (
+        not target_order_ids
+        or target_order_ids != tuple(sorted(target_order_ids))
+        or len(set(target_order_ids)) != len(target_order_ids)
+        or order.id not in target_order_ids
+    ):
+        raise RecoveryTransitionError(
+            "brokerless disposition-cancel request requires one canonical, "
+            f"complete local target scope containing child {order.id}"
+        )
+    dedupe_key = (
+        f"envelope:{envelope.id}:disposition_cancel_request:"
+        f"{order.id}:{disposition}:{claim_occurrence}"
+    )
+    prior = next((event for event in events if event.dedupe_key == dedupe_key), None)
+    decision_time = prior.ts_event if prior is not None else utcnow()
+    draft = ExecutionEvent(
+        event_type=ExecutionEventType.ENVELOPE_ACTION,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=dedupe_key,
+        ts_event=decision_time,
+        symbol=envelope.symbol,
+        side=OrderSide.SELL,
+        quantity=order.quantity,
+        price=order.limit_price,
+        order_id=order.id,
+        envelope_id=envelope.id,
+        session_id=envelope.session_id,
+        correlation_id=envelope.sell_intent_id,
+        payload={
+            "action": _DISPOSITION_CANCEL_REQUEST_ACTION,
+            "actor": "engine",
+            "disposition": disposition,
+            "claim_occurrence": claim_occurrence,
+            "target_order_ids": list(target_order_ids),
+        },
+    )
+    stored = await store.append_execution_event(draft)
+    if not _stored_cancel_attempt_matches(stored, draft):
+        raise RecoveryTransitionError(
+            "disposition-cancel request dedupe identity conflicts with persisted "
+            f"fact for envelope {envelope.id} child {order.id} claim "
+            f"{claim_occurrence}"
+        )
+    return stored
+
+
 async def _persist_disposition_cancel_attempt(
     store: StateStore,
     *,
@@ -1191,9 +1285,20 @@ async def _persist_disposition_cancel_attempt(
     existing = _disposition_cancel_events(
         events, envelope_id=envelope.id, order_id=order.id
     )
-    effective_disposition = (
-        str(existing[0].payload["disposition"]) if existing else disposition
-    )
+    requests = [
+        event
+        for event in events
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope.id
+        and event.order_id == order.id
+        and event.payload.get("action") == _DISPOSITION_CANCEL_REQUEST_ACTION
+    ]
+    if existing:
+        effective_disposition = str(existing[0].payload["disposition"])
+    elif requests:
+        effective_disposition = str(requests[0].payload["disposition"])
+    else:
+        effective_disposition = disposition
     if existing:
         persisted_snapshot = _cancel_target_snapshot_from_event(existing[0])
         if persisted_snapshot is None:
@@ -1413,6 +1518,15 @@ async def _cancel_envelope_working_order(
         for order in projection.venue_orders
         if order.id not in excluded_ids
     }
+    request_only_targets: dict[str, Order] = {}
+    for order_id in projection.uncertain_claim_order_ids:
+        local = orders.get(order_id)
+        if (
+            local is not None
+            and local.status is OrderStatus.SUBMITTING
+            and local.broker_order_id is None
+        ):
+            request_only_targets[local.id] = local
     for order_id in projection.unresolved_order_ids:
         local = orders.get(order_id)
         if (
@@ -1431,8 +1545,62 @@ async def _cancel_envelope_working_order(
             for order_id, order in targets.items()
             if order_id in target_order_ids
         }
+        request_only_targets = {
+            order_id: order
+            for order_id, order in request_only_targets.items()
+            if order_id in target_order_ids
+        }
 
-    # Resolve every safely-local child first. A submission claim can win this
+    # Pre-arm every safely-local child before its compare-and-swap. The request
+    # is a non-I/O hold for the next exact claim occurrence and carries the
+    # complete local-order decision scope. If a claim wins after this append,
+    # restart retains the disposition; if the local cancel wins, the historical
+    # request clears logically against terminal truth without any venue call.
+    request_candidates = {**targets, **request_only_targets}
+    decision_target_order_ids = tuple(sorted(request_candidates))
+    for order in request_candidates.values():
+        if order.status not in (OrderStatus.CREATED, OrderStatus.SUBMITTING):
+            continue
+        prior_requests = [
+            event
+            for event in all_events
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id == reloaded.id
+            and event.order_id == order.id
+            and event.payload.get("action") == _DISPOSITION_CANCEL_REQUEST_ACTION
+        ]
+        if prior_requests:
+            continue
+        prior_occurrence = claim_occurrence_at(
+            all_events,
+            order_id=order.id,
+            at=datetime.max.replace(tzinfo=timezone.utc),
+        )
+        if order.status is OrderStatus.SUBMITTING and prior_occurrence is None:
+            raise RecoveryTransitionError(
+                "brokerless disposition-cancel request cannot bind SUBMITTING "
+                f"child {order.id} to a durable claim occurrence"
+            )
+        if order.status is OrderStatus.SUBMITTING:
+            assert prior_occurrence is not None
+            request_claim_occurrence = prior_occurrence
+        else:
+            request_claim_occurrence = (
+                0 if prior_occurrence is None else prior_occurrence + 1
+            )
+        stored_request = await _persist_disposition_cancel_request(
+            store,
+            envelope=reloaded,
+            order=order,
+            disposition=disposition,
+            events=all_events,
+            target_order_ids=decision_target_order_ids,
+            claim_occurrence=request_claim_occurrence,
+        )
+        if not any(event.id == stored_request.id for event in all_events):
+            all_events.append(stored_request)
+
+    # Resolve every safely-local child. A submission claim can win this
     # compare-and-swap and return a broker-backed row; that raced identity must
     # join the same exact pre-IO snapshot as every incumbent venue child.
     refresh_after_created_race = False
@@ -1645,7 +1813,8 @@ async def _converge_envelope_disposition_cancels(
         if (
             event.event_type is ExecutionEventType.ENVELOPE_ACTION
             and event.envelope_id is not None
-            and event.payload.get("action") == "cancel"
+            and event.payload.get("action")
+            in ("cancel", _DISPOSITION_CANCEL_REQUEST_ACTION)
         ):
             raw_disposition = event.payload.get("disposition")
             persisted_by_envelope.setdefault(
@@ -1656,6 +1825,14 @@ async def _converge_envelope_disposition_cancels(
                 else _EXPIRY_DISPOSITION_CANCEL,
             )
             target_ids = persisted_target_ids.setdefault(event.envelope_id, set())
+            if event.payload.get("action") == _DISPOSITION_CANCEL_REQUEST_ACTION:
+                request_target_ids = _cancel_request_target_order_ids(event)
+                if request_target_ids is None:
+                    if event.order_id is not None:
+                        target_ids.add(event.order_id)
+                else:
+                    target_ids.update(request_target_ids)
+                continue
             snapshot = _cancel_target_snapshot_from_event(event)
             if snapshot is None:
                 # Keep malformed history in the candidate set so the shared
@@ -1675,7 +1852,8 @@ async def _converge_envelope_disposition_cancels(
             disposition = _EXPIRY_DISPOSITION_CANCEL
             # Terminal envelope truth independently cancels every then-current
             # valid child. This also repairs a crash between EXPIRED and the
-            # first exact child event, even when older stale-cancel history exists.
+            # first exact child event. Per-child persisted request/attempt facts
+            # retain their earlier disposition when the same child overlaps.
         elif disposition is not None:
             # Non-terminal replay is bounded by the exact pre-IO snapshot. A
             # later child can never inherit an older child's cancel authority.
@@ -1799,7 +1977,8 @@ async def _run_one_envelope(
         for event in events
         if event.event_type is ExecutionEventType.ENVELOPE_ACTION
         and event.envelope_id == envelope.id
-        and event.payload.get("action") == "cancel"
+        and event.payload.get("action")
+        in ("cancel", _DISPOSITION_CANCEL_REQUEST_ACTION)
     ]
     if cancel_events:
         # A stale-data decision survives restart and data recovery. Do not let
@@ -1825,6 +2004,12 @@ async def _run_one_envelope(
             return
         cancel_target_ids: set[str] = set()
         for event in cancel_events:
+            if event.payload.get("action") == _DISPOSITION_CANCEL_REQUEST_ACTION:
+                request_target_ids = _cancel_request_target_order_ids(event)
+                if request_target_ids is None:
+                    return
+                cancel_target_ids.update(request_target_ids)
+                continue
             cancel_snapshot = _cancel_target_snapshot_from_event(event)
             if cancel_snapshot is None:
                 return

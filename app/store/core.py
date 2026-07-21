@@ -1451,6 +1451,26 @@ def _cancel_target_snapshot(
     return snapshot
 
 
+def _cancel_request_target_order_ids(
+    payload: Mapping[str, Any],
+) -> Optional[tuple[str, ...]]:
+    """Parse the canonical local-only scope of a brokerless cancel request."""
+
+    raw = payload.get("target_order_ids")
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or any(not isinstance(order_id, str) or not order_id for order_id in raw)
+    ):
+        return None
+    target_ids = tuple(raw)
+    if target_ids != tuple(sorted(target_ids)) or len(set(target_ids)) != len(
+        target_ids
+    ):
+        return None
+    return target_ids
+
+
 def project_envelope_obligation(
     *,
     envelopes: Sequence[ExecutionEnvelope],
@@ -1535,6 +1555,7 @@ def project_envelope_obligation(
                 retain_malformed_envelope(envelope.id)
     scopes: dict[str, ExecutionEnvelope] = {}
     canonical_actions: dict[str, ExecutionEvent] = {}
+    cancel_request_actions: dict[str, list[ExecutionEvent]] = {}
     cancel_actions: dict[str, list[ExecutionEvent]] = {}
     for event in action_events:
         if event.event_type is not ExecutionEventType.ENVELOPE_ACTION:
@@ -1568,6 +1589,14 @@ def project_envelope_obligation(
         envelope = envelopes_by_id[event.envelope_id]
         order_id = event.order_id
         action_kind = event.payload.get("action")
+        if action_kind == "cancel_request":
+            # A brokerless request is a non-I/O hold on one durable submit
+            # claim. It never becomes the canonical child edge and never grants
+            # venue authority; its exact claim binding is validated after the
+            # order-lifecycle fold below.
+            cancel_request_actions.setdefault(order_id, []).append(event)
+            linked = True
+            continue
         if action_kind == "cancel":
             cancel_actions.setdefault(order_id, []).append(event)
             disposition = event.payload.get("disposition")
@@ -1656,6 +1685,90 @@ def project_envelope_obligation(
         canonical_actions[order_id] = event
         order_ids.append(order_id)
 
+    # A brokerless disposition-cancel request preserves a decision that raced
+    # a local CREATED cancel and lost to a submission claim. It is scoped to the
+    # existing canonical child and one immutable claim occurrence, contains no
+    # broker identity or positive attempt, and cannot mint or replace a child.
+    for order_id, requests in cancel_request_actions.items():
+        canonical = canonical_actions.get(order_id)
+        order = orders_by_id.get(order_id)
+        dispositions = [event.payload.get("disposition") for event in requests]
+        occurrences: set[int] = set()
+        request_lineage_invalid = (
+            canonical is None
+            or order is None
+            or not dispositions
+            or any(item != dispositions[0] for item in dispositions[1:])
+        )
+        for event in requests:
+            disposition = event.payload.get("disposition")
+            occurrence = event.payload.get("claim_occurrence")
+            target_order_ids = _cancel_request_target_order_ids(event.payload)
+            occurrence_valid = (
+                isinstance(occurrence, int)
+                and not isinstance(occurrence, bool)
+                and occurrence >= 0
+            )
+            request_lineage_invalid = request_lineage_invalid or (
+                canonical is None
+                or order is None
+                or event.envelope_id != canonical.envelope_id
+                or event.source is not EventSource.ENGINE
+                or event.authority is not EventAuthority.LOCAL
+                or event.symbol != canonical.symbol
+                or event.side is not canonical.side
+                or event.correlation_id != canonical.correlation_id
+                or event.session_id != canonical.session_id
+                or event.quantity != order.quantity
+                or event.price != order.limit_price
+                or event.payload.get("actor") != "engine"
+                or disposition not in ("expiry_cancel_and_return", "stale_data_cancel")
+                or not occurrence_valid
+                or target_order_ids is None
+                or order_id not in (target_order_ids or ())
+                or set(event.payload)
+                != {
+                    "action",
+                    "actor",
+                    "disposition",
+                    "claim_occurrence",
+                    "target_order_ids",
+                }
+                or event.dedupe_key
+                != (
+                    f"envelope:{event.envelope_id}:disposition_cancel_request:"
+                    f"{order_id}:{disposition}:{occurrence}"
+                )
+                or (
+                    canonical.sequence > 0
+                    and event.sequence > 0
+                    and event.sequence <= canonical.sequence
+                )
+            )
+            if target_order_ids is not None:
+                for target_order_id in target_order_ids:
+                    target_canonical = canonical_actions.get(target_order_id)
+                    target_order = orders_by_id.get(target_order_id)
+                    request_lineage_invalid = request_lineage_invalid or (
+                        target_canonical is None
+                        or target_order is None
+                        or canonical is None
+                        or target_canonical.envelope_id != canonical.envelope_id
+                        or (
+                            target_canonical.sequence > 0
+                            and event.sequence > 0
+                            and target_canonical.sequence >= event.sequence
+                        )
+                    )
+            if occurrence_valid:
+                assert isinstance(occurrence, int)
+                if occurrence in occurrences:
+                    request_lineage_invalid = True
+                occurrences.add(occurrence)
+        if request_lineage_invalid and order_id not in invalid_seen:
+            invalid_seen.add(order_id)
+            invalid.append(order_id)
+
     # A disposition cancel is a non-minting intent/attempt fact. It may only
     # follow the canonical submit/reprice edge for the exact existing child;
     # it never becomes ``canonical_actions[order_id]`` and therefore cannot
@@ -1674,7 +1787,16 @@ def project_envelope_obligation(
         disposition = attempts[0].payload.get("disposition")
         target_snapshot = _cancel_target_snapshot(attempts[0].payload)
         prior_sequence = canonical.sequence
-        cancel_lineage_invalid = order.broker_order_id is None
+        requests = cancel_request_actions.get(order_id, [])
+        cancel_lineage_invalid = order.broker_order_id is None or any(
+            request.payload.get("disposition") != disposition
+            or (
+                request.sequence > 0
+                and attempts[0].sequence > 0
+                and request.sequence >= attempts[0].sequence
+            )
+            for request in requests
+        )
         for expected_attempt, event in enumerate(attempts, start=1):
             event_attempt = event.payload.get("attempt")
             cancel_lineage_invalid = cancel_lineage_invalid or (
@@ -1736,6 +1858,22 @@ def project_envelope_obligation(
     known_claim_occurrences: dict[str, set[int]] = {
         order_id: set() for order_id in order_ids
     }
+    claim_sequence_by_order: dict[str, dict[int, int]] = {
+        order_id: {} for order_id in order_ids
+    }
+    claim_boundary_sequence_by_order: dict[str, dict[int, int]] = {
+        order_id: {} for order_id in order_ids
+    }
+
+    def record_claim_boundary(
+        order_id: str, occurrence: Optional[int], sequence: int
+    ) -> None:
+        if occurrence is None:
+            return
+        prior = claim_boundary_sequence_by_order[order_id].get(occurrence)
+        if prior is None or (sequence > 0 and (prior <= 0 or sequence < prior)):
+            claim_boundary_sequence_by_order[order_id][occurrence] = sequence
+
     for event in order_events:
         if event.order_id not in claim_open_by_order:
             continue
@@ -1792,6 +1930,7 @@ def project_envelope_obligation(
                     invalid.append(order_id)
                 continue
             known_claim_occurrences[order_id].add(occurrence)
+            claim_sequence_by_order[order_id][occurrence] = event.sequence
             next_claim_occurrence[order_id] = occurrence + 1
             latest_claim_occurrence[order_id] = occurrence
             claim_open_by_order[order_id].add(occurrence)
@@ -1805,6 +1944,7 @@ def project_envelope_obligation(
                     invalid_seen.add(order_id)
                     invalid.append(order_id)
                 continue
+            record_claim_boundary(order_id, occurrence, event.sequence)
             claim_open_by_order[order_id].remove(occurrence)
             # A local release says only that the claim writer stood down.  It
             # cannot close a venue interval opened by broker authority.
@@ -1816,6 +1956,7 @@ def project_envelope_obligation(
             # occurrence, and therefore closes only that claim/venue interval.
             if occurrence is None:
                 occurrence = latest_claim_occurrence[order_id]
+            record_claim_boundary(order_id, occurrence, event.sequence)
             if occurrence is None:
                 claim_open_by_order[order_id].clear()
                 venue_open_by_order[order_id].clear()
@@ -1827,6 +1968,13 @@ def project_envelope_obligation(
         if event.authority is not EventAuthority.BROKER_AUTHORITATIVE:
             # In particular, local CANCELED is not proof that a previously
             # acknowledged broker order stopped working.
+            record_claim_boundary(
+                order_id,
+                occurrence
+                if occurrence is not None
+                else latest_claim_occurrence[order_id],
+                event.sequence,
+            )
             continue
 
         if (
@@ -1841,6 +1989,7 @@ def project_envelope_obligation(
         if event.event_type in _BROKER_WORKING_EVENTS:
             if occurrence is None:
                 occurrence = latest_claim_occurrence[order_id]
+            record_claim_boundary(order_id, occurrence, event.sequence)
             venue_open_by_order[order_id].add(occurrence)
             if occurrence is None:
                 claim_open_by_order[order_id].clear()
@@ -1850,6 +1999,9 @@ def project_envelope_obligation(
 
         if event.event_type in _BROKER_TERMINAL_EVENTS:
             if occurrence is None:
+                occurrence = latest_claim_occurrence[order_id]
+            record_claim_boundary(order_id, occurrence, event.sequence)
+            if occurrence is None:
                 # Ordinary broker terminal facts are order-wide. Recovery facts
                 # name an occurrence and close only that interval.
                 claim_open_by_order[order_id].clear()
@@ -1857,6 +2009,44 @@ def project_envelope_obligation(
             else:
                 claim_open_by_order[order_id].discard(occurrence)
                 venue_open_by_order[order_id].discard(occurrence)
+    cancel_request_target_ids: set[str] = set()
+    for order_id, requests in cancel_request_actions.items():
+        known_occurrences = known_claim_occurrences.get(order_id, set())
+        claim_sequences = claim_sequence_by_order.get(order_id, {})
+        boundary_sequences = claim_boundary_sequence_by_order.get(order_id, {})
+        for request in requests:
+            occurrence = request.payload.get("claim_occurrence")
+            if not isinstance(occurrence, int) or isinstance(occurrence, bool):
+                continue  # the static request-shape validation already failed it
+            claim_sequence = claim_sequences.get(occurrence)
+            highest_known = max(known_occurrences) if known_occurrences else -1
+            prior_boundary = boundary_sequences.get(occurrence - 1)
+            occurrence_is_next = occurrence == highest_known + 1
+            request_follows_claim = (
+                claim_sequence is not None
+                and occurrence == highest_known
+                and request.sequence > 0
+                and claim_sequence > 0
+                and request.sequence > claim_sequence
+            )
+            prior_occurrence_closed = occurrence == 0 or (
+                prior_boundary is not None
+                and prior_boundary > 0
+                and request.sequence > prior_boundary
+            )
+            request_invalid = (
+                not prior_occurrence_closed
+                or (claim_sequence is None and not occurrence_is_next)
+                or (claim_sequence is not None and not request_follows_claim)
+            )
+            if request_invalid:
+                if order_id not in invalid_seen:
+                    invalid_seen.add(order_id)
+                    invalid.append(order_id)
+            else:
+                target_order_ids = _cancel_request_target_order_ids(request.payload)
+                if target_order_ids is not None:
+                    cancel_request_target_ids.update(target_order_ids)
     # First validate every durable action -> order edge without consulting
     # mutable lifecycle state.  In particular, ``payload.action`` and
     # ``replaces_order_id`` are part of the persisted delegation identity: a
@@ -2003,7 +2193,10 @@ def project_envelope_obligation(
     for order_id in unresolved:
         order = valid_orders[order_id]
         candidate_bucket: Optional[list[str]] = None
-        if order.status is OrderStatus.CREATED:
+        if (
+            order.status is OrderStatus.CREATED
+            and order_id not in cancel_request_target_ids
+        ):
             candidate_bucket = claimable
         elif (
             order.status is OrderStatus.SUBMITTING
