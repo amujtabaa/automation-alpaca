@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "One-click environment bootstrap: devcontainer + session-start recipe for cloud/away sessions"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0119
 wave: post-R2 beta-prep (infra; no product surface)
 model_tier: mid
