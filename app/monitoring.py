@@ -1388,6 +1388,17 @@ async def _cancel_envelope_working_order(
             if order_id in target_order_ids
         }
 
+    # Resolve every safely-local child first. A submission claim can win this
+    # compare-and-swap and return a broker-backed row; that raced identity must
+    # join the same exact pre-IO snapshot as every incumbent venue child.
+    for order_id, order in list(targets.items()):
+        if order.status is OrderStatus.CREATED:
+            targets[order_id] = await store.transition_order(
+                order.id,
+                OrderStatus.CANCELED,
+                expected_from=OrderStatus.CREATED,
+            )
+
     venue_call_orders = [
         order
         for order in targets.values()
@@ -1416,13 +1427,6 @@ async def _cancel_envelope_working_order(
     prepared_open: dict[str, tuple[int, str]] = {}
     prepared_terminal: set[str] = set()
     for order in targets.values():
-        if order.status is OrderStatus.CREATED:
-            await store.transition_order(
-                order.id,
-                OrderStatus.CANCELED,
-                expected_from=OrderStatus.CREATED,
-            )
-            continue
         if order.broker_order_id is None or order.status is OrderStatus.CANCEL_PENDING:
             continue
         target_snapshot = historical_snapshot_by_order.get(
