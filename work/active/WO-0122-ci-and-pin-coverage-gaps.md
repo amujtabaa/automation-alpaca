@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Close CI/pin coverage gaps: run the conformance oracle in CI, pin store lock-liveness, fix a stale fixture"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0122
 wave: post-R2 beta-prep
 model_tier: mid
@@ -87,3 +87,26 @@ running actually isn't. Prioritize it even if F002/C101 slip to a follow-up.
 ## Completion disposition
 
 Expected: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`.
+
+## Fable gate
+
+```yaml
+fable_gate:
+  goal: "Make CI run the R2 conformance oracle, add failure-capable INV-051/052 lock-liveness pins, and repair the stale WO-0108 recovery fixture."
+  assumptions:
+    - "Current store code has no actual reentrant lock acquisition or await-under-lock defect; any contrary evidence is an immediate P0/P1 stop."
+    - "Temporary mutation probes may touch app/store files only in the working tree and must be reverted with apply_patch before any commit."
+    - "The CI change is additive and does not alter or weaken the existing full-suite coverage gate."
+  approach: "Add red CI-presence coverage, author bounded dual-store and structural pins, mutation-prove each store/property, align the stale fixture to the prior-sibling shape, then add the explicit oracle step and testing-model note."
+  out_of_scope:
+    - "permanent app/** changes"
+    - "docs/adr/**"
+    - ".ai-os/**"
+    - "any weakening or deletion of the honest WO-0109 sibling pin"
+  done_when:
+    - "CI-form oracle command reports 61/61 and workflow coverage proves the step is additive."
+    - "INV-051/052 pins pass and turn red under deliberate mutations for both stores."
+    - "The stale fixture asserts a distinct prior-sibling recovery and the honest twin remains green."
+    - "Full gates, close-out, disposition, ledger, move, and scoreboard are complete."
+  blast_radius: ".github/workflows/ci.yml, tests/**, testing-model PKL, and work records"
+```
