@@ -215,3 +215,56 @@ Ids below are placeholders; assign next-free master ids at draft time (WO namesp
 9. **Fresh `signal_records` schema approval:** the archived approval (78d8f57) was given against a pre-R2 schema under branch-only governance — re-approve at WO-R4.
 10. **Repo-primer Opus-routing bullet:** re-ratify (with refreshed model currency and the `recommended_model` frontmatter convention either re-established or stripped) or leave RECORD-ONLY in the archive.
 11. **WO-0102 scope refresh:** approve widening allowed_paths to include the launcher trio and `app/main.py` beyond router-mount-only (current text at `work/queue/WO-0102-signal-ingestion-endpoint.md:42` is narrower than the A-1 remediation requires).
+
+---
+
+## 9. Exposure-predicate design (planning-seat draft, 2026-07-20 — the A-3 rewrite for WO-0127)
+
+**Principle: no formula.** The archive hand-summed "committed sell exposure" from raw order
+rows — the exact parallel derivation INV-090 now forbids. The rewrite does not translate that
+formula; it derives the QUANTITY from the same primitives the submission rails already trust:
+
+1. **One pure shared function** beside the obligation projection in `app/store/core.py` —
+   `project_committed_sell_exposure(symbol, orders, envelopes, recoveries, events)` returning
+   `{quantity, contributions[]}` — called by BOTH stores under the same lock/transaction as the
+   A-2 atomic conversion command (never a facade-side sum).
+2. **Contribution sources, deduplicated by immutable identity (INV-091 coalescing):**
+   (a) the symbol's live envelope mandate counts as `remaining_quantity` — the mandate IS the
+   commitment; its own child orders are NOT separately counted (remaining decrements only on
+   deduped fills, ADR-010 §2 — single source, no double count);
+   (b) direct/legacy SELL orders in the may-execute set count their unfilled remainder;
+   (c) open SELL `SubmitRecoveryRecord`s (`RECOVERY_OPEN_STATUSES`) count their quantity —
+   venue exposure without a live row — deduped against (b) by `(local_order_id,
+   broker_order_id)`: an order + its recovery + any canonical fallback for the same broker id
+   coalesce as ONE leg (INV-091);
+   (d) INV-091 acceptance-uncertainty facts (`UNKNOWN_RECONCILE_REQUIRED`, accepted-submit
+   fallbacks) for SELLs not otherwise represented.
+3. **Fail-closed:** any malformed/ambiguous contribution (projection ambiguity flags, invalid
+   identity) refuses the conversion outright — quarantine posture, mirroring stage/claim rails.
+4. **Improvements beyond the archive:**
+   - refusal reasons carry the contribution breakdown (the operator sees WHICH commitments
+     blocked the signal);
+   - the same function feeds the cockpit's exposure display — single source, zero drift (the
+     WO-0126 philosophy applied here from birth);
+   - **cross-consistency property pin:** wherever `committed_exposure ≥ position`, the boolean
+     rails (`_same_symbol_exit_may_execute`) must agree — the quantity view and the boolean
+     view can never contradict (mutation-pinned);
+   - T1.3-style producer/consumer AST pins so the predicate cannot silently lose a consumer.
+5. **Conservative sub-choice (flag to the re-reviewer):** `needs_review` children count at
+   full recovery quantity — consistent with Policy A's quarantine posture.
+
+## 10. Batch ratification record (2026-07-20, Ameen)
+
+- **D-SIG-1 = Option A (localhost-only producer) — RATIFIED** ("take the correct path"),
+  with a stated intent to pursue **Option C (TradingView/webhook producers) relatively soon**.
+  The amended ADR text keeps Option B (tailnet) as a pure config flip; Option C gets a seeded
+  architecture NOW (ADR-013 external-ingress draft, D-SIG-9: public RECEIVER authenticates +
+  forwards as a keyed producer; the trading API is never public) but remains gated behind the
+  D-HOST-1 deployment/auth ADR acceptance.
+- The ADR-009 re-review (WO-R2 / REV-0034 staging) is INCLUDED in the next Codex batch; the
+  review itself executes at the Claude seat out-of-session (cross-model rule).
+- Remaining D-SIG-2..8 + batch sub-decisions are presented as the pre-checked decision block
+  in `work/queue/CODEX-KICKOFF-ULTRA-BATCH.md` — launching the prompt with the block unedited
+  ratifies the recommendations; edits override. Item 9 (fresh `signal_records` schema
+  approval) is deliberately NOT pre-asked — it is put to the operator at WO-R4 time with the
+  actual DDL in front of them.
