@@ -1,5 +1,8 @@
 # ULTRA beta-prep batch state
 
+Session status: **IMPLEMENTATION COMPLETE / REVIEW GATES STAGED** (2026-07-21). The four
+human-gated work orders remain in REVIEW pending their independent CLAUDE-seat verdicts.
+
 This file is the durable continuity record for the consolidated beta-prep batch on
 `codex/ultra-beta-batch`. The operator decision block below is the authoritative
 ratification source for this session.
@@ -53,7 +56,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0121 | REVIEW | `b03c0e9` activation; `07f7159` annotations; `36538e8` review-stage | Annotation-only safety-record reconciliation frozen; REV-0036 staged against integrated semantic head `07f7159`; no ledger/disposition until independent review + human disposition. |
 | WO-0122 | CLOSED | `114e5c3` activation; `9370311` implementation; `4bfeb55` close-out | VERIFIED: additive 61-case CI oracle, dual-store mutation-proven INV-051/052 pins, stale fixture repaired; 3867 passed, 11 skipped, 1 expected xfail. |
 | WO-0123 | CLOSED | `635127b` activation; `710ed09` recorder; `6c072d8` boundary pin; `e4d805b` close-out | Read-only, flag-off-by-default recorder with separate bounded tape store, replay documentation, failure-capable zero-order-flow spy, and green full suite; dispositioned and moved to `work/completed/`. |
-| WO-0124 | REVIEW | semantic/test range `044c583..33ad906`; key late checkpoints: `ffac1b3` exact scope, `403ce81` race fixes, `138e389` brokerless hold, `c360487` dedupe fix, `48851ba` docs, `33ad906` coverage pins; final review-stage metadata follows | VERIFIED author evidence: exact pre-IO attempt truth, bounded needs_review escalation, brokerless exact-occurrence hold, A/B restart scope with later-C exclusion, same-key concurrency convergence, non-minting identity, and reprice-only budget; 429 related + 4087 full at 93.05%; two in-process ACCEPT audits do not replace REV-0037, which is staged for CLAUDE; no result/ledger/disposition/close before independent result + human disposition. |
+| WO-0124 | REVIEW | semantic/test range `044c583..33ad906`; key late checkpoints: `ffac1b3` exact scope, `403ce81` race fixes, `138e389` brokerless hold, `c360487` dedupe fix, `48851ba` docs, `33ad906` coverage pins; `3d8015f` final review-stage metadata | VERIFIED author evidence: exact pre-IO attempt truth, bounded needs_review escalation, brokerless exact-occurrence hold, A/B restart scope with later-C exclusion, same-key concurrency convergence, non-minting identity, and reprice-only budget; 429 related + 4087 full at 93.05%; two in-process ACCEPT audits do not replace REV-0037, which is staged for CLAUDE; no result/ledger/disposition/close before independent result + human disposition. |
 | WO-0125 | CLOSED | `9dec106` activation; `81a5e64` implementation; `2b39830` close-out | VERIFIED: explicit full envelope vocabulary fold, dual-store read-model parity, two mutation-red pins; 3881 passed, 11 skipped, 1 expected xfail. |
 | WO-0126 | CLOSED | `42071ba` activation; `c99ebda` RED; `108874f` implementation; `3c5a1ec` gate checkpoint; dependency `ffd818b`; `04e55f3` close-out | VERIFIED: one event-derived counter drives enforcement and display; stored application field removed with SQLite tombstone inert. Integrated ffd818b6 restored the inherited gate; 4015 passed, 11 skipped, 1 expected xfail at 93.15%; dispositioned and moved to `work/completed/keep/`. |
 | WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
@@ -74,3 +77,23 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
   `harness/bootstrap.py`, `tests/test_tape_recorder.py`, and the reviewer-owned
   `work/review/AUDIT-0002-priorwork/probe_review_integrity.py`. WO-0114's scoped format check is
   green; do not absorb those changes into this lane.
+- Signal Seat R4 — the fresh `signal_records` DDL/schema approval remains deliberately deferred
+  until R4 presents the real DDL. Do not begin R4–R7 implementation until REV-0034 is accepted and
+  that separate human-gated schema decision is recorded.
+
+## Session-end verification
+
+- **VERIFIED:** `codex/ultra-beta-batch` fast-forwarded exactly to WO-0124 metadata head
+  `3d8015f`; the independently requested semantic/test range remains `1af0ae7..33ad906`.
+- **VERIFIED:** final WO-0124 full gate at `33ad906`: 4,087 passed, 11 skipped, 1 expected xfail,
+  93.05% branch coverage; its two earlier below-floor coverage attempts remain recorded in the WO.
+- **VERIFIED:** integrated R2 conformance oracle 61/61 from a unique OS-temp basetemp; Ruff clean;
+  mypy clean across 70 source files; import-linter kept all 6 contracts.
+- **VERIFIED:** AI-OS install, version, ledger, PKL, and work-order-disposition validators passed;
+  `.env.example` documents all 40/40 configuration names.
+- **VERIFIED:** REV-0034/0035/0036/0037 each contains exactly `request.md`; all five frozen ranges
+  (including REV-0035's supplemental FIX range) resolve, preserve ancestry, and pass diff checks.
+- **UNVERIFIED by design:** REV-0034/0035/0036/0037 independent CLAUDE-seat verdicts and the
+  associated human dispositions run after this session; no review-gated WO is closed here.
+- **UNVERIFIED / environment-limited:** WO-0124's optional AI-OS source-package self-tests are not
+  installed-layout CI gates; their 31-pass/3-fail/2-error fixture mismatch is retained in the WO.
