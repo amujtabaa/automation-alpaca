@@ -1421,6 +1421,36 @@ class EnvelopeObligationProjection:
     retains_across_close: bool = False
 
 
+def _cancel_target_snapshot(
+    payload: Mapping[str, Any],
+) -> Optional[tuple[tuple[str, str], ...]]:
+    """Parse the exact, canonical child/broker scope of a cancel decision."""
+
+    raw = payload.get("target_snapshot")
+    if not isinstance(raw, list) or not raw:
+        return None
+    parsed: list[tuple[str, str]] = []
+    for item in raw:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"order_id", "broker_order_id"}
+            or not isinstance(item.get("order_id"), str)
+            or not item["order_id"]
+            or not isinstance(item.get("broker_order_id"), str)
+            or not item["broker_order_id"]
+        ):
+            return None
+        parsed.append((item["order_id"], item["broker_order_id"]))
+    snapshot = tuple(parsed)
+    if snapshot != tuple(sorted(snapshot)) or len(set(snapshot)) != len(snapshot):
+        return None
+    if len({order_id for order_id, _ in snapshot}) != len(snapshot):
+        return None
+    if len({broker_order_id for _, broker_order_id in snapshot}) != len(snapshot):
+        return None
+    return snapshot
+
+
 def project_envelope_obligation(
     *,
     envelopes: Sequence[ExecutionEnvelope],
@@ -1543,6 +1573,7 @@ def project_envelope_obligation(
             disposition = event.payload.get("disposition")
             attempt = event.payload.get("attempt")
             broker_order_id = event.payload.get("broker_order_id")
+            target_snapshot = _cancel_target_snapshot(event.payload)
             cancel_invalid = (
                 event.source is not EventSource.ENGINE
                 or event.authority is not EventAuthority.LOCAL
@@ -1563,6 +1594,8 @@ def project_envelope_obligation(
                 or not isinstance(attempt, int)
                 or isinstance(attempt, bool)
                 or attempt <= 0
+                or target_snapshot is None
+                or (order_id, broker_order_id) not in (target_snapshot or ())
                 or set(event.payload)
                 != {
                     "action",
@@ -1570,6 +1603,7 @@ def project_envelope_obligation(
                     "disposition",
                     "broker_order_id",
                     "attempt",
+                    "target_snapshot",
                 }
                 or event.dedupe_key
                 != (
@@ -1638,6 +1672,7 @@ def project_envelope_obligation(
         if order is None:
             continue
         disposition = attempts[0].payload.get("disposition")
+        target_snapshot = _cancel_target_snapshot(attempts[0].payload)
         prior_sequence = canonical.sequence
         cancel_lineage_invalid = order.broker_order_id is None
         for expected_attempt, event in enumerate(attempts, start=1):
@@ -1654,6 +1689,7 @@ def project_envelope_obligation(
                 or event.price != order.limit_price
                 or event.payload.get("broker_order_id") != order.broker_order_id
                 or event.payload.get("disposition") != disposition
+                or _cancel_target_snapshot(event.payload) != target_snapshot
                 or event_attempt != expected_attempt
                 or (
                     event.sequence > 0
@@ -1663,6 +1699,22 @@ def project_envelope_obligation(
             )
             if event.sequence > 0:
                 prior_sequence = event.sequence
+        if target_snapshot is not None:
+            first_cancel_sequence = attempts[0].sequence
+            for target_order_id, target_broker_order_id in target_snapshot:
+                target_canonical = canonical_actions.get(target_order_id)
+                target_order = orders_by_id.get(target_order_id)
+                cancel_lineage_invalid = cancel_lineage_invalid or (
+                    target_canonical is None
+                    or target_order is None
+                    or target_canonical.envelope_id != canonical.envelope_id
+                    or target_order.broker_order_id != target_broker_order_id
+                    or (
+                        target_canonical.sequence > 0
+                        and first_cancel_sequence > 0
+                        and target_canonical.sequence >= first_cancel_sequence
+                    )
+                )
         if cancel_lineage_invalid and order_id not in invalid_seen:
             invalid_seen.add(order_id)
             invalid.append(order_id)

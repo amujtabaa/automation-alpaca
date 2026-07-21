@@ -163,6 +163,12 @@ def _manual_cancel_event(
             "disposition": EXPIRY_CANCEL,
             "broker_order_id": target_broker_id,
             "attempt": attempt,
+            "target_snapshot": [
+                {
+                    "order_id": order.id,
+                    "broker_order_id": target_broker_id,
+                }
+            ],
         },
     )
 
@@ -221,6 +227,12 @@ async def test_cancel_event_is_durable_before_venue_io_and_replayable(any_store)
         "disposition": EXPIRY_CANCEL,
         "broker_order_id": order.broker_order_id,
         "attempt": 1,
+        "target_snapshot": [
+            {
+                "order_id": order.id,
+                "broker_order_id": order.broker_order_id,
+            }
+        ],
     }
     assert event.envelope_id == envelope.id
     assert event.order_id == order.id
@@ -431,9 +443,9 @@ async def _assert_historical_cancel_does_not_retarget_future_child(store) -> Non
     assert adapter.canceled == [first.broker_order_id]
     fresh_future = await store.get_order(future.id)
     assert fresh_future is not None and fresh_future.status is OrderStatus.SUBMITTED
-    assert _cancel_events(
-        await store.get_execution_events(), envelope.id, future.id
-    ) == []
+    assert (
+        _cancel_events(await store.get_execution_events(), envelope.id, future.id) == []
+    )
 
 
 async def test_historical_cancel_never_retargets_future_child(any_store):
@@ -462,9 +474,12 @@ async def test_historical_cancel_never_retargets_future_child_after_sqlite_resta
         fresh_future = await reopened.get_order(future.id)
         assert fresh_future is not None
         assert fresh_future.status is OrderStatus.SUBMITTED
-        assert _cancel_events(
-            await reopened.get_execution_events(), envelope.id, future.id
-        ) == []
+        assert (
+            _cancel_events(
+                await reopened.get_execution_events(), envelope.id, future.id
+            )
+            == []
+        )
     finally:
         await reopened.close()
 
@@ -507,18 +522,22 @@ async def test_expiry_without_current_child_event_scopes_before_venue_io(any_sto
     # Model a crash after the terminal envelope transition but before the first
     # child-B expiry event. Convergence must discover only current child B, then
     # persist its exact identity before acquiring venue authority.
-    assert _cancel_events(
-        await any_store.get_execution_events(), envelope.id, future.id
-    ) == []
+    assert (
+        _cancel_events(await any_store.get_execution_events(), envelope.id, future.id)
+        == []
+    )
     await monitoring._converge_envelope_disposition_cancels(any_store, adapter)
 
     assert adapter.observed_exact_event is True
     assert adapter.canceled == [first.broker_order_id, future.broker_order_id]
-    assert len(
-        _cancel_events(
-            await any_store.get_execution_events(), envelope.id, first.id
+    assert (
+        len(
+            _cancel_events(
+                await any_store.get_execution_events(), envelope.id, first.id
+            )
         )
-    ) == 1
+        == 1
+    )
     [future_cancel] = _cancel_events(
         await any_store.get_execution_events(), envelope.id, future.id
     )

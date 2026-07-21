@@ -1100,6 +1100,54 @@ def _disposition_cancel_events(
     ]
 
 
+_CancelTargetSnapshot = tuple[tuple[str, str], ...]
+
+
+def _cancel_target_snapshot_for_orders(
+    orders: list[Order],
+) -> _CancelTargetSnapshot:
+    """Canonical exact venue scope persisted before any cancel IO."""
+
+    pairs = [
+        (order.id, order.broker_order_id)
+        for order in orders
+        if order.broker_order_id is not None
+    ]
+    return tuple(sorted(pairs))
+
+
+def _cancel_target_snapshot_from_event(
+    event: ExecutionEvent,
+) -> Optional[_CancelTargetSnapshot]:
+    """Parse only the payload shape; projection owns authority validation."""
+
+    raw = event.payload.get("target_snapshot")
+    if not isinstance(raw, list) or not raw:
+        return None
+    parsed: list[tuple[str, str]] = []
+    for item in raw:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"order_id", "broker_order_id"}
+            or not isinstance(item.get("order_id"), str)
+            or not item["order_id"]
+            or not isinstance(item.get("broker_order_id"), str)
+            or not item["broker_order_id"]
+        ):
+            return None
+        parsed.append((item["order_id"], item["broker_order_id"]))
+    return tuple(parsed)
+
+
+def _cancel_target_snapshot_payload(
+    snapshot: _CancelTargetSnapshot,
+) -> list[dict[str, str]]:
+    return [
+        {"order_id": order_id, "broker_order_id": broker_order_id}
+        for order_id, broker_order_id in snapshot
+    ]
+
+
 def _stored_cancel_attempt_matches(
     stored: ExecutionEvent, draft: ExecutionEvent
 ) -> bool:
@@ -1132,6 +1180,7 @@ async def _persist_disposition_cancel_attempt(
     order: Order,
     disposition: str,
     events: list[ExecutionEvent],
+    target_snapshot: _CancelTargetSnapshot,
 ) -> Optional[int]:
     """Append the next exact cancel attempt before IO.
 
@@ -1145,6 +1194,16 @@ async def _persist_disposition_cancel_attempt(
     effective_disposition = (
         str(existing[0].payload["disposition"]) if existing else disposition
     )
+    if existing:
+        persisted_snapshot = _cancel_target_snapshot_from_event(existing[0])
+        if persisted_snapshot is None:
+            raise RecoveryTransitionError(
+                "disposition-cancel target snapshot is malformed for "
+                f"envelope {envelope.id} child {order.id}"
+            )
+        effective_snapshot = persisted_snapshot
+    else:
+        effective_snapshot = target_snapshot
     attempt = len(existing) + 1
     if attempt > _DISPOSITION_CANCEL_RETRY_LIMIT:
         return None
@@ -1172,6 +1231,7 @@ async def _persist_disposition_cancel_attempt(
             "disposition": effective_disposition,
             "broker_order_id": order.broker_order_id,
             "attempt": attempt,
+            "target_snapshot": _cancel_target_snapshot_payload(effective_snapshot),
         },
     )
     stored = await store.append_execution_event(draft)
@@ -1223,6 +1283,7 @@ async def _cancel_envelope_working_order(
     envelope: ExecutionEnvelope,
     *,
     disposition: str = _EXPIRY_DISPOSITION_CANCEL,
+    target_order_ids: Optional[frozenset[str]] = None,
 ) -> None:
     """Best-effort cancel of every projection-valid child obligation.
 
@@ -1231,6 +1292,9 @@ async def _cancel_envelope_working_order(
     multiple broker-confirmed children.  Missing, malformed, recovery-owned, or
     claim-uncertain lineages remain fail-closed; no target is guessed.  Each
     valid target is isolated so one failed cancel cannot strand its sibling.
+    A replay supplies ``target_order_ids`` from a prior durable target snapshot;
+    ``None`` is reserved for a fresh disposition decision or terminal-envelope
+    recovery, which discovers the then-current projection-valid children.
     """
 
     if disposition not in _DISPOSITION_CANCEL_KINDS:
@@ -1313,45 +1377,135 @@ async def _cancel_envelope_working_order(
             and local.id not in excluded_ids
         ):
             targets[local.id] = local
+
+    # Validate the complete lineage before applying the durable exact-id scope.
+    # A malformed snapshot must remain visible as a projection failure, never be
+    # made to look harmless by filtering its bad identity away first.
+    if target_order_ids is not None:
+        targets = {
+            order_id: order
+            for order_id, order in targets.items()
+            if order_id in target_order_ids
+        }
+
+    venue_call_orders = [
+        order
+        for order in targets.values()
+        if order.broker_order_id is not None
+        and order.status not in (OrderStatus.CREATED, OrderStatus.CANCEL_PENDING)
+    ]
+    current_target_snapshot = _cancel_target_snapshot_for_orders(venue_call_orders)
+    historical_snapshot_by_order: dict[str, _CancelTargetSnapshot] = {}
+    for event in all_events:
+        if (
+            event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+            or event.envelope_id != reloaded.id
+            or event.payload.get("action") != "cancel"
+        ):
+            continue
+        snapshot = _cancel_target_snapshot_from_event(event)
+        if snapshot is None:
+            continue
+        for snapshot_order_id, _ in snapshot:
+            historical_snapshot_by_order.setdefault(snapshot_order_id, snapshot)
+
+    # Phase 1: prepare every exact target before the first venue call. The full
+    # target snapshot is carried by each attempt, so even a crash/fault between
+    # sibling appends leaves the first fact able to recover the remaining
+    # pre-decision child without granting authority over a later child.
+    prepared_open: dict[str, tuple[int, str]] = {}
+    prepared_terminal: set[str] = set()
     for order in targets.values():
-        try:
-            if order.status is OrderStatus.CREATED:
-                order = await store.transition_order(
-                    order.id,
-                    OrderStatus.CANCELED,
-                    expected_from=OrderStatus.CREATED,
-                )
-                if order.status is OrderStatus.CANCELED:
-                    continue
-            if (
-                order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
-                and order.broker_order_id is not None
-            ):
-                prior_attempts = _disposition_cancel_events(
-                    all_events, envelope_id=reloaded.id, order_id=order.id
-                )
-                effective_disposition = (
-                    str(prior_attempts[0].payload["disposition"])
-                    if prior_attempts
-                    else disposition
-                )
-                if len(prior_attempts) >= _DISPOSITION_CANCEL_RETRY_LIMIT:
-                    await _escalate_disposition_cancel_exhausted(
-                        store,
-                        envelope=reloaded,
-                        order=order,
-                        disposition=effective_disposition,
-                    )
-                    continue
-                attempt = await _persist_disposition_cancel_attempt(
+        if order.status is OrderStatus.CREATED:
+            await store.transition_order(
+                order.id,
+                OrderStatus.CANCELED,
+                expected_from=OrderStatus.CREATED,
+            )
+            continue
+        if order.broker_order_id is None or order.status is OrderStatus.CANCEL_PENDING:
+            continue
+        target_snapshot = historical_snapshot_by_order.get(
+            order.id, current_target_snapshot
+        )
+        if not target_snapshot:
+            raise RecoveryTransitionError(
+                "disposition-cancel target snapshot is empty for "
+                f"envelope {reloaded.id} child {order.id}"
+            )
+        if order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED):
+            prior_attempts = _disposition_cancel_events(
+                all_events, envelope_id=reloaded.id, order_id=order.id
+            )
+            effective_disposition = (
+                str(prior_attempts[0].payload["disposition"])
+                if prior_attempts
+                else disposition
+            )
+            if len(prior_attempts) >= _DISPOSITION_CANCEL_RETRY_LIMIT:
+                await _escalate_disposition_cancel_exhausted(
                     store,
                     envelope=reloaded,
                     order=order,
                     disposition=effective_disposition,
-                    events=all_events,
                 )
-                if attempt is None:
+                continue
+            attempt = await _persist_disposition_cancel_attempt(
+                store,
+                envelope=reloaded,
+                order=order,
+                disposition=effective_disposition,
+                events=all_events,
+                target_snapshot=target_snapshot,
+            )
+            if attempt is not None:
+                prepared_open[order.id] = (attempt, effective_disposition)
+            continue
+
+        # The projection, not the terminal local column, says this broker
+        # interval is still open. Give it its durable recovery owner before any
+        # best-effort venue call; the recovery loop then confirms terminal truth.
+        attempt = await _persist_disposition_cancel_attempt(
+            store,
+            envelope=reloaded,
+            order=order,
+            disposition=disposition,
+            events=all_events,
+            target_snapshot=target_snapshot,
+        )
+        await store.create_submit_recovery(
+            local_order_id=order.id,
+            broker_order_id=order.broker_order_id,
+            client_order_id=order.id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            failure_reason=(
+                "envelope cancel found a broker-open interval behind "
+                f"local {order.status.value}"
+            ),
+            session_id=order.session_id,
+            candidate_id=order.candidate_id,
+            extra_payload={
+                "envelope_id": envelope.id,
+                "action_kind": "cancel_terminal_venue_interval",
+            },
+        )
+        if attempt is not None:
+            prepared_terminal.add(order.id)
+
+    # Phase 2: only fully prepared exact children may acquire venue authority.
+    for order in targets.values():
+        try:
+            if (
+                order.status in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED)
+                and order.broker_order_id is not None
+            ):
+                prepared = prepared_open.get(order.id)
+                if prepared is None:
                     continue
+                attempt, effective_disposition = prepared
                 try:
                     await adapter.cancel_order(order.broker_order_id)
                     await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
@@ -1365,48 +1519,8 @@ async def _cancel_envelope_working_order(
                         )
                     raise
                 continue
-            if (
-                order.broker_order_id is not None
-                and order.status is not OrderStatus.CANCEL_PENDING
-            ):
-                # The projection, not the terminal local column, says this
-                # broker interval is still open. A terminal row cannot move to
-                # CANCEL_PENDING, so give cleanup a durable occurrence-scoped
-                # recovery owner *before* the best-effort cancel call. The
-                # recovery loop then polls/cancels until broker terminal truth
-                # closes the interval.
-                # This locally-terminal branch really is an otherwise-untracked
-                # venue interval, so its existing unresolved recovery owner is
-                # correct. Persist disposition provenance before either the
-                # recovery write or the best-effort venue call.
-                attempt = await _persist_disposition_cancel_attempt(
-                    store,
-                    envelope=reloaded,
-                    order=order,
-                    disposition=disposition,
-                    events=all_events,
-                )
-                await store.create_submit_recovery(
-                    local_order_id=order.id,
-                    broker_order_id=order.broker_order_id,
-                    client_order_id=order.id,
-                    symbol=order.symbol,
-                    side=order.side,
-                    quantity=order.quantity,
-                    limit_price=order.limit_price,
-                    failure_reason=(
-                        "envelope cancel found a broker-open interval behind "
-                        f"local {order.status.value}"
-                    ),
-                    session_id=order.session_id,
-                    candidate_id=order.candidate_id,
-                    extra_payload={
-                        "envelope_id": envelope.id,
-                        "action_kind": "cancel_terminal_venue_interval",
-                    },
-                )
-                if attempt is not None:
-                    await adapter.cancel_order(order.broker_order_id)
+            if order.id in prepared_terminal and order.broker_order_id is not None:
+                await adapter.cancel_order(order.broker_order_id)
         except (BrokerError, *_TRANSITION_ERRORS) as exc:
             _log.warning(
                 "envelope %s: child %s cancel failed (%s); reconcile will converge it",
@@ -1432,6 +1546,7 @@ async def _converge_envelope_disposition_cancels(
         return
 
     persisted_by_envelope: dict[str, str] = {}
+    persisted_target_ids: dict[str, set[str]] = {}
     for event in events:
         if (
             event.event_type is ExecutionEventType.ENVELOPE_ACTION
@@ -1446,19 +1561,40 @@ async def _converge_envelope_disposition_cancels(
                 and raw_disposition in _DISPOSITION_CANCEL_KINDS
                 else _EXPIRY_DISPOSITION_CANCEL,
             )
+            target_ids = persisted_target_ids.setdefault(event.envelope_id, set())
+            snapshot = _cancel_target_snapshot_from_event(event)
+            if snapshot is None:
+                # Keep malformed history in the candidate set so the shared
+                # projection can fail it closed and surface diagnostics.
+                if event.order_id is not None:
+                    target_ids.add(event.order_id)
+            else:
+                target_ids.update(order_id for order_id, _ in snapshot)
 
     for env in envelopes:
         disposition = persisted_by_envelope.get(env.id)
-        if disposition is None and (
+        target_order_ids: Optional[frozenset[str]] = None
+        if (
             env.status is EnvelopeStatus.EXPIRED
             and env.expiry_disposition is EnvelopeExpiryDisposition.CANCEL_AND_RETURN
         ):
             disposition = _EXPIRY_DISPOSITION_CANCEL
+            # Terminal envelope truth independently cancels every then-current
+            # valid child. This also repairs a crash between EXPIRED and the
+            # first exact child event, even when older stale-cancel history exists.
+        elif disposition is not None:
+            # Non-terminal replay is bounded by the exact pre-IO snapshot. A
+            # later child can never inherit an older child's cancel authority.
+            target_order_ids = frozenset(persisted_target_ids.get(env.id, set()))
         if disposition is None:
             continue
         try:
             await _cancel_envelope_working_order(
-                store, adapter, env, disposition=disposition
+                store,
+                adapter,
+                env,
+                disposition=disposition,
+                target_order_ids=target_order_ids,
             )
         except Exception:  # noqa: BLE001 — isolate per envelope
             _log.exception("envelope %s: disposition cancel-convergence failed", env.id)

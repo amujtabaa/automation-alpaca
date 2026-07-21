@@ -3159,9 +3159,7 @@ async def test_partial_cancel_scope_persist_recovers_exact_snapshot_after_restar
                 raise RuntimeError("injected crash during exact cancel-scope persist")
         return await original_append(event)
 
-    monkeypatch.setattr(
-        first_store, "append_execution_event", fail_second_cancel_scope
-    )
+    monkeypatch.setattr(first_store, "append_execution_event", fail_second_cancel_scope)
     before_crash = MockBrokerAdapter()
     try:
         with pytest.raises(
@@ -3212,7 +3210,9 @@ async def test_partial_cancel_scope_persist_recovers_exact_snapshot_after_restar
 
         assert adapter.canceled == [first.broker_order_id, second.broker_order_id]
         assert (await reopened.get_order(first.id)).status is OrderStatus.CANCEL_PENDING
-        assert (await reopened.get_order(second.id)).status is OrderStatus.CANCEL_PENDING
+        assert (
+            await reopened.get_order(second.id)
+        ).status is OrderStatus.CANCEL_PENDING
         assert (await reopened.get_order(future.id)).status is OrderStatus.SUBMITTED
         assert not any(
             event.event_type is ExecutionEventType.ENVELOPE_ACTION
