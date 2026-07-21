@@ -58,7 +58,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0126 | QUEUED | — | Lane 2; after WO-0114 and WO-0125 shared-file work lands. |
 | WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
 | WO-0128 | QUEUED | — | Lane 4; separate red staging branch after WO-0127 text stabilizes. |
-| WO-0129 | QUEUED | — | Lane 2; final env sweep after WO-0123. |
+| WO-0129 | ACTIVE | activation commit | Lane 2; env sweep follows WO-0123 close. |
 
 ## Running NEEDS-INPUT list
 

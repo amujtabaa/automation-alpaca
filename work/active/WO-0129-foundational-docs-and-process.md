@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Foundational docs & process: fill the repo primer, complete .env.example, land the P-1/P-2 review-protocol amendments"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0129
 wave: post-R2 beta-prep (foundational; from session-history review 2026-07-20)
 model_tier: mid
