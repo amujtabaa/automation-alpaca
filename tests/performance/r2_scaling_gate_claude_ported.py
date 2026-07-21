@@ -41,11 +41,15 @@ from app.models import (
     SessionType,
 )
 from app.store.sqlite import SqliteStateStore
+from tests.performance.r2_scaling_budget import (
+    RUNTIME_SCALE_LIMIT,
+    STARTUP_SCALE_LIMIT,
+    apply_beta_scale_budget,
+    dataset_cardinality,
+)
 
 T0 = datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc)
 TARGET = "AAPL"
-RUNTIME_SCALE_LIMIT = 3.0
-STARTUP_SCALE_LIMIT = 12.0
 
 
 @dataclass(frozen=True)
@@ -447,8 +451,13 @@ async def main() -> int:
         "datasets": datasets,
         "ratios": ratios,
         "gates": gates,
-        "passed": all(gates.values()),
     }
+    apply_beta_scale_budget(
+        report,
+        target=dataset_cardinality(REALISTIC),
+        stress=dataset_cardinality(STRESS),
+        stress_executed=STRESS.name in datasets,
+    )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["passed"] else 1
 

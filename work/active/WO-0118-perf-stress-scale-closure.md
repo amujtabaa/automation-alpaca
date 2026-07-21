@@ -141,6 +141,86 @@ is the documented rollback for an additive index).
 `mid` — measurement discipline plus bounded, precedent-guided optimization; the hard semantic
 rails are already pinned by the existing parity/oracle corpus.
 
+## Execution evidence — 2026-07-21
+
+### Environment
+
+Fresh OS-temp environment: `C:\Users\amujt\AppData\Local\Temp\codex-wo0118-py312`.
+
+```text
+CPython 3.12.13 (MSC v.1944 64 bit, AMD64)
+Windows-11-10.0.26200-SP0
+SQLite 3.50.4
+pip 25.0.1
+fastapi=0.139.0 pydantic=2.13.4 pytest=9.1.1
+ruff=0.15.20 mypy=2.2.0 import-linter=2.13
+pip check: No broken requirements found.
+```
+
+The constrained install used `requirements.txt` with `constraints.txt`. No Alpaca credentials,
+paper database, network broker call, or live/shadow trading mode was used.
+
+### Phase 1 — fresh target/stress measurement
+
+Canonical target runs (`R2_STRESS` absent), each exit 0:
+
+| Run | Runtime p95 ratio | Startup elapsed ratio | Startup SELECT ratio | Runtime SELECTs | Projection peak |
+|---|---:|---:|---:|---:|---:|
+| 1 | 0.758941x | 8.984696x | 9.102190x | 18 → 18 | 310,040 B |
+| 2 | 1.022693x | 9.169887x | 9.102190x | 18 → 18 | 310,256 B |
+| 3 | 0.667735x | 9.417490x | 9.102190x | 18 → 18 | 310,256 B |
+
+Spread: runtime `0.667735–1.022693x` (median `0.758941x`); startup elapsed
+`8.984696–9.417490x` (median `9.169887x`); SELECT ratio exactly `9.102190x`.
+
+Canonical stress runs (`R2_STRESS=1`), each exit 0. The comparison is the 100-symbol /
+1,001-Envelope / 10,002-event / 1,000-recovery design target versus the 1,000-symbol /
+10,001-Envelope / 100,002-event / 10,000-recovery stress corpus.
+
+| Run | Runtime p95 ratio | Startup elapsed ratio | Startup SELECT ratio | Runtime SELECTs | Stress startup |
+|---|---:|---:|---:|---:|---:|
+| 1 | 1.142179x | 11.480315x | 9.901363x | 18 → 18 | 7,085.388 ms |
+| 2 | 0.977006x | 11.063887x | 9.901363x | 18 → 18 | 7,018.490 ms |
+| 3 | 1.026324x | 10.807658x | 9.901363x | 18 → 18 | 6,749.839 ms |
+
+Spread: runtime `0.977006–1.142179x` (median `1.026324x`); startup elapsed
+`10.807658–11.480315x` (median `11.063887x`); SELECT ratio exactly `9.901363x`.
+
+The Claude-ported gate also exited 0 at target (runtime `0.801569x`, startup `8.818945x`,
+SELECT `9.102190x`) and stress (runtime `1.008816x`, startup `10.701036x`, SELECT
+`9.901363x`). All canonical and ported reports had `unrelated_full_scans: []`. EXPLAIN used
+bounded seeks through `idx_envelopes_symbol`, `idx_exec_events_envelope`,
+`idx_exec_events_symbol_type`, `idx_orders_symbol`, `idx_exec_events_order`,
+`idx_recoveries_local_order`, and primary-key indexes; scoped order-by operations alone used a
+temporary B-tree.
+
+**VERIFIED Phase-1 verdict:** the pre-Cluster-E `72–76x` stress startup convexity did not
+survive. Current startup work is approximately linear for approximately 10x facts and remains
+inside the unchanged 12x ceiling. Phase 2 did not trigger: zero `app/store/**` changes, zero D9
+index/DDL request, and no independent store-surface review packet.
+
+### Phase 3 — red/green and mutation proof
+
+```yaml
+fable_fix:
+  symptom: "The scaling scripts enforced ratios but did not expose one shared, executable beta target/stress cardinality and threshold contract."
+  root_cause: "Cardinality and limits lived as duplicated script-local facts, so drift or removal of one stress assertion was not independently pinned."
+  evidence: "Initial targeted pytest failed during collection because tests.performance.r2_scaling_budget did not exist."
+  fix: "Add one shared budget applicator used exactly once by both gates; make cardinality and stress-contract checks part of passed; emit limits and measured ratio margin; record the contract in testing-model PKL."
+  regression_test: "tests/performance/test_r2_scaling_budget.py"
+  red_green_verified: true
+  attempt: 1
+```
+
+```text
+RED: ImportError: cannot import name 'r2_scaling_budget' from 'tests.performance'
+GREEN: 6 passed
+MUTANT: disable the ported gate's apply_beta_scale_budget call → 1 failed, 1 passed
+RESTORED: 6 passed
+POST-CHANGE GATES: canonical target/stress and ported target/stress all exit 0;
+  cardinality gates=true, stress contract complete=true, limits_changed=false.
+```
+
 ## Completion disposition
 
 Expected: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`.

@@ -4,7 +4,7 @@ title: Testing Model and Determinism Rules
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-20
+last_verified: 2026-07-21
 tags: [testing, determinism, ci]
 source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md]
 supersedes: []
@@ -51,6 +51,22 @@ Deterministic, dual-path testing posture inherited from the migration and kept p
   use work counters where wall-clock thresholds alone cannot mutation-pin asymptotic behavior.
   Durable repair high-watermarks advance only after the selected tail validates completely; tests
   prove steady cadence starts after that sequence and that failure does not skip poison on restart.
+- The beta R2 scaling budget is explicit and may not be silently loosened. The declared design target
+  is 100 symbols / 1,001 Envelopes / 10,002 execution events / 1,000 recoveries; the required stress
+  corpus is approximately 10x at 1,000 / 10,001 / 100,002 / 10,000. Runtime p95 growth remains capped
+  at 3x, startup SELECT and elapsed growth at 12x, and canonical projection peak at 2 MiB. Every
+  `R2_STRESS=1` run must retain constant query count, reject unrelated full scans, and enforce all
+  three ratio ceilings; target/stress cardinality drift is itself a gate failure.
+- WO-0118 measured this budget on 2026-07-21 in a fresh constrained CPython 3.12.13 environment
+  (SQLite 3.50.4, Windows 11). Three canonical target runs passed with runtime growth 0.668–1.023x,
+  startup elapsed growth 8.985–9.417x, and deterministic SELECT growth 9.102x. Three canonical stress
+  runs passed with runtime growth 0.977–1.142x, startup elapsed growth 10.808–11.480x, SELECT growth
+  9.901x, 18 runtime SELECTs at both realistic and stress scale, and zero unrelated scans. The
+  Claude-ported target/stress cross-check also passed (stress startup 10.701x). The pre-Cluster-E
+  72–76x stress convexity did not survive, so no Phase-2 store optimization or D9 index request was
+  warranted. These are design-target results, not an observed-paper inventory: WO-0115 remains
+  without a ratified source database path, and its future inventory must be compared to this budget
+  without changing the limits automatically.
 - Never weaken a test to make code pass; never merge failing or newly-skipped tests. Phase-named tests remain active regression evidence unless replaced and reviewed.
 - CI gate (as wired today): `ruff check`, `mypy app/`, `pytest` + coverage, import-linter (`lint-imports`) contracts, `pip-audit` where configured. Formatting authority: `ruff format`.
 - `mypy` static typecheck (ADR-007, wired 2026-07-08; **burn-down complete 2026-07-09, WO-0012**): the grandfather list is EMPTY — the whole `app/` package is typechecked with no `ignore_errors` override (started 16 modules / ~187 baseline errors; every error fixed by triage, never silenced). `warn_unused_ignores = true` since 2026-07-11 (the ADR-007 follow-up flip; a stale `# type: ignore` now fails the gate). A line-level mypy-baseline (ADR-007's other documented future upgrade) is **moot** — with zero grandfathered errors there is nothing to baseline; revisit only if a future mypy/dep bump introduces a large new error class. Dependency closure pinned in `constraints.txt` (CI installs `-c constraints.txt`), so the gate can't drift out from under a green PR.
@@ -83,3 +99,6 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
 - 2026-07-20: WO-0125 added complete execution-envelope replay to the dual-store read-model
   verifier, including canonical and repair-attribution fill debits plus an explicit event-family
   vocabulary ratchet. Store write/event truth remained unchanged.
+- 2026-07-21: WO-0118 froze the explicit beta target/stress cardinalities and unchanged scaling
+  limits, added a failure-capable shared budget contract to both R2 gates, and recorded fresh
+  three-run target/stress headroom. Phase 2 was measurement-skipped because scaling was near-linear.
