@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: REV-0029 remediation — close the three order-execution correctness classes (P0-1/2/3) + P1-1/P1-2ext
-status: ACTIVE
+status: SUPERSEDED
 work_order_id: WO-0108
 wave: R2 consolidation campaign (CAMPAIGN-0002), post-review remediation
 model_tier: strong
 risk: high
-disposition: []
+disposition: [SUPERSEDED, RESULT_SUMMARY_KEPT]
 owner: Ameen
 created: 2026-07-18
 gated_surface: order submission/claim, manual flatten, candidate dispatch, event-log truth
@@ -188,3 +188,14 @@ forbidden_paths:
   continuation round per the packet protocol).
 - **Terminal (flagged, not decisions):** operator commissions the round-2 review; operator merges
   on ACCEPT.
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- `work/review/REV-0029/result-round2.md` returned `BLOCK`; the round-2 implementation therefore did
+  not satisfy this work order's terminal review gate.
+- `work/completed/keep/WO-0109-rev0029-round3-remediation.md` explicitly says it supersedes the
+  incomplete round-1/round-2 fixes tracked here and carries the next remediation implementation.
+- The later WO-0109..WO-0113 chain is present on current `master`; PR #9 merged at `88833e3d`.
+
+Recorded action: `SUPERSEDED` by WO-0109; this result is retained as provenance. It is deliberately
+not mislabeled `CLOSED` from the pre-review step table.

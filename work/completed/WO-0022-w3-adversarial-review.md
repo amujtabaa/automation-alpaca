@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: W3 adversarial review — in-process critic agents + independent Codex gate (post WO-0016..0021)
-status: DRAFT
+status: SUPERSEDED
 work_order_id: WO-0022
 wave: W3
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [SUPERSEDED, RESULT_SUMMARY_KEPT]
 owner: Ameen (gates the W3 merge; independent review is policy-mandatory for WO-0017/0019 + ADR-010)
 created: 2026-07-11
 ---
@@ -116,3 +116,14 @@ forbidden_paths:
 - Fable FULL. Never review your own work while holding the context that produced it: Phase A
   agents get fresh contexts; the implementing session must not author the Phase A prompts' answers.
 - Quality-engineer/self-review does not count as Phase B (CLAUDE.md review policy).
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Ledger line 42 records the executed Phase A and its `REV-0023/phase-a.md` result.
+- `work/review/REV-0023/result.md` and `disposition.md` record the independent Phase-A2 review as
+  `ACCEPT-WITH-CHANGES`, `RESOLVED`, with its gated-surface conditions satisfied.
+- Later REV-0029..REV-0033 campaigns and PR #9 supersede this stale W3 review launcher as an open
+  queue item; its historical Phase A record remains valuable.
+
+Recorded action: `SUPERSEDED`; durable result retained. Unchecked historical checklist boxes are
+left untouched rather than rewritten after the fact.

@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Work-order / ledger hygiene sweep: flip, disposition, move, ledger — evidence-backed only"
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0116
 wave: post-R2 beta-prep
 model_tier: mid
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen / planning seat drafted 2026-07-20 / implementer: Codex session
 created: 2026-07-20
 gated_surface: none (bookkeeping only; ALL file deletions excluded — operator-gated)
@@ -143,3 +143,84 @@ misfiling one record corrupts the planning plane CI protects.
 ## Completion disposition
 
 Expected: `[RESULT_SUMMARY_KEPT]` (+ ledger rows per target).
+
+## Close-out (2026-07-20)
+
+This sweep records what the current repository evidence proves. It does not backdate status,
+rewrite historical bodies, delete files, or adjudicate code correctness reserved for WO-0117.
+
+| Target | Action | Fresh evidence / exact reason |
+|---|---|---|
+| WO-0032 | `CLOSED`, moved to `work/completed/` | `1aad3e5` is on master; REV-0023 disposition explicitly clears the gated review; targeted four-file probe `48 passed`. |
+| WO-0033 | `CLOSED`, moved | `e2ead56` + `d74cdd4` are on master; own outcome says 5/5; REV-0023 resolved; targeted probe green. |
+| WO-0034 | `CLOSED`, moved | `140e167` + `d74cdd4` are on master; REV-0023 retains Ameen's approval and clears the event-truth gate; targeted probe green. |
+| WO-0035 | `CLOSED`, moved | Noncanonical `EXECUTED (...)` normalized; `c03bbae` is on master; own verified outcome + targeted probe green. |
+| WO-0105 | `CLOSED`, moved | `7300433` completed Part A; ratification and Part B P1-P8 outcome exist; PR #9 is merged. |
+| WO-0107 | `CLOSED`, moved | Ratified Option B remains in ADR-010 §4; later corrections end in resolved REV-0033 and merged PR #9. |
+| WO-0108 | `SUPERSEDED`, moved | REV-0029 round 2 returned `BLOCK`; WO-0109 explicitly supersedes its incomplete fixes. |
+| W3-STATE | moved to `work/completed/keep/` | ADR-010 accepted and PR #9 merged; archive note appended, body preserved. |
+| WO-0109 | `NEEDS-INPUT`, untouched | REV-0030 `result.md` says `ACCEPT`, but the required `disposition.md` is absent and no later packet explicitly supersedes REV-0030. |
+| WO-0110 | front matter normalized to `CLOSED` | Existing ledger line 60 is `CLOSED`; `ae8c13a` is on master; no duplicate ledger row. |
+| WO-0111 | normalized to `CLOSED` | Existing ledger line 61 is `CLOSED`; `4d607da` is on master; REV-0031 resolved; no duplicate row. |
+| WO-0112 | normalized to `CLOSED` | Existing ledger line 62 is `CLOSED`; `194343c` is on master; REV-0032 resolved; no duplicate row. |
+| WO-0022 | `SUPERSEDED`, moved | Existing ledger records Phase A; REV-0023 is resolved; later review campaigns supersede this stale launcher. |
+| WO-0029 | `NEEDS-INPUT`, untouched | It remains an explicit planning-seat re-cut: SPEC-08 is DONE while CC-05 is PARTIAL. |
+| W3-KICKOFF-PROMPT | deletion recommendation only | Deletion is operator-gated; no file removed. |
+| W3-README | deletion recommendation only | Deletion is operator-gated; no file removed. |
+| W4-SEED-NOTES | deletion recommendation only | Deletion is operator-gated; no file removed. |
+| WO-0102 | handed to AUDIT-0002 Tier 3 | Queue-gate currency requires fresh adjudication, forbidden in Lane H. |
+| WO-0103 | handed to AUDIT-0002 Tier 3 | Same. |
+| WO-0104 | handed to AUDIT-0002 Tier 3 | Same. |
+
+### Consolidated Lane H NEEDS-INPUT / audit handoff
+
+1. Decide whether to author the missing REV-0030 disposition or explicitly record which later
+   packet supersedes it; until then WO-0109 remains `REVIEW`.
+2. Re-cut or otherwise disposition the mixed DONE/PARTIAL WO-0029 umbrella.
+3. Approve or reject deletion of `W3-KICKOFF-PROMPT.md`, `W3-README.md`, and `W4-SEED-NOTES.md`.
+4. AUDIT-0002 must decide WO-0102/0103/0104 currency and mechanically inspect the REV-0030 gap.
+
+### Fresh verification evidence
+
+```text
+INSTALL CHECK PASSED
+VERSION CHECK PASSED: v0.9.1
+LEDGER CHECK PASSED
+PKL CHECK PASSED
+DISPOSITION CHECK PASSED
+ruff check . -> All checks passed!
+pytest --collect-only -p no:cacheprovider -> 3873 tests collected in 2.03s
+targeted WO-0032..0035 pins -> 48 passed
+git diff 88833e3d..master -- app tests -> no output
+```
+
+```yaml
+fable_fix:
+  symptom: "The first targeted probe reported 48 setup errors before any test body ran."
+  root_cause: "The sandbox could not scan pytest's normal OS-temp root (WinError 5); repo cache writes were also denied."
+  evidence: "Trace ended in pytest pathlib os.scandir(C:/Users/amujt/AppData/Local/Temp/pytest-of-amujt)."
+  fix: "Reran the identical test selection with approved OS-temp access and -p no:cacheprovider."
+  regression_test: "48 passed"
+  red_green_verified: false
+  attempt: 1
+```
+
+```yaml
+fable_done:
+  task: "WO-0116 work-order and ledger hygiene sweep"
+  done_when_results:
+    - "Every target was evidence-backed, explicitly batched NEEDS-INPUT, or handed to AUDIT-0002."
+    - "Evidence-backed status changes have per-file close-outs and append-only ledger rows."
+    - "Five AI-OS checks, ruff, and 3,873-test collection pass; disposition output has zero warnings."
+    - "Zero files deleted and zero historical body rewrites."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  evidence:
+    - "48 targeted tests passed"
+    - "3873 tests collected"
+    - "AI-OS checks and ruff passed"
+  status: VERIFIED
+```
+
+Applied disposition: `[RESULT_SUMMARY_KEPT]`.

@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: R2 consolidation campaign — Part A (investigate + decide the canonical SellIntent↔Envelope lifecycle link)
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0105
 wave: R2 consolidation campaign (CAMPAIGN-0002), Part A
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen
 created: 2026-07-16
 gated_surface: order-intent lifecycle, session-close event truth, cancel/replace, schema/DB migration (Part B only — Part A produces no code changes to app/**)
@@ -187,3 +187,15 @@ Part B has not begun as of this record.
 ## Deletion decision
 
 N/A — ACTIVE pending human ratification.
+
+## Hygiene close-out (recorded 2026-07-20; not backdated)
+
+- Commit `7300433` records the completed Part A report and hard stop; it is an ancestor of current
+  `master`.
+- `RATIFICATION-part-a.md` records Ameen's Part A decisions. The authoritative outcome log in
+  `PARTB-COMPLETION-PLAN.md` records P1-P8 complete, and `DOWNSTREAM-STATUS.md` records the later
+  consolidated review/merge endpoint.
+- PR #9 merged at `88833e3d`; `git diff 88833e3d..master -- app tests` is empty.
+
+Recorded action: `CLOSED`; the Part A report remains the durable result summary. The stale
+"ACTIVE pending ratification" sentence above is preserved as historical body text.
