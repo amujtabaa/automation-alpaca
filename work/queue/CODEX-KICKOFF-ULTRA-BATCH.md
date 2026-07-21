@@ -29,7 +29,14 @@ orchestration for the parallel lanes; the ordering constraints below are hard.
   Serialize every WO pair sharing files: `docs/INVARIANTS.md` (WO-0121↔0127), `app/models.py`
   (WO-0114↔0126), `cockpit/**` (WO-0114↔0126), `app/events/**` (WO-0125↔0126). Every
   close-out appends `work/ledger.jsonl` — resolve append conflicts keep-both-lines. Lane 3
-  items run serially. Pin Lane 1 to your deepest effort setting.
+  items run serially.
+- **Effort allocation (explicit):** WO-0114 runs at your MAXIMUM reasoning effort — it is the
+  reason this session is local on your strongest model. If per-agent effort is configurable,
+  pin Lane 1's agent(s) to the highest setting. **If it is not configurable, do NOT run Lane 2
+  concurrently with Lane 1: complete WO-0114 alone, at full depth, then fan out** — sequencing
+  is the effort control when knobs are absent. Elevated (not maximum) effort: WO-0127 (ADR
+  semantic drafting) and WO-0124 (gated cancel surface). Lean is fine for the mechanical WOs:
+  WO-0119/0120/0128/0129 porting and bookkeeping.
 - **Extra High/single context:** run lanes as strict order — Lane 1 → Lane 2 (as listed) →
   Lane 3 → Lane 4 → Lane 5.
 - **Review-gated WOs end the session at `status: REVIEW`** (in `work/active/`, packet staged),
@@ -76,10 +83,12 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 
 ## The work, by lane
 
-**Lane 1 — SERIAL FIRST: WO-0114 (PD-1 release valve).** The batch centerpiece and the reason
-this session is local on your strongest model. Human-gated event-truth surface; full contract
-in the WO. On completion, STAGE `work/review/REV-0035/request.md` for the Claude seat (your
-own validation never counts as the independent review).
+**Lane 1 — SERIAL FIRST: WO-0114 (PD-1 release valve). MAXIMUM EFFORT (see Execution model —
+if effort isn't per-agent configurable, run this lane alone to completion before any Lane 2
+work starts).** The batch centerpiece and the reason this session is local on your strongest
+model. Human-gated event-truth surface; full contract in the WO. On completion, STAGE
+`work/review/REV-0035/request.md` for the Claude seat (your own validation never counts as
+the independent review).
 
 **Lane 2 — parallel from t=0 (disjoint from Lane 1):**
 - WO-0127 — ADR-009 amendment + spec reconciliation + REV-0034 staging (docs/spec/queue only;
