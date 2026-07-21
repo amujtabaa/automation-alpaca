@@ -1,13 +1,13 @@
 ---
 type: Work Order
 title: "PD-1: needs_review reconciliation release valve (human-gated, event-truth)"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0114
 wave: post-R2 beta-prep
 model_tier: strong
 risk: high
 disposition: []
-owner: Ameen (ratifies) / planning seat drafted 2026-07-20 / implementer TBD
+owner: Ameen (ratifies) / planning seat drafted 2026-07-20 / Codex implementer seat
 created: 2026-07-20
 gated_surface: event-log truth, recovery FSM vocabulary, operator control API
 ---
