@@ -13,10 +13,10 @@ SELL-exposure projection (§3a), and the ordinary risk decision. It then consume
 operator approval, appends `SIGNAL_APPROVED`, and creates and links exactly one ordinary intent.
 Failure leaves no approval event, no intent, and the signal in RECEIVED.
 
-The facade composition at `app/facade/store_backed.py:786-789`
+The facade composition at `app/facade/store_backed.py::StoreBackedCommandFacade.approve_candidate`
 (`await gate.approve(...)` followed by `await create_order_for_candidate(...)`) is explicitly
 forbidden for signal conversion; its await boundary is the original F-002 crash shape. The atomic
-command composes the existing candidate planner at `app/store/core.py:887` and the corresponding
+command composes the existing candidate planner at `app/store/core.py::plan_create_order_for_candidate` and the corresponding
 SELL planners inside the store transaction.
 
 Per D-SIG-8, conversion mints the **same domain objects the cockpit/manual flow mints**:
@@ -72,7 +72,7 @@ not preempt or weaken a manual backstop.
 ### 3a. Shared committed SELL-exposure projection
 
 There is **no signal-specific sum over raw rows**. One pure shared function beside
-`project_envelope_obligation` (`app/store/core.py:1401`) is the sole quantity source:
+`project_envelope_obligation` (`app/store/core.py::project_envelope_obligation`) is the sole quantity source:
 
 ```python
 project_committed_sell_exposure(

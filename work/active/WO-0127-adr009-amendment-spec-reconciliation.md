@@ -102,7 +102,8 @@ forbidden_paths:
 
 - [x] Every plan §3 "Master action" executed; zero app/test files touched (`git diff --stat`).
 - [x] ADR-009 still `Proposed` with a dated "remediation drafted, REV-0034 pending" banner.
-- [x] REV-0034 request staged and self-contained against semantic head `7fa9985`; per the batch's
+- [x] REV-0034 request staged and self-contained against integrated semantic range
+      `c90a7ae..8a76a29`; per the batch's
       explicit review-gated exception, this WO stays in `work/active/` and receives no ledger row
       or completion disposition until independent review and human text approval.
 - [x] Fable DONE with evidence (anchor-verification greps pasted for every refreshed citation).
@@ -267,7 +268,7 @@ fable_done:
       evidence: "ADR-013 requires HMAC/secret authentication, private keyed forwarding, a never-public trading API, D-HOST-1 acceptance, and independent review."
     - item: "Implementation drafts remain gated and independent review is staged"
       status: MET
-      evidence: "WO-0102..0104 and PKL remain draft; REV-0034 targets d32dfb1..7fa9985 for the Claude seat."
+      evidence: "WO-0102..0104 and PKL remain draft; REV-0034 targets the resolvable integrated range c90a7ae..8a76a29 for the Claude seat."
     - item: "Scope and fresh evidence gates pass"
       status: MET
       evidence: "Scope, PKL, disposition, ledger, install, 17 phase-3 checker tests, anchor greps, residue checks, and git diff checks pass."

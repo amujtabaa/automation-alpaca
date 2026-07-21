@@ -82,7 +82,7 @@ Every router `create_app` (`app/main.py`) mounts, classified. With `signal_seat_
 | `routes_watchlist` (all) | operator-only |
 | `routes_candidates` (all) | operator-only |
 | `routes_trading` reads/commands (orders, positions, recoveries, flatten, emergency reduce) | operator-only |
-| `GET /api/envelopes`, `POST /api/envelopes/approve`, `POST /api/envelopes/{envelope_id}/cancel` (`routes_trading.py:289,299,318`) | operator-only |
+| `GET /api/envelopes`, `POST /api/envelopes/approve`, `POST /api/envelopes/{envelope_id}/cancel` (`app/api/routes_trading.py::list_envelopes`, `app/api/routes_trading.py::approve_envelope`, `app/api/routes_trading.py::cancel_envelope`) | operator-only |
 | `routes_controls` (all — kill switch, session control) | operator-only |
 | `routes_review` (all) | operator-only |
 | `routes_marketdata` (all) | operator-only |

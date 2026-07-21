@@ -23,7 +23,7 @@ Authoritative kickoff: `work/queue/CODEX-KICKOFF-REMEDIATION.md`
 | WO-0130 | CLOSED | activation `b108339`; RED `5ea1bca`; finish `3cdf8fb` | VERIFIED: boundary RED, main-path mutation RED, restored focused/static gates, and full 4105-node pytest exit 0; `RESULT_SUMMARY_KEPT`. |
 | WO-0132 | CLOSED | activation `ab7996f`; RED/mutation pin `2ae9d44`; finish `3361d8d` | VERIFIED: exact authority mutation killed 4/4 direct nodes; both missing-occurrence consumers fail closed; focused 133 and full 4113-node gates exit 0; REV-0035 re-verification remains out-of-session. |
 | WO-0131 | REVIEW | activation `cf50f11`; RED `d0665b3`; semantic `b99d8c0`; review staging `d759913` | VERIFIED implementation: 15 legal + 75 illegal edges, direct/read-model mutation killed, replay/parity/conformance 282 and full 4205-node gates exit 0; REV-0038 staged for Claude; no disposition/ledger/close-out. |
-| WO-0133 | ACTIVE | activation: this commit | GATE VERIFIED: all cited symbols exist; re-baseline line-only anchors and reconcile `d32dfb1..7fa9985` to `c90a7ae..8a76a29`; ADR-009 remains Proposed. |
+| WO-0133 | CLOSED | activation `0c81a18`; finish: this commit | VERIFIED: C-1 anchors converted to stable symbols, C-2 reconciled to `c90a7ae..8a76a29`, REV-0034 disposition RESOLVED, and full 4205-node pytest/static gates exit 0; ADR-009 remains Proposed; `RESULT_SUMMARY_KEPT`. |
 
 ## Running NEEDS-INPUT list
 
