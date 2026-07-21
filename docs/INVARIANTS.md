@@ -774,8 +774,11 @@ blind-resubmit failure mode ADR-002 exists to prevent.
 *Amended 2026-07-21 (D-0124 / WO-0124, pending REV-0037):* the budget substrate counts only
 canonical `action=reprice` facts. An expiry/stale-data disposition cancel is wind-down, not
 reprice churn, and spends zero budget. Each such venue attempt instead commits its own exact-child,
-non-minting `envelope_action` before broker IO. The durable attempt sequence is the sole retry
-counter across restart; direct authority ends at three. A third failed attempt atomically creates
+non-minting `envelope_action` before broker IO. Its canonical `target_snapshot` names every
+then-current validated order/broker pair, and every target is prepared before the first venue call;
+a partial sibling-write failure therefore leaves durable exact restart scope without authorizing a
+later child. The durable attempt sequence is the sole retry counter across restart; direct
+authority ends at three. A third failed attempt atomically creates
 one exact-pair terminal `needs_review` recovery latch with reason
 `envelope_disposition_cancel_exhausted`. That latch is operator-visible and excluded from the
 automatic submit-recovery loop; no fourth direct cancel occurs. *Pinned by:*
@@ -1020,14 +1023,22 @@ ADR-001 predicate remains composed by this same projection. See INV-096.
 `envelope_action` facts are non-minting projection inputs. They must follow one canonical
 submit/reprice child, retain the same envelope/order/session/intent/material scope, name that
 Order's exact concrete broker identity, and form one contiguous, single-disposition attempt
-sequence. They never replace the canonical child edge or create another obligation. Missing,
-foreign, reordered, mixed-disposition, or otherwise malformed cancel provenance marks the exact
-child invalid and therefore fails cancellation closed; symbol equality alone still grants no
-authority. At the three-attempt bound, the exact child's terminal `needs_review` latch composes
+sequence. Their canonical `target_snapshot` contains only exact order/broker pairs whose canonical
+actions belong to the same envelope and precede the cancel fact. Non-terminal replay intersects
+the current projection with that durable snapshot: a pre-existing legacy sibling remains
+recoverable after a partial append/restart, while a child created later never inherits historical
+cancel authority. `EXPIRED + CANCEL_AND_RETURN` may discover a then-current valid child after a
+crash before its first event, but must persist that exact identity before IO. Cancel facts never
+replace the canonical child edge or create another obligation. Missing, foreign, future-expanded,
+reordered, mixed-disposition, or otherwise malformed cancel provenance marks the exact child
+invalid and therefore fails cancellation closed; symbol equality alone still grants no authority.
+At the three-attempt bound, the exact child's terminal `needs_review` latch composes
 through this same projection's widened retention while the normal tracked-order reconciliation
 remains the only automatic observer of broker/fill truth. *Pinned by:*
 `tests/test_wo0124_disposition_cancel_convergence.py` (dual-store positive, non-minting, exact
-broker-identity negative, restart, and recovery-authority controls).
+broker-identity negative, restart, historical-child exclusion, and recovery-authority controls)
+plus `tests/test_wo0036_r2_hostile_closure.py` (legacy multi-child pre-IO and partial-snapshot
+restart controls).
 
 **INV-091 — Durable submit progress cannot disappear or be blindly repeated.**
 *WO-0113 operator-ratified branch behavior — pending REV-0033 independent

@@ -351,10 +351,18 @@ autonomous decision is replayable from the log.
 **Amended 2026-07-21 (D-0124 / WO-0124, pending REV-0037):** each expiry or stale-data
 disposition venue-cancel attempt is first appended as a non-minting `ENGINE`/`LOCAL`
 `envelope_action` with the exact `envelope_id`, order and broker identities, session/intent
-correlation, disposition, and a contiguous positive attempt number. The shared obligation
-projection accepts the event only after the canonical submit/reprice child and validates that
-exact identity; malformed or foreign facts fail the child closed. The event records cancel
-intent/attempt, never broker-terminal or fill truth. Restart derives retry state from these facts.
+correlation, disposition, a contiguous positive attempt number, and a canonical `target_snapshot`
+of every then-current projection-valid order/broker pair that may receive venue IO. Every target's
+fact is prepared before the first venue call. If a sibling append faults partway through, the first
+fact still durably names the complete pre-IO snapshot, so restart can finish that exact set without
+selecting a later child. The shared obligation projection accepts the event only after the
+canonical submit/reprice child and validates every snapshot pair against the same envelope,
+concrete broker identity, and a canonical action sequenced before the cancel fact; malformed,
+foreign, or future-expanded snapshots fail the child closed. A non-terminal replay is restricted
+to this snapshot. `EXPIRED + CANCEL_AND_RETURN` independently discovers the then-current valid
+child only to repair a crash before its first cancel fact, then persists that exact identity before
+IO. The event records cancel intent/attempt, never broker-terminal or fill truth. Restart derives
+retry state from these facts.
 Direct cancel authority is bounded at three persisted attempts. A third failed attempt creates
 one exact-pair, terminal `needs_review` recovery-ledger latch with reason
 `envelope_disposition_cancel_exhausted`; it is visible to the human and retains the owner but is
