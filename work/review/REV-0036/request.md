@@ -6,7 +6,7 @@ status: STAGED
 reviewer_seat: Claude
 targets: [ADR-002, ADR-003, ADR-006, ADR-007, ADR-008, INVARIANTS-annotations, pyproject-comment]
 human_gated_surfaces: [accepted-ADR-text, invariant-record-text, event-log-truth-records]
-commit_range: eab9e57..64886f9
+commit_range: b03c0e9..07f7159
 created: 2026-07-21
 ---
 
@@ -31,7 +31,7 @@ vocabulary, invariant meaning, threshold, import contract, or mypy configuration
 WO-0121 stays `REVIEW` until this packet returns and the human dispositions it. No beta milestone
 may rely on these corrected labels merely because the implementer checks pass.
 
-Review the frozen semantic range `eab9e57..64886f9` on this staging branch. If integration
+Review the frozen integrated semantic range `b03c0e9..07f7159` on this staging branch. If integration
 rewrites those commits, the dispatching integrator must replace the frontmatter range with the
 exact equivalent integrated range before the review runs.
 

@@ -48,17 +48,17 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0114 | QUEUED | — | Lane 1; maximum effort; review-gated to REV-0035. |
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
 | WO-0118 | QUEUED | — | Lane 3; after WO-0114 lands. |
-| WO-0119 | CLOSED | 698ff91, added8d, this commit | Bootstrapper, Python 3.12 devcontainer, and environment pointer verified in a disposable OS-temp checkout; fresh + rerun smoke gates green; dispositioned and moved to `work/completed/`. |
+| WO-0119 | CLOSED | `966b1a7` activation; `5f715a8` implementation; `7387199` close-out | Bootstrapper, Python 3.12 devcontainer, and environment pointer verified in a disposable OS-temp checkout; fresh + rerun smoke gates green; dispositioned and moved to `work/completed/`. |
 | WO-0120 | CLOSED | `ecfc2f3` activation; `3a27ec8` checker; `325433f` close-out | VERIFIED: records reconciled, folder-aware checker red/green, 160 passed + 1 expected xfail, five AI-OS checks green. |
-| WO-0121 | REVIEW | eab9e57; 64886f9; HEAD (review-stage) | Annotation-only safety-record reconciliation frozen; REV-0036 staged against semantic head `64886f9`; no ledger/disposition until independent review + human disposition. |
+| WO-0121 | REVIEW | `b03c0e9` activation; `07f7159` annotations; `36538e8` review-stage | Annotation-only safety-record reconciliation frozen; REV-0036 staged against integrated semantic head `07f7159`; no ledger/disposition until independent review + human disposition. |
 | WO-0122 | CLOSED | `114e5c3` activation; `9370311` implementation; `4bfeb55` close-out | VERIFIED: additive 61-case CI oracle, dual-store mutation-proven INV-051/052 pins, stale fixture repaired; 3867 passed, 11 skipped, 1 expected xfail. |
-| WO-0123 | CLOSED | 5fb6a25, 795a429, e7b29cb, this commit | Read-only, flag-off-by-default recorder with separate bounded tape store, replay documentation, failure-capable zero-order-flow spy, and green full suite; dispositioned and moved to `work/completed/`. |
+| WO-0123 | CLOSED | `635127b` activation; `710ed09` recorder; `6c072d8` boundary pin; `e4d805b` close-out | Read-only, flag-off-by-default recorder with separate bounded tape store, replay documentation, failure-capable zero-order-flow spy, and green full suite; dispositioned and moved to `work/completed/`. |
 | WO-0124 | QUEUED | — | Lane 3; elevated effort; review-gated to REV-0037. |
-| WO-0125 | CLOSED | `9dec106` activation; `81a5e64` implementation; close-out: this commit | VERIFIED: explicit full envelope vocabulary fold, dual-store read-model parity, two mutation-red pins; 3881 passed, 11 skipped, 1 expected xfail. |
+| WO-0125 | CLOSED | `9dec106` activation; `81a5e64` implementation; `2b39830` close-out | VERIFIED: explicit full envelope vocabulary fold, dual-store read-model parity, two mutation-red pins; 3881 passed, 11 skipped, 1 expected xfail. |
 | WO-0126 | QUEUED | — | Lane 2; after WO-0114 and WO-0125 shared-file work lands. |
 | WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
-| WO-0128 | QUEUED | — | Lane 4; separate red staging branch after WO-0127 text stabilizes. |
-| WO-0129 | CLOSED | close-out commit | Complete configuration sweep after WO-0123; primer and P-1/P-2 protocol landed. |
+| WO-0128 | CLOSED / RED-STAGING | `e16866f` activation; `24d3746` close-out on `codex/signal-tests-staging` | VERIFIED intentional RED: 51 tests collected; 10 planned R4/R5 ImportErrors only; never merge until mapped slices turn green. |
+| WO-0129 | CLOSED | `094f0df` activation; `6aa678f` close-out | Complete 40/40 configuration sweep after WO-0123; primer and P-1/P-2 protocol landed. |
 
 ## Running NEEDS-INPUT list
 
