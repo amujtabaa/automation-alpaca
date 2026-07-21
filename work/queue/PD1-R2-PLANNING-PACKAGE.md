@@ -30,6 +30,12 @@
 
 ## 2. Operator decision register
 
+> **Ratification record — 2026-07-20, Ameen, via structured decision prompt (planning
+> session):** D-PD1-1 = default (hybrid-honest); D-PD1-2 = default (`operator_reconciled`);
+> D-PD1-3 = **API + cockpit control** (non-default; cockpit invokes only the typed FastAPI
+> command); D-PD1-4 = default (separate ingestion + valve commands, both in WO-0114).
+> **D-BF-5..7 remain PENDING.** WO-0114 is updated to match (banner + allowed paths).
+
 Numbering follows the handoff (1-7). Format: **Default (recommended)** / Alternatives /
 Consequences. Answers materially change semantics, data handling, or authorization — nothing
 below is answerable from current code alone.

@@ -14,11 +14,12 @@ gated_surface: event-log truth, recovery FSM vocabulary, operator control API
 
 # Work Order: PD-1 — the needs_review reconciliation release valve
 
-> **DO NOT ACTIVATE.** Blocked until Ameen ratifies decisions **D-PD1-1..D-PD1-4** in
-> `work/queue/PD1-R2-PLANNING-PACKAGE.md`. This WO touches human-gated surfaces
-> (event-log truth + operator control): it requires its own independent cross-model review
-> packet (`REV-00xx`, next free id) with `ACCEPT`/`ACCEPT-WITH-CHANGES` before any beta
-> reliance. Planning authorization ≠ implementation authorization (CLAUDE.md safety core).
+> **RATIFIED 2026-07-20 (Ameen, structured decision prompt; recorded in
+> `PD1-R2-PLANNING-PACKAGE.md` §2):** D-PD1-1 = hybrid-honest; D-PD1-2 = `operator_reconciled`;
+> D-PD1-3 = **API + cockpit control** (the cockpit button invokes ONLY the typed FastAPI
+> command); D-PD1-4 = separate ingestion + valve commands, both in this WO. Implementation may
+> activate per normal WO flow. Still required before any beta reliance: its own independent
+> cross-model review packet (`REV-00xx`, next free id) with `ACCEPT`/`ACCEPT-WITH-CHANGES`.
 > Independent of WO-0115 (backfill verification); neither expands the other.
 
 ## Goal
@@ -52,6 +53,7 @@ allowed_paths:
   - app/store/sqlite.py
   - app/facade/**            # typed command + DTO + error mapping
   - app/api/routes_trading.py
+  - cockpit/**               # D-PD1-3: release control; typed API client ONLY — no store/broker/alpaca imports
   - app/monitoring.py        # operator visibility only (no recovery-loop behavior change)
   - tests/**                 # new test module + updated pins ONLY where behavior legitimately changed
   - docs/adr/ADR-012-*.md    # new ADR (ADR-011 is reserved for the W4 entry-envelope seed)
@@ -66,7 +68,6 @@ allowed_paths:
 ```yaml
 forbidden_paths:
   - app/adapters/**          # ZERO broker calls: the valve never submits/cancels/replaces at the venue
-  - cockpit/**               # wave 1 is API-only unless D-PD1-3 ratifies a cockpit control
   - app/reconciliation.py    # the reconciler must keep refusing to auto-resolve (reconciliation.py:19-32)
   - .github/workflows/**
 ```
@@ -114,9 +115,11 @@ forbidden_paths:
       retention, malformed-ambiguity, venue obligation, TIMEOUT_QUARANTINE, or the ADR-001
       overfill latch (which is permanent and is NOT touched by this WO) each independently keep
       the quarantine.
-- [ ] **Boundary:** Streamlit (if ever) and operators reach this only through the typed facade
+- [ ] **Boundary:** operators and the cockpit reach this only through the typed facade
       command + `POST` route (`Depends(get_command_facade)`, `X-Actor`, `FacadeError` → 404/409/422
-      mapping). No route→store, no route→broker, no UI-owned state.
+      mapping). The D-PD1-3 cockpit control calls the typed API client only — no route→store,
+      no route→broker, no UI-owned state; an AppTest pin proves the button renders
+      server-classified outcomes and imports no store/broker module.
 - [ ] **Docs ship with the change:** new ADR-012 (valve semantics + decisions as ratified),
       ADR-008 amendment iff vocabulary added, INV-096, `pkl/safety/invariants-rationale.md`,
       and the hardening gates (`tests/test_review_hardening_gates.py` enum-total/producer-consumer)

@@ -71,10 +71,10 @@ verdict `VERIFIED` or `BLOCKED`/`NEEDS-INPUT`.
 
 ## My decision block (I will edit this at launch; unanswered = lane stays blocked)
 
-- D-PD1-1 (provenance): [ ] default (hybrid-honest) / [ ] alt A / [ ] alt B / [ ] pending
-- D-PD1-2 (status name): [ ] default `operator_reconciled` / [ ] other: ____ / [ ] pending
-- D-PD1-3 (surface): [ ] default API-only / [ ] API+cockpit / [ ] pending
-- D-PD1-4 (fills): [ ] default separate-commands, same WO / [ ] own WO / [ ] atomic / [ ] pending
+- D-PD1-1 (provenance): [x] default (hybrid-honest) — RATIFIED 2026-07-20
+- D-PD1-2 (status name): [x] default `operator_reconciled` — RATIFIED 2026-07-20
+- D-PD1-3 (surface): [x] API+cockpit (cockpit = typed API only) — RATIFIED 2026-07-20
+- D-PD1-4 (fills): [x] default separate-commands, same WO — RATIFIED 2026-07-20
 - D-BF-5 (artifact): path/handling: ____ / [ ] pending (no artifact yet)
 - D-BF-6 (fixtures): [ ] default yes-gated / [ ] report-only / [ ] pending
 - D-BF-7 (anomalies): [ ] default report-only / [ ] pending
