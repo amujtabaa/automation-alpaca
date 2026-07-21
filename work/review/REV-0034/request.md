@@ -6,7 +6,7 @@ status: STAGED
 reviewer_seat: Claude
 targets: [ADR-009, signal-seat-spec, ADR-013-draft, WO-0102..0104-rescope]
 human_gated_surfaces: [ADR-text, order-submission-design, auth-transport-design, event-log-design, schema-design]
-commit_range: d32dfb1..7fa9985
+commit_range: c90a7ae..8a76a29
 created: 2026-07-20
 ---
 
@@ -29,7 +29,7 @@ ADR-009 remains **Proposed**. This packet does not ask you to implement or accep
 review your result and approve/disposition the final text separately. WO-0102..0104 remain gated
 drafts; the fresh `signal_records` DDL approval is deliberately deferred to R4.
 
-Review the frozen semantic range `d32dfb1..7fa9985` on this staging branch. If integration
+Review the frozen integrated semantic range `c90a7ae..8a76a29` on this staging branch. If integration
 rewrites those commits (for example by cherry-pick), the dispatching integrator must replace the
 frontmatter range with the exact equivalent integrated range before the review runs. The archive
 source

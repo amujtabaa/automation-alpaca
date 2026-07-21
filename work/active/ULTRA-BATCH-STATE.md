@@ -49,14 +49,14 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
 | WO-0118 | QUEUED | — | Lane 3; after WO-0114 lands. |
 | WO-0119 | QUEUED | — | Lane 2; mechanical bootstrap. |
-| WO-0120 | CLOSED | `e653a24` activation; `ad7c9fd` checker; close-out: this commit | VERIFIED: records reconciled, folder-aware checker red/green, 160 passed + 1 expected xfail, five AI-OS checks green. |
+| WO-0120 | CLOSED | `ecfc2f3` activation; `3a27ec8` checker; `325433f` close-out | VERIFIED: records reconciled, folder-aware checker red/green, 160 passed + 1 expected xfail, five AI-OS checks green. |
 | WO-0121 | QUEUED | — | Lane 2; serialize after WO-0127 on `docs/INVARIANTS.md`; review-gated to REV-0036. |
-| WO-0122 | CLOSED | `4eb89a6` activation; `fb6a5c7` implementation; close-out: this commit | VERIFIED: additive 61-case CI oracle, dual-store mutation-proven INV-051/052 pins, stale fixture repaired; 3867 passed, 11 skipped, 1 expected xfail. |
+| WO-0122 | CLOSED | `114e5c3` activation; `9370311` implementation; `4bfeb55` close-out | VERIFIED: additive 61-case CI oracle, dual-store mutation-proven INV-051/052 pins, stale fixture repaired; 3867 passed, 11 skipped, 1 expected xfail. |
 | WO-0123 | QUEUED | — | Lane 2; tape recorder. |
 | WO-0124 | QUEUED | — | Lane 3; elevated effort; review-gated to REV-0037. |
 | WO-0125 | QUEUED | — | Lane 2; serialize before WO-0126 on `app/events/**`. |
 | WO-0126 | QUEUED | — | Lane 2; after WO-0114 and WO-0125 shared-file work lands. |
-| WO-0127 | REVIEW | d32dfb1; 1409eae; 7fa9985; HEAD (review-stage) | ADR-009/ADR-013 remain Proposed; REV-0034 staged against semantic head `7fa9985`; no ledger/disposition until independent review + human text approval. |
+| WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
 | WO-0128 | QUEUED | — | Lane 4; separate red staging branch after WO-0127 text stabilizes. |
 | WO-0129 | QUEUED | — | Lane 2; final env sweep after WO-0123. |
 
