@@ -1277,6 +1277,50 @@ async def _escalate_disposition_cancel_exhausted(
     )
 
 
+async def _refresh_disposition_cancel_target_state(
+    store: StateStore,
+    *,
+    envelope_id: str,
+    order_id: str,
+) -> str:
+    """Classify a post-cancel transition race from fresh durable truth."""
+
+    loaded = await _validated_envelope_lineage(store, envelope_id)
+    if loaded is None:
+        return "invalid"
+    _, projection, orders = loaded
+    if (
+        projection.missing_envelope_ids
+        or projection.missing_order_ids
+        or projection.invalid_order_ids
+    ):
+        return "invalid"
+    current = orders.get(order_id)
+    if current is None:
+        return "invalid"
+    open_ids = {
+        *(order.id for order in projection.venue_orders),
+        *projection.unresolved_order_ids,
+        *projection.recovery_order_ids,
+        *projection.uncertain_claim_order_ids,
+        *projection.needs_review_child_order_ids,
+    }
+    if current.status is OrderStatus.CANCEL_PENDING:
+        return "converging"
+    if current.status in (
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.REJECTED,
+    ):
+        return "terminal" if order_id not in open_ids else "invalid"
+    if order_id in open_ids and current.status in (
+        OrderStatus.SUBMITTED,
+        OrderStatus.PARTIALLY_FILLED,
+    ):
+        return "open"
+    return "invalid"
+
+
 async def _cancel_envelope_working_order(
     store: StateStore,
     adapter: BrokerAdapter,
@@ -1391,13 +1435,29 @@ async def _cancel_envelope_working_order(
     # Resolve every safely-local child first. A submission claim can win this
     # compare-and-swap and return a broker-backed row; that raced identity must
     # join the same exact pre-IO snapshot as every incumbent venue child.
+    refresh_after_created_race = False
     for order_id, order in list(targets.items()):
         if order.status is OrderStatus.CREATED:
-            targets[order_id] = await store.transition_order(
+            resolved = await store.transition_order(
                 order.id,
                 OrderStatus.CANCELED,
                 expected_from=OrderStatus.CREATED,
             )
+            targets[order_id] = resolved
+            if resolved.status is not OrderStatus.CANCELED:
+                refresh_after_created_race = True
+
+    if refresh_after_created_race:
+        # The CREATED projection lost its CAS. Re-read the complete durable
+        # lineage before deciding whether the winner is venue-live, uncertain,
+        # or broker-terminal; the stale pre-CAS projection grants no authority.
+        return await _cancel_envelope_working_order(
+            store,
+            adapter,
+            reloaded,
+            disposition=disposition,
+            target_order_ids=target_order_ids,
+        )
 
     venue_call_orders = [
         order
@@ -1512,9 +1572,29 @@ async def _cancel_envelope_working_order(
                 attempt, effective_disposition = prepared
                 try:
                     await adapter.cancel_order(order.broker_order_id)
-                    await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
-                except (BrokerError, *_TRANSITION_ERRORS):
+                except BrokerError:
                     if attempt == _DISPOSITION_CANCEL_RETRY_LIMIT:
+                        await _escalate_disposition_cancel_exhausted(
+                            store,
+                            envelope=reloaded,
+                            order=order,
+                            disposition=effective_disposition,
+                        )
+                    raise
+                try:
+                    await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
+                except _TRANSITION_ERRORS:
+                    refreshed_state = await _refresh_disposition_cancel_target_state(
+                        store,
+                        envelope_id=reloaded.id,
+                        order_id=order.id,
+                    )
+                    if refreshed_state in ("terminal", "converging"):
+                        continue
+                    if (
+                        refreshed_state == "open"
+                        and attempt == _DISPOSITION_CANCEL_RETRY_LIMIT
+                    ):
                         await _escalate_disposition_cancel_exhausted(
                             store,
                             envelope=reloaded,
@@ -1720,9 +1800,6 @@ async def _run_one_envelope(
         if loaded is None:
             return
         _, projection, _ = loaded
-        cancel_order_ids = {
-            event.order_id for event in cancel_events if event.order_id is not None
-        }
         cancel_unresolved_ids = {
             *projection.unresolved_order_ids,
             *projection.recovery_order_ids,
@@ -1734,8 +1811,15 @@ async def _run_one_envelope(
             or projection.missing_envelope_ids
             or projection.missing_order_ids
             or projection.invalid_order_ids
-            or bool(cancel_order_ids & cancel_unresolved_ids)
         ):
+            return
+        cancel_target_ids: set[str] = set()
+        for event in cancel_events:
+            cancel_snapshot = _cancel_target_snapshot_from_event(event)
+            if cancel_snapshot is None:
+                return
+            cancel_target_ids.update(order_id for order_id, _ in cancel_snapshot)
+        if cancel_target_ids & cancel_unresolved_ids:
             return
 
     # A staged-but-unexecuted action (transient release / crash between
