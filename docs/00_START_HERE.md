@@ -39,6 +39,15 @@ A browser-operated, paper-first automated trading system using:
 
 ## How to Use This Project
 
+### Environment setup
+
+For a fresh clone, run `python harness/bootstrap.py`. It creates or refreshes the ignored
+`.venv` with Python 3.12, installs the dependency set pinned by `constraints.txt`, and runs
+`ruff check .`, `mypy app/`, and `pytest -q --collect-only`. The supplied devcontainer runs the
+same command after creation. The bootstrap does not read credentials, state files, or databases;
+with the default `BROKER_ADAPTER=auto`, the application remains on its mock adapter until an
+operator deliberately configures a paper adapter.
+
 Use this Claude Project to refine architecture, draft Codex/Claude Code prompts,
 review implementation output, identify contradictions, and preserve context
 across chats. Use Codex or Claude Code to create/modify repo files, run tests,

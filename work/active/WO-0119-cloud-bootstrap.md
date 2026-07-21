@@ -16,6 +16,31 @@ gated_surface: none (no app code, no credentials, no data; CI workflow untouched
 
 ## Goal
 
+[FABLE • FULL • verification: DIRECT • task: WO-0119 cloud bootstrap]
+
+```yaml
+fable_gate:
+  goal: "Provide one cross-platform command that creates a Python 3.12 venv, mirrors CI installation, and fails loudly on the three required smoke gates."
+  assumptions:
+    - "A Python 3.12 interpreter is available to the devcontainer and target host."
+    - "The target can access the package index or an already-populated package cache for the initial install."
+    - "The CI install lines in .github/workflows/ci.yml remain the authoritative dependency sequence."
+  approach: "Add a host-agnostic Python bootstrapper, call it from a minimal Python 3.12 devcontainer, document the no-credentials/mock-default boundary, then prove fresh-run and rerun behavior in an OS-temp disposable checkout."
+  out_of_scope:
+    - "Application, test, CI, broker, credential, database, or data-file changes."
+    - "Any live or paper venue interaction."
+  done_when:
+    - "Bootstrapper creates or reuses .venv, installs requirements under constraints, and runs ruff, mypy, and pytest collection."
+    - "Fresh disposable checkout and rerun both finish with green smoke output and leave tracked files unchanged."
+    - "Devcontainer and documentation satisfy the work-order constraints."
+  blast_radius: "development-environment setup only"
+```
+
+TDD exception declaration: `tests/**` is forbidden by this work order. The red-first proof is
+therefore an external invocation that fails because the required bootstrap command does not yet
+exist; behavior is subsequently verified directly in a disposable checkout rather than by adding
+an in-repo test file outside the allowed paths.
+
 A fresh clone — Codespace, Codex Cloud, Claude Code web, or a new laptop — reaches "gates
 runnable" (venv built, deps installed, smoke check green) with zero manual setup, so the
 operator's home↔away workflow and future cloud agent sessions start warm instead of bare.
