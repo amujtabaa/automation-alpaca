@@ -56,7 +56,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0124 | QUEUED | — | Lane 3; elevated effort; review-gated to REV-0037. |
 | WO-0125 | QUEUED | — | Lane 2; serialize before WO-0126 on `app/events/**`. |
 | WO-0126 | QUEUED | — | Lane 2; after WO-0114 and WO-0125 shared-file work lands. |
-| WO-0127 | ACTIVE | activation (this commit) | Lane 2 docs/spec lane active; elevated effort; `docs/INVARIANTS.md` serialized here; review-gated to REV-0034. |
+| WO-0127 | REVIEW | d32dfb1; 1409eae; 7fa9985; HEAD (review-stage) | ADR-009/ADR-013 remain Proposed; REV-0034 staged against semantic head `7fa9985`; no ledger/disposition until independent review + human text approval. |
 | WO-0128 | QUEUED | — | Lane 4; separate red staging branch after WO-0127 text stabilizes. |
 | WO-0129 | QUEUED | — | Lane 2; final env sweep after WO-0123. |
 
