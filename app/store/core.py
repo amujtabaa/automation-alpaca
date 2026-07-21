@@ -1331,11 +1331,11 @@ def direct_sell_order_may_execute(
         if event.event_type is ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED:
             occurrence = latest_occurrence if occurrence is None else occurrence
             if occurrence is None:
-                claim_open.clear()
-                venue_open.clear()
-            else:
-                claim_open.discard(occurrence)
-                venue_open.discard(occurrence)
+                # ADR-012 releases exactly one submission occurrence.  An
+                # occurrence-less fact cannot prove any interval safe to close.
+                return True
+            claim_open.discard(occurrence)
+            venue_open.discard(occurrence)
             continue
         if event.authority is not EventAuthority.BROKER_AUTHORITATIVE:
             continue
@@ -1956,13 +1956,14 @@ def project_envelope_obligation(
             # occurrence, and therefore closes only that claim/venue interval.
             if occurrence is None:
                 occurrence = latest_claim_occurrence[order_id]
-            record_claim_boundary(order_id, occurrence, event.sequence)
             if occurrence is None:
-                claim_open_by_order[order_id].clear()
-                venue_open_by_order[order_id].clear()
-            else:
-                claim_open_by_order[order_id].discard(occurrence)
-                venue_open_by_order[order_id].discard(occurrence)
+                if order_id not in invalid_seen:
+                    invalid_seen.add(order_id)
+                    invalid.append(order_id)
+                continue
+            record_claim_boundary(order_id, occurrence, event.sequence)
+            claim_open_by_order[order_id].discard(occurrence)
+            venue_open_by_order[order_id].discard(occurrence)
             continue
 
         if event.authority is not EventAuthority.BROKER_AUTHORITATIVE:
