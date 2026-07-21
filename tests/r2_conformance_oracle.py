@@ -1,12 +1,12 @@
 """Spec-derived R2 SellIntent<->ExecutionEnvelope conformance oracle.
 
-This file is intentionally named without the default ``test_`` prefix during
-Part A.  The consolidation branch is still the pre-R2 base, so the suite is run
-explicitly against each candidate implementation::
+This file intentionally retains its non-default historical name. CI runs it
+explicitly as a permanent post-merge gate, and it can still be invoked against
+candidate implementations with the same command::
 
     pytest -q tests/r2_conformance_oracle.py
 
-Part B must run this exact file as an acceptance gate.  The assertions are
+The assertions are
 phrased over observable ownership, exposure, event truth, and safety rails;
 they do not depend on either candidate's internal R2 helper functions.
 

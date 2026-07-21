@@ -266,8 +266,9 @@ async def test_lane_a_same_envelope_cannot_stage_second_sell(any_store):
 
 
 async def test_lane_a_claim_blocks_recovery_latched_after_stage(any_store):
-    # The race variant: the second SELL was staged BEFORE the recovery latched.
-    # The final claim choke must then fail closed.
+    # The race variant: O2 is staged BEFORE a recovery for distinct prior child
+    # O1 latches. The final claim must be blocked specifically by the sibling
+    # recovery consumer, not by O2's own current-order recovery guard.
     session = await _held(any_store)
     intent = await any_store.create_sell_intent(
         symbol="AAPL",
@@ -278,45 +279,44 @@ async def test_lane_a_claim_blocks_recovery_latched_after_stage(any_store):
     envelope = await any_store.approve_envelope_activation(
         _p03_draft(intent.id, session.id), actor="operator-a"
     )
-    o1 = await _needs_review_child(any_store, session, envelope)
-    # Resolve the recovery's block long enough to stage O2... no — construct the
-    # order first, then latch a SECOND needs_review on O1's sibling: simplest
-    # honest shape is stage O2 while NO recovery exists, then latch one on O1.
-    # (O1's recovery is created AFTER O2's stage below.)
-    del o1
-
-    session2 = await _held(any_store, symbol="MSFT")  # noqa: F841 - unrelated noise
-
-    # Fresh envelope/intent for a clean stage-then-latch ordering:
-    intent2 = await any_store.create_sell_intent(
-        symbol="MSFT",
-        reason=SellReason.PROTECTION_FLOOR,
-        target_quantity=100,
-        session_id=session2.id,
+    first = await any_store.stage_envelope_action(
+        envelope.id,
+        _p03_action(),
+        snapshot_fingerprint="wo0108-p03-first",
+        now=_NOW,
     )
-    draft2 = _p03_draft(intent2.id, session2.id)
-    draft2 = draft2.model_copy(update={"symbol": "MSFT"})
-    envelope2 = await any_store.approve_envelope_activation(draft2, actor="operator-a")
-    staged2 = await any_store.stage_envelope_action(
-        envelope2.id, _p03_action(), snapshot_fingerprint="wo0108-p03-3", now=_NOW
+    first_claim = await any_store.claim_order_for_submission(first.order.id)
+    assert first_claim.order is not None
+    await any_store.transition_order(
+        first.order.id,
+        OrderStatus.SUBMITTED,
+        broker_order_id=f"broker-terminal-{first.order.id}",
     )
-    # NOW the same-lineage exposure latches (a prior child of envelope2):
+    await any_store.transition_order(first.order.id, OrderStatus.CANCELED)
+    second = await any_store.stage_envelope_action(
+        envelope.id,
+        _p03_action(),
+        snapshot_fingerprint="wo0108-p03-second",
+        now=_NOW + timedelta(seconds=1),
+    )
+
     await any_store.create_submit_recovery(
-        local_order_id=staged2.order.id,
-        broker_order_id=f"broker-nr-{staged2.order.id}",
-        symbol="MSFT",
+        local_order_id=first.order.id,
+        broker_order_id=f"broker-nr-{first.order.id}",
+        symbol="AAPL",
         side=OrderSide.SELL,
         quantity=100,
         limit_price=9.9,
         failure_reason="wo0108 p03 race",
-        session_id=session2.id,
+        session_id=session.id,
         cleanup_status=RECOVERY_NEEDS_REVIEW,
     )
-    claim = await any_store.claim_order_for_submission(staged2.order.id)
+    claim = await any_store.claim_order_for_submission(second.order.id)
     assert claim.outcome == CLAIM_BLOCKED, (
         "the final claim must fail closed on a needs_review exposure latched "
         f"after staging; got {claim.outcome!r}"
     )
+    assert claim.reason is not None and first.order.id in claim.reason
 
 
 async def test_lane_b_direct_needs_review_blocks_fresh_owner_submission(any_store):

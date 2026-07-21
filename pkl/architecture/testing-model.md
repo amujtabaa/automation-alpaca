@@ -21,6 +21,12 @@ Deterministic, dual-path testing posture inherited from the migration and kept p
 
 - Engine logic: injected clock only — no bare `datetime.now()` / `time.time()`. No unseeded randomness in engine/reconciliation tests. Deterministic IDs and queues.
 - Dual-store parity: any change touching state, order, fill, position, reconciliation, kill switch, or the API boundary is tested on both in-memory and SQLite paths.
+- The 61-case R2 conformance oracle is an explicit CI step because its historical filename is
+  intentionally outside default pytest discovery; removal of that step is pinned by
+  `tests/test_ci_lock_liveness_pins.py`.
+- INV-051/052 lock liveness is executable: a bounded dual-store composite call fails on
+  reentrant public lock acquisition, and an AST pin rejects every `await` nested under either
+  store's `async with self._lock` block so broker/network latency cannot enter the lock.
 - Dual-store parity is a **decision-structure** obligation, not only an equal-output
   assertion. A distinguishing-state test compares each twin's selection universe
   (immutable scope, raw cache, and event projection), predicate and branch ordering,

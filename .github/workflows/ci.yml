@@ -90,6 +90,11 @@ jobs:
             echo "::error::Completed work order(s) parked in a live work/ folder — close-out must ship in the same commit as the work (CLAUDE.md close-out rule)."
             exit 1
           fi
+      - name: Run R2 conformance oracle
+        # The spec oracle intentionally keeps its historical filename, which
+        # default pytest discovery does not collect. Run it explicitly so all
+        # 61 observable R2 ownership/safety cases gate every push and PR.
+        run: python -m pytest -q tests/r2_conformance_oracle.py
       - name: Run tests with coverage
         # --cov-branch + the fail_under floor in pyproject [tool.coverage.report]
         # gate the build; a real coverage regression fails here.
