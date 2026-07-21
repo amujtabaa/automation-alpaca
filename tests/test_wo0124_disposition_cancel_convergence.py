@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import app.monitoring as monitoring
+import app.store.core as store_core
 from app.broker.adapter import BrokerError
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
@@ -171,6 +172,40 @@ def _manual_cancel_event(
                 }
             ],
         },
+    )
+
+
+@pytest.mark.parametrize(
+    "target_snapshot",
+    [
+        ["not-an-identity-pair"],
+        [
+            {"order_id": "order-b", "broker_order_id": "broker-b"},
+            {"order_id": "order-a", "broker_order_id": "broker-a"},
+        ],
+        [
+            {"order_id": "order-a", "broker_order_id": "broker-a"},
+            {"order_id": "order-a", "broker_order_id": "broker-b"},
+        ],
+        [
+            {"order_id": "order-a", "broker_order_id": "broker-a"},
+            {"order_id": "order-b", "broker_order_id": "broker-a"},
+        ],
+    ],
+    ids=[
+        "malformed-pair",
+        "noncanonical-order",
+        "duplicate-local-order",
+        "duplicate-broker-order",
+    ],
+)
+async def test_cancel_target_snapshot_rejects_noncanonical_identity_sets(
+    target_snapshot,
+):
+    """Exact venue authority requires one canonical one-to-one identity set."""
+
+    assert (
+        store_core._cancel_target_snapshot({"target_snapshot": target_snapshot}) is None
     )
 
 
