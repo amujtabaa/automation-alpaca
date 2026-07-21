@@ -12,10 +12,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import app.monitoring as monitoring
 from app.broker.mock import MockBrokerAdapter
 from app.config import Settings
 from app.facade.errors import ConflictError
 from app.facade.store_backed import StoreBackedCommandFacade
+from app.marketdata.fake import FakeMarketDataFeed
 from app.monitoring import _cancel_envelope_working_order
 from app.models import (
     EnvelopeExpiryDisposition,
@@ -38,6 +40,7 @@ from app.models import (
     SellReason,
     SessionType,
 )
+from app.sellside.types import ActionKind, PlannedAction
 
 pytestmark = pytest.mark.anyio
 
@@ -578,6 +581,134 @@ async def test_monitoring_created_cancel_race_revalidates_broker_terminal_fill(
         and event.payload.get("action") == "cancel"
         for event in await any_store.get_execution_events()
     )
+
+
+async def test_monitoring_created_cancel_race_holds_brokerless_claim_until_ack(
+    any_store, monkeypatch
+):
+    """A claim that wins the local-cancel CAS must not erase the disposition."""
+
+    store_clock = (
+        "app.store.memory.utcnow"
+        if hasattr(any_store, "_orders")
+        else "app.store.sqlite.utcnow"
+    )
+    monkeypatch.setattr(store_clock, lambda: RACE_NOW)
+    envelope, child = await _active_envelope_with_created_child(any_store)
+    first_adapter = MockBrokerAdapter()
+    real_transition = any_store.transition_order
+    raced = False
+
+    async def claim_without_ack_before_cancel(
+        order_id: str,
+        new_status: OrderStatus,
+        **kwargs,
+    ):
+        nonlocal raced
+        if not raced and order_id == child.id and new_status is OrderStatus.CANCELED:
+            raced = True
+            assert kwargs.get("expected_from") is OrderStatus.CREATED
+            claim = await any_store.claim_order_for_submission(child.id)
+            assert claim.order is not None
+            assert claim.order.status is OrderStatus.SUBMITTING
+            assert claim.order.broker_order_id is None
+        return await real_transition(order_id, new_status, **kwargs)
+
+    monkeypatch.setattr(any_store, "transition_order", claim_without_ack_before_cancel)
+    await _cancel_envelope_working_order(
+        any_store,
+        first_adapter,
+        envelope,
+        disposition="stale_data_cancel",
+    )
+    monkeypatch.setattr(any_store, "transition_order", real_transition)
+
+    assert raced
+    assert first_adapter.canceled == []
+    request_facts = [
+        event
+        for event in await any_store.get_execution_events()
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope.id
+        and event.order_id == child.id
+        and event.payload.get("action") == "cancel_request"
+    ]
+    assert len(request_facts) == 1
+    request = request_facts[0]
+    assert request.session_id == envelope.session_id
+    assert request.correlation_id == envelope.sell_intent_id
+    assert request.payload == {
+        "action": "cancel_request",
+        "actor": "engine",
+        "disposition": "stale_data_cancel",
+        "claim_occurrence": 0,
+    }
+    assert "attempt" not in request.payload
+    assert "broker_order_id" not in request.payload
+
+    broker_order_id = "paper-wo0113-cancel-race-after-return"
+    acknowledged = await real_transition(
+        child.id,
+        OrderStatus.SUBMITTED,
+        broker_order_id=broker_order_id,
+    )
+    assert acknowledged.status is OrderStatus.SUBMITTED
+
+    market_data = FakeMarketDataFeed()
+    market_data.set_snapshot(
+        child.symbol,
+        last_price=9.8,
+        bid=9.79,
+        ask=9.81,
+        volume=1_000,
+        updated_at=RACE_NOW + timedelta(minutes=1),
+    )
+    monkeypatch.setattr(
+        monitoring,
+        "decide",
+        lambda *_args, **_kwargs: PlannedAction(
+            kind=ActionKind.REPRICE,
+            limit_price=9.8,
+            quantity=child.quantity,
+            regime=None,
+            urgency=0.0,
+            working_stop=9.5,
+            atr=0.05,
+            tranche=False,
+            stop_triggered=False,
+        ),
+    )
+    second_adapter = MockBrokerAdapter()
+    await monitoring._run_one_envelope(
+        any_store,
+        second_adapter,
+        market_data,
+        envelope,
+        tapes=monitoring.EnvelopeTapeBuffer(),
+        snap_memo={},
+        now=RACE_NOW + timedelta(minutes=1),
+    )
+
+    assert second_adapter.replaced == []
+    assert not any(
+        event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.envelope_id == envelope.id
+        and event.payload.get("action") == "reprice"
+        for event in await any_store.get_execution_events()
+    )
+
+    await monitoring._converge_envelope_disposition_cancels(any_store, second_adapter)
+    assert second_adapter.canceled == [broker_order_id]
+    cancel_attempts = [
+        event
+        for event in await any_store.get_execution_events()
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.order_id == child.id
+        and event.payload.get("action") == "cancel"
+    ]
+    assert len(cancel_attempts) == 1
+    assert cancel_attempts[0].payload["attempt"] == 1
+    assert cancel_attempts[0].payload["broker_order_id"] == broker_order_id
 
 
 async def test_terminal_fill_excludes_source_cancels_sibling_and_reconciles_once(
