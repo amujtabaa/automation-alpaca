@@ -56,7 +56,7 @@ Soft bound = policy output clamped into range + logged. Fields:
 | Price | absolute floor price (worst tolerated print); submission below floor = breach, never clamp | hard |
 | Price | trail-distance range `[min,max]`; participation-rate cap; aggressiveness set | soft |
 | Rate | cooldown floor (min ms between reprices) | hard |
-| Rate | lifetime cancel/replace budget; exhaustion → `EXHAUSTED` (terminal-pending-human) | hard |
+| Rate | lifetime **reprice** budget; only `action=reprice` spends it; disposition wind-down cancels do not; exhaustion → `EXHAUSTED` (terminal-pending-human) | hard |
 | Rate | max outstanding child orders (v1: 1) | hard |
 | Time | TTL; allowed session phases (pre/regular/after) | hard |
 | Time | **expiry disposition** (approval-time mandatory choice): `CANCEL_AND_RETURN` \| `REST_AT_FLOOR` | hard |
@@ -65,6 +65,13 @@ Soft bound = policy output clamped into range + logged. Fields:
 **D-1 (decided):** there is **one envelope kind**. No protective-vs-profit-taking subtype; all
 dispositions are explicit approval-time fields. The approval surface carries the burden of
 purpose-appropriate defaults; the code has one path.
+
+**Amended 2026-07-21 (D-0124 / WO-0124, pending REV-0037):** the historically named
+`cancel_replace_budget` is a lifetime bound on autonomous **reprice aggression**, not on
+wind-down. Only a canonical `envelope_action` with `action=reprice` spends it. Expiry
+`CANCEL_AND_RETURN` and stale-data `CANCEL` attempts are durable and audited but spend zero
+budget; otherwise an exposure-reducing safety action could be disabled merely because prior
+reprices exhausted the mandate's churn allowance.
 
 ### 3. State machine
 
@@ -340,6 +347,19 @@ submit/reprice/resize/cancel, the clamped params, and the snapshot fingerprint),
 `envelope_breached`, `envelope_exhausted`, `envelope_expired` (+ chosen disposition),
 `envelope_frozen`/`envelope_resumed`, `envelope_superseded`, `envelope_plan_divergence`. Every
 autonomous decision is replayable from the log.
+
+**Amended 2026-07-21 (D-0124 / WO-0124, pending REV-0037):** each expiry or stale-data
+disposition venue-cancel attempt is first appended as a non-minting `ENGINE`/`LOCAL`
+`envelope_action` with the exact `envelope_id`, order and broker identities, session/intent
+correlation, disposition, and a contiguous positive attempt number. The shared obligation
+projection accepts the event only after the canonical submit/reprice child and validates that
+exact identity; malformed or foreign facts fail the child closed. The event records cancel
+intent/attempt, never broker-terminal or fill truth. Restart derives retry state from these facts.
+Direct cancel authority is bounded at three persisted attempts. A third failed attempt creates
+one exact-pair, terminal `needs_review` recovery-ledger latch with reason
+`envelope_disposition_cancel_exhausted`; it is visible to the human and retains the owner but is
+excluded from automatic submit-recovery work. The still-tracked order remains on ordinary
+broker-authoritative reconciliation, and no later direct disposition cancel is issued.
 
 **Amended 2026-07-11 (WO-0016 gate):** `envelope_activated`, `envelope_completed`, and
 `envelope_cancelled` added to the family. As drafted, the §3 machine's `APPROVED → ACTIVE`,

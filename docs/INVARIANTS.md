@@ -771,6 +771,17 @@ blind-resubmit failure mode ADR-002 exists to prevent.
 `test_transient_failure_releases_and_redrive_spends_no_new_budget`,
 `test_kill_between_staging_and_venue_call_blocks_at_the_claim`).
 
+*Amended 2026-07-21 (D-0124 / WO-0124, pending REV-0037):* the budget substrate counts only
+canonical `action=reprice` facts. An expiry/stale-data disposition cancel is wind-down, not
+reprice churn, and spends zero budget. Each such venue attempt instead commits its own exact-child,
+non-minting `envelope_action` before broker IO. The durable attempt sequence is the sole retry
+counter across restart; direct authority ends at three. A third failed attempt atomically creates
+one exact-pair terminal `needs_review` recovery latch with reason
+`envelope_disposition_cancel_exhausted`. That latch is operator-visible and excluded from the
+automatic submit-recovery loop; no fourth direct cancel occurs. *Pinned by:*
+`tests/test_wo0124_disposition_cancel_convergence.py` and the amended
+`tests/test_wo0126_replace_budget_single_source.py` corpus.
+
 **INV-084 — Reduce-only is enforced against the live fill-derived position at
 every pre-venue seam.** ``stage_envelope_action`` (both stores) reads the
 symbol's fill-derived position projection under the SAME lock/transaction as
@@ -1004,6 +1015,19 @@ above remain unchanged.
 record's widened-retention contribution and closes only its durable submission-
 claim occurrence. Every other strict, malformed, recovery, venue, timeout, and
 ADR-001 predicate remains composed by this same projection. See INV-096.
+
+*Amended 2026-07-21 (D-0124 / WO-0124, pending REV-0037):* disposition-cancel
+`envelope_action` facts are non-minting projection inputs. They must follow one canonical
+submit/reprice child, retain the same envelope/order/session/intent/material scope, name that
+Order's exact concrete broker identity, and form one contiguous, single-disposition attempt
+sequence. They never replace the canonical child edge or create another obligation. Missing,
+foreign, reordered, mixed-disposition, or otherwise malformed cancel provenance marks the exact
+child invalid and therefore fails cancellation closed; symbol equality alone still grants no
+authority. At the three-attempt bound, the exact child's terminal `needs_review` latch composes
+through this same projection's widened retention while the normal tracked-order reconciliation
+remains the only automatic observer of broker/fill truth. *Pinned by:*
+`tests/test_wo0124_disposition_cancel_convergence.py` (dual-store positive, non-minting, exact
+broker-identity negative, restart, and recovery-authority controls).
 
 **INV-091 — Durable submit progress cannot disappear or be blindly repeated.**
 *WO-0113 operator-ratified branch behavior — pending REV-0033 independent

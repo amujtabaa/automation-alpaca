@@ -387,6 +387,10 @@ async def test_direct_cancel_retries_are_bounded_then_escalate_once(any_store):
 
     class AlwaysFailCancelAdapter(MockBrokerAdapter):
         async def cancel_order(self, broker_order_id: str) -> None:
+            attempts = _cancel_events(
+                await any_store.get_execution_events(), envelope.id, order.id
+            )
+            assert len(attempts) == len(self.canceled) + 1
             self.canceled.append(broker_order_id)
             raise BrokerError("injected persistent disposition-cancel failure")
 
@@ -426,3 +430,36 @@ async def test_direct_cancel_retries_are_bounded_then_escalate_once(any_store):
     # submit-recovery loop, whose semantics are for otherwise-untracked submits.
     await monitoring._recover_unpersisted_submits(any_store, adapter)
     assert adapter.canceled == [order.broker_order_id] * 3
+
+
+async def test_failed_human_escalation_never_reopens_venue_authority(
+    any_store, monkeypatch
+):
+    envelope, order = await _submitted_child(any_store)
+    await any_store.transition_envelope(
+        envelope.id,
+        EnvelopeStatus.EXPIRED,
+        actor="engine",
+        reason="wo0124-expiry",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    class AlwaysFailCancelAdapter(MockBrokerAdapter):
+        async def cancel_order(self, broker_order_id: str) -> None:
+            self.canceled.append(broker_order_id)
+            raise BrokerError("injected persistent disposition-cancel failure")
+
+    async def fail_escalation(**_kwargs):
+        raise RuntimeError("injected recovery-ledger write failure")
+
+    monkeypatch.setattr(any_store, "create_submit_recovery", fail_escalation)
+    adapter = AlwaysFailCancelAdapter()
+    for _ in range(5):
+        await monitoring._converge_envelope_disposition_cancels(any_store, adapter)
+
+    assert adapter.canceled == [order.broker_order_id] * 3
+    attempts = _cancel_events(
+        await any_store.get_execution_events(), envelope.id, order.id
+    )
+    assert [event.payload["attempt"] for event in attempts] == [1, 2, 3]
+    assert await any_store.list_submit_recoveries() == []
