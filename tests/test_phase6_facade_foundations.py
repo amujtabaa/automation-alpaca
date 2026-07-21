@@ -108,6 +108,35 @@ def test_get_actor_resolves_header_or_default(header, expected):
     assert get_actor(x_actor=header) == expected
 
 
+def test_get_actor_binds_authenticated_principal_over_x_actor():
+    # Under signal_seat_enabled the operator middleware stamps an authenticated
+    # principal. That principal is authoritative; X-Actor is only a sub-label.
+    from types import SimpleNamespace
+
+    authed = SimpleNamespace(state=SimpleNamespace(authenticated_actor="operator"))
+    assert get_actor(request=authed, x_actor="totally-someone-else") == (
+        "operator:totally-someone-else"
+    )
+    assert get_actor(request=authed, x_actor=None) == "operator"
+    assert get_actor(request=authed, x_actor="   ") == "operator"
+
+    unauthed = SimpleNamespace(state=SimpleNamespace())
+    assert get_actor(request=unauthed, x_actor="desk-3") == "desk-3"
+    assert get_actor(request=unauthed, x_actor=None) == DEFAULT_ACTOR
+    assert get_actor(request=None, x_actor=None) == DEFAULT_ACTOR
+
+
+def test_get_actor_strips_control_chars_from_sublabel():
+    # No control character may reach a line-oriented audit sink.
+    from types import SimpleNamespace
+
+    authed = SimpleNamespace(state=SimpleNamespace(authenticated_actor="operator"))
+    assert get_actor(request=authed, x_actor="desk\n3\r\tX") == "operator:desk3X"
+    assert get_actor(request=authed, x_actor="\n\r\t") == "operator"
+    unauthed = SimpleNamespace(state=SimpleNamespace())
+    assert get_actor(request=unauthed, x_actor="a\nb") == "ab"
+
+
 # --------------------------------------------------------------------------- #
 # Facade constructors accept the Phase-6 injected collaborators (keyword-only,
 # optional — a store-only construction still works).

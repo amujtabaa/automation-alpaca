@@ -46,6 +46,11 @@ _SANCTIONED_ALPACA_REACHERS = _SANCTIONED_ALPACA_IMPORTERS | {
     "app.broker.factory",
     "app.marketdata.factory",
     "app.main",
+    # The backend-owned launch/composition root (ADR-009 A-1 clause 6): `python -m
+    # app` -> app.server.run() builds the app via app.main.create_app, so both reach
+    # alpaca transitively through the composition root exactly as app.main does.
+    "app.server",
+    "app.__main__",
 }
 
 # Concrete venue implementations the venue-agnostic engine must never reach
