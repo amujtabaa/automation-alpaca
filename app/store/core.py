@@ -4149,8 +4149,6 @@ def envelope_draft_reason(envelope: ExecutionEnvelope) -> Optional[str]:
         return f"a new envelope must be PENDING, got {envelope.status.value}"
     if envelope.remaining_quantity != envelope.qty_ceiling:
         return "a new envelope's remaining_quantity must equal qty_ceiling"
-    if envelope.replaces_used != 0:
-        return "a new envelope's replaces_used must be 0"
     if envelope.superseded_by_id is not None:
         return "a new envelope cannot already be superseded"
     # Codex PR#8 F2: a fresh draft must not pre-declare EITHER supersession link.

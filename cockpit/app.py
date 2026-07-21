@@ -796,6 +796,13 @@ def screen_envelopes() -> None:
         st.error(str(exc))
         return
 
+    if any("replaces_used" not in envelope for envelope in envelopes):
+        st.error(
+            "Backend envelope read model is missing derived replaces_used; "
+            "refusing to display a false zero."
+        )
+        return
+
     # Quarantine-grade prominence first (the WO-0015 visibility standard):
     # a FROZEN / BREACHED / EXHAUSTED mandate is an operator action item.
     attention = [
@@ -825,7 +832,7 @@ def screen_envelopes() -> None:
                         f"{e.get('trail_distance_min')}-{e.get('trail_distance_max')}"
                     ),
                     "replaces": (
-                        f"{e.get('replaces_used', 0)}/{e.get('cancel_replace_budget')}"
+                        f"{e['replaces_used']}/{e.get('cancel_replace_budget')}"
                     ),
                     "expires_at": e.get("expires_at"),
                     "on expiry": e.get("expiry_disposition"),

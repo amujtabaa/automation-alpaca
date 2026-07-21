@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from app.models import (
     Candidate,
     Event,
+    ExecutionEnvelope,
     Fill,
     Order,
     Position,
@@ -29,6 +30,18 @@ from app.models import (
     SessionRecord,
     SubmitRecoveryRecord,
 )
+
+
+class EnvelopeView(ExecutionEnvelope):
+    """Read-only envelope plus its event-derived replace-budget usage.
+
+    The persisted mandate intentionally has no ``replaces_used`` field. This
+    required read-model value is computed from the execution-event log by the
+    query facade and may exceed the approved budget if durable truth ever shows
+    an overrun; display never clamps or hides that fact.
+    """
+
+    replaces_used: int = Field(ge=0)
 
 
 class ExternalOrderView(BaseModel):

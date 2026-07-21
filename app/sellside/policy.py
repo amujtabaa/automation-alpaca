@@ -131,8 +131,28 @@ def _own_actions(
     )
 
 
-def _replaces_used(actions: Sequence[ExecutionEvent]) -> int:
-    return sum(1 for e in actions if e.payload.get("action") in _BUDGET_ACTIONS)
+def project_envelope_replaces_used(
+    history: Sequence[ExecutionEvent],
+) -> dict[str, int]:
+    """Project lifetime replace-budget usage from execution truth.
+
+    This is the single computation consumed by both policy enforcement and the
+    operator read model. It deliberately filters the complete event ingress:
+    only envelope-scoped ``ENVELOPE_ACTION`` facts with an incumbent
+    budget-consuming action count. ``refused_stale`` and unknown/future action
+    values therefore remain non-consuming by construction.
+    """
+
+    projected: dict[str, int] = {}
+    for event in history:
+        if (
+            event.event_type is not ExecutionEventType.ENVELOPE_ACTION
+            or event.envelope_id is None
+            or event.payload.get("action") not in _BUDGET_ACTIONS
+        ):
+            continue
+        projected[event.envelope_id] = projected.get(event.envelope_id, 0) + 1
+    return projected
 
 
 def _last_action_at(actions: Sequence[ExecutionEvent]) -> Optional[datetime]:
@@ -268,7 +288,7 @@ def validate_action(
                 detail=f"{elapsed.total_seconds() * 1000:.0f}ms since last action",
             )
     if action.kind is ActionKind.REPRICE:
-        used = _replaces_used(actions)
+        used = project_envelope_replaces_used(history).get(envelope.id, 0)
         if used >= envelope.cancel_replace_budget:
             return RailViolation(
                 rail="cancel_replace_budget",
@@ -505,7 +525,8 @@ def decide(
     if has_working_order:
         desired = PlannedAction(**{**desired.__dict__, "kind": ActionKind.REPRICE})
     if desired.kind is ActionKind.REPRICE and (
-        _replaces_used(actions) >= envelope.cancel_replace_budget
+        project_envelope_replaces_used(history).get(envelope.id, 0)
+        >= envelope.cancel_replace_budget
     ):
         return ExhaustedSignal(
             detail=(f"cancel/replace budget {envelope.cancel_replace_budget} spent")

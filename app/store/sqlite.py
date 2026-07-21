@@ -414,8 +414,9 @@ CREATE TABLE IF NOT EXISTS execution_events (
 -- Execution envelopes (ADR-010 / WO-0016): the pre-approved, immutable,
 -- bounded mandate for one sell intent. Bounds NEVER update in place —
 -- amendment is a new row via the atomic supersede operation. Only status,
--- remaining_quantity (deduped-fill decrements ONLY), replaces_used,
--- supersession linkage, and timestamps change after insert. The
+-- remaining_quantity (deduped-fill decrements ONLY), supersession linkage,
+-- and timestamps change after insert. The historical replaces_used column is
+-- an inert compatibility tombstone: application code neither reads nor writes it.
 -- single-ACTIVE-per-intent partial unique index is created in initialize()
 -- (after _migrate, matching the fills-index pattern).
 CREATE TABLE IF NOT EXISTS execution_envelopes (
@@ -1107,7 +1108,6 @@ class SqliteStateStore(StateStore):
             aggressiveness=json.loads(row["aggressiveness"]),
             cooldown_floor_ms=row["cooldown_floor_ms"],
             cancel_replace_budget=row["cancel_replace_budget"],
-            replaces_used=row["replaces_used"],
             max_outstanding_children=row["max_outstanding_children"],
             expires_at=row["expires_at"],
             allowed_session_phases=json.loads(row["allowed_session_phases"]),
@@ -1760,15 +1760,15 @@ class SqliteStateStore(StateStore):
                (id, sell_intent_id, symbol, side, reduce_only, qty_ceiling,
                 remaining_quantity, floor_price, trail_distance_min,
                 trail_distance_max, participation_rate_cap, aggressiveness,
-                cooldown_floor_ms, cancel_replace_budget, replaces_used,
-                max_outstanding_children, expires_at, allowed_session_phases,
+                cooldown_floor_ms, cancel_replace_budget, max_outstanding_children,
+                expires_at, allowed_session_phases,
                 expiry_disposition, stale_data_disposition, status,
                 supersedes_id, superseded_by_id, session_id, created_at,
                 updated_at, approved_at, activated_at, frozen_at, completed_at,
                 expired_at, exhausted_at, breached_at, superseded_at,
                 cancelled_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                       ?,?,?,?,?,?,?,?,?)""",
+                       ?,?,?,?,?,?,?,?)""",
             (
                 env.id,
                 env.sell_intent_id,
@@ -1784,7 +1784,6 @@ class SqliteStateStore(StateStore):
                 json.dumps(list(env.aggressiveness)),
                 env.cooldown_floor_ms,
                 env.cancel_replace_budget,
-                env.replaces_used,
                 env.max_outstanding_children,
                 _dt(env.expires_at),
                 json.dumps([p.value for p in env.allowed_session_phases]),
@@ -1815,7 +1814,7 @@ class SqliteStateStore(StateStore):
 
         cur.execute(
             """UPDATE execution_envelopes SET status=?, remaining_quantity=?,
-               replaces_used=?, supersedes_id=?, superseded_by_id=?,
+               supersedes_id=?, superseded_by_id=?,
                updated_at=?, approved_at=?, activated_at=?, frozen_at=?,
                completed_at=?, expired_at=?, exhausted_at=?, breached_at=?,
                superseded_at=?, cancelled_at=?
@@ -1823,7 +1822,6 @@ class SqliteStateStore(StateStore):
             (
                 env.status.value,
                 env.remaining_quantity,
-                env.replaces_used,
                 env.supersedes_id,
                 env.superseded_by_id,
                 _dt(env.updated_at),

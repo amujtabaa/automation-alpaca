@@ -679,8 +679,8 @@ class ExecutionEnvelope(_Entity):
     no store exposes a bound-update path; amendment is a new envelope via
     supersession. Only ``status``, ``remaining_quantity``, supersession
     linkage, and timestamps change after creation, each through a dedicated
-    audited store operation. (``replaces_used`` is NOT a stored-and-written
-    field — see its declaration below.)
+    audited store operation. Replace-budget usage is projected from the
+    ``ENVELOPE_ACTION`` log and is not domain state.
 
     ``remaining_quantity`` is a read-model counter: it starts at
     ``qty_ceiling`` and is decremented ONLY by deduped fill events
@@ -711,14 +711,6 @@ class ExecutionEnvelope(_Entity):
     # --- Rate (hard rails) -------------------------------------------------- #
     cooldown_floor_ms: int  # min ms between reprices
     cancel_replace_budget: int  # lifetime budget; exhaustion → EXHAUSTED
-    # Budget consumption is DERIVED from the ENVELOPE_ACTION event log (the count
-    # of reprice/cancel actions — the SAME source the policy's cancel_replace
-    # budget rail enforces on, `app.sellside.policy._replaces_used`). No writer
-    # maintains this stored field today, so it stays 0; making the read-model /
-    # cockpit project it from the event log (via one shared counter used by both
-    # enforcement and display, to avoid a display/enforcement drift) is tracked
-    # in WO-0029 (Codex PR#8 F5). Do NOT add a second stored writer here.
-    replaces_used: int = 0
     max_outstanding_children: int = 1  # v1: 1
 
     # --- Time / data (hard rails) -------------------------------------------#
@@ -806,11 +798,6 @@ class ExecutionEnvelope(_Entity):
             raise ValueError(
                 "cancel_replace_budget must be positive, got "
                 f"{self.cancel_replace_budget}"
-            )
-        if not 0 <= self.replaces_used <= self.cancel_replace_budget:
-            raise ValueError(
-                f"replaces_used {self.replaces_used} outside "
-                f"[0, {self.cancel_replace_budget}]"
             )
         if self.max_outstanding_children < 1:
             raise ValueError(

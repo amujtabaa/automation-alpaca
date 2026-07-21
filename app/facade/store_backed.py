@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional
 from datetime import date as date_cls
 
 from app.facade.dtos import (
+    EnvelopeView,
     ExternalOrderView,
     FlattenResponse,
     MarketSnapshotView,
@@ -86,6 +87,7 @@ from app.policy import (
 from app.broker.adapter import BrokerError
 from app.monitoring import cancel_open_buys
 from app.protection import ProtectionConfig, floor_breach_reason, floor_price
+from app.sellside import policy as sellside_policy
 from app.store.base import (
     FLATTEN_BUYS_OPEN,
     FLATTEN_FLAT,
@@ -651,12 +653,23 @@ class StoreBackedQueryFacade:
             )
         return views
 
-    async def list_envelopes(self) -> list[ExecutionEnvelope]:
+    async def list_envelopes(self) -> list[EnvelopeView]:
         """``GET /api/envelopes`` (WO-0020): read-only envelope visibility.
-        The envelope API is now declared on ``StateStore`` (WO-0030), so this
-        is a direct typed passthrough."""
+        Durable envelope rows carry mandate state only; replace-budget usage is
+        projected from the same execution-event counter policy enforcement
+        consumes (WO-0126)."""
 
-        return await self._store.list_envelopes()
+        envelopes = await self._store.list_envelopes()
+        usage = sellside_policy.project_envelope_replaces_used(
+            await self._store.get_execution_events()
+        )
+        return [
+            EnvelopeView(
+                **envelope.model_dump(),
+                replaces_used=usage.get(envelope.id, 0),
+            )
+            for envelope in envelopes
+        ]
 
 
 class StoreBackedCommandFacade:

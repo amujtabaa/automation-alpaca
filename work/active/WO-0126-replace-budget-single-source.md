@@ -147,3 +147,41 @@ The accepted import-linter contract explicitly forbids `app.sellside` from impor
 `app.events`. The single projector therefore remains in the pure sell-side policy module and is
 consumed downward by no stateful dependency and upward by the facade read model. This preserves
 the accepted architecture while still providing one computation to both enforcement and display.
+
+## Fable fixes
+
+```yaml
+fable_fixes:
+  - symptom: "Policy and both HTTP store cases had no shared projector and displayed the obsolete stored zero."
+    root_cause: "Enforcement counted ENVELOPE_ACTION history inside policy while the API serialized an unwritten domain/SQLite field; the two truths had no shared computation."
+    evidence: "Red-first run: 13 failed, 72 passed; memory and SQLite each returned replaces_used=0 after one reprice plus one cancel."
+    fix: "Expose one pure lifetime projector in the policy layer, consume it at both enforcement sites and in the facade EnvelopeView, and delete domain/core/SQLite application dependencies on the old field."
+    regression_test: "tests/test_wo0126_replace_budget_single_source.py plus incumbent policy/model/cockpit tests"
+    red_green_verified: true
+    attempt: 1
+  - symptom: "A hostile legacy SQLite replaces_used=999 prevented second-open hydration under the old bounded domain validator."
+    root_cause: "SQLite hydration still promoted the compatibility column into application state even though no legitimate writer maintained it."
+    evidence: "Red restart test failed during initialize with replaces_used 999 outside [0, 5]."
+    fix: "Stop hydrating, inserting, or updating the tombstone; remove the draft guard and domain field while retaining the physical column unchanged for compatibility."
+    regression_test: "tests/test_wo0126_replace_budget_single_source.py::test_sqlite_restart_ignores_hostile_legacy_column"
+    red_green_verified: true
+    attempt: 1
+```
+
+## Implementation evidence
+
+```yaml
+evidence:
+  - command: "focused WO-0126 + model/policy/cockpit/API/replay tests after implementation"
+    result: PASS
+    decisive_output: "103 passed in 2.98s; post-mutation rerun 103 passed in 2.94s"
+  - command: "mutate incumbent action corpus to count refused_stale"
+    result: PASS
+    decisive_output: "3 tests failed: differential and both HTTP stores reported 3 instead of 2; mutation reverted."
+  - command: "mutate facade to bypass the shared projector"
+    result: PASS
+    decisive_output: "2 store cases failed: projected 0 instead of sentinel 17; mutation reverted."
+  - command: "ruff check .; mypy app/; lint-imports"
+    result: PASS
+    decisive_output: "Ruff passed; mypy found no issues in 70 files; 6 import contracts kept with 0 broken."
+```

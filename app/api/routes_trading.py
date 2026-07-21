@@ -16,6 +16,7 @@ from app.api.deps import get_actor, get_command_facade, get_query_facade
 from app.api.schemas import ReconciliationStatusResponse
 from app.facade.commands import ExecutionCommandFacade
 from app.facade.dtos import (
+    EnvelopeView,
     FlattenResponse,
     OperatorOrdersResponse,
     ProtectionStatusResponse,
@@ -342,10 +343,10 @@ async def list_events(
     )
 
 
-@router.get("/envelopes", response_model=list[ExecutionEnvelope])
+@router.get("/envelopes", response_model=list[EnvelopeView])
 async def list_envelopes(
     query_facade: ExecutionQueryFacade = Depends(get_query_facade),
-) -> list[ExecutionEnvelope]:
+) -> list[EnvelopeView]:
     """Read-only envelope visibility (ADR-010 / WO-0020): status, bounds,
     remaining qty, budget, dispositions — everything the cockpit renders
     derives from this payload; the UI holds no envelope state."""

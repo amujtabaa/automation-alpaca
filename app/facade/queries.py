@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from app.models import ExecutionEnvelope
+from app.facade.dtos import EnvelopeView
 
 __all__ = ["ExecutionQueryFacade"]
 
@@ -26,7 +26,7 @@ class ExecutionQueryFacade(Protocol):
         wired into ``GET /api/positions``."""
         ...
 
-    async def list_envelopes(self) -> list[ExecutionEnvelope]:
+    async def list_envelopes(self) -> list[EnvelopeView]:
         """Every execution envelope — read-only visibility for the cockpit
         Envelope Monitor (ADR-010 / WO-0020): status, bounds, remaining qty,
         budget, dispositions. ``GET /api/envelopes``.
