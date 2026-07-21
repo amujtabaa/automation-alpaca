@@ -1574,12 +1574,22 @@ async def _cancel_envelope_working_order(
                     await adapter.cancel_order(order.broker_order_id)
                 except BrokerError:
                     if attempt == _DISPOSITION_CANCEL_RETRY_LIMIT:
-                        await _escalate_disposition_cancel_exhausted(
-                            store,
-                            envelope=reloaded,
-                            order=order,
-                            disposition=effective_disposition,
+                        refreshed_state = (
+                            await _refresh_disposition_cancel_target_state(
+                                store,
+                                envelope_id=reloaded.id,
+                                order_id=order.id,
+                            )
                         )
+                        if refreshed_state in ("terminal", "converging"):
+                            continue
+                        if refreshed_state == "open":
+                            await _escalate_disposition_cancel_exhausted(
+                                store,
+                                envelope=reloaded,
+                                order=order,
+                                disposition=effective_disposition,
+                            )
                     raise
                 try:
                     await store.transition_order(order.id, OrderStatus.CANCEL_PENDING)
