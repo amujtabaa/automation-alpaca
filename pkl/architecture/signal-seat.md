@@ -1,10 +1,10 @@
 ---
 type: Module Knowledge
 title: Signal Seat — external signal producers (contract summary)
-status: draft
-authority: medium
+status: active
+authority: high
 owner: Ameen
-last_verified: 2026-07-20
+last_verified: 2026-07-21
 tags: [signal-seat, architecture, boundaries, safety]
 source_refs: [docs/adr/ADR-009-signal-seat-boundary.md, docs/spec/signal-seat/00-overview.md]
 supersedes: []
@@ -15,16 +15,16 @@ superseded_by: null
 
 ## Gate state
 
-ADR-009 is **Proposed**. WO-0127 drafted the master-side remediation and staged REV-0034, but the
-draft has no implementation authority. WO-0102..0104 remain gated until the Claude-seat review
-returns ACCEPT / ACCEPT-WITH-CHANGES and Ameen accepts the final ADR text. Fresh
-`signal_records` DDL approval is deferred to R4.
+ADR-009 is **Accepted**. REV-0034 returned ACCEPT-WITH-CHANGES, WO-0133 resolved C-1/C-2, and
+Ameen approved the final text at `385cc7d` on 2026-07-21. G1 is clear. WO-0102..0104 remain draft
+and retain their own activation, sequencing, implementation-review, and joint-enablement gates.
+Fresh `signal_records` DDL approval remains deferred to R4.
 
 Archive REV-0024/0025 records at
 `origin/archive/claude-wo-0001-install-checks-2x5ys8` are provenance only; their ids and
 governance state are not ported.
 
-## Rules / facts proposed by ADR-009
+## Rules / facts accepted by ADR-009
 
 - **Topology:** v1 producer is localhost-only. Allowed transport vocabulary is `loopback`
   (default) and `tailnet_serve`; the backend remains loopback-bound. Tailscale Funnel and every
@@ -67,8 +67,9 @@ second executor.
 
 ## Applies to
 
-Future WO-0102/0103/0104/R4-R7 implementation after G1 clears; any future producer integration;
-any L1/L2 proposal (which requires a superseding ADR and review).
+Future WO-0102/0103/0104/R4-R7 implementation now that G1 is clear, subject to each work order's
+remaining gates; any future producer integration; any L1/L2 proposal (which requires a superseding
+ADR and review).
 
 ## Related pages
 
@@ -82,3 +83,5 @@ any L1/L2 proposal (which requires a superseding ADR and review).
 - 2026-07-14: initial draft distillation.
 - 2026-07-20: reconciled to current INV-087/090/091 semantics and D-SIG-1..9; retained
   draft/medium authority pending REV-0034 and human acceptance.
+- 2026-07-21: promoted to active/high authority after REV-0034 ACCEPT-WITH-CHANGES, WO-0133
+  remediation, RESOLVED disposition, and Ameen's explicit final-text approval at `385cc7d`.

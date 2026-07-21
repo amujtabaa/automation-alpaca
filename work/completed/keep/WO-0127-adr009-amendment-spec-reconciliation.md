@@ -1,15 +1,15 @@
 ---
 type: Work Order
 title: "Signal Seat R1: ADR-009 remediation amendment + spec reconciliation + REV-0034 staging"
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0127
 wave: signal-seat revival (O-3 path a; ladder step R1)
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 owner: Ameen (approves amendment text) / implementer: Codex ultra session
 created: 2026-07-20
-gated_surface: ADR change (human-gated); ADR-009 status stays Proposed until REV-0034 ACCEPT
+gated_surface: ADR change (human-gated); Ameen approved final text at 385cc7d on 2026-07-21
 ---
 
 # Work Order: land the remediated ADR-009 + spec suite on master, stage the re-review
@@ -101,8 +101,9 @@ forbidden_paths:
 ## Acceptance criteria
 
 - [x] Every plan §3 "Master action" executed; zero app/test files touched (`git diff --stat`).
-- [x] ADR-009 still `Proposed` with a dated "remediation drafted, REV-0034 pending" banner.
-- [x] REV-0034 request staged and self-contained against integrated semantic range
+- [x] Review-stage criterion: ADR-009 remained `Proposed` with a dated remediation banner until
+      independent review, disposition, and human approval completed.
+- [x] Review-stage exception honored: REV-0034 was staged against integrated semantic range
       `c90a7ae..8a76a29`; per the batch's
       explicit review-gated exception, this WO stays in `work/active/` and receives no ledger row
       or completion disposition until independent review and human text approval.
@@ -118,10 +119,11 @@ cross-reference) edit, that is out of scope. Rollback: revert; docs-only.
 
 Expected: `[RESULT_SUMMARY_KEPT]` (ADR amendment recorded in-place; ADR_CREATED not applicable).
 
-Not applied at this gate. REV-0034 and Ameen's text approval remain outstanding, so disposition,
-ledger append, and move to `work/completed/` are deliberately deferred.
+Review-stage record: disposition was deliberately deferred while REV-0034 and Ameen's text
+approval were outstanding. Applied at final close-out after both gates cleared:
+`[RESULT_SUMMARY_KEPT, PKL_UPDATED]`.
 
-## Evidence and Fable handoff
+## Review-stage evidence and Fable handoff (historical)
 
 ### Red-first contract probe
 
@@ -283,6 +285,168 @@ fable_done:
   status: VERIFIED
 ```
 
-Evidence status: **VERIFIED** for the staged docs/spec/queue contract and current anchors.
-**UNVERIFIED** by design: independent correctness verdict, ADR acceptance, and future runtime
-implementation. **NEEDS-INPUT:** none for WO-0127. **P0:** none observed.
+Review-stage evidence status: **VERIFIED** for the staged docs/spec/queue contract and then-current
+anchors. At that checkpoint, independent correctness, ADR acceptance, and future runtime
+implementation were intentionally **UNVERIFIED**. Final gate evidence follows below.
+
+## Human acceptance and final close-out — 2026-07-21
+
+### Authoritative human approval
+
+Ameen supplied this explicit approval against the exact pushed branch head:
+
+> I approve the final ADR-009 text on codex/ultra-beta-batch at 385cc7d and authorize its status
+> change from Proposed to Accepted, plus WO-0127 close-out.
+
+The approval authorizes the governance status transition and this close-out only. It does not
+approve the deferred `signal_records` DDL, Proposed ADR-013/public ingress, live trading, L1/L2
+autonomy, ADR-012, a merge, or any application/test implementation.
+
+### Final GATE / red-first evidence
+
+Before the acceptance edit, the failure-capable governance probe returned:
+
+```text
+ADR_STATUS_NOT_ACCEPTED
+ADR_ACTION_4_UNCHECKED
+ADR_ACTION_5_UNCHECKED
+ADR_ACTION_6_UNCHECKED
+SPEC_GATE_STALE
+PKL_NOT_ACTIVE_HIGH
+WO_0102_G1_STALE
+WO_0103_G1_STALE
+WO_0104_G1_STALE
+WO_0127_STILL_ACTIVE
+WO_0127_COMPLETED_COPY_MISSING
+WO_0127_LEDGER_ROWS=0
+HUMAN_APPROVAL_NOT_DURABLY_RECORDED
+ULTRA_SCOREBOARD_STALE
+REMEDIATION_GATE_STALE
+ACCEPTANCE_PROBE=RED (15 unmet conditions)
+```
+
+After applying the exact approved governance transition, the identical probe returned:
+
+```text
+ACCEPTANCE_PROBE=GREEN
+```
+
+### Fresh close-out verification
+
+```text
+SCOPE CHECK PASSED
+PKL CHECK PASSED
+LEDGER CHECK PASSED
+DISPOSITION CHECK PASSED
+INSTALL CHECK PASSED
+VERSION CHECK PASSED: v0.9.1
+FABLE CHECK PASSED
+ruff: All checks passed!
+mypy: Success: no issues found in 70 source files
+Import Linter: 6 kept, 0 broken
+phase-3 governance tests: 17 passed
+pytest collection: 4205 tests collected
+HYGIENE REPORT: 0 violation(s), 3 advisory finding(s)
+```
+
+Pytest collection and governance-test scratch used distinct `%TEMP%` basetemps with the cache
+provider disabled. The three hygiene advisories are pre-existing long active WOs
+(WO-0114/0121/0124), not WO-0127 violations.
+
+```text
+PASS zero app/tests/cockpit/.github changes
+PASS reviewer-owned REV-0034 result unchanged
+PASS REV-0022 predecessor disposition RESOLVED through REV-0034
+PASS ADR-013 byte-unchanged and remains Proposed
+PASS WO-0102 remains draft
+PASS WO-0103 remains draft
+PASS WO-0104 remains draft
+PASS no stale live ADR-009/REV-0034 gate claims
+PASS WO-0127 ledger_rows=1
+```
+
+The application and test tree is byte-identical to approved head `385cc7d`, whose full Python
+3.12 suite had already exited 0 with 4193 passed, 11 skipped, and 1 expected xfail. This
+governance-only close-out did not rerun that unchanged runtime suite; it freshly re-collected all
+4205 nodes and reran static, architecture, governance, scope, and negative-control gates.
+
+```yaml
+fable_gate:
+  task: "Accept ADR-009 and atomically close WO-0127"
+  mode: FULL
+  approval: "Ameen explicitly approved final ADR-009 text at codex/ultra-beta-batch@385cc7d and authorized Proposed-to-Accepted plus WO-0127 close-out."
+  preconditions:
+    - "REV-0034 verdict is ACCEPT-WITH-CHANGES and its disposition is RESOLVED."
+    - "WO-0133 applied and failure-checked required corrections C-1/C-2."
+    - "The worktree began clean at the exact approved and pushed head 385cc7d."
+  out_of_scope:
+    - "Any application, test, cockpit, schema/DDL, event-vocabulary, broker, credential, or live-trading change"
+    - "ADR-013/public ingress, L1/L2 autonomy, ADR-012 acceptance, merge, or PR"
+    - "Activation or implementation of draft WO-0102..0104"
+  done_when: "ADR-009 and its derived authority claims are accepted and consistent, downstream gates remain intact, and WO-0127 status/disposition/ledger/move ship atomically."
+  red_evidence: "The pre-edit governance probe reported 15 unmet acceptance and close-out conditions while independently pinning ADR-013 and the R4 schema gate."
+```
+
+```yaml
+fable_fix:
+  symptom: "After human approval arrived, ADR/spec/PKL and downstream queue banners still described ADR-009 and REV-0034 as Proposed or pending, and WO-0127 remained parked at REVIEW."
+  root_cause: "Those claims were intentionally frozen at the review stage until both independent disposition and explicit human text approval existed; neither an implementer nor reviewer could self-clear the architecture gate."
+  fix: "Recorded Ameen's exact approval, flipped only the approved governance authority, synchronized derived gate claims, preserved every downstream gate, and closed WO-0127 atomically."
+  regression_test: "The identical 15-condition governance probe changed RED to GREEN; stale-claim and forbidden-surface negative controls passed."
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+fable_fix:
+  symptom: "The first post-edit git diff --check reported trailing whitespace in the human-acceptance addendum."
+  root_cause: "A Markdown hard-break used two trailing spaces on the author line."
+  fix: "Replaced the hard-break with an explicit blank line, without changing the approval text or meaning."
+  regression_test: "git diff --check returned clean before staging."
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+fable_fix:
+  symptom: "The final governance-chain audit found REV-0022 still marked REMEDIATION_OPEN after its required fresh re-review path had been satisfied."
+  root_cause: "The first acceptance synchronization updated the forward REV-0034/ADR/WO records but omitted the predecessor BLOCK disposition that originally opened G1."
+  fix: "Preserved REV-0022's BLOCK history, changed its current disposition to RESOLVED, and appended an explicit forward link through REV-0034, WO-0133, and Ameen's approval."
+  regression_test: "The final chain probe requires REV-0022 RESOLVED with resolved_by REV-0034 and rejects any live REMEDIATION_OPEN marker."
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+fable_done:
+  task: "ADR-009 human acceptance and WO-0127 close-out"
+  done_when_results:
+    - item: "Independent and human gates both clear"
+      status: MET
+      evidence: "REV-0022 is forward-resolved through REV-0034 ACCEPT-WITH-CHANGES/RESOLVED plus Ameen's exact approval at 385cc7d."
+    - item: "ADR and derived authority state are current"
+      status: MET
+      evidence: "ADR-009 is Accepted; Signal Seat spec and PKL are synchronized; G1 stale-claim sweep is empty."
+    - item: "Unapproved boundaries remain closed"
+      status: MET
+      evidence: "ADR-013 is byte-unchanged Proposed, R4 DDL remains deferred, WO-0102..0104 remain draft, and zero runtime/test paths changed."
+    - item: "WO lifecycle closes atomically"
+      status: MET
+      evidence: "WO-0127 is CLOSED in completed/keep with RESULT_SUMMARY_KEPT + PKL_UPDATED, exactly one ledger row, refreshed scoreboards, and no active copy."
+    - item: "Fresh gates pass"
+      status: MET
+      evidence: "Acceptance RED-to-GREEN probe, scope, PKL, ledger, disposition, Fable, install, version, static/import, 17 governance tests, 4205-node collection, and hygiene all exit clean."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  deferred:
+    - "Fresh signal_records DDL/schema approval at R4"
+    - "Runtime implementation and independent reviews for the Signal Seat implementation WOs"
+    - "ADR-013/public ingress, L1/L2 autonomy, ADR-012 acceptance, REV-0038, merge, and PR"
+  status: VERIFIED
+```
+
+Final evidence status: **VERIFIED** for ADR-009 acceptance authority, derived-doc consistency,
+review/disposition preconditions, scope, lifecycle, and governance/static gates. **UNVERIFIED** by
+design: future schema and runtime implementation. **NEEDS-INPUT:** none for this close-out.
+**P0:** none observed.

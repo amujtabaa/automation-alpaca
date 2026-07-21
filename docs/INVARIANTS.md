@@ -1265,9 +1265,9 @@ structural.
 `tests/test_wo0114_cockpit_release.py`, and the enum/producer/consumer matrix in
 `tests/test_review_hardening_gates.py` (both stores plus SQLite reopen).
 
-### Proposed Signal Seat cross-reference (non-normative; WO-0127)
+### Accepted Signal Seat cross-reference (non-normative; WO-0127)
 
-Proposed ADR-009 and `docs/spec/signal-seat/06-invariants.md` map Signal Seat conversion to the
+Accepted ADR-009 and `docs/spec/signal-seat/06-invariants.md` map Signal Seat conversion to the
 current registry without adding, deleting, relaxing, or amending an invariant. In particular,
 D-SIG-7 preserves INV-087 single-mandate plus the existing sell-intent single-flight rule;
 the proposed `project_committed_sell_exposure` consumes INV-090 obligation truth and INV-091

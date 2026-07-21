@@ -1,21 +1,21 @@
 # ADR-009: Signal Seat — External Agentic Signal Producers as Bounded Intent Sources
 
-**Status:** **Proposed — remediation drafted 2026-07-20; REV-0034 pending.** The 2026-07-12
-acceptance was rescinded after REV-0022 returned BLOCK. Archive remediation rounds hardened
-A-1..A-4, but no archive packet carried an ACCEPT / ACCEPT-WITH-CHANGES verdict on the final
-master-side specification. WO-0127 reconciles that text to today's tree and ratified D-SIG-1..9
-without accepting it. G1 clears only after the Claude-seat REV-0034 review returns
-ACCEPT / ACCEPT-WITH-CHANGES and Ameen approves the final text.
-**Date:** 2026-07-11 (drafted); 2026-07-20 (master-side remediation draft)
+**Status:** **Accepted — 2026-07-21.** Ameen explicitly approved the final text at
+`codex/ultra-beta-batch@385cc7d` after Claude-seat REV-0034 returned
+ACCEPT-WITH-CHANGES and its C-1/C-2 remediation was dispositioned RESOLVED. The earlier
+2026-07-12 acceptance had been rescinded after REV-0022 returned BLOCK; this acceptance is the
+fresh master-side decision after amendments A-1..A-4, D-SIG-1..9 reconciliation, and re-review.
+**Date:** 2026-07-11 (drafted); 2026-07-20 (master-side remediation draft); 2026-07-21 (accepted)
 **Deciders:** Ameen (human gate). Implementer: Codex. Reviewer: Claude seat via REV-0034.
 **Number:** ADR-009.
-**Implementation gate:** WO-0102..0104 remain gated drafts. The fresh `signal_records` schema
-approval is deliberately deferred until R4 presents current DDL.
+**Implementation gate:** G1 is cleared. WO-0102..0104 remain draft queue items and may be
+activated only in their required sequence; the fresh `signal_records` schema approval remains
+deferred until R4 presents current DDL.
 
 > **Archive provenance only.** The amendment basis is
 > `origin/archive/claude-wo-0001-install-checks-2x5ys8`. References below to archive
 > archive REV-0024/0025 describe evidence at that ref; those packet ids are not ported, do not occupy a
-> master review slot, and do not clear REV-0034.
+> master review slot, and did not clear the fresh REV-0034 gate.
 >
 > **Ratified topology for this draft.** V1 producers are localhost-only (`loopback`). A future
 > tailnet producer is a configuration change through `tailnet_serve`, while the backend remains
@@ -94,11 +94,12 @@ Define a **Signal Seat**: a runtime role (not a development seat) for external s
 Easier: adding/swapping producers (any agent that can POST JSON); auditing exactly what influenced trading (provenance in the event log); later trust-ladder promotion as a pure policy change behind a stable contract. Harder: the integration is deliberately shallow; every signal costs a human approval in beta (accepted — that *is* the design); one new API surface + event types to test on both storage paths. Revisit: L1 promotion criteria after beta produces approval-volume data.
 
 
-## Proposed amendments — REV-0022 remediation (REV-0034 pending)
+## Accepted amendments — REV-0022 remediation (REV-0034 resolved)
 
 Each amendment below remediates one REV-0022 BLOCK finding. Archive rounds supplied the hardened
-basis; WO-0127 narrows and reconciles it to current master. The text remains Proposed and
-non-implementable until REV-0034 and Ameen's post-review approval.
+basis; WO-0127 narrows and reconciles it to current master. REV-0034 returned
+ACCEPT-WITH-CHANGES, WO-0133 resolved its required citation corrections, and Ameen accepted this
+text on 2026-07-21. Implementation remains confined to separately activated, gated work orders.
 
 ### A-1 (remediates F-001) — Transport and credential-lifecycle boundary
 
@@ -392,7 +393,9 @@ never against a half-railed or conversion-less app.
 1. [x] Draft master-side A-1..A-4 remediation under the ratified D-SIG decisions (WO-0127).
 2. [x] Reconcile specs 00-06, PKL, and WO-0102..0104; seed Proposed ADR-013.
 3. [x] Stage one fresh request at `work/review/REV-0034/request.md`.
-4. [ ] Claude-seat independent review returns ACCEPT / ACCEPT-WITH-CHANGES.
-5. [ ] Ameen dispositions REV-0034 and explicitly approves the final ADR text.
-6. [ ] Only then: flip Proposed→Accepted and unfreeze implementation WOs.
+4. [x] Claude-seat REV-0034 returned ACCEPT-WITH-CHANGES; C-1/C-2 were remediated by WO-0133
+   and the packet disposition is RESOLVED.
+5. [x] Ameen explicitly approved the final ADR text at `385cc7d` on 2026-07-21.
+6. [x] Flip Proposed→Accepted and clear G1. WO-0102..0104 remain draft and retain their own
+   activation, sequencing, schema, implementation, and independent-review gates.
 7. [ ] At R4: present current `signal_records` DDL for a fresh schema decision.

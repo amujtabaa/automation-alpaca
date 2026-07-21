@@ -48,8 +48,8 @@
 
 1. **Accept ADR-012** (release valve) — Proposed today; beta reliance gates on acceptance +
    REV-0035 dispositioned + WO-0132's pin. Yours to give.
-2. **Accept ADR-009** (signal seat) — Proposed; flips to Accepted after WO-0133's anchors land
-   and REV-0034 is dispositioned. This is what unblocks Signal Seat R4–R7.
+2. [x] **Accept ADR-009** (signal seat) — Ameen approved the final text at `385cc7d` on
+   2026-07-21 after WO-0133 and REV-0034 disposition; ADR-009 is Accepted and G1 is clear.
 3. **Merge decision** — once WO-0130/0132/0133 close, WO-0131 returns REV-0038 ACCEPT, and the
    two ADR acceptances are given, the branch fast-forwards to master. The four review results +
    dispositions ride along.

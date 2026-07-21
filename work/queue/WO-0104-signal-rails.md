@@ -14,10 +14,11 @@ created: 2026-07-11
 
 # Work Order: Signal rails — TTL, staleness, rate limits, producer quarantine
 
-> **GATED DRAFT — DO NOT ACTIVATE.** ADR-009 remains Proposed; REV-0034 and Ameen's
-> post-review approval must clear G1. Start after the fresh R4 model/store/schema foundation and
-> the re-scoped WO-0102 endpoint/auth/launcher work; coordinate the joint enablement milestone with
-> WO-0103. Producer release and any event/schema additions remain human-gated.
+> **DRAFT — G1 CLEARED; DO NOT ACTIVATE YET.** ADR-009 was accepted by Ameen on 2026-07-21
+> after REV-0034 was dispositioned RESOLVED. Start after the fresh R4 model/store/schema
+> foundation and the re-scoped WO-0102 endpoint/auth/launcher work; coordinate the joint
+> enablement milestone with WO-0103. Producer release and any event/schema additions remain
+> human-gated.
 >
 > The final-slot invalid-budget debit co-opens the quarantine epoch in one atomic operation.
 > `loopback`/`tailnet_serve` are the only transport values; Funnel/public exposure is forbidden.

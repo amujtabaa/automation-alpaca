@@ -2,8 +2,10 @@
 type: Review Disposition
 rev_id: REV-0022
 verdict_received: BLOCK
-disposition_status: REMEDIATION_OPEN
+disposition_status: RESOLVED
 date: 2026-07-14
+resolved_date: 2026-07-21
+resolved_by: REV-0034
 ---
 
 # Disposition — REV-0022 (ADR-009 Signal Seat acceptance review)
@@ -44,3 +46,22 @@ result dated 2026-07-11 — `result.md`). Four P1 findings, none yet remediated:
 Remediate F-001..F-004 as ADR-009 text amendments + WO tightening (human-approved), then
 re-review (new packet or REV-0022 re-run at Ameen's discretion, mirroring the REV-0001→REV-0003
 pattern). The gate clears only on an ACCEPT/ACCEPT-WITH-CHANGES disposition of that re-review.
+
+## Resolution addendum — 2026-07-21
+
+The original BLOCK verdict and rescind record above remain historical truth. Its stated path to
+clearing the gate has now been completed on the master-side branch:
+
+1. WO-0127 reconciled amendments A-1..A-4 and D-SIG-1..9 into the current ADR/spec suite.
+2. Claude-seat REV-0034 independently returned **ACCEPT-WITH-CHANGES** on the final master-side
+   text.
+3. WO-0133 applied required corrections C-1/C-2; REV-0034's author-owned disposition is
+   **RESOLVED** and leaves the reviewer-owned result unchanged.
+4. Ameen explicitly approved the final ADR-009 text at
+   `codex/ultra-beta-batch@385cc7d` on 2026-07-21 and authorized Proposed→Accepted plus WO-0127
+   close-out.
+
+Therefore the four REV-0022 findings are remediated at the architecture/specification layer and
+the original G1 review gate is closed by the fresh REV-0034 chain. This resolution does not claim
+runtime implementation: the fresh R4 `signal_records` DDL decision and implementation work orders
+retain their own human and independent-review gates. **REV-0022 disposition: RESOLVED.**

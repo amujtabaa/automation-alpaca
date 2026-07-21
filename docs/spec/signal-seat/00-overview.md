@@ -1,20 +1,19 @@
 
 # Signal Seat — Contract Specification (WO-0101)
 
-**Authority:** draft implementation contract for ADR-009 as amended by WO-0127. ADR-009 remains
-**Proposed**; the remediation text and this spec await independent review in REV-0034 and Ameen's
-post-review approval. Where this spec and ADR-009 disagree, ADR-009 wins and the disagreement is a
-defect in this spec.
-**Status:** remediation drafted 2026-07-20; REVIEW pending — design-only, no implementation is
-authorized. WO-0102..0104 remain gated drafts until REV-0034 returns ACCEPT / ACCEPT-WITH-CHANGES
-and Ameen accepts the ADR text. The fresh `signal_records` DDL approval is deliberately deferred
-to WO-R4.
+**Authority:** accepted implementation contract for ADR-009 as amended by WO-0127. REV-0034
+returned ACCEPT-WITH-CHANGES, WO-0133 resolved its required citation corrections, and Ameen
+accepted the final ADR text at `385cc7d` on 2026-07-21. Where this spec and ADR-009 disagree,
+ADR-009 wins and the disagreement is a defect in this spec.
+**Status:** architecture accepted 2026-07-21; implementation has not begun. WO-0102..0104 remain
+draft and retain their activation, sequencing, implementation-review, and joint-enablement gates.
+The fresh `signal_records` DDL approval remains deliberately deferred to WO-R4.
 **Tree basis:** `origin/master@3b8c840` plus the ULTRA batch continuity commit; current-tree anchors
 were refreshed during WO-0127.
 
 > **Archive provenance convention.** References to archive REV-0024/0025 below mean records at
 > `origin/archive/claude-wo-0001-install-checks-2x5ys8`; those packet ids are never ported to
-> master and do not clear REV-0034.
+> master and did not clear the fresh REV-0034 gate.
 
 ## Document map
 

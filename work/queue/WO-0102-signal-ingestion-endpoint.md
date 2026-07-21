@@ -14,10 +14,11 @@ created: 2026-07-11
 
 # Work Order: Signal ingestion endpoint + event-log provenance
 
-> **GATED DRAFT — DO NOT ACTIVATE.** ADR-009 remains Proposed; REV-0034 and Ameen's
-> post-review approval must clear G1 first. The archive implementation/review record is provenance
-> only. A fresh `signal_records` DDL decision is required at R4; the archived schema approval is
-> stale. Sequence after G1: model/store foundation → this endpoint/auth/launcher work; live
+> **DRAFT — G1 CLEARED; DO NOT ACTIVATE UNTIL THE R4 FOUNDATION GATE.** ADR-009 was accepted
+> by Ameen on 2026-07-21 after REV-0034 was dispositioned RESOLVED. The archive
+> implementation/review record is provenance only. A fresh `signal_records` DDL decision is
+> required at R4; the archived schema approval is stale. Sequence: model/store foundation → this
+> endpoint/auth/launcher work; live
 > enablement remains the joint WO-0102+0103+0104 milestone.
 >
 > D-SIG posture is binding: `loopback` default + `tailnet_serve`; Funnel/public exposure

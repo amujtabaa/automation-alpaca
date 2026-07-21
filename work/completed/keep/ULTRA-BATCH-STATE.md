@@ -1,7 +1,9 @@
 # ULTRA beta-prep batch state
 
-Session status: **IMPLEMENTATION COMPLETE / REVIEW GATES STAGED** (2026-07-21). The four
-human-gated work orders remain in REVIEW pending their independent CLAUDE-seat verdicts.
+Session status: **IMPLEMENTATION COMPLETE / POST-SESSION GATES ADVANCING** (2026-07-21).
+Independent results REV-0034..0037 were deposited after the batch session; WO-0127 is now closed
+after REV-0034 disposition and explicit human ADR-009 acceptance. Other review-gated work orders
+retain their own close-out requirements.
 
 This file is the durable continuity record for the consolidated beta-prep batch on
 `codex/ultra-beta-batch`. The operator decision block below is the authoritative
@@ -59,7 +61,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0124 | REVIEW | semantic/test range `044c583..33ad906`; key late checkpoints: `ffac1b3` exact scope, `403ce81` race fixes, `138e389` brokerless hold, `c360487` dedupe fix, `48851ba` docs, `33ad906` coverage pins; `3d8015f` final review-stage metadata | VERIFIED author evidence: exact pre-IO attempt truth, bounded needs_review escalation, brokerless exact-occurrence hold, A/B restart scope with later-C exclusion, same-key concurrency convergence, non-minting identity, and reprice-only budget; 429 related + 4087 full at 93.05%; two in-process ACCEPT audits do not replace REV-0037, which is staged for CLAUDE; no result/ledger/disposition/close before independent result + human disposition. |
 | WO-0125 | CLOSED | `9dec106` activation; `81a5e64` implementation; `2b39830` close-out | VERIFIED: explicit full envelope vocabulary fold, dual-store read-model parity, two mutation-red pins; 3881 passed, 11 skipped, 1 expected xfail. |
 | WO-0126 | CLOSED | `42071ba` activation; `c99ebda` RED; `108874f` implementation; `3c5a1ec` gate checkpoint; dependency `ffd818b`; `04e55f3` close-out | VERIFIED: one event-derived counter drives enforcement and display; stored application field removed with SQLite tombstone inert. Integrated ffd818b6 restored the inherited gate; 4015 passed, 11 skipped, 1 expected xfail at 93.15%; dispositioned and moved to `work/completed/keep/`. |
-| WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
+| WO-0127 | CLOSED | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage; final acceptance/close-out: this commit | REV-0034 returned ACCEPT-WITH-CHANGES and is dispositioned RESOLVED; Ameen approved final text at `385cc7d`; ADR-009 Accepted, ADR-013 remains Proposed; ledger/disposition/move complete. |
 | WO-0128 | CLOSED / RED-STAGING | `e16866f` activation; `24d3746` close-out on `codex/signal-tests-staging` | VERIFIED intentional RED: 51 tests collected; 10 planned R4/R5 ImportErrors only; never merge until mapped slices turn green. |
 | WO-0129 | CLOSED | `094f0df` activation; `6aa678f` close-out | Complete 40/40 configuration sweep after WO-0123; primer and P-1/P-2 protocol landed. |
 
@@ -77,11 +79,11 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
   `harness/bootstrap.py`, `tests/test_tape_recorder.py`, and the reviewer-owned
   `work/review/AUDIT-0002-priorwork/probe_review_integrity.py`. WO-0114's scoped format check is
   green; do not absorb those changes into this lane.
-- Signal Seat R4 — the fresh `signal_records` DDL/schema approval remains deliberately deferred
-  until R4 presents the real DDL. Do not begin R4–R7 implementation until REV-0034 is accepted and
-  that separate human-gated schema decision is recorded.
+- Signal Seat R4 — G1 cleared when Ameen accepted ADR-009 on 2026-07-21. The fresh
+  `signal_records` DDL/schema approval remains deliberately deferred until R4 presents the real
+  DDL; do not begin the schema slice until that separate human-gated decision is recorded.
 
-## Session-end verification
+## Historical session-end verification
 
 - **VERIFIED:** `codex/ultra-beta-batch` fast-forwarded exactly to WO-0124 metadata head
   `3d8015f`; the independently requested semantic/test range remains `1af0ae7..33ad906`.
@@ -97,3 +99,11 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
   associated human dispositions run after this session; no review-gated WO is closed here.
 - **UNVERIFIED / environment-limited:** WO-0124's optional AI-OS source-package self-tests are not
   installed-layout CI gates; their 31-pass/3-fail/2-error fixture mismatch is retained in the WO.
+
+## Post-session gate update — 2026-07-21
+
+- **VERIFIED:** REV-0034 returned ACCEPT-WITH-CHANGES; WO-0133 applied C-1/C-2; its author-owned
+  disposition is RESOLVED; the reviewer-owned result is unchanged.
+- **VERIFIED:** Ameen explicitly approved ADR-009 at `385cc7d`; WO-0127 is closed with
+  `[RESULT_SUMMARY_KEPT, PKL_UPDATED]` in the same governance-only commit.
+- **VERIFIED:** ADR-013 remains Proposed and the fresh R4 schema decision remains deferred.

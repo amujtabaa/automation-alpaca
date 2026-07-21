@@ -1,7 +1,8 @@
 # 05 — Conversion: approval → ordinary order intent, exposure, TradingState, correlation
 
-> **Gate state:** draft remediation for Proposed ADR-009; REV-0034 and Ameen's post-review
-> approval are required before implementation.
+> **Gate state:** ADR-009 was accepted by Ameen on 2026-07-21 after REV-0034 was dispositioned
+> RESOLVED. G1 is clear; implementation remains confined to the separately activated,
+> review-gated Signal Seat work orders and the fresh R4 schema decision.
 
 ## 1. One atomic approval command; no new execution lane
 

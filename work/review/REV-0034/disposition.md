@@ -35,3 +35,21 @@ disposition leaves the reviewer-owned `result.md` unchanged.
 Both required REV-0034 changes are applied and independently failure-checked within the
 implementer lane. **REV-0034 disposition: RESOLVED.** This disposition does not accept ADR-009;
 the Proposed→Accepted decision remains human-only.
+
+## Human acceptance addendum — 2026-07-21
+
+**Author:** Ameen (human decider)
+
+**Relationship to the review:** separate post-disposition architecture approval; the
+reviewer-owned `result.md` remains unchanged.
+
+Ameen explicitly approved the final branch text:
+
+> I approve the final ADR-009 text on codex/ultra-beta-batch at 385cc7d and authorize its status
+> change from Proposed to Accepted, plus WO-0127 close-out.
+
+This approval clears ADR-009's human-text gate after REV-0034's ACCEPT-WITH-CHANGES verdict and
+RESOLVED disposition. The close-out commit flips ADR-009 to Accepted, promotes the derived Signal
+Seat PKL authority, closes and moves WO-0127, and appends its ledger row. ADR-013/public ingress,
+the fresh R4 `signal_records` DDL decision, runtime implementation, live trading, L1/L2 autonomy,
+ADR-012, and merge remain outside this approval.

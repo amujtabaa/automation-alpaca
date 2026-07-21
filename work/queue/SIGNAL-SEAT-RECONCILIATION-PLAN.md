@@ -1,7 +1,9 @@
 # Signal Seat Reconciliation Plan
 
 **Repo:** automation-alpaca (master, bdb7221/89f0f6e era) · **Archive:** `origin/archive/claude-wo-0001-install-checks-2x5ys8` (tip fc81951, forked from 80250e0, 2026-07-13)
-**Status of this document:** DRAFT for operator (Ameen) review. No repo files were modified. All verdicts below reflect the adversarial verify pass; **zero verify-stage downgrades occurred** — all 60 mapped verdicts were CONFIRMED, with three verify amendments folded into the table and WO ladder (import-boundary allowlist co-port; repo-primer frontmatter citation; README stale-claim fix).
+**Status of this document:** EXECUTED THROUGH G1. ADR-009 was accepted by Ameen at `385cc7d` on
+2026-07-21 after REV-0034 ACCEPT-WITH-CHANGES and RESOLVED disposition. The downstream R4–R7
+ladder remains future work under its own gates, including the fresh R4 schema decision.
 
 ---
 
@@ -17,13 +19,17 @@ Most of the archived Signal Seat survives. Of 60 archive files audited, **32 por
 
 | Packet | Verdict | What it established |
 |---|---|---|
-| **REV-0022** (master, frozen 25590a7, GPT-5 Codex, 2026-07-11) | **BLOCK** | Four P1s: F-001 credential/transport, F-002 non-atomic approval→intent, F-003 freshness deferred out of ADR, F-004 unbounded rejected-count appends. Master disposition still **REMEDIATION_OPEN** (`work/review/REV-0022/disposition.md`). |
+| **REV-0022** (master, frozen 25590a7, GPT-5 Codex, 2026-07-11) | **BLOCK** | Four P1s: F-001 credential/transport, F-002 non-atomic approval→intent, F-003 freshness deferred out of ADR, F-004 unbounded rejected-count appends. Historical BLOCK preserved; disposition **RESOLVED 2026-07-21** through the fresh REV-0034 chain. |
 | **REV-0024** (archive, frozen 413da38) | **BLOCK** | Closure scorecard: **F-002/A-2 and F-003/A-3 CONFIRMED CLOSED**; F-001/F-004 NOT closed. Four new P1s incl. the ASGI-seam bind-guard unenforceability and the paced-hostility hole (10,080 events over 7 days at 1 req/min without breaching the refill bucket). Produced Ameen's backend-owned-launcher and non-refilling-budget decisions. |
 | **REV-0025** (archive, frozen 209496d) | **BLOCK** | Seven P1s (reachable-503 listener, non-mutation-sensitive launch proof, non-linearizable/non-durable budget, joint-enablement contradiction, A-4 propagation contradictions, session-close missing from the auth matrix); explicitly **no A-2/A-3 regression**. Ameen then decided D-1 (construction-time bind refusal) and D-2 (release/deployment conversion gate), folded all findings, **LOCKED the spec, ACCEPTED ADR-009 (2026-07-14)** — disposition candidly recorded as `RESOLVED_BY_LOCK`. |
 | **REV-0026** (archive) | **WITHDRAWN** | Never dispatched ("no fifth spec-only round"). Retained for provenance. |
 | **REV-0027** (archive) | **ACCEPT-WITH-CHANGES** | First **code** review of the branch WO-0102 implementation (cc346b1..5a93f73): no P0/P1; one P2 (operator-middleware prefix-skip of `/api/signals*`) + two P3, folded at 11832f0. Disposition `FINDINGS_FOLDED_AWAITING_HUMAN_RATIFICATION` — WO-0102 never closed even on the branch, and the archive tip carries 8 further auto-review fix rounds after the reviewed commit. |
 
-Net: all four REV-0022 P1s were remediated to human-approved locked spec text (two Codex-verified closed, two human-decided and in-process-verified only); one of three implementation WOs was built and code-reviewed on the branch; WO-0103/0104 were never built. **No packet in the chain ever carried ACCEPT or ACCEPT-WITH-CHANGES on the spec** — the gate was closed by human lock, which does not satisfy master's G1 condition as written (`work/review/REV-0022/disposition.md` "Path to clearing the gate"; CLAUDE.md Review section).
+At plan-drafting time, all four REV-0022 P1s had been remediated to human-approved locked spec
+text (two Codex-verified closed, two human-decided and in-process-verified only), but **no packet in
+that archive chain carried ACCEPT or ACCEPT-WITH-CHANGES on the spec**. The later master-side
+REV-0034 review supplied the missing verdict and now satisfies the G1 condition in
+`work/review/REV-0022/disposition.md`; no archive verdict or governance state was imported.
 
 ### Id collision handling (mandatory)
 
@@ -36,7 +42,9 @@ Net: all four REV-0022 P1s were remediated to human-approved locked spec text (t
 
 ## 3. ADR-009: path to Accepted
 
-Master state: **Proposed** (acceptance of 2026-07-12 rescinded 2026-07-14); REV-0022 disposition **REMEDIATION_OPEN**; WO-0101..0104 re-gated. G1 clears **only** on an ACCEPT/ACCEPT-WITH-CHANGES disposition of a re-review of the final master-side text.
+Master state: **Accepted** (2026-07-21). REV-0034 returned ACCEPT-WITH-CHANGES, WO-0133 resolved
+C-1/C-2, the disposition is RESOLVED, and Ameen approved the final text at `385cc7d`. G1 is clear;
+WO-0102..0104 remain draft and retain their downstream gates.
 
 ### Finding-by-finding status
 
@@ -49,9 +57,11 @@ Master state: **Proposed** (acceptance of 2026-07-12 rescinded 2026-07-14); REV-
 
 ### Acceptance sequence (the only path that satisfies G1)
 
-1. Land the four amendments on master as human-approved ADR text (WO-R1 below), **keeping Status: Proposed** ("Proposed — remediation drafted").
-2. Dispatch **one fresh re-review packet (≥ REV-0034)** against the final master text, explicitly flagging the never-reviewed items: A-1 clause 6 (D-1a construction capability), A-4 final form (zero-budget co-open, linearizable/durable budget, rails-guard permanence, D-2a), and the two locked A-3 clauses.
-3. G1 clears **only** on ACCEPT/ACCEPT-WITH-CHANGES of that packet; only then does Ameen flip Proposed→Accepted and unfreeze WO-0102..0104.
+1. [x] Land the four amendments as reviewable ADR text while keeping Status: Proposed.
+2. [x] Dispatch REV-0034 against the final text and disposition its ACCEPT-WITH-CHANGES result
+   after WO-0133 resolves C-1/C-2.
+3. [x] Ameen approves the final text and flips Proposed→Accepted. G1 is clear; WO-0102..0104 are
+   unblocked from G1 only and remain draft under their own activation and downstream gates.
 
 ---
 
@@ -168,7 +178,8 @@ Ids below are placeholders; assign next-free master ids at draft time (WO namesp
 
 ### Step 2 — WO-R2: Re-review dispatch + disposition (external reviewer; packet authored LOCAL)
 - **Scope:** Stage one fresh packet (≥ REV-0034) against the final ADR + spec text; explicitly flag the never-reviewed items (A-1 clause 6 / D-1a; final A-4; A-3's two locked clauses; the multi-exit re-decision). Mirror the REV-0001→REV-0003 pattern.
-- **Gates:** **G1 clears only on ACCEPT/ACCEPT-WITH-CHANGES**; then Ameen flips Proposed→Accepted and unfreezes the implementation WOs. Hard stop for everything below except Step 3 prep.
+- **Gates:** **G1 CLEARED 2026-07-21** after REV-0034 ACCEPT-WITH-CHANGES/RESOLVED and Ameen's
+  explicit acceptance at `385cc7d`. Downstream work retains every gate named below.
 
 ### Step 3 — WO-R3: Red-first test-corpus port (CLOUD-capable; branch-staged)
 - **Scope:** Rebase the 12 KEEP test files + `signal_seat_helpers.py` + the two hunk cherry-picks onto master on a staging branch; re-baseline constants/citations against the amended ADR. Tests stay red on the branch; each slice merges only with its green implementation WO (CI cannot carry red tests on master).

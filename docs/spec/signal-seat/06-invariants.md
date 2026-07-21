@@ -1,8 +1,9 @@
 # 06 — Invariant preservation notes
 
-> **Gate state:** draft remediation for Proposed ADR-009; REV-0034 and Ameen's post-review
-> approval are required before implementation. This document adds cross-references only; it does
-> not amend any statement in `docs/INVARIANTS.md`.
+> **Gate state:** ADR-009 was accepted by Ameen on 2026-07-21 after REV-0034 was dispositioned
+> RESOLVED. G1 is clear; implementation remains confined to separately activated, review-gated
+> work orders. This document adds cross-references only; it does not amend any statement in
+> `docs/INVARIANTS.md`.
 
 Every note names a concrete mechanism from this spec. The invariant registry remains the
 independent oracle.
@@ -73,4 +74,4 @@ The stale archive schema approval is provenance only. The fresh `signal_records`
 at R4; no schema is approved by WO-0127.
 
 No invariant text was deleted or semantically changed by this reconciliation. The only
-`docs/INVARIANTS.md` edit in WO-0127 is a non-normative cross-reference to this Proposed spec.
+`docs/INVARIANTS.md` edit in WO-0127 is a non-normative cross-reference to this accepted spec.
