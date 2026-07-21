@@ -11,8 +11,10 @@ human_gated_surfaces:
   - operator fill ingestion and position truth
   - typed operator API and cockpit control
 review_base_sha: 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae
-head_sha: 759eff03e289851a41d652a2ad392f6b9ff2c6b9
+head_sha: 3e47387509d94e8e31291635cf97fbea734ff3bf
 commit_range: 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
+supplemental_fix_base_sha: fbb2887842e149eb422605ad0fe532e2c7683dbc
+supplemental_fix_range: fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
 branch: codex/ultra-beta-batch
 created: 2026-07-20
 ---
@@ -55,21 +57,30 @@ implementation. Produce findings only. Each finding requires `file:line`, a conc
 sequence, why it matters, and what resolves it. End with exactly one verdict: **BLOCK**,
 **ACCEPT-WITH-CHANGES**, or **ACCEPT**, and state anything not independently verified.
 
-## Frozen review range
+## Frozen review ranges
 
-The frozen range is the three contiguous WO-0114 commits on `codex/ultra-beta-batch`:
+Review both frozen ranges. The first is the original three-commit WO-0114 implementation; the
+second is the post-integration coverage/idempotency FIX. Do not diff straight from the original
+base to the supplemental head because that ancestry includes unrelated ULTRA-batch commits.
 
 ```powershell
 git rev-parse 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae
 git rev-parse 759eff03e289851a41d652a2ad392f6b9ff2c6b9
+git rev-parse fbb2887842e149eb422605ad0fe532e2c7683dbc
+git rev-parse 3e47387509d94e8e31291635cf97fbea734ff3bf
 git diff --stat 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 git diff --name-status 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 git diff --check 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 git diff 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
+git diff --stat fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
+git diff --name-status fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
+git diff --check fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
+git diff fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
 ```
 
 Activation commit: `f3be6e3`. Red-first checkpoint: `b6d4fb0`. The range contains only WO-0114
-lane commits from the ULTRA batch base.
+lane commits from the ULTRA batch base. Semantic FIX: `3e47387`; its supplemental base is the
+integrated batch head immediately before the fix.
 
 ## What changed
 
@@ -84,6 +95,8 @@ lane commits from the ULTRA batch base.
 - ADR-012, ADR-008 amendment, INV-096/INV-090 cross-reference, and PKL rationale.
 - WO-0114 tests, cockpit AppTest, hardening producer/consumer matrix, and the append-only interface
   totality pin.
+- Supplemental FIX: failure-capable negative-path coverage, older-fill exact replay after later
+  cumulative progress, and complete compatibility fill-row identity checks in both stores.
 
 Forbidden paths `app/adapters/**`, `app/reconciliation.py`, and `.github/workflows/**` are untouched.
 
@@ -119,7 +132,10 @@ Compare memory `_atomic` and SQLite `_tx` mutation order and rollback. Race two 
 attestations and race the recovery driver. Verify exact repeat is byte/write-count neutral while a
 different actor/reason/evidence/fact returns a 409-class conflict. Close/reopen SQLite between fill,
 release, and both replays. Look for a check/write gap between fill ingestion and release, including
-the envelope record-first bridge.
+the envelope record-first bridge. Replay an older cumulative-4 fill after a later cumulative-6 fill;
+it must be a write-free duplicate because its exact durable event still matches. Corrupt any
+compatibility fill-row identity field while leaving the event intact; both stores must fail closed,
+never return the corrupt row as a duplicate or repair it implicitly.
 
 ### 5. Contribution-only lifecycle closure
 
@@ -176,6 +192,10 @@ At minimum, temporarily (without committing) and independently:
 
 - remove cumulative parity comparison: the memory and SQLite contradiction nodes must turn red;
 - omit one identity echo comparison: only that field's two store nodes must turn red;
+- restore the old latest-canonical-total comparison on exact fill replay: the memory, SQLite, and
+  SQLite-reopen older-fill nodes must turn red;
+- omit the compatibility fill-row symbol comparison: the memory and SQLite corruption controls
+  must turn red with zero truth writes;
 - remove each lifecycle consumer of the release event: direct-SELL and envelope choke-point tests
   must distinguish the mutations;
 - treat `HUMAN_ATTESTED` as broker-authoritative: capacity/negative-position pins must turn red;
@@ -189,29 +209,38 @@ Use OS temp for pytest scratch; do not create repo-root basetemp directories.
 
 ```powershell
 $Py = (Resolve-Path .\.venv\Scripts\python.exe).Path
+$Tmp = Join-Path $env:TEMP ("rev0035-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $Tmp | Out-Null
 & $Py -m ruff check .
 & $Py -m mypy app/
 & .\.venv\Scripts\lint-imports.exe
-git diff --check 87aa950f375e91e116a3347e1cf13de0ea5bac88..codex/wo-0114
-& $Py -m pytest -q
+git diff --check 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
+git diff --check fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
+& $Py -m pytest -o "addopts=" -q --cov=app --cov-branch --basetemp (Join-Path $Tmp "pytest")
 & $Py -m pytest -q tests/r2_conformance_oracle.py tests/test_r2_conformance_oracle_claude.py
 & $Py -m pytest -q tests/test_review_hardening_gates.py
 & $Py -m pytest -q tests/test_wo0114_pd1_release_valve.py tests/test_wo0114_cockpit_release.py
 ```
 
 Run Ruff format on the exact WO Python paths and require green. The repository-wide command
-`ruff format --check .` has one pre-existing, out-of-range blocker:
-`work/review/AUDIT-0002-priorwork/probe_review_integrity.py`. Reproduce and report it; do not edit
-that prior review artifact as part of REV-0035.
+`ruff format --check .` has six pre-existing/out-of-range blockers: three `app/recorder/` files,
+`harness/bootstrap.py`, `tests/test_tape_recorder.py`, and
+`work/review/AUDIT-0002-priorwork/probe_review_integrity.py`. Reproduce and report them; do not edit
+those files as part of REV-0035.
 
 ## Author evidence to reproduce, not trust
 
-- Full suite: **3,948 collected; 3,936 passed, 11 skipped, 1 xfailed; exit 0; 316.6 s**.
-- WO/API/cockpit/hardening focused corpus: **86/86** (69 + 3 + 14).
+- Exact semantic head `3e47387`: CI-form full suite **4,003 passed, 11 skipped, 1 xfailed;
+  93.129079% (15,411/16,548 combined units); exit 0; 400.86 s**.
+- WO/API/cockpit/hardening focused corpus: **121/121** (104 + 3 + 14).
 - Conformance: **83 passed / 6 documented skips**; hardening: **14/14**.
-- Static: Ruff check green; mypy **64 files**; import-linter **6 kept / 0 broken**; diff check green.
+- Static: Ruff check green; mypy **70 files**; import-linter **6 kept / 0 broken**; both frozen-range
+  diff checks green.
 - Mutations: cumulative guard removed -> only **2 parity failures**; symbol echo skipped -> only
   **2 identity failures**; restored identity/parity corpus **22/22**.
+- Supplemental replay probes: old latest-total comparison -> **3 older-fill failures**; event
+  evidence comparison removed -> **3 conflicting-replay failures**; fill-row symbol omitted ->
+  **2 corruption failures**. All mutations were restored.
 - Additional red probe: partial `FILLED` plus missing claim occurrence -> **4/4 failed** before
   guards and **4/4 green** after.
 - First full run found one stale append-only interface-totality pin. Root cause was a new command

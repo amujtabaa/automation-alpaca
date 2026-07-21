@@ -45,7 +45,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 
 | WO | Status | Branch commits | Notes |
 |---|---|---|---|
-| WO-0114 | REVIEW | `f3be6e3` activation; `b6d4fb0` red-first contract; `759eff0` review-stage | Implementation/evidence complete; REV-0035 staged for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
+| WO-0114 | REVIEW | `f3be6e3` activation; `b6d4fb0` red-first contract; `759eff0` review-stage; `3e47387` semantic FIX; metadata freeze: this commit | CI-form coverage restored to 93.13%; older-fill replay and fill-row identity fail closed in both stores; REV-0035 refreshed for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
 | WO-0118 | CLOSED | `a14a8f7` activation; `30d4ae5` budget contract; `2546188` close-out | VERIFIED: three-run target and 10x stress evidence showed near-linear post-Cluster-E scaling; Phase 2 skipped with no store/DDL/index changes; unchanged 3x/12x/2 MiB limits frozen, dispositioned, and moved to `work/completed/keep/`. |
 | WO-0119 | CLOSED | `966b1a7` activation; `5f715a8` implementation; `7387199` close-out | Bootstrapper, Python 3.12 devcontainer, and environment pointer verified in a disposable OS-temp checkout; fresh + rerun smoke gates green; dispositioned and moved to `work/completed/`. |
@@ -69,9 +69,11 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 - WO-0114 integration — `docs/00_START_HERE.md:840` must name the separate canonical-fill command
   plus exact full-identity/terminal/cumulative-parity attestation before one record leaves the open
   view. WO-0114 did not cross its allowed documentation paths.
-- Repository-wide `ruff format --check .` — pre-existing
-  `work/review/AUDIT-0002-priorwork/probe_review_integrity.py` would reformat. WO-0114's scoped
-  format check is green; do not edit the prior review artifact from this lane.
+- Repository-wide `ruff format --check .` — six pre-existing/out-of-lane files would reformat:
+  `app/recorder/__init__.py`, `app/recorder/models.py`, `app/recorder/store.py`,
+  `harness/bootstrap.py`, `tests/test_tape_recorder.py`, and the reviewer-owned
+  `work/review/AUDIT-0002-priorwork/probe_review_integrity.py`. WO-0114's scoped format check is
+  green; do not absorb those changes into this lane.
 - WO-0126 — ratified removal of the stored `replaces_used` domain field cannot satisfy the WO's
   current `app/store/**` prohibition: SQLite schema hydration/writes and the shared draft guard
   still consume the field. Preferred amendment: allow `app/store/core.py` and

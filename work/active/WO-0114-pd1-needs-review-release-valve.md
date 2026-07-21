@@ -254,21 +254,57 @@ fable_fix:
   attempt: 1
 ```
 
+```yaml
+fable_fix:
+  symptom: "The review-stage branch passed plain pytest but failed the repository's 93 percent CI-form branch-coverage gate."
+  root_cause: "The original full-suite command omitted --cov=app --cov-branch, so the review evidence could not expose thin negative-path coverage in the new human-gated surface."
+  evidence: "The inherited 27e82bc coverage artifact measured 15,320 / 16,555 combined statement-plus-branch units (92.540018 percent), below fail_under=93."
+  fix: "Add failure-capable HTTP, facade, lineage, dual-store corruption/state, pure-defense, exact-replay, and SQLite-reopen cases without weakening an existing assertion."
+  regression_test: "tests/test_wo0114_pd1_release_valve.py; exact semantic head measures 15,411 / 16,548 units (93.129079 percent)."
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+fable_fix:
+  symptom: "After two fills advanced one broker leg from cumulative 4 to 6, an exact retry of the older cumulative-4 command was rejected instead of returning a write-free duplicate."
+  root_cause: "The exact-replay branch compared the historical command cumulative value with the latest canonical broker-leg total before the stores compared the durable event and fill identity."
+  evidence: "Reintroducing the comparison failed exactly three public-command nodes: memory, SQLite, and SQLite reopen."
+  fix: "Skip latest-total parity only for a dedupe-key replay; retain intrinsic/capacity validation and require the stores' durable event payload plus complete fill-row economics/source/session identity before duplicate success."
+  regression_test: "test_older_fill_exact_retry_remains_write_free_after_later_fill; test_older_fill_exact_retry_remains_write_free_after_sqlite_reopen"
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+fable_fix:
+  symptom: "A corrupted compatibility fill row with AAPL event truth but MSFT row truth was returned as an exact duplicate."
+  root_cause: "Both store replay checks compared only fill quantity, price, and side; symbol/order/source/session identity were omitted. A coverage setup also created an orphan FILL event instead of canonical row/event truth."
+  evidence: "The new corruption control failed exactly twice before the repair (memory and SQLite); the corrected 17-node replay/state slice passed."
+  fix: "Centralize full recovery fill-row identity comparison, apply it in both stores, and replace the orphan-event setup with append_fill plus row/position assertions."
+  regression_test: "test_exact_replay_rejects_corrupt_fill_read_model; test_recovery_command_state_guards_are_dual_store_and_write_free"
+  red_green_verified: true
+  attempt: 1
+```
+
 ### Fresh evidence
 
 | Classification | Command | Decisive output |
 |---|---|---|
 | VERIFIED | `ruff check .` | `All checks passed!` |
 | VERIFIED | `ruff format --check <all WO-0114 Python paths>` | all scoped files already formatted |
-| BLOCKED | `ruff format --check .` | one pre-existing out-of-scope file would reformat: `work/review/AUDIT-0002-priorwork/probe_review_integrity.py`; no WO-0114 edit made |
-| VERIFIED | `mypy app/` | `Success: no issues found in 64 source files` |
+| BLOCKED | `ruff format --check .` | six pre-existing/out-of-lane files would reformat: three `app/recorder/` files, `harness/bootstrap.py`, `tests/test_tape_recorder.py`, and reviewer-owned `work/review/AUDIT-0002-priorwork/probe_review_integrity.py`; no WO-0114 edit made |
+| VERIFIED | `mypy app/` | `Success: no issues found in 70 source files` |
 | VERIFIED | `lint-imports` | `Contracts: 6 kept, 0 broken` |
-| VERIFIED | `pytest -q tests/test_wo0114_pd1_release_valve.py tests/test_wo0114_cockpit_release.py tests/test_review_hardening_gates.py` | 86 passed (69 store/API + 3 cockpit + 14 hardening) |
+| VERIFIED | `pytest -q tests/test_wo0114_pd1_release_valve.py tests/test_wo0114_cockpit_release.py tests/test_review_hardening_gates.py` | 121 passed (104 store/API + 3 cockpit + 14 hardening) |
 | VERIFIED | parity guard mutation | 2 failed only at cumulative parity (memory + SQLite); restored 22/22 green |
 | VERIFIED | echoed-symbol guard mutation | 2 failed only at symbol identity (memory + SQLite); restored 22/22 green |
+| VERIFIED | older-fill latest-total mutation | 3 failed only at older exact replay (memory + SQLite + SQLite reopen); restored 3/3 green |
+| VERIFIED | replay event-evidence mutation | 3 failed only at conflicting replay evidence (memory + SQLite + SQLite reopen); restored 3/3 green |
+| VERIFIED | fill-row symbol corruption RED/GREEN | 2 failed before complete row-identity comparison; corrected replay/state slice 17/17 green |
 | VERIFIED | `pytest -q tests/r2_conformance_oracle.py tests/test_r2_conformance_oracle_claude.py` | 83 passed, 6 skipped, exit 0 |
 | VERIFIED | `pytest -q tests/test_review_hardening_gates.py` | 14 passed, exit 0 |
-| VERIFIED | `pytest -q` | 3,948 collected; 3,936 passed, 11 skipped, 1 xfailed; exit 0; 316.6 s |
+| VERIFIED | CI-form `pytest -q --cov=app --cov-branch` on `3e47387` | 4,003 passed, 11 skipped, 1 xfailed; required 93.0 reached; 93.129079% (15,411 / 16,548 units); exit 0; 400.86 s |
 | VERIFIED | `git diff --check` | exit 0 |
 
 ```yaml
@@ -282,7 +318,7 @@ fable_done:
     allowed_paths_respected: true
     drive_by_edits: false
   evidence:
-    - "Full suite 3,936 passed / 11 skipped / 1 xfailed, exit 0."
+    - "Exact semantic head 3e47387: full CI-form suite 4,003 passed / 11 skipped / 1 xfailed; 93.129079 percent branch-aware combined coverage; exit 0."
     - "Conformance 83 passed / 6 skipped; hardening 14 passed."
     - "Ruff check, mypy, import-linter, scoped Ruff format, and diff check green."
   status: VERIFIED
@@ -300,9 +336,10 @@ fable_done:
   command has recorded every canonical execution and an exact full-identity, terminal-state,
   cumulative-parity attestation transitions that one record to `operator_reconciled`; the recovery
   driver still acts only on `unresolved`.
-- Repository-wide `ruff format --check .` remains blocked by the pre-existing AUDIT-0002 probe
-  named above. The WO-scoped format gate is green. Do not edit reviewer-owned prior-work artifacts
-  from this lane.
+- Repository-wide `ruff format --check .` remains blocked by six pre-existing/out-of-lane files:
+  `app/recorder/__init__.py`, `app/recorder/models.py`, `app/recorder/store.py`,
+  `harness/bootstrap.py`, `tests/test_tape_recorder.py`, and the reviewer-owned AUDIT-0002 probe.
+  The WO-scoped format gate is green; do not absorb those files into this lane.
 - ADR-012 human acceptance and REV-0035 `ACCEPT` / `ACCEPT-WITH-CHANGES` remain mandatory before
   beta reliance. No disposition, ledger close, or work-order move is authorized yet.
 
