@@ -144,6 +144,15 @@ projection, but it made a one-shot, non-evented stale-data cancel and had no dur
 or bound. WO-0124 retains that projection/cancel seam, adds stale/restart selection from durable
 facts, and does not add a symbol-only target, adapter method, venue mode, config, or schema.
 
+Re-derivation also exposed a narrower race outside the original packet: a safely-local `CREATED`
+cancel could lose its compare-and-swap to a submission claim before a broker id existed. The
+approved additive `action=cancel_request` is a selection-only, non-minting hold on one exact claim
+occurrence and the complete sorted local-order decision scope. It has no broker identity, positive
+attempt, budget cost, or venue authority. Only fresh validated broker truth plus the normal exact
+pre-IO `action=cancel` attempt can authorize the adapter. Request-first, claim-first, release,
+terminal, expiry-overlap, partial-write, restart, future-child, malformed-scope, and later-claim
+schedules are now explicit dual-store pins.
+
 The initial RED design proposed an `unresolved` submit-recovery record at exhaustion. Re-derivation
 stopped production work: `_recover_unpersisted_submits` polls with `recorded_quantity=0` and models
 an otherwise-untracked submit, so giving it a still-tracked canonical disposition order could
@@ -152,6 +161,12 @@ directly in terminal `needs_review` on the third failed attempt. Normal tracked-
 remains the only automatic broker/fill observer; the submit-recovery loop excludes the latch.
 Both stores' existing `create_submit_recovery` seam creates record + audit atomically, validates
 order scope, dedupes the exact local/broker pair, and writes nothing on identity conflict.
+
+An adversarial exact-hash recheck then forced identical concurrent request/attempt writers to use
+different caller-local timestamps. The durable dedupe winner and single-IO property held, but the
+loser raised `RecoveryTransitionError`. The red-first correction accepts only the stored winner's
+timestamp; dedupe key, provenance, exact identity/material scope, and payload still must match,
+and the normal-attempt loser returns without venue IO.
 
 ### Red-first evidence
 
@@ -163,6 +178,18 @@ evidence:
   - command: "corrected needs_review recovery-authority pins before production edits"
     result: FAIL
     decisive_output: "2 failed: five direct venue calls were observed instead of three; no terminal needs_review latch existed."
+  - command: "historical-child, multi-child pre-IO, and partial-write/restart RED checkpoints"
+    result: FAIL
+    decisive_output: "The then-current implementation either expanded replay to a later child, acquired IO before complete sibling scope was durable, or could not recover the omitted sibling after restart."
+  - command: "created-cancel race, terminal-race, and lost-response RED checkpoints"
+    result: FAIL
+    decisive_output: "Stale pre-CAS state could target the wrong winner; terminal truth could trigger a false recovery latch; one lost terminal response could strand or over-escalate the exact child."
+  - command: "brokerless claim-hold RED checkpoint"
+    result: FAIL
+    decisive_output: "3 failure classes across memory, SQLite, and SQLite reopen: a claim could win without a durable disposition hold, fresh policy could overtake it, or restart could forget it."
+  - command: "advancing-clock concurrent request and exact-attempt collision pins before c360487"
+    result: FAIL
+    decisive_output: "4 failed (request + attempt, memory + SQLite): each benign dedupe loser raised RecoveryTransitionError solely because its local ts_event differed from the stored winner."
 ```
 
 ### Mutation evidence
@@ -193,30 +220,60 @@ mutations:
   - mutant: "create RECOVERY_UNRESOLVED instead of terminal RECOVERY_NEEDS_REVIEW"
     killed_by: "test_direct_cancel_retries_are_bounded_then_escalate_once"
     decisive_output: "no needs_review record existed; automatic recovery ownership would reopen"
+  - mutant: "remove exact historical target-id replay filtering"
+    killed_by: "same-process and SQLite-restart historical-child exclusion controls"
+    decisive_output: "3 failures: later child C inherited old A/B cancellation authority"
+  - mutant: "remove sibling B from the first durable target snapshot"
+    killed_by: "partial-snapshot SQLite restart control"
+    decisive_output: "restart could not recover the omitted pre-decision sibling"
+  - mutant: "trust the stale pre-CAS CREATED projection after a submission claim wins"
+    killed_by: "dual-store created-cancel broker/terminal race controls"
+    decisive_output: "the stale local decision either missed or mis-targeted the raced durable lineage"
+  - mutant: "reduce the pending-policy guard to event.order_id instead of complete target scope"
+    killed_by: "dual-store and reopen sibling-overtake controls"
+    decisive_output: "a terminal first sibling released policy while another selected sibling remained open"
+  - mutant: "remove the brokerless cancel_request hold from projection claimability/replay"
+    killed_by: "request-first, claim-first, and SQLite-reopen hold controls"
+    decisive_output: "3 failures: the selected claim could proceed or be forgotten before an exact broker-backed attempt existed"
+  - mutant: "restore caller-local ts_event equality as a dedupe identity field"
+    killed_by: "advancing-clock concurrent request and exact-attempt controls"
+    decisive_output: "4 failures; benign same-key losers faulted in both stores"
 ```
 
 ### Fresh implementation and gate evidence
 
 ```yaml
 evidence:
-  - command: "focused WO-0124 plus amended WO-0126 budget corpus"
+  - command: "pytest -q tests/test_wo0124_disposition_cancel_convergence.py tests/test_wo0113_safe_local_cancel.py"
     result: PASS
-    decisive_output: "20 passed in 2.4s"
-  - command: "WO-0019, WO-0036 safety/hostile, WO-0113 safe-local-cancel, and R2 conformance corpus"
+    decisive_output: "89 passed"
+  - command: "WO-0124/0126, WO-0019, WO-0036 safety/hostile, WO-0113, and explicit R2 conformance corpus"
     result: PASS
-    decisive_output: "351 passed in 20.9s"
-  - command: "pytest --cov=app --cov-branch --cov-report=term-missing"
+    decisive_output: "429 passed in 31.1s"
+  - command: "python -m pytest --cov=app --cov-branch --cov-report=term-missing --basetemp=.pytest-tmp-wo0124-full-33ad906-20260721"
     result: PASS
-    decisive_output: "4029 passed, 11 skipped, 1 expected xfail; 93.05 percent coverage; exit 0 in 359.84s"
+    decisive_output: "4087 passed, 11 skipped, 1 expected xfail; 93.05 percent branch coverage; exit 0 in 438.44s"
+  - command: "the two preceding full coverage attempts before added rejection-path pins"
+    result: FAIL_THEN_SUPERSEDED
+    decisive_output: "All semantic tests passed, but 4077 tests produced only 92.98 percent and 4083 produced only 92.99 percent; neither was accepted as green."
   - command: "ruff check . --no-cache; scoped ruff format --check"
     result: PASS
-    decisive_output: "All checks passed; 6 changed Python files already formatted"
+    decisive_output: "All checks passed; 9 scoped Python files already formatted"
   - command: "mypy app/"
     result: PASS
     decisive_output: "Success: no issues found in 70 source files"
   - command: "lint-imports --no-cache"
     result: PASS
     decisive_output: "Analyzed 99 files and 485 dependencies; 6 contracts kept, 0 broken"
+  - command: "two in-process adversarial exact-hash audits at 48851ba/c360487 behavior"
+    result: PASS_NON_INDEPENDENT
+    decisive_output: "Both returned ACCEPT with no remaining findings; one independently reran 419 related cases and all static gates. These audits do not clear the required cross-model REV-0037 seat."
+  - command: "AI-OS installed-repo validators: install, version, ledger, PKL, disposition, Fable DONE, scope, context hygiene"
+    result: PASS
+    decisive_output: "All seven blocking validators passed; context hygiene reported 0 violations and 4 advisory active-work-order line-count findings."
+  - command: "pytest -q .ai-os/scripts/tests from this installed OS layout"
+    result: ENVIRONMENT_LAYOUT_LIMIT
+    decisive_output: "31 passed, 3 failed, 2 errored: package-self-test fixtures require source-package files at .ai-os/00_START_HERE.md and an installed mcp/ package, while this repo intentionally has the installed .ai-os/core layout and optional MCP absent. Direct installed-repo validators above are green; no vendored OS file was changed."
 constraints:
   credentials_used: false
   live_trading_used: false
@@ -234,6 +291,20 @@ fable_fix:
   regression_test: "test_direct_cancel_retries_are_bounded_then_escalate_once plus test_failed_human_escalation_never_reopens_venue_authority"
   red_green_verified: true
   attempt: 1
+fable_fix_2:
+  symptom: "A CREATED disposition cancel could lose to a brokerless submit claim and leave no durable decision for restart."
+  root_cause: "The old flow tried the local compare-and-swap before persisting any selection truth; normal cancel attempts require a broker id that does not yet exist."
+  fix: "Persist a non-I/O cancel_request for the exact occurrence and complete local target scope; block named CREATED claims and require a later normal exact broker-backed attempt before IO."
+  regression_test: "WO-0113 brokerless serialization/occurrence corpus plus WO-0036 pre-CAS, mixed-scope, sibling, and restart controls"
+  red_green_verified: true
+  attempt: 1
+fable_fix_3:
+  symptom: "A concurrent same-key dedupe loser faulted when its caller-local timestamp differed from the stored winner."
+  root_cause: "The replay identity comparator treated ts_event as caller identity even though the store's dedupe key had already chosen one immutable fact."
+  fix: "Accept the winner timestamp only; preserve every authority-bearing provenance, material, correlation, scope, and payload comparison; only the exact-attempt winner owns IO."
+  regression_test: "test_concurrent_brokerless_request_accepts_dedupe_winner_timestamp and test_concurrent_exact_cancel_attempt_accepts_dedupe_winner_timestamp"
+  red_green_verified: true
+  attempt: 1
 ```
 
 ```yaml
@@ -248,16 +319,19 @@ fable_done:
       evidence: "SQLite crash/reopen reaches attempt 2; both stores stop at attempts 1,2,3 and latch exactly once."
     - item: "Projection never broadens cancel authority or mints a child"
       status: MET
-      evidence: "Exact broker positive/foreign negative, contiguous-attempt, and non-minting controls are green; two projection mutants turn RED."
+      evidence: "Exact broker/request identity, canonical snapshot, occurrence, A/B/C restart, malformed/superset, contiguous-attempt, and non-minting controls are green; projection/scope mutants turn RED."
+    - item: "Brokerless and concurrent decision races converge without granting implicit venue authority"
+      status: MET
+      evidence: "Both stores and SQLite reopen cover request-first, claim-first, release, terminal, expiry overlap, later occurrence, partial sibling scope, and advancing-clock dedupe collisions; only a persisted normal exact attempt owns IO."
     - item: "Disposition cancels spend zero reprice budget and accepted records agree"
       status: MET
       evidence: "Shared policy/facade/restart count is reprice-only; ADR-010 and INV-083/090 carry dated pending-review amendments."
     - item: "Static, import, regression, full-suite, and coverage gates are green"
       status: MET
-      evidence: "4029 passed at 93.05 percent; Ruff, scoped format, mypy, and all six import contracts passed."
+      evidence: "4087 passed at 93.05 percent after two honestly retained below-floor attempts; 429 related cases, Ruff, scoped format, mypy, and all six import contracts passed."
     - item: "Independent human-gated review is staged without self-certification"
       status: MET
-      evidence: "REV-0037 targets frozen semantic range 1af0ae7..a865a95; WO remains REVIEW."
+      evidence: "REV-0037 targets frozen semantic/test range 1af0ae7..33ad906; in-process ACCEPT audits are explicitly non-independent; WO remains REVIEW."
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false

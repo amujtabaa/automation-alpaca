@@ -6,7 +6,7 @@ status: STAGED
 reviewer_seat: Claude
 targets: [WO-0124, ADR-010, INV-083, INV-090]
 human_gated_surfaces: [cancel-replace, event-log-truth, accepted-ADR-text, invariant-record-text]
-commit_range: 1af0ae7..a865a95
+commit_range: 1af0ae7..33ad906
 created: 2026-07-21
 ---
 
@@ -30,17 +30,28 @@ WO-0124 changes cancel/replace behavior, append-only execution truth, accepted A
 INV-083/090. D-0124 authorizes the narrow change and decides that disposition wind-down cancels
 spend zero reprice budget. Independent review remains mandatory before beta reliance.
 
-Review the frozen semantic range `1af0ae7..a865a95`:
+Review the frozen semantic/test range `1af0ae7..33ad906`:
 
 - `044c583` — activation and narrow policy/model-comment path authorization
 - `d1e8494` — red-first disposition/restart/projection/budget contract
 - `0940d53` — corrected terminal human-review recovery authority (RED)
 - `e7ea5fd` — monitoring, shared projection, and reprice-only implementation
 - `a865a95` — ADR-010 + INV-083/090 amendments and escalation-failure pin
+- `a962ced` — initial request checkpoint, superseded by this final packet (not authority)
+- `b730411`, `3bd546a`, `dd152ea` — historical-child, complete pre-IO sibling scope, and partial-write/restart RED pins
+- `ffac1b3`, `a08a33e`, `550314c` — exact target-snapshot implementation/docs and raced broker-child retention
+- `8fd45e1`, `403ce81` — three cancel-convergence race RED pins and their fix
+- `b566334`, `3cf0379` — lost terminal-response RED pin and false-escalation fix
+- `2266bcf`, `138e389` — brokerless claim-hold RED contract and implementation
+- `17af9d1`, `c360487` — advancing-clock concurrent-dedupe RED pins and winner-timestamp fix
+- `48851ba` — final brokerless/occurrence/dedupe ADR-010 and INV-083/090 text
+- `dbb5656`, `33ad906` — rejection-path and canonical-snapshot negative controls restoring coverage
 
-The later review-stage commit contains only this request and work/status evidence; it is excluded
-so the packet does not review itself. If integration rewrites the semantic commits, the dispatcher
-must replace the frontmatter range with the exact equivalent integrated range before review.
+The later final review-stage commit contains only this refreshed request and work/status evidence;
+it is excluded so the packet does not review itself. If integration rewrites the semantic commits,
+the dispatcher must replace the frontmatter range with the exact equivalent integrated range
+before review. The earlier `a962ced` request-only checkpoint is included by history but superseded
+in full by this file.
 
 ## Authority model to verify, not assume
 
@@ -63,6 +74,18 @@ must replace the frontmatter range with the exact equivalent integrated range be
 6. The pre-existing locally-terminal/broker-open interval branch remains a genuinely untracked
    interval and may retain its existing `unresolved` recovery semantics. Verify the new tracked-
    order latch did not silently change or duplicate that branch.
+7. A brokerless `action=cancel_request` is selection truth only. It has exact envelope/order/
+   session/intent/material identity, one non-negative claim occurrence, and a sorted unique
+   non-empty `target_order_ids` selection, but no broker id, positive attempt, budget spend, or
+   venue authority. Monitoring disposition policy is its sole producer.
+8. Request-first serialization pre-arms the next occurrence and blocks every named `CREATED`
+   claim. Claim-first serialization may bind only that same highest occurrence even if ACK or
+   terminal truth commits before the request append; a later occurrence fails closed. A crash
+   after the first request preserves the complete A/B decision scope and excludes later C.
+9. Broker IO after a request still requires fresh valid non-terminal lineage and a newly persisted
+   normal exact `(order_id, broker_order_id)` cancel attempt. Concurrent same-key request/attempt
+   writers accept the stored winner timestamp only when every authority-bearing field and payload
+   matches; only the normal-attempt winner owns IO.
 
 ## Curated targets and boundaries
 
@@ -82,6 +105,11 @@ must replace the frontmatter range with the exact equivalent integrated range be
 - Incumbent regression truth: `tests/test_wo0019_engine_seam.py`,
   `tests/test_wo0036_execution_safety.py`, `tests/test_wo0036_r2_hostile_closure.py`,
   `tests/test_wo0113_safe_local_cancel.py`, `tests/r2_conformance_oracle.py`
+
+Within those tests, prioritize the named brokerless request serialization, pre-CAS crash/restart,
+mixed local/venue A/B plus later-C exclusion, expiry overlap, malformed/superset scope,
+later-occurrence rejection, single-producer, advancing-clock dedupe collision, and canonical
+target-snapshot rejection controls.
 
 Forbidden/out of scope: credentials; live venue; non-paper mode; adapter/facade/cockpit changes;
 new config/dependency/field/enum/schema/DDL/migration; symbol-only or venue-uncertain cancel
@@ -114,6 +142,17 @@ scenario per invariant in `result.md`, with command/outcome and why it can fail.
    or a mixed disposition. Prove the projection fails closed and that no new child/obligation is
    minted. Also verify one valid cancel fact leaves the canonical submit/reprice child and
    unresolved cardinality unchanged.
+3. Force both serialization orders around `cancel_request`: request before claim, and claim before
+   request with broker ACK before append. Then release occurrence 0, accept occurrence 1, and append
+   the stale occurrence-0 request. The first two same-occurrence schedules must converge exactly;
+   the later-occurrence schedule must make zero cancel attempts/calls and fail closed.
+4. Build A=`CREATED` and B=`SUBMITTED`, crash immediately after the first request commit, reopen
+   SQLite, then add C. The request must have durably named A+B; A must remain unclaimable, B alone
+   may receive exact venue cancellation, and C must remain outside historical authority.
+5. Collide two same-key request writers and two same-key normal-attempt writers while advancing the
+   caller clock between drafts. Both pairs must converge without a benign-loser exception; only
+   one attempt fact and one venue owner may result. Change one material/payload field under the
+   same key and prove that collision still fails closed.
 
 ## Required mutation/disproof pass
 
@@ -126,19 +165,27 @@ Independently attempt at least these changes (temporary, restore each):
 - create `RECOVERY_UNRESOLVED` instead of terminal `RECOVERY_NEEDS_REVIEW`;
 - let `action=cancel` replace/mint the canonical child;
 - remove exact broker-id validation or accept symbol-only scope.
+- omit `cancel_request` from claimability/restart/policy guards;
+- reduce a request's `target_order_ids` to its anchor and drop selected siblings;
+- allow an occurrence-0 request to bind an accepted occurrence-1 claim;
+- restore caller-local `ts_event` equality as a dedupe identity field, or let a dedupe loser own IO;
+- accept malformed, reordered, duplicate-order, or duplicate-broker target snapshots.
 
 If a relevant test/probe stays green under a mutant, report a finding; a test that cannot fail is
 a P0 under the repository review rules.
 
 ## Author evidence to reproduce skeptically
 
-- Focused amended contract: **20 passed**.
-- Incumbent cancel/projection/R2 corpus: **351 passed**.
-- Exact CI-form suite: **4029 passed, 11 skipped, 1 expected xfail**, branch coverage **93.05%**.
-- `ruff check .`: passed; scoped format: 6 files already formatted.
+- Primary WO-0124 + brokerless safe-local contract: **89 passed**.
+- Cancel/projection/R2 related corpus: **429 passed**.
+- Exact CI-form suite: **4087 passed, 11 skipped, 1 expected xfail**, branch coverage **93.05%**.
+- Two earlier full attempts passed all semantics but reached only **92.98%** and **92.99%**;
+  rejection-path pins were added and the final full gate above was rerun from `33ad906`.
+- `ruff check .`: passed; scoped format: 9 files already formatted.
 - `mypy app/`: 70 source files clean.
 - Import linter: 99 files / 485 dependencies, 6 contracts kept, 0 broken.
-- Seven author mutants described in the work order turned RED and were restored.
+- Thirteen author mutants described in the work order turned RED and were restored. The
+  advancing-clock bug was also reproduced live as 4/4 RED before its one-line identity fix.
 
 Treat skips/xfail as claims to inspect, not automatic acceptance. Verify the changed tests are not
 weakened, the event is actually persisted before IO in both stores, and the coverage floor is not
@@ -161,6 +208,10 @@ met by excluding the changed code.
 6. Did the range stay within its authorized paths and avoid adapter, facade, cockpit, config,
    dependency, field/enum/schema/migration, live-mode, reviewer-result, disposition, and ledger
    changes?
+7. Can any brokerless request mint venue authority, survive onto a later claim occurrence, omit a
+   selected sibling, expand to a later child, let fresh policy overtake an unresolved target, or
+   relabel a stale-data decision as expiry? Can same-key concurrency raise on timestamp alone or
+   produce double IO?
 
 ## Expected output
 
