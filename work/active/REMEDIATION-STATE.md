@@ -22,7 +22,7 @@ Authoritative kickoff: `work/queue/CODEX-KICKOFF-REMEDIATION.md`
 |---|---|---|---|
 | WO-0130 | CLOSED | activation `b108339`; RED `5ea1bca`; finish `3cdf8fb` | VERIFIED: boundary RED, main-path mutation RED, restored focused/static gates, and full 4105-node pytest exit 0; `RESULT_SUMMARY_KEPT`. |
 | WO-0132 | CLOSED | activation `ab7996f`; RED/mutation pin `2ae9d44`; finish `3361d8d` | VERIFIED: exact authority mutation killed 4/4 direct nodes; both missing-occurrence consumers fail closed; focused 133 and full 4113-node gates exit 0; REV-0035 re-verification remains out-of-session. |
-| WO-0131 | ACTIVE | activation: this commit | Gated replay FSM legality authorized by WO; GATE and RED evidence pending; must end at REVIEW with REV-0038 staged, never self-close. |
+| WO-0131 | REVIEW | activation `cf50f11`; RED `d0665b3`; semantic `b99d8c0`; review staging: this commit | VERIFIED implementation: 15 legal + 75 illegal edges, direct/read-model mutation killed, replay/parity/conformance 282 and full 4205-node gates exit 0; REV-0038 staged for Claude; no disposition/ledger/close-out. |
 | WO-0133 | QUEUED | — | ADR-009 anchor/range re-baseline; runs last after application anchors settle. |
 
 ## Running NEEDS-INPUT list
