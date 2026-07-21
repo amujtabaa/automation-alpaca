@@ -187,8 +187,16 @@ smallest VPS tier (20-25 GB) is ~100x headroom — the event log grows append-on
 but linearly (~1 KB/event; the perf suite's 100k-event STRESS corpus ≈ 0.1 GB); growth cost
 is policed by the CI scaling gate + WO-0118's beta budget; any future compaction is an
 ADR-gated event-log-truth decision. Prerequisites before exposure stand: auth layer ADR +
-deployment ADR + Lane B as the migration cutover gate. Interim access (Tailscale) remains
-available meanwhile without any repo change.
+deployment ADR + Lane B as the migration cutover gate.
+
+**2026-07-20 interim ratified (Ameen): Tailscale, in the D-013b-compliant shape.**
+`docs/00_START_HERE.md` D-013b records localhost as a load-bearing security boundary (the
+mutating API is unauthenticated by design). The ratified interim therefore is: FastAPI stays
+bound `127.0.0.1:8000` (never on any network); Streamlit stays bound `127.0.0.1:8501`;
+remote access ONLY via `tailscale serve` (authenticated tailnet identity = the required auth
+layer; both processes keep enforced localhost binding). **Tailscale Funnel (public exposure)
+is forbidden** until the auth ADR exists. Zero repo changes involved; this interim neither
+amends D-013b nor substitutes for the VPS-era auth ADR.
 
 ## 3. Dependency and sequencing note
 
