@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R1: ADR-009 remediation amendment + spec reconciliation + REV-0034 staging"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0127
 wave: signal-seat revival (O-3 path a; ladder step R1)
 model_tier: strong
