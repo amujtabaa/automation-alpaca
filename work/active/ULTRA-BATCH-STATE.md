@@ -45,7 +45,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 
 | WO | Status | Branch commits | Notes |
 |---|---|---|---|
-| WO-0114 | REVIEW | `f3be6e3` activation; `b6d4fb0` red-first contract; `759eff0` review-stage; `3e47387` semantic FIX; metadata freeze: this commit | CI-form coverage restored to 93.13%; older-fill replay and fill-row identity fail closed in both stores; REV-0035 refreshed for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
+| WO-0114 | REVIEW | `f3be6e3` activation; `b6d4fb0` red-first contract; `759eff0` review-stage; `ffd818b` semantic FIX; `a079e39` metadata freeze | CI-form coverage restored to 93.13%; older-fill replay and fill-row identity fail closed in both stores; REV-0035 refreshed for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
 | WO-0118 | CLOSED | `a14a8f7` activation; `30d4ae5` budget contract; `2546188` close-out | VERIFIED: three-run target and 10x stress evidence showed near-linear post-Cluster-E scaling; Phase 2 skipped with no store/DDL/index changes; unchanged 3x/12x/2 MiB limits frozen, dispositioned, and moved to `work/completed/keep/`. |
 | WO-0119 | CLOSED | `966b1a7` activation; `5f715a8` implementation; `7387199` close-out | Bootstrapper, Python 3.12 devcontainer, and environment pointer verified in a disposable OS-temp checkout; fresh + rerun smoke gates green; dispositioned and moved to `work/completed/`. |

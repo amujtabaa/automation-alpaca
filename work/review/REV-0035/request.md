@@ -11,10 +11,10 @@ human_gated_surfaces:
   - operator fill ingestion and position truth
   - typed operator API and cockpit control
 review_base_sha: 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae
-head_sha: 3e47387509d94e8e31291635cf97fbea734ff3bf
+head_sha: ffd818b6c8d86efed01a2b2924e59c23e535cb23
 commit_range: 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 supplemental_fix_base_sha: fbb2887842e149eb422605ad0fe532e2c7683dbc
-supplemental_fix_range: fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
+supplemental_fix_range: fbb2887842e149eb422605ad0fe532e2c7683dbc..ffd818b6c8d86efed01a2b2924e59c23e535cb23
 branch: codex/ultra-beta-batch
 created: 2026-07-20
 ---
@@ -67,19 +67,19 @@ base to the supplemental head because that ancestry includes unrelated ULTRA-bat
 git rev-parse 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae
 git rev-parse 759eff03e289851a41d652a2ad392f6b9ff2c6b9
 git rev-parse fbb2887842e149eb422605ad0fe532e2c7683dbc
-git rev-parse 3e47387509d94e8e31291635cf97fbea734ff3bf
+git rev-parse ffd818b6c8d86efed01a2b2924e59c23e535cb23
 git diff --stat 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 git diff --name-status 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 git diff --check 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 git diff 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
-git diff --stat fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
-git diff --name-status fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
-git diff --check fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
-git diff fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
+git diff --stat fbb2887842e149eb422605ad0fe532e2c7683dbc..ffd818b6c8d86efed01a2b2924e59c23e535cb23
+git diff --name-status fbb2887842e149eb422605ad0fe532e2c7683dbc..ffd818b6c8d86efed01a2b2924e59c23e535cb23
+git diff --check fbb2887842e149eb422605ad0fe532e2c7683dbc..ffd818b6c8d86efed01a2b2924e59c23e535cb23
+git diff fbb2887842e149eb422605ad0fe532e2c7683dbc..ffd818b6c8d86efed01a2b2924e59c23e535cb23
 ```
 
 Activation commit: `f3be6e3`. Red-first checkpoint: `b6d4fb0`. The range contains only WO-0114
-lane commits from the ULTRA batch base. Semantic FIX: `3e47387`; its supplemental base is the
+lane commits from the ULTRA batch base. Semantic FIX: `ffd818b`; its supplemental base is the
 integrated batch head immediately before the fix.
 
 ## What changed
@@ -215,7 +215,7 @@ New-Item -ItemType Directory -Path $Tmp | Out-Null
 & $Py -m mypy app/
 & .\.venv\Scripts\lint-imports.exe
 git diff --check 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
-git diff --check fbb2887842e149eb422605ad0fe532e2c7683dbc..3e47387509d94e8e31291635cf97fbea734ff3bf
+git diff --check fbb2887842e149eb422605ad0fe532e2c7683dbc..ffd818b6c8d86efed01a2b2924e59c23e535cb23
 & $Py -m pytest -o "addopts=" -q --cov=app --cov-branch --basetemp (Join-Path $Tmp "pytest")
 & $Py -m pytest -q tests/r2_conformance_oracle.py tests/test_r2_conformance_oracle_claude.py
 & $Py -m pytest -q tests/test_review_hardening_gates.py
@@ -230,7 +230,7 @@ those files as part of REV-0035.
 
 ## Author evidence to reproduce, not trust
 
-- Exact semantic head `3e47387`: CI-form full suite **4,003 passed, 11 skipped, 1 xfailed;
+- Exact semantic head `ffd818b`: CI-form full suite **4,003 passed, 11 skipped, 1 xfailed;
   93.129079% (15,411/16,548 combined units); exit 0; 400.86 s**.
 - WO/API/cockpit/hardening focused corpus: **121/121** (104 + 3 + 14).
 - Conformance: **83 passed / 6 documented skips**; hardening: **14/14**.

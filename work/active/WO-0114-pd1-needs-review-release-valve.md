@@ -304,7 +304,7 @@ fable_fix:
 | VERIFIED | fill-row symbol corruption RED/GREEN | 2 failed before complete row-identity comparison; corrected replay/state slice 17/17 green |
 | VERIFIED | `pytest -q tests/r2_conformance_oracle.py tests/test_r2_conformance_oracle_claude.py` | 83 passed, 6 skipped, exit 0 |
 | VERIFIED | `pytest -q tests/test_review_hardening_gates.py` | 14 passed, exit 0 |
-| VERIFIED | CI-form `pytest -q --cov=app --cov-branch` on `3e47387` | 4,003 passed, 11 skipped, 1 xfailed; required 93.0 reached; 93.129079% (15,411 / 16,548 units); exit 0; 400.86 s |
+| VERIFIED | CI-form `pytest -q --cov=app --cov-branch` on the semantic tree integrated as `ffd818b` | 4,003 passed, 11 skipped, 1 xfailed; required 93.0 reached; 93.129079% (15,411 / 16,548 units); exit 0; 400.86 s |
 | VERIFIED | `git diff --check` | exit 0 |
 
 ```yaml
@@ -318,7 +318,7 @@ fable_done:
     allowed_paths_respected: true
     drive_by_edits: false
   evidence:
-    - "Exact semantic head 3e47387: full CI-form suite 4,003 passed / 11 skipped / 1 xfailed; 93.129079 percent branch-aware combined coverage; exit 0."
+    - "Exact semantic tree integrated as ffd818b: full CI-form suite 4,003 passed / 11 skipped / 1 xfailed; 93.129079 percent branch-aware combined coverage; exit 0."
     - "Conformance 83 passed / 6 skipped; hardening 14 passed."
     - "Ruff check, mypy, import-linter, scoped Ruff format, and diff check green."
   status: VERIFIED
