@@ -4,7 +4,7 @@ title: Signal Seat — external signal producers (contract summary)
 status: draft
 authority: medium
 owner: Ameen
-last_verified: 2026-07-21
+last_verified: 2026-07-20
 tags: [signal-seat, architecture, boundaries, safety]
 source_refs: [docs/adr/ADR-009-signal-seat-boundary.md, docs/spec/signal-seat/00-overview.md]
 supersedes: []
@@ -80,5 +80,5 @@ any L1/L2 proposal (which requires a superseding ADR and review).
 ## Change log
 
 - 2026-07-14: initial draft distillation.
-- 2026-07-21: reconciled to current INV-087/090/091 semantics and D-SIG-1..9; retained
+- 2026-07-20: reconciled to current INV-087/090/091 semantics and D-SIG-1..9; retained
   draft/medium authority pending REV-0034 and human acceptance.

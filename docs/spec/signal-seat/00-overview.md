@@ -5,7 +5,7 @@
 **Proposed**; the remediation text and this spec await independent review in REV-0034 and Ameen's
 post-review approval. Where this spec and ADR-009 disagree, ADR-009 wins and the disagreement is a
 defect in this spec.
-**Status:** remediation drafted 2026-07-21; REVIEW pending — design-only, no implementation is
+**Status:** remediation drafted 2026-07-20; REVIEW pending — design-only, no implementation is
 authorized. WO-0102..0104 remain gated drafts until REV-0034 returns ACCEPT / ACCEPT-WITH-CHANGES
 and Ameen accepts the ADR text. The fresh `signal_records` DDL approval is deliberately deferred
 to WO-R4.

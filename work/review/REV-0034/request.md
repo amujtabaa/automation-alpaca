@@ -7,7 +7,7 @@ reviewer_seat: Claude
 targets: [ADR-009, signal-seat-spec, ADR-013-draft, WO-0102..0104-rescope]
 human_gated_surfaces: [ADR-text, order-submission-design, auth-transport-design, event-log-design, schema-design]
 commit_range: d32dfb1..SET-ON-DISPATCH
-created: 2026-07-21
+created: 2026-07-20
 ---
 
 # Review Request REV-0034 — ADR-009 remediation and Signal Seat specification
@@ -144,8 +144,8 @@ unreachability/design argument and mark runtime proof UNVERIFIED rather than inv
 - `work/queue/WO-0104-signal-rails.md`
 - `work/review/DISPATCH.md`
 - `work/review/REV-0022/{result.md,disposition.md}`
-- current anchors: `app/facade/store_backed.py:786-787`,
-  `app/store/core.py:887,1401`, `app/models.py:893`,
+- current anchors: `app/facade/store_backed.py:786-789`,
+  `app/store/core.py:887,981-998,1401`, `app/models.py:893`,
   `app/api/routes_system.py:48`, `app/api/routes_trading.py:289,299,318`
 
 ## Out of scope

@@ -13,7 +13,7 @@ SELL-exposure projection (§3a), and the ordinary risk decision. It then consume
 operator approval, appends `SIGNAL_APPROVED`, and creates and links exactly one ordinary intent.
 Failure leaves no approval event, no intent, and the signal in RECEIVED.
 
-The facade composition at `app/facade/store_backed.py:786-787`
+The facade composition at `app/facade/store_backed.py:786-789`
 (`await gate.approve(...)` followed by `await create_order_for_candidate(...)`) is explicitly
 forbidden for signal conversion; its await boundary is the original F-002 crash shape. The atomic
 command composes the existing candidate planner at `app/store/core.py:887` and the corresponding

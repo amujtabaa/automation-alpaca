@@ -1,7 +1,7 @@
 # ADR-013: External Webhook Ingress Through a Public Receiver
 
 **Status:** **Proposed — draft seed only; not approved for implementation**
-**Date:** 2026-07-21
+**Date:** 2026-07-20
 **Deciders:** Ameen (future human gate)
 **Number:** ADR-013
 **Prerequisites:** accepted D-HOST-1 deployment/auth ADR and independent acceptance review of this
