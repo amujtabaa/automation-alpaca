@@ -35,6 +35,7 @@ from app.models import (
 from app.sellside.types import ActionKind, PlannedAction
 from app.store.memory import InMemoryStateStore
 from app.store.sqlite import SqliteStateStore
+from app.transitions import ENVELOPE_TRANSITIONS
 
 pytestmark = pytest.mark.anyio
 
@@ -117,6 +118,99 @@ def _active_prefix() -> list[ExecutionEvent]:
     ]
 
 
+_TRANSITION_EVENT_BY_TARGET = {
+    EnvelopeStatus.APPROVED: ExecutionEventType.ENVELOPE_APPROVED,
+    EnvelopeStatus.ACTIVE: ExecutionEventType.ENVELOPE_ACTIVATED,
+    EnvelopeStatus.FROZEN: ExecutionEventType.ENVELOPE_FROZEN,
+    EnvelopeStatus.COMPLETED: ExecutionEventType.ENVELOPE_COMPLETED,
+    EnvelopeStatus.EXPIRED: ExecutionEventType.ENVELOPE_EXPIRED,
+    EnvelopeStatus.EXHAUSTED: ExecutionEventType.ENVELOPE_EXHAUSTED,
+    EnvelopeStatus.BREACHED: ExecutionEventType.ENVELOPE_BREACHED,
+    EnvelopeStatus.SUPERSEDED: ExecutionEventType.ENVELOPE_SUPERSEDED,
+    EnvelopeStatus.CANCELLED: ExecutionEventType.ENVELOPE_CANCELLED,
+}
+
+
+def _transition_event_type(
+    before: EnvelopeStatus, after: EnvelopeStatus
+) -> ExecutionEventType:
+    if before is EnvelopeStatus.FROZEN and after is EnvelopeStatus.ACTIVE:
+        return ExecutionEventType.ENVELOPE_RESUMED
+    return _TRANSITION_EVENT_BY_TARGET[after]
+
+
+def _transition_extra(after: EnvelopeStatus) -> dict[str, object]:
+    return {"superseded_by_id": "env-2"} if after is EnvelopeStatus.SUPERSEDED else {}
+
+
+def _prefix_to_status(status: EnvelopeStatus) -> list[ExecutionEvent]:
+    created = _event(ExecutionEventType.ENVELOPE_CREATED, 1, payload=_created_payload())
+    if status is EnvelopeStatus.PENDING:
+        return [created]
+    if status is EnvelopeStatus.APPROVED:
+        return [
+            created,
+            _transition(
+                ExecutionEventType.ENVELOPE_APPROVED,
+                2,
+                EnvelopeStatus.PENDING,
+                EnvelopeStatus.APPROVED,
+            ),
+        ]
+    active = _active_prefix()
+    if status is EnvelopeStatus.ACTIVE:
+        return active
+    if status is EnvelopeStatus.FROZEN:
+        return [
+            *active,
+            _transition(
+                ExecutionEventType.ENVELOPE_FROZEN,
+                4,
+                EnvelopeStatus.ACTIVE,
+                EnvelopeStatus.FROZEN,
+            ),
+        ]
+    if status is EnvelopeStatus.CANCELLED:
+        return [
+            created,
+            _transition(
+                ExecutionEventType.ENVELOPE_CANCELLED,
+                2,
+                EnvelopeStatus.PENDING,
+                EnvelopeStatus.CANCELLED,
+            ),
+        ]
+    return [
+        *active,
+        _transition(
+            _transition_event_type(EnvelopeStatus.ACTIVE, status),
+            4,
+            EnvelopeStatus.ACTIVE,
+            status,
+            **_transition_extra(status),
+        ),
+    ]
+
+
+_LEGAL_TRANSITION_CASES = tuple(
+    (before, after)
+    for before in EnvelopeStatus
+    for after in _TRANSITION_EVENT_BY_TARGET
+    if after in ENVELOPE_TRANSITIONS[before]
+)
+_ILLEGAL_TRANSITION_CASES = tuple(
+    (before, after)
+    for before in EnvelopeStatus
+    for after in _TRANSITION_EVENT_BY_TARGET
+    if after not in ENVELOPE_TRANSITIONS[before]
+)
+
+
+def _transition_case_id(case: tuple[EnvelopeStatus, EnvelopeStatus]) -> str:
+    before, after = case
+    return f"{before.value}-to-{after.value}"
+
+
 def test_envelope_vocabulary_is_explicitly_classified() -> None:
     current = frozenset(
         event_type
@@ -172,29 +266,110 @@ def test_replay_folds_actions_fills_attribution_freeze_and_resume() -> None:
 
 
 @pytest.mark.parametrize(
-    ("event_type", "terminal"),
+    ("event_type", "before", "terminal"),
     [
-        (ExecutionEventType.ENVELOPE_COMPLETED, EnvelopeStatus.COMPLETED),
-        (ExecutionEventType.ENVELOPE_BREACHED, EnvelopeStatus.BREACHED),
-        (ExecutionEventType.ENVELOPE_EXHAUSTED, EnvelopeStatus.EXHAUSTED),
-        (ExecutionEventType.ENVELOPE_EXPIRED, EnvelopeStatus.EXPIRED),
-        (ExecutionEventType.ENVELOPE_SUPERSEDED, EnvelopeStatus.SUPERSEDED),
-        (ExecutionEventType.ENVELOPE_CANCELLED, EnvelopeStatus.CANCELLED),
+        (
+            ExecutionEventType.ENVELOPE_COMPLETED,
+            EnvelopeStatus.ACTIVE,
+            EnvelopeStatus.COMPLETED,
+        ),
+        (
+            ExecutionEventType.ENVELOPE_BREACHED,
+            EnvelopeStatus.ACTIVE,
+            EnvelopeStatus.BREACHED,
+        ),
+        (
+            ExecutionEventType.ENVELOPE_EXHAUSTED,
+            EnvelopeStatus.ACTIVE,
+            EnvelopeStatus.EXHAUSTED,
+        ),
+        (
+            ExecutionEventType.ENVELOPE_EXPIRED,
+            EnvelopeStatus.ACTIVE,
+            EnvelopeStatus.EXPIRED,
+        ),
+        (
+            ExecutionEventType.ENVELOPE_SUPERSEDED,
+            EnvelopeStatus.ACTIVE,
+            EnvelopeStatus.SUPERSEDED,
+        ),
+        (
+            ExecutionEventType.ENVELOPE_CANCELLED,
+            EnvelopeStatus.FROZEN,
+            EnvelopeStatus.CANCELLED,
+        ),
     ],
 )
 def test_terminal_lifecycle_event_folds_status(
-    event_type: ExecutionEventType, terminal: EnvelopeStatus
+    event_type: ExecutionEventType,
+    before: EnvelopeStatus,
+    terminal: EnvelopeStatus,
 ) -> None:
-    extra = (
-        {"superseded_by_id": "env-2"} if terminal is EnvelopeStatus.SUPERSEDED else {}
-    )
+    prefix = _prefix_to_status(before)
+    extra = _transition_extra(terminal)
     events = [
-        *_active_prefix(),
-        _transition(event_type, 4, EnvelopeStatus.ACTIVE, terminal, **extra),
+        *prefix,
+        _transition(event_type, len(prefix) + 1, before, terminal, **extra),
     ]
     projection = project_envelopes(events)["env-1"]
     assert projection.status is terminal
     assert projection.superseded_by_id == extra.get("superseded_by_id")
+
+
+def test_transition_event_vocabulary_covers_every_representable_target() -> None:
+    assert set(_TRANSITION_EVENT_BY_TARGET) == set(EnvelopeStatus) - {
+        EnvelopeStatus.PENDING
+    }
+    assert set(_LEGAL_TRANSITION_CASES) | set(_ILLEGAL_TRANSITION_CASES) == {
+        (before, after)
+        for before in EnvelopeStatus
+        for after in _TRANSITION_EVENT_BY_TARGET
+    }
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    _LEGAL_TRANSITION_CASES,
+    ids=tuple(_transition_case_id(case) for case in _LEGAL_TRANSITION_CASES),
+)
+def test_replay_accepts_every_fsm_legal_envelope_transition(
+    before: EnvelopeStatus,
+    after: EnvelopeStatus,
+) -> None:
+    prefix = _prefix_to_status(before)
+    event = _transition(
+        _transition_event_type(before, after),
+        len(prefix) + 1,
+        before,
+        after,
+        **_transition_extra(after),
+    )
+
+    projection = project_envelopes([*prefix, event])["env-1"]
+
+    assert projection.status is after
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    _ILLEGAL_TRANSITION_CASES,
+    ids=tuple(_transition_case_id(case) for case in _ILLEGAL_TRANSITION_CASES),
+)
+def test_replay_rejects_every_fsm_illegal_envelope_transition(
+    before: EnvelopeStatus,
+    after: EnvelopeStatus,
+) -> None:
+    prefix = _prefix_to_status(before)
+    event = _transition(
+        _transition_event_type(before, after),
+        len(prefix) + 1,
+        before,
+        after,
+        **_transition_extra(after),
+    )
+
+    with pytest.raises(ProjectionError, match="illegal envelope transition"):
+        project_envelopes([*prefix, event])
 
 
 def test_repair_checkpoint_is_classified_global_metadata() -> None:
