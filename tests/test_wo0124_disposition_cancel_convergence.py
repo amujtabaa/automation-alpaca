@@ -16,6 +16,7 @@ import pytest
 import app.monitoring as monitoring
 from app.broker.adapter import BrokerError
 from app.broker.mock import MockBrokerAdapter
+from app.config import Settings
 from app.marketdata.fake import FakeMarketDataFeed
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
@@ -373,6 +374,158 @@ async def test_stale_cancel_failure_then_sqlite_restart_converges(
         assert [event.payload["attempt"] for event in attempts] == [1, 2]
     finally:
         await reopened.close()
+
+
+async def _close_first_child(
+    store,
+    adapter: MockBrokerAdapter | None = None,
+) -> tuple[ExecutionEnvelope, Order, MockBrokerAdapter]:
+    """Close child A with a durable cancel and broker-authoritative terminal."""
+
+    envelope, first = await _submitted_child(store)
+    adapter = adapter or MockBrokerAdapter()
+    await monitoring._cancel_envelope_working_order(
+        store,
+        adapter,
+        envelope,
+        disposition=STALE_CANCEL,
+    )
+    assert adapter.canceled == [first.broker_order_id]
+    await monitoring._reconcile_open_orders(store, adapter, Settings())
+    closed = await store.get_order(first.id)
+    assert closed is not None and closed.status is OrderStatus.CANCELED
+    return envelope, first, adapter
+
+
+async def _submit_future_child(
+    store,
+    envelope: ExecutionEnvelope,
+    adapter: MockBrokerAdapter,
+) -> Order:
+    """Submit child B after A's exact cancel obligation has converged."""
+
+    result = await execute_envelope_action(
+        store,
+        adapter,
+        envelope.id,
+        _planned(),
+        snapshot_fingerprint="wo0124-future-child",
+        now=NOW + timedelta(seconds=2),
+    )
+    assert result.outcome == ENVELOPE_EXEC_SUBMITTED, result.detail
+    assert result.order_id is not None
+    future = await store.get_order(result.order_id)
+    assert future is not None and future.broker_order_id is not None
+    return future
+
+
+async def _assert_historical_cancel_does_not_retarget_future_child(store) -> None:
+    envelope, first, adapter = await _close_first_child(store)
+    future = await _submit_future_child(store, envelope, adapter)
+    assert future.id != first.id
+
+    await monitoring._converge_envelope_disposition_cancels(store, adapter)
+
+    # The durable cancel fact names child A. It is not standing envelope-wide
+    # authority and must never be reused against later child B.
+    assert adapter.canceled == [first.broker_order_id]
+    fresh_future = await store.get_order(future.id)
+    assert fresh_future is not None and fresh_future.status is OrderStatus.SUBMITTED
+    assert _cancel_events(
+        await store.get_execution_events(), envelope.id, future.id
+    ) == []
+
+
+async def test_historical_cancel_never_retargets_future_child(any_store):
+    await _assert_historical_cancel_does_not_retarget_future_child(any_store)
+
+
+async def test_historical_cancel_never_retargets_future_child_after_sqlite_restart(
+    tmp_path,
+):
+    db_path = tmp_path / "wo0124-historical-cancel-scope.db"
+    first_store = SqliteStateStore(db_path)
+    envelope, first, _adapter = await _close_first_child(first_store)
+    await first_store.close()
+
+    reopened = SqliteStateStore(db_path)
+    await reopened.initialize()
+    try:
+        # Mint B only after restart. The persisted event for A, not an in-memory
+        # selection, is therefore the only old cancel authority available.
+        adapter = MockBrokerAdapter()
+        future = await _submit_future_child(reopened, envelope, adapter)
+        assert future.id != first.id
+        await monitoring._converge_envelope_disposition_cancels(reopened, adapter)
+
+        assert adapter.canceled == []
+        fresh_future = await reopened.get_order(future.id)
+        assert fresh_future is not None
+        assert fresh_future.status is OrderStatus.SUBMITTED
+        assert _cancel_events(
+            await reopened.get_execution_events(), envelope.id, future.id
+        ) == []
+    finally:
+        await reopened.close()
+
+
+async def test_expiry_without_current_child_event_scopes_before_venue_io(any_store):
+    class EventObservingAdapter(MockBrokerAdapter):
+        target_broker_order_id: str | None = None
+        target_order_id: str | None = None
+        observed_exact_event = False
+
+        async def cancel_order(self, broker_order_id: str) -> None:
+            if broker_order_id == self.target_broker_order_id:
+                events = await any_store.get_execution_events()
+                [event] = _cancel_events(
+                    events,
+                    envelope.id,
+                    self.target_order_id or "<missing-target>",
+                )
+                self.observed_exact_event = (
+                    event.envelope_id == envelope.id
+                    and event.order_id == self.target_order_id
+                    and event.payload.get("disposition") == EXPIRY_CANCEL
+                    and event.payload.get("broker_order_id") == broker_order_id
+                )
+            await super().cancel_order(broker_order_id)
+
+    adapter = EventObservingAdapter()
+    envelope, first, _ = await _close_first_child(any_store, adapter)
+    future = await _submit_future_child(any_store, envelope, adapter)
+    adapter.target_broker_order_id = future.broker_order_id
+    adapter.target_order_id = future.id
+    await any_store.transition_envelope(
+        envelope.id,
+        EnvelopeStatus.EXPIRED,
+        actor="engine",
+        reason="wo0124-expiry-after-prior-stale-cancel",
+        now=NOW + timedelta(seconds=3),
+    )
+
+    # Model a crash after the terminal envelope transition but before the first
+    # child-B expiry event. Convergence must discover only current child B, then
+    # persist its exact identity before acquiring venue authority.
+    assert _cancel_events(
+        await any_store.get_execution_events(), envelope.id, future.id
+    ) == []
+    await monitoring._converge_envelope_disposition_cancels(any_store, adapter)
+
+    assert adapter.observed_exact_event is True
+    assert adapter.canceled == [first.broker_order_id, future.broker_order_id]
+    assert len(
+        _cancel_events(
+            await any_store.get_execution_events(), envelope.id, first.id
+        )
+    ) == 1
+    [future_cancel] = _cancel_events(
+        await any_store.get_execution_events(), envelope.id, future.id
+    )
+    assert future_cancel.payload["disposition"] == EXPIRY_CANCEL
+    fresh_future = await any_store.get_order(future.id)
+    assert fresh_future is not None
+    assert fresh_future.status is OrderStatus.CANCEL_PENDING
 
 
 async def test_direct_cancel_retries_are_bounded_then_escalate_once(any_store):
