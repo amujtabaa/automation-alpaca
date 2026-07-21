@@ -75,4 +75,3 @@ follow_imports_for_stubs = true
 # factories, dev route, and both alpaca-py SDK adapters — is now typechecked with no
 # `ignore_errors` override. The whole `app/` package is under the gate. (Third-party
 # stub handling stays above via the numpy/pandas/pyarrow follow_imports override.)
-# Next ADR-007 step: consider flipping `warn_unused_ignores = true`.

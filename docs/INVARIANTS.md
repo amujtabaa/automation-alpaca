@@ -140,6 +140,11 @@ reopen both.
 `tests/test_wo0113_capi_uncertainty.py::test_final_buy_claim_rechecks_uncertainty_created_after_order_mint`,
 plus `tests/test_wo0113_acceptance_identity.py::test_created_order_with_own_venue_identity_cannot_be_resubmitted`.
 
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
+
 **INV-022 — A live-at-broker order is never untracked.** Ordinarily, every broker
 order the adapter still considers live has one durable local owner: a local
 order row or an open (`unresolved`/`needs_review`) `SubmitRecoveryRecord`.
@@ -153,6 +158,11 @@ visibility into (F-002).
 *Pinned by:* `no_live_untracked_broker_order` invariant
 (`tests/test_lifecycle_state_machine.py`), `tests/test_sim_chaos.py`, and the
 exact provenance/identity pins in `tests/test_wo0113_submit_acceptance_fallback.py`.
+
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
 
 **INV-023 — A stale `SUBMITTING` order (crash between claim and broker
 persist) is recovered by idempotent re-drive, never left stranded, and never
@@ -439,6 +449,11 @@ into an invisible global bypass.
 (`test_direct_manual_intent_creation_is_denied_while_halted`,
 `test_direct_manual_dispatch_rechecks_halted_and_self_heals`).
 
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
+
 **INV-061 — Control-surface setters (`set_kill_switch`, `set_buys_paused`,
 `set_watchlist_armed`, `add_watchlist_symbol`'s `armed` field) accept only a
 real `bool` — a coercible string (`"false"`) or truthy int is rejected with a
@@ -546,6 +561,11 @@ the identity/lineage conflict matrix,
 `test_new_repair_rejects_an_existing_unreflected_marker`,
 `test_cadence_validates_direct_attributed_fill_chain`, and
 `test_attribution_repair_uses_durable_tail_checkpoint`).
+
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
 
 **INV-077 — At most ONE envelope per sell intent is ACTIVE, with no observable
 two-ACTIVE window.** Activation checks the intent's other envelopes under the
@@ -698,6 +718,11 @@ Pins: `tests/test_wo0113_primary_remediation.py`
 `test_envelope_stage_defers_without_canceling_recovery_owned_created_buy`,
 `test_candidate_creation_is_refused_during_exit_preemption`, and
 `test_exit_blocked_candidate_dispatch_expires_instead_of_reviving`).
+
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
 
 **INV-082 — Plan/write validator disagreement is a DEFECT signal: freeze +
 ENVELOPE_PLAN_DIVERGENCE, zero venue calls.** ``stage_envelope_action`` (both
@@ -1056,6 +1081,11 @@ cross-representation conflict handling, and timeout-resolution ownership are pin
 `tests/test_wo0113_store_parity.py`; bounded repair selection is pinned in
 `tests/test_wo0113_repair_scaling.py`.
 
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
+
 **INV-092 — Local `CREATED → CANCELED` is one common proof, not a raw-status
 shortcut.** Under the deciding lock/transaction, event projection must still
 say `CREATED`, `broker_order_id` must be absent, no open `unresolved` or
@@ -1074,6 +1104,11 @@ or recovery leaves the order non-terminal.
 `test_session_close_uses_projection_spares_recovery_and_counts_exactly`, and
 `test_local_created_cancel_rolls_back_row_audit_and_execution`), plus
 `tests/test_wo0113_acceptance_identity.py::test_accepted_direct_sell_cannot_be_canceled_as_local_created`.
+
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
 
 **INV-093 — A failed candidate dispatch cannot silently strand a consumed
 approval.** Every ordinary exception and `asyncio.CancelledError` after approval
@@ -1106,6 +1141,11 @@ points even if a local terminal fact masks its order row.
 `tests/test_wo0113_acceptance_identity.py`,
 `tests/test_wo0113_primary_remediation.py`, and the existing final-claim pins in
 `tests/test_wo0109_round3_remediation.py`.
+
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending label
+is retained verbatim as decision history; this annotation records only the completed review gate
+and changes no invariant meaning.*
 
 **INV-095 — Every managed venue response is correlated to one durable exact
 request scope.** Before a venue submit/replace, the engine appends one

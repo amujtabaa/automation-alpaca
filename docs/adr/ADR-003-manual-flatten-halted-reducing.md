@@ -36,6 +36,11 @@ not retroactive revocation. The scoped authorization never changes the global co
 capability interpretation YES on 2026-07-19; it does not create an ambient bypass. REV-0033
 independent review remains required.
 
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending
+language is retained verbatim as decision history; this annotation records only the completed
+review gate and changes no behavior or decision.*
+
 ## Consequences
 
 Operator exit remains possible, but it is not a hidden bypass around the kill switch.

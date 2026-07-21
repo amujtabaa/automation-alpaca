@@ -43,6 +43,7 @@ allowed_paths:
   - docs/adr/ADR-007-mypy-typecheck-gate.md
   - docs/adr/ADR-008-order-status-event-provenance.md
   - docs/INVARIANTS.md
+  - pyproject.toml       # F004: remove one contradictory comment only; no config-value change
   - work/**            # review packet, close-out
 ```
 

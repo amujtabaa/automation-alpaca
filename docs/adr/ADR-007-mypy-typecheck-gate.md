@@ -48,3 +48,15 @@ existing import-linter ignore-list and coverage `fail_under` ratchets:
   (`app/main.py:172: Incompatible return value type … [return-value]`, exit 1).
 - The limitation is real — a new error in a grandfathered module passes — **PROVEN** (documented above).
 - CI step fails the build on a new type error in a checked module (to be added with the tooling change).
+
+## WO-0121 current-state record — 2026-07-21
+
+The 187-error/16-module baseline, grandfather punch-list, and accepted limitation above are
+retained as the historical adoption record. WO-0012 subsequently burned the application
+punch-list down completely: the live `pyproject.toml` contains no application
+`ignore_errors = true` override, and the whole `app/` package is checked. The live gate also sets
+`warn_unused_ignores = true`; `mypy app/` currently succeeds across **64 source files**. The only
+remaining mypy override skips incompatible third-party numpy/pandas/pyarrow stubs and does not
+exempt application code. This dated record changes no type policy or configuration value; it
+records the stronger already-shipped ratchet. The annotation itself remains review-gated by
+REV-0036 before beta reliance.

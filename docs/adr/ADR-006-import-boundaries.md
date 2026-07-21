@@ -106,3 +106,12 @@ create transitive paths that are not violations.
 - the ratchet bites: a stale/unmatched ignore entry and a newly-introduced
   forbidden edge both fail `lint-imports` (verified during Phase 5 build + its
   review remediation; re-checkable by removing any Contract-5 ignore line).
+
+## WO-0121 current-state record — 2026-07-21
+
+The original five-contract decision, consequences, and evidence above are retained as the
+accepted historical baseline. The live `.importlinter` now defines **six** contracts: the original
+five plus `sellside-is-a-pure-policy`, which mechanically enforces the accepted pure-sellside
+boundary from ADR-010/WO-0018. `lint-imports` currently reports **6 kept, 0 broken**. This dated
+record does not add, remove, relax, or reinterpret an import boundary; it records the stronger
+already-shipped gate. The annotation itself remains review-gated by REV-0036 before beta reliance.

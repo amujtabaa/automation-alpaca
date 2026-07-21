@@ -63,6 +63,11 @@ These are defensive realizations of this ADR's accepted no-blind-redrive decisio
 permission to submit. The operator ratified this fallback-ownership and repair shape YES on
 2026-07-19; REV-0033 independent review remains required.
 
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../../work/review/REV-0033/disposition.md) is **RESOLVED**. The preceding pending
+language is retained verbatim as decision history; this annotation records only the completed
+review gate and changes no behavior or decision.*
+
 ## Consequences
 
 The system may stall more often, but it avoids oversell/short-flip risk caused by submitting a replacement while the first order may already be live or filled.

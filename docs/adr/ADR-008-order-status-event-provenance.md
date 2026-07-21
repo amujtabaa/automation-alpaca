@@ -76,6 +76,11 @@ ExecutionEvent, and owner reconciliation atomically. Pins:
 
 ### WO-0113 operator-ratified behavior — pending REV-0033 independent review
 
+*WO-0121 closure record (2026-07-21): REV-0033 returned **ACCEPT-WITH-CHANGES** and its
+[disposition](../../work/review/REV-0033/disposition.md) is **RESOLVED**. The pending heading is
+retained verbatim as decision history; this annotation records only the completed review gate and
+changes no behavior or decision.*
+
 Whenever recovery ownership for accepted broker identity cannot be persisted, the last-write
 fallback is `UNKNOWN_RECONCILE_REQUIRED` with `ENGINE` / `LOCAL` provenance, whether or not the
 ordinary acceptance audit already succeeded. It is a local containment/ownership decision, not a
