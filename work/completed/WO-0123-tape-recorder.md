@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Real-tape recorder: capture extended-hours market data + derived events for replay validation"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0123
 wave: post-R2 beta-prep (Entry-Envelope enabler; runs early to accumulate corpus)
 model_tier: mid
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen / implementer TBD / from W4-SEED-NOTES replay-harness seed
 created: 2026-07-20
 gated_surface: none for order flow (read-only market data only); reads broker market data (paper)
@@ -132,3 +132,55 @@ run in parallel with Lane P, the remediation batch, and the Signal Seat revival.
 ## Completion disposition
 
 Expected: `[RESULT_SUMMARY_KEPT]`.
+
+## Fable verification and close-out
+
+```yaml
+fable_fix:
+  symptom: "The full import-boundary pin rejected the new standalone recorder launcher because it transitively reached the concrete market-data factory."
+  root_cause: "The existing transitive SDK allowlist named only the application composition root. WO-0123 intentionally adds a second, read-only operational composition root (`app.recorder.runner` and `app.recorder.__main__`) that constructs the existing MarketDataService factory."
+  evidence: "pytest -q -x reached tests/test_import_boundaries.py::test_only_sanctioned_modules_transitively_reach_the_alpaca_sdk and reported exactly app.recorder.runner and app.recorder.__main__ as stray reachers."
+  fix: "Extended the exact sanctioned-reacher pin and its rationale to name only these two recorder composition-root modules; direct SDK import remains confined to the two concrete ports."
+  regression_test: "Focused recorder plus import-boundary suite passed, and lint-imports reported all six contracts KEPT."
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+evidence:
+  command: "Before implementation: python -m pytest -q tests/test_tape_recorder.py"
+  result: FAIL
+  decisive_output: "ImportError: cannot import name ENABLE_TAPE_RECORDER_ENV from app.config; RED_EXIT_CODE=2"
+---
+evidence:
+  command: "python -m pytest -q --basetemp <OS-temp> tests/test_tape_recorder.py"
+  result: PASS
+  decisive_output: "6 passed; includes zero-order-flow adapter spy, flag-off inertness, deterministic replay, invalid-data flags, rotation, and config defaults."
+---
+evidence:
+  command: "Temporary mutation: add recorder submit_order call, then run the zero-order-flow spy test"
+  result: FAIL
+  decisive_output: "AssertionError: assert ['submit'] == []; MUTATION_EXIT_CODE=1. Mutation restored before final validation."
+---
+evidence:
+  command: "ruff check .; mypy app/; lint-imports; pytest -q --basetemp <OS-temp>"
+  result: PASS
+  decisive_output: "ruff: All checks passed; mypy: Success: no issues found in 70 source files; import-linter: 6 contracts kept, 0 broken; full pytest exit 0 after 340.7s."
+```
+
+```yaml
+fable_done:
+  task: "WO-0123 real-tape recorder"
+  done_when_results:
+    - "The flag-off recorder makes no MarketDataService call and creates no tape file."
+    - "The enabled recorder uses only MarketDataService snapshots, records validity/session metadata with injected time, and persists a replay-stable NDJSON stream."
+    - "The order-flow spy and its temporary submit mutation prove submit/cancel/replace calls are caught."
+    - "The separate configured tape store rotates within documented retention bounds and never touches execution truth."
+    - "The standalone operational launcher and replay tape format are documented; no credentialed market-data capture was performed or needed in this batch."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  evidence:
+    - "Focused, mutation, boundary, static, and full-suite evidence above."
+  status: VERIFIED
+```
