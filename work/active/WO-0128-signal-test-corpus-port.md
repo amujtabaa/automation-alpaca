@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R3: red-first test-corpus port (branch-staged, never merged red)"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0128
 wave: signal-seat revival (O-3 path a; ladder step R3)
 model_tier: mid
