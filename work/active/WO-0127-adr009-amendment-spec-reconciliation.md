@@ -42,6 +42,7 @@ remediation text (A-1..A-4), corrected for today's tree — so one fresh indepen
 ```yaml
 allowed_paths:
   - docs/adr/ADR-009-signal-seat-boundary.md
+  - docs/adr/ADR-013-external-ingress.md     # D-SIG-9 Proposed-only seed
   - docs/spec/signal-seat/**
   - pkl/architecture/signal-seat.md
   - docs/INVARIANTS.md            # cross-references ONLY (no invariant semantics change)
@@ -82,6 +83,9 @@ forbidden_paths:
 - [ ] **Conversion semantics:** per D-SIG-8's ratified answer — v1 signal conversion mints the
       SAME Candidate/SellIntent objects the cockpit does; downstream execution is byte-identical
       to manual flow (envelope where the operator delegates); no new execution lane.
+- [ ] **External-ingress seed:** per D-SIG-9, create Proposed-only ADR-013 for the thin public
+      HMAC/secret-authenticating Receiver that forwards privately as a keyed producer; the
+      trading API is never public; D-HOST-1 deployment/auth ADR acceptance + review are prerequisites.
 - [ ] Spec files 00-04 ported with plan §5 mechanical fixes; 05-conversion sell-half and
       06-invariants REWRITTEN per plan §5; pkl page stays draft/medium authority.
 - [ ] WO-0102/0103/0104 re-scoped per plan §5 + §8-11 (status stays gated/draft; launcher trio

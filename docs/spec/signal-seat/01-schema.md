@@ -1,3 +1,4 @@
+
 # 01 — Schema: `SignalProposal`, `SignalRecord`, the approval payload
 
 ## 1. Wire schema — `SignalProposal` (request body of `POST /api/signals`)
@@ -12,7 +13,7 @@ spoofable).
 |---|---|---|---|
 | `signal_id` | `str` | 1–64 chars, `[A-Za-z0-9_-]+` | Producer-generated, deterministic (ULID or equivalent). Half of the idempotency key. |
 | `issued_at` | `datetime` (ISO-8601, tz-aware) | plausibility-checked (`02-lifecycle.md §3`) | Naive datetimes are a 422 validation failure → quarantine path. |
-| `ttl_seconds` | `int` | clamped semantics: valid range `[30, 86400]`; outside → quarantine | Signal expires at `issued_at + ttl_seconds`. |
+| `ttl_seconds` | `int` | valid range `[30, 86400]`; outside → quarantine | Effective expiry is server-capped: `expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)` (ADR-009 A-3). |
 | `symbol` | `str` | 1–10 chars, uppercased, `[A-Z.]+` | Instrument. |
 | `direction` | `Literal["buy", "sell"]` | | Maps to the direction-aware conversion path (`05-conversion.md`). |
 | `suggested_quantity` | `Optional[int]` | `> 0` if present | **Advisory, display-only.** Never flows into any order field (`05-conversion.md §2`). |
@@ -47,9 +48,11 @@ class SignalRecord(_Entity):
     status: SignalStatus
     symbol: str
     direction: str                 # "buy" | "sell"
-    issued_at: datetime
-    ttl_seconds: int
-    expires_at: datetime           # issued_at + ttl_seconds, precomputed, tz-aware UTC
+    issued_at: Optional[datetime]  # NULL only for a validation-quarantine ON issued_at (missing/naive) — raw offender kept in raw_fields; non-null for every RECEIVED/valid record
+    ttl_seconds: Optional[int]     # NULL only for a validation-quarantine ON ttl_seconds (non-integer/out-of-range) — raw offender kept in raw_fields
+    expires_at: Optional[datetime] # min(received_at + server_max_ttl, issued_at + ttl_seconds) — ADR-009 A-3; persisted, never re-derived. NULL when the freshness fields are too invalid to compute it (terminal validation-quarantine-at-ingest, 02-lifecycle §2)
+    received_at: datetime          # injected server clock at ingest (the A-3 anchor) — ALWAYS present
+    raw_fields: Optional[dict[str, str]]  # the raw offending input for a validation-quarantine (archive REV-0025-F P1): a malformed issued_at/ttl_seconds is recorded verbatim here so the terminal record is representable and replay-exact, never invented sentinels
     suggested_quantity: Optional[int]
     suggested_limit_price: ResponseSafeFloat
     thesis: str
@@ -66,12 +69,30 @@ class SignalRecord(_Entity):
 Unique index / dict key: **`(producer_id, signal_id)`** — never bare `signal_id` (ADR-009;
 cross-producer duplicate ids are distinct signals).
 
+**Terminal validation-quarantine records are representable, never sentinel-invented** (archive REV-0025-F P1,
+resolves the 01↔02 field-nullability contradiction): the ADR principle is *record malformed-but-
+attributable, don't reject-and-forget* (§1), so an authenticated body whose `issued_at` is missing/
+naive or whose `ttl_seconds` is non-integer/out-of-range **is** persisted as a terminal `QUARANTINED`
+`SignalRecord` — with the offending typed field `NULL` (`issued_at`/`ttl_seconds`), `expires_at` `NULL`
+(uncomputable), and the raw offending input preserved in `raw_fields`. `received_at`, `producer_id`,
+`signal_id`, `record_id`, `payload_hash`, and `quarantine_reason` are always present. Replay is exact
+from the `SIGNAL_QUARANTINED` event (which embeds the same raw proposal, `02-lifecycle §2`); no
+sentinel dates/ints are ever fabricated. A RECEIVED/valid record has all freshness fields non-null.
+
 ## 3. Dedupe and idempotency
 
 On `POST /api/signals` with an existing `(producer_id, signal_id)`:
 
-- **Identical `payload_hash`** → idempotent replay: HTTP 200 with the existing record; **no new
-  event appended** (mirrors `client_order_id` idempotency). Works in every signal status.
+- **Boundary rejection takes precedence over idempotent replay** (archive REV-0025 inline): the
+  quarantine-epoch / rate / budget rails check runs at step 2 **before the body is read**, so the
+  `payload_hash` dedupe path (which needs the body) is **not reached** for a quarantined or
+  over-limit producer — its request, *even an identical replay of an already-accepted signal*, is
+  boundary-rejected **403/429**, not 200. This is required for the flood bound (a quarantined
+  producer must not earn cheap 200s), and the dedupe contract below is scoped to **admitted**
+  ingests only.
+- **Identical `payload_hash`** (admitted producer) → idempotent replay: HTTP 200 with the existing
+  record; **no new event appended** (mirrors `client_order_id` idempotency). Works in every signal
+  status.
 - **Different `payload_hash`** → duplicate-conflict: the **existing** record's status is untouched;
   the conflict is recorded **event-only** as **`SIGNAL_DUPLICATE_CONFLICT`** — a dedicated
   audit-only event type, **explicitly excluded from the signal lifecycle fold** (Codex PR #6: a
@@ -90,7 +111,7 @@ what enter those fields):
 
 | Field | Type | Constraints |
 |---|---|---|
-| `quantity` | `int` | `> 0`; for sells, `quantity > live position` at conversion time (read under the store lock) **refuses** the conversion with reason `POSITION_CHANGED` — never silently capped (`05-conversion.md §1`) |
+| `quantity` | `int` | `> 0`; for sells, `quantity > (live position − project_committed_sell_exposure(...).quantity)` at conversion time (computed under the store lock/transaction from the shared obligation/recovery/acceptance projection) **refuses** the conversion with reason `POSITION_CHANGED` — never silently capped. **The ceiling is the exposure-aware available position in EVERY state, not bare `live position`; ambiguity in the projection refuses conversion with its contribution breakdown** (ADR-009 A-3 / `05-conversion.md §3a`; a bare-`live position` check admits a 50-share signal sell against a 100-share position with 90 already committed to exits — the joint-oversell hole INV-4 forbids; archive REV-0024-F P1) |
 | `limit_price` | `float` | finite, `> 0` (`limit_price_reason` — the F1/BACKEND-1 rule) |
 | `actor` | threaded from the authenticated operator credential + `X-Actor` audit label | |
 

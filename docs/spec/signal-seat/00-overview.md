@@ -1,10 +1,20 @@
+
 # Signal Seat — Contract Specification (WO-0101)
 
-**Authority:** implements ADR-009 — **whose acceptance was rescinded 2026-07-14 (REV-0022 formal verdict: BLOCK)**. This spec is therefore **DRAFT input to the F-001..F-004 remediation** (it already contains partial answers: expiry bounds/atomic re-check §02, approval-atomic-with-conversion rule A2, coalesced audit §03 — the remediation must reconcile or strengthen these to the reviewer's asks, e.g. per-epoch audit bound, server-max-TTL formula, read-route auth, transport/key lifecycle). It implements ADR-009 exactly; where this spec and ADR-009
-disagree, ADR-009 wins and the disagreement is a defect in this spec.
-**Status:** complete spec, design-only — no code ships with this document set.
-**Implementer contract:** WO-0102 (ingestion), WO-0103 (approval surface + conversion), WO-0104
-(rails) must be implementable from these documents alone, against the as-built tree at `c4271d8`+.
+**Authority:** draft implementation contract for ADR-009 as amended by WO-0127. ADR-009 remains
+**Proposed**; the remediation text and this spec await independent review in REV-0034 and Ameen's
+post-review approval. Where this spec and ADR-009 disagree, ADR-009 wins and the disagreement is a
+defect in this spec.
+**Status:** remediation drafted 2026-07-21; REVIEW pending — design-only, no implementation is
+authorized. WO-0102..0104 remain gated drafts until REV-0034 returns ACCEPT / ACCEPT-WITH-CHANGES
+and Ameen accepts the ADR text. The fresh `signal_records` DDL approval is deliberately deferred
+to WO-R4.
+**Tree basis:** `origin/master@3b8c840` plus the ULTRA batch continuity commit; current-tree anchors
+were refreshed during WO-0127.
+
+> **Archive provenance convention.** References to archive REV-0024/0025 below mean records at
+> `origin/archive/claude-wo-0001-install-checks-2x5ys8`; those packet ids are never ported to
+> master and do not clear REV-0034.
 
 ## Document map
 
@@ -12,7 +22,7 @@ disagree, ADR-009 wins and the disagreement is a defect in this spec.
 |---|---|
 | `01-schema.md` | `SignalProposal` wire schema, `SignalRecord` entity, the approval payload, dedupe/idempotency semantics, validation rules |
 | `02-lifecycle.md` | Signal state machine, event-log vocabulary additions, TTL/staleness rules, replay/reconstruction contract |
-| `03-rails.md` | Rate limits, the WO-0102 interim ingest ceiling, producer quarantine + release, flood backpressure |
+| `03-rails.md` | Rate limits, the non-refilling invalid/conflict budget, enablement gated on full rails, producer quarantine + release, flood backpressure |
 | `04-auth-and-api.md` | Producer/operator credential model, endpoint definitions (OpenAPI fragment), feature flag + mount rules |
 | `05-conversion.md` | Approval → order-intent conversion per direction, the risk-reducing classification, TradingState/kill-switch interaction table, signal→order correlation |
 | `06-invariants.md` | Preservation notes: CLAUDE.md invariants 1–11 and spine §5 INV-1..9, each mapped to the concrete mechanism in this spec |
@@ -32,11 +42,21 @@ disagree, ADR-009 wins and the disagreement is a defect in this spec.
 
 `Settings.signal_seat_enabled: bool = False` (env `SIGNAL_SEAT_ENABLED`). Flag off ⇒ the signal
 routers are **not mounted** in `create_app` (`app/main.py`) — endpoints 404, no auth surface, no
-storage writes possible. Flag on ⇒ routers mounted **and** operator-credential enforcement on all
-mutating command routes is active (the two flip together; see `04-auth-and-api.md §4`).
-**Deployment gate (ADR-009 rails):** the flag must not be enabled in any environment before
-WO-0104's full rails land — but the code does not rely on that discipline: WO-0102 ships the
-interim hard ceiling (`03-rails.md §2`) so an enabled endpoint is never unrailed.
+storage writes possible. Flag on ⇒ routers mounted **and** operator-credential enforcement on
+**every sensitive route — reads included** — is active (the two flip together; see the fail-closed
+mounted-route matrix in `04-auth-and-api.md §1a` and `§4`). Read exposure is exposure: a producer
+with HTTP reach must learn nothing about positions, orders, sessions, or other producers' theses,
+so the enforcement is **not** narrowed to mutating command routes (ADR-009 A-1.3; archive REV-0024-F-003).
+**Enablement is gated on full rails (ADR-009 A-4; not a deployment discipline but a startup guard):**
+with the flag on, startup **fails fast** unless the full per-producer rails are wired — refilling
+rate bucket, non-refilling invalid/conflict budget, producer-quarantine epoch, and human release
+path (parallel to the credential-presence guard). There is **no interim ceiling** and no window in
+which an enabled endpoint is unrailed; the former audit-free interim ceiling was withdrawn after
+archive REV-0024. Live enablement is therefore the **joint WO-0102 + WO-0103 + WO-0104 milestone** — ingest
+endpoint, the WO-0103 atomic approval→conversion (an enabled seat that cannot atomically convert
+re-opens F-002), and the rails (`03-rails.md §2`). V1 producer topology is localhost-only
+(`loopback`); `tailnet_serve` is the only configured remote transport. Tailscale Funnel and all
+other public exposure are forbidden and negatively tested.
 
 ## Out of scope (log, don't build)
 

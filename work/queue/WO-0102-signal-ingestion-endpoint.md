@@ -1,3 +1,4 @@
+
 ---
 type: Work Order
 title: Signal ingestion endpoint + event-log provenance
@@ -13,9 +14,15 @@ created: 2026-07-11
 
 # Work Order: Signal ingestion endpoint + event-log provenance
 
-> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, and on WO-0101's spec (drafted, `docs/spec/signal-seat/`, itself draft pending the same remediation)
-> **and** WO-0101's spec is complete (this WO must be implementable from that spec alone).
-> Sequencing: 0101 → 0102 → {0103, 0104 in parallel}.
+> **GATED DRAFT — DO NOT ACTIVATE.** ADR-009 remains Proposed; REV-0034 and Ameen's
+> post-review approval must clear G1 first. The archive implementation/review record is provenance
+> only. A fresh `signal_records` DDL decision is required at R4; the archived schema approval is
+> stale. Sequence after G1: model/store foundation → this endpoint/auth/launcher work; live
+> enablement remains the joint WO-0102+0103+0104 milestone.
+>
+> D-SIG posture is binding: `loopback` default + `tailnet_serve`; Funnel/public exposure
+> forbidden; construction-time guard + `python -m app`; all sensitive reads operator-key-gated
+> when flag-on with same-change cockpit plumbing; env-injected static keys with multi-key overlap.
 
 ## Goal
 
@@ -39,7 +46,11 @@ allowed_paths:
   - app/api/routes_signals.py        # new signal routes only
   - app/api/schemas.py               # signal DTOs
   - app/api/deps.py                  # wiring + producer/operator credential dependencies
-  - app/main.py                      # router mount only (create_app mounts routers explicitly)
+  - app/main.py                      # router mount + app construction: docs-route disable/operator-gate, credential-presence + launch-provenance + rails-presence startup guards (A-1/A-4) — Codex rev-3, archive REV-0024
+  - app/server.py                    # NEW backend-owned launch entrypoint (python -m app): programmatic uvicorn, bind derived from validated signal_transport_policy, launch-provenance sentinel (A-1 clause 6, archive REV-0024-F-001)
+  - app/launch_guard.py              # NEW opaque one-shot construction capability + bind checks
+  - app/__main__.py                  # NEW: `python -m app` → app.server.run()
+  - README.md                        # document `python -m app` as the sole sanctioned start command for an enabled seat; deprecate bare `uvicorn app.main:app` under the flag (A-1 clause 6)
   - app/facade/**                    # signal command/query facade — the ADR-005 seam the route talks to
   - cockpit/api_client.py            # operator-credential header plumbing ONLY (no signal UI — that is WO-0103)
   - app/models.py                    # signal event types
@@ -70,17 +81,22 @@ forbidden_paths:
 - [ ] `app.api.routes_signals` added to `.importlinter` contract 5 `source_modules` in the same change — contract 5 enumerates route modules explicitly, so a new route is NOT gated until listed; `lint-imports` must show the new module covered (Codex PR #5 P1).
 - [ ] Router mounted in `create_app` (`app/main.py`) behind the feature flag — the flag-off⇒404 test is only meaningful against the real mount path; route-registration test included (Codex PR #5 P1).
 - [ ] **Route reaches the backend only through a typed signal facade** (ADR-005 / `.importlinter` contract 5): `routes_signals` imports the facade, never `app.store`/`app.events` directly and never via the `get_store` dependency loophole — once listed in contract 5, `lint-imports` proves it (Codex PR #5 round-4 P1).
-- [ ] **Operator credential required on mutating command routes from this WO onward** (ADR-009 §Contract 1): once producers can reach FastAPI, unauthenticated command access is denied — negative tests for the existing command routes with no credential and with an invalid credential, not just producer-key rejection (Codex PR #5 round-4 P1).
+- [ ] **Operator credential required on EVERY sensitive route — reads included — from this WO onward** (ADR-009 Amendment A-1): the full route-authorization matrix ({none, invalid, producer-key, operator-key} × every mounted sensitive route incl. positions/orders/sessions/signals-list/producers) asserted against the real mounted app; **credential-presence startup guard** (flag on ⇒ startup fails unless OPERATOR_API_KEY + producer map configured), FastAPI auto-docs routes disabled-or-operator-only and classified, and key-lifecycle rules implemented as specified (Codex rev-3). **The matrix test is flag-on, so it runs at the joint enablement milestone** (WO-0102 routes + WO-0104 rails; the flag is un-enable-able until WO-0104's rails satisfy the rails-presence guard — see the ingest-rails item below); this WO authors it, the milestone runs it green (archive REV-0024).
+- [ ] **Backend-owned launch path — proxy-private bind enforced at CONSTRUCTION, no listener without the launcher** (ADR-009 A-1 clause 6, archive REV-0025-F-001; Ameen D-1): a request-time 503 is insufficient — `uvicorn app.main:app --host 0.0.0.0 --lifespan off` still accepts TCP + serves 503 on the forbidden port (Codex live-reproduced). Ship `app/server.py::run()` (invoked `python -m app`) that starts uvicorn **programmatically** with the bind derived from + re-validated against `signal_transport_policy`, exiting non-zero **before serving** on any non-loopback/non-socket bind; it mints an **opaque one-shot code-owned capability** (NOT env/config/importable) and passes it to the construction factory. With the flag on, **building the app without the capability raises** — so the module-level `app` import target is removed/refuses, and a bare `uvicorn app.main:app` fails at **import** ⇒ uvicorn opens **no listener**. Keep a fail-closed ASGI request guard as **defense-in-depth only**. Constraints: no env switch, no importable pre-authorized `app`, no zero-arg authorized factory may mint the capability. Document `python -m app` as the sole start command in README; flag off ⇒ construction unrestricted (bare uvicorn dev command unchanged).
+- [ ] **Mutation-sensitive launch proof** (archive REV-0025-F-002): a **subprocess** test with `OPERATOR_API_KEY` + producer map + rails ALL present (so no unrelated startup guard supplies the failure): (a) `uvicorn app.main:app --host 0.0.0.0` + flag on, **both `--lifespan on` and `--lifespan off`**, → **no accepting listener / connection refused**, asserted at the socket level (NOT an HTTP 503); (b) a same-config **positive control** — sanctioned `python -m app` on the policy-valid loopback bind — reaches a **ready listener** serving `GET /api/health`; (c) the launcher with a non-loopback bind + flag on → exit non-zero asserting the **exact A-1 bind-policy reason**. Removing/mutating any single A-1 check must make its own assertion fail.
+- [ ] **Ingest processing order per A-4**: authenticate → rails → bounded body read (64 KiB cap) → parse. **The handler takes raw `Request` — no Pydantic body parameter** (FastAPI reads body-model routes before dependencies can reject; Codex rev-2); auth/rails run as **body-blind dependencies**, then manual capped read + validation. Steps 1–2 reject with zero body processing and **zero store writes — with the single exception of the one epoch-opening `PRODUCER_QUARANTINED` append** when a request first crosses a breach threshold (the one permitted carve-out per `03-rails.md §4`; archive REV-0025-F-006 — do NOT state a blanket "zero writes" that omits it), and with no "otherwise-valid" qualifier on the rate decision (that would require parsing before the rate decision — archive REV-0024-F-004). This WO defines the **rails seam** (the Protocol the body-blind dependency consults); the rails *implementation* — refilling bucket, non-refilling invalid/conflict budget, quarantine epoch, release — is **WO-0104's** (`03-rails.md §1/§1a/§4/§5`). There is **no interim ceiling** (withdrawn, archive REV-0024-F-004).
+- [ ] **Permanent rails-presence startup guard** (ADR-009 A-4; archive REV-0024-F-004, archive REV-0025-F-005): with `signal_seat_enabled` on, `create_app` startup **fails fast unless a conforming rails provider is wired** (rate bucket + non-refilling invalid/conflict budget + quarantine epoch + human release) — exactly parallel to the credential-presence guard, and a **standing invariant, never deleted**. In production that provider is WO-0104's real one (proven wired by the production entrypoint; a Protocol-presence check can't tell it from a permissive fake), so this WO ships the endpoint with the flag **structurally un-enable-able against real wiring** until WO-0104 **satisfies** the guard.
+- [ ] **Sanctioned test seam so WO-0102's own route tests are runnable in isolation** (archive REV-0024-F P1, archive REV-0025-F-005): the flag-on app has two construction guards — rails-presence and the launch-provenance capability. WO-0102 ships (i) a **test-double rails provider** and (ii) a **test-only construction path that mints the launch capability** — both confined to a test seam that **production config/environment cannot select** (never a production default; the production `python -m app` entrypoint is separately proven to wire WO-0104's *real* provider, archive REV-0025-F-005). Its accept/dedupe/malformed/auth integration tests use them to build a mounted flag-on `TestClient` app without weakening either guard or implementing WO-0104 early. The **paced-flood constant-event-row** and **full route-authorization matrix** tests still run at the joint enablement milestone against WO-0104's *real* rails (`03-rails.md §1a`) — the seam exercises ingest wiring, not the flood bound.
 - [ ] **Cockpit credential plumbing lands in the SAME change as the auth flip** (Codex PR #5 round-5 P1): `cockpit/api_client.py::_request` sends the operator credential header, so the browser client's kill-switch / manual-flatten / candidate / watchlist controls keep working the moment enforcement turns on — invariant 11 (browser-first) must never have a window where the operator is locked out of safety controls. Test: authenticated cockpit client exercises kill switch + flatten + a candidate command against the enforced backend; unauthenticated request to the same routes → 401/403. Scope note: `api_client.py` ONLY — the rest of `cockpit/**` stays forbidden here (signal UI is WO-0103).
 - [ ] Producer API keys are **ingestion-scoped** (ADR-009 §Contract 1 role separation): valid for `POST /signals` only; a producer credential is rejected by every other command route (negative test).
-- [ ] Post-quarantine backpressure per ADR-009 rails: ingress from a quarantined producer is rejected at the boundary WITHOUT per-request event appends; coalesced audit only — event log proven bounded under post-quarantine flood (test) (Codex PR #5 P2).
-- [ ] **Interim ingest ceiling ships WITH the endpoint** (Codex PR #5 round-6 P2): a conservative hard per-producer + global requests-per-window ceiling, boundary-rejected (429) beyond it with bounded/coalesced audit — so there is NO configurable window between this WO and WO-0104 in which an authenticated producer can flood the append-only log with unique or malformed proposals. Test: sustained over-ceiling ingest leaves the event log bounded. WO-0104's full rails (policy limits + producer quarantine + human release) supersede this ceiling; the ceiling is not removed until they land.
+- [ ] ~~Post-quarantine backpressure~~ — **moved to WO-0104** (archive REV-0024-F-004): quarantine-epoch handling (`PRODUCER_QUARANTINED`/`PRODUCER_RELEASED`, coalesced audit, post-quarantine write-free ingress) is WO-0104 behavior, not WO-0102's. This WO no longer carries it — the earlier self-contradiction (requiring epoch handling here while declaring it WO-0104's) is removed.
+- [ ] ~~Interim ingest ceiling~~ — **WITHDRAWN** (archive REV-0024-F-004): the audit-free interim ceiling was rate-bounded, not storage-bounded (a producer paced under it still appended validation/conflict events forever). It is removed, not tuned. The no-unrailed-window guarantee is now provided **structurally** by the rails-presence startup guard above (flag un-enable-able until WO-0104's full rails wire), so an enabled endpoint never runs without finite-audit flood protection.
 - [ ] Event-log truth: signals reconstructable purely from events (replay test).
 - [ ] Flag off ⇒ endpoint absent/404; proven by test.
 
 ## Required tests
 
-- [ ] Unit + integration: accept, dedupe on `(producer_id, signal_id)` incl. the cross-producer duplicate-id case, malformed→`SIGNAL_QUARANTINED`, auth-reject — dual-store.
+- [ ] Unit + integration: accept, dedupe on `(producer_id, signal_id)` incl. the cross-producer duplicate-id case, malformed→`SIGNAL_QUARANTINED`, auth-reject — dual-store. **Constructed via the fake-rails test seam** (flag-on app with the test-double rails provider, satisfying the rails-presence guard without WO-0104) — archive REV-0024-F P1.
 - [ ] Replay: signal state reconstructable purely from events.
 - [ ] Flag-off: endpoint absent/404.
 
@@ -100,6 +116,11 @@ lint-imports
 - [ ] Scope limited to allowed paths; no forbidden paths touched.
 - [ ] Fable DONE block includes evidence.
 - [ ] PKL update completed or explicitly not required.
+- [ ] **Fresh schema/DB-migration human approval required before any store-schema change.**
+  The archive approval is stale against today's tree. At R4, present the actual additive
+  `signal_records` DDL, indexes, rail persistence, and nullable correlation columns; record
+  explicit approval before execution. Event-vocabulary additions remain human-gated too.
+- [ ] **Independent CODE review gate cleared before closeout** (this WO touches human-gated surfaces — transport/auth boundary, event-log vocabulary, schema migration): a review packet is queued and dispositioned ACCEPT / ACCEPT-WITH-CHANGES before the work is relied on for a beta milestone. Completion cannot bypass this gate.
 
 ## Model-tier rationale
 

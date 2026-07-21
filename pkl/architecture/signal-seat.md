@@ -4,7 +4,7 @@ title: Signal Seat — external signal producers (contract summary)
 status: draft
 authority: medium
 owner: Ameen
-last_verified: 2026-07-14
+last_verified: 2026-07-21
 tags: [signal-seat, architecture, boundaries, safety]
 source_refs: [docs/adr/ADR-009-signal-seat-boundary.md, docs/spec/signal-seat/00-overview.md]
 supersedes: []
@@ -13,66 +13,72 @@ superseded_by: null
 
 # Signal Seat — external signal producers (contract summary)
 
-## Summary
+## Gate state
 
-External agentic producers (untrusted advisors, out-of-process) may POST signal proposals to the
-backend over an authenticated HTTP contract; a proposal becomes an order intent **only** through
-per-signal human approval (trust level L0). **GATE STATE (2026-07-14): ADR-009 is Proposed — its
-acceptance was RESCINDED after the formal REV-0022 review returned BLOCK (4 P1s: credential/
-transport boundary, non-atomic conversion, TTL/classification bounds, unbounded audit). Nothing
-below is implementable until F-001..F-004 are remediated and re-review clears; WO-0102..0104 are
-re-gated.** ADR-009 (Proposed) is the decision; the
-draft contract is `docs/spec/signal-seat/` (WO-0101 output — DRAFT input to the remediation).
-Implementation: WO-0102 → WO-0103 ∥ WO-0104, all RE-GATED pending remediation + re-review.
+ADR-009 is **Proposed**. WO-0127 drafted the master-side remediation and staged REV-0034, but the
+draft has no implementation authority. WO-0102..0104 remain gated until the Claude-seat review
+returns ACCEPT / ACCEPT-WITH-CHANGES and Ameen accepts the final ADR text. Fresh
+`signal_records` DDL approval is deferred to R4.
 
-## Rules / facts
+Archive REV-0024/0025 records at
+`origin/archive/claude-wo-0001-install-checks-2x5ys8` are provenance only; their ids and
+governance state are not ported.
 
-- Identity: `producer_id` derives from the API key server-side, never from the request body;
-  dedupe/idempotency key is `(producer_id, signal_id)`.
-- Role separation: producer keys are ingestion-scoped (`POST /api/signals` only); approve /
-  reject / producer-release are operator-credential-only. Operator-auth enforcement on all
-  mutating command routes flips on with the `signal_seat_enabled` flag, together with the cockpit
-  credential plumbing (no operator lockout window).
-- Lifecycle: RECEIVED → QUARANTINED | EXPIRED | REJECTED | APPROVED; terminal is terminal;
-  approval is **atomic with conversion** (no approved-but-unconverted state); no event ordering
-  can approve an expired/quarantined signal.
-- Events: `SIGNAL_*` / `PRODUCER_*` are first-class append-only ExecutionEvents; signal state is
-  replay-reconstructable; the position fold consumes only `FILL`, so signal events are
-  structurally position-invisible.
-- Sizing: producer suggestions are display-only; the dispatched order carries the
-  operator-confirmed quantity/limit price from the approval payload.
-- Conversion is direction-aware: buys mint a `Candidate` (strategy="signal"), sells a
-  `SellIntent` with `SellReason.SIGNAL` (pauses under the kill switch; no manual-flatten-style
-  bypass). Kill switch/Halted block conversion; in `Reducing` only risk-reducing signals convert
-  (within-position sells; classification conservative toward convertibility, the quantity-aware
-  risk gate stays binding; blocked conversions are operator-visible — recorded human decision).
-- Rails: TTL/staleness quarantine at ingest; per-producer rate limit → producer quarantine with
-  operator release (browser control required); post-quarantine/over-ceiling ingress is
-  boundary-rejected with coalesced audit — the event log stays bounded under flood; WO-0102
-  ships an interim hard ceiling so no unrailed enablement window exists.
-- Correlation: `SIGNAL_APPROVED` ↔ minted intent id; Candidate/SellIntent carry nullable
-  `signal_producer_id`/`signal_signal_id` — every signal-originated order's trace resolves to
-  exactly its signal.
+## Rules / facts proposed by ADR-009
+
+- **Topology:** v1 producer is localhost-only. Allowed transport vocabulary is `loopback`
+  (default) and `tailnet_serve`; the backend remains loopback-bound. Tailscale Funnel and every
+  other public exposure are forbidden and negatively tested.
+- **Launcher:** the backend-owned `python -m app` construction-time capability prevents a
+  flag-on bare Uvicorn import from opening any listener. A request-time 503 is only defense in
+  depth, not the boundary.
+- **Identity/auth:** `producer_id` derives from an ingestion-scoped producer key; operator keys
+  gate every sensitive route, reads included, when the flag is on. Keys are env-injected static
+  secrets with multi-key overlap rotation; cockpit key plumbing lands with enforcement.
+- **Lifecycle:** RECEIVED → QUARANTINED | EXPIRED | REJECTED | APPROVED; terminal is terminal.
+  Approval and ordinary intent creation are one dual-store atomic command.
+- **Freshness:** durable server-owned
+  `expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)`, with bounded TTL,
+  skew quarantine, injected clock, and atomic conversion-time recheck.
+- **Rails:** every authenticated ingest debits the refilling rate bucket. Attributable terminal
+  ingest facts debit a durable, non-refilling per-cycle budget; the final debit co-opens one
+  quarantine epoch, post-quarantine ingress is write-free, and human release resets both rails.
+  Flag-on construction requires the real rails provider.
+- **Conversion:** producer suggestions are display-only. BUY mints the same Candidate and SELL the
+  same SellIntent as cockpit/manual flow. Downstream candidate/sell-intent, envelope, claim,
+  adapter, and reconciliation paths are unchanged; there is no signal execution lane.
+- **Exposure:** one shared `project_committed_sell_exposure` consumes the INV-090 obligation
+  projection, `RECOVERY_OPEN_STATUSES`, and INV-091 accepted-submit truth. It returns quantity,
+  contribution breakdown, and ambiguity; both stores and the cockpit consume it.
+- **Single mandate:** D-SIG-7 preserves existing sell-intent single-flight and INV-087's one ACTIVE
+  envelope per symbol. The archive multi-exit relaxation is declined.
+- **Correlation:** signal provenance remains auditable across Candidate/SellIntent/order events but
+  never grants authority.
+- **External Internet producers:** Proposed ADR-013 isolates a public HMAC-authenticating Receiver
+  that forwards privately as a keyed producer. The trading API is never public; D-HOST-1
+  deployment/auth acceptance is prerequisite.
 
 ## Rationale
 
-The spine's one correct entry point for external influence is intent through the API behind
-session control, risk checks, the kill switch, and the single-writer engine. The Signal Seat
-formalizes that entry point for machine advisors without moving the human gate. See ADR-009
-(options analysis + 16-finding adversarial review, REV-0022).
+The only safe external influence point is an untrusted proposal entering the private FastAPI
+boundary, then ordinary operator approval and the existing single-writer execution spine. The
+Signal Seat adds identity, provenance, freshness, and finite hostile-ingest rails without adding a
+second executor.
 
 ## Applies to
 
-- WO-0102/0103/0104 implementation; any future producer integration; L1/L2 trust-ladder proposals
-  (each needs a superseding ADR + independent review).
+Future WO-0102/0103/0104/R4-R7 implementation after G1 clears; any future producer integration;
+any L1/L2 proposal (which requires a superseding ADR and review).
 
 ## Related pages
 
 - `pkl/architecture/architecture-map.md`
 - `pkl/architecture/testing-model.md`
 - `pkl/safety/invariants-rationale.md`
+- `docs/adr/ADR-013-external-ingress.md`
 
 ## Change log
 
-- 2026-07-14: Created as WO-0101's PKL distillation of `docs/spec/signal-seat/`.
-- 2026-07-14 (later): marked draft/medium-authority — REV-0022's formal verdict (BLOCK) rescinded ADR-009's acceptance; page re-promotes only when the re-review clears (Codex PR #6 finding).
+- 2026-07-14: initial draft distillation.
+- 2026-07-21: reconciled to current INV-087/090/091 semantics and D-SIG-1..9; retained
+  draft/medium authority pending REV-0034 and human acceptance.

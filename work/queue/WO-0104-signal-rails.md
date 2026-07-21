@@ -1,3 +1,4 @@
+
 ---
 type: Work Order
 title: "Signal rails: TTL, staleness, rate limits, producer quarantine"
@@ -13,9 +14,13 @@ created: 2026-07-11
 
 # Work Order: Signal rails — TTL, staleness, rate limits, producer quarantine
 
-> **RE-GATED (2026-07-14) — DO NOT ACTIVATE**: REV-0022's formal run returned BLOCK; gated on ADR-009 F-001..F-004 remediation + re-review acceptance, then WO-0102. NOTE F-003/F-004 land here: server-max-TTL/expiry formula and per-epoch audit bound become ADR text, not WO discretion
-> and WO-0102 is complete. Runs after 0102; may run in parallel with 0103. The producer
-> **release** route is a human-gated action — same Complex treatment as WO-0103.
+> **GATED DRAFT — DO NOT ACTIVATE.** ADR-009 remains Proposed; REV-0034 and Ameen's
+> post-review approval must clear G1. Start after the fresh R4 model/store/schema foundation and
+> the re-scoped WO-0102 endpoint/auth/launcher work; coordinate the joint enablement milestone with
+> WO-0103. Producer release and any event/schema additions remain human-gated.
+>
+> The final-slot invalid-budget debit co-opens the quarantine epoch in one atomic operation.
+> `loopback`/`tailnet_serve` are the only transport values; Funnel/public exposure is forbidden.
 
 ## Goal
 
@@ -37,6 +42,8 @@ Read only these first:
 allowed_paths:
   - app/events/**                    # signal rails + SIGNAL_EXPIRED events
   - app/models.py
+  - app/config.py                    # server_max_ttl / rate-limit / signal_invalid_budget_per_epoch Settings (A-3/A-4 tunables + hard caps) — Codex rev-3, archive REV-0024
+  - app/main.py                      # SATISFY the permanent rails-presence startup guard by wiring the real provider (A-4; not delete it — archive REV-0025-F-005); prove the production entrypoint constructs the real provider
   - app/store/**
   - app/api/**                       # release route — human-gated action
   - app/facade/**                    # signal facade (release command/queries) — contract 5: the route never reaches store/events directly; commands.py stays forbidden below
@@ -58,17 +65,26 @@ forbidden_paths:
 
 - [ ] Injected clock throughout (no bare `datetime.now()` / `time.time()`).
 - [ ] Property-style tests: no ordering of signal events can yield an APPROVED state for an expired/quarantined signal.
-- [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test).
-- [ ] Post-quarantine backpressure (ADR-009 rails; Codex PR #5 P2): ingress from a quarantined producer is boundary-rejected with coalesced audit, no per-request event appends — event log bounded under sustained post-quarantine flood (test).
+- [ ] Rate-limit breach → all subsequent signals from that producer quarantined until an explicit human release event (test). **The refilling bucket debits EVERY authenticated ingest** — valid, invalid, or duplicate — evaluated at rails-check time **before body parse** (no "otherwise-valid" qualifier; archive REV-0024-F-004). The bucket bounds *throughput*, not *storage*.
+- [ ] **Non-refilling invalid/conflict budget** (ADR-009 A-4; archive REV-0024-F-002/F-004 — the storage bound the refilling bucket cannot provide): `signal_invalid_budget_per_epoch` (default 50; **tunable within `[1, 1000]`, 1000 a hard architectural cap — startup fails fast outside the range**, archive REV-0024-F P2) debited by **every attributable terminal-at-ingest append** — validation `SIGNAL_QUARANTINED`, each novel-hash `SIGNAL_DUPLICATE_CONFLICT` (same-hash replays already coalesced, `01-schema.md §3`), **and each dead-on-arrival `SIGNAL_EXPIRED`** (`expires_at ≤ received_at` / skew-based `issued_at_future`/`issued_at_stale`, `02-lifecycle.md §3`; archive REV-0024-F P1 — else a producer dodges the budget with unique just-expired proposals); does **not** refill while un-quarantined; **the check-reserve-debit is atomic with the terminal event append** — one memory lock / one SQLite transaction, so a step-2 pass does not pre-grant a slot and concurrent/slow-body requests cannot append past the cap (archive REV-0025-F-003); **exact final-slot transition — the exhausting append opens the epoch in the SAME atomic op** (Ameen 2026-07-14, archive REV-0025-F P1; supersedes the earlier "next ingest opens the epoch"): the append that consumes the last slot co-appends its own terminal event AND the one `PRODUCER_QUARANTINED` in one op, so there is **no zero-budget-but-un-quarantined gap** (an exhausted producer's RECEIVED signals must not stay approvable); still exactly one `PRODUCER_QUARANTINED` per epoch, subsequent rejects write-free; **each attributable-rejection event carries `cycle_budget_limit`** so the budget is reconstructable from the event log alone (archive REV-0025-F P1); **both the pinned limit AND consumed/remaining count are replay-reconstructable + durable, restored before serving**, so a restart cannot zero the consumed count (archive REV-0025-F-004); **resets only on human release**. Tests (both stores): (a) pace invalid, novel-conflict, **and dead-on-arrival-expiry** at/below the refill rate over many windows → **constant event-row ceiling** + quarantine-on-exhaustion; (b) **final-slot race** — N concurrent requests with one slot left → exactly one terminal append **co-opening one `PRODUCER_QUARANTINED`**, no approve-during-gap; (c) **delayed/slow-streamed body** admitted at step 2 cannot append after exhaustion; (d) **crash-injection** between debit and append leaves neither; (e) **restart/replay** with 49/50 consumed under raised AND lowered config → consumed count + `cycle_budget_limit` survive from the log, exactly one final append allowed; after release the new config starts the next cycle; (f) **duplicate epoch-open/release** idempotent.
+- [ ] Post-quarantine backpressure per ADR-009 **Amendment A-4**: epoch-bounded audit (ONE PRODUCER_QUARANTINED per epoch — opened by **rate-bucket breach OR invalid/conflict-budget exhaustion**; nothing appended post-quarantine; saturating out-of-log counter; count carried on PRODUCER_RELEASED) — model-based flood test asserts CONSTANT event-row count under sustained hostility, both stores.
+- [ ] **Wire the full rails and SATISFY the permanent rails-presence startup guard** (ADR-009 A-4; the enablement point; archive REV-0025-F-005): the guard is a **standing invariant, never deleted** — once the rate bucket + non-refilling invalid budget + quarantine epoch + human release are wired, startup passes it with `signal_seat_enabled` on. **Prove the production entrypoint constructs the REAL provider** (a Protocol-presence check can't tell it from a permissive fake) and that **fakes are confined to a test-only construction path production config/environment cannot select**. This change satisfies the **rails** half of the gate; **live enablement additionally requires WO-0103's conversion capability** — so even if WO-0104 lands before WO-0103, the flag stays **deployment-gated off** until the conversion path is present and proven (Ameen D-2: a release/deployment gate, not a runtime check; archive REV-0025-F-005). The **flag-on integration suite runs green only at the joint milestone**: the `04-auth-and-api.md §1a` mounted-route authorization matrix (asserting required routes **exist**, not merely classifying mounted ones), the **joint conversion oracle** (ingest → operator approval → exactly one atomically-linked intent, with WO-0103), and the paced-flood constant-event-row tests. WO-0104 alone must NOT declare the flag enable-able.
+- [ ] Expiry semantics per **Amendment A-3**: server-computed durable `expires_at = min(received_at + server_max_ttl, issued_at + ttl_seconds)`, skew bounds, restart-stable, atomically re-checked at conversion (property tests, injected clock).
 - [ ] The release route is **operator-only** (same credential split as WO-0103); a producer API key cannot release its own quarantine (negative test).
+- [ ] **`PRODUCER_RELEASED` resets BOTH rails** — the §1 refilling bucket **and** the §1a non-refilling invalid/conflict budget (archive REV-0024-F P1): a producer quarantined by budget exhaustion, once released, must be able to ingest again **without immediate re-quarantine** — else the human release control is inert. Test asserts a released (budget-exhausted) producer's next ingest is accepted, both stores.
 - [ ] **Release is reachable from the browser** (Codex PR #5 round-6 P2, invariant 11): the cockpit gains a producer-quarantine release control (on WO-0103's signal panel if it exists, else a minimal standalone control) issuing the release intent via the typed API client — the required human action must not be raw-API-only. Thin-client rules apply (no signal state owned client-side; contract 2 stays green).
-- [ ] WO-0102's interim ingest ceiling is replaced by the full rails **in this change** — never removed before them.
+- [ ] There is **no interim ingest ceiling to replace** — it was withdrawn (archive REV-0024-F-004). Instead, the no-unrailed-window guarantee is structural: WO-0102 ships the flag un-enable-able, and **this change wires the full rails and thereby SATISFIES the permanent rails-presence guard** (never deletes it — archive REV-0025-F-005), so the endpoint is never live without finite-audit flood protection.
 
 ## Required tests
 
-- [ ] Expiry sweep emits `SIGNAL_EXPIRED`; expired signal never approvable — property-style, dual-store.
+- [ ] Expiry sweep emits `SIGNAL_EXPIRED`; expired signal never approvable — property-style, dual-store. **`SIGNAL_EXPIRED` carries `(producer_id, signal_id)`/`record_id`; replay with multiple RECEIVED signals expiring in one sweep transitions each independently** (archive REV-0024-F P1).
 - [ ] Staleness/plausibility on `issued_at` (future / implausibly old → quarantine).
 - [ ] Producer quarantine on rate-limit breach; release only via explicit human release event.
+- [ ] **Paced-hostility flood** (archive REV-0024-F-002): invalid, novel-conflict, **and dead-on-arrival-expiry** requests paced at or below the refill rate over many windows → constant event-row count, quarantine opens on non-refilling-budget exhaustion — both stores.
+- [ ] **Release resets both rails** (archive REV-0024-F P1): a budget-exhausted, then released, producer ingests again without immediate re-quarantine — both stores.
+- [ ] **Budget config validation + cycle-scope** (archive REV-0024-F P1/P2): `signal_invalid_budget_per_epoch` outside `[1, 1000]` → startup fails fast; and a mid-cycle config change applies only to cycles beginning after it — an in-flight cycle's pinned limit is unchanged across restart/replay.
+- [ ] **Budget linearizability + durability** (archive REV-0025-F-003/F-004): final-slot concurrency race, slow-body-after-exhaustion, crash-injection (debit⇔append atomic), and restart/replay preserving the **consumed** count (not just the limit) so no fresh budget is granted without release — per the behavior item's (b)–(f), both stores.
+- [ ] **Enablement gate**: with `signal_seat_enabled` on and rails NOT wired, `create_app` startup fails the rails-presence guard; with the full rails wired, it starts — and the joint flag-on route-authorization matrix passes at the mounted app.
 
 ## Required commands
 
@@ -86,6 +102,8 @@ lint-imports
 - [ ] Scope limited to allowed paths; no forbidden paths touched.
 - [ ] Fable DONE block includes evidence.
 - [ ] PKL update completed or explicitly not required.
+- [ ] **Independent CODE review gate cleared before closeout** (archive REV-0025-F P1): this WO touches human-gated surfaces — the producer **release** action, quarantine rails, and event-log vocabulary — so a review packet is queued and dispositioned ACCEPT / ACCEPT-WITH-CHANGES before the work is relied on for a beta milestone. Completion cannot bypass this gate.
+- [ ] **Any schema/DB change stops for human approval** (if this WO adds producer-rail persistence/columns): additive-only, both stores, explicit human approval recorded before execution (`06-invariants.md §Cross-cutting` (b)).
 
 ## Model-tier rationale
 

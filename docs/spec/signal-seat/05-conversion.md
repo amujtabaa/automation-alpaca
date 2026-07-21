@@ -1,84 +1,148 @@
-# 05 — Conversion: approval → order intent, classification, TradingState, correlation
+# 05 — Conversion: approval → ordinary order intent, exposure, TradingState, correlation
 
-## 1. The conversion is the existing pipeline, entered atomically at approval
+> **Gate state:** draft remediation for Proposed ADR-009; REV-0034 and Ameen's post-review
+> approval are required before implementation.
 
-Operator approval (with the payload of `01-schema.md §4`) performs, **in one store operation under
-the single-writer lock** (rule A2):
+## 1. One atomic approval command; no new execution lane
 
-- **Buy-direction signal** → create a `Candidate` with
-  `strategy="signal"`, `reason=<short thesis ref>`, `suggested_quantity=<operator quantity>`,
-  `suggested_limit_price=<operator limit_price>`, plus the correlation fields (§4) — then drive it
-  through the **existing** approve→dispatch path (`plan_create_order_for_candidate` et al.) with
-  the same actor. The operator's one approval action approves both the signal and the candidate it
-  mints; no second panel click, no bypassed gate — the same session-control / risk-gate /
-  kill-switch checks run unchanged.
-- **Sell-direction signal** → create a `SellIntent` with **`reason=SellReason.SIGNAL`** (new enum
-  member — the third value after `manual_flatten` / `protection_floor`, exactly the extension
-  point the enum's docstring anticipated), `target_quantity=<operator quantity>` — and if the operator quantity exceeds the live position
-  read under the same lock, the conversion **refuses** with structured reason `POSITION_CHANGED`
-  (the position moved since the form was filled); the operator re-confirms with a fresh quantity.
-  **Never silently capped** (Codex PR #6: a cap would dispatch a different quantity than the
-  operator approved while the audit records the original — breaking the operator-confirmed sizing
-  guarantee), correlation fields — driven through the existing sell-side
-  approve→dispatch path. **Kill-switch semantics: `SIGNAL` sells pause under the kill switch like
-  `PROTECTION_FLOOR`** — they are NOT the human backstop and get no `MANUAL_FLATTEN`-style bypass;
-  manual flatten remains the separate, dumber, direct path.
-- Any refusal anywhere in that pipeline aborts the whole approval with the structured reason
-  (422, operator-visible, never silent); the signal stays RECEIVED (rule A2).
+Operator approval (with the payload from `01-schema.md §4`) executes one dedicated store command
+in both stores. Under one memory-store lock / one SQLite transaction, with no `await` between
+checks and durable writes, the command re-reads the signal status and persisted `expires_at`, the
+producer quarantine epoch, `TradingState` and kill switch, fresh position, the shared committed
+SELL-exposure projection (§3a), and the ordinary risk decision. It then consumes exactly one
+operator approval, appends `SIGNAL_APPROVED`, and creates and links exactly one ordinary intent.
+Failure leaves no approval event, no intent, and the signal in RECEIVED.
 
-`Order.candidate_id`/`sell_intent_id` XOR and all downstream machinery are untouched — past the
-intent's creation, a signal-originated order **is** an ordinary order.
+The facade composition at `app/facade/store_backed.py:786-787`
+(`await gate.approve(...)` followed by `await create_order_for_candidate(...)`) is explicitly
+forbidden for signal conversion; its await boundary is the original F-002 crash shape. The atomic
+command composes the existing candidate planner at `app/store/core.py:887` and the corresponding
+SELL planners inside the store transaction.
 
-## 2. Sizing and pricing come from the approval payload — never the proposal
+Per D-SIG-8, conversion mints the **same domain objects the cockpit/manual flow mints**:
 
-The as-built candidate path builds the LIMIT order from `candidate.suggested_quantity` /
-`suggested_limit_price` (`app/store/core.py:641+`) — whoever populates those fields controls the
-order. In this spec those fields are populated **exclusively from the operator's approval
-payload**; `SignalProposal.suggested_*` never touches an order-bound field. Test (WO-0103): a
-proposal suggesting (qty=500, px=1.00) approved by the operator as (qty=10, px=25.50) dispatches
-an order carrying (10, 25.50), both stores.
+- **BUY signal:** an ordinary `Candidate` with the existing signal strategy/origin fields,
+  operator-confirmed quantity and limit price, and signal correlation. The same candidate approval,
+  risk, order-mint, claim, adapter, and reconciliation path applies. There is no signal submitter.
+- **SELL signal:** an ordinary `SellIntent` with `SellReason.SIGNAL`, operator-confirmed target
+  quantity, limit price, and signal correlation. It uses the same sell-intent, envelope, order,
+  claim, adapter, and reconciliation seams as the cockpit. If the operator delegates bounded
+  autonomous execution, the ordinary ADR-010 envelope approval path is used; otherwise the
+  ordinary direct SELL path is used. A signal never invents an envelope, order type, claim, or
+  venue-call lane unavailable to a manual operator.
+- Past intent creation, downstream execution is identical to manual flow. Signal provenance
+  remains audit correlation only; it grants no execution authority.
 
-## 3. TradingState / kill-switch interaction table
+D-SIG-7 declines the archive's multi-exit relaxation. Signal conversion obeys the existing
+same-symbol sell-intent single-flight rule and INV-087's one-ACTIVE-envelope-per-symbol mandate.
+If another same-symbol exit owns the single flight, conversion refuses atomically with stable
+reason `SINGLE_FLIGHT_CONFLICT`; it does not reuse or widen the other signal's approval and does
+not create a second mandate.
 
-Ingestion is fact-recording and is allowed in every state (subject to rails); **conversion** is
-new order intent and obeys session control:
+Any refusal anywhere in the ordinary pipeline is structured and operator-visible (HTTP 422 at the
+route); the signal remains RECEIVED and can be reconsidered when the blocking fact changes.
+
+## 2. Sizing and pricing come only from the approval payload
+
+The producer's `suggested_quantity` and `suggested_limit_price` are display-only. The ordinary
+Candidate/SellIntent fields that bind an order are populated exclusively from the authenticated
+operator's approval payload. A proposal suggesting (qty=500, px=1.00) approved as
+(qty=10, px=25.50) dispatches an ordinary order for (10, 25.50), both stores.
+
+A SELL approval is never silently capped. If quantity exceeds the current available uncommitted
+position, conversion refuses with `POSITION_CHANGED` and the contribution breakdown from §3a;
+the operator re-reads and confirms a new quantity.
+
+## 3. TradingState / kill-switch interaction
+
+Ingestion records facts and is allowed in every state subject to rails. Conversion creates new
+order intent and follows the existing controls:
 
 | State | Ingest | Convert (approve) |
 |---|---|---|
-| `Active`, kill switch off | ✔ (rails apply) | ✔ — risk gate is the binding check |
-| `Reducing` | ✔ | Only **risk-reducing** signals (§3a); refusal reason `TRADING_STATE_REDUCING` otherwise |
-| `Halted` | ✔ (facts are facts) | ✘ — refusal `TRADING_HALTED`; no emergency-override path for signals (that override is scoped to manual reduce-only exits, ADR-003) |
-| Kill switch engaged | ✔ | ✘ — kill switch blocks new order intent (invariant 10); refusal reason surfaced |
-| Reject / expire / release | — | Operator reject and producer release are allowed in every state (they create no order intent) |
+| `Active`, kill switch off | yes | ordinary risk/single-flight/exposure gates apply |
+| `Reducing` | yes | only a risk-reducing SELL under §3a; otherwise `TRADING_STATE_REDUCING` |
+| `Halted` | yes | refuse `TRADING_HALTED`; signals never receive the emergency-reduce capability |
+| kill switch engaged | yes | refuse `KILL_SWITCH`; no signal-origin exception |
+| reject / expiry / producer release | n/a | allowed because these create no order intent |
 
-### 3a. The risk-reducing classification (Ameen's INV-7 asymmetry decision, recorded in ADR-009)
+A `SellReason.SIGNAL` exit is not manual flatten. It receives no ADR-003 emergency bypass and may
+not preempt or weaken a manual backstop.
 
-A signal is **risk-reducing** iff, evaluated under the same store lock at conversion time:
-`direction == "sell"` AND live net position in `symbol` > 0 AND `operator quantity ≤ live
-position`. (Long-only spine: a sell that stays within the position can only shrink risk; buys are
-never risk-reducing.)
+### 3a. Shared committed SELL-exposure projection
 
-Error-direction asymmetry, honored as decided:
+There is **no signal-specific sum over raw rows**. One pure shared function beside
+`project_envelope_obligation` (`app/store/core.py:1401`) is the sole quantity source:
 
-- **False "risk-reducing"** is backstopped: the quantity-aware risk gate (INV-7 proper,
-  reduce-only enforcement) remains the **binding** check on the produced intent — classification
-  never substitutes for it.
-- **False "not-risk-reducing"** has no downstream backstop, so the classification is deliberately
-  this simple and conservative-toward-convertibility: any within-position sell **is** convertible
-  in `Reducing`. A blocked conversion in `Reducing` returns the structured reason to the operator
-  — **never silent** (WO-0103 test: genuine protective sell IS convertible in `Reducing`,
-  end-to-end over the real `SellReason.SIGNAL` route, both stores). Manual flatten stays the
-  signal-independent fallback regardless.
+```python
+project_committed_sell_exposure(
+    symbol,
+    orders,
+    envelopes,
+    recoveries,
+    events,
+) -> CommittedSellExposure  # quantity + contribution breakdown + ambiguity flags
+```
 
-## 4. Correlation — authority is severed at approval; the audit chain is not
+Both stores call it under the same lock/transaction as conversion. The cockpit's exposure display
+consumes the same result; a facade-side or UI-side reimplementation is forbidden.
 
-- `SIGNAL_APPROVED` payload carries `converted_kind` + `converted_id` (the minted
-  candidate/sell-intent id) alongside `(producer_id, signal_id)` and the operator values.
-- `Candidate` and `SellIntent` gain two **additive, nullable** fields:
-  `signal_producer_id: Optional[str]`, `signal_signal_id: Optional[str]` (both stores; no
-  migration of existing rows — new columns default NULL). They flow into the intent's existing
-  audit-event payloads at creation.
-- Filter path an auditor walks (test contract, WO-0103): order → `candidate_id`/`sell_intent_id` →
-  the intent's `signal_*` fields → the signal; or event-log-only: `SIGNAL_APPROVED.converted_id`
-  joins the intent-creation event. With two approved signals on one symbol, each order's trace
-  resolves to exactly its own signal, both stores.
+Contribution sources are deduplicated by immutable identity:
+
+1. The symbol's live envelope mandate contributes its `remaining_quantity`. Its child orders are
+   not counted again; deduped fill events are the only facts that reduce the mandate.
+2. Direct/legacy SELL orders in the may-execute set contribute unfilled remainder.
+3. Open SELL `SubmitRecoveryRecord` rows in `RECOVERY_OPEN_STATUSES`
+   (`app/models.py:893`) contribute their quantity when venue exposure lacks a live row.
+4. INV-091 acceptance-uncertainty facts, including `UNKNOWN_RECONCILE_REQUIRED` and accepted-submit
+   fallbacks, contribute when not otherwise represented.
+5. An order, its recovery, and a canonical fallback for the same
+   `(local_order_id, broker_order_id)` coalesce into one leg. Distinct concrete broker
+   acceptances remain distinct legs. A `needs_review` child contributes its full recovery
+   quantity.
+
+The function consumes the INV-090 obligation projection rather than deriving neighboring
+owner/delegation semantics. Malformed identity, projection ambiguity, or unbounded quantity sets an
+ambiguity flag and refuses conversion fail-closed; no best-effort quantity is returned. Refusal
+payloads carry the complete contribution breakdown so the operator can see which commitment
+blocked the approval.
+
+The universal ceiling, in every `TradingState`, is:
+
+```
+operator_quantity <= live_fill_derived_position - committed_sell_exposure.quantity
+```
+
+This quantity rail does not replace ordinary risk, single-flight, opposite-side, envelope,
+submission-claim, or recovery rails. It is an additional consistent view over the same facts.
+Property pins required of WO-0103/R7:
+
+- wherever committed exposure is at least the position, the boolean
+  `_same_symbol_exit_may_execute` rails agree and conversion refuses;
+- every contribution category and coalescing identity is independently mutation-pinned;
+- T1.3 AST checks enumerate the one producer and every store/cockpit consumer;
+- decision structure, ambiguity, rollback, and contribution order are compared across both stores.
+
+A signal is risk-reducing in `Reducing` only when `direction == "sell"`, live position is
+positive, the single-flight/INV-087 gates permit the ordinary flow, and the inequality above holds.
+The ordinary quantity-aware risk gate remains binding. Blocks are visible; manual flatten remains
+the independent human fallback.
+
+## 4. Correlation survives; authority does not
+
+- `SIGNAL_APPROVED` carries `converted_kind`, `converted_id`,
+  `(producer_id, signal_id)`, authenticated operator identity, and operator values.
+- The ordinary Candidate/SellIntent carries nullable signal correlation fields. Those fields do
+  not select execution behavior and require fresh schema approval with the actual R4 DDL.
+- An auditor can walk order → Candidate/SellIntent → signal, or
+  `SIGNAL_APPROVED.converted_id` → ordinary intent-creation event. Two signals on one symbol
+  remain separately traceable even when one is refused by single-flight; only the successfully
+  converted signal owns the resulting intent.
+
+## 5. Required negative proofs
+
+WO-0103/R7 must prove, on both stores and at the real mounted app: no split-await conversion; no
+approval without exactly one ordinary intent; no signal-only execution lane; no multi-exit
+relaxation; no second ACTIVE envelope per symbol; no conversion beside ambiguous/recovery-owned
+SELL exposure; no producer-suggested sizing reaching an order; no Halted/kill-switch bypass; and no
+position movement from any signal event.

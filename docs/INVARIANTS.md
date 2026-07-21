@@ -1128,6 +1128,16 @@ can authenticate a different venue order and apply its status/fills locally.
 `tests/test_spine_phase4_reconciliation_engine.py`, and
 `tests/test_wo0019_engine_seam.py::test_submit_scope_uses_the_injected_decision_clock`.
 
+### Proposed Signal Seat cross-reference (non-normative; WO-0127)
+
+Proposed ADR-009 and `docs/spec/signal-seat/06-invariants.md` map Signal Seat conversion to the
+current registry without adding, deleting, relaxing, or amending an invariant. In particular,
+D-SIG-7 preserves INV-087 single-mandate plus the existing sell-intent single-flight rule;
+the proposed `project_committed_sell_exposure` consumes INV-090 obligation truth and INV-091
+accepted-submit/recovery truth; and the ordinary Candidate/SellIntent downstream path preserves
+INV-034, INV-085, and INV-094. This annotation has no implementation authority. REV-0034 and
+Ameen's post-review ADR approval remain required.
+
 ---
 
 ## Superseded / historical
