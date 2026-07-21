@@ -20,8 +20,8 @@ Authoritative kickoff: `work/queue/CODEX-KICKOFF-REMEDIATION.md`
 
 | WO | Status | Branch commits | Notes |
 |---|---|---|---|
-| WO-0130 | CLOSED | activation `b108339`; RED `5ea1bca`; finishing: this commit | VERIFIED: boundary RED, main-path mutation RED, restored focused/static gates, and full 4105-node pytest exit 0; `RESULT_SUMMARY_KEPT`. |
-| WO-0132 | QUEUED | — | Direct `HUMAN_ATTESTED` fill-rail mutation pin plus conservative missing-occurrence handling; REV-0035 re-verification remains out-of-session. |
+| WO-0130 | CLOSED | activation `b108339`; RED `5ea1bca`; finish `3cdf8fb` | VERIFIED: boundary RED, main-path mutation RED, restored focused/static gates, and full 4105-node pytest exit 0; `RESULT_SUMMARY_KEPT`. |
+| WO-0132 | ACTIVE | activation: this commit | Direct `HUMAN_ATTESTED` fill-rail mutation pin plus conservative missing-occurrence handling; GATE and RED evidence pending; REV-0035 re-verification remains out-of-session. |
 | WO-0131 | QUEUED | — | Gated replay FSM legality; must end at REVIEW with REV-0038 staged, never self-close. |
 | WO-0133 | QUEUED | — | ADR-009 anchor/range re-baseline; runs last after application anchors settle. |
 

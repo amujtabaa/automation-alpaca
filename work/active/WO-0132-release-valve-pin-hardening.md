@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Release-valve pin hardening: HUMAN_ATTESTED fill-rail direct pin (REV-0035 P1-1) + claim_occurrence conservatism (P2-1)"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0132
 wave: ultra-batch remediation (post-review)
 model_tier: strong
