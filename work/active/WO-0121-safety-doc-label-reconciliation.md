@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Reconcile accepted safety-doc labels with current state (REV-0033 + import/mypy ratchets)"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0121
 wave: post-R2 beta-prep
 model_tier: mid
