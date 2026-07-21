@@ -53,7 +53,11 @@ from app.store.base import (
 )
 from app.store.core import (
     EnvelopeActionPausedError,
+    FILL_REJECT,
     canonical_recovery_fill_quantity,
+    direct_sell_order_may_execute,
+    plan_append_fill,
+    project_envelope_obligation,
     recovery_status_event,
     validate_recovery_attested_facts,
     validate_recovery_fill_facts,
@@ -449,6 +453,159 @@ async def test_operator_fill_over_order_capacity_is_rejected(any_store):
         mode="json"
     ) == before_position
     assert await any_store.list_fills(order_id=order.id) == []
+
+
+@pytest.mark.parametrize(
+    (
+        "side",
+        "prior_filled",
+        "current_quantity",
+        "expected_event_type",
+        "expected_reason",
+    ),
+    [
+        (
+            OrderSide.BUY,
+            5,
+            5,
+            EventType.FILL_REJECTED_INVALID.value,
+            "cumulative_exceeds_order_quantity",
+        ),
+        (
+            OrderSide.SELL,
+            0,
+            0,
+            EventType.FILL_REJECTED_NEGATIVE.value,
+            "negative_position",
+        ),
+    ],
+)
+async def test_PIN_human_attested_plan_append_fill_keeps_strict_rails(
+    any_store,
+    side,
+    prior_filled,
+    current_quantity,
+    expected_event_type,
+    expected_reason,
+):
+    """Directly pin the planner rail, bypassing recovery-ingest prechecks."""
+    _, _, order, _ = await _needs_review_order(any_store, quantity=5, side=side)
+
+    plan = plan_append_fill(
+        order_id=order.id,
+        order=order,
+        prior_filled=prior_filled,
+        current_quantity=current_quantity,
+        is_duplicate=False,
+        symbol=order.symbol,
+        side=side,
+        quantity=1,
+        price=10.0,
+        source_fill_id=f"wo0132-{side.value}",
+        filled_at=_NOW,
+        session_id=order.session_id,
+        source=EventSource.OPERATOR,
+        authority=EventAuthority.HUMAN_ATTESTED,
+    )
+
+    assert plan.outcome == FILL_REJECT
+    assert plan.event.event_type == expected_event_type
+    assert plan.event.payload["reason"] == expected_reason
+    assert plan.fill is None
+    assert plan.execution_event is None
+    assert plan.quarantine_event is None
+
+
+def _occurrence_less_lifecycle_event(
+    order,
+    event_type,
+    *,
+    sequence,
+    envelope_id=None,
+    correlation_id=None,
+):
+    broker_event = event_type is ExecutionEventType.SUBMITTED
+    return ExecutionEvent(
+        sequence=sequence,
+        event_type=event_type,
+        source=EventSource.BROKER_STREAM if broker_event else EventSource.ENGINE,
+        authority=(
+            EventAuthority.BROKER_AUTHORITATIVE
+            if broker_event
+            else EventAuthority.LOCAL
+        ),
+        symbol=order.symbol,
+        side=OrderSide.SELL,
+        order_id=order.id,
+        envelope_id=envelope_id,
+        session_id=order.session_id,
+        correlation_id=correlation_id,
+        payload={"recovery_id": "wo0132-occurrence-less"},
+    )
+
+
+async def test_occurrence_less_release_cannot_clear_direct_sell_venue_interval(any_store):
+    _, _, order, _ = await _needs_review_order(
+        any_store,
+        quantity=5,
+        side=OrderSide.SELL,
+    )
+    terminal_order = order.model_copy(update={"status": OrderStatus.CANCELED})
+    events = [
+        _occurrence_less_lifecycle_event(
+            terminal_order,
+            ExecutionEventType.SUBMITTED,
+            sequence=1,
+        ),
+        _occurrence_less_lifecycle_event(
+            terminal_order,
+            ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED,
+            sequence=2,
+        ),
+    ]
+
+    assert direct_sell_order_may_execute(terminal_order, events) is True
+
+
+async def test_occurrence_less_release_marks_envelope_child_invalid(any_store):
+    _, intent, envelope, order, _ = await _envelope_needs_review(any_store)
+    terminal_order = order.model_copy(update={"status": OrderStatus.CANCELED})
+    terminal_envelope = envelope.model_copy(
+        update={"status": EnvelopeStatus.COMPLETED, "remaining_quantity": 0}
+    )
+    action_events = [
+        event
+        for event in await any_store.get_execution_events()
+        if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.order_id == order.id
+    ]
+    assert len(action_events) == 1
+    order_events = [
+        _occurrence_less_lifecycle_event(
+            terminal_order,
+            ExecutionEventType.SUBMITTED,
+            sequence=1,
+            envelope_id=envelope.id,
+            correlation_id=intent.id,
+        ),
+        _occurrence_less_lifecycle_event(
+            terminal_order,
+            ExecutionEventType.SUBMIT_RECOVERY_OPERATOR_RECONCILED,
+            sequence=2,
+            envelope_id=envelope.id,
+            correlation_id=intent.id,
+        ),
+    ]
+
+    projection = project_envelope_obligation(
+        envelopes=[terminal_envelope],
+        action_events=action_events,
+        orders_by_id={terminal_order.id: terminal_order},
+        order_events=order_events,
+    )
+
+    assert terminal_order.id in projection.invalid_order_ids
+    assert projection.retains_intent is True
 
 
 async def test_interleaved_conflicting_attestations_exactly_one_applies(any_store):
