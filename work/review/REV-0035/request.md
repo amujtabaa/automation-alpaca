@@ -10,10 +10,10 @@ human_gated_surfaces:
   - submit-recovery state machine and quarantine release
   - operator fill ingestion and position truth
   - typed operator API and cockpit control
-review_base_sha: 87aa950f375e91e116a3347e1cf13de0ea5bac88
-head_sha: "Resolve codex/wo-0114 HEAD after the review-stage commit containing this packet"
-commit_range: 87aa950f375e91e116a3347e1cf13de0ea5bac88..HEAD
-branch: codex/wo-0114
+review_base_sha: 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae
+head_sha: 759eff03e289851a41d652a2ad392f6b9ff2c6b9
+commit_range: 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
+branch: codex/ultra-beta-batch
 created: 2026-07-20
 ---
 
@@ -57,18 +57,18 @@ sequence, why it matters, and what resolves it. End with exactly one verdict: **
 
 ## Frozen review range
 
-The packet is committed with the implementation, so resolve `codex/wo-0114` HEAD before review:
+The frozen range is the three contiguous WO-0114 commits on `codex/ultra-beta-batch`:
 
 ```powershell
-git rev-parse 87aa950f375e91e116a3347e1cf13de0ea5bac88
-git rev-parse codex/wo-0114
-git diff --stat 87aa950f375e91e116a3347e1cf13de0ea5bac88..codex/wo-0114
-git diff --name-status 87aa950f375e91e116a3347e1cf13de0ea5bac88..codex/wo-0114
-git diff --check 87aa950f375e91e116a3347e1cf13de0ea5bac88..codex/wo-0114
-git diff 87aa950f375e91e116a3347e1cf13de0ea5bac88..codex/wo-0114
+git rev-parse 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae
+git rev-parse 759eff03e289851a41d652a2ad392f6b9ff2c6b9
+git diff --stat 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
+git diff --name-status 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
+git diff --check 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
+git diff 74cf4117de3899bd9fbbbc6160c20e8ac3eab4ae..759eff03e289851a41d652a2ad392f6b9ff2c6b9
 ```
 
-Activation commit: `f991196`. Red-first checkpoint: `a3cd2a6`. The range contains only WO-0114
+Activation commit: `f3be6e3`. Red-first checkpoint: `b6d4fb0`. The range contains only WO-0114
 lane commits from the ULTRA batch base.
 
 ## What changed

@@ -45,7 +45,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 
 | WO | Status | Branch commits | Notes |
 |---|---|---|---|
-| WO-0114 | REVIEW | `f991196`, `a3cd2a6`, HEAD (review-stage commit) | Implementation/evidence complete; REV-0035 staged for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
+| WO-0114 | REVIEW | `f3be6e3` activation; `b6d4fb0` red-first contract; `759eff0` review-stage | Implementation/evidence complete; REV-0035 staged for CLAUDE; ADR-012 acceptance + independent verdict pending; not closed. |
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
 | WO-0118 | QUEUED | — | Lane 3; after WO-0114 lands. |
 | WO-0119 | CLOSED | `966b1a7` activation; `5f715a8` implementation; `7387199` close-out | Bootstrapper, Python 3.12 devcontainer, and environment pointer verified in a disposable OS-temp checkout; fresh + rerun smoke gates green; dispositioned and moved to `work/completed/`. |

@@ -218,7 +218,7 @@ fable_gate:
 
 ```yaml
 evidence:
-  command: "pytest -q tests/test_wo0114_pd1_release_valve.py (red checkpoint a3cd2a6)"
+  command: "pytest -q tests/test_wo0114_pd1_release_valve.py (red checkpoint b6d4fb0)"
   result: FAIL
   decisive_output: "Collection failed: ImportError for RECOVERY_OPERATOR_RECONCILED; production vocabulary/commands did not exist."
 ```
