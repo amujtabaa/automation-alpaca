@@ -44,6 +44,18 @@
   `--cov` run on 3.12 before beta reliance closes the gap. Not a code fix — a verification step
   (fold into the merge checklist).
 
+## Post-remediation status (2026-07-21, Claude seat)
+
+Remediation executed and independently re-verified at `d589da4`: WO-0130/0132/0133 CLOSED;
+REV-0035 P1-1 mutation re-check → exactly the 4 new pins RED, restored green → **REV-0035
+RESOLVED**; REV-0036/REV-0037 dispositions recorded (all advisory P2s logged); ADR-009
+**Accepted** (operator, after REV-0034 RESOLVED). **REV-0038** (WO-0131 replay legality)
+returned **ACCEPT-WITH-CHANGES**: fix verified correct with an independently re-derived
+exhaustive 90-pair matrix; one required change remains — **F1: additive payload-mismatch pins**
+for the pre-existing `from`/`to` guards (`app/events/projectors.py:694-704`; tests only, no
+source change). F1 is the LAST item before the merge gate; REV-0038's disposition stays open
+until it lands and is re-verified.
+
 ## Operator gates (human-only; after remediation lands)
 
 1. **Accept ADR-012** (release valve) — Proposed today; beta reliance gates on acceptance +
