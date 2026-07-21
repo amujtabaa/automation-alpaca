@@ -1,16 +1,24 @@
 ---
 type: Work Order
 title: Envelope terminal-state semantics, disposition eventing, replay coverage (F8 grouped — planning seat to re-cut)
-status: DRAFT — grouped placeholder; planning seat should re-cut into 2-3 WOs. ADR-010 text
-  amendments (SPEC-05 FROZEN-overfill edge, SPEC-09 §5 defect claim) are human-gated.
+status: SUPERSEDED
 work_order_id: WO-0029
 wave: W3 remediation (REV-0023 Phase A)
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [SUPERSEDED, RESULT_SUMMARY_KEPT]
 owner: Ameen
 created: 2026-07-12
+superseded_by: [WO-0124, WO-0125, WO-0126]
 ---
+
+> **CLOSE-OUT (2026-07-20, O-1 ratified by Ameen; AUDIT-0002 F005).** Re-cut executed: the
+> verified-open items became WO-0124 (SPEC-06/07 disposition-cancel convergence + eventing/
+> budget decision), WO-0125 (CC-04 replay/parity coverage), WO-0126 (CC-05 single-source
+> replace-budget projection). Already-landed rows stay recorded below as history: SPEC-05 +
+> SPEC-09 landed via WO-0029A (`33945c0`/merge `d1d2e4b`, recorded in ADR-010 + INV-082/085);
+> SPEC-10 + SPEC-08 landed via WO-0036 cluster 4 (inline DONE notes below); CC-06 subsumed by
+> WO-0030. Historical body unchanged.
 
 # Work Order (umbrella): close the F8 lifecycle/eventing gaps
 

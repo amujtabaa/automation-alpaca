@@ -47,11 +47,17 @@
 
 ## Operator decisions (batched — needed before the routed work can be authorized)
 
-- **O-1 (F005) — WO-0029 re-cut.** The umbrella mixes landed items (SPEC-05/08/09/10 done) with
+- **O-1 (F005) — WO-0029 re-cut. RESOLVED 2026-07-20 (Ameen: yes).** Executed same day:
+  WO-0029 → SUPERSEDED (moved to `work/completed/`), verified-open items re-cut as WO-0124
+  (SPEC-06/07), WO-0125 (CC-04), WO-0126 (CC-05). Original text retained below as history:
+  The umbrella mixes landed items (SPEC-05/08/09/10 done) with
   genuinely-open classes (CC-04 replay/read-model parity, SPEC-06/07 cancel-convergence, CC-05
   truthful `replaces_used` projection). **Recommend:** planning seat re-cuts ONLY the verified-
   open classes into 2-3 scoped WOs, marks the landed rows historically. Authorize the re-cut?
-- **O-2 (F006) — W3/W4 launcher hygiene.** `W3-README` + `W3-KICKOFF-PROMPT` are finished-wave
+- **O-2 (F006) — W3/W4 launcher hygiene. RESOLVED 2026-07-20 (Ameen: yes).** Executed same
+  day: both W3 launchers deleted (ledger row `W3-LAUNCHERS`); `W4-SEED-NOTES.md` gained a dated
+  currency-correction block separating live seeds from closed debt. Original text retained:
+  `W3-README` + `W3-KICKOFF-PROMPT` are finished-wave
   launchers safe to delete; `W4-SEED-NOTES` mixes useful research seeds with false gate/debt
   claims (ADR-010 accepted, INV-089 closed the price-poison it lists as open). **Recommend:**
   delete the two W3 launchers (ledger row), refresh W4 notes to separate live seeds from closed

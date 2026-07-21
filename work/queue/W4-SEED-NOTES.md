@@ -3,6 +3,17 @@
 Planning-seat seeds, 2026-07-11. W4 begins only after W3 merges. Two ADR drafts + one harness WO
 are expected; nothing here is authorized work yet.
 
+> **Currency correction (2026-07-20, O-2 ratified by Ameen; AUDIT-0002 F006).** The research
+> seeds below (rails, trigger taxonomy, pessimistic fill model, corpus taxonomy) remain LIVE.
+> The gate/debt claims are stale and corrected as follows: **ADR-010 is Accepted** (2026-07-15,
+> REV-0023 chain — the "must be Accepted post-REV" debt below is CLOSED); the
+> `record_envelope_fill(price=None)` poison is **CLOSED** (INV-089 / WO-0033 — required price,
+> value-guarded, both stores); the ADR-001/ADR-002 superseding decision records remain open as
+> written. Sequencing per the 2026-07-20 roadmap ratification: Entry Envelope runs AFTER the
+> Signal Seat revival; the replay corpus starts NOW via WO-0123 (tape recorder), so the
+> harness's data dependency accrues in parallel; the Entry Envelope's ARMING gates on replay
+> validation against that corpus.
+
 ## ADR-011 seed — Entry Envelope (buy side)
 
 > Renumbered 2026-07-12: ADR-010 was taken on master by the merged Signal Seat line (PR #5), so the shipped execution-envelope ADR moved to ADR-010 and this seed moved from ADR-010 to ADR-011.
