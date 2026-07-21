@@ -54,15 +54,15 @@ def _event(
     )
 
 
-def _old_inline_count(events: list[ExecutionEvent], envelope_id: str) -> int:
-    """Frozen pre-WO-0126 behavior used only as the differential oracle."""
+def _ratified_reprice_count(events: list[ExecutionEvent], envelope_id: str) -> int:
+    """D-0124: wind-down cancels are evented but only reprices spend budget."""
 
     return sum(
         1
         for event in events
         if event.event_type is ExecutionEventType.ENVELOPE_ACTION
         and event.envelope_id == envelope_id
-        and event.payload.get("action") in {"reprice", "cancel"}
+        and event.payload.get("action") == "reprice"
     )
 
 
@@ -81,10 +81,10 @@ def test_shared_projection_matches_the_complete_incumbent_action_corpus() -> Non
 
     projected = sellside_policy.project_envelope_replaces_used(events)
 
-    assert projected == {"env-1": 2, "env-2": 1}
-    assert projected["env-1"] == _old_inline_count(events, "env-1")
-    assert projected["env-2"] == _old_inline_count(events, "env-2")
-    assert _old_inline_count(events, "missing") == projected.get("missing", 0)
+    assert projected == {"env-1": 1, "env-2": 1}
+    assert projected["env-1"] == _ratified_reprice_count(events, "env-1")
+    assert projected["env-2"] == _ratified_reprice_count(events, "env-2")
+    assert _ratified_reprice_count(events, "missing") == projected.get("missing", 0)
 
 
 def _draft(intent_id: str) -> ExecutionEnvelope:
@@ -154,7 +154,7 @@ async def test_http_read_projects_usage_from_each_store(any_store) -> None:
 
     assert response.status_code == 200, response.text
     [row] = response.json()
-    assert row["replaces_used"] == 2
+    assert row["replaces_used"] == 1
     assert row["cancel_replace_budget"] == 5
     assert "replaces_used" not in ExecutionEnvelope.model_fields
 
@@ -198,7 +198,7 @@ async def test_sqlite_restart_ignores_hostile_legacy_column(tmp_path) -> None:
     try:
         [view] = await StoreBackedQueryFacade(reopened).list_envelopes()
         stored = await reopened.get_envelope(envelope.id)
-        assert view.replaces_used == 2
+        assert view.replaces_used == 1
         assert stored is not None
         assert not hasattr(stored, "replaces_used")
     finally:
