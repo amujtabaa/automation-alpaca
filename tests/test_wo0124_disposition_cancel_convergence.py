@@ -604,6 +604,70 @@ async def test_direct_cancel_retries_are_bounded_then_escalate_once(any_store):
     assert adapter.canceled == [order.broker_order_id] * 3
 
 
+@pytest.mark.parametrize(
+    "terminal_status",
+    [OrderStatus.CANCELED, OrderStatus.FILLED],
+    ids=["cancel-ack", "fill"],
+)
+async def test_third_cancel_transition_race_revalidates_terminal_truth(
+    any_store, terminal_status
+):
+    envelope, order = await _submitted_child(any_store)
+    await any_store.transition_envelope(
+        envelope.id,
+        EnvelopeStatus.EXPIRED,
+        actor="engine",
+        reason="wo0124-third-attempt-terminal-race",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    class TerminalOnThirdCancelAdapter(MockBrokerAdapter):
+        async def cancel_order(self, broker_order_id: str) -> None:
+            self.canceled.append(broker_order_id)
+            if len(self.canceled) < 3:
+                raise BrokerError("injected pre-terminal cancel failure")
+            if terminal_status is OrderStatus.FILLED:
+                fill_id = "wo0124-third-cancel-race-fill"
+                await any_store.record_envelope_fill(
+                    envelope.id,
+                    quantity=order.quantity,
+                    dedupe_key=fill_id,
+                    order_id=order.id,
+                    price=order.limit_price,
+                    now=NOW + timedelta(seconds=4),
+                )
+                await any_store.append_fill(
+                    order.id,
+                    order.symbol,
+                    order.side,
+                    order.quantity,
+                    order.limit_price,
+                    source_fill_id=fill_id,
+                    filled_at=NOW + timedelta(seconds=4),
+                    session_id=order.session_id,
+                )
+                await any_store.transition_order(
+                    order.id,
+                    OrderStatus.FILLED,
+                    filled_quantity=order.quantity,
+                )
+            else:
+                await any_store.transition_order(order.id, OrderStatus.CANCELED)
+
+    adapter = TerminalOnThirdCancelAdapter()
+    for _ in range(4):
+        await monitoring._converge_envelope_disposition_cancels(any_store, adapter)
+
+    assert adapter.canceled == [order.broker_order_id] * 3
+    terminal = await any_store.get_order(order.id)
+    assert terminal is not None and terminal.status is terminal_status
+    attempts = _cancel_events(
+        await any_store.get_execution_events(), envelope.id, order.id
+    )
+    assert [event.payload["attempt"] for event in attempts] == [1, 2, 3]
+    assert await any_store.list_submit_recoveries() == []
+
+
 async def test_failed_human_escalation_never_reopens_venue_authority(
     any_store, monkeypatch
 ):

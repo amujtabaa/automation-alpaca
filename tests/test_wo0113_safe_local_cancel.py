@@ -514,6 +514,72 @@ async def test_monitoring_created_cancel_race_uses_cas_returned_venue_state(
     assert _canceled_facts(await any_store.get_execution_events(), child.id) == []
 
 
+async def test_monitoring_created_cancel_race_revalidates_broker_terminal_fill(
+    any_store, monkeypatch
+):
+    store_clock = (
+        "app.store.memory.utcnow"
+        if hasattr(any_store, "_orders")
+        else "app.store.sqlite.utcnow"
+    )
+    monkeypatch.setattr(store_clock, lambda: RACE_NOW)
+    envelope, child = await _active_envelope_with_created_child(any_store)
+    adapter = MockBrokerAdapter()
+    broker_order_id = "paper-wo0113-cancel-race-filled-child"
+    real_transition = any_store.transition_order
+    raced = False
+
+    async def fill_before_cancel_cas(
+        order_id: str,
+        new_status: OrderStatus,
+        **kwargs,
+    ):
+        nonlocal raced
+        if not raced and order_id == child.id and new_status is OrderStatus.CANCELED:
+            raced = True
+            assert kwargs.get("expected_from") is OrderStatus.CREATED
+            claim = await any_store.claim_order_for_submission(child.id)
+            assert claim.order is not None
+            assert claim.order.status is OrderStatus.SUBMITTING
+            await real_transition(
+                child.id,
+                OrderStatus.SUBMITTED,
+                broker_order_id=broker_order_id,
+            )
+            await any_store.append_fill(
+                child.id,
+                child.symbol,
+                OrderSide.SELL,
+                child.quantity,
+                child.limit_price,
+                source_fill_id="wo0113-created-cancel-race-terminal-fill",
+                filled_at=RACE_NOW,
+                session_id=child.session_id,
+            )
+            await real_transition(
+                child.id,
+                OrderStatus.FILLED,
+                filled_quantity=child.quantity,
+            )
+        return await real_transition(order_id, new_status, **kwargs)
+
+    monkeypatch.setattr(any_store, "transition_order", fill_before_cancel_cas)
+
+    await _cancel_envelope_working_order(any_store, adapter, envelope)
+
+    assert raced
+    current = await any_store.get_order(child.id)
+    assert current is not None and current.status is OrderStatus.FILLED
+    assert adapter.canceled == []
+    assert await any_store.list_submit_recoveries() == []
+    assert not any(
+        event.event_type is ExecutionEventType.ENVELOPE_ACTION
+        and event.order_id == child.id
+        and event.payload.get("action") == "cancel"
+        for event in await any_store.get_execution_events()
+    )
+
+
 async def test_terminal_fill_excludes_source_cancels_sibling_and_reconciles_once(
     any_store, monkeypatch
 ):
