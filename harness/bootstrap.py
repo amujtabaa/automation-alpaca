@@ -64,6 +64,19 @@ def _run(command: Sequence[str], *, cwd: Path) -> None:
     subprocess.run(command, check=True, cwd=cwd)
 
 
+def _resolve_venv(root: Path, configured: str | Path) -> Path:
+    """Resolve *configured* to a strict descendant of the repository root."""
+    resolved_root = root.resolve()
+    candidate = (resolved_root / Path(configured)).resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as error:
+        raise RuntimeError("--venv must resolve inside the repository root") from error
+    if candidate == resolved_root:
+        raise RuntimeError("--venv must resolve inside the repository root, not to the root itself")
+    return candidate
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create or refresh the Python 3.12 development environment and smoke-check it."
@@ -80,7 +93,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     root = Path(__file__).resolve().parent.parent
-    venv = (root / args.venv).resolve()
+    venv = _resolve_venv(root, args.venv)
     requirements = root / "requirements.txt"
     constraints = root / "constraints.txt"
 

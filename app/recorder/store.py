@@ -36,9 +36,13 @@ class TapeStore:
             line = f"{line}\n"
         encoded = line.encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        write_mode = "a"
         if self.path.exists() and self.path.stat().st_size + len(encoded) > self.max_bytes:
-            self._rotate()
-        with self.path.open("a", encoding="utf-8", newline="\n") as tape:
+            if self.max_segments == 1:
+                write_mode = "w"
+            else:
+                self._rotate()
+        with self.path.open(write_mode, encoding="utf-8", newline="\n") as tape:
             tape.write(line)
 
     def append(self, record: TapeRecord) -> None:
