@@ -20,7 +20,22 @@ orchestration for the parallel lanes; the ordering constraints below are hard.
 - Paper-only. Zero live trading. Alpaca credentials are needed by NO work order in this batch.
 - Pytest scratch goes to OS temp (default basetemp) — never repo-root scratch dirs.
 - Every WO's own file is its contract: read it fully before its first commit; activate it
-  (status → ACTIVE, move to `work/active/`) as its first commit; close it out with the work.
+  (status → ACTIVE, move to `work/active/`) as its first commit; close it out with the work —
+  EXCEPT the four review-gated WOs (see Execution model), which end at `status: REVIEW`.
+
+## Execution model (mode-adaptive)
+
+- **Ultra/orchestrated:** Lanes 1+2 may run concurrently ONLY via isolated agents/worktrees.
+  Serialize every WO pair sharing files: `docs/INVARIANTS.md` (WO-0121↔0127), `app/models.py`
+  (WO-0114↔0126), `cockpit/**` (WO-0114↔0126), `app/events/**` (WO-0125↔0126). Every
+  close-out appends `work/ledger.jsonl` — resolve append conflicts keep-both-lines. Lane 3
+  items run serially. Pin Lane 1 to your deepest effort setting.
+- **Extra High/single context:** run lanes as strict order — Lane 1 → Lane 2 (as listed) →
+  Lane 3 → Lane 4 → Lane 5.
+- **Review-gated WOs end the session at `status: REVIEW`** (in `work/active/`, packet staged),
+  NOT closed: WO-0114 (stage REV-0035), WO-0121 (REV-0036), WO-0124 (REV-0037), WO-0127
+  (REV-0034; the human ADR-text approval happens at the post-session merge review — do NOT
+  stall mid-session waiting for it). All other WOs close out fully in-session.
 
 ## Operator decision block (pre-checked = ratified on paste; edit to override)
 
@@ -70,7 +85,8 @@ own validation never counts as the independent review).
 - WO-0127 — ADR-009 amendment + spec reconciliation + REV-0034 staging (docs/spec/queue only;
   governed by the decision block + reconciliation plan §3/§9/§10). Include the D-SIG-9
   ADR-013 seed here (same docs lane).
-- WO-0129 — repo-primer fill + `.env.example` completion + P-1/P-2 protocol amendments.
+- WO-0129 — repo-primer fill + `.env.example` completion + P-1/P-2 protocol amendments (run
+  its env-var sweep after WO-0123's config flag exists, or re-sweep at session end).
 - WO-0119 — bootstrap (devcontainer + smoke script). WO-0123 — tape recorder (start the
   corpus clock; zero order flow, proven by spy test).
 - WO-0120 — governance record-truth + folder-aware checker (Phase 1 records incl. the two
@@ -84,11 +100,14 @@ own validation never counts as the independent review).
 
 **Lane 3 — AFTER Lane 1 lands (shared store files):**
 - WO-0118 — perf closure, ALL phases now unblocked (Phase 1 measure → Phase 2 only if the
-  stress data demands, Cluster-E constraints → Phase 3 budget).
-- WO-0124 — disposition-cancel convergence (D-0124 answer applies; stage its REV packet).
+  stress data demands, Cluster-E constraints → Phase 3 budget). A new-index need is D9-gated:
+  it becomes a NEEDS-INPUT line for the operator, never a stall and never landed unapproved.
+- WO-0124 — disposition-cancel convergence (D-0124 answer applies; stage REV-0037).
 
 **Lane 4 — after WO-0127's text stabilizes:** WO-0128 — signal test-corpus port onto
-`codex/signal-tests-staging` (red by design; NEVER merged red; slice map produced).
+`codex/signal-tests-staging` (red by design; NEVER merged red; slice map produced). Pushing
+that branch will show RED CI there — expected; state it in the close-out, never "fix" it by
+weakening a test.
 
 **Lane 5 — only if D-BF-NOW filled:** WO-0115 per its runbook (planning package §5): quiesce
 app → SHA-256 the source → copies only → classify every write → second-open idempotency →

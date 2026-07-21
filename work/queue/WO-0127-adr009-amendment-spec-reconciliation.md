@@ -90,7 +90,9 @@ forbidden_paths:
       explicitly flagging every never-reviewed item (A-1 clause 6 / D-1a; final A-4; the two
       locked A-3 clauses; the D-SIG-7 outcome). Reviewer: the Claude seat (cross-model rule —
       the review itself runs OUT of this session).
-- [ ] Ameen approves the amendment text before the close-out commit (human-gated ADR change).
+- [ ] The amendment text is human-gated: this WO ends its session at `status: REVIEW` with
+      REV-0034 staged; Ameen's text approval happens at the post-session merge review together
+      with the REV-0034 disposition. Never stall mid-session waiting for it.
 
 ## Acceptance criteria
 
