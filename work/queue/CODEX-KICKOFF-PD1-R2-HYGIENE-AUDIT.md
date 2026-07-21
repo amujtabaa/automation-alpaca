@@ -75,9 +75,10 @@ verdict `VERIFIED` or `BLOCKED`/`NEEDS-INPUT`.
 - D-PD1-2 (status name): [x] default `operator_reconciled` — RATIFIED 2026-07-20
 - D-PD1-3 (surface): [x] API+cockpit (cockpit = typed API only) — RATIFIED 2026-07-20
 - D-PD1-4 (fills): [x] default separate-commands, same WO — RATIFIED 2026-07-20
-- D-BF-5 (artifact): path/handling: ____ / [ ] pending (no artifact yet)
-- D-BF-6 (fixtures): [ ] default yes-gated / [ ] report-only / [ ] pending
-- D-BF-7 (anomalies): [ ] default report-only / [ ] pending
+- D-BF-5 (artifact): [x] no artifact yet — RATIFIED 2026-07-20; Lane B ends NEEDS-INPUT at
+  intake; artifact plan now tied to D-HOST-1 (hosting decision, planning package §2)
+- D-BF-6 (fixtures): [x] default yes-gated — RATIFIED 2026-07-20
+- D-BF-7 (anomalies): [x] default report-only — RATIFIED 2026-07-20
 
 ## Cross-lane rules
 

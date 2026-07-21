@@ -34,7 +34,13 @@
 > session):** D-PD1-1 = default (hybrid-honest); D-PD1-2 = default (`operator_reconciled`);
 > D-PD1-3 = **API + cockpit control** (non-default; cockpit invokes only the typed FastAPI
 > command); D-PD1-4 = default (separate ingestion + valve commands, both in WO-0114).
-> **D-BF-5..7 remain PENDING.** WO-0114 is updated to match (banner + allowed paths).
+> WO-0114 is updated to match (banner + allowed paths).
+>
+> **2026-07-20 (second batch):** D-BF-5 = **(c) no artifact yet** — Lane B ends `NEEDS-INPUT`
+> at the intake gate until an artifact is supplied; D-BF-6 = default (yes, gated fixtures);
+> D-BF-7 = default (report-only). Ameen's B-1 rationale raised a NEW decision — remote access
+> to the platform from laptop/mobile — registered below as **D-HOST-1** (deployment
+> architecture, future ADR; deliberately NOT folded into WO-0115).
 
 Numbering follows the handoff (1-7). Format: **Default (recommended)** / Alternatives /
 Consequences. Answers materially change semantics, data handling, or authorization — nothing
@@ -150,6 +156,29 @@ semantic on real data — a separately named future WO, id assigned at creation;
   NOT authorized. (WO-0116/0117 were later consumed by the hygiene sweep and audit charter.)
 - *Alternative — pre-authorize narrow mechanical remediations.* Faster, but each remediation is
   a new semantic against real economic records; rejected as default.
+
+### D-HOST-1 — Remote access / backend+DB hosting (raised by Ameen 2026-07-20; future ADR)
+
+Ameen wants the platform reachable from home, laptop, and eventually mobile. Facts that bound
+the design: the FastAPI engine is the single writer of the SQLite DB (safety core inv. 3;
+syncing the DB file between machines would create two writers — forbidden); `*.db` is
+deliberately untracked (a live DB must never live in git/GitHub); the API currently has NO
+authentication (`app/api/deps.py` — deliberate, single-user-localhost beta), so public
+exposure without an auth layer is forbidden.
+
+- **Recommended near-term: Tailscale (or equivalent private mesh VPN) to the home PC.** Engine
+  + DB stay put; every device is a browser over an encrypted private network. Zero code
+  change, zero hosting cost, no ADR required (no dependency, no architecture change — a
+  network-layer operator choice). Caveat: home PC on during trading hours.
+- **Endgame: small VPS hosts engine + DB.** Requires an ADR (deployment architecture) plus an
+  authentication story BEFORE any public exposure, and a migration executed through the
+  WO-0115 runbook as the cutover verification (hash source → verify copy → migrate). Alpaca
+  keys move to the host's secret store; paper-only invariants unchanged.
+- **Rejected: hosting the live DB on GitHub** — git snapshots vs. constantly-writing SQLite =
+  corruption/conflicts, plus permanent history exposure of trading data.
+
+Sequencing: D-HOST-1 (choose) → Lane B verification on a copy (the cutover gate) → migrate.
+Nothing implements without the ADR when the VPS path is chosen.
 
 ## 3. Dependency and sequencing note
 

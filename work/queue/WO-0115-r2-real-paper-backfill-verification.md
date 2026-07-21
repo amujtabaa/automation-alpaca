@@ -14,12 +14,13 @@ gated_surface: real paper-data handling (read-only source); NO remediation autho
 
 # Work Order: verify the R2 startup envelope-owner re-projection against real paper data
 
-> **DO NOT ACTIVATE** until Ameen answers **D-BF-5..D-BF-7** in
-> `work/queue/PD1-R2-PLANNING-PACKAGE.md` (artifact location/handling, fixture policy,
-> anomaly policy). **Hard gate:** if no real pre-existing paper-trading database artifact is
-> available, execution ends `NEEDS-INPUT` — synthetic fixtures cannot satisfy this gate (D5,
-> `PARTB-COMPLETION-PLAN.md`). This WO verifies and reports; it authorizes ZERO repair,
-> retro-sweep, migration, or app-code change. Independent of WO-0114; neither expands the other.
+> **RATIFIED 2026-07-20 (Ameen):** D-BF-6 = yes-gated fixtures; D-BF-7 = report-only;
+> D-BF-5 = **no artifact yet** — HOLD this WO until the D-HOST-1 hosting decision resolves
+> (planning package §2): the verification doubles as the cutover gate for the DB's eventual
+> migration to its host. **Hard gate unchanged:** without a real artifact, execution ends
+> `NEEDS-INPUT` — synthetic fixtures cannot satisfy it (D5, `PARTB-COMPLETION-PLAN.md`).
+> This WO verifies and reports; it authorizes ZERO repair, retro-sweep, migration, or
+> app-code change. Independent of WO-0114; neither expands the other.
 
 ## Goal
 
