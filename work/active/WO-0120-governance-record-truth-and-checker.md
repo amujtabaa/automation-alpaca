@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Complete the governance record + make the disposition checker folder-aware"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0120
 wave: post-R2 beta-prep
 model_tier: mid
@@ -92,3 +92,25 @@ visibility even though it touches no app code.
 ## Completion disposition
 
 Expected: `[RESULT_SUMMARY_KEPT]` (+ ledger rows per record).
+
+## Fable gate
+
+```yaml
+fable_gate:
+  goal: "Make completed governance records truthful and make the disposition checker reject non-completed records parked under work/completed."
+  assumptions:
+    - "The cited ledger, close-out, and review artifacts agree; any conflict stops the affected record as NEEDS-INPUT."
+    - "Record remediation is additive except for frontmatter status/disposition corrections explicitly authorized by this work order."
+  approach: "Verify each cited closure chain, reconcile Phase 1 records without rewriting historical bodies, add a failing checker regression, then make the folder-aware guard pass."
+  out_of_scope:
+    - "app/**"
+    - "docs/**"
+    - ".github/**"
+    - "the two F009 findings the audit says remain legitimately open"
+  done_when:
+    - "Every required record is reconciled or explicitly left open with evidence."
+    - "The checker fails for a completed-folder DRAFT and passes on the truthful repository."
+    - "All five AI-OS checks and scoped regression tests pass with fresh output."
+    - "Close-out status, disposition, ledger append, file move, scoreboard, and Fable DONE ship together."
+  blast_radius: "work/** governance metadata plus the disposition checker and its tests"
+```

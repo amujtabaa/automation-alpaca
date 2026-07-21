@@ -49,7 +49,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0115 | QUEUED / NEEDS-INPUT | — | D-BF-NOW unchecked and source DB path blank; do not run. |
 | WO-0118 | QUEUED | — | Lane 3; after WO-0114 lands. |
 | WO-0119 | QUEUED | — | Lane 2; mechanical bootstrap. |
-| WO-0120 | QUEUED | — | Lane 2; governance record truth and checker. |
+| WO-0120 | ACTIVE | activation: this commit | Lane 2; governance record truth and checker; Fable GATE recorded. |
 | WO-0121 | QUEUED | — | Lane 2; serialize after WO-0127 on `docs/INVARIANTS.md`; review-gated to REV-0036. |
 | WO-0122 | QUEUED | — | Lane 2; CI and pin coverage. |
 | WO-0123 | QUEUED | — | Lane 2; tape recorder. |
