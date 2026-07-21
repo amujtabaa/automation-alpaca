@@ -54,7 +54,7 @@ its own moment: the fresh `signal_records` schema approval (asked at R4 with rea
 | WO-0122 | CLOSED | `114e5c3` activation; `9370311` implementation; `4bfeb55` close-out | VERIFIED: additive 61-case CI oracle, dual-store mutation-proven INV-051/052 pins, stale fixture repaired; 3867 passed, 11 skipped, 1 expected xfail. |
 | WO-0123 | QUEUED | — | Lane 2; tape recorder. |
 | WO-0124 | QUEUED | — | Lane 3; elevated effort; review-gated to REV-0037. |
-| WO-0125 | QUEUED | — | Lane 2; serialize before WO-0126 on `app/events/**`. |
+| WO-0125 | ACTIVE | activation: this commit | Lane 2; GATE confirms residual envelope projector/read-model replay gap; serialized before WO-0126 on `app/events/**`. |
 | WO-0126 | QUEUED | — | Lane 2; after WO-0114 and WO-0125 shared-file work lands. |
 | WO-0127 | REVIEW | `c90a7ae` activation; `ba2e358` reconciliation; `8a76a29` FIX; `961fa7e` review-stage | ADR-009/ADR-013 remain Proposed; REV-0034 staged against integrated semantic head `8a76a29`; no ledger/disposition until independent review + human text approval. |
 | WO-0128 | QUEUED | — | Lane 4; separate red staging branch after WO-0127 text stabilizes. |
