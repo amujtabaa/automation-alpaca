@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Envelope disposition cancel convergence + eventing/budget decision (SPEC-06/07, re-cut from WO-0029)"
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0124
 wave: W3-debt closure (re-cut per O-1, AUDIT-0002 F005)
 model_tier: strong
@@ -60,16 +60,16 @@ forbidden_paths:
 
 ## Required behavior
 
-- [ ] GATE first: re-derive what WO-0036's `_converge_expired_envelope_cancels` already covers
+- [x] GATE first: re-derive what WO-0036's `_converge_expired_envelope_cancels` already covers
       vs the stale-data `CANCEL` disposition path; do not rebuild what exists.
-- [ ] Bounded reconcile-driven convergence for every disposition cancel (retry → recovery-ledger
+- [x] Bounded reconcile-driven convergence for every disposition cancel (retry → recovery-ledger
       escalation, mirroring the submit-recovery loop shape); never blind-resubmit, never blind-cancel
       a venue-uncertain order.
-- [ ] Disposition cancels emit `envelope_action` events carrying `envelope_id` provenance.
-- [ ] **Operator sub-decision (batch before implementation):** do disposition cancels spend the
+- [x] Disposition cancels emit `envelope_action` events carrying `envelope_id` provenance.
+- [x] **Operator sub-decision (batch before implementation):** do disposition cancels spend the
       cancel/replace budget? Either answer is implementable; `_BUDGET_ACTIONS` and observed
       behavior must agree, and the ADR-010 budget text is amended to record the choice.
-- [ ] Red-first, both stores + restart; convergence pins include a failed-cancel-then-crash schedule.
+- [x] Red-first, both stores + restart; convergence pins include a failed-cancel-then-crash schedule.
 
 ## Fable FULL gate
 
@@ -115,10 +115,12 @@ schema, migration, adapter, facade, cockpit, or widened cancel-authority change.
 
 ## Acceptance criteria
 
-- [ ] No disposition path can strand a live venue order under a terminal envelope (pinned).
-- [ ] Eventing replayable; budget accounting matches the ratified decision; ADR amendment shipped.
-- [ ] Full gates green; independent review packet (next free REV id) before beta reliance.
-- [ ] Fable DONE with evidence; close-out + ledger with the work.
+- [x] No disposition failure is silent: direct retries converge or latch the exact exposure for
+      human review without reopening automatic cancel authority (pinned).
+- [x] Eventing replayable; budget accounting matches the ratified decision; ADR amendment shipped.
+- [x] Full gates green; independent review packet REV-0037 staged before beta reliance.
+- [x] Fable DONE recorded for the REVIEW handoff. Close-out, disposition, ledger, and move remain
+      deferred until the independent result and human disposition.
 
 ## Stop conditions
 
@@ -128,3 +130,147 @@ that is a design change, not this WO. Sequenced AFTER Lane P (WO-0114): shared s
 ## Completion disposition
 
 Expected: `[RESULT_SUMMARY_KEPT, ADR_CREATED]` (amendment).
+
+Not applied at this gate. REV-0037 and human disposition remain outstanding, so WO-0124 stays in
+`work/active/` with an empty disposition, no ledger append, no reviewer result, and no completed
+move.
+
+## Evidence and Fable handoff
+
+### GATE re-derivation and authority correction
+
+WO-0036 already re-drove `EXPIRED + CANCEL_AND_RETURN` through the exact shared obligation
+projection, but it made a one-shot, non-evented stale-data cancel and had no durable attempt state
+or bound. WO-0124 retains that projection/cancel seam, adds stale/restart selection from durable
+facts, and does not add a symbol-only target, adapter method, venue mode, config, or schema.
+
+The initial RED design proposed an `unresolved` submit-recovery record at exhaustion. Re-derivation
+stopped production work: `_recover_unpersisted_submits` polls with `recorded_quantity=0` and models
+an otherwise-untracked submit, so giving it a still-tracked canonical disposition order could
+duplicate ownership and misclassify fills. The approved correction creates one exact-pair record
+directly in terminal `needs_review` on the third failed attempt. Normal tracked-order reconcile
+remains the only automatic broker/fill observer; the submit-recovery loop excludes the latch.
+Both stores' existing `create_submit_recovery` seam creates record + audit atomically, validates
+order scope, dedupes the exact local/broker pair, and writes nothing on identity conflict.
+
+### Red-first evidence
+
+```yaml
+evidence:
+  - command: "pytest -q tests/test_wo0124_disposition_cancel_convergence.py tests/test_wo0126_replace_budget_single_source.py before production edits"
+    result: FAIL
+    decisive_output: "14 failed, 4 passed: cancel counted as budget; no pre-IO event; valid cancel provenance poisoned projection; stale failure was forgotten after clear/restart; five direct cancels escaped the requested bound."
+  - command: "corrected needs_review recovery-authority pins before production edits"
+    result: FAIL
+    decisive_output: "2 failed: five direct venue calls were observed instead of three; no terminal needs_review latch existed."
+```
+
+### Mutation evidence
+
+Every mutant was applied alone, produced the stated RED, and was immediately restored with a clean
+tree before the next mutant:
+
+```yaml
+mutations:
+  - mutant: "add cancel back to _BUDGET_ACTIONS"
+    killed_by: "test_disposition_cancel_does_not_spend_reprice_budget"
+    decisive_output: "projected 2 instead of 1"
+  - mutant: "bypass append_execution_event before cancel IO"
+    killed_by: "test_cancel_event_is_durable_before_venue_io_and_replayable"
+    decisive_output: "adapter observer saw no durable event before its call"
+  - mutant: "restrict convergence selection to EXPIRED envelopes"
+    killed_by: "test_stale_cancel_failure_then_sqlite_restart_converges"
+    decisive_output: "reopened ACTIVE stale obligation made zero cancel calls"
+  - mutant: "raise direct retry limit from 3 to 4"
+    killed_by: "test_direct_cancel_retries_are_bounded_then_escalate_once"
+    decisive_output: "four direct calls observed instead of three"
+  - mutant: "let cancel enter the canonical child-minting action path"
+    killed_by: "test_cancel_event_is_non_minting_and_preserves_exact_child_projection"
+    decisive_output: "the exact child became invalid"
+  - mutant: "remove cancel broker-order-id comparison"
+    killed_by: "test_cancel_event_with_foreign_broker_identity_fails_projection_closed"
+    decisive_output: "foreign broker identity projected valid"
+  - mutant: "create RECOVERY_UNRESOLVED instead of terminal RECOVERY_NEEDS_REVIEW"
+    killed_by: "test_direct_cancel_retries_are_bounded_then_escalate_once"
+    decisive_output: "no needs_review record existed; automatic recovery ownership would reopen"
+```
+
+### Fresh implementation and gate evidence
+
+```yaml
+evidence:
+  - command: "focused WO-0124 plus amended WO-0126 budget corpus"
+    result: PASS
+    decisive_output: "20 passed in 2.4s"
+  - command: "WO-0019, WO-0036 safety/hostile, WO-0113 safe-local-cancel, and R2 conformance corpus"
+    result: PASS
+    decisive_output: "351 passed in 20.9s"
+  - command: "pytest --cov=app --cov-branch --cov-report=term-missing"
+    result: PASS
+    decisive_output: "4029 passed, 11 skipped, 1 expected xfail; 93.05 percent coverage; exit 0 in 359.84s"
+  - command: "ruff check . --no-cache; scoped ruff format --check"
+    result: PASS
+    decisive_output: "All checks passed; 6 changed Python files already formatted"
+  - command: "mypy app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 70 source files"
+  - command: "lint-imports --no-cache"
+    result: PASS
+    decisive_output: "Analyzed 99 files and 485 dependencies; 6 contracts kept, 0 broken"
+constraints:
+  credentials_used: false
+  live_trading_used: false
+  adapter_or_facade_changed: false
+  config_or_dependency_changed: false
+  field_enum_schema_or_migration_changed: false
+  reviewer_result_or_disposition_written: false
+```
+
+```yaml
+fable_fix:
+  symptom: "The first escalation design assigned a still-tracked disposition order to the unresolved submit-recovery loop."
+  root_cause: "That loop assumes an otherwise-untracked submit and polls with recorded_quantity zero, which is the wrong owner and fill-accounting model for this canonical tracked order."
+  fix: "Create one exact-pair terminal needs_review latch on the third failed direct attempt; ordinary order reconcile remains authoritative and automatic recovery excludes the latch."
+  regression_test: "test_direct_cancel_retries_are_bounded_then_escalate_once plus test_failed_human_escalation_never_reopens_venue_authority"
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+fable_done:
+  task: "WO-0124 durable bounded disposition-cancel convergence and budget alignment"
+  done_when_results:
+    - item: "Expiry and stale-data disposition cancels append exact non-minting provenance before every adapter call"
+      status: MET
+      evidence: "Dual-store adapter observer plus per-attempt observer are green; append-bypass mutation turns RED."
+    - item: "Failed cancel survives clear/restart and direct authority is bounded"
+      status: MET
+      evidence: "SQLite crash/reopen reaches attempt 2; both stores stop at attempts 1,2,3 and latch exactly once."
+    - item: "Projection never broadens cancel authority or mints a child"
+      status: MET
+      evidence: "Exact broker positive/foreign negative, contiguous-attempt, and non-minting controls are green; two projection mutants turn RED."
+    - item: "Disposition cancels spend zero reprice budget and accepted records agree"
+      status: MET
+      evidence: "Shared policy/facade/restart count is reprice-only; ADR-010 and INV-083/090 carry dated pending-review amendments."
+    - item: "Static, import, regression, full-suite, and coverage gates are green"
+      status: MET
+      evidence: "4029 passed at 93.05 percent; Ruff, scoped format, mypy, and all six import contracts passed."
+    - item: "Independent human-gated review is staged without self-certification"
+      status: MET
+      evidence: "REV-0037 targets frozen semantic range 1af0ae7..a865a95; WO remains REVIEW."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+    live_or_nonpaper_behavior_changed: false
+    adapter_facade_cockpit_changed: false
+    config_dependency_schema_migration_changed: false
+  deferred:
+    - "Independent REV-0037 result and author/human disposition"
+    - "Ledger append, completion disposition, CLOSED status, and move to work/completed"
+    - "Beta reliance on this human-gated cancel/event/ADR change"
+  status: VERIFIED
+```
+
+Evidence status: **VERIFIED** for the author semantic range and staged review handoff.
+**UNVERIFIED** by design: the independent verdict and human disposition. **NEEDS-INPUT:** none for
+the implementation; REV-0037 remains the mandatory next gate.
