@@ -372,6 +372,19 @@ def test_replay_rejects_every_fsm_illegal_envelope_transition(
         project_envelopes([*prefix, event])
 
 
+def test_read_model_projection_rejects_fsm_illegal_envelope_transition() -> None:
+    prefix = _prefix_to_status(EnvelopeStatus.PENDING)
+    illegal = _transition(
+        ExecutionEventType.ENVELOPE_COMPLETED,
+        len(prefix) + 1,
+        EnvelopeStatus.PENDING,
+        EnvelopeStatus.COMPLETED,
+    )
+
+    with pytest.raises(ProjectionError, match="illegal envelope transition"):
+        project_read_models([*prefix, illegal])
+
+
 def test_repair_checkpoint_is_classified_global_metadata() -> None:
     checkpoint = _event(
         ExecutionEventType.ENVELOPE_ATTRIBUTION_REPAIR_CHECKPOINT,

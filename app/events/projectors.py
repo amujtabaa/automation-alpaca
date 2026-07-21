@@ -39,6 +39,7 @@ from app.models import (
 )
 from app.policy import fill_value_reason
 from app.position import apply_fill
+from app.transitions import ENVELOPE_TRANSITIONS
 
 
 class ProjectionError(ValueError):
@@ -700,6 +701,11 @@ def project_envelopes(
                 raise ProjectionError(
                     f"envelope transition sequence={event.sequence} to "
                     f"{event.payload.get('to')!r} does not match {expected.value!r}"
+                )
+            if expected not in ENVELOPE_TRANSITIONS[current.status]:
+                raise ProjectionError(
+                    f"illegal envelope transition sequence={event.sequence}: "
+                    f"{current.status.value!r} -> {expected.value!r}"
                 )
             superseded_by_id = current.superseded_by_id
             if event.event_type is ExecutionEventType.ENVELOPE_SUPERSEDED:
