@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: ExecutionEnvelope entity, state machine, events, dual-store persistence (ADR-010 §2-3, §6)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0016
 wave: W3
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ADR_CREATED]
+record_reconciliation: "WO-0120 (2026-07-20) verified fable-done.md status VERIFIED and the existing WO-0016 DISPOSED ledger row; a canonical CLOSED ledger row is appended."
 owner: Ameen (human-gated: event-log truth changes; schema migration)
 created: 2026-07-11
 ---

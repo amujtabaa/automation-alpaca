@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: Envelope approval surface + flatten/kill-switch precedence (ADR-010 §1, §4)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0017
 wave: W3
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified fable-done.md status VERIFIED and the existing WO-0017 DISPOSED ledger row; a canonical CLOSED ledger row is appended."
 owner: Ameen (human-gated: order submission delegation, kill switch, manual flatten)
 created: 2026-07-11
 ---

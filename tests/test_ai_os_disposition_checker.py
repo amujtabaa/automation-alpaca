@@ -43,6 +43,5 @@ disposition: [RESULT_SUMMARY_KEPT]
 
     assert warnings == []
     assert any(
-        "WO-0999" in failure and "completed folder" in failure
-        for failure in failures
+        "WO-0999" in failure and "completed folder" in failure for failure in failures
     )

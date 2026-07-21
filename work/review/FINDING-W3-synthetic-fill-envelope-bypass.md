@@ -1,5 +1,8 @@
 # FINDING — reconciliation-inferred fills bypass the envelope: the qty ceiling silently re-arms
 
+> **Authoritative disposition (2026-07-20): RESOLVED.** The original OPEN record below is
+> retained as historical finding text; the additive resolution block is authoritative.
+
 - **Status:** OPEN (REV-0023 Phase A, completeness-critic CC-01, both stores). Previously
   deferred-logged as "synthetic-fill bridge (rare path)" — the H1-violation compounding was never
   assessed; upgraded to FINDING.
@@ -37,3 +40,13 @@ same canonical dedupe key), dual-store tests, and a strict pin of the 200-vs-100
 
 Completeness-critic `test_critic_inferred_fill_gap.py` (session scratchpad; mirrors
 `_apply_inferred_fills` argument-for-argument). Output quoted in the critic report under REV-0023.
+
+## Resolution / disposition (recorded by WO-0120)
+
+**RESOLVED by WO-0025.** Reconciliation-inferred fills for envelope children use the same
+record-first bridge and canonical dedupe identity as stream fills. The exact property pin is
+`test_PIN_F5_inferred_fill_decrements_envelope_remaining` in
+`tests/test_rev0023_phase_a_pins.py`, with the direct bridge pin
+`test_inferred_fill_bridge_decrements_envelope` in `tests/test_wo0025_multileg.py`. The
+assembled W3 remediation review is dispositioned RESOLVED in REV-0023, and AUDIT-0002 F009
+independently reconciled this class as fixed. **Disposition: CLOSED / RESULT_SUMMARY_KEPT.**

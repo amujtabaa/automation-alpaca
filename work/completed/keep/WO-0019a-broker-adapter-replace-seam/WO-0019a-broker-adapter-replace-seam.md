@@ -1,13 +1,13 @@
 ---
 type: Work Order
 title: Broker-adapter replace/edit seam (pre-requisite for WO-0019, ADR-010 §1)
-status: DRAFT — awaiting human gate approval (T3a); drafted by the implementation seat at the
-  WO-0019 tripwire per the kickoff protocol ("Absent → NEEDS-INPUT")
+status: CLOSED
 work_order_id: WO-0019a
 wave: W3
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified fable-done.md status VERIFIED and the existing WO-0019a DISPOSED ledger row; a canonical CLOSED ledger row is appended."
 owner: Ameen (human-gated: order submission / cancel-replace surface)
 created: 2026-07-11
 ---

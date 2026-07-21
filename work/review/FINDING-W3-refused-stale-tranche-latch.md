@@ -1,5 +1,8 @@
 # FINDING — a benignly-refused tranche permanently consumes the tranche entitlement (WO-0029A regression)
 
+> **Authoritative disposition (2026-07-20): RESOLVED.** The original OPEN record below is
+> retained as historical finding text; the additive resolution block is authoritative.
+
 - **Status:** OPEN (found by the SOL-0001 crosswise review's drift lens, verified by two
   independent refuters; app-side, NOT charged to Sol).
 - **Severity:** P2 (behavioral: the envelope's single tranche opportunity is silently burned by
@@ -20,3 +23,12 @@
 - Sol's rival fold has the mirror-image defect on the same event (their anonymous-tranche
   latch, DRIFT-SVD-3) — both sides' tranche accounting must be pinned against the
   refused_stale vocabulary in the W4 harness.
+
+## Resolution / disposition (recorded by WO-0120)
+
+**RESOLVED by WO-0031(d).** Tranche entitlement now counts WORKING actions only, so a
+`refused_stale` provenance row cannot burn it. The exact pin is
+`test_SVD2_refused_stale_does_not_consume_tranche` in
+`tests/test_sol0001_incumbent_pins.py`; INV-086 and WO-0031's VERIFIED close-out record the same
+contract. AUDIT-0002 F009 independently reconciled the WO, pin, and current green behavior.
+**Disposition: CLOSED / RESULT_SUMMARY_KEPT.**

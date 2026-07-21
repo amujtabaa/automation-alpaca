@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Complete the governance record + make the disposition checker folder-aware"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0120
 wave: post-R2 beta-prep
 model_tier: mid
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen / implementer TBD / from AUDIT-0002 F001/F008/F009/F010 + C001/C102
 created: 2026-07-20
 gated_surface: none for the record flips; Phase 2 changes a CI gate (operator-aware)
@@ -48,7 +48,7 @@ forbidden_paths:
 
 ## Required behavior
 
-- [ ] **Phase 1 — records (bookkeeping, evidence-backed, append-only ledger, no body rewrites):**
+- [x] **Phase 1 — records (bookkeeping, evidence-backed, append-only ledger, no body rewrites):**
   - **F001 / C001:** reconcile the ~14 completed W3 records still at DRAFT/gate-awaiting
     (WO-0016..0021, 0024..0028, 0030, 0031) AND WO-0113 (`status: REVIEW`) to a canonical
     completed status + non-empty disposition, each citing its ledger + close-out evidence. Flip
@@ -61,21 +61,21 @@ forbidden_paths:
     Leave the two legitimately-open findings (grouped lifecycle/eventing, structural-hold) OPEN.
   - **F010:** correct REV-0019's disposition front-matter verdict to match its result (retain
     body); add a retained request/provenance marker for REV-0023 recording the actual dispatch.
-- [ ] **Phase 2 — checker (changes a CI gate; operator-aware):** make
+- [x] **Phase 2 — checker (changes a CI gate; operator-aware):** make
   `check_work_order_disposition.py` FAIL when a file under `work/completed/**` has a
   non-completed status or an empty required disposition (today it only inspects recognized
   completed statuses, so a REVIEW/DRAFT file in a completed folder is invisible — the exact
   blind spot behind F001/C001). Keep the existing WARNING-on-parked-completed behavior. Add/extend
   a test if the checker has one.
-- [ ] Close-out ships with the work; every flip cites pasted evidence; `git diff --stat` limited
+- [x] Close-out ships with the work; every flip cites pasted evidence; `git diff --stat` limited
   to allowed paths.
 
 ## Acceptance criteria
 
-- [ ] All five AI-OS checks green; the hardened checker passes on the now-truthful tree AND
+- [x] All five AI-OS checks green; the hardened checker passes on the now-truthful tree AND
   fails on a deliberately-planted completed-folder DRAFT (prove the new guard bites).
-- [ ] Every record flip evidence-backed; ledger append-only; no historical body rewritten.
-- [ ] Fable DONE block; VERIFIED only when every listed record is reconciled or explicitly left
+- [x] Every record flip evidence-backed; ledger append-only; no historical body rewritten.
+- [x] Fable DONE block; VERIFIED only when every listed record is reconciled or explicitly left
   open with a reason (the two genuinely-open F009 findings).
 
 ## Stop conditions
@@ -113,4 +113,66 @@ fable_gate:
     - "All five AI-OS checks and scoped regression tests pass with fresh output."
     - "Close-out status, disposition, ledger append, file move, scoreboard, and Fable DONE ship together."
   blast_radius: "work/** governance metadata plus the disposition checker and its tests"
+```
+
+## Fable fixes
+
+```yaml
+fable_fix:
+  symptom: "A DRAFT or REVIEW work order under work/completed was invisible to the disposition gate."
+  root_cause: "The checker decided whether a record required completion hygiene only from its status; it never treated the completed folder as an authoritative lifecycle signal."
+  evidence: "The new completed-folder DRAFT regression failed before the checker edit because analyze() returned no failure for WO-0999."
+  fix: "Treat work/completed placement as requiring a canonical completed status and a non-empty disposition while retaining WARNING-only behavior for completed statuses parked in live folders."
+  regression_test: "tests/test_ai_os_disposition_checker.py::test_completed_folder_rejects_noncompleted_status"
+  red_green_verified: true
+  attempt: 1
+```
+
+## Fresh evidence
+
+```yaml
+evidence:
+  - command: "pytest resolved-finding corpus plus AI-OS checker tests with OS-temp basetemp"
+    result: PASS
+    decisive_output: "160 passed, 1 expected xfailed in 10.41s; the xfail is the deliberately open structural-hold finding."
+  - command: "ruff check + ruff format --check on the changed checker/test"
+    result: PASS
+    decisive_output: "All checks passed; 2 files already formatted."
+  - command: "check_install; check_version_consistency; check_ledger; check_pkl; check_work_order_disposition"
+    result: PASS
+    decisive_output: "INSTALL CHECK PASSED; VERSION CHECK PASSED v0.9.1; LEDGER CHECK PASSED; PKL CHECK PASSED; DISPOSITION CHECK PASSED."
+  - command: "check_work_order_scope over 87aa950..worktree plus context_hygiene_report"
+    result: PASS
+    decisive_output: "SCOPE CHECK PASSED; HYGIENE REPORT 0 violations and 0 advisories."
+```
+
+Toolchain incident: the first static command resolved the system Python 3.14 interpreter, which
+does not contain `ruff`. Root cause was interpreter selection, not repository behavior; the
+authoritative rerun used the repository's pinned `.venv` interpreter and passed.
+
+## Fable done
+
+```yaml
+fable_done:
+  task: "WO-0120 governance record truth and folder-aware disposition checker"
+  done_when_results:
+    - item: "Fourteen completed W3 work orders and WO-0109/WO-0113 carry canonical CLOSED status, non-empty disposition, close-out citations, and append-only correction rows."
+      status: MET
+    - item: "REV-0029/0030 closure chain, REV-0019 verdict metadata, and REV-0023 request provenance are authoritative and history-preserving."
+      status: MET
+    - item: "Nine remediated W3 findings have additive authoritative RESOLVED blocks; the grouped lifecycle/eventing and structural-hold findings remain open."
+      status: MET
+    - item: "The completed-folder DRAFT regression failed before and passes after the folder-aware guard."
+      status: MET
+    - item: "Five AI-OS checks, scope, hygiene, formatting, and the 161-case resolved-finding corpus exit green (160 pass, 1 expected xfail)."
+      status: MET
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  evidence:
+    - "160 passed, 1 expected xfailed in 10.41s"
+    - "All five AI-OS checks passed"
+    - "SCOPE CHECK PASSED"
+    - "HYGIENE REPORT 0 violations, 0 advisories"
+  status: VERIFIED
 ```

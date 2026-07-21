@@ -1,5 +1,8 @@
 # FINDING — multi-order envelopes cannot complete: the two D-3 validators use different "working order" predicates
 
+> **Authoritative disposition (2026-07-20): RESOLVED.** The original OPEN record below is
+> retained as historical finding text; the additive resolution block is authoritative.
+
 - **Status:** OPEN (REV-0023 Phase A; found INDEPENDENTLY by spec-attacker SPEC-04 and
   completeness-critic CC-02 — distinct repros, both stores).
 - **Severity:** **P1** (fail-closed, so no illegal venue action — but a core designed capability
@@ -43,3 +46,14 @@ ADR-010 amendment defining the predicate ships with the change.
 
 Completeness-critic `test_critic_second_leg_freeze.py` (session scratchpad); spec-attacker
 harness R3. Decisive outputs quoted in the critic reports compiled under REV-0023.
+
+## Resolution / disposition (recorded by WO-0120)
+
+**RESOLVED by WO-0025.** The live-working-order predicate is unified over lifecycle history and
+terminal children lead to a fresh SUBMIT. The exact regression pins are
+`test_PIN_F4_second_leg_after_full_fill_never_false_divergence` in
+`tests/test_rev0023_phase_a_pins.py` plus
+`test_second_leg_after_terminal_first_order_submits_fresh` in
+`tests/test_wo0025_multileg.py`. The assembled W3 remediation review is dispositioned RESOLVED
+in REV-0023, and AUDIT-0002 F009 independently reconciled this class as fixed.
+**Disposition: CLOSED / RESULT_SUMMARY_KEPT.**

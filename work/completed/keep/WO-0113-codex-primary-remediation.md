@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: Codex primary-seat engagement — review the prior seat's WO-0111/WO-0112, remediate all findings, close the recurring gap classes, reach merge-readiness
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0113
 wave: R2 consolidation campaign (CAMPAIGN-0002), merge-readiness (Codex primary seat)
 model_tier: strong
 risk: high
 disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified REV-0033 RESOLVED at cdb7dd9 and operator merge 88833e3d; a canonical CLOSED ledger row is appended."
 owner: Ameen
 implementer_seat: Codex (primary implementation seat — durable operator decision, 2026-07-19)
 review_seat: Claude or human (independent — NOT the implementer; REV-0033)

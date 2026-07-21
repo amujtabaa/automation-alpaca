@@ -1,5 +1,8 @@
 # FINDING — a staged envelope order can outlive envelope cancellation and reach the venue
 
+> **Authoritative disposition (2026-07-20): RESOLVED.** The original OPEN record below is
+> retained as historical finding text; the additive resolution block is authoritative.
+
 - **Status:** OPEN (found by WO-0021, 2026-07-12). Pinned by
   `tests/test_wo0021_envelope_chaos.py::test_flatten_mid_reprice_staged_order_never_reaches_the_venue`
   (`xfail(strict=True)` — flips loudly when fixed). Reproduced on BOTH stores.
@@ -44,3 +47,12 @@ Two independent belts, either sufficient, both cheap:
 The drafted WO does BOTH (defense in depth) + a store-level invariant test, and also settles the
 deferred intent→ORDERED linkage question that let this compound. Human-gated (flatten/submission
 surfaces) — queues for approval and independent review.
+
+## Resolution / disposition (recorded by WO-0120)
+
+**RESOLVED by amended WO-0024.** Preemption atomically sweeps staged CREATED envelope orders,
+and redrive independently refuses a non-ACTIVE mandate. The original exact pin
+`test_flatten_mid_reprice_staged_order_never_reaches_the_venue` in
+`tests/test_wo0021_envelope_chaos.py` is now a passing invariant test. The assembled W3
+remediation review is dispositioned RESOLVED in REV-0023, and AUDIT-0002 F009 independently
+reconciled this class as fixed. **Disposition: CLOSED / RESULT_SUMMARY_KEPT.**

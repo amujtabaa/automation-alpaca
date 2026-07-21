@@ -17,9 +17,9 @@ and the MCP server (shared code, not shelling out).
 Usage:
   python scripts/check_work_order_disposition.py
 """
+
 from __future__ import annotations
 import json
-import sys
 from pathlib import Path
 
 from ai_os_paths import find_root, load_yaml_list
@@ -73,13 +73,15 @@ def scan_work_orders(root: Path) -> list[dict]:
         fm = parse_work_order(p)
         if fm is None or fm.get("type", "") != "Work Order":
             continue
-        records.append({
-            "path": p,
-            "folder": p.relative_to(work).parts[0],
-            "id": fm.get("work_order_id", p.stem),
-            "status": fm.get("status", ""),
-            "dispositions": fm["disposition"],
-        })
+        records.append(
+            {
+                "path": p,
+                "folder": p.relative_to(work).parts[0],
+                "id": fm.get("work_order_id", p.stem),
+                "status": fm.get("status", ""),
+                "dispositions": fm["disposition"],
+            }
+        )
     return records
 
 
@@ -111,17 +113,26 @@ def analyze(root: Path) -> tuple[list[str], list[str]]:
             failures.append(
                 f"{record['id']}: non-completed status {record['status']!r} in completed folder ({rel})"
             )
-        if (filed_as_completed or record["status"] in COMPLETED) and not record["dispositions"]:
-            failures.append(f"{record['id']}: completed ({record['status']}) with empty disposition ({rel})")
+        if (filed_as_completed or record["status"] in COMPLETED) and not record[
+            "dispositions"
+        ]:
+            failures.append(
+                f"{record['id']}: completed ({record['status']}) with empty disposition ({rel})"
+            )
         for d in record["dispositions"]:
             if valid and d not in valid:
-                failures.append(f"{record['id']}: disposition {d!r} not in rules/ai-os-rules.yaml vocabulary ({rel})")
+                failures.append(
+                    f"{record['id']}: disposition {d!r} not in rules/ai-os-rules.yaml vocabulary ({rel})"
+                )
         if "DELETED" in record["dispositions"] and record["id"] not in known_ledger_ids:
             failures.append(
                 f"{record['id']}: DELETED disposition without a matching ledger entry "
-                f"(require_ledger_entry_for_deleted_work_orders) ({rel})")
+                f"(require_ledger_entry_for_deleted_work_orders) ({rel})"
+            )
         if record["status"] in COMPLETED and record["folder"] in LIVE_FOLDERS:
-            warnings.append(f"{record['id']}: completed ({record['status']}) still in work/{record['folder']}/ ({rel})")
+            warnings.append(
+                f"{record['id']}: completed ({record['status']}) still in work/{record['folder']}/ ({rel})"
+            )
     return failures, warnings
 
 
@@ -129,7 +140,9 @@ def review(root: Path, work_order_id: str) -> dict:
     """Conservative disposition recommendation (derived from the work order,
     never invented) for the MCP ai_os_disposition_review tool."""
     for record in scan_work_orders(root):
-        if record["id"] == work_order_id or record["path"].name.startswith(work_order_id):
+        if record["id"] == work_order_id or record["path"].name.startswith(
+            work_order_id
+        ):
             if record["status"] not in COMPLETED:
                 return {
                     "work_order_id": work_order_id,

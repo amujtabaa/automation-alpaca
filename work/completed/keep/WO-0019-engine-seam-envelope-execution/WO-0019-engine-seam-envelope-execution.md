@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: Engine seam — write-time envelope validation + ENVELOPE_PLAN_DIVERGENCE (ADR-010 §1, §5)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0019
 wave: W3
 model_tier: strong
 risk: high
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified fable-done.md status VERIFIED and the existing WO-0019 DISPOSED ledger row; a canonical CLOSED ledger row is appended."
 owner: Ameen (human-gated: order submission, cancel/replace)
 created: 2026-07-11
 ---

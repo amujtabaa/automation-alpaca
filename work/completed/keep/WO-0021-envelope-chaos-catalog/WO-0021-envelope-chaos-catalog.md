@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: Envelope chaos & property catalog — adversarial scenarios as executable tests (LASE 05)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0021
 wave: W3
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified fable-done.md status VERIFIED and the existing WO-0021 DISPOSED ledger row; a canonical CLOSED ledger row is appended."
 owner: Ameen
 created: 2026-07-11
 ---

@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: REV-0029 round-3 remediation — close every confirmed round-2 finding (Codex implements)
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0109
 wave: R2 consolidation campaign (CAMPAIGN-0002), post-review remediation (round 3)
 model_tier: strong
 risk: high
 disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified REV-0030 ACCEPT at cc79a7b, the retrospective REV-0029/REV-0030 dispositions, and operator merge 88833e3d; a canonical CLOSED ledger row is appended."
 owner: Ameen
 implementer_seat: Codex
 review_seat: Claude or human (independent — NOT the implementer)

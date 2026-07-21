@@ -1,5 +1,8 @@
 # FINDING — redrive is a validation-free venue path; WO-0024's status guard does not close it
 
+> **Authoritative disposition (2026-07-20): RESOLVED.** The original OPEN record below is
+> retained as historical finding text; the additive resolution block is authoritative.
+
 - **Status:** OPEN (REV-0023 Phase A; found INDEPENDENTLY by interleaving-attacker INT-001,
   spec-attacker SPEC-03, completeness-critic CC-03 — 3/4 critics, distinct repros, both stores).
 - **Severity:** **P1** (H1/H5/H6; oversized and post-TTL venue submissions reproduced from the
@@ -48,3 +51,14 @@ stores.
 Interleaving probe suite (session scratchpad `test_w3_interleaving_probes.py`, re-confirmed on a
 pristine `f092ca7` worktree); spec-attacker harness R2; completeness-critic path analysis with
 quoted code. Decisive outputs quoted in the critic reports compiled under REV-0023.
+
+## Resolution / disposition (recorded by WO-0120)
+
+**RESOLVED by amended WO-0024.** Redrive revalidates current remaining quantity, mandate state,
+TTL, phase, and staleness before claim. The exact pins are
+`test_PIN_F3_redrive_respects_current_remaining`,
+`test_PIN_F3_redrive_gather_variant_fill_racing_redrive`, and
+`test_PIN_F3_redrive_after_ttl_makes_no_venue_call` in
+`tests/test_rev0023_phase_a_pins.py`. The assembled W3 remediation review is dispositioned
+RESOLVED in REV-0023, and AUDIT-0002 F009 independently reconciled this class as fixed.
+**Disposition: CLOSED / RESULT_SUMMARY_KEPT.**

@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: Pure sell-side policy rebuild — regime-adaptive LASE core (ADR-010 §1, §7; research notes)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0018
 wave: W3
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified fable-done.md status VERIFIED and the existing WO-0018 DISPOSED ledger row; a canonical CLOSED ledger row is appended."
 owner: Ameen
 created: 2026-07-11
 ---

@@ -1,7 +1,7 @@
 ---
 type: Review Disposition
 rev_id: REV-0019
-verdict_received: ACCEPT-WITH-CHANGES
+verdict_received: ACCEPT
 disposition_status: RESOLVED   # was PARTIAL; ENG-001 residual now cleared via REV-0020 (see addendum)
 date: 2026-07-10
 addendum_date: 2026-07-11

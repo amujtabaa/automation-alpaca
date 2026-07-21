@@ -1,5 +1,8 @@
 # FINDING — reduce-only is a flag, not a rail: envelope SELLs submit against zero position
 
+> **Authoritative disposition (2026-07-20): RESOLVED.** The original OPEN record below is
+> retained as historical finding text; the additive resolution block is authoritative.
+
 - **Status:** OPEN (REV-0023 Phase A, spec-attacker SPEC-01, 2026-07-12). Pin: none yet —
   WO-0026 must land a strict pin.
 - **Severity:** **P0** (H1 hard-rail with no enforcement seam; venue call is the harm point).
@@ -34,3 +37,13 @@ breach→FROZEN semantics, both stores, dual-store tests + a strict pin of the z
 
 Spec-attacker harness R5, session scratchpad `spec_attack.py` (read-only). Decisive output quoted
 in REV-0023/phase-a source report.
+
+## Resolution / disposition (recorded by WO-0120)
+
+**RESOLVED by WO-0026.** Both stores re-read the fill-derived current position in the atomic
+stage/claim path and fail closed before venue submission. The exact strict pin is
+`test_PIN_F1_sell_against_zero_position_never_reaches_venue` in
+`tests/test_rev0023_phase_a_pins.py`, with shrink/redrive twins in
+`tests/test_wo0019_engine_seam.py`. The assembled W3 remediation review is dispositioned
+RESOLVED in REV-0023, and AUDIT-0002 F009 independently reconciled this class as fixed.
+**Disposition: CLOSED / RESULT_SUMMARY_KEPT.**

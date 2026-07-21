@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: Monitoring-tick wiring + operator visibility for envelopes (ADR-010 §1; LASE 04)
-status: DRAFT
+status: CLOSED
 work_order_id: WO-0020
 wave: W3
 model_tier: mid
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
+record_reconciliation: "WO-0120 (2026-07-20) verified fable-done.md status VERIFIED and the existing WO-0020 DISPOSED ledger row; a canonical CLOSED ledger row is appended."
 owner: Ameen
 created: 2026-07-11
 ---

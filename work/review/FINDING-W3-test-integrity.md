@@ -1,5 +1,8 @@
 # FINDING — W3 test-integrity defects (mutation-testing survivors)
 
+> **Authoritative disposition (2026-07-20): RESOLVED.** The original OPEN record below is
+> retained as historical finding text; the additive resolution block is authoritative.
+
 - **Status:** OPEN (REV-0023 Phase A, test-critic; 13 mutations run one-at-a-time against the full
   W3 suite at `f092ca7`, 10 killed, 3 survived + 2 partial survivors). Working tree verified
   restored; post-restoration baseline identical (410 passed, 3 xfailed).
@@ -23,3 +26,14 @@ FINDING-W3-memory-atomic-envelope-rollback.md (TC-03).
 
 Per protocol Phase A results are not shared with the Codex seat pre-verdict; but the human should
 know that until TC-01 is fixed, "suite green" is NOT evidence on the replace-targeting surface.
+
+## Resolution / disposition (recorded by WO-0120)
+
+**RESOLVED by WO-0028.** TC-01 through TC-08 were strengthened or corrected without weakening a
+test; the close-out records a 14/14 killed mutation matrix. Load-bearing pins include the exact
+reprice-target assertion in `tests/test_wo0019_engine_seam.py`,
+`test_ratchet_holds_when_atr_expands_and_candidates_collapse` in
+`tests/test_wo0021_regime_tapes.py`, the four memory rollback pins, and the promoted
+`tests/test_rev0023_phase_a_pins.py` corpus. The assembled W3 remediation review is
+dispositioned RESOLVED in REV-0023, and AUDIT-0002 F009 independently reconciled this class as
+fixed. **Disposition: CLOSED / RESULT_SUMMARY_KEPT.**

@@ -1,4 +1,4 @@
-# REV-0029 — builder disposition (IN PROGRESS, 2026-07-18)
+# REV-0029 — builder disposition (RESOLVED; closure recorded retrospectively 2026-07-20)
 
 > **Verdict acknowledged: BLOCK — and it is correct.** Every finding was independently re-verified
 > against the source by the builder before this disposition; none is disputed. Three real
@@ -100,3 +100,26 @@ BLOCK stands until round-2 review ACCEPT. The round-2 request is queued at `requ
 carries the PROC-0001 fresh-probe obligation for the amended INVs. Merge gate reopens only on an
 `ACCEPT` / `ACCEPT-WITH-CHANGES` verdict + a recorded round-2 disposition. No PR, no merge, nothing
 beta-relevant relies on this trunk meanwhile. PD-1 stays parked (post-merge WO).
+
+## Round-2 verdict received + round-3 closure (recorded retrospectively per AUDIT-0002 F008)
+
+**Round-2 verdict: BLOCK** (`result-round2.md`, pinned `70b5567`, diff `abfbae9..70b5567`) —
+P0-1/P0-2/P0-3 still-open, P1-1 still-open, P1-2 instance-only, P1-3 red; P0-4/P0-5
+closed-by-property; three new findings (NEW-P0-1 inert sibling pin, NEW-P1-1 substring T1.3
+gate, NEW-P1-2 tracked `.agents/.codex` contamination). The "Round-2 update" table above
+predates this verdict; it is retained unaltered as history.
+
+**Round-2 disposition: ALL EIGHT FINDINGS ACCEPTED.** Independently re-verified by the Claude
+seat's triage embedded in the WO-0109 draft (`7e59a9e`). NEW-P1-2 resolved immediately
+(contamination removed `e0da97d`; CI guard `aba8052`). The rest remediated by **WO-0109**
+(Clusters A-E: `5b4e742`, `1e14189`, `3f85656`, `d12596d`, `51dee57`; close-out `0236591`),
+red-first, dual-store, mutation-verified per cluster.
+
+**Round-3 review: REV-0030 — ACCEPT** (`REV-0030/result.md`, commit `cc79a7b`; reviewer Claude,
+independent of the Codex implementer; range `7e59a9e..51dee57` at `0236591`). Zero findings.
+
+**Gate state: CLEARED.** The REV-0029 merge gate (rounds 1+2 BLOCK) was cleared by the REV-0030
+ACCEPT. Subsequent PR #9-head deltas were separately gated: WO-0110 (Codex PR-reviewer delta),
+WO-0111 (REV-0031 → RESOLVED via WO-0113), WO-0112 (REV-0032 → RESOLVED via WO-0113), WO-0113
+(REV-0033 → RESOLVED, `cdb7dd9`). Operator merged PR #9 at `88833e3d` (ledger PR-0009-MERGE).
+**REV-0029 disposition status: RESOLVED.** No historical review body was altered by this closure.
