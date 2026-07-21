@@ -138,15 +138,35 @@ async def test_invalid_market_data_is_preserved_with_validity_flags(tmp_path):
     assert replayed.snapshot.bid == -1.0
 
 
-def test_store_rotates_before_exceeding_its_segment_bound(tmp_path):
+def test_store_replaces_active_segment_when_only_one_is_retained(tmp_path):
+    first_line = '{"sequence":1}\n'
+    second_line = '{"sequence":2}\n'
+    store = TapeStore(
+        tmp_path / "tape.ndjson",
+        max_bytes=len(first_line.encode("utf-8")),
+        max_segments=1,
+    )
+
+    store.append_line(first_line)
+    store.append_line(second_line)
+
+    assert (tmp_path / "tape.ndjson").read_text(encoding="utf-8") == second_line
+    assert (tmp_path / "tape.ndjson").stat().st_size <= store.max_bytes
+    assert list(tmp_path.glob("tape.*.ndjson")) == []
+
+
+def test_store_rotates_and_replaces_oldest_when_two_segments_are_retained(tmp_path):
     store = TapeStore(tmp_path / "tape.ndjson", max_bytes=1, max_segments=2)
-    line = '{"schema_version":1}\n'
+    first_line = '{"sequence":1}\n'
+    second_line = '{"sequence":2}\n'
+    third_line = '{"sequence":3}\n'
 
-    store.append_line(line)
-    store.append_line(line)
+    store.append_line(first_line)
+    store.append_line(second_line)
+    store.append_line(third_line)
 
-    assert (tmp_path / "tape.ndjson").read_text(encoding="utf-8") == line
-    assert (tmp_path / "tape.1.ndjson").read_text(encoding="utf-8") == line
+    assert (tmp_path / "tape.ndjson").read_text(encoding="utf-8") == third_line
+    assert (tmp_path / "tape.1.ndjson").read_text(encoding="utf-8") == second_line
 
 
 def test_recorder_settings_are_off_by_default_and_parse_operational_values(monkeypatch):
