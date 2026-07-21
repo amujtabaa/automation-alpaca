@@ -66,6 +66,20 @@ def test_active_envelope_renders_bounds_and_remaining(monkeypatch):
     assert "AAPL" in blob
 
 
+def test_nonzero_derived_replace_usage_is_rendered(monkeypatch):
+    at = _run(monkeypatch, [_envelope(replaces_used=2)])
+    frame = at.dataframe[0].value
+    assert frame.loc[0, "replaces"] == "2/5"
+
+
+def test_missing_derived_replace_usage_is_not_silently_zero(monkeypatch):
+    envelope = _envelope()
+    envelope.pop("replaces_used")
+    at = _run(monkeypatch, [envelope])
+    errors = " ".join(str(error.value) for error in at.error)
+    assert "missing derived replaces_used" in errors.lower()
+
+
 def test_frozen_and_breached_are_prominent(monkeypatch):
     at = _run(
         monkeypatch,

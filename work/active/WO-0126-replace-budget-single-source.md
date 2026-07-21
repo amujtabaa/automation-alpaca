@@ -130,3 +130,20 @@ evidence:
     result: PASS
     decisive_output: "Analyzed 99 files, 484 dependencies; 6 contracts kept, 0 broken"
 ```
+
+## Red-first evidence
+
+```yaml
+evidence:
+  - command: "WO-0126 + incumbent model/policy/cockpit tests before production changes, cache disabled, unique OS-temp basetemp"
+    result: FAIL
+    decisive_output: "13 failed, 72 passed in 2.95s: missing shared projector; both HTTP stores returned stale 0; hostile SQLite tombstone blocked reopen; domain field remained accepted; policy/facade wiring and cockpit missing-truth pins failed."
+  - command: "cockpit-only red refinement"
+    result: FAIL
+    decisive_output: "1 failed, 4 passed: a payload missing replaces_used was silently rendered as zero; the nonzero 2/5 rendering control passed."
+```
+
+The accepted import-linter contract explicitly forbids `app.sellside` from importing
+`app.events`. The single projector therefore remains in the pure sell-side policy module and is
+consumed downward by no stateful dependency and upward by the facade read model. This preserves
+the accepted architecture while still providing one computation to both enforcement and display.

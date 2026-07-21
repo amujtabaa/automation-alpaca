@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import app.sellside.policy as sellside_policy
 from app.marketdata.service import MarketSnapshot
 from app.models import (
     EnvelopeExpiryDisposition,
@@ -309,6 +310,34 @@ def test_budget_exhaustion_signals_exhausted():
     ]
     out = decide(env, tape, now=NOW, history=history)
     assert isinstance(out, ExhaustedSignal)
+
+
+def test_both_budget_enforcement_sites_consume_the_shared_projection(monkeypatch):
+    env, tape = make_envelope(cancel_replace_budget=1), crash_tape()
+    history = [
+        action_event(
+            env,
+            action="submit",
+            limit_price=9.7,
+            at=NOW - timedelta(seconds=60),
+        )
+    ]
+    calls = []
+
+    def exhausted_projection(events):
+        calls.append(tuple(events))
+        return {env.id: 1}
+
+    monkeypatch.setattr(
+        sellside_policy, "project_envelope_replaces_used", exhausted_projection
+    )
+
+    assert isinstance(decide(env, tape, now=NOW, history=history), ExhaustedSignal)
+    violation = validate_action(
+        env, planned(kind=ActionKind.REPRICE), history=history, now=NOW
+    )
+    assert violation is not None and violation.rail == "cancel_replace_budget"
+    assert calls == [tuple(history), tuple(history)]
 
 
 def test_other_envelopes_history_is_ignored():

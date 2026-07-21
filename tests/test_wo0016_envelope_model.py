@@ -57,7 +57,7 @@ def test_valid_draft_constructs_with_expected_defaults():
     assert env.reduce_only is True
     # remaining starts at the ceiling and only fill application may move it.
     assert env.remaining_quantity == env.qty_ceiling == 100
-    assert env.replaces_used == 0
+    assert "replaces_used" not in ExecutionEnvelope.model_fields
     assert env.max_outstanding_children == 1
     assert env.supersedes_id is None and env.superseded_by_id is None
 
@@ -155,12 +155,10 @@ def test_cancel_replace_budget_must_be_positive(budget):
         make_envelope(cancel_replace_budget=budget)
 
 
-def test_replaces_used_bounded_by_budget_and_nonnegative():
-    with pytest.raises(ValidationError):
-        make_envelope(replaces_used=-1)
-    with pytest.raises(ValidationError):
-        make_envelope(cancel_replace_budget=5, replaces_used=6)
-    assert make_envelope(cancel_replace_budget=5, replaces_used=5).replaces_used == 5
+@pytest.mark.parametrize("value", [0, 1, -1, 6])
+def test_replaces_used_is_not_accepted_as_domain_state(value):
+    with pytest.raises(ValidationError, match="replaces_used"):
+        make_envelope(replaces_used=value)
 
 
 @pytest.mark.parametrize("n", [0, -1])
