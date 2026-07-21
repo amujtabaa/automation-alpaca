@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "ADR-009/spec citation re-baseline + review-range reconciliation (REV-0034 C-1/C-2)"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0133
 wave: ultra-batch remediation (post-review)
 model_tier: mid
