@@ -43,6 +43,7 @@ from app.sellside.types import ActionKind, PlannedAction
 from app.monitoring import (
     _apply_update,
     _cancel_envelope_working_order,
+    _converge_envelope_disposition_cancels,
     _converge_expired_envelope_cancels,
     _record_recovery_terminal_fact,
     _recover_unpersisted_submits,
@@ -3130,6 +3131,97 @@ async def test_cancel_and_return_cancels_every_valid_legacy_venue_child(
     assert (
         await any_store.get_sell_intent(intent.id)
     ).status is SellIntentStatus.APPROVED
+
+
+async def test_partial_cancel_scope_persist_recovers_exact_snapshot_after_restart(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "wo0124-partial-cancel-scope.db"
+    first_store = SqliteStateStore(db_path)
+    _, _, envelope = await _activate(first_store)
+    first = _raw_seed_live_child(
+        first_store, envelope, order_id="legacy-stale-snapshot-a"
+    )
+    second = _raw_seed_live_child(
+        first_store, envelope, order_id="legacy-stale-snapshot-b"
+    )
+    original_append = first_store.append_execution_event
+    cancel_appends = 0
+
+    async def fail_second_cancel_scope(event):
+        nonlocal cancel_appends
+        if (
+            event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.payload.get("action") == "cancel"
+        ):
+            cancel_appends += 1
+            if cancel_appends == 2:
+                raise RuntimeError("injected crash during exact cancel-scope persist")
+        return await original_append(event)
+
+    monkeypatch.setattr(
+        first_store, "append_execution_event", fail_second_cancel_scope
+    )
+    before_crash = MockBrokerAdapter()
+    try:
+        with pytest.raises(
+            RuntimeError, match="crash during exact cancel-scope persist"
+        ):
+            await _cancel_envelope_working_order(
+                first_store,
+                before_crash,
+                envelope,
+                disposition="stale_data_cancel",
+            )
+
+        # No venue authority is acquired until the complete exact target scope
+        # is durable. The first fact is the restart anchor for both A and B.
+        assert before_crash.canceled == []
+        cancel_events = [
+            event
+            for event in await first_store.get_execution_events()
+            if event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.envelope_id == envelope.id
+            and event.payload.get("action") == "cancel"
+        ]
+        assert len(cancel_events) == 1
+        assert cancel_events[0].payload["target_snapshot"] == [
+            {
+                "order_id": first.id,
+                "broker_order_id": first.broker_order_id,
+            },
+            {
+                "order_id": second.id,
+                "broker_order_id": second.broker_order_id,
+            },
+        ]
+    finally:
+        await first_store.close()
+
+    reopened = SqliteStateStore(db_path)
+    await reopened.initialize()
+    try:
+        # A later child C is valid legacy lineage but was not in the durable
+        # pre-crash snapshot. Clearing the stale-data signal and restarting may
+        # recover A+B only; it must never expand authority to C.
+        future = _raw_seed_live_child(
+            reopened, envelope, order_id="legacy-stale-snapshot-future-c"
+        )
+        adapter = MockBrokerAdapter()
+        await _converge_envelope_disposition_cancels(reopened, adapter)
+
+        assert adapter.canceled == [first.broker_order_id, second.broker_order_id]
+        assert (await reopened.get_order(first.id)).status is OrderStatus.CANCEL_PENDING
+        assert (await reopened.get_order(second.id)).status is OrderStatus.CANCEL_PENDING
+        assert (await reopened.get_order(future.id)).status is OrderStatus.SUBMITTED
+        assert not any(
+            event.event_type is ExecutionEventType.ENVELOPE_ACTION
+            and event.order_id == future.id
+            and event.payload.get("action") == "cancel"
+            for event in await reopened.get_execution_events()
+        )
+    finally:
+        await reopened.close()
 
 
 async def test_cancel_and_return_recovers_broker_open_terminal_local_child(any_store):
