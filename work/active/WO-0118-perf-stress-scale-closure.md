@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "P1-3 closure: re-measure R2 scaling on current master; bound stress-scale startup; set beta-scale budget"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0118
 wave: post-R2 beta-prep
 model_tier: mid
@@ -13,6 +13,29 @@ gated_surface: none expected; any new index/DDL or gate-limit change requires ex
 ---
 
 # Work Order: performance follow-up — measure first, optimize only if the data says so
+
+[FABLE • FULL • verification: DIRECT • task: WO-0118 performance stress-scale closure]
+
+```yaml
+fable_gate:
+  goal: "Re-measure current scaling at target and stress size, optimize only on repeatable material convexity, and freeze an explicit beta-scale budget without loosening any limit."
+  assumptions:
+    - "WO-0114 is integrated at this branch base through its REVIEW-stage commits, so the shared app/store sequencing gate is clear."
+    - "WO-0115 has no ratified source database path; REALISTIC is the declared beta design target, not an observed-paper inventory, and STRESS supplies measured 10x cardinality headroom."
+    - "Wall-clock evidence is interpreted across three fresh runs; one noisy result cannot trigger Phase 2 or a budget change."
+  approach: "Activate first; measure all target/stress gates in a fresh OS-temp Python 3.12 environment; add a red-first executable budget contract; skip store optimization unless repeated evidence proves material convexity; then run the full native and AI-OS gates before atomic close-out."
+  out_of_scope:
+    - "Any new index, DDL/schema change, or migration without a new explicit D9 approval line."
+    - "Any relaxation of the 3x runtime, 12x startup, or 2 MiB projection limits."
+    - "Any retention predicate, action authority, event-log truth, human-gated transition, or execution behavior change."
+    - "Any live trading, Alpaca credential use, or real-paper database access."
+  done_when:
+    - "Three-run target and stress evidence plus Claude-ported gate evidence records spreads, SELECT counts, query plans, and the post-Cluster-E convexity verdict."
+    - "The gate and testing-model PKL name the beta target, 10x stress cardinality, headroom, and unchanged thresholds, with a failure-capable budget pin."
+    - "Full native, oracle, hardening, scaling, scope, disposition, ledger, PKL, and hygiene gates have fresh evidence."
+    - "Status, disposition, ledger, batch scoreboard, and file move close atomically."
+  blast_radius: "tests/performance/**, pkl/architecture/testing-model.md, and work/**; app/store/** only if Phase 1 independently triggers Phase 2"
+```
 
 > **Sequencing gate:** do NOT execute while a live WO-0114 (Lane P) branch is unmerged — both
 > touch `app/store/*`. If the operator's launch message says Lane P is pending/unratified,
