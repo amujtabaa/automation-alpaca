@@ -5,10 +5,11 @@ for: replay the append-only event log into a fresh projection and assert it
 matches — across the in-memory store, the SQLite store, and a from-scratch
 replay — plus the snapshot+replay equivalence that bounds recovery time.
 
-Phase 2 verifies the **position** projection (the one projector that exists).
-The helpers return structured :class:`ParityResult` values rather than asserting,
-so they serve both CI tests (assert on ``.ok``) and a future runtime health
-check (log on mismatch) — §11's "run it in CI and periodically at runtime".
+The verifier covers position plus the implemented event-truth read models,
+including execution envelopes. The helpers return structured
+:class:`ParityResult` values rather than asserting, so they serve both CI tests
+(assert on ``.ok``) and a future runtime health check (log on mismatch) — §11's
+"run it in CI and periodically at runtime".
 
 Pure except for :func:`project_store_event_log`, which only *reads* a store's
 event log (never writes) and hands the events to the pure projector.
@@ -20,10 +21,12 @@ from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 
 from app.events.projectors import (
+    EnvelopeProjection,
     PositionProjection,
     PositionProjector,
     active_emergency_reduce_overrides,
     current_trading_state,
+    project_envelopes,
     quarantined_symbols,
     timeout_quarantined_order_ids,
 )
@@ -121,8 +124,9 @@ async def verify_dual_store_parity(
 # Position is one event-truth read model; Phase 3/4 added more, each folded from
 # the same append-only ``ExecutionEvent`` log by a pure projector: the
 # overfill-quarantine set (wave 3b), the timeout-quarantine set (wave 3c), the
-# effective ``TradingState`` per session (wave 3d/4f), and the emergency-reduce
-# override grants per session (wave 3e). Their persisted columns
+# effective ``TradingState`` per session (wave 3d/4f), the emergency-reduce
+# override grants per session (wave 3e), and execution-envelope state (WO-0125).
+# Their persisted columns
 # (``orders.status``, ``sessions.trading_state``) are co-written READ MODELS: the
 # first durable write is the ``ExecutionEvent``, and the column is reconstructable
 # from the log. This verifier proves that reconstructability the same way the
@@ -145,12 +149,14 @@ class ReadModelProjection:
     """The event-truth read models derivable purely from an ``ExecutionEvent``
     log, other than position (which has its own :class:`PositionProjection`).
     Session-scoped models (``trading_state``, ``emergency_overrides``) are keyed
-    by ``session_id`` so a multi-session log is compared session-by-session."""
+    by ``session_id`` so a multi-session log is compared session-by-session;
+    envelopes are keyed by immutable ``envelope_id``."""
 
     quarantined_symbols: frozenset[str]
     timeout_quarantined_order_ids: frozenset[str]
     trading_state: Mapping[str, TradingState] = field(default_factory=dict)
     emergency_overrides: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    envelopes: Mapping[str, EnvelopeProjection] = field(default_factory=dict)
 
 
 def _session_ids(events: Sequence[ExecutionEvent]) -> list[str]:
@@ -183,6 +189,7 @@ def project_read_models(events: Iterable[ExecutionEvent]) -> ReadModelProjection
             sid: frozenset(active_emergency_reduce_overrides(materialized, sid))
             for sid in sessions
         },
+        envelopes=project_envelopes(materialized),
     )
 
 
@@ -200,6 +207,13 @@ def _describe_read_model_diff(
             f"{label_a}={sorted(a.timeout_quarantined_order_ids)} "
             f"{label_b}={sorted(b.timeout_quarantined_order_ids)}"
         )
+    for envelope_id in sorted(set(a.envelopes) | set(b.envelopes)):
+        ea = a.envelopes.get(envelope_id)
+        eb = b.envelopes.get(envelope_id)
+        if ea != eb:
+            return (
+                f"envelope {envelope_id!r} differs: {label_a}={ea!r} {label_b}={eb!r}"
+            )
     for sid in sorted(set(a.trading_state) | set(b.trading_state)):
         sa = a.trading_state.get(sid)
         sb = b.trading_state.get(sid)
@@ -238,8 +252,9 @@ async def verify_dual_store_readmodel_parity(
     memory_store: StateStore, sqlite_store: StateStore
 ) -> ParityResult:
     """Assert the in-memory and SQLite event logs project to the same NON-position
-    read models — quarantine, timeout-quarantine, per-session ``TradingState``, and
-    per-session emergency-reduce overrides (Phase 6). Complements
+    read models — quarantine, timeout-quarantine, per-session ``TradingState``,
+    per-session emergency-reduce overrides, and execution envelopes (Phase 6 /
+    WO-0125). Complements
     :func:`verify_dual_store_parity` (position) so the dual-store "strict parity"
     rule covers the full event-truth read-model surface, proving every co-written
     read-model column is reconstructable identically from either store's log."""

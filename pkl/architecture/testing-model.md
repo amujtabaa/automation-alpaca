@@ -4,7 +4,7 @@ title: Testing Model and Determinism Rules
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-19
+last_verified: 2026-07-20
 tags: [testing, determinism, ci]
 source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md]
 supersedes: []
@@ -40,6 +40,11 @@ Deterministic, dual-path testing posture inherited from the migration and kept p
 - Safety-surface changes (overfill, timeout ambiguity, reconciliation, kill switch, manual flatten, position projection) expand tests in the same change — never deferred.
 - Property tests cover spine invariants where behavior spans many interleavings; persist or print failing seeds/traces.
 - Replay / parity verifier runs where implemented; event-log replay is regression evidence.
+- Execution-envelope replay is a permanent dual-store read-model gate. The pure projector folds
+  the complete explicit `envelope_*` vocabulary plus envelope-attributed canonical `FILL` facts,
+  fails closed on identity/transition/debit-chain drift, and reconstructs mandate bounds, status,
+  remaining quantity, and supersession linkage. The vocabulary pin must turn red when a new
+  envelope event is introduced without an explicit replay classification.
 - Scaling gates combine measured ratios with deterministic complexity/plan pins. An indexed seek is
   still an unrelated corpus walk when its only bound is a global event type; the R2 gate rejects the
   type-only `idx_exec_events_type_sequence` plan on symbol/owner projection paths. Migration loops
@@ -75,3 +80,6 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
   predicate/order/rollback/bootstrap decision-structure rule, with distinguishing-state tests as
   the required evidence, and added fail-closed durable-tail checkpoint pins for repair cadence.
   last_verified refreshed; final WO implementation SHA pending close-out.
+- 2026-07-20: WO-0125 added complete execution-envelope replay to the dual-store read-model
+  verifier, including canonical and repair-attribution fill debits plus an explicit event-family
+  vocabulary ratchet. Store write/event truth remained unchanged.

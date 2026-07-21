@@ -1,10 +1,11 @@
 """Pure projectors — reconstruct state from the ``ExecutionEvent`` log.
 
-A *projector* folds an ordered event stream into a read model. Phase 2 ships one
-concrete projector, :class:`PositionProjector`, which derives per-symbol
-positions from ``FILL`` events by reusing ``app/position.py:apply_fill`` — the
-folding formula lives in exactly one place (Rule 7), whether the fills come from
-the legacy fill table or (Phase 3) the event log.
+A *projector* folds an ordered event stream into a read model. Position replay
+derives per-symbol state from ``FILL`` events by reusing
+``app/position.py:apply_fill`` — the folding formula lives in exactly one place
+(Rule 7), whether the fills come from the legacy fill table or the event log.
+Envelope replay reconstructs immutable mandate bounds, lifecycle status,
+remaining quantity, and supersession linkage from the existing event family.
 
 Everything here is pure: no IO, no async, no clock. Projectors consume an
 already-read ``list[ExecutionEvent]`` (the store owns reading), which keeps them
@@ -16,20 +17,22 @@ store's ``get_execution_events`` guarantees this). The fold is order-dependent;
 projectors do not re-sort, so an ordering violation is a caller bug, not
 silently masked.
 
-Projectors for primary / spawn / TradingState / quarantine are Phase 3 — they
-implement the same "fold events → read model" shape once those state machines
-exist (see ``docs/SPINE_MIGRATION_PROGRESS.md``).
+Primary/spawn projection remains deferred; TradingState and quarantine folds
+below implement the same "events → read model" shape (see
+``docs/SPINE_MIGRATION_PROGRESS.md``).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from app.models import (
     ExecutionEvent,
     ExecutionEventType,
+    EnvelopeStatus,
     Fill,
+    OrderSide,
     OrderStatus,
     Position,
     TradingState,
@@ -432,6 +435,291 @@ def active_emergency_reduce_overrides(
         elif event.event_type is ExecutionEventType.EMERGENCY_REDUCE_OVERRIDE_RESOLVED:
             active[event.symbol] = False
     return {symbol for symbol, is_active in active.items() if is_active}
+
+
+# Every event in the current envelope namespace is classified explicitly. This
+# intentionally stays a literal set (rather than deriving from the enum): a new
+# ``envelope_*`` event must make the coverage pin fail until its replay semantics
+# are consciously assigned.
+ENVELOPE_EVENT_TYPES: frozenset[ExecutionEventType] = frozenset(
+    {
+        ExecutionEventType.ENVELOPE_CREATED,
+        ExecutionEventType.ENVELOPE_APPROVED,
+        ExecutionEventType.ENVELOPE_ACTIVATED,
+        ExecutionEventType.ENVELOPE_ACTION,
+        ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+        ExecutionEventType.ENVELOPE_ATTRIBUTION_REPAIR_CHECKPOINT,
+        ExecutionEventType.ENVELOPE_COMPLETED,
+        ExecutionEventType.ENVELOPE_BREACHED,
+        ExecutionEventType.ENVELOPE_EXHAUSTED,
+        ExecutionEventType.ENVELOPE_EXPIRED,
+        ExecutionEventType.ENVELOPE_FROZEN,
+        ExecutionEventType.ENVELOPE_RESUMED,
+        ExecutionEventType.ENVELOPE_SUPERSEDED,
+        ExecutionEventType.ENVELOPE_CANCELLED,
+        ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE,
+    }
+)
+
+_ENVELOPE_STATUS_EVENTS: dict[ExecutionEventType, EnvelopeStatus] = {
+    ExecutionEventType.ENVELOPE_APPROVED: EnvelopeStatus.APPROVED,
+    ExecutionEventType.ENVELOPE_ACTIVATED: EnvelopeStatus.ACTIVE,
+    ExecutionEventType.ENVELOPE_COMPLETED: EnvelopeStatus.COMPLETED,
+    ExecutionEventType.ENVELOPE_BREACHED: EnvelopeStatus.BREACHED,
+    ExecutionEventType.ENVELOPE_EXHAUSTED: EnvelopeStatus.EXHAUSTED,
+    ExecutionEventType.ENVELOPE_EXPIRED: EnvelopeStatus.EXPIRED,
+    ExecutionEventType.ENVELOPE_FROZEN: EnvelopeStatus.FROZEN,
+    ExecutionEventType.ENVELOPE_RESUMED: EnvelopeStatus.ACTIVE,
+    ExecutionEventType.ENVELOPE_SUPERSEDED: EnvelopeStatus.SUPERSEDED,
+    ExecutionEventType.ENVELOPE_CANCELLED: EnvelopeStatus.CANCELLED,
+}
+
+_ENVELOPE_NO_STATE_EVENTS = frozenset(
+    {
+        ExecutionEventType.ENVELOPE_ACTION,
+        ExecutionEventType.ENVELOPE_PLAN_DIVERGENCE,
+    }
+)
+
+_ENVELOPE_BOUND_KEYS = (
+    "qty_ceiling",
+    "floor_price",
+    "trail_distance_min",
+    "trail_distance_max",
+    "participation_rate_cap",
+    "aggressiveness",
+    "cooldown_floor_ms",
+    "cancel_replace_budget",
+    "max_outstanding_children",
+    "expires_at",
+    "allowed_session_phases",
+    "expiry_disposition",
+    "stale_data_disposition",
+    "supersedes_id",
+)
+
+
+def _freeze_projection_value(value: object) -> object:
+    """Make nested payload values immutable and equality-stable."""
+
+    if isinstance(value, dict):
+        return tuple(
+            (key, _freeze_projection_value(item)) for key, item in sorted(value.items())
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_projection_value(item) for item in value)
+    return value
+
+
+@dataclass(frozen=True)
+class EnvelopeProjection:
+    """Replay-derived state for one execution envelope.
+
+    The immutable mandate bounds come from ``ENVELOPE_CREATED``'s complete
+    snapshot. Mutable state is limited to lifecycle status, remaining quantity,
+    and supersession linkage. ``folded_event_types`` records every envelope
+    decision/fact consumed, including action and divergence events that do not
+    themselves mutate the read model.
+    """
+
+    envelope_id: str
+    sell_intent_id: str
+    symbol: str
+    session_id: str | None
+    status: EnvelopeStatus
+    qty_ceiling: int
+    remaining_quantity: int
+    supersedes_id: str | None
+    superseded_by_id: str | None
+    bound_snapshot: tuple[tuple[str, object], ...]
+    folded_event_types: tuple[ExecutionEventType, ...]
+    up_to_sequence: int
+
+
+def _created_envelope_projection(event: ExecutionEvent) -> EnvelopeProjection:
+    if event.envelope_id is None:
+        raise ProjectionError("ENVELOPE_CREATED is missing envelope_id")
+    if event.symbol is None:
+        raise ProjectionError(
+            f"ENVELOPE_CREATED for {event.envelope_id!r} is missing symbol"
+        )
+    if event.side is not OrderSide.SELL:
+        raise ProjectionError(
+            f"ENVELOPE_CREATED for {event.envelope_id!r} must have SELL side"
+        )
+    if event.correlation_id is None:
+        raise ProjectionError(
+            f"ENVELOPE_CREATED for {event.envelope_id!r} is missing sell-intent correlation"
+        )
+    missing = [key for key in _ENVELOPE_BOUND_KEYS if key not in event.payload]
+    if missing:
+        raise ProjectionError(
+            f"ENVELOPE_CREATED for {event.envelope_id!r} missing bound field(s): "
+            f"{', '.join(missing)}"
+        )
+    if event.payload.get("sell_intent_id") != event.correlation_id:
+        raise ProjectionError(
+            f"ENVELOPE_CREATED for {event.envelope_id!r} has conflicting sell-intent identity"
+        )
+    qty_ceiling = event.payload["qty_ceiling"]
+    if type(qty_ceiling) is not int or qty_ceiling <= 0:
+        raise ProjectionError(
+            f"ENVELOPE_CREATED for {event.envelope_id!r} has invalid qty_ceiling "
+            f"{qty_ceiling!r}"
+        )
+    supersedes_id = event.payload["supersedes_id"]
+    if supersedes_id is not None and not isinstance(supersedes_id, str):
+        raise ProjectionError(
+            f"ENVELOPE_CREATED for {event.envelope_id!r} has invalid supersedes_id"
+        )
+    bounds = tuple(
+        (key, _freeze_projection_value(event.payload[key]))
+        for key in _ENVELOPE_BOUND_KEYS
+    )
+    return EnvelopeProjection(
+        envelope_id=event.envelope_id,
+        sell_intent_id=event.correlation_id,
+        symbol=event.symbol,
+        session_id=event.session_id,
+        status=EnvelopeStatus.PENDING,
+        qty_ceiling=qty_ceiling,
+        remaining_quantity=qty_ceiling,
+        supersedes_id=supersedes_id,
+        superseded_by_id=None,
+        bound_snapshot=bounds,
+        folded_event_types=(event.event_type,),
+        up_to_sequence=event.sequence,
+    )
+
+
+def _validate_envelope_event_identity(
+    projection: EnvelopeProjection, event: ExecutionEvent
+) -> None:
+    if (
+        event.envelope_id != projection.envelope_id
+        or event.symbol != projection.symbol
+        or event.side is not OrderSide.SELL
+        or event.session_id != projection.session_id
+        or event.correlation_id != projection.sell_intent_id
+    ):
+        raise ProjectionError(
+            f"envelope event sequence={event.sequence} has foreign or malformed identity "
+            f"for {projection.envelope_id!r}"
+        )
+
+
+def _touch_envelope_projection(
+    projection: EnvelopeProjection, event: ExecutionEvent
+) -> EnvelopeProjection:
+    return replace(
+        projection,
+        folded_event_types=(*projection.folded_event_types, event.event_type),
+        up_to_sequence=max(projection.up_to_sequence, event.sequence),
+    )
+
+
+def _apply_envelope_debit(
+    projection: EnvelopeProjection, event: ExecutionEvent
+) -> EnvelopeProjection:
+    quantity = event.quantity
+    before = event.payload.get("remaining_before")
+    after = event.payload.get("remaining_after")
+    if type(quantity) is not int or quantity <= 0:
+        raise ProjectionError(
+            f"envelope debit sequence={event.sequence} has invalid quantity {quantity!r}"
+        )
+    if type(before) is not int or before != projection.remaining_quantity:
+        raise ProjectionError(
+            f"envelope debit sequence={event.sequence} remaining_before {before!r} "
+            f"does not match projected {projection.remaining_quantity}"
+        )
+    expected_after = max(0, before - quantity)
+    if type(after) is not int or after != expected_after:
+        raise ProjectionError(
+            f"envelope debit sequence={event.sequence} remaining_after {after!r} "
+            f"does not match expected {expected_after}"
+        )
+    return replace(projection, remaining_quantity=after)
+
+
+def project_envelopes(
+    events: Iterable[ExecutionEvent],
+) -> dict[str, EnvelopeProjection]:
+    """Fold the complete current envelope event family into read models.
+
+    Canonical envelope-attributed ``FILL`` events and repair-only
+    ``ENVELOPE_FILL_ATTRIBUTED`` markers both debit remaining quantity exactly
+    once using their persisted before/after chain. Repair checkpoints are global
+    cursor metadata, so they are explicitly classified but do not create or
+    mutate a per-envelope projection. Any malformed identity, missing creation
+    snapshot, broken debit chain, or contradictory lifecycle edge fails closed.
+    """
+
+    projected: dict[str, EnvelopeProjection] = {}
+    for event in events:
+        if (
+            event.event_type
+            is ExecutionEventType.ENVELOPE_ATTRIBUTION_REPAIR_CHECKPOINT
+        ):
+            continue
+        is_envelope_fill = (
+            event.event_type is ExecutionEventType.FILL
+            and event.envelope_id is not None
+        )
+        if event.event_type not in ENVELOPE_EVENT_TYPES and not is_envelope_fill:
+            continue
+        if event.event_type is ExecutionEventType.ENVELOPE_CREATED:
+            if event.envelope_id is not None and event.envelope_id in projected:
+                raise ProjectionError(
+                    f"duplicate ENVELOPE_CREATED for {event.envelope_id!r}"
+                )
+            created = _created_envelope_projection(event)
+            projected[created.envelope_id] = created
+            continue
+        if event.envelope_id is None or event.envelope_id not in projected:
+            raise ProjectionError(
+                f"envelope event sequence={event.sequence} appears before ENVELOPE_CREATED"
+            )
+
+        current = projected[event.envelope_id]
+        _validate_envelope_event_identity(current, event)
+        if event.event_type in {
+            ExecutionEventType.FILL,
+            ExecutionEventType.ENVELOPE_FILL_ATTRIBUTED,
+        }:
+            current = _apply_envelope_debit(current, event)
+        elif event.event_type in _ENVELOPE_STATUS_EVENTS:
+            expected = _ENVELOPE_STATUS_EVENTS[event.event_type]
+            if event.payload.get("from") != current.status.value:
+                raise ProjectionError(
+                    f"envelope transition sequence={event.sequence} from "
+                    f"{event.payload.get('from')!r} does not match projected "
+                    f"{current.status.value!r}"
+                )
+            if event.payload.get("to") != expected.value:
+                raise ProjectionError(
+                    f"envelope transition sequence={event.sequence} to "
+                    f"{event.payload.get('to')!r} does not match {expected.value!r}"
+                )
+            superseded_by_id = current.superseded_by_id
+            if event.event_type is ExecutionEventType.ENVELOPE_SUPERSEDED:
+                superseded_by_id = event.payload.get("superseded_by_id")
+                if not isinstance(superseded_by_id, str) or not superseded_by_id:
+                    raise ProjectionError(
+                        f"ENVELOPE_SUPERSEDED sequence={event.sequence} is missing "
+                        "superseded_by_id"
+                    )
+            current = replace(
+                current,
+                status=expected,
+                superseded_by_id=superseded_by_id,
+            )
+        elif event.event_type not in _ENVELOPE_NO_STATE_EVENTS:
+            raise ProjectionError(
+                f"unclassified envelope event type {event.event_type.value!r}"
+            )
+        projected[event.envelope_id] = _touch_envelope_projection(current, event)
+    return projected
 
 
 class PositionProjector:
