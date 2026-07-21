@@ -57,13 +57,16 @@
   delete the two W3 launchers (ledger row), refresh W4 notes to separate live seeds from closed
   debt. Approve the deletion batch?
 - **O-3 (F007) — the stranded Signal Seat (47 commits, `archive/claude-wo-0001-install-checks-2x5ys8`).**
-  8,556 insertions of reviewed signal-ingestion work exist only on that archive line; master has
-  none of it, and ADR-009 stays Proposed after REV-0022 BLOCK. **Two paths:** (a) authorize a
-  fresh reconciliation plan against current master (with the schema/auth/event-log gates + its
-  own independent review) — revives the feature properly; (b) mark it abandoned/superseded,
-  retain the archive for provenance — closes the ambiguity, defers the feature. **No default
-  recommended** — this is a genuine product-roadmap call (does the Signal Seat feature belong in
-  beta?). Until answered, WO-0102/0103/0104 stay CURRENT-BLOCKED, correctly.
+  **RESOLVED 2026-07-20 (Ameen): path (a) — revive properly against current master.** The
+  feature belongs in beta. "Properly" is a sequenced effort, NOT an immediate implementation:
+  (1) **resolve the ADR-009 BLOCK first** — REV-0022 returned BLOCK on F-001..F-004; ADR-009 is
+  still Proposed, and no implementation may rely on it until Accepted (human-gated + independent
+  review); (2) **planning-seat reconciliation pass** — diff the 47 archived commits (which
+  predate R2 / envelope / WO-0113) against today's tree, classify keep/rewrite/drop; (3) scoped
+  implementation WOs with schema/auth/event-log gates, **sequenced AFTER Lane P (WO-0114)** — both
+  edit `app/store/*` + `app/models.py`, so they must not run concurrently. WO-0102/0103/0104 stay
+  CURRENT-BLOCKED until the ADR clears and the reconciliation plan lands. Step 2 is read-only and
+  may proceed concurrently with Lane P/Session 2.
 
 ## Protocol notes (low; fold into `.ai-os/core/15_CROSS_MODEL_REVIEW.md` when convenient)
 
