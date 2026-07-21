@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -383,6 +384,44 @@ def test_read_model_projection_rejects_fsm_illegal_envelope_transition() -> None
 
     with pytest.raises(ProjectionError, match="illegal envelope transition"):
         project_read_models([*prefix, illegal])
+
+
+@pytest.mark.parametrize(
+    "projector",
+    (project_envelopes, project_read_models),
+    ids=("project-envelopes", "project-read-models"),
+)
+def test_status_event_payload_from_must_match_projected_status(
+    projector: Callable[[list[ExecutionEvent]], object],
+) -> None:
+    prefix = _prefix_to_status(EnvelopeStatus.PENDING)
+    corrupt = _event(
+        ExecutionEventType.ENVELOPE_COMPLETED,
+        len(prefix) + 1,
+        payload={"from": "active", "to": "completed"},
+    )
+
+    with pytest.raises(ProjectionError, match="does not match projected 'pending'"):
+        projector([*prefix, corrupt])
+
+
+@pytest.mark.parametrize(
+    "projector",
+    (project_envelopes, project_read_models),
+    ids=("project-envelopes", "project-read-models"),
+)
+def test_status_event_payload_to_must_match_event_type_target(
+    projector: Callable[[list[ExecutionEvent]], object],
+) -> None:
+    prefix = _prefix_to_status(EnvelopeStatus.PENDING)
+    corrupt = _event(
+        ExecutionEventType.ENVELOPE_APPROVED,
+        len(prefix) + 1,
+        payload={"from": "pending", "to": "completed"},
+    )
+
+    with pytest.raises(ProjectionError, match="does not match 'approved'"):
+        projector([*prefix, corrupt])
 
 
 def test_repair_checkpoint_is_classified_global_metadata() -> None:
