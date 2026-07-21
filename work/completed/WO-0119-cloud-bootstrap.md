@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "One-click environment bootstrap: devcontainer + session-start recipe for cloud/away sessions"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0119
 wave: post-R2 beta-prep (infra; no product surface)
 model_tier: mid
 risk: low
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen / implementer: Codex session 2
 created: 2026-07-20
 gated_surface: none (no app code, no credentials, no data; CI workflow untouched)
@@ -115,3 +115,50 @@ rather than half-bootstrap.
 ## Completion disposition
 
 Expected: `[RESULT_SUMMARY_KEPT]`.
+
+## Fable verification and close-out
+
+```yaml
+fable_fix:
+  symptom: "The initial disposable fresh-run proof stopped before dependency installation completed."
+  root_cause: "The restricted sandbox denied package-index sockets; a normal temporary Windows clone also exceeded the host path limit on already-tracked .claude files. Neither condition was caused by the bootstrapper."
+  evidence: "Restricted run reached `pip install -r requirements.txt -c constraints.txt` and exited 1 with WinError 10013; a normal temporary clone reported `Filename too long`."
+  fix: "Retried the same CI-mirroring command with approved package-index access in an OS-temp archive checkout, then initialized a disposable Git baseline with core.longpaths enabled solely to verify tracked-file cleanliness."
+  regression_test: "Fresh and second bootstrap invocations in the disposable checkout both returned 0; the second invocation reported reused installed requirements and completed all smoke gates."
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+evidence:
+  command: "Before implementation: python harness/bootstrap.py --help"
+  result: FAIL
+  decisive_output: "can't open file ...\\harness\\bootstrap.py: [Errno 2] No such file or directory; RED_EXIT_CODE=2"
+---
+evidence:
+  command: "C:\\Users\\amujt\\dev\\automation-alpaca\\.venv\\Scripts\\python.exe -m ruff check harness/bootstrap.py; ... -m mypy harness/bootstrap.py"
+  result: PASS
+  decisive_output: "All checks passed!; Success: no issues found in 1 source file"
+---
+evidence:
+  command: "Fresh OS-temp archive checkout: python harness/bootstrap.py; repeat the command; git status --short"
+  result: PASS
+  decisive_output: "Fresh install completed; ruff: All checks passed!; mypy: Success: no issues found in 64 source files; pytest collection completed; RERUN_EXIT_CODE=0; final git status output was empty."
+```
+
+```yaml
+fable_done:
+  task: "WO-0119 cloud bootstrap"
+  done_when_results:
+    - "harness/bootstrap.py finds or requires Python 3.12, creates/reuses .venv, mirrors the two CI pip commands, and executes the three required smoke gates."
+    - ".devcontainer/devcontainer.json supplies a Python 3.12 image and runs the bootstrapper after creation."
+    - "docs/00_START_HERE.md points operators to the command and states its credential-free, mock-default boundary."
+    - "Fresh and rerun disposable verification passed with no tracked-file changes."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  evidence:
+    - "Fresh and rerun direct evidence above."
+    - "Focused ruff and mypy evidence above."
+  status: VERIFIED
+```
