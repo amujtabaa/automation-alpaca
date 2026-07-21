@@ -54,6 +54,15 @@ STRATEGY_MAX_SPREAD_ENV = "STRATEGY_MAX_SPREAD_PCT"
 STRATEGY_LIMIT_BUFFER_ENV = "STRATEGY_LIMIT_BUFFER_PCT"
 STRATEGY_DEFAULT_QUANTITY_ENV = "STRATEGY_DEFAULT_QUANTITY"
 
+# WO-0123 — separate, read-only market-data tape recorder.  This deliberately
+# does not share the execution store or any broker order-flow setting.
+ENABLE_TAPE_RECORDER_ENV = "ENABLE_TAPE_RECORDER"
+TAPE_RECORDER_PATH_ENV = "TAPE_RECORDER_PATH"
+TAPE_RECORDER_SYMBOLS_ENV = "TAPE_RECORDER_SYMBOLS"
+TAPE_RECORDER_INTERVAL_SECONDS_ENV = "TAPE_RECORDER_INTERVAL_SECONDS"
+TAPE_RECORDER_MAX_BYTES_ENV = "TAPE_RECORDER_MAX_BYTES"
+TAPE_RECORDER_MAX_SEGMENTS_ENV = "TAPE_RECORDER_MAX_SEGMENTS"
+
 # Phase 6 — Capital Intelligence Layer (CAPI) pre-trade risk gate (D-016).
 # Enforced in app.store.core's create_order_for_candidate (authoritative) and
 # pre-checked in the approve route (UX) — see app.policy.risk_limit_reason.
@@ -102,6 +111,10 @@ DEFAULT_STRATEGY_MIN_VOLUME = 50_000.0
 DEFAULT_STRATEGY_MAX_SPREAD_PCT = 1.0
 DEFAULT_STRATEGY_LIMIT_BUFFER_PCT = 0.1
 DEFAULT_STRATEGY_DEFAULT_QUANTITY = 10
+DEFAULT_TAPE_RECORDER_PATH = "./data/tapes/tape.ndjson"
+DEFAULT_TAPE_RECORDER_INTERVAL_SECONDS = 1.0
+DEFAULT_TAPE_RECORDER_MAX_BYTES = 50 * 1024 * 1024
+DEFAULT_TAPE_RECORDER_MAX_SEGMENTS = 7
 # Placeholder paper-trading guardrails, not a real capital plan — a beta
 # operator running the default 10-share strategy has ample headroom under
 # these; they exist so CAPI is a real, always-on gate from day one rather
@@ -206,6 +219,16 @@ class Settings:
     strategy_max_spread_pct: float = DEFAULT_STRATEGY_MAX_SPREAD_PCT
     strategy_limit_buffer_pct: float = DEFAULT_STRATEGY_LIMIT_BUFFER_PCT
     strategy_default_quantity: int = DEFAULT_STRATEGY_DEFAULT_QUANTITY
+
+    # --- WO-0123: read-only tape recorder -------------------------------- #
+    # Off by default. Its standalone launcher creates a separate MarketDataService
+    # and never receives a broker adapter or StateStore.
+    enable_tape_recorder: bool = False
+    tape_recorder_path: str = DEFAULT_TAPE_RECORDER_PATH
+    tape_recorder_symbols: tuple[str, ...] = ()
+    tape_recorder_interval_seconds: float = DEFAULT_TAPE_RECORDER_INTERVAL_SECONDS
+    tape_recorder_max_bytes: int = DEFAULT_TAPE_RECORDER_MAX_BYTES
+    tape_recorder_max_segments: int = DEFAULT_TAPE_RECORDER_MAX_SEGMENTS
 
     # --- Phase 6: CAPI pre-trade risk gate (D-016) ------------------------- #
     capi_max_shares_per_order: float = DEFAULT_CAPI_MAX_SHARES_PER_ORDER
@@ -420,6 +443,37 @@ def load_settings() -> Settings:
         STRATEGY_DEFAULT_QUANTITY_ENV, DEFAULT_STRATEGY_DEFAULT_QUANTITY, minimum=1
     )
 
+    enable_tape_recorder = (
+        os.environ.get(ENABLE_TAPE_RECORDER_ENV, "false").strip().lower() not in _FALSEY
+    )
+    tape_recorder_path = (
+        os.environ.get(TAPE_RECORDER_PATH_ENV, DEFAULT_TAPE_RECORDER_PATH).strip()
+        or DEFAULT_TAPE_RECORDER_PATH
+    )
+    tape_recorder_symbols = tuple(
+        dict.fromkeys(
+            symbol.strip().upper()
+            for symbol in os.environ.get(TAPE_RECORDER_SYMBOLS_ENV, "").split(",")
+            if symbol.strip()
+        )
+    )
+    if enable_tape_recorder and not tape_recorder_symbols:
+        raise ValueError(
+            f"{TAPE_RECORDER_SYMBOLS_ENV} must name at least one symbol when "
+            f"{ENABLE_TAPE_RECORDER_ENV}=true"
+        )
+    tape_recorder_interval_seconds = _env_float(
+        TAPE_RECORDER_INTERVAL_SECONDS_ENV,
+        DEFAULT_TAPE_RECORDER_INTERVAL_SECONDS,
+        minimum=0.001,
+    )
+    tape_recorder_max_bytes = _env_int(
+        TAPE_RECORDER_MAX_BYTES_ENV, DEFAULT_TAPE_RECORDER_MAX_BYTES, minimum=1
+    )
+    tape_recorder_max_segments = _env_int(
+        TAPE_RECORDER_MAX_SEGMENTS_ENV, DEFAULT_TAPE_RECORDER_MAX_SEGMENTS, minimum=1
+    )
+
     # Strictly positive for all three (matches STRATEGY_MAX_SPREAD_ENV's
     # reasoning): a limit of exactly 0 doesn't mean "unlimited," it means
     # "reject every order," which would silently disable all trading rather
@@ -510,6 +564,12 @@ def load_settings() -> Settings:
         strategy_max_spread_pct=strategy_max_spread,
         strategy_limit_buffer_pct=strategy_limit_buffer,
         strategy_default_quantity=strategy_default_quantity,
+        enable_tape_recorder=enable_tape_recorder,
+        tape_recorder_path=tape_recorder_path,
+        tape_recorder_symbols=tape_recorder_symbols,
+        tape_recorder_interval_seconds=tape_recorder_interval_seconds,
+        tape_recorder_max_bytes=tape_recorder_max_bytes,
+        tape_recorder_max_segments=tape_recorder_max_segments,
         capi_max_shares_per_order=capi_max_shares_per_order,
         capi_max_notional_per_order=capi_max_notional_per_order,
         capi_max_total_exposure=capi_max_total_exposure,

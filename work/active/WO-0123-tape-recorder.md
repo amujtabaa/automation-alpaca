@@ -22,6 +22,26 @@ gated_surface: none for order flow (read-only market data only); reads broker ma
 
 ## Goal
 
+[FABLE • FULL • verification: DIRECT • task: WO-0123 tape recorder]
+
+```yaml
+fable_gate:
+  goal: "Capture a deterministic, durable, replayable record of market-data snapshots without any execution-state or order-flow interaction."
+  assumptions:
+    - "MarketDataService is the existing abstract read-only market-data port; its concrete Alpaca stream remains the only SDK ingress."
+    - "The operator supplies paper credentials and recorder symbols only when intentionally operating the recorder; no test or implementation step needs credentials."
+    - "A separate NDJSON tape store under the configured ignored data path satisfies durability without extending execution-event truth."
+  approach: "Write red tests for inert/off, order-flow-spy isolation, deterministic replay, invalid-data preservation, and rotation; add a recorder package and flag/path configuration; document the operational contract and tape schema."
+  out_of_scope:
+    - "Order submission, cancellation, replacement, execution state, positions, fills, envelopes, app/store, facade, API routes, cockpit, and live trading."
+    - "Replay-policy scoring or a fill model."
+  done_when:
+    - "Recorder captures only MarketDataService snapshots with injected time and explicit validity flags."
+    - "Tape data round-trips byte-identically, rotates within its configured retention bound, and is documented."
+    - "Flag-off is inert and the required spy proves zero order-flow calls."
+  blast_radius: "new isolated development/operations recorder package and configuration only"
+```
+
 A deterministic recorder that captures real market-data snapshots and the events the engine
 derives from them, into a durable tape store replayable later — with ZERO order flow.
 
