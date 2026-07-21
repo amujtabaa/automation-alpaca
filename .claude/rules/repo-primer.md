@@ -28,6 +28,20 @@ Durable preference from the repo owner (Ameen) on how to run multi-step work —
 - **Hard limit:** this preference governs *velocity and structure only*. It never overrides the
   `CLAUDE.md` safety core, the invariants, or the human-gated surfaces — those still stop and wait for
   explicit human approval, always. Autonomy means fewer needless pauses, not auto-approving gated actions.
+- **Continuity protocol for long or compaction-prone sessions** (adopted 2026-07-20, ULTRA batch;
+  apply to ANY batch — or single work order — expected to outlive its context window):
+  1. **FIRST commit** of the session: a state file in `work/active/` (e.g. `<BATCH>-STATE.md`)
+     holding the operator's ratified decision block **verbatim** (the pasted version is
+     authoritative over any repo copy) plus a per-WO scoreboard (WO → status → commits → notes).
+  2. Update the scoreboard at every WO activation and close-out; clearly-marked WIP checkpoint
+     commits are allowed so no work is ever unrecoverable.
+  3. **After ANY pause, resume, or compaction:** re-read, in order, the session contract
+     (kickoff file) → the state file → the active WO's file, and verify position with
+     `git log`/`git status` — never conversation memory (AGENTS.md rule 9).
+  4. Decisions are re-derived ONLY from the state file, never from memory; a WO the scoreboard
+     shows closed is never reopened.
+  5. At session end the state file's final scoreboard IS the status-table deliverable; it moves
+     out of `work/active/` in the last commit.
 
 ## What This Repo Is
 
