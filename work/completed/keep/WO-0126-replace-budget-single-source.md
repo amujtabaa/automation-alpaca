@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Single-source replace-budget projection: one counter for enforcement AND display (CC-05 remainder, re-cut from WO-0029)"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0126
 wave: W3-debt closure (re-cut per O-1, AUDIT-0002 F005)
 model_tier: mid
 risk: low
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen / Codex implementer
 created: 2026-07-20
 gated_surface: none (read-model truthfulness; enforcement semantics unchanged)
@@ -63,18 +63,18 @@ old databases continue opening without DDL; it is not read, written, cached, or 
 
 ## Required behavior
 
-- [ ] One pure shared counter over the `ENVELOPE_ACTION` log (respecting `refused_stale` never
+- [x] One pure shared counter over the `ENVELOPE_ACTION` log (respecting `refused_stale` never
       counting, per ADR-010 §5) consumed by BOTH enforcement and display.
-- [ ] Enforcement behavior is UNCHANGED — pinned by the existing budget tests staying green plus
+- [x] Enforcement behavior is UNCHANGED — pinned by the existing budget tests staying green plus
       a differential pin (old inline derivation vs shared counter agree across the action corpus).
-- [ ] Cockpit/API show the derived value; the stored field cannot drift from it (removed, or
+- [x] Cockpit/API show the derived value; the stored field cannot drift from it (removed, or
       demoted to a documented cache that nothing enforces from — decision recorded in the WO).
-- [ ] Red-first for the read-model truth; both stores where the API reads differ.
+- [x] Red-first for the read-model truth; both stores where the API reads differ.
 
 ## Acceptance criteria
 
-- [ ] Zero drift possible between enforced and displayed budget (single derivation, pinned).
-- [ ] Full gates green; Fable DONE with evidence; close-out + ledger with the work.
+- [x] Zero drift possible between enforced and displayed budget (single derivation, pinned).
+- [x] Full gates green; Fable DONE with evidence; close-out + ledger with the work.
 
 ## Stop conditions
 
@@ -166,6 +166,13 @@ fable_fixes:
     regression_test: "tests/test_wo0126_replace_budget_single_source.py::test_sqlite_restart_ignores_hostile_legacy_column"
     red_green_verified: true
     attempt: 1
+  - symptom: "The integrated branch's CI-form coverage text remained below the required 93% even though WO-0126's own executable units were fully covered."
+    root_cause: "Pre-WO WO-0114 recovery code had uncovered safety branches; adversarial expansion also reproduced an exact older-fill replay defect and incomplete persisted fill-identity comparison."
+    evidence: "Pre-FIX combined branch: 3980 passed, 11 skipped, 1 xfailed at 92.54%; exact pre-WO base was already 92.53%."
+    fix: "Integrate the independently validated WO-0114 semantic/test FIX ffd818b6 as local cherry-pick 4bd0efa, preserving all WO-0126 core/SQLite tombstone removals."
+    regression_test: "tests/test_wo0114_pd1_release_valve.py plus the exact CI-form full coverage gate"
+    red_green_verified: true
+    attempt: 1
 ```
 
 ## Implementation evidence
@@ -186,7 +193,7 @@ evidence:
     decisive_output: "Ruff passed; mypy found no issues in 70 files; 6 import contracts kept with 0 broken."
 ```
 
-## Validation checkpoint — inherited batch coverage blocker
+## Validation checkpoint — inherited batch coverage blocker (resolved)
 
 ```yaml
 evidence:
@@ -208,7 +215,72 @@ evidence:
   - command: "five AI-OS checks; context hygiene"
     result: VERIFIED
     decisive_output: "Install, version, ledger, PKL, and disposition checks passed; hygiene reported 0 violations and 3 unrelated review-WO size advisories."
+  - command: "combined WO-0114 + WO-0126 + R2 conformance tests after ffd818b6 integration"
+    result: VERIFIED
+    decisive_output: "171 passed in 10.77s."
+  - command: "exact CI-form full pytest with OS-temp basetemp and COVERAGE_FILE after ffd818b6 integration"
+    result: VERIFIED
+    decisive_output: "4015 passed, 11 skipped, 1 xfailed in 445.46s; required 93.0% reached at 93.15%; process exit 0."
 artifact:
   retained_coverage_json: "C:/Users/amujt/AppData/Local/Temp/wo0126-current-coverage-a3792d63/coverage.json"
-status: "ACTIVE / BLOCKED — do not close, disposition, append the ledger, or move until the inherited batch coverage gate is restored."
+  final_coverage_root: "C:/Users/amujt/AppData/Local/Temp/wo0126-final-coverage-ee614e05c1bf40bca62a7dc880e564d4"
+status: "RESOLVED — ffd818b6 restored the inherited batch gate; WO-0126 close-out is unblocked."
+```
+
+## Fresh close-out evidence
+
+```yaml
+evidence:
+  - command: "WO-0114 + WO-0126 + R2 tests; unique OS-temp basetemp; cache disabled"
+    result: VERIFIED
+    decisive_output: "171 passed, 2 warnings in 10.77s."
+  - command: "pytest --cov=app --cov-branch --cov-report=term-missing; OS-temp basetemp and COVERAGE_FILE"
+    result: VERIFIED
+    decisive_output: "4015 passed, 11 skipped, 1 xfailed; 93.15% coverage; exit 0."
+  - command: "ruff check .; scoped ruff format --check; mypy app/; lint-imports"
+    result: VERIFIED
+    decisive_output: "Ruff passed; 15 files formatted; mypy found no issues in 70 files; all 6 import contracts kept."
+  - command: "install, version, ledger, PKL, disposition, WO-0126 scope, dependency scope, and hygiene checks"
+    result: VERIFIED
+    decisive_output: "All checks passed; hygiene reported 0 violations and 3 unrelated active-review size advisories."
+  - command: "rg replaces_used app/models.py app/store/core.py app/store/sqlite.py"
+    result: VERIFIED
+    decisive_output: "Only the SQLite compatibility comment and physical tombstone column remain; no model/core/application read or write exists."
+constraints:
+  credentials_used: false
+  live_trading_used: false
+  ddl_or_migration_changed: false
+  existing_test_weakened: false
+```
+
+## Fable done
+
+```yaml
+fable_done:
+  task: "WO-0126 single-source replace-budget projection"
+  done_when_results:
+    - item: "One pure ENVELOPE_ACTION-derived projector is consumed by policy enforcement and every displayed envelope read."
+      status: MET
+    - item: "The complete incumbent action corpus remains behavior-identical; refused_stale stays excluded and both deliberate mutations turn the pins red."
+      status: MET
+    - item: "Memory and reopened SQLite API reads expose the same derived count; cockpit requires and renders that value."
+      status: MET
+    - item: "ExecutionEnvelope and active store application code no longer read, write, hydrate, or cache replaces_used; the physical SQLite tombstone alone remains."
+      status: MET
+    - item: "Focused, conformance, static, import, exact CI coverage, AI-OS, scope, and hygiene gates are green."
+      status: MET
+    - item: "Status, disposition, ledger, move, and batch scoreboard ship atomically in this close-out."
+      status: MET
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+    enforcement_semantics_changed: false
+    event_truth_changed: false
+    schema_or_migration_changed: false
+  evidence:
+    - "13-failure RED and two independent mutation-red controls"
+    - "171 combined focused/conformance tests passed"
+    - "4015 passed, 11 skipped, 1 expected xfail at 93.15% in the exact CI coverage gate"
+    - "Ruff, scoped format, mypy, six import contracts, five AI-OS checks, dual scope checks, and hygiene passed"
+  status: VERIFIED
 ```
