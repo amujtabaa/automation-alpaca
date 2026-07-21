@@ -44,6 +44,25 @@ orchestration for the parallel lanes; the ordering constraints below are hard.
   (REV-0034; the human ADR-text approval happens at the post-session merge review — do NOT
   stall mid-session waiting for it). All other WOs close out fully in-session.
 
+## Continuity across pauses and compaction (long session — this WILL matter)
+
+1. **FIRST commit of the session** (before any WO work): create `work/active/ULTRA-BATCH-STATE.md`
+   containing (a) the operator's decision block **as pasted** — verbatim, including any edits
+   and the D-BF-NOW value; the pasted block is authoritative over the repo copy of this file —
+   and (b) a per-WO scoreboard table (WO → status → branch commits → notes). This file is the
+   session's durable memory.
+2. Update the scoreboard in every WO's activation commit and close-out commit. Mid-WO WIP
+   checkpoint commits are allowed (clearly marked, within the WO's lane) so no more than a few
+   minutes of work is ever unrecoverable.
+3. **After ANY pause, resume, or context compaction:** before acting, re-read in order —
+   `work/queue/CODEX-KICKOFF-ULTRA-BATCH.md` (this contract), `work/active/ULTRA-BATCH-STATE.md`
+   (where you are), and the active WO's file (what you're doing). Verify with `git log`/`git
+   status`, never with conversation memory (AGENTS.md rule 9).
+4. Never re-derive a decision from memory: the state file's decision block is the ONLY
+   ratification source mid-session. A WO the scoreboard shows closed is never reopened.
+5. At session end, the state file's final scoreboard IS the per-WO status-table deliverable;
+   move it out of `work/active/` into the close-out report location as your last commit.
+
 ## Operator decision block (pre-checked = ratified on paste; edit to override)
 
 - [x] D-SIG-2: ADR-009 re-review = one fresh packet **REV-0034**; reviewer = the CLAUDE seat
