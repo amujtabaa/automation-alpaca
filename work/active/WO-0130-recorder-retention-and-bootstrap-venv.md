@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Recorder retention bound (max_segments=1) + bootstrap external-venv guard"
-status: DRAFT
+status: ACTIVE
 work_order_id: WO-0130
 wave: ultra-batch remediation (post-review)
 model_tier: mid
