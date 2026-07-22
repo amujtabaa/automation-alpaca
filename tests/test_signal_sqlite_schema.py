@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.models import SignalRecord, SignalStatus
+from app.store.memory import InMemoryStateStore
 from app.store.sqlite import SqliteStateStore
 
 pytestmark = pytest.mark.anyio
@@ -196,3 +198,41 @@ async def test_signal_event_and_record_rollback_together(tmp_path, monkeypatch) 
         if store._conn is not None:
             store._conn.close()
             store._conn = None
+
+
+async def test_memory_signal_event_and_record_rollback_together(monkeypatch) -> None:
+    store = InMemoryStateStore()
+    await store.initialize()
+    ingest = {
+        "producer_id": "property",
+        "signal_id": "memory-atomic",
+        "symbol": "AAPL",
+        "direction": "buy",
+        "issued_at": NOW,
+        "ttl_seconds": 300,
+        "suggested_quantity": 10,
+        "suggested_limit_price": 100.0,
+        "thesis": "atomic co-write",
+        "provenance": {"test": "rev-0039-f2"},
+        "server_max_ttl_seconds": 3600,
+        "cycle_budget_limit": 50,
+        "received_at": NOW,
+    }
+
+    def fail_post_write_copy(_record: SignalRecord, **_kwargs: object) -> SignalRecord:
+        raise RuntimeError("injected post-write signal failure")
+
+    # The result copy happens after both the event append and signal-map write,
+    # so this exercises rollback of both mutations rather than failing pre-write.
+    with monkeypatch.context() as patch:
+        patch.setattr(SignalRecord, "model_copy", fail_post_write_copy)
+        with pytest.raises(RuntimeError, match="injected post-write signal failure"):
+            await store.ingest_signal(**ingest)
+
+    assert await store.get_signal("property", "memory-atomic") is None
+    assert await store.get_execution_events() == []
+
+    clean = await store.ingest_signal(**ingest)
+    assert clean.record.status is SignalStatus.RECEIVED
+    assert await store.get_signal("property", "memory-atomic") == clean.record
+    assert len(await store.get_execution_events()) == 1

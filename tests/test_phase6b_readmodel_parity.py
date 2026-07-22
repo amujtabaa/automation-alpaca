@@ -19,18 +19,27 @@ safety-critical derived quantity, IS projected and parity-checked.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
 from app.events.replay import (
-    ReadModelProjection,
     compare_read_models,
     project_read_models,
     verify_dual_store_parity,
     verify_dual_store_readmodel_parity,
 )
-from app.models import OrderSide, OrderStatus, TradingState
+from app.models import (
+    EventAuthority,
+    EventSource,
+    ExecutionEvent,
+    ExecutionEventType,
+    OrderSide,
+    OrderStatus,
+    SignalRecord,
+    TradingState,
+)
 from app.store.memory import InMemoryStateStore
 from app.store.sqlite import SqliteStateStore
 
@@ -42,6 +51,38 @@ pytestmark = pytest.mark.anyio
 # the position read model differ on updated_at alone). Same idiom as the wave-3b
 # overfill parity test.
 _TS = datetime(2026, 1, 2, 15, 30, tzinfo=timezone.utc)
+_SIGNAL_KEY = ("pin-producer", "pin-signal")
+
+
+def _signal_received_event() -> ExecutionEvent:
+    record = SignalRecord(
+        id="pin-record",
+        producer_id=_SIGNAL_KEY[0],
+        signal_id=_SIGNAL_KEY[1],
+        symbol="AAPL",
+        direction="buy",
+        issued_at=_TS,
+        ttl_seconds=300,
+        expires_at=_TS + timedelta(seconds=300),
+        received_at=_TS,
+        suggested_quantity=10,
+        suggested_limit_price=100.0,
+        thesis="aggregate replay parity",
+        provenance={"test": "rev-0039-f1"},
+        payload_hash="pin-payload-hash",
+        created_at=_TS,
+        updated_at=_TS,
+    )
+    return ExecutionEvent(
+        id="pin-event",
+        event_type=ExecutionEventType.SIGNAL_RECEIVED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key="signal_create:pin-producer:pin-signal",
+        symbol="AAPL",
+        ts_init=_TS,
+        payload={"record": record.model_dump(mode="json")},
+    )
 
 
 async def _hold(store, symbol: str, qty: int, *, avg: float = 10.0) -> str:
@@ -168,6 +209,50 @@ async def test_readmodel_dual_store_parity(tmp_path):
         sqlite._conn = None
 
 
+async def test_signal_ingest_participates_in_dual_store_readmodel_parity(
+    tmp_path, monkeypatch
+) -> None:
+    """Aggregate parity must include a real signal ingest from each store."""
+    memory = InMemoryStateStore()
+    sqlite = SqliteStateStore(tmp_path / "signal-readmodel-parity.db")
+    await memory.initialize()
+    await sqlite.initialize()
+
+    # SignalRecord and its ExecutionEvent each receive generated ids. Pinning the
+    # generator after store initialization gives both independent ingests the
+    # same logical event payload without copying one store's event log to the other.
+    monkeypatch.setattr("app.models.uuid.uuid4", lambda: UUID(int=1))
+    ingest = {
+        "producer_id": _SIGNAL_KEY[0],
+        "signal_id": _SIGNAL_KEY[1],
+        "symbol": "AAPL",
+        "direction": "buy",
+        "issued_at": _TS,
+        "ttl_seconds": 300,
+        "suggested_quantity": 10,
+        "suggested_limit_price": 100.0,
+        "thesis": "aggregate replay parity",
+        "provenance": {"test": "rev-0039-f1"},
+        "server_max_ttl_seconds": 3600,
+        "cycle_budget_limit": 50,
+        "received_at": _TS,
+    }
+    try:
+        await memory.ingest_signal(**ingest)
+        await sqlite.ingest_signal(**ingest)
+
+        parity = await verify_dual_store_readmodel_parity(memory, sqlite)
+        assert parity.ok, parity.detail
+
+        memory_projection = project_read_models(await memory.get_execution_events())
+        sqlite_projection = project_read_models(await sqlite.get_execution_events())
+        assert _SIGNAL_KEY in memory_projection.signals
+        assert _SIGNAL_KEY in sqlite_projection.signals
+    finally:
+        sqlite._conn.close()
+        sqlite._conn = None
+
+
 async def test_project_read_models_matches_store_folds(tmp_path):
     """The from-scratch replay projection equals each store's own read-model reads
     — i.e. the persisted read-model columns are reconstructable from the log."""
@@ -199,7 +284,10 @@ async def test_project_read_models_matches_store_folds(tmp_path):
 def test_compare_read_models_detects_divergence():
     """The comparator must FAIL (with a describing detail) on a real divergence —
     otherwise a silent projection drift would pass parity unnoticed."""
-    base = ReadModelProjection(
+    aggregate = project_read_models([_signal_received_event()])
+    assert _SIGNAL_KEY in aggregate.signals
+    base = replace(
+        aggregate,
         quarantined_symbols=frozenset({"TSLA"}),
         timeout_quarantined_order_ids=frozenset({"o1"}),
         trading_state={"s1": TradingState.HALTED},
@@ -213,8 +301,13 @@ def test_compare_read_models_detects_divergence():
         replace(base, timeout_quarantined_order_ids=frozenset()),
         replace(base, trading_state={"s1": TradingState.REDUCING}),
         replace(base, emergency_overrides={"s1": frozenset()}),
+        replace(base, signals={}),
     ]
     for other in perturbations:
         result = compare_read_models("a", base, "b", other)
         assert not result.ok
         assert result.detail  # names the diverging field
+        if other.signals != base.signals:
+            assert "signal" in result.detail
+            assert _SIGNAL_KEY[0] in result.detail
+            assert _SIGNAL_KEY[1] in result.detail
