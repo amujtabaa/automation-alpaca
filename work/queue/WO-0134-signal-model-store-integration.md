@@ -89,7 +89,7 @@ allowed_paths:
   - tests/test_signal_seat_models.py                 # pulled from staging; never weakened
   - tests/test_signal_ingest_store.py                # pulled from staging; never weakened
   - tests/test_signal_projector_forward_compat.py    # pulled from staging; never weakened
-  - tests/**                                         # NEW T1.3-style producer/consumer pin tests only
+  - tests/**                                         # NEW tests only: T1.3-style producer/consumer pins + test_signal_ingest_properties.py
   - work/active/**                                   # WO activation, SIGNAL-R4-STATE.md
   - work/review/REV-0039/                            # request.md staging
 ```
@@ -169,6 +169,24 @@ forbidden_paths:
       records from birth.
 - [ ] **Dual-store parity:** the three R4 test files green on BOTH stores; replay
       reconstruction byte-identical within each store; the full existing corpus stays green.
+- [ ] **Property-based corpus — NEW `tests/test_signal_ingest_properties.py` (D-R4-6):**
+      hypothesis is already pinned (`constraints.txt:50`); mirror the house idiom
+      (`tests/test_wo0018_sellside_properties.py` — `@st.composite` strategies,
+      `@settings(max_examples=…, deadline=None)`, bounded example counts). Three tiers over
+      the pure planner + stores:
+      (1) **planner invariants** — A-3 formula exactness incl. the `server_max_ttl` cap
+      dominating any producer TTL; DOA ⟺ `expires_at ≤ received_at`; exact skew boundaries
+      at `received_at + 30s` / `received_at − 24h`; `(producer_id, signal_id)` injectivity
+      across producers; identical `payload_hash` ⇒ idempotent echo appending NO new event;
+      different hash ⇒ audit-only conflict with the original record untouched;
+      (2) **outcome totality** — every generated admitted ingest maps to EXACTLY ONE of the
+      six outcome constants, never zero, never two (the store-pure half of the totality
+      guarantee the R5-gated totality file cannot deliver in R4);
+      (3) **metamorphic dual-store/replay** — one generated ingest sequence applied to both
+      stores projects identical read-models, and `replay(log) ≡ live read-model` within each
+      store. All variation flows through hypothesis strategies + the injected clock — no
+      unseeded randomness, no wall clock. This file is ADDITIVE alongside the staged corpus,
+      never a substitute for any staged test.
 - [ ] **Totality partial evidence:** after implementation, temporarily stage
       `tests/test_signal_quarantine_totality.py` from the staging branch, run collection,
       paste the output proving its ONLY remaining failure is the missing R5
@@ -210,6 +228,9 @@ Before **any commit** that touches `app/store/sqlite.py`:
 
 - [ ] Three R4 test files green on both stores, unweakened, byte-identical to the staging
       branch versions (diff evidence pasted).
+- [ ] Property corpus (`tests/test_signal_ingest_properties.py`) green on both stores; at
+      least one property demonstrated RED against a deliberately broken planner draft or
+      mutation (paste it) — a property that cannot fail is not evidence.
 - [ ] Totality-file partial evidence pasted (remaining red = R5 seam only); file absent from
       every commit.
 - [ ] Schema-gate package presented; operator approval pasted verbatim; sqlite slice

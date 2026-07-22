@@ -81,6 +81,13 @@ fresh pasted evidence, FIX blocks with root cause. No completion claims without 
       `archive REV-00xx @ origin/archive/claude-wo-0001-install-checks-2x5ys8`.
 - [x] D-R4-5 **Branch:** `codex/signal-r4-store` from current master; the three test files
       are pulled from the staging branch, byte-identical, never weakened.
+- [x] D-R4-6 **Property-based corpus:** add `tests/test_signal_ingest_properties.py`
+      (hypothesis, already pinned — no new dependency, no ADR) with the three tiers the WO
+      specifies: planner invariants (A-3 exactness, skew boundaries, dedupe injectivity,
+      echo-vs-conflict), outcome totality over the six constants, and metamorphic
+      dual-store/replay equivalence. House idiom per
+      `tests/test_wo0018_sellside_properties.py`; additive alongside the staged corpus,
+      never a substitute; at least one property proven RED-capable via a mutation.
 - **NOT pre-checked and NOT pre-checkable — THE SCHEMA GATE (Lane A only):** the fresh
   `signal_records` schema approval happens mid-session with the actual DDL in front of the
   operator (WO-0134 "THE SCHEMA GATE" section is the binding procedure). This block does NOT
@@ -163,12 +170,13 @@ Recommended slice order — sequenced so the schema gate stalls as little as pos
 5. **projectors.py** `project_signal_records` (after `PositionProjector`, :731 today;
    per-record fold; `SIGNAL_DUPLICATE_CONFLICT` excluded; forward-compat per the staged
    test) + **replay.py** registration in the SAME change.
-6. **Green + evidence:** three files green both stores; totality-file partial evidence
-   (stage temporarily → collect → paste → delete before committing); full gate battery
-   (`ruff check .`, `ruff format --check .`, `mypy app/`, `lint-imports`, `pytest -q`,
-   `python tests/r2_conformance_oracle.py`, `pytest -q tests/test_wo0113_repair_scaling.py`)
-   with fresh pasted output. T1.3-style producer/consumer pins for any new safety payload
-   field beyond the staged pins.
+6. **Green + evidence:** three files green both stores; the D-R4-6 property corpus
+   (`tests/test_signal_ingest_properties.py`) green both stores with its RED-capability
+   mutation pasted; totality-file partial evidence (stage temporarily → collect → paste →
+   delete before committing); full gate battery (`ruff check .`, `ruff format --check .`,
+   `mypy app/`, `lint-imports`, `pytest -q`, `python tests/r2_conformance_oracle.py`,
+   `pytest -q tests/test_wo0113_repair_scaling.py`) with fresh pasted output. T1.3-style
+   producer/consumer pins for any new safety payload field beyond the staged pins.
 7. **Stage `work/review/REV-0039/request.md`** for the Claude seat (cross-model rule):
    scope, commit list, the schema-gate approval record, evidence index, and the
    never-reviewed items called out (planner rewrite vs archive design, `_atomic`
@@ -233,6 +241,8 @@ The design is fully pre-ratified (D-ML-1..6) — **no mid-session gate**. Order:
   `work/queue/REVIEW-REMEDIATION-BATCH.md`.
 - R5 (endpoint/auth/launcher), R6 (rails), R7 (conversion) — later rungs; R5+R6+R7 share
   the joint D-2a enablement milestone.
+- **WO-0136 (signal-endpoint threat model, R5-prep)** — doc-only, queued for a separate
+  cloud/mid-tier session per the execution preference; do NOT absorb it here.
 - The other two REV-0037/0035 advisory P2s (per-child escalation isolation; full 3.12 `--cov`
   run) — still recorded backlog, not this session.
 - Anything touching the staging branch itself (`codex/signal-tests-staging` is live and
