@@ -7,6 +7,8 @@ Setup baseline: `origin/master@9d60b74`. The requested local branch already exis
 history rewrite. Both work orders and accepted ADRs are present, the staging corpus is readable,
 and REV-0039 / REV-0040 namespaces were free at activation.
 
+Activation commit: `7f918b4`.
+
 ## Operator decision block (pre-checked = ratified on paste; edit to override)
 
 - [x] D-R4-1 **Slice correction (supersedes the WO-0128 slice map's 4-file R4 row):** R4's
@@ -94,7 +96,7 @@ verbatim before any `app/store/sqlite.py` commit.
 | A / WO-0134 | SCHEMA GATE | NEEDS-INPUT | — | No SQLite work/commit until explicit approval. |
 | A / WO-0134 | `app/store/sqlite.py` | BLOCKED | — | Blocked only on the schema gate. |
 | A / WO-0134 | projector + replay | PENDING | — | Same commit. |
-| A / WO-0134 | green evidence | PENDING | — | Staged tests, properties, totality partial, full gates. |
+| A / WO-0134 | green evidence | RED VERIFIED | pending | Three staged blobs match exactly; collection fails on missing `SignalRecord` / `project_signal_records` before core constants are reached. |
 | A / WO-0134 | REV-0039 staging | PENDING | — | Claude-seat request only. |
 | B / WO-0135 | `app/monitoring.py` escalation | PENDING | — | Reuse gate VERIFIED on both stores before activation. |
 | B / WO-0135 | idempotency + post-reconcile + scope pins | PENDING | — | Dual-store, replay, zero venue calls. |

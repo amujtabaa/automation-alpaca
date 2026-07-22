@@ -108,6 +108,22 @@ allowed_paths:
   - work/review/REV-0039/                            # request.md staging
 ```
 
+### RED evidence — staged R4 corpus (2026-07-22)
+
+```yaml
+evidence:
+  command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider --collect-only -q tests/test_signal_seat_models.py tests/test_signal_ingest_store.py tests/test_signal_projector_forward_compat.py"
+  result: FAIL
+  decisive_output: "Collection stopped with three intended missing-implementation ImportErrors: app.models.SignalRecord and app.events.projectors.project_signal_records. The core constants were not yet reached because these earlier imports fail first."
+```
+
+```yaml
+evidence:
+  command: "git diff --exit-code origin/codex/signal-tests-staging -- <three R4 paths>; compare git hash-object with staging blob ids"
+  result: PASS
+  decisive_output: "All three worktree blob ids exactly matched staging: a4de2669..., 9513d50e..., a3ed1b5d...."
+```
+
 ## Forbidden paths
 
 ```yaml
