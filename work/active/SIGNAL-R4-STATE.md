@@ -127,10 +127,10 @@ implementation is authorized by this record.
 | A / WO-0134 | projector + replay | VERIFIED | `4d9779d` | Same change; staged pure + memory projector tests and 108 replay regressions green. |
 | A / WO-0134 | green evidence | VERIFIED / BOUNDED EXCEPTION | `b87d464`, `d79bd6e`, `f8c6048`, `a6468a1` | Signal R4 suite: 66 passed across both stores; full pytest, Ruff check, mypy, import-linter, operator-accepted canonical R2 oracle, and repair-scaling pass. The formatting/whitespace exception is limited to the three exact staged blobs and seven byte-identical baseline Ruff findings. |
 | A / WO-0134 | REV-0039 staging | STAGED / READY | `d79bd6e`, `f8c6048`, `a6468a1` | Claude-seat request is frozen at `b87d464`; operator gate decisions are recorded and WO-0134 is REVIEW. |
-| B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | `249f9be`, pending (operator-disposition commit) | Creation/dedup works, but the pre-ratified lifecycle is unreachable; operator directed no implementation or ADR-012 weakening. |
-| B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | `249f9be`, pending (operator-disposition commit) | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
-| B / WO-0135 | green evidence | BLOCKED | `249f9be`, pending (operator-disposition commit) | GATE stop condition fired before RED test/source work; blocker state explicitly retained. |
-| B / WO-0135 | REV-0040 staging | STAGED / READY-BLOCKER | `5be2996`, pending (operator-disposition commit) | Claude verifies the blocker and may assess a purpose-built record only as a non-authoritative proposal. |
+| B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | `249f9be`, `5e86fd0` | Creation/dedup works, but the pre-ratified lifecycle is unreachable; operator directed no implementation or ADR-012 weakening. |
+| B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | `249f9be`, `5e86fd0` | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
+| B / WO-0135 | green evidence | BLOCKED | `249f9be`, `5e86fd0` | GATE stop condition fired before RED test/source work; blocker state explicitly retained. |
+| B / WO-0135 | REV-0040 staging | STAGED / READY-BLOCKER | `5be2996`, `5e86fd0` | Claude verifies the blocker and may assess a purpose-built record only as a non-authoritative proposal. |
 
 ## Full-gate evidence (2026-07-22)
 
