@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R4 — model + store integration (vocabulary, pure planner, dual-store ingest, projector + replay parity)"
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0134
 wave: signal-seat reconciliation ladder, step R4 (plan §6 step 4)
 model_tier: strong (LOCAL Codex — gated surface; repo-primer execution preference)
@@ -282,11 +282,12 @@ Before **any commit** that touches `app/store/sqlite.py`:
       every commit.
 - [x] Schema-gate package presented; operator approval pasted verbatim; sqlite slice
       committed only after it.
-- [ ] Full gates green: `ruff check .`, `ruff format --check .`, `mypy app/` (new code fully
-      typed — the grandfather list only shrinks), `lint-imports`, `pytest -q` (OS-temp
-      basetemp), `python tests/r2_conformance_oracle.py`,
-      `pytest -q tests/test_wo0113_repair_scaling.py`. Fresh pasted output for each.
-- [ ] `status: REVIEW`, WO in `work/active/`, REV-0039 staged, branch pushed, nothing
+- [x] Full gate obligation satisfied: `ruff check .`, `mypy app/`, `lint-imports`, `pytest -q`
+      (OS-temp basetemp), the operator-accepted canonical pytest R2 oracle invocation, and
+      `pytest -q tests/test_wo0113_repair_scaling.py` pass. The operator granted a bounded
+      formatting/whitespace exception covering only the three immutable staged blobs and seven
+      Ruff findings proven byte-identical to `origin/master`; no other finding is waived.
+- [x] `status: REVIEW`, WO in `work/active/`, REV-0039 staged, branch pushed, nothing
       merged, no ledger line.
 - [x] Fable implementation record (gate + FIX blocks + evidence) appended to this file.
 
@@ -299,6 +300,21 @@ fail-closed `_migrate` column/unique-key guard were presented in-session. The op
 
 This approval was copied into the continuity state and this work order before any
 `app/store/sqlite.py` change or commit. Its scope is exactly the presented package.
+
+### Final gate-disposition evidence (2026-07-22)
+
+The operator replied:
+
+```text
+Approved: Grant a bounded WO-0134 formatting/whitespace exception covering only the three mandatory staging blobs and the seven Ruff findings proven byte-identical to origin/master. The three staged hashes must remain unchanged, all implementation-owned non-staged files must pass Ruff formatting, and no additional finding is waived. Formatting normalization is separate work.
+Accept .venv\Scripts\python.exe -m pytest -p no:cacheprovider -q tests/r2_conformance_oracle.py as satisfying the R2 oracle gate. The unchanged oracle passes all 61 cases; the direct-script spelling is an import-context defect and should be corrected separately.
+```
+
+Post-disposition recheck: the staged blob ids remain `a4de2669...`, `9513d50e...`, and
+`a3ed1b5d...`; all nine implementation-owned non-staged Python files pass
+`ruff format --check`; all seven waived baseline findings remain byte-identical to
+`origin/master`. Formatting normalization and the direct-script import-context defect are separate
+work and were not absorbed.
 
 ## Stop conditions
 
@@ -460,16 +476,16 @@ evidence:
 fable_fix:
   trigger: "The kickoff's literal python tests/r2_conformance_oracle.py command failed before collection."
   root_cause: "Direct-file execution sets sys.path[0] to tests, while the oracle imports the top-level app package and is authored/tested as a pytest module."
-  correction: "No product or launcher change was absorbed. The canonical pytest invocation passed all 61 cases; the command-contract mismatch is routed to NEEDS-INPUT."
+  correction: "No product or launcher change was absorbed. The canonical pytest invocation passed all 61 cases and the operator accepted it for this gate; the direct-script import-context defect remains separate work."
   safety_effect: "The conformance cases ran unchanged; only invocation differed."
 ```
 
 ```yaml
 fable_done:
-  status: BLOCKED
+  status: REVIEW
   verified: "Approved Signal Seat R4 implementation, 66 focused cases, full 4,275-node suite, static typing, import contracts, canonical R2 oracle, repair scaling, byte-identical staged corpus, and mutation-capable properties."
-  blocked_on:
-    - "Repository-wide Ruff format and range diff-check hygiene conflict with exact staged blobs; seven additional Ruff findings are unchanged baseline files."
-    - "The literal direct-script oracle command is not import-safe; its canonical pytest invocation passes."
-  disposition: "WO remains ACTIVE. REV-0039 is staged on hold; no ledger, merge, or completion claim."
+  accepted_exceptions:
+    - "Formatting/whitespace only: three immutable staging blobs plus seven Ruff findings byte-identical to origin/master; no additional finding waived."
+    - "The unchanged 61-case oracle run through pytest satisfies the gate; direct-script import context remains separate work."
+  disposition: "WO is REVIEW and REV-0039 is staged for the Claude seat; no ledger, merge, or close-out claim."
 ```

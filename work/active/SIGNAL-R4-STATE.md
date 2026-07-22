@@ -91,6 +91,18 @@ Operator response, copied verbatim before any `app/store/sqlite.py` change or co
 Approval scope is exactly the presented `signal_records` DDL, status/symbol indexes, exact
 column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broaden either lane.
 
+## Lane A final gate-disposition record
+
+Operator response, copied verbatim on 2026-07-22:
+
+```text
+Approved: Grant a bounded WO-0134 formatting/whitespace exception covering only the three mandatory staging blobs and the seven Ruff findings proven byte-identical to origin/master. The three staged hashes must remain unchanged, all implementation-owned non-staged files must pass Ruff formatting, and no additional finding is waived. Formatting normalization is separate work.
+Accept .venv\Scripts\python.exe -m pytest -p no:cacheprovider -q tests/r2_conformance_oracle.py as satisfying the R2 oracle gate. The unchanged oracle passes all 61 cases; the direct-script spelling is an import-context defect and should be corrected separately.
+```
+
+The exception waives no semantic test, implementation-owned formatting failure, additional Ruff
+finding, or future hash drift. The direct-script import-context defect remains separate work.
+
 ## Two-lane scoreboard
 
 | Lane | Slice | Status | Commits | Notes |
@@ -102,8 +114,8 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
 | A / WO-0134 | SCHEMA GATE | APPROVED | `6947966` | Operator approval copied verbatim above; exact presented package only. |
 | A / WO-0134 | `app/store/sqlite.py` | VERIFIED | `b87d464` | Approved DDL + guards, mapper, and atomic ingest/read methods; focused rollback and malformed-schema tests green. |
 | A / WO-0134 | projector + replay | VERIFIED | `4d9779d` | Same change; staged pure + memory projector tests and 108 replay regressions green. |
-| A / WO-0134 | green evidence | VERIFIED / GATE BLOCKED | `b87d464`, `d79bd6e`, `f8c6048` | Signal R4 suite: 66 passed across both stores; full pytest, Ruff check, mypy, import-linter, canonical R2 oracle, and repair-scaling pass. Repository-wide Ruff format and range diff-check conflict with exact staged blobs; seven Ruff findings are unchanged baseline; the kickoff's literal direct-script oracle command is not import-safe. |
-| A / WO-0134 | REV-0039 staging | STAGED / HOLD | `d79bd6e`, `f8c6048` | Claude-seat request is frozen at `b87d464`; hold does not flip WO status to REVIEW while the two gate-contract decisions remain open. |
+| A / WO-0134 | green evidence | VERIFIED / BOUNDED EXCEPTION | `b87d464`, `d79bd6e`, `f8c6048`, pending (operator-disposition commit) | Signal R4 suite: 66 passed across both stores; full pytest, Ruff check, mypy, import-linter, operator-accepted canonical R2 oracle, and repair-scaling pass. The formatting/whitespace exception is limited to the three exact staged blobs and seven byte-identical baseline Ruff findings. |
+| A / WO-0134 | REV-0039 staging | STAGED / READY | `d79bd6e`, `f8c6048`, pending (operator-disposition commit) | Claude-seat request is frozen at `b87d464`; operator gate decisions are recorded and WO-0134 is REVIEW. |
 | B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | `249f9be` | Creation/dedup works, but the pre-ratified lifecycle is unreachable; no source edit made. |
 | B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | `249f9be` | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
 | B / WO-0135 | green evidence | BLOCKED | `249f9be` | GATE stop condition fired before RED test/source work. |
@@ -112,7 +124,7 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
 ## Full-gate evidence (2026-07-22)
 
 - `VERIFIED` — `.venv\Scripts\python.exe -m ruff check .`: `All checks passed!`
-- `BLOCKED` — `.venv\Scripts\python.exe -m ruff format --check .`: Ruff would reformat the
+- `VERIFIED / BOUNDED EXCEPTION` — `.venv\Scripts\python.exe -m ruff format --check .`: Ruff would reformat the
   three mandatory byte-identical staged Signal tests and seven files unchanged from
   `origin/master`; 276 files were already formatted. Formatting either set would violate the
   staged-corpus contract or unrelated-baseline scope. All nine implementation-owned, non-staged
@@ -120,7 +132,7 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
 - `VERIFIED` — the seven non-Signal formatter findings are byte-identical to `origin/master`, and
   the three Signal findings retain staging blob ids `a4de2669...`, `9513d50e...`, and
   `a3ed1b5d...`.
-- `BLOCKED` — `git diff --check origin/master...HEAD` reports only a trailing blank line in each
+- `VERIFIED / BOUNDED EXCEPTION` — `git diff --check origin/master...HEAD` reports only a trailing blank line in each
   of those same three exact staged blobs. Editing them would violate D-R4-5; no implementation or
   evidence file contributes a whitespace error.
 - `VERIFIED` — `.venv\Scripts\python.exe -m mypy app/`: no issues in 70 source files.
@@ -129,25 +141,19 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
   entry point is the passing canonical invocation.
 - `VERIFIED` — `.venv\Scripts\python.exe -m pytest -p no:cacheprovider -q`: 4,275 nodes
   collected, exit 0, progress reached 100% (including the repository's existing skips/xfail).
-- `BLOCKED` — `.venv\Scripts\python.exe tests/r2_conformance_oracle.py` fails before collection
+- `VERIFIED / ACCEPTED CANONICAL INVOCATION` — `.venv\Scripts\python.exe tests/r2_conformance_oracle.py` fails before collection
   with `ModuleNotFoundError: No module named 'app'` because direct file execution roots imports at
   `tests/`. The repository/CI canonical invocation,
   `.venv\Scripts\python.exe -m pytest -p no:cacheprovider -q tests/r2_conformance_oracle.py`,
   is `VERIFIED` with 61 passing cases.
 - `VERIFIED` — `.venv\Scripts\python.exe -m pytest -p no:cacheprovider -q
   tests/test_wo0113_repair_scaling.py`: 13 passed.
+- `VERIFIED` — post-disposition boundary recheck: all three staging hashes remain exact; all nine
+  implementation-owned non-staged Python files report `already formatted`; all seven waived Ruff
+  baseline files remain byte-identical to `origin/master`.
 
 ## NEEDS-INPUT
 
-- WO-0134's acceptance text simultaneously requires repository-wide Ruff formatting and exact
-  staging blobs. The current staging branch supplies three files Ruff would change (and that make
-  range `git diff --check` report their trailing blank lines), while seven additional formatter
-  findings are untouched baseline. Choose an explicit bounded gate exception or a separately
-  authorized corpus/baseline normalization; this branch will not weaken or rewrite the mandated
-  tests.
-- WO-0134 names a direct-script R2 oracle command that cannot import `app` in the current repo.
-  Confirm that the passing canonical pytest invocation satisfies the gate, or authorize a separate
-  launcher/import-path correction outside this implementation slice.
 - WO-0135's D-ML-1/D-ML-2 synthetic recovery cannot reach D-ML-5's ADR-012 operator terminal.
   A revised design must explicitly authorize a compatible operator-release identity/path or a
   different durable record mechanism. That would expand the gated store/model/event surface and

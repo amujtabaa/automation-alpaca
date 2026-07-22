@@ -3,7 +3,7 @@ type: Review Request
 rev_id: REV-0039
 title: "WO-0134 — Signal Seat R4 model, planner, dual-store persistence, and replay"
 status: STAGED
-dispatch_state: HOLD_PENDING_OPERATOR_GATE_DECISIONS
+dispatch_state: READY_FOR_INDEPENDENT_REVIEW
 reviewer_seat: Claude
 targets: [WO-0134, ADR-009, signal-seat-r4]
 human_gated_surfaces: [schema-DB-migration, event-log-truth, replay-read-model]
@@ -30,10 +30,11 @@ packet. Produce findings only. Each finding requires `file:line`, why it matters
 resolves it. End with exactly one verdict: `BLOCK`, `ACCEPT-WITH-CHANGES`, or `ACCEPT`, and list
 anything not independently verified.
 
-This request is staged on **HOLD** because two gate-contract decisions remain open: the mandated
-staged tests are neither Ruff-format-clean nor range-diff-check-clean, and the kickoff's literal
-direct-script oracle invocation is not import-safe. Staging this packet does not flip WO-0134 from
-ACTIVE to REVIEW and does not authorize beta reliance.
+The operator has disposed the two gate-contract mismatches: a bounded formatting/whitespace
+exception covers only the three immutable staged blobs and seven Ruff findings proven
+byte-identical to `origin/master`, and the unchanged 61-case pytest oracle invocation satisfies the
+R2 gate. WO-0134 is REVIEW. This packet is ready for independent review but does not authorize beta
+reliance before disposition.
 
 ## Frozen semantic range and approval boundary
 
@@ -63,6 +64,16 @@ was:
 
 Approval authorizes review of the gated change; it is not evidence that the implementation or DDL
 is correct. Any deviation from the approved package is a P0.
+
+The later operator gate disposition is also binding but narrow:
+
+- the three staged hashes must remain exact and all implementation-owned non-staged files must
+  pass Ruff formatting;
+- only the seven Ruff findings proven byte-identical to `origin/master` are additionally excepted;
+- no other finding is waived, and formatting normalization is separate work;
+- `.venv\Scripts\python.exe -m pytest -p no:cacheprovider -q
+  tests/r2_conformance_oracle.py` satisfies the oracle gate with 61 unchanged cases; the
+  direct-script import-context defect is separate work.
 
 ## What changed
 
@@ -194,6 +205,10 @@ the reviewer.
   staged blobs has a trailing blank line at EOF; no implementation/evidence path is named.
 - Literal `python tests/r2_conformance_oracle.py` is **not green**: direct execution cannot import
   top-level `app`; the unchanged canonical pytest invocation passes all 61 cases.
+- The operator explicitly accepted the bounded ten-file formatting/whitespace boundary and the
+  canonical 61-case oracle invocation. Post-disposition recheck preserved all three staged hashes,
+  found all nine implementation-owned non-staged files formatted, and found all seven waived
+  baseline files byte-identical to `origin/master`.
 
 Treat every count as a claim to reproduce, not certification. Use OS temporary pytest scratch;
 never create a repository-root basetemp.
@@ -208,12 +223,13 @@ never create a repository-root basetemp.
 5. Are the staged tests and additive properties failure-capable across planner, store, and projector
    mutations?
 6. Did the frozen semantic range stay within the human approval and WO boundaries?
-7. Independently confirm whether the disclosed oracle-command and exact-corpus formatting/diff
-   conflicts are repository-contract blockers; do not silently waive them in the verdict.
+7. Independently confirm the operator exception did not expand: any changed staged hash,
+   implementation-owned formatting failure, eighth baseline finding, semantic test waiver, or
+   oracle-content change is outside approval and must be reported.
 
 ## Expected output
 
 After dispatch, write findings only to `work/review/REV-0039/result.md`, followed by one verdict.
 `BLOCK` any unapproved DDL/migration deviation, safety-invariant breach, partial event/record truth,
 non-injective dedupe, mutable conflict/echo behavior, replay/position bypass, inert decisive test,
-or unreproducible completion claim.
+unreproducible completion claim, or expansion beyond the exact operator exception.
