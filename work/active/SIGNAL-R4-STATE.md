@@ -91,13 +91,13 @@ copied here verbatim before any `app/store/sqlite.py` commit.
 | Lane | Slice | Status | Commits | Notes |
 | --- | --- | --- | --- | --- |
 | A / WO-0134 | `app/models.py` | VERIFIED | `ba1594d` | Additive enum/entity/event vocabulary; `test_signal_seat_models.py`: 6 passed. |
-| A / WO-0134 | `app/store/base.py` | VERIFIED | pending (this commit) | Result type + ABC trio; typed injected clock. |
-| A / WO-0134 | `app/store/core.py` planner | VERIFIED | pending (this commit) | Pure rewrite; constants in core; 9-property corpus green and A-3 mutation killed. |
-| A / WO-0134 | `app/store/memory.py` | VERIFIED | pending (this commit) | Signal state covered by `_atomic`; all 16 memory ingest cases green. |
+| A / WO-0134 | `app/store/base.py` | VERIFIED | `4d9779d` | Result type + ABC trio; typed injected clock. |
+| A / WO-0134 | `app/store/core.py` planner | VERIFIED | `4d9779d` | Pure rewrite; constants in core; 9-property corpus green and A-3 mutation killed. |
+| A / WO-0134 | `app/store/memory.py` | VERIFIED | `4d9779d` | Signal state covered by `_atomic`; all 16 memory ingest cases green. |
 | A / WO-0134 | SCHEMA GATE | NEEDS-INPUT / PRESENTED | — | Exact DDL + fail-closed migration guard presented; awaiting explicit approval. |
 | A / WO-0134 | `app/store/sqlite.py` | BLOCKED | — | Blocked only on the schema gate. |
-| A / WO-0134 | projector + replay | VERIFIED | pending (this commit) | Same change; staged pure + memory projector tests and 108 replay regressions green. |
-| A / WO-0134 | green evidence | PARTIAL VERIFIED | pending | Three staged blobs still match exactly; memory slice and pure properties green. SQLite/full gates remain blocked on schema approval. |
+| A / WO-0134 | projector + replay | VERIFIED | `4d9779d` | Same change; staged pure + memory projector tests and 108 replay regressions green. |
+| A / WO-0134 | green evidence | PARTIAL VERIFIED | `4d9779d` | Three staged blobs still match exactly; memory slice and pure properties green. Totality collection now fails only on the expected R5 helper seam. SQLite/full gates remain blocked on schema approval. |
 | A / WO-0134 | REV-0039 staging | PENDING | — | Claude-seat request only. |
 | B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | pending | Creation/dedup works, but the pre-ratified lifecycle is unreachable; no source edit made. |
 | B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | pending | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |

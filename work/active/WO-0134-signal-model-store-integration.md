@@ -230,7 +230,7 @@ forbidden_paths:
       example-pinned by the staged ingest corpus. All variation flows through hypothesis
       strategies + the injected clock — no unseeded randomness, no wall clock. This file is
       ADDITIVE alongside the staged corpus, never a substitute for any staged test.
-- [ ] **Totality partial evidence:** after implementation, temporarily stage
+- [x] **Totality partial evidence:** after implementation, temporarily stage
       `tests/test_signal_quarantine_totality.py` from the staging branch, run collection,
       paste the output proving its ONLY remaining failure is the missing R5
       `tests/signal_seat_helpers.py` seam (its R4-owned imports — `_SYMBOL_RE`,
@@ -371,3 +371,14 @@ Targeted mypy currently reports only the expected gated-boundary error: `SqliteS
 remains abstract until its three signal methods can be implemented after explicit schema
 approval. The replay variable-narrowing error discovered in that run was corrected before this
 checkpoint; full `mypy app/` remains a post-SQLite gate.
+
+### R5-gated totality collection evidence (2026-07-22)
+
+```yaml
+evidence:
+  command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider --collect-only -q tests/test_signal_quarantine_totality.py"
+  staged_blob: "3e6c0456b8f31ee92dac8467ddc932545eeafe37 (byte-identical to origin/codex/signal-tests-staging)"
+  result: EXPECTED-FAIL
+  decisive_output: "The sole collection error is ModuleNotFoundError: No module named 'tests.signal_seat_helpers'. app.store.base._SYMBOL_RE and app.store.core SIGNAL_TTL_MIN_SECONDS/SIGNAL_TTL_MAX_SECONDS imported successfully."
+  cleanup: "VERIFIED — tests/test_signal_quarantine_totality.py was deleted immediately after collection and is absent from git status/commits."
+```
