@@ -107,7 +107,7 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
 | B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | `249f9be` | Creation/dedup works, but the pre-ratified lifecycle is unreachable; no source edit made. |
 | B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | `249f9be` | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
 | B / WO-0135 | green evidence | BLOCKED | `249f9be` | GATE stop condition fired before RED test/source work. |
-| B / WO-0135 | REV-0040 staging | BLOCKED | pending | Blocker-verification packet still to be staged; implementation review is impossible under the current reuse design. |
+| B / WO-0135 | REV-0040 staging | STAGED / BLOCKER | pending (blocker-packet commit) | Independent review is limited to reproducing the reuse contradiction; no implementation exists to accept under the current design. |
 
 ## Full-gate evidence (2026-07-22)
 

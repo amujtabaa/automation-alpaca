@@ -100,13 +100,13 @@ if not existing:                                 # create exactly once (Hazard 2
 
 ## Required behavior
 
-- [ ] **GATE** (fable_gate in this file's record): confirm the exact reuse contract holds by
-      reading the store methods — specifically that a synthetic `local_order_id` with no order
-      row + `broker_order_id=""` + `RECOVERY_NEEDS_REVIEW` (a) passes the scope-match guard
-      (missing local row is valid input), (b) drives the WO-0132-hardened `claim_occurrence is
-      None` path deterministically on **both** stores, and (c) is idempotent per tick. If ANY
-      of these does not hold, **STOP and escalate** — the fallback (a new `ExecutionEventType`
-      + projector + table) is a larger gated surface and a different WO, not scope to absorb.
+- [x] **GATE — BLOCKED** (fable_gate in this file's record): read-only probes confirmed that a
+      synthetic `local_order_id` with no order row + `broker_order_id=""` +
+      `RECOVERY_NEEDS_REVIEW` dedups deterministically with `claim_occurrence is None` on both
+      stores, but the required ADR-012 operator-release lifecycle rejects that identity. Because
+      the exact reuse contract does not hold end-to-end, **STOP and escalate** — the fallback (a
+      new `ExecutionEventType` + projector + table or other durable mechanism) is a larger gated
+      surface and a different WO, not scope to absorb.
 - [ ] **Red-first:** a dual-store test that drives a malformed lineage (populate
       `projection.missing_order_ids`/`invalid_order_ids`/`missing_envelope_ids`) through
       convergence and asserts a `RECOVERY_NEEDS_REVIEW` record + `SUBMIT_RECOVERY_NEEDS_REVIEW`
@@ -139,7 +139,8 @@ if not existing:                                 # create exactly once (Hazard 2
       first-detection only (fire when the record is created; stay quiet on subsequent no-op
       ticks) — this is the log-noise remedy the reviewer named. If it complicates the change,
       keep the existing warning and note it; do not expand scope for it.
-- [ ] **Stage `work/review/REV-0040/request.md`** for the Claude seat: scope, commit(s), the
+- [x] **Stage `work/review/REV-0040/request.md`** for the Claude seat as a blocker-verification
+      packet (not an implementation-complete packet): scope, commit(s), the
       reuse rationale (why no new vocabulary/table), the two hazard pins, and the dual-store +
       replay evidence index.
 
@@ -277,3 +278,11 @@ fable_done:
     - "both stores reject the synthetic lineage as missing its referenced local order"
   status: BLOCKED
 ```
+
+### Review staging state (2026-07-22)
+
+`work/review/REV-0040/request.md` is staged for the independent Claude seat to reproduce the
+reuse contradiction and review the boundary conclusion. It freezes the evidence-only commit
+`249f9be`; no production/test implementation exists to accept. WO-0135 remains ACTIVE/BLOCKED and
+cannot flip to REVIEW until the operator authorizes a revised mechanism in a new or amended gated
+work order.
