@@ -99,10 +99,10 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
 | A / WO-0134 | `app/store/base.py` | VERIFIED | `4d9779d` | Result type + ABC trio; typed injected clock. |
 | A / WO-0134 | `app/store/core.py` planner | VERIFIED | `4d9779d` | Pure rewrite; constants in core; 9-property corpus green and A-3 mutation killed. |
 | A / WO-0134 | `app/store/memory.py` | VERIFIED | `4d9779d` | Signal state covered by `_atomic`; all 16 memory ingest cases green. |
-| A / WO-0134 | SCHEMA GATE | APPROVED | pending (approval record commit) | Operator approval copied verbatim above; exact presented package only. |
-| A / WO-0134 | `app/store/sqlite.py` | IN PROGRESS | — | Approved DDL + guard; RED tests precede implementation. |
+| A / WO-0134 | SCHEMA GATE | APPROVED | `6947966` | Operator approval copied verbatim above; exact presented package only. |
+| A / WO-0134 | `app/store/sqlite.py` | VERIFIED | pending (this commit) | Approved DDL + guards, mapper, and atomic ingest/read methods; focused rollback and malformed-schema tests green. |
 | A / WO-0134 | projector + replay | VERIFIED | `4d9779d` | Same change; staged pure + memory projector tests and 108 replay regressions green. |
-| A / WO-0134 | green evidence | PARTIAL VERIFIED | `4d9779d` | Three staged blobs still match exactly; memory slice and pure properties green. Totality collection now fails only on the expected R5 helper seam. SQLite/full gates remain blocked on schema approval. |
+| A / WO-0134 | green evidence | TARGETED VERIFIED | pending (this commit) | Signal R4 suite: 66 passed across both stores; staged blobs remain exact; mypy app/: 70 source files clean. Full repository gates remain pending. |
 | A / WO-0134 | REV-0039 staging | PENDING | — | Claude-seat request only. |
 | B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | pending | Creation/dedup works, but the pre-ratified lifecycle is unreachable; no source edit made. |
 | B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | pending | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |

@@ -194,7 +194,7 @@ forbidden_paths:
 - [x] **`app/store/memory.py`:** ingest/read methods integrated into the rebuilt `_atomic`
       (memory.py:494 today) — signal dict/index covered by snapshot/rollback; event append +
       co-written `SignalRecord` row in one atomic op.
-- [ ] **`app/store/sqlite.py` — ONLY after the schema gate clears:** `signal_records` DDL +
+- [x] **`app/store/sqlite.py` — ONLY after the schema gate clears:** `signal_records` DDL +
       indexes + `_migrate` guard; event append through the existing
       `_insert_execution_event` contract; record row + event in one transaction.
 - [x] **`app/events/projectors.py`:** `project_signal_records` appended after
@@ -273,14 +273,14 @@ Before **any commit** that touches `app/store/sqlite.py`:
 
 ## Acceptance criteria
 
-- [ ] Three R4 test files green on both stores, unweakened, byte-identical to the staging
+- [x] Three R4 test files green on both stores, unweakened, byte-identical to the staging
       branch versions (diff evidence pasted).
-- [ ] Property corpus (`tests/test_signal_ingest_properties.py`) green (pure seams, sync);
+- [x] Property corpus (`tests/test_signal_ingest_properties.py`) green (pure seams, sync);
       at least one property demonstrated RED against a deliberately broken planner draft or
       mutation (paste it) — a property that cannot fail is not evidence.
-- [ ] Totality-file partial evidence pasted (remaining red = R5 seam only); file absent from
+- [x] Totality-file partial evidence pasted (remaining red = R5 seam only); file absent from
       every commit.
-- [ ] Schema-gate package presented; operator approval pasted verbatim; sqlite slice
+- [x] Schema-gate package presented; operator approval pasted verbatim; sqlite slice
       committed only after it.
 - [ ] Full gates green: `ruff check .`, `ruff format --check .`, `mypy app/` (new code fully
       typed — the grandfather list only shrinks), `lint-imports`, `pytest -q` (OS-temp
@@ -377,10 +377,10 @@ The first sandboxed memory-test attempt could not enumerate pytest's default OS-
 (`WinError 5`). The identical command was re-run with approved OS-temp access and passed; no
 repo-root scratch directory or product-code workaround was introduced.
 
-Targeted mypy currently reports only the expected gated-boundary error: `SqliteStateStore`
-remains abstract until its three signal methods can be implemented after explicit schema
-approval. The replay variable-narrowing error discovered in that run was corrected before this
-checkpoint; full `mypy app/` remains a post-SQLite gate.
+Before schema approval, targeted mypy reported the expected gated-boundary error because
+`SqliteStateStore` was intentionally still abstract. The replay variable-narrowing error found in
+that same pre-approval run was corrected before the non-SQLite checkpoint. After the approved
+SQLite implementation, full `mypy app/` passed across all 70 source files (evidence below).
 
 ### R5-gated totality collection evidence (2026-07-22)
 
@@ -391,4 +391,33 @@ evidence:
   result: EXPECTED-FAIL
   decisive_output: "The sole collection error is ModuleNotFoundError: No module named 'tests.signal_seat_helpers'. app.store.base._SYMBOL_RE and app.store.core SIGNAL_TTL_MIN_SECONDS/SIGNAL_TTL_MAX_SECONDS imported successfully."
   cleanup: "VERIFIED — tests/test_signal_quarantine_totality.py was deleted immediately after collection and is absent from git status/commits."
+```
+
+### SQLite slice evidence (2026-07-22)
+
+```yaml
+evidence:
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q --tb=short 'tests/test_signal_ingest_store.py::test_accept_received[sqlite]'"
+    result: RED
+    decisive_output: "TypeError: SqliteStateStore remained abstract without get_signal, ingest_signal, and list_signals."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q --tb=short tests/test_signal_sqlite_schema.py"
+    result: RED
+    decisive_output: "All four new schema/guard/atomicity cases failed on the same missing SQLite implementation."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_seat_models.py tests/test_signal_ingest_store.py tests/test_signal_projector_forward_compat.py tests/test_signal_sqlite_schema.py tests/test_signal_ingest_properties.py"
+    result: PASS
+    decisive_output: "66 passed across memory + SQLite, including approved schema shape/indexes, malformed-type guard, missing-unique guard, atomic event/record rollback, restart persistence, replay, dedupe/conflict, and properties."
+  - command: ".venv/Scripts/python.exe -m mypy app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 70 source files."
+  - command: "git diff --exit-code origin/codex/signal-tests-staging -- <three R4 paths>; git hash-object <three R4 paths>"
+    result: PASS
+    decisive_output: "Staged blobs remain byte-identical: a4de2669..., 9513d50e..., a3ed1b5d...."
+```
+
+```yaml
+fable_fix:
+  trigger: "First SQLite GREEN run had one guard-test assertion failure."
+  root_cause: "pytest interpreted the literal parentheses in missing UNIQUE(producer_id, signal_id) as regex groups even though the runtime guard message was exact."
+  correction: "Escaped the expected literal with re.escape; the same five focused cases and then all 66 Signal R4 cases passed."
+  safety_effect: "Test-only correction; no guard or production behavior was relaxed."
 ```
