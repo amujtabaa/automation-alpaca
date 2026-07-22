@@ -1,18 +1,22 @@
 ---
 type: Work Order
 title: "Reconcile accepted safety-doc labels with current state (REV-0033 + import/mypy ratchets)"
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0121
 wave: post-R2 beta-prep
 model_tier: mid
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT]
 owner: Ameen (ratifies) / implementer: Codex / from AUDIT-0002 F003 + F004
 created: 2026-07-20
 gated_surface: accepted ADR + INVARIANTS text (human-gated: ADR change + event-log-truth records)
 ---
 
 # Work Order: make the accepted safety records describe what actually shipped
+
+> **CLOSE-OUT (2026-07-22).** Annotation-only reconciliation, independently reviewed:
+> **REV-0036 ACCEPT → disposition RESOLVED** (zero findings; 3 informational notes). The
+> operator's merge decision is the only remaining event; nothing else gates this WO.
 
 > **HUMAN-GATED.** Edits accepted ADRs and `docs/INVARIANTS.md` → requires explicit operator
 > approval and an independent cross-model review packet (`REV-00xx`) before beta reliance.

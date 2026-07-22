@@ -1,19 +1,24 @@
 ---
 type: Work Order
 title: "Envelope disposition cancel convergence + eventing/budget decision (SPEC-06/07, re-cut from WO-0029)"
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0124
 wave: W3-debt closure (re-cut per O-1, AUDIT-0002 F005)
 model_tier: strong
 fable_mode: FULL
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, ADR_CREATED]
 owner: Ameen / Codex implementer
 created: 2026-07-20
 gated_surface: cancel/replace (venue cancel convergence) — human-gated; independent review required
 ---
 
 # Work Order: a disposition venue cancel must converge, be evented, and agree with the budget
+
+> **CLOSE-OUT (2026-07-22).** Bounded evented disposition-cancel convergence + the D-0124
+> reprice-only budget (ADR-010 amendment shipped with the change, per the ratified decision
+> block). Independently reviewed: **REV-0037 ACCEPT-WITH-CHANGES → RESOLVED** (zero P0/P1;
+> two P2 advisories recorded as follow-ups in the disposition + remediation batch note).
 
 ## Goal
 

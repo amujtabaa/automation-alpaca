@@ -1,18 +1,23 @@
 ---
 type: Work Order
 title: "Envelope replay must fail closed on FSM-illegal lifecycle transitions"
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0131
 wave: ultra-batch remediation (post-review)
 model_tier: strong
 risk: medium
-disposition: []
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 owner: Ameen / implementer: Codex remediation session
 created: 2026-07-21
 gated_surface: event-log-truth (replay/read-model interpretation) — human-gated; needs its own review
 ---
 
 # Work Order: the replay projector's own contract — fail closed on impossible history
+
+> **CLOSE-OUT (2026-07-22).** Replay now fails closed on FSM-illegal transitions (90-pair
+> matrix, both replay paths). Independently reviewed: **REV-0038 ACCEPT-WITH-CHANGES →
+> RESOLVED** — F1 payload-guard pins landed (`edc8998`) and the surviving mutant re-verified
+> killed at `57fcf3f`.
 
 > **HUMAN-GATED (event-log truth).** This changes how corrupted/synthetic event history is
 > interpreted at replay. It ends its session at `status: REVIEW` with a fresh packet
