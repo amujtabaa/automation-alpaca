@@ -1,9 +1,9 @@
 # Codex CLOUD kickoff — WO-0136 signal-endpoint threat model (mid-tier, doc-only)
 
-> Operator launch prompt, drafted by the planning seat 2026-07-22. Paste into a FRESH **cloud**
-> Codex session (bounded mid-tier documentation work — cloud-suitable per the repo-primer
-> execution preference; no local strongest-model needed). Doc-only, non-gated, closes out
-> fully in-session. Feeds Signal Seat R5 — its GAP register becomes R5's requirement list.
+> Operator launch prompt, drafted by the planning seat 2026-07-22 (rev-2: remote-agnostic Step 0).
+> Paste into a FRESH **cloud** Codex session (bounded mid-tier documentation work — cloud-suitable
+> per the repo-primer execution preference; no local strongest-model needed). Doc-only, non-gated,
+> closes out fully in-session. Feeds Signal Seat R5 — its GAP register becomes R5's requirement list.
 
 ---
 
@@ -15,23 +15,35 @@ your complete contract** (required content, allowed/forbidden paths, acceptance,
 This is analysis, not implementation: you synthesize accepted ADR/spec text + the pre-found attack
 corpus into one document; you never edit accepted text or code.
 
-## Setup — sync first, verify, then work
+## Setup — establish your base (your cloud checkout may NOT expose an `origin` remote; ADAPT, do not hard-fail)
 
-- **Step 0 (execute yourself):** `git status --short` (clean, else STOP) → `git fetch origin` →
-  confirm `git log --oneline -1 origin/master` is `8d8c0d8` **or a descendant** →
-  `git checkout -b codex/wo-0136-threat-model origin/master` →
-  `git fetch origin archive/claude-wo-0001-install-checks-2x5ys8` (the pre-found attack corpus lives
-  on this archive ref; you read it with `git show origin/archive/claude-wo-0001-install-checks-2x5ys8:<path>`).
-- **Precondition guard (fail closed — ALL must hold, else STOP and report which failed):**
+The Codex cloud environment often provisions the repo **in place** with no `origin` remote (or a
+differently-named one). Do not assume `origin`; detect and adapt:
+
+1. `git status --short` — must be clean (else STOP and report; never stash blindly).
+2. `git remote -v` — note what is configured. Three cases:
+   - **`origin` exists** → `git fetch origin`; your base is `origin/master`.
+   - **a differently-named remote exists** → `git fetch <name>`; your base is `<name>/master`
+     (substitute the real name and report it).
+   - **NO remote (in-place provision)** → your base is the current `HEAD`; do **not** fetch.
+3. Confirm your base is current — it must contain the R4 + threat-model-queue merge:
+   `git merge-base --is-ancestor 8d8c0d8 <base> && echo BASE-OK`
+   (`<base>` = `HEAD` in the no-remote case). Must print **BASE-OK**. If it does not, your checkout
+   predates the merge — STOP and report; the platform must re-provision from the default branch.
+4. Create your working branch from that base:
+   `git checkout -b codex/wo-0136-threat-model <base>` (no-remote case: from `HEAD`, i.e.
+   `git checkout -b codex/wo-0136-threat-model`).
+
+- **Precondition guard (fail closed — ALL must hold; these are LOCAL checks, no fetch required):**
   1. `work/queue/WO-0136-signal-endpoint-threat-model.md` exists on your branch.
   2. `docs/adr/ADR-009-signal-seat-boundary.md` shows **Status: Accepted** (2026-07-21).
   3. `docs/adr/ADR-013-external-ingress.md` shows **Status: Proposed** (the Option-C seed you size,
      never approve).
-  4. The archive ref is reachable:
-     `git show origin/archive/claude-wo-0001-install-checks-2x5ys8:app/launch_guard.py | head -3`
-     returns content.
-- Never push master. No PR unless asked. Paper-only; zero credentials/broker/live. Pytest scratch
-  in OS temp if you run anything (you shouldn't need to — this is doc-only).
+  4. The pre-found-attack fallback sources are present on your branch (they suffice even with no
+     archive ref — see the work section): `work/review/REV-0022/result.md` and
+     `work/queue/SIGNAL-SEAT-RECONCILIATION-PLAN.md`.
+- Never push master. Paper-only; zero credentials/broker/live. Doc-only — you should not need to run
+  the app or tests; if you do, pytest scratch goes to OS temp.
 
 ## Decision block (pre-checked = ratified on paste; edit to override)
 
@@ -47,7 +59,8 @@ corpus into one document; you never edit accepted text or code.
       straight into the R5 WO. This is the document's primary downstream product.
 - [x] D-TM-4 **Archive citations use archive-ref provenance** — never bare `REV-0024`/`REV-0025`
       ids (they collide with master's namespace): cite as
-      `archive REV-00xx @ origin/archive/claude-wo-0001-install-checks-2x5ys8`.
+      `archive REV-00xx @ origin/archive/claude-wo-0001-install-checks-2x5ys8` (the provenance form
+      holds even when you read the content from the master fallback sources below).
 - [x] D-TM-5 **Option C (internet/webhook producers) is SIZED, not approved.** The internet-attacker
       section scopes what the future ADR-013 must answer; it approves nothing and proposes no
       deployment. Internet exposure stays STRUCTURALLY excluded today (loopback bind + construction
@@ -85,11 +98,17 @@ Produce `docs/THREAT_MODEL_SIGNAL_SEAT.md`:
 4. **Appendix A — clause traceability:** every ADR-009 A-1 and A-4 clause ↔ ≥1 threat row it
    mitigates. A clause mitigating nothing, or a threat with no clause, is itself a finding.
 5. **Appendix B — pre-found attacks:** one row each, showing which accepted control now covers it —
-   or a GAP. Mandatory rows: REV-0022 F-001 (unauthenticated reads / transport-credential boundary,
-   master packet); archive REV-0024 (ASGI-seam bind-guard unenforceability; the **paced-hostility
-   hole** — 10,080 events over 7 days at 1 req/min without breaching a refill bucket); archive
-   REV-0025 (reachable-503 listener; non-mutation-sensitive launch proof; non-linearizable/durable
-   budget; joint-enablement contradiction; **`POST /api/session/close` missing from the auth matrix**).
+   or a GAP. **Sources (the archive branch is OPTIONAL; master fully documents these):**
+   - Try the archive corpus if your checkout has it —
+     `git show origin/archive/claude-wo-0001-install-checks-2x5ys8:<path>` (also try the bare
+     `archive/…` form). If the ref is absent (the cloud provision may omit it), do NOT block:
+   - REV-0022 F-001 (unauthenticated reads / transport-credential boundary): `work/review/REV-0022/result.md` (master).
+   - archive REV-0024/0025 findings (the **paced-hostility hole** — 10,080 events over 7 days at
+     1 req/min without breaching a refill bucket; ASGI-seam **bind-guard unenforceability**;
+     **reachable-503 listener**; non-mutation-sensitive launch proof; non-linearizable/durable budget;
+     joint-enablement contradiction; **`POST /api/session/close` missing from the auth matrix**):
+     `work/queue/SIGNAL-SEAT-RECONCILIATION-PLAN.md` §2 (the review-chain table describes each) plus
+     the WO-0136 context packet's enumeration. Cite in the D-TM-4 archive-ref provenance form.
 6. **GAP register** — numbered, owner rung, testable-requirement phrasing (D-TM-3).
 7. **Non-goals** stated in the doc: no code, no spec/ADR edits, no pen-testing, no new deps;
    Option C sizes ADR-013 but approves nothing.
@@ -111,9 +130,19 @@ genuinely distill a security-posture PKL page — optional, not required), appen
 line, move `work/queue/WO-0136-…md` (activate to `work/active/` first, then) to
 `work/completed/keep/`, and move `work/active/WO-0136-STATE.md` into the close-out. Run
 `python .ai-os/scripts/check_work_order_disposition.py` and `python .ai-os/scripts/check_ledger.py`
-(both must pass) before the finishing commit. Push `codex/wo-0136-threat-model`. Report the GAP
-register's R5 rows in your final summary so the planning seat can lift them. Nothing merged — the
-operator fast-forwards master.
+(both must pass) before the finishing commit.
+
+**Deliver however your environment surfaces work (adaptive — mirrors Step 0):**
+- If a remote is configured: push `codex/wo-0136-threat-model` to it (never master).
+- If NO remote (in-place provision): leave the close-out commits on `codex/wo-0136-threat-model` for
+  the platform to export/surface — do NOT force a `git push` that will fail-close the session after
+  the work is done.
+- A PR is acceptable ONLY if that is your platform's default delivery for this doc-only WO in the
+  operator's own repo; do not create one solely to satisfy delivery.
+
+**Report in your final summary:** your exact delivery method (remote+branch pushed / PR / local
+branch for platform) AND the **GAP register's R5 rows verbatim**, so the planning seat can lift them
+into R5 without re-reading the whole doc. The operator fast-forwards master from the result.
 
 ## NOT in this session
 
