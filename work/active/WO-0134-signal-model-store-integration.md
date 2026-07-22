@@ -206,7 +206,7 @@ forbidden_paths:
       (additive, defaulted), `project_read_models` folds it via `project_signal_records`,
       `_describe_read_model_diff` extended — so dual-store read-model parity covers signal
       records from birth.
-- [ ] **Dual-store parity:** the three R4 test files green on BOTH stores; replay
+- [x] **Dual-store parity:** the three R4 test files green on BOTH stores; replay
       reconstruction byte-identical within each store; the full existing corpus stays green.
 - [x] **Property-based corpus — NEW `tests/test_signal_ingest_properties.py` (D-R4-6):**
       hypothesis is already pinned (`constraints.txt:50`); mirror the house idiom
@@ -239,7 +239,7 @@ forbidden_paths:
 - [x] **T1.3-style producer/consumer pins** for any new safety-relevant event payload field
       beyond what the staged corpus already pins (e.g. `cycle_budget_limit`, `expires_at`,
       `record_id` carriage) — a producer without a pinned consumer is a silent-loss bug.
-- [ ] **Stage `work/review/REV-0039/request.md`** for the Claude seat: scope, commits, the
+- [x] **Stage `work/review/REV-0039/request.md`** for the Claude seat: scope, commits, the
       schema-gate approval record, evidence index, and the specific never-reviewed items
       (planner rewrite vs archive, `_atomic` integration, replay-parity registration).
 
@@ -288,7 +288,7 @@ Before **any commit** that touches `app/store/sqlite.py`:
       `pytest -q tests/test_wo0113_repair_scaling.py`. Fresh pasted output for each.
 - [ ] `status: REVIEW`, WO in `work/active/`, REV-0039 staged, branch pushed, nothing
       merged, no ledger line.
-- [ ] Fable implementation record (gate + FIX blocks + evidence) appended to this file.
+- [x] Fable implementation record (gate + FIX blocks + evidence) appended to this file.
 
 ### Schema-gate approval evidence (2026-07-22)
 
@@ -420,4 +420,53 @@ fable_fix:
   root_cause: "pytest interpreted the literal parentheses in missing UNIQUE(producer_id, signal_id) as regex groups even though the runtime guard message was exact."
   correction: "Escaped the expected literal with re.escape; the same five focused cases and then all 66 Signal R4 cases passed."
   safety_effect: "Test-only correction; no guard or production behavior was relaxed."
+```
+
+### Repository-wide gate evidence and unresolved contract edges (2026-07-22)
+
+```yaml
+evidence:
+  - command: ".venv/Scripts/python.exe -m ruff check ."
+    result: PASS
+    decisive_output: "All checks passed!"
+  - command: ".venv/Scripts/python.exe -m ruff format --check ."
+    result: BLOCKED
+    decisive_output: "Would reformat 10 files; 276 files already formatted. The findings are the three byte-identical staged Signal tests plus seven files unchanged from origin/master."
+    scope_proof: "git diff --exit-code origin/master -- <seven non-Signal paths> passed; git diff --exit-code origin/codex/signal-tests-staging -- <three Signal paths> passed. All nine implementation-owned non-staged Python files pass format --check."
+  - command: ".venv/Scripts/python.exe -m mypy app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 70 source files."
+  - command: ".venv/Scripts/lint-imports.exe"
+    result: PASS
+    decisive_output: "99 files, 489 dependencies; 6 contracts kept, 0 broken."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q"
+    result: PASS
+    decisive_output: "4,275 nodes collected; exit 0; progress reached 100%, including the repository's existing skips/xfail."
+  - command: ".venv/Scripts/python.exe tests/r2_conformance_oracle.py"
+    result: BLOCKED
+    decisive_output: "ModuleNotFoundError: No module named 'app' before collection because direct file execution roots imports at tests/."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/r2_conformance_oracle.py"
+    result: PASS
+    decisive_output: "61 passing conformance cases under the repository/CI canonical invocation."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_wo0113_repair_scaling.py"
+    result: PASS
+    decisive_output: "13 passed."
+```
+
+```yaml
+fable_fix:
+  trigger: "The kickoff's literal python tests/r2_conformance_oracle.py command failed before collection."
+  root_cause: "Direct-file execution sets sys.path[0] to tests, while the oracle imports the top-level app package and is authored/tested as a pytest module."
+  correction: "No product or launcher change was absorbed. The canonical pytest invocation passed all 61 cases; the command-contract mismatch is routed to NEEDS-INPUT."
+  safety_effect: "The conformance cases ran unchanged; only invocation differed."
+```
+
+```yaml
+fable_done:
+  status: BLOCKED
+  verified: "Approved Signal Seat R4 implementation, 66 focused cases, full 4,275-node suite, static typing, import contracts, canonical R2 oracle, repair scaling, byte-identical staged corpus, and mutation-capable properties."
+  blocked_on:
+    - "Repository-wide Ruff format gate conflicts with exact staged blobs and seven unchanged baseline files."
+    - "The literal direct-script oracle command is not import-safe; its canonical pytest invocation passes."
+  disposition: "WO remains ACTIVE. REV-0039 is staged on hold; no ledger, merge, or completion claim."
 ```
