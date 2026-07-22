@@ -81,9 +81,10 @@ call, no guessed target) — the record is additive visibility only.
 
 ## Schema-gate approval record
 
-`NEEDS-INPUT` — no SQLite approval is implied by the kickoff or prior archive decision. The exact
-DDL package must be presented after R4 red evidence; the operator's response will be copied here
-verbatim before any `app/store/sqlite.py` commit.
+`NEEDS-INPUT` — the exact archive-shape DDL plus a master-specific fail-closed `_migrate`
+shape/unique-key guard was presented in-session after RED evidence on 2026-07-22. No SQLite
+approval is implied by the kickoff or prior archive decision. The operator's response will be
+copied here verbatim before any `app/store/sqlite.py` commit.
 
 ## Two-lane scoreboard
 
@@ -93,12 +94,19 @@ verbatim before any `app/store/sqlite.py` commit.
 | A / WO-0134 | `app/store/base.py` | PENDING | — | Result type + ABC trio. |
 | A / WO-0134 | `app/store/core.py` planner | PENDING | — | Pure rewrite; constants in core. |
 | A / WO-0134 | `app/store/memory.py` | PENDING | — | Signal state covered by `_atomic`. |
-| A / WO-0134 | SCHEMA GATE | NEEDS-INPUT | — | No SQLite work/commit until explicit approval. |
+| A / WO-0134 | SCHEMA GATE | NEEDS-INPUT / PRESENTED | — | Exact DDL + fail-closed migration guard presented; awaiting explicit approval. |
 | A / WO-0134 | `app/store/sqlite.py` | BLOCKED | — | Blocked only on the schema gate. |
 | A / WO-0134 | projector + replay | PENDING | — | Same commit. |
 | A / WO-0134 | green evidence | RED VERIFIED | pending | Three staged blobs match exactly; collection fails on missing `SignalRecord` / `project_signal_records` before core constants are reached. |
 | A / WO-0134 | REV-0039 staging | PENDING | — | Claude-seat request only. |
-| B / WO-0135 | `app/monitoring.py` escalation | PENDING | — | Reuse gate VERIFIED on both stores before activation. |
-| B / WO-0135 | idempotency + post-reconcile + scope pins | PENDING | — | Dual-store, replay, zero venue calls. |
-| B / WO-0135 | green evidence | PENDING | — | Targeted then full gates. |
-| B / WO-0135 | REV-0040 staging | PENDING | — | Claude-seat request only. |
+| B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | pending | Creation/dedup works, but the pre-ratified lifecycle is unreachable; no source edit made. |
+| B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | pending | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
+| B / WO-0135 | green evidence | BLOCKED | pending | GATE stop condition fired before RED test/source work. |
+| B / WO-0135 | REV-0040 staging | BLOCKED | pending | Requires a revised human-approved design/work-order boundary. |
+
+## NEEDS-INPUT
+
+- WO-0135's D-ML-1/D-ML-2 synthetic recovery cannot reach D-ML-5's ADR-012 operator terminal.
+  A revised design must explicitly authorize a compatible operator-release identity/path or a
+  different durable record mechanism. That would expand the gated store/model/event surface and
+  is not authorized by the current WO.

@@ -236,3 +236,44 @@ fable_gate:
     - "Full gate battery is freshly green; REV-0040 is staged; WO status is REVIEW; branch is pushed."
   blast_radius: "One malformed-lineage branch in app/monitoring.py plus dual-store convergence tests; additive audit visibility only."
 ```
+
+### GATE evidence and reuse blocker (2026-07-22)
+
+```yaml
+evidence:
+  command: "Ephemeral memory + SQLite probe: create the pre-ratified synthetic lineage recovery three times, then inspect all recoveries and submit_recovery_needs_review audit events."
+  result: PASS
+  decisive_output: "Both stores returned the same record id on all three calls, persisted exactly one record and one audit event, and omitted claim_occurrence (None)."
+```
+
+```yaml
+evidence:
+  command: "Construct the ADR-012 operator attestation for the synthetic recovery and call reconcile_submit_recovery on memory + SQLite (the store call used model_construct only to get past the typed-command rejection and prove the deeper guard)."
+  result: BLOCKED
+  decisive_output: "The typed command rejects broker_order_id='' ('String should have at least 1 character'); both stores then reject the bypassed command with 'recovery lineage is not trustworthy: referenced local order is missing'."
+```
+
+The pre-ratified reuse is therefore unsound for D-ML-5 and the required post-reconcile pin:
+`SubmitRecoveryAttestation.broker_order_id` requires a non-empty value, while ADR-012's store
+command also requires a real local order, trustworthy owner/envelope lineage, and a durable
+submission-claim occurrence. The synthetic `lineage:<envelope.id>` / empty-broker-id record is
+intentionally missing all three. Per the WO stop condition, no `app/store/**`, `app/models.py`, or
+`app/events/**` fallback was attempted and no Lane B production/test file was edited.
+
+```yaml
+fable_done:
+  task: "WO-0135 malformed-lineage needs-review record"
+  done_when_results:
+    - "Creation/dedup reuse gate: MET on memory and SQLite."
+    - "ADR-012 operator lifecycle: BLOCKED by typed identity and store lineage/claim guards."
+    - "Post-reconcile, scope-drift, replay, and full-green requirements: BLOCKED because the ratified lifecycle is unreachable."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  evidence:
+    - "memory same_id=True records=1 events=1 claim_occurrence=None"
+    - "sqlite same_id=True records=1 events=1 claim_occurrence=None"
+    - "both typed commands reject the empty broker id"
+    - "both stores reject the synthetic lineage as missing its referenced local order"
+  status: BLOCKED
+```
