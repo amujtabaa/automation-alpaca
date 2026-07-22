@@ -1,18 +1,24 @@
 ---
 type: Work Order
 title: "PD-1: needs_review reconciliation release valve (human-gated, event-truth)"
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0114
 wave: post-R2 beta-prep
 model_tier: strong
 risk: high
-disposition: []
+disposition: [ADR_CREATED, PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Ameen (ratifies) / planning seat drafted 2026-07-20 / Codex implementer seat
 created: 2026-07-20
 gated_surface: event-log truth, recovery FSM vocabulary, operator control API
 ---
 
 # Work Order: PD-1 — the needs_review reconciliation release valve
+
+> **CLOSE-OUT (2026-07-22).** Implemented by the Codex seat in the ULTRA batch; pin hardening
+> via WO-0132 (REV-0035 P1-1). Independently reviewed: **REV-0035 ACCEPT-WITH-CHANGES →
+> disposition RESOLVED** (mutation re-verified at `d589da4`). **ADR-012 Accepted by Ameen
+> 2026-07-22** — the beta-reliance gate this WO named is cleared pending the batch merge.
+> INV-096 active. Ledger row ships in this commit.
 
 > **RATIFIED 2026-07-20 (Ameen, structured decision prompt; recorded in
 > `PD1-R2-PLANNING-PACKAGE.md` §2):** D-PD1-1 = hybrid-honest; D-PD1-2 = `operator_reconciled`;

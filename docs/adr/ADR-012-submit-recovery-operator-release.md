@@ -2,11 +2,15 @@
 
 ## Status
 
-**Proposed** (2026-07-20). The operator ratified D-PD1-1 through D-PD1-4 in
-`work/queue/PD1-R2-PLANNING-PACKAGE.md`: hybrid-honest provenance, terminal status
-`operator_reconciled`, a typed FastAPI command plus cockpit control, and separate fill-ingestion
-and release commands. The implementation is staged by WO-0114, but this ADR still requires Ameen's
-acceptance and REV-0035 independent cross-model review before beta reliance.
+**Accepted — 2026-07-22.** Ameen explicitly accepted this ADR (in-session acceptance recorded
+by the planning seat in the same commit that closes WO-0114) after the Claude-seat independent
+review REV-0035 returned ACCEPT-WITH-CHANGES and was dispositioned **RESOLVED** — its P1-1
+inert-pin remediated by WO-0132 and the mutation independently re-verified at `d589da4`
+(exactly the four new `HUMAN_ATTESTED` fill-rail pins go red; restored green). Drafted
+**Proposed** 2026-07-20 on the operator's D-PD1-1..4 ratifications
+(`work/queue/PD1-R2-PLANNING-PACKAGE.md` §2): hybrid-honest provenance, terminal status
+`operator_reconciled`, a typed FastAPI command plus cockpit control, and separate
+fill-ingestion and release commands. Live trading remains disabled and out of scope.
 
 ## Context
 

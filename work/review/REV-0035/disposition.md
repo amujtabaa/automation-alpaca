@@ -46,3 +46,9 @@ Claude seat's REV-0038 verification run.
 Beta reliance on the valve remains gated on **ADR-012 acceptance** (operator). WO-0114's own
 close-out (status flip, ledger, move) follows the operator's merge decision per the batch's
 review-gated-WO rule. **REV-0035 disposition: RESOLVED.**
+
+## Operator acceptance record (2026-07-22)
+
+**ADR-012 accepted by Ameen** — explicit in-session acceptance, recorded by the planning seat
+in the same commit that closes WO-0114. The beta-reliance gate named above is cleared pending
+the batch merge to master.
