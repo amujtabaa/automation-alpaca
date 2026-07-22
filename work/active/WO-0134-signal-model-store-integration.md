@@ -290,6 +290,16 @@ Before **any commit** that touches `app/store/sqlite.py`:
       merged, no ledger line.
 - [ ] Fable implementation record (gate + FIX blocks + evidence) appended to this file.
 
+### Schema-gate approval evidence (2026-07-22)
+
+The exact DDL, indexes, field-by-field nullability cross-check, archive deviation list, and
+fail-closed `_migrate` column/unique-key guard were presented in-session. The operator replied:
+
+> The DDL plus guard looks fine as far as I'm concerned. You may proceed.
+
+This approval was copied into the continuity state and this work order before any
+`app/store/sqlite.py` change or commit. Its scope is exactly the presented package.
+
 ## Stop conditions
 
 - The schema gate refuses or cannot be reached → BLOCKED (never worked around).

@@ -81,10 +81,15 @@ call, no guessed target) — the record is additive visibility only.
 
 ## Schema-gate approval record
 
-`NEEDS-INPUT` — the exact archive-shape DDL plus a master-specific fail-closed `_migrate`
-shape/unique-key guard was presented in-session after RED evidence on 2026-07-22. No SQLite
-approval is implied by the kickoff or prior archive decision. The operator's response will be
-copied here verbatim before any `app/store/sqlite.py` commit.
+`APPROVED` — the exact archive-shape DDL plus the master-specific fail-closed `_migrate`
+shape/unique-key guard was presented in-session after RED evidence on 2026-07-22.
+
+Operator response, copied verbatim before any `app/store/sqlite.py` change or commit:
+
+> The DDL plus guard looks fine as far as I'm concerned. You may proceed.
+
+Approval scope is exactly the presented `signal_records` DDL, status/symbol indexes, exact
+column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broaden either lane.
 
 ## Two-lane scoreboard
 
@@ -94,8 +99,8 @@ copied here verbatim before any `app/store/sqlite.py` commit.
 | A / WO-0134 | `app/store/base.py` | VERIFIED | `4d9779d` | Result type + ABC trio; typed injected clock. |
 | A / WO-0134 | `app/store/core.py` planner | VERIFIED | `4d9779d` | Pure rewrite; constants in core; 9-property corpus green and A-3 mutation killed. |
 | A / WO-0134 | `app/store/memory.py` | VERIFIED | `4d9779d` | Signal state covered by `_atomic`; all 16 memory ingest cases green. |
-| A / WO-0134 | SCHEMA GATE | NEEDS-INPUT / PRESENTED | — | Exact DDL + fail-closed migration guard presented; awaiting explicit approval. |
-| A / WO-0134 | `app/store/sqlite.py` | BLOCKED | — | Blocked only on the schema gate. |
+| A / WO-0134 | SCHEMA GATE | APPROVED | pending (approval record commit) | Operator approval copied verbatim above; exact presented package only. |
+| A / WO-0134 | `app/store/sqlite.py` | IN PROGRESS | — | Approved DDL + guard; RED tests precede implementation. |
 | A / WO-0134 | projector + replay | VERIFIED | `4d9779d` | Same change; staged pure + memory projector tests and 108 replay regressions green. |
 | A / WO-0134 | green evidence | PARTIAL VERIFIED | `4d9779d` | Three staged blobs still match exactly; memory slice and pure properties green. Totality collection now fails only on the expected R5 helper seam. SQLite/full gates remain blocked on schema approval. |
 | A / WO-0134 | REV-0039 staging | PENDING | — | Claude-seat request only. |
