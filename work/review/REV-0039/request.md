@@ -31,9 +31,9 @@ resolves it. End with exactly one verdict: `BLOCK`, `ACCEPT-WITH-CHANGES`, or `A
 anything not independently verified.
 
 This request is staged on **HOLD** because two gate-contract decisions remain open: the mandated
-staged tests are not Ruff-format-clean, and the kickoff's literal direct-script oracle invocation
-is not import-safe. Staging this packet does not flip WO-0134 from ACTIVE to REVIEW and does not
-authorize beta reliance.
+staged tests are neither Ruff-format-clean nor range-diff-check-clean, and the kickoff's literal
+direct-script oracle invocation is not import-safe. Staging this packet does not flip WO-0134 from
+ACTIVE to REVIEW and does not authorize beta reliance.
 
 ## Frozen semantic range and approval boundary
 
@@ -190,6 +190,8 @@ the reviewer.
   (61 cases), and repair scaling (13 cases) passed.
 - `ruff format --check .` is **not green**: it names the three exact staged blobs and seven files
   byte-identical to `origin/master`. All implementation-owned non-staged files pass.
+- `git diff --check 9d60b74..b87d464` is **not green** only because each of the same three exact
+  staged blobs has a trailing blank line at EOF; no implementation/evidence path is named.
 - Literal `python tests/r2_conformance_oracle.py` is **not green**: direct execution cannot import
   top-level `app`; the unchanged canonical pytest invocation passes all 61 cases.
 
@@ -206,8 +208,8 @@ never create a repository-root basetemp.
 5. Are the staged tests and additive properties failure-capable across planner, store, and projector
    mutations?
 6. Did the frozen semantic range stay within the human approval and WO boundaries?
-7. Independently confirm whether the two disclosed command/format conflicts are repository-contract
-   blockers; do not silently waive them in the verdict.
+7. Independently confirm whether the disclosed oracle-command and exact-corpus formatting/diff
+   conflicts are repository-contract blockers; do not silently waive them in the verdict.
 
 ## Expected output
 

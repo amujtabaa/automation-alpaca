@@ -120,6 +120,9 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
 - `VERIFIED` — the seven non-Signal formatter findings are byte-identical to `origin/master`, and
   the three Signal findings retain staging blob ids `a4de2669...`, `9513d50e...`, and
   `a3ed1b5d...`.
+- `BLOCKED` — `git diff --check origin/master...HEAD` reports only a trailing blank line in each
+  of those same three exact staged blobs. Editing them would violate D-R4-5; no implementation or
+  evidence file contributes a whitespace error.
 - `VERIFIED` — `.venv\Scripts\python.exe -m mypy app/`: no issues in 70 source files.
 - `VERIFIED` — `.venv\Scripts\lint-imports.exe`: 6 contracts kept, 0 broken. The initial
   `python -m lint_imports` spelling was not an executable module; the repository's installed
@@ -137,10 +140,11 @@ column-shape guard, and `UNIQUE(producer_id, signal_id)` guard. It does not broa
 ## NEEDS-INPUT
 
 - WO-0134's acceptance text simultaneously requires repository-wide Ruff formatting and exact
-  staging blobs. The current staging branch supplies three files Ruff would change, and seven
-  additional findings are untouched baseline. Choose an explicit bounded gate exception or a
-  separately authorized corpus/baseline normalization; this branch will not weaken or rewrite the
-  mandated tests.
+  staging blobs. The current staging branch supplies three files Ruff would change (and that make
+  range `git diff --check` report their trailing blank lines), while seven additional formatter
+  findings are untouched baseline. Choose an explicit bounded gate exception or a separately
+  authorized corpus/baseline normalization; this branch will not weaken or rewrite the mandated
+  tests.
 - WO-0134 names a direct-script R2 oracle command that cannot import `app` in the current repo.
   Confirm that the passing canonical pytest invocation satisfies the gate, or authorize a separate
   launcher/import-path correction outside this implementation slice.

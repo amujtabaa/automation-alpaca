@@ -433,6 +433,9 @@ evidence:
     result: BLOCKED
     decisive_output: "Would reformat 10 files; 276 files already formatted. The findings are the three byte-identical staged Signal tests plus seven files unchanged from origin/master."
     scope_proof: "git diff --exit-code origin/master -- <seven non-Signal paths> passed; git diff --exit-code origin/codex/signal-tests-staging -- <three Signal paths> passed. All nine implementation-owned non-staged Python files pass format --check."
+  - command: "git diff --check origin/master...HEAD"
+    result: BLOCKED
+    decisive_output: "Only the three exact staged Signal blobs report a trailing blank line at EOF; no implementation/evidence file reports a whitespace error."
   - command: ".venv/Scripts/python.exe -m mypy app/"
     result: PASS
     decisive_output: "Success: no issues found in 70 source files."
@@ -466,7 +469,7 @@ fable_done:
   status: BLOCKED
   verified: "Approved Signal Seat R4 implementation, 66 focused cases, full 4,275-node suite, static typing, import contracts, canonical R2 oracle, repair scaling, byte-identical staged corpus, and mutation-capable properties."
   blocked_on:
-    - "Repository-wide Ruff format gate conflicts with exact staged blobs and seven unchanged baseline files."
+    - "Repository-wide Ruff format and range diff-check hygiene conflict with exact staged blobs; seven additional Ruff findings are unchanged baseline files."
     - "The literal direct-script oracle command is not import-safe; its canonical pytest invocation passes."
   disposition: "WO remains ACTIVE. REV-0039 is staged on hold; no ledger, merge, or completion claim."
 ```
