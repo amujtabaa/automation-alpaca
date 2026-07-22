@@ -35,11 +35,16 @@
   corrupt cancel lineage is surfaced only by a recurring log, not a durable operator-visible
   record. Emitting a deduped `needs_review` is a NEW human-gated event-log write → its own
   future WO + decision, deliberately not folded in. (Pre-existing WO-0036 behavior, not a
-  regression.) **→ DRAFTED as `work/queue/WO-0135-malformed-lineage-needs-review-record.md`
-  (2026-07-22, planning seat); reuse-based design (existing `SUBMIT_RECOVERY_NEEDS_REVIEW`
-  ledger, no new vocabulary/table), pre-ratified D-ML-1..6, staged into the Signal-R4 Codex
-  session (Lane B) ending at REVIEW → REV-0040. This advisory line flips to resolved at
-  WO-0135 close-out.**
+  regression.) **→ WO-0135 (reuse-based design) ABANDONED 2026-07-22: the synthetic
+  `SUBMIT_RECOVERY_NEEDS_REVIEW` record can be created/deduped but can NEVER be operator-resolved
+  (ADR-012 typed attestation + store lineage/claim guards), and would permanently poison the
+  symbol's SELL-exposure rails (REV-0040 ACCEPT, both findings independently reproduced). The
+  submit-recovery ledger is the wrong vessel. STILL OPEN as an advisory: the successor is a
+  purpose-built malformed-lineage operator-review record (own event vocabulary/projector/read
+  model/operator command/ADR) as end-state, read-model/cockpit surface as interim; do NOT widen
+  ADR-012. Charter a fresh gated WO when Signal Seat R5+/the recovery surface is next worked
+  (inherits WO-0135's analysis + REV-0040 §Proposal Assessment). Corrupt-lineage path stays
+  fail-closed meanwhile.**
 - **REV-0037 P2-2 — per-child escalation isolation.** A permanent recovery-write fault on one
   exhausted child could stall sibling cancels in a legacy multi-child envelope (v1 has one
   child, so low reachability; fail-closed throughout). Advisory follow-up.

@@ -1,17 +1,36 @@
 ---
 type: Work Order
 title: "Durable deduped needs-review record for persistently malformed cancel lineages (REV-0037 P2-1)"
-status: ACTIVE
+status: ABANDONED
+disposition: [ABANDONED, RESULT_SUMMARY_KEPT]
 work_order_id: WO-0135
 wave: post-ULTRA advisory follow-up (REV-0037 P2-1)
 model_tier: strong (LOCAL Codex — event-log-truth surface)
 risk: medium
 owner: Ameen / implementer: Codex local session
 created: 2026-07-22
+abandoned: 2026-07-22
 gated_surface: event-log truth (a NEW condition appends to the append-only log) — human-gated; ends at status REVIEW with REV-0040 staged for the Claude seat. NO schema migration and NO new event vocabulary (reuse path) → no mid-session DDL/vocabulary gate.
 ---
 
 # Work Order: surface a stranded corrupt cancel lineage as a durable recovery record
+
+> **ABANDONED (2026-07-22, Ameen).** The pre-ratified reuse design is unsound and cannot be repaired
+> within its boundary. Codex's GATE (and independent review **REV-0040 ACCEPT**) reproduced the
+> blocker at every layer: the synthetic `lineage:<id>` / empty-broker-id `SUBMIT_RECOVERY_NEEDS_REVIEW`
+> record can be created and deduped, but **can never be operator-resolved** — the ADR-012 typed
+> attestation requires a non-empty `broker_order_id` (`app/models.py:1038`) and both stores' reconcile
+> command requires a real order + trustworthy lineage + a durable claim occurrence
+> (`app/store/core.py:2998-3001`), none of which a synthetic record holds. REV-0040 additionally found
+> the record would **permanently poison the symbol's SELL-exposure rails** (blocking `flatten_position`
+> for that symbol forever). Reuse of the submit-recovery ledger is therefore the wrong vessel. No Lane B
+> production or test code shipped; the corrupt-lineage path remains fail-closed as today (REV-0037 P2-1
+> is advisory, not a live-safety defect). **Successor direction (non-authoritative, per REV-0040
+> §"Proposal Assessment"):** a purpose-built malformed-lineage operator-review record (new event type +
+> projector + read model + typed operator command + ADR) as the end-state, with a re-derivable
+> read-model/cockpit surface as a low-risk interim; do NOT widen ADR-012. That successor is a fresh WO
+> to be chartered when Signal Seat R5+ / the recovery surface is next worked — it inherits this WO's
+> analysis and REV-0040's assessment. This WO is superseded by that future charter, not resumed.
 
 > **HUMAN-GATED (event-log truth).** This adds a new *condition* under which the log is
 > written: a persistently malformed cancel lineage now mints a durable, deduped
