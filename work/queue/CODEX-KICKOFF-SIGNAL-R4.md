@@ -181,8 +181,8 @@ instead of stalling after it:
    per-record fold; `SIGNAL_DUPLICATE_CONFLICT` excluded; forward-compat per the staged
    test) + **replay.py** registration in the SAME change.
 6. **Green + evidence:** three files green both stores; the D-R4-6 property corpus
-   (`tests/test_signal_ingest_properties.py`) green both stores with its RED-capability
-   mutation pasted; totality-file partial evidence (stage temporarily → collect → paste →
+   (`tests/test_signal_ingest_properties.py`, pure seams, sync) green with its
+   RED-capability mutation pasted; totality-file partial evidence (stage temporarily → collect → paste →
    delete before committing); full gate battery (`ruff check .`, `ruff format --check .`,
    `mypy app/`, `lint-imports`, `pytest -q`, `python tests/r2_conformance_oracle.py`,
    `pytest -q tests/test_wo0113_repair_scaling.py`) with fresh pasted output. T1.3-style
