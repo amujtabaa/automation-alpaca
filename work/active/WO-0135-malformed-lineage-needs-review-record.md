@@ -283,6 +283,15 @@ fable_done:
 
 `work/review/REV-0040/request.md` is staged for the independent Claude seat to reproduce the
 reuse contradiction and review the boundary conclusion. It freezes the evidence-only commit
-`249f9be`; no production/test implementation exists to accept. WO-0135 remains ACTIVE/BLOCKED and
-cannot flip to REVIEW until the operator authorizes a revised mechanism in a new or amended gated
-work order.
+`249f9be`; no production/test implementation exists to accept. WO-0135 remains in `work/active/`
+with its Fable/blocker state `BLOCKED`.
+
+### Operator continuation disposition (2026-07-22)
+
+```text
+Keep WO-0135 BLOCKED. Do not weaken ADR-012 or implement a replacement mechanism in this session. Stage REV-0040 for Claude to verify the reuse blocker and assess, as a non-authoritative proposal, whether a purpose-built malformed-lineage operator-review record is the appropriate next design direction. Any exact schema, event vocabulary, lifecycle, operator command, new WO, or implementation requires subsequent planning and explicit human approval.
+```
+
+Accordingly, this session performs no further Lane B design or implementation. REV-0040 may assess
+the direction only; it cannot authorize a schema, event vocabulary, lifecycle, operator command,
+new work order, or code change.

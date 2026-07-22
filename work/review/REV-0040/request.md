@@ -34,6 +34,12 @@ fired before RED test or source work. No `app/monitoring.py`, `tests/**`, `app/s
 event, schema, API, facade, cockpit, ADR, invariant, or ledger change was made for Lane B. A verdict
 must not claim the requested durable record ships in this range.
 
+The operator's continuation boundary is explicit:
+
+```text
+Keep WO-0135 BLOCKED. Do not weaken ADR-012 or implement a replacement mechanism in this session. Stage REV-0040 for Claude to verify the reuse blocker and assess, as a non-authoritative proposal, whether a purpose-built malformed-lineage operator-review record is the appropriate next design direction. Any exact schema, event vocabulary, lifecycle, operator command, new WO, or implementation requires subsequent planning and explicit human approval.
+```
+
 ## Exact evidence range
 
 Review:
@@ -132,10 +138,12 @@ repository.
 ## Expected resolution boundary
 
 If the contradiction reproduces, the current mechanism cannot be implemented honestly under
-WO-0135. Recommend a separately human-gated design/work order that defines a durable
-malformed-lineage operator record and its terminal lifecycle, or explicitly amends the current WO
-with equivalent authority and review. Do not prescribe weakening ADR-012's submit-recovery
-identity, lineage, claim, fill, or position safeguards.
+WO-0135. Assess, strictly as a **non-authoritative proposal**, whether a purpose-built
+malformed-lineage operator-review record is the appropriate next design direction. Do not define
+or authorize its exact schema, event vocabulary, lifecycle, operator command, new work order, or
+implementation; every such surface requires subsequent planning and explicit human approval. Do
+not prescribe weakening ADR-012's submit-recovery identity, lineage, claim, fill, or position
+safeguards.
 
 ## Author evidence to reproduce skeptically
 
@@ -156,4 +164,5 @@ status transition graph alone.
 Write findings only to `work/review/REV-0040/result.md`, then one verdict. `BLOCK` any claim that
 WO-0135 is implemented, any unreachable promised operator lifecycle, any proposed weakening of
 ADR-012 authority, any production change outside the pre-ratified monitoring-only scope, or any
-unreproducible gate evidence.
+unreproducible gate evidence. Any design-direction assessment is advisory only and must not be
+written as approved architecture or implementation authority.

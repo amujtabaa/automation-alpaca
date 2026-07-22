@@ -103,6 +103,17 @@ Accept .venv\Scripts\python.exe -m pytest -p no:cacheprovider -q tests/r2_confor
 The exception waives no semantic test, implementation-owned formatting failure, additional Ruff
 finding, or future hash drift. The direct-script import-context defect remains separate work.
 
+## Lane B final blocker-disposition record
+
+Operator response, copied verbatim on 2026-07-22:
+
+```text
+Keep WO-0135 BLOCKED. Do not weaken ADR-012 or implement a replacement mechanism in this session. Stage REV-0040 for Claude to verify the reuse blocker and assess, as a non-authoritative proposal, whether a purpose-built malformed-lineage operator-review record is the appropriate next design direction. Any exact schema, event vocabulary, lifecycle, operator command, new WO, or implementation requires subsequent planning and explicit human approval.
+```
+
+WO-0135 remains in `work/active/` with its Fable/blocker state `BLOCKED`; no replacement design or
+implementation is authorized by this record.
+
 ## Two-lane scoreboard
 
 | Lane | Slice | Status | Commits | Notes |
@@ -116,10 +127,10 @@ finding, or future hash drift. The direct-script import-context defect remains s
 | A / WO-0134 | projector + replay | VERIFIED | `4d9779d` | Same change; staged pure + memory projector tests and 108 replay regressions green. |
 | A / WO-0134 | green evidence | VERIFIED / BOUNDED EXCEPTION | `b87d464`, `d79bd6e`, `f8c6048`, `a6468a1` | Signal R4 suite: 66 passed across both stores; full pytest, Ruff check, mypy, import-linter, operator-accepted canonical R2 oracle, and repair-scaling pass. The formatting/whitespace exception is limited to the three exact staged blobs and seven byte-identical baseline Ruff findings. |
 | A / WO-0134 | REV-0039 staging | STAGED / READY | `d79bd6e`, `f8c6048`, `a6468a1` | Claude-seat request is frozen at `b87d464`; operator gate decisions are recorded and WO-0134 is REVIEW. |
-| B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | `249f9be` | Creation/dedup works, but the pre-ratified lifecycle is unreachable; no source edit made. |
-| B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | `249f9be` | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
-| B / WO-0135 | green evidence | BLOCKED | `249f9be` | GATE stop condition fired before RED test/source work. |
-| B / WO-0135 | REV-0040 staging | STAGED / BLOCKER | `5be2996` | Independent review is limited to reproducing the reuse contradiction; no implementation exists to accept under the current design. |
+| B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | `249f9be`, pending (operator-disposition commit) | Creation/dedup works, but the pre-ratified lifecycle is unreachable; operator directed no implementation or ADR-012 weakening. |
+| B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | `249f9be`, pending (operator-disposition commit) | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
+| B / WO-0135 | green evidence | BLOCKED | `249f9be`, pending (operator-disposition commit) | GATE stop condition fired before RED test/source work; blocker state explicitly retained. |
+| B / WO-0135 | REV-0040 staging | STAGED / READY-BLOCKER | `5be2996`, pending (operator-disposition commit) | Claude verifies the blocker and may assess a purpose-built record only as a non-authoritative proposal. |
 
 ## Full-gate evidence (2026-07-22)
 
@@ -154,7 +165,5 @@ finding, or future hash drift. The direct-script import-context defect remains s
 
 ## NEEDS-INPUT
 
-- WO-0135's D-ML-1/D-ML-2 synthetic recovery cannot reach D-ML-5's ADR-012 operator terminal.
-  A revised design must explicitly authorize a compatible operator-release identity/path or a
-  different durable record mechanism. That would expand the gated store/model/event surface and
-  is not authorized by the current WO.
+- None for this session. WO-0135 is deliberately BLOCKED; any next mechanism requires subsequent
+  planning and explicit human approval.
