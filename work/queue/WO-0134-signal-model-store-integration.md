@@ -26,6 +26,11 @@ gated_surface: schema/DB migration (`signal_records` DDL in app/store/sqlite.py)
 > ledger close-out line until the disposition lands; the eventual close-out ships status
 > flip + disposition + ledger + file move in one commit (CI enforces).
 
+> **Sibling in the same Codex session (Lane B): WO-0135** (malformed-lineage needs-review
+> record) runs alongside this WO but is **file-disjoint** — its footprint is
+> `app/monitoring.py` + tests, none of which this WO touches. No serialization needed; keep
+> the two lanes' commits separate. See `work/queue/CODEX-KICKOFF-SIGNAL-R4.md`.
+
 ## Goal
 
 Land the Signal Seat's model vocabulary and dual-store ingest substrate on master — purely

@@ -35,7 +35,11 @@
   corrupt cancel lineage is surfaced only by a recurring log, not a durable operator-visible
   record. Emitting a deduped `needs_review` is a NEW human-gated event-log write → its own
   future WO + decision, deliberately not folded in. (Pre-existing WO-0036 behavior, not a
-  regression.)
+  regression.) **→ DRAFTED as `work/queue/WO-0135-malformed-lineage-needs-review-record.md`
+  (2026-07-22, planning seat); reuse-based design (existing `SUBMIT_RECOVERY_NEEDS_REVIEW`
+  ledger, no new vocabulary/table), pre-ratified D-ML-1..6, staged into the Signal-R4 Codex
+  session (Lane B) ending at REVIEW → REV-0040. This advisory line flips to resolved at
+  WO-0135 close-out.**
 - **REV-0037 P2-2 — per-child escalation isolation.** A permanent recovery-write fault on one
   exhausted child could stall sibling cancels in a legacy multi-child envelope (v1 has one
   child, so low reachability; fail-closed throughout). Advisory follow-up.
