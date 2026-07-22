@@ -37,8 +37,10 @@ fresh pasted evidence, FIX blocks with root cause. No completion claims without 
 
 - **Step 0 (execute yourself; do not assume the operator pre-pulled):**
   `git status --short` (tree must be clean — if not, STOP and report; never stash blindly)
-  → `git fetch origin` → confirm `git log --oneline -1 origin/master` is `b253036` **or a
-  descendant** → `git checkout -b codex/signal-r4-store origin/master`.
+  → `git fetch origin` → confirm master ancestry with
+  `git merge-base --is-ancestor b253036 origin/master && echo ANCESTRY-OK` (must print
+  ANCESTRY-OK; the tip itself will be NEWER than `b253036` because the planning branch
+  merged — that is expected) → `git checkout -b codex/signal-r4-store origin/master`.
 - **Precondition guard (fail closed — ALL must hold, else STOP and report which failed):**
   1. Both `work/queue/WO-0134-signal-model-store-integration.md` and
      `work/queue/WO-0135-malformed-lineage-needs-review-record.md` exist on your new branch.
@@ -85,7 +87,9 @@ fresh pasted evidence, FIX blocks with root cause. No completion claims without 
       (hypothesis, already pinned — no new dependency, no ADR) with the three tiers the WO
       specifies: planner invariants (A-3 exactness, skew boundaries, dedupe injectivity,
       echo-vs-conflict), outcome totality over the six constants, and metamorphic
-      dual-store/replay equivalence. House idiom per
+      fold/replay equivalence — **PURE seams only, sync** (never drive async store methods
+      under hypothesis; the house property idiom is sync-over-pure, and store round-trip
+      parity is already example-pinned by the staged corpus). House idiom per
       `tests/test_wo0018_sellside_properties.py`; additive alongside the staged corpus,
       never a substitute; at least one property proven RED-capable via a mutation.
 - **NOT pre-checked and NOT pre-checkable — THE SCHEMA GATE (Lane A only):** the fresh
@@ -148,22 +152,28 @@ call, no guessed target) — the record is additive visibility only.
 
 ## The work — Lane A: WO-0134 (the WO file is the full contract)
 
-Recommended slice order — sequenced so the schema gate stalls as little as possible:
+Recommended slice order — the schema-gate package goes FIRST because the operator who just
+launched this session is still at the keyboard; approval then overlaps all the store work
+instead of stalling after it:
 
 1. **Red first:** pull the three R4 test files from staging
    (`git checkout origin/codex/signal-tests-staging -- <the three paths>`); paste red
    collection evidence (today they die on the missing `app.store.core` signal constants).
-2. **models.py** vocabulary (purely additive; re-derive the
+2. **Present THE SCHEMA GATE package IMMEDIATELY** — the DDL is fully derivable from
+   `01-schema.md §2` + the archive reference alone and does not depend on any of your
+   implementation. Package = exact DDL + `_migrate` hunk; field-by-field cross-check vs
+   `01-schema.md §2` incl. the REV-0025-F nullability rationale; deviation list vs the
+   archive DDL at
+   `origin/archive/claude-wo-0001-install-checks-2x5ys8:app/store/sqlite.py` ~:353-383.
+   **HARD STOP on the sqlite slice — wait for explicit operator approval.** Proceed with
+   steps 3-4 (which never touch sqlite.py) while waiting; commit NOTHING touching
+   sqlite.py before the approval lands.
+3. **models.py** vocabulary (purely additive; re-derive the
    `EMERGENCY_REDUCE_OVERRIDE_RESOLVED` anchor, models.py:458 today) → **base.py**
-   (`SignalIngestResult` + ABC trio) → **core.py** pure planner at the post-envelope EOF
+   (`SignalIngestResult` + ABC trio; safe — the WO's pre-verified facts confirm no third
+   `StateStore` subclass exists) → **core.py** pure planner at the post-envelope EOF
    seam (constants, sanitizers, A-3 formula, dedupe/echo/conflict, DOA expiry,
    `cycle_budget_limit` carriage; injected clock only).
-3. **As soon as the DDL is final: present THE SCHEMA GATE package** (exact DDL + `_migrate`
-   hunk; field-by-field cross-check vs `01-schema.md §2` incl. the REV-0025-F nullability
-   rationale; deviation list vs the archive DDL at
-   `origin/archive/claude-wo-0001-install-checks-2x5ys8:app/store/sqlite.py` ~:353-383).
-   **HARD STOP — wait for explicit operator approval.** Continue memory-side work while
-   waiting; commit NOTHING touching sqlite.py before the approval lands.
 4. **memory.py** integration inside `_atomic` (:494 today; snapshot/rollback covers the
    signal state; event + record co-write is one atomic op) → after approval, **sqlite.py**
    (DDL + `_migrate` + methods through `_insert_execution_event`, one transaction).
@@ -195,7 +205,10 @@ The design is fully pre-ratified (D-ML-1..6) — **no mid-session gate**. Order:
 2. **Red-first:** a dual-store test driving a malformed lineage
    (`missing_order_ids`/`invalid_order_ids`/`missing_envelope_ids` populated) through
    convergence asserting a `RECOVERY_NEEDS_REVIEW` record + `SUBMIT_RECOVERY_NEEDS_REVIEW`
-   event — RED then GREEN, pasted.
+   event — RED then GREEN, pasted. Do not build lineage-corruption scaffolding from
+   scratch: `tests/test_wo0036_r2_hostile_closure.py:620-622` already constructs exactly
+   this (`_terminal_envelope("missing-owner")`, `_raw_insert_envelope`,
+   `_raw_seed_live_child`) — reuse/adapt those helpers.
 3. **Implement** the escalation at `app/monitoring.py:1502` exactly per the WO's pre-ratified
    block (immutable scope fields; `list_submit_recoveries` pre-check; first-detection warn).
 4. **The three war-game pins** (all dual-store): idempotent dedup across ≥3 ticks (one record,

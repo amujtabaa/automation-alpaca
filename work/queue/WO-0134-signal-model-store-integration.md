@@ -75,6 +75,20 @@ ingest-outcome constants in `models.py` (~:196-201); the staged tests import the
 `app.store.core`. **Follow the tests.** (Canonical definition location is yours to choose so
 long as the pinned imports resolve and import-linter contracts hold.)
 
+### Pre-verified facts (planning seat, 2026-07-22 — spend zero time re-deriving these)
+
+- The `any_store` fixture the staged tests parametrize on lives in the **repo-root
+  `conftest.py:29`** (there is NO `tests/conftest.py`) and already covers memory + sqlite.
+  No conftest work is needed.
+- `StateStore` has exactly two concrete subclasses (`InMemoryStateStore`,
+  `SqliteStateStore`) and no test fakes subclass it — adding the three `@abstractmethod`
+  signal methods to the ABC breaks nothing else.
+- The envelope-vocabulary pin (`tests/test_wo0125_envelope_replay_parity.py`,
+  `test_envelope_vocabulary_is_explicitly_classified`) filters on the `envelope_` value
+  prefix — the 8 new `signal_*`/`producer_*` members pass through it untouched. No other
+  exhaustiveness gate iterates `ExecutionEventType`'s full member set.
+- `_SYMBOL_RE` is already on master (`app/store/base.py:74`).
+
 ## Allowed paths
 
 ```yaml
@@ -182,11 +196,15 @@ forbidden_paths:
       (2) **outcome totality** — every generated admitted ingest maps to EXACTLY ONE of the
       six outcome constants, never zero, never two (the store-pure half of the totality
       guarantee the R5-gated totality file cannot deliver in R4);
-      (3) **metamorphic dual-store/replay** — one generated ingest sequence applied to both
-      stores projects identical read-models, and `replay(log) ≡ live read-model` within each
-      store. All variation flows through hypothesis strategies + the injected clock — no
-      unseeded randomness, no wall clock. This file is ADDITIVE alongside the staged corpus,
-      never a substitute for any staged test.
+      (3) **metamorphic fold/replay equivalence — PURE seams only, sync:** for a generated
+      admitted ingest sequence, folding the planner-emitted events through
+      `project_signal_records` yields the read-model the sequence implies, and folding the
+      same event list twice yields identical results (determinism). Do NOT drive async
+      store methods under hypothesis — the house property idiom is sync-over-pure-functions
+      (all six existing property files), and async store round-trip parity is already
+      example-pinned by the staged ingest corpus. All variation flows through hypothesis
+      strategies + the injected clock — no unseeded randomness, no wall clock. This file is
+      ADDITIVE alongside the staged corpus, never a substitute for any staged test.
 - [ ] **Totality partial evidence:** after implementation, temporarily stage
       `tests/test_signal_quarantine_totality.py` from the staging branch, run collection,
       paste the output proving its ONLY remaining failure is the missing R5
@@ -220,16 +238,20 @@ Before **any commit** that touches `app/store/sqlite.py`:
 4. No approval (refused, or operator unavailable) → the sqlite slice stays **uncommitted**,
    this WO flips to **BLOCKED** at that boundary, clean non-sqlite commits are pushed, and
    the session reports the gate as the blocker.
-5. You MAY present the package as soon as the DDL is final (e.g. right after the core.py
-   planner settles) so approval overlaps the memory.py work — the stall window should be as
-   small as you can make it. You may NOT pre-commit sqlite work "to be reverted if refused".
+5. **Present the package FIRST, not last.** The DDL is fully derivable from
+   `01-schema.md §2` + the archive reference alone — it does not depend on your models.py/
+   core.py implementation. Draft and present the gate package as your first Lane A design
+   act (immediately after the red-first evidence), while the operator who just launched the
+   session is still at the keyboard. Approval then overlaps ALL of the models/base/core/
+   memory work instead of stalling after it. You may NOT pre-commit sqlite work "to be
+   reverted if refused".
 
 ## Acceptance criteria
 
 - [ ] Three R4 test files green on both stores, unweakened, byte-identical to the staging
       branch versions (diff evidence pasted).
-- [ ] Property corpus (`tests/test_signal_ingest_properties.py`) green on both stores; at
-      least one property demonstrated RED against a deliberately broken planner draft or
+- [ ] Property corpus (`tests/test_signal_ingest_properties.py`) green (pure seams, sync);
+      at least one property demonstrated RED against a deliberately broken planner draft or
       mutation (paste it) — a property that cannot fail is not evidence.
 - [ ] Totality-file partial evidence pasted (remaining red = R5 seam only); file absent from
       every commit.
