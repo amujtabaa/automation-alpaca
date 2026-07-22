@@ -85,3 +85,9 @@ ADR and review).
   draft/medium authority pending REV-0034 and human acceptance.
 - 2026-07-21: promoted to active/high authority after REV-0034 ACCEPT-WITH-CHANGES, WO-0133
   remediation, RESOLVED disposition, and Ameen's explicit final-text approval at `385cc7d`.
+- 2026-07-22: R4 store layer landed (WO-0134): signal model vocabulary, pure ingest planner
+  (A-3 deadline, injective `(producer_id, signal_id)` dedupe, echo/audit-only-conflict), dual-store
+  persistence (`signal_records` DDL behind the operator schema gate), `project_signal_records` fold
+  + replay-parity registration. Both stores green; INV-1/INV-9 preserved. Independently reviewed
+  REV-0039 ACCEPT-WITH-CHANGES → RESOLVED. Endpoint/auth/rails/conversion (R5–R7) remain unbuilt;
+  the seat flag stays OFF until the joint D-2a milestone.

@@ -1,17 +1,30 @@
 ---
 type: Work Order
 title: "Signal Seat R4 — model + store integration (vocabulary, pure planner, dual-store ingest, projector + replay parity)"
-status: REVIEW
+status: CLOSED
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 work_order_id: WO-0134
 wave: signal-seat reconciliation ladder, step R4 (plan §6 step 4)
 model_tier: strong (LOCAL Codex — gated surface; repo-primer execution preference)
 risk: high
 owner: Ameen / implementer: Codex local session
 created: 2026-07-22
+closed: 2026-07-22
 gated_surface: schema/DB migration (`signal_records` DDL in app/store/sqlite.py) — mid-session HARD STOP for explicit operator approval; WO ends at status REVIEW with REV-0039 staged for the Claude seat
 ---
 
 # Work Order: Signal Seat R4 — model + store integration
+
+> **CLOSE-OUT (2026-07-22).** Signal model vocabulary, pure ingest planner, dual-store persistence
+> (memory `_atomic` + approved `signal_records` SQLite DDL behind the operator schema gate),
+> `project_signal_records` fold, and replay-parity registration landed; the three staged store-pure
+> corpora go green on both stores. Independently reviewed **REV-0039 ACCEPT-WITH-CHANGES → RESOLVED**:
+> the two required tests-only pins (F1 aggregate replay-parity signals; F2 memory `_atomic` rollback)
+> landed (`27bcfbd`) and the Claude seat re-verified both surviving mutations turn RED against them
+> (M7a → F1 RED; M4a → F2 RED), restored clean. Full gate battery green at `b9ebc9b` (ruff check,
+> mypy 70, lint-imports 6/0, oracle 61, scaling 13, full suite exit 0; ruff-format only the
+> pre-existing bounded 10-file exception, no new files). Schema-gate approval recorded verbatim in
+> the state file. F3–F6 recorded as R5 planning inputs.
 
 > **HUMAN-GATED (schema/migration).** The `signal_records` table is a new schema surface.
 > The archived approval (`78d8f57`) was given against a pre-R2 schema under branch-only
