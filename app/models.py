@@ -165,6 +165,22 @@ class SellIntentStatus(str, Enum):
     ORDERED = "ordered"
 
 
+class SignalStatus(str, Enum):
+    """External-producer signal lifecycle (ADR-009 / spec 02-lifecycle §1).
+
+    Signals are advisory facts with their own monotonic state machine. They carry
+    no execution authority and never participate in the fill/position fold.
+    ``QUARANTINED``, ``EXPIRED``, ``REJECTED``, and ``APPROVED`` are terminal;
+    duplicate conflicts are audit-only and do not change this status.
+    """
+
+    RECEIVED = "received"
+    QUARANTINED = "quarantined"
+    EXPIRED = "expired"
+    REJECTED = "rejected"
+    APPROVED = "approved"
+
+
 class EnvelopeStatus(str, Enum):
     """Execution-envelope lifecycle (ADR-010 §3).
 
@@ -456,6 +472,16 @@ class ExecutionEventType(str, Enum):
     # and consumed on resolution; the global TradingState stays Halted throughout.
     EMERGENCY_REDUCE_OVERRIDE = "emergency_reduce_override"
     EMERGENCY_REDUCE_OVERRIDE_RESOLVED = "emergency_reduce_override_resolved"
+    # Signal Seat (ADR-009 / WO-0134, spec 02-lifecycle §2). Additive event
+    # vocabulary only: position projection continues to fold exactly FILL.
+    SIGNAL_RECEIVED = "signal_received"
+    SIGNAL_QUARANTINED = "signal_quarantined"
+    SIGNAL_EXPIRED = "signal_expired"
+    SIGNAL_DUPLICATE_CONFLICT = "signal_duplicate_conflict"
+    SIGNAL_REJECTED = "signal_rejected"
+    SIGNAL_APPROVED = "signal_approved"
+    PRODUCER_QUARANTINED = "producer_quarantined"
+    PRODUCER_RELEASED = "producer_released"
     # Execution-envelope family (ADR-010 §6, provenance per ADR-008). Lifecycle
     # events carry `envelope_id` + the owning sell_intent_id as correlation_id;
     # ENVELOPE_CREATED snapshots the full bound set in `payload` so every
@@ -667,6 +693,50 @@ class SellIntent(_Entity):
     rejected_at: Optional[datetime] = None
     expired_at: Optional[datetime] = None
     ordered_at: Optional[datetime] = None
+
+
+class SignalRecord(_Entity):
+    """Stored external-producer signal (ADR-009 / spec 01-schema §2).
+
+    The injective dedupe identity is ``(producer_id, signal_id)``; ``id`` is a
+    separate server identity. Freshness fields may be null only for an
+    attributable validation quarantine whose offending raw values are retained
+    in ``raw_fields``. ``received_at`` is always the injected server-clock
+    anchor, while ``expires_at`` is computed once and persisted for every
+    computable proposal. The row is a co-written read model reconstructable from
+    the additive ``SIGNAL_*`` event family.
+    """
+
+    id: str = Field(default_factory=new_id)
+    producer_id: str
+    signal_id: str
+    status: SignalStatus = SignalStatus.RECEIVED
+    symbol: str
+    direction: str
+
+    issued_at: Optional[datetime] = None
+    ttl_seconds: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    received_at: datetime
+    raw_fields: Optional[dict[str, str]] = None
+
+    suggested_quantity: Optional[int] = None
+    suggested_limit_price: ResponseSafeFloat = None
+    thesis: str
+    provenance: dict[str, str] = Field(default_factory=dict)
+    payload_hash: str
+    quarantine_reason: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    approved_at: Optional[datetime] = None
+    rejected_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    quarantined_at: Optional[datetime] = None
+
+    converted_kind: Optional[str] = None
+    converted_id: Optional[str] = None
+    approved_by: Optional[str] = None
 
 
 class ExecutionEnvelope(_Entity):

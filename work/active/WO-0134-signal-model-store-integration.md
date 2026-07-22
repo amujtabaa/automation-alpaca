@@ -117,6 +117,15 @@ evidence:
   decisive_output: "Collection stopped with three intended missing-implementation ImportErrors: app.models.SignalRecord and app.events.projectors.project_signal_records. The core constants were not yet reached because these earlier imports fail first."
 ```
 
+### Model vocabulary evidence (2026-07-22)
+
+```yaml
+evidence:
+  command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_seat_models.py"
+  result: PASS
+  decisive_output: "6 passed; additive SignalStatus, SignalRecord, and eight ExecutionEventType members collect and satisfy the FILL-only guard."
+```
+
 ```yaml
 evidence:
   command: "git diff --exit-code origin/codex/signal-tests-staging -- <three R4 paths>; compare git hash-object with staging blob ids"

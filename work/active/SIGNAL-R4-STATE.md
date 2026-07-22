@@ -90,7 +90,7 @@ copied here verbatim before any `app/store/sqlite.py` commit.
 
 | Lane | Slice | Status | Commits | Notes |
 | --- | --- | --- | --- | --- |
-| A / WO-0134 | `app/models.py` | PENDING | — | Additive signal vocabulary only. |
+| A / WO-0134 | `app/models.py` | VERIFIED | pending (this commit) | Additive enum/entity/event vocabulary; `test_signal_seat_models.py`: 6 passed. |
 | A / WO-0134 | `app/store/base.py` | PENDING | — | Result type + ABC trio. |
 | A / WO-0134 | `app/store/core.py` planner | PENDING | — | Pure rewrite; constants in core. |
 | A / WO-0134 | `app/store/memory.py` | PENDING | — | Signal state covered by `_atomic`. |
