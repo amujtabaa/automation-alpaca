@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Durable deduped needs-review record for persistently malformed cancel lineages (REV-0037 P2-1)"
-status: QUEUED
+status: ACTIVE
 work_order_id: WO-0135
 wave: post-ULTRA advisory follow-up (REV-0037 P2-1)
 model_tier: strong (LOCAL Codex — event-log-truth surface)
@@ -212,3 +212,27 @@ PKL page states the log-only behavior). The close-out commit (after REV-0040 ACC
 ACCEPT-WITH-CHANGES) ships status flip + disposition + ledger line + file move to
 `work/completed/keep/`, and flips the REV-0037 P2-1 advisory line in
 `work/queue/REVIEW-REMEDIATION-BATCH.md` to resolved-by-WO-0135.
+
+## Implementation record
+
+`[FABLE • FULL • verification: DIRECT • task: WO-0135 malformed-lineage needs-review record]`
+
+```yaml
+fable_gate:
+  goal: "Make a persistently malformed cancel lineage durably operator-visible as exactly one needs_review recovery record while preserving the existing fail-closed, zero-venue-call posture."
+  assumptions:
+    - "The pre-ratified D-ML-1..6 reuse design is binding and no new event type, table, or migration is permitted."
+    - "Immutable envelope scope is id, symbol, SELL side, and qty_ceiling; remaining_quantity and ambiguity sets are payload-only."
+    - "A record in any cleanup status permanently satisfies the lineage dedup pre-check."
+  approach: "Prove the create_submit_recovery reuse contract on both stores; add a failing malformed-lineage test using the existing hostile lineage helpers; implement the monitoring-only escalation and first-detection warning; pin dedup, post-reconcile, scope stability, replay, operator visibility, and zero venue calls."
+  out_of_scope:
+    - "Any app/store, app/models, app/events, facade, API, cockpit, schema, or vocabulary change"
+    - "Per-child escalation isolation and unrelated REV-0037 advisories"
+    - "Ledger close-out, merge, or broker/live behavior"
+  done_when:
+    - "Malformed lineage creates one needs_review record and one submit_recovery_needs_review audit event across at least three ticks on both stores."
+    - "Post-reconcile and remaining_quantity-drift ticks do not raise or recreate."
+    - "Replay/operator/recovery-loop visibility and zero venue calls are pinned."
+    - "Full gate battery is freshly green; REV-0040 is staged; WO status is REVIEW; branch is pushed."
+  blast_radius: "One malformed-lineage branch in app/monitoring.py plus dual-store convergence tests; additive audit visibility only."
+```

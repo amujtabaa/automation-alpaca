@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R4 — model + store integration (vocabulary, pure planner, dual-store ingest, projector + replay parity)"
-status: QUEUED
+status: ACTIVE
 work_order_id: WO-0134
 wave: signal-seat reconciliation ladder, step R4 (plan §6 step 4)
 model_tier: strong (LOCAL Codex — gated surface; repo-primer execution preference)
@@ -279,3 +279,29 @@ Before **any commit** that touches `app/store/sqlite.py`:
 Expected at eventual close-out: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]` — the close-out commit
 (after REV-0039's ACCEPT/ACCEPT-WITH-CHANGES disposition) ships status flip, disposition,
 ledger line, file move to `work/completed/keep/`, and any invalidated doc/PKL claim refresh.
+
+## Implementation record
+
+`[FABLE • FULL • verification: DIRECT • task: WO-0134 Signal Seat R4 model + store integration]`
+
+```yaml
+fable_gate:
+  goal: "Land the additive Signal Seat model vocabulary, pure ingest planner, dual-store persistence, and signal projector/replay registration required by the three R4 store-pure tests."
+  assumptions:
+    - "ADR-009 is Accepted and its A-3 constants and persisted-deadline semantics are binding."
+    - "The three staged R4 tests are authoritative and remain byte-identical to origin/codex/signal-tests-staging."
+    - "server_max_ttl_seconds and cycle_budget_limit are caller-supplied; R4 adds no Settings or HTTP seam."
+    - "The signal_records SQLite slice remains blocked until the operator explicitly approves the exact in-session DDL package."
+  approach: "Red-first staged tests; present the schema package immediately; implement non-SQLite slices through pure shared planning; integrate memory atomicity; add projector and replay registration together; implement SQLite only after approval; add pure Hypothesis properties and run fresh gates."
+  out_of_scope:
+    - "R5 endpoint, auth, launcher, config, facade, cockpit, and signal_seat_helpers work"
+    - "R6 rails and R7 conversion behavior"
+    - "Any ADR/spec amendment, ledger close-out, merge, or live/broker behavior"
+  done_when:
+    - "Three staged R4 files are byte-identical and green on both stores."
+    - "Pure property corpus is green and at least one property is mutation-proven red-capable."
+    - "Totality collection fails only on the missing R5 helper seam and the temporary file is absent from commits."
+    - "Schema approval is recorded verbatim before any SQLite commit."
+    - "Full gate battery is freshly green; REV-0039 is staged; WO status is REVIEW; branch is pushed."
+  blast_radius: "Additive model/event vocabulary, StateStore ABC, shared pure signal planner, memory read model, gated SQLite schema/read model, signal event projector, and replay-parity projection."
+```
