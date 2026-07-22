@@ -1,17 +1,21 @@
 ---
 type: Work Order
 title: "Signal-endpoint threat model (R5-prep): adversarial requirements checklist for the first external input surface"
-status: QUEUED
+status: CLOSED
 work_order_id: WO-0136
 wave: signal-seat R5 preparation (parallel to R4; doc-only)
 model_tier: mid (CLOUD-capable — bounded documentation work per repo-primer execution preference)
 risk: low (no code, no gated surface touched; output is advisory input to R5)
 owner: Ameen / implementer: any seat (cloud session suitable)
 created: 2026-07-22
+disposition: [RESULT_SUMMARY_KEPT]
+closed: 2026-07-22
 gated_surface: none — new analysis doc only. NOT an ADR/spec change; closes out fully in-session. Its findings feed R5's build + R5's review packet; they do not amend accepted text.
 ---
 
 # Work Order: threat-model the signal ingestion surface before R5 builds it
+
+> **CLOSED (2026-07-22):** Delivered `docs/THREAT_MODEL_SIGNAL_SEAT.md`, an advisory STRIDE threat model with assets/trust boundaries, attacker profiles, per-surface STRIDE rows, ADR-009 A-1/A-4 traceability, pre-found-attack traceability, a numbered GAP register, non-goals, and a zero-orphan self-audit. Disposition `[RESULT_SUMMARY_KEPT]`.
 
 > **Advisory input, not spec.** The deliverable is a NEW analysis document. It proposes; it
 > never amends. Any finding that seems to contradict the ACCEPTED ADR-009/spec text is
