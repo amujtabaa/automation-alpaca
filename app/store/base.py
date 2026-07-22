@@ -48,6 +48,8 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    SignalRecord,
+    SignalStatus,
     SubmitRecoveryAttestation,
     SubmitRecoveryFillCommand,
     SubmitRecoveryFillResult,
@@ -321,6 +323,19 @@ class FillAppendResult:
     status: Literal["appended", "duplicate", "conflict"]
     fill: Optional[Fill]
     event: Event
+
+
+@dataclass(frozen=True)
+class SignalIngestResult:
+    """Outcome of :meth:`StateStore.ingest_signal` (ADR-009 / WO-0134).
+
+    ``outcome`` is one of the six signal-ingest constants in
+    :mod:`app.store.core`; ``record`` is either the newly persisted record or
+    the pre-existing record returned for an idempotent replay/conflict.
+    """
+
+    outcome: str
+    record: SignalRecord
 
 
 @dataclass(frozen=True)
@@ -1291,6 +1306,55 @@ class StateStore(ABC):
     @abstractmethod
     async def get_max_execution_sequence(self) -> int:
         """The highest assigned ``sequence`` in the log, or ``0`` if empty."""
+
+    # ------------------------------------------------------------------ #
+    # Signal Seat (ADR-009 / WO-0134): additive advisory-signal read model.
+    # SIGNAL_* events never touch order/fill/position state (INV-1/INV-9).
+    # ------------------------------------------------------------------ #
+    @abstractmethod
+    async def ingest_signal(
+        self,
+        *,
+        producer_id: str,
+        signal_id: str,
+        symbol: str,
+        direction: str,
+        issued_at: Optional[datetime] = None,
+        ttl_seconds: Optional[int] = None,
+        suggested_quantity: Optional[int] = None,
+        suggested_limit_price: Optional[float] = None,
+        thesis: str,
+        provenance: dict[str, str],
+        server_max_ttl_seconds: int,
+        cycle_budget_limit: int,
+        validation_failed: bool = False,
+        raw_fields: Optional[dict[str, str]] = None,
+        received_at: datetime,
+    ) -> SignalIngestResult:
+        """Ingest one attributable signal atomically with its event truth.
+
+        Dedupe is injective on ``(producer_id, signal_id)``. An identical
+        payload is a write-free replay; a changed payload appends only an
+        audit-conflict execution event and never mutates the original record.
+        ``received_at`` is the injected planning clock. The caller supplies the
+        A-3 server TTL cap and current-cycle invalid-budget limit.
+        """
+
+    @abstractmethod
+    async def get_signal(
+        self, producer_id: str, signal_id: str
+    ) -> Optional[SignalRecord]:
+        """Stored signal for ``(producer_id, signal_id)``, or ``None``."""
+
+    @abstractmethod
+    async def list_signals(
+        self,
+        *,
+        status: Optional[SignalStatus] = None,
+        symbol: Optional[str] = None,
+        producer_id: Optional[str] = None,
+    ) -> list[SignalRecord]:
+        """Stored signals, optionally filtered by durable status/scope."""
 
     # ------------------------------------------------------------------ #
     # Execution envelopes (Spine v2 / ADR-010 — the autonomous sell-side

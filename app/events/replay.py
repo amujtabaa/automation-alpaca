@@ -27,10 +27,11 @@ from app.events.projectors import (
     active_emergency_reduce_overrides,
     current_trading_state,
     project_envelopes,
+    project_signal_records,
     quarantined_symbols,
     timeout_quarantined_order_ids,
 )
-from app.models import ExecutionEvent, TradingState
+from app.models import ExecutionEvent, SignalRecord, TradingState
 from app.store.base import StateStore
 
 
@@ -157,6 +158,7 @@ class ReadModelProjection:
     trading_state: Mapping[str, TradingState] = field(default_factory=dict)
     emergency_overrides: Mapping[str, frozenset[str]] = field(default_factory=dict)
     envelopes: Mapping[str, EnvelopeProjection] = field(default_factory=dict)
+    signals: Mapping[tuple[str, str], SignalRecord] = field(default_factory=dict)
 
 
 def _session_ids(events: Sequence[ExecutionEvent]) -> list[str]:
@@ -190,6 +192,7 @@ def project_read_models(events: Iterable[ExecutionEvent]) -> ReadModelProjection
             for sid in sessions
         },
         envelopes=project_envelopes(materialized),
+        signals=project_signal_records(materialized),
     )
 
 
@@ -213,6 +216,14 @@ def _describe_read_model_diff(
         if ea != eb:
             return (
                 f"envelope {envelope_id!r} differs: {label_a}={ea!r} {label_b}={eb!r}"
+            )
+    for signal_key in sorted(set(a.signals) | set(b.signals)):
+        signal_a = a.signals.get(signal_key)
+        signal_b = b.signals.get(signal_key)
+        if signal_a != signal_b:
+            return (
+                f"signal {signal_key!r} differs: "
+                f"{label_a}={signal_a!r} {label_b}={signal_b!r}"
             )
     for sid in sorted(set(a.trading_state) | set(b.trading_state)):
         sa = a.trading_state.get(sid)

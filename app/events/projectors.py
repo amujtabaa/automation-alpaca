@@ -35,6 +35,8 @@ from app.models import (
     OrderSide,
     OrderStatus,
     Position,
+    SignalRecord,
+    SignalStatus,
     TradingState,
 )
 from app.policy import fill_value_reason
@@ -780,3 +782,108 @@ class PositionProjector:
             # quarantine detector. Local malformed input is rejected at append.
             positions[fill.symbol] = apply_fill(current, fill, allow_short=True)
         return PositionProjection(positions=positions, up_to_sequence=up_to_sequence)
+
+
+# --------------------------------------------------------------------------- #
+# Signal Seat read-model fold (ADR-009 / WO-0134).
+#
+# Creation events carry a full record snapshot. Later R5/R7 transition events
+# carry only identity + changed terminal/correlation fields. Duplicate conflicts
+# are audit-only and structurally excluded from this fold.
+# --------------------------------------------------------------------------- #
+
+_SIGNAL_CREATION_EVENT_TYPES = frozenset(
+    {
+        ExecutionEventType.SIGNAL_RECEIVED,
+        ExecutionEventType.SIGNAL_QUARANTINED,
+        ExecutionEventType.SIGNAL_EXPIRED,
+    }
+)
+
+_SIGNAL_TRANSITION_STATUS: dict[ExecutionEventType, SignalStatus] = {
+    ExecutionEventType.SIGNAL_QUARANTINED: SignalStatus.QUARANTINED,
+    ExecutionEventType.SIGNAL_EXPIRED: SignalStatus.EXPIRED,
+    ExecutionEventType.SIGNAL_REJECTED: SignalStatus.REJECTED,
+    ExecutionEventType.SIGNAL_APPROVED: SignalStatus.APPROVED,
+}
+
+_SIGNAL_TRANSITION_TIMESTAMP_FIELD: dict[ExecutionEventType, str] = {
+    ExecutionEventType.SIGNAL_QUARANTINED: "quarantined_at",
+    ExecutionEventType.SIGNAL_EXPIRED: "expired_at",
+    ExecutionEventType.SIGNAL_REJECTED: "rejected_at",
+    ExecutionEventType.SIGNAL_APPROVED: "approved_at",
+}
+
+_SIGNAL_TRANSITION_DIRECT_FIELDS = (
+    "converted_kind",
+    "converted_id",
+    "quarantine_reason",
+)
+
+_SIGNAL_TRANSITION_ALIASES: dict[ExecutionEventType, dict[str, str]] = {
+    ExecutionEventType.SIGNAL_APPROVED: {"actor": "approved_by"},
+}
+
+
+def project_signal_records(
+    events: Iterable[ExecutionEvent],
+) -> dict[tuple[str, str], SignalRecord]:
+    """Fold ordered ``SIGNAL_*`` events by ``(producer_id, signal_id)``."""
+
+    records: dict[tuple[str, str], SignalRecord] = {}
+    for event in events:
+        event_type = event.event_type
+        payload = event.payload or {}
+        snapshot = payload.get("record")
+        if event_type in _SIGNAL_CREATION_EVENT_TYPES and isinstance(snapshot, dict):
+            record = SignalRecord.model_validate(snapshot)
+            records[(record.producer_id, record.signal_id)] = record
+            continue
+        if event_type is ExecutionEventType.SIGNAL_RECEIVED:
+            raise ProjectionError(
+                f"SIGNAL_RECEIVED creation event sequence={event.sequence} is "
+                "missing a record snapshot (payload['record'])"
+            )
+        if event_type is ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT:
+            continue
+
+        mapped_status = _SIGNAL_TRANSITION_STATUS.get(event_type)
+        if mapped_status is None:
+            continue
+        producer_id = payload.get("producer_id")
+        signal_id = payload.get("signal_id")
+        if not isinstance(producer_id, str) or not isinstance(signal_id, str):
+            raise ProjectionError(
+                f"{event_type.value} event sequence={event.sequence} is missing "
+                "required record identity (producer_id/signal_id)"
+            )
+        existing = records.get((producer_id, signal_id))
+        if existing is None:
+            continue
+        record_id = payload.get("record_id")
+        if not isinstance(record_id, str) or record_id != existing.id:
+            raise ProjectionError(
+                f"{event_type.value} event sequence={event.sequence} has a "
+                "missing or mismatched record_id"
+            )
+        if existing.status is not SignalStatus.RECEIVED:
+            continue
+
+        transition_ts = event.ts_event or event.ts_init
+        update: dict[str, object] = {
+            "status": mapped_status,
+            "updated_at": transition_ts,
+        }
+        timestamp_field = _SIGNAL_TRANSITION_TIMESTAMP_FIELD.get(event_type)
+        if timestamp_field is not None:
+            update[timestamp_field] = transition_ts
+        for field_name in _SIGNAL_TRANSITION_DIRECT_FIELDS:
+            if field_name in payload:
+                update[field_name] = payload[field_name]
+        for source_key, destination_field in _SIGNAL_TRANSITION_ALIASES.get(
+            event_type, {}
+        ).items():
+            if source_key in payload:
+                update[destination_field] = payload[source_key]
+        records[(producer_id, signal_id)] = existing.model_copy(update=update)
+    return records

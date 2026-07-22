@@ -49,6 +49,8 @@ from app.models import (
     SellReason,
     SessionRecord,
     SessionStatus,
+    SignalRecord,
+    SignalStatus,
     SubmitRecoveryAttestation,
     SubmitRecoveryFillCommand,
     SubmitRecoveryFillResult,
@@ -92,6 +94,7 @@ from app.store.base import (
     RecoveryTransitionError,
     RiskLimits,
     SellIntentTransitionError,
+    SignalIngestResult,
     SessionAlreadyClosedError,
     SessionClosedError,
     StateStore,
@@ -181,6 +184,11 @@ from app.store.core import (
     direct_sell_order_may_execute,
     project_envelope_obligation,
     sell_intent_is_active,
+    build_signal_proposal_payload,
+    normalize_signal_ingest_fields,
+    normalize_signal_raw_fields,
+    plan_signal_ingest,
+    signal_canonical_hash,
 )
 from app.transitions import (
     ENVELOPE_TRANSITIONS,
@@ -234,6 +242,7 @@ class InMemoryStateStore(StateStore):
         self._order_ids_by_broker: dict[str, list[str]] = {}
         self._sell_intents: dict[str, SellIntent] = {}  # Phase 7
         self._envelopes: dict[str, ExecutionEnvelope] = {}  # ADR-010 / WO-0016
+        self._signals: dict[tuple[str, str], SignalRecord] = {}
         # Spine v2 execution-event log (Phase 2): append-only, sequence order.
         # `_execution_event_dedupe` maps a non-null dedupe_key to its event for
         # O(1) INV-5 idempotency without scanning the log.
@@ -521,6 +530,7 @@ class InMemoryStateStore(StateStore):
         saved_sell_intents = {
             k: v.model_copy(deep=True) for k, v in self._sell_intents.items()
         }
+        saved_signals = dict(self._signals)
         saved_fills = list(self._fills)
         saved_source_ids = set(self._fill_source_ids)
         saved_events = list(self._events)
@@ -542,6 +552,7 @@ class InMemoryStateStore(StateStore):
             self._rebuild_order_identity_index_unlocked()
             self._envelopes = saved_envelopes
             self._sell_intents = saved_sell_intents
+            self._signals = saved_signals
             self._fills = saved_fills
             self._submit_recoveries = saved_recoveries
             self._rebuild_submit_recovery_indexes_unlocked()
@@ -5513,6 +5524,116 @@ class InMemoryStateStore(StateStore):
     async def get_max_execution_sequence(self) -> int:
         async with self._lock:
             return self._execution_events[-1].sequence if self._execution_events else 0
+
+    # ------------------------------------------------------------------ #
+    # Signal Seat (ADR-009 / WO-0134)
+    # ------------------------------------------------------------------ #
+    async def ingest_signal(
+        self,
+        *,
+        producer_id: str,
+        signal_id: str,
+        symbol: str,
+        direction: str,
+        issued_at: Optional[datetime] = None,
+        ttl_seconds: Optional[int] = None,
+        suggested_quantity: Optional[int] = None,
+        suggested_limit_price: Optional[float] = None,
+        thesis: str,
+        provenance: dict[str, str],
+        server_max_ttl_seconds: int,
+        cycle_budget_limit: int,
+        validation_failed: bool = False,
+        raw_fields: Optional[dict[str, str]] = None,
+        received_at: datetime,
+    ) -> SignalIngestResult:
+        (
+            symbol,
+            direction,
+            thesis,
+            provenance,
+            suggested_quantity,
+            suggested_limit_price,
+        ) = normalize_signal_ingest_fields(
+            validation_failed=validation_failed,
+            symbol=symbol,
+            direction=direction,
+            thesis=thesis,
+            provenance=provenance,
+            suggested_quantity=suggested_quantity,
+            suggested_limit_price=suggested_limit_price,
+        )
+        raw_fields = normalize_signal_raw_fields(raw_fields)
+        canonical = build_signal_proposal_payload(
+            signal_id=signal_id,
+            symbol=symbol,
+            direction=direction,
+            issued_at=issued_at,
+            ttl_seconds=ttl_seconds,
+            suggested_quantity=suggested_quantity,
+            suggested_limit_price=suggested_limit_price,
+            thesis=thesis,
+            provenance=provenance,
+            raw_fields=raw_fields,
+        )
+        payload_hash = signal_canonical_hash(canonical)
+        async with self._lock:
+            with self._atomic():
+                existing = self._signals.get((producer_id, signal_id))
+                plan = plan_signal_ingest(
+                    existing=existing,
+                    producer_id=producer_id,
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    direction=direction,
+                    issued_at=issued_at,
+                    ttl_seconds=ttl_seconds,
+                    suggested_quantity=suggested_quantity,
+                    suggested_limit_price=suggested_limit_price,
+                    thesis=thesis,
+                    provenance=provenance,
+                    payload_hash=payload_hash,
+                    canonical_proposal=canonical,
+                    validation_failed=validation_failed,
+                    raw_fields=raw_fields,
+                    received_at=received_at,
+                    server_max_ttl_seconds=server_max_ttl_seconds,
+                    cycle_budget_limit=cycle_budget_limit,
+                )
+                if plan.event is not None:
+                    self._append_execution_event_unlocked(plan.event)
+                if plan.record is not None:
+                    self._signals[(producer_id, signal_id)] = plan.record
+                return SignalIngestResult(
+                    outcome=plan.outcome,
+                    record=plan.result_record.model_copy(deep=True),
+                )
+
+    async def get_signal(
+        self, producer_id: str, signal_id: str
+    ) -> Optional[SignalRecord]:
+        async with self._lock:
+            record = self._signals.get((producer_id, signal_id))
+            return record.model_copy(deep=True) if record is not None else None
+
+    async def list_signals(
+        self,
+        *,
+        status: Optional[SignalStatus] = None,
+        symbol: Optional[str] = None,
+        producer_id: Optional[str] = None,
+    ) -> list[SignalRecord]:
+        normalized_symbol = normalize_symbol(symbol) if symbol is not None else None
+        if status is not None:
+            require_status_enum(status, SignalStatus, field="status filter")
+        async with self._lock:
+            return [
+                record.model_copy(deep=True)
+                for record in self._signals.values()
+                if (status is None or record.status is status)
+                and (normalized_symbol is None or record.symbol == normalized_symbol)
+                and (producer_id is None or record.producer_id == producer_id)
+            ]
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

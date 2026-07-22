@@ -155,13 +155,13 @@ forbidden_paths:
 
 ## Required behavior
 
-- [ ] **GATE** (fable_gate block in this file's implementation record): goal, assumptions,
+- [x] **GATE** (fable_gate block in this file's implementation record): goal, assumptions,
       approach, out-of-scope, done-when, blast radius — before any code.
-- [ ] **Red-first:** pull exactly the three R4 test files from the staging branch
+- [x] **Red-first:** pull exactly the three R4 test files from the staging branch
       (`git checkout origin/codex/signal-tests-staging -- tests/test_signal_seat_models.py
       tests/test_signal_ingest_store.py tests/test_signal_projector_forward_compat.py`);
       paste the red collection/ImportError evidence BEFORE implementing.
-- [ ] **`app/models.py` — purely additive:** `SignalStatus` (RECEIVED / QUARANTINED /
+- [x] **`app/models.py` — purely additive:** `SignalStatus` (RECEIVED / QUARANTINED /
       EXPIRED / REJECTED / APPROVED), `SignalRecord` per `01-schema.md §2` including the
       REV-0025-F nullability rules (`issued_at`/`ttl_seconds`/`expires_at` NULL exactly and
       only for the validation-quarantine cases; `received_at` always present; `raw_fields`
@@ -171,11 +171,11 @@ forbidden_paths:
       exhaustiveness-gate breaks; position projection stays FILL-only (INV-1/INV-9 —
       `SIGNAL_*`/`PRODUCER_*` structurally invisible to the Position Service; the models
       test pins this).
-- [ ] **`app/store/base.py`:** `SignalIngestResult` + abstract `ingest_signal` /
+- [x] **`app/store/base.py`:** `SignalIngestResult` + abstract `ingest_signal` /
       `get_signal` / `list_signals`, REWRITTEN from the archive design against the staged
       corpus's signatures. Docstrings point at the constants' actual master home. Reuse the
       existing `_SYMBOL_RE`.
-- [ ] **`app/store/core.py` — REWRITE the pure planner** at the post-envelope EOF seam
+- [x] **`app/store/core.py` — REWRITE the pure planner** at the post-envelope EOF seam
       (after the `plan_stage_envelope_action` / `EnvelopeActionStageResult` block,
       core.py:5384-5565 today; file is 5,565 lines): freshness/TTL constants
       (`SIGNAL_TTL_MIN_SECONDS = 30`, `SIGNAL_TTL_MAX_SECONDS = 86400`, future-skew 30s,
@@ -191,24 +191,24 @@ forbidden_paths:
       **caller-supplied parameters** threaded into planning/events — rails and Settings
       arrive in R6/R5; the store never invents them. Injected clock only; no bare
       `datetime.now()`/`time.time()`.
-- [ ] **`app/store/memory.py`:** ingest/read methods integrated into the rebuilt `_atomic`
+- [x] **`app/store/memory.py`:** ingest/read methods integrated into the rebuilt `_atomic`
       (memory.py:494 today) — signal dict/index covered by snapshot/rollback; event append +
       co-written `SignalRecord` row in one atomic op.
 - [ ] **`app/store/sqlite.py` — ONLY after the schema gate clears:** `signal_records` DDL +
       indexes + `_migrate` guard; event append through the existing
       `_insert_execution_event` contract; record row + event in one transaction.
-- [ ] **`app/events/projectors.py`:** `project_signal_records` appended after
+- [x] **`app/events/projectors.py`:** `project_signal_records` appended after
       `PositionProjector` (:731 today) — pure per-record fold keyed by
       `(producer_id, signal_id)` / `record_id` per `02-lifecycle.md §4`;
       `SIGNAL_DUPLICATE_CONFLICT` excluded from the fold; forward-compatible per the staged
       forward-compat test.
-- [ ] **`app/events/replay.py` — same change:** `ReadModelProjection` gains a signals field
+- [x] **`app/events/replay.py` — same change:** `ReadModelProjection` gains a signals field
       (additive, defaulted), `project_read_models` folds it via `project_signal_records`,
       `_describe_read_model_diff` extended — so dual-store read-model parity covers signal
       records from birth.
 - [ ] **Dual-store parity:** the three R4 test files green on BOTH stores; replay
       reconstruction byte-identical within each store; the full existing corpus stays green.
-- [ ] **Property-based corpus — NEW `tests/test_signal_ingest_properties.py` (D-R4-6):**
+- [x] **Property-based corpus — NEW `tests/test_signal_ingest_properties.py` (D-R4-6):**
       hypothesis is already pinned (`constraints.txt:50`); mirror the house idiom
       (`tests/test_wo0018_sellside_properties.py` — `@st.composite` strategies,
       `@settings(max_examples=…, deadline=None)`, bounded example counts). Three tiers over
@@ -236,7 +236,7 @@ forbidden_paths:
       `tests/signal_seat_helpers.py` seam (its R4-owned imports — `_SYMBOL_RE`,
       `SIGNAL_TTL_MIN_SECONDS`, `SIGNAL_TTL_MAX_SECONDS` — now resolve), then unstage and
       delete it before the next commit. It must never appear in an R4 commit.
-- [ ] **T1.3-style producer/consumer pins** for any new safety-relevant event payload field
+- [x] **T1.3-style producer/consumer pins** for any new safety-relevant event payload field
       beyond what the staged corpus already pins (e.g. `cycle_budget_limit`, `expires_at`,
       `record_id` carriage) — a producer without a pinned consumer is a silent-loss bug.
 - [ ] **Stage `work/review/REV-0039/request.md`** for the Claude seat: scope, commits, the
@@ -330,3 +330,44 @@ fable_gate:
     - "Full gate battery is freshly green; REV-0039 is staged; WO status is REVIEW; branch is pushed."
   blast_radius: "Additive model/event vocabulary, StateStore ABC, shared pure signal planner, memory read model, gated SQLite schema/read model, signal event projector, and replay-parity projection."
 ```
+
+### Non-SQLite slice evidence (2026-07-22)
+
+```yaml
+evidence:
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_ingest_store.py -k memory"
+    result: PASS
+    decisive_output: "16 passed; memory ingest, dedupe/conflict, freshness, position isolation, and replay reconstruction are green."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_projector_forward_compat.py -k 'not both_stores and not round_trips'"
+    result: PASS
+    decisive_output: "9 passed; pure transition, latch, and fail-fast projector cases are green."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_projector_forward_compat.py -k memory"
+    result: PASS
+    decisive_output: "2 passed; store-backed projector payload folds are green on memory."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_phase6b_readmodel_parity.py::test_compare_read_models_detects_divergence tests/test_wo0125_envelope_replay_parity.py -k 'not projection_matches_each_store_read_model and not dual_store_verifier'"
+    result: PASS
+    decisive_output: "108 passed; additive signals registration preserves existing replay/read-model behavior."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_ingest_properties.py"
+    result: PASS
+    decisive_output: "9 passed; A-3, boundary, dedupe, totality, echo/conflict, fold determinism, and payload-carriage properties are green."
+  - command: ".venv/Scripts/python.exe -m ruff check <six changed app files> tests/test_signal_ingest_properties.py && ruff format --check <same>"
+    result: PASS
+    decisive_output: "All checks passed; all files formatted."
+```
+
+```yaml
+fable_fix:
+  trigger: "Mutation proof deliberately replaced A-3 min(...) with max(...)."
+  root_cause: "The mutated planner ignored the tighter server/producer expiry bound."
+  test_proof: "test_a3_deadline_formula_is_exact falsified at issued_offset=0, ttl_seconds=30, server_max_ttl=1: actual +30s versus required +1s."
+  correction: "Restored min(...); the complete 9-test Hypothesis corpus passed."
+```
+
+The first sandboxed memory-test attempt could not enumerate pytest's default OS-temp parent
+(`WinError 5`). The identical command was re-run with approved OS-temp access and passed; no
+repo-root scratch directory or product-code workaround was introduced.
+
+Targeted mypy currently reports only the expected gated-boundary error: `SqliteStateStore`
+remains abstract until its three signal methods can be implemented after explicit schema
+approval. The replay variable-narrowing error discovered in that run was corrected before this
+checkpoint; full `mypy app/` remains a post-SQLite gate.

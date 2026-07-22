@@ -25,8 +25,11 @@ still behave identically after each method is migrated here.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Mapping, Optional, Sequence
 
 from app.models import (
@@ -56,6 +59,8 @@ from app.models import (
     SellIntentStatus,
     SellReason,
     SessionRecord,
+    SignalRecord,
+    SignalStatus,
     SubmitRecoveryAttestation,
     SubmitRecoveryFillCommand,
     SubmitRecoveryIdentity,
@@ -85,6 +90,7 @@ from app.store.base import (
     RiskLimits,
     SellIntentTransitionError,
     UnknownEntityError,
+    normalize_symbol,
 )
 from app.transitions import (
     ENVELOPE_TIMESTAMP,
@@ -5563,3 +5569,616 @@ class EnvelopeActionStageResult:
     envelope: ExecutionEnvelope
     order: Optional[Order] = None
     working_order: Optional[Order] = None
+
+
+# =========================================================================== #
+# Signal Seat ingest (ADR-009 / WO-0134; specs 01-schema + 02-lifecycle)
+#
+# Pure decision/event construction shared by both stores. The six outcome
+# constants deliberately live here because the authoritative staged corpus pins
+# this import surface (D-R4-2); the archived implementation placed them in the
+# model module and is provenance only.
+# =========================================================================== #
+
+SIGNAL_RECEIVED_OK = "received"
+SIGNAL_EXPIRED_AT_INGEST = "expired"
+SIGNAL_QUARANTINED_VALIDATION = "quarantined_validation"
+SIGNAL_QUARANTINED_FRESHNESS = "quarantined_freshness"
+SIGNAL_REPLAYED = "replayed"
+SIGNAL_CONFLICT = "conflict"
+
+SIGNAL_INGEST_OUTCOMES = frozenset(
+    {
+        SIGNAL_RECEIVED_OK,
+        SIGNAL_EXPIRED_AT_INGEST,
+        SIGNAL_QUARANTINED_VALIDATION,
+        SIGNAL_QUARANTINED_FRESHNESS,
+        SIGNAL_REPLAYED,
+        SIGNAL_CONFLICT,
+    }
+)
+
+SIGNAL_FUTURE_SKEW_SECONDS = 30
+SIGNAL_STALE_SECONDS = 24 * 3600
+SIGNAL_TTL_MIN_SECONDS = 30
+SIGNAL_TTL_MAX_SECONDS = 86400
+
+_SIGNAL_DIRECTIONS = frozenset({"buy", "sell"})
+_SIGNAL_CYCLE_BUDGET_MAX = 1000
+_SQLITE_MAX_SIGNED_INT = 2**63 - 1
+
+
+def _require_bounded_int(
+    value: int, *, field_name: str, minimum: int, maximum: int
+) -> int:
+    """Return a strict integer inside ``[minimum, maximum]`` or fail closed."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        raise ValueError(f"{field_name} must be an integer in [{minimum}, {maximum}]")
+    return value
+
+
+def _require_aware(value: datetime, *, field_name: str) -> datetime:
+    """Signal freshness is defined only over timezone-aware timestamps."""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value
+
+
+def signal_dedupe_key(prefix: str, *parts: str) -> str:
+    """Injectively encode arbitrary string parts for an execution dedupe key.
+
+    Delimiter joins are ambiguous for untrusted identities: ``("a:b", "c")``
+    and ``("a", "b:c")`` collide. Length-prefixed parts preserve tuple
+    boundaries for every string and therefore keep live/replay truth aligned.
+    """
+
+    encoded = "|".join(f"{len(part)}:{part}" for part in parts)
+    return f"{prefix}:{encoded}"
+
+
+def safe_quarantine_symbol(raw_symbol: str) -> str:
+    """Return a canonical ticker for a quarantine row, else ``UNKNOWN``."""
+
+    stripped = raw_symbol.strip()
+    if not stripped or not stripped.isascii():
+        return "UNKNOWN"
+    try:
+        return normalize_symbol(stripped)
+    except ValueError:
+        return "UNKNOWN"
+
+
+def safe_advisory_quantity(value: object) -> Optional[int]:
+    """Return a positive SQLite-representable advisory quantity, else null."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 < value <= _SQLITE_MAX_SIGNED_INT
+    ):
+        return None
+    return value
+
+
+def safe_advisory_price(value: object) -> Optional[float]:
+    """Return a finite positive advisory price, else null."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) and numeric > 0 else None
+
+
+def _utf8_escape_text(value: object) -> str:
+    """Return UTF-8-safe text, escaping any unpaired surrogate code points."""
+
+    text = value if isinstance(value, str) else str(value)
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "backslashreplace").decode("ascii")
+
+
+def normalize_signal_raw_fields(
+    raw_fields: Optional[dict[str, str]],
+) -> Optional[dict[str, str]]:
+    """Normalize raw validation offenders into replay/SQLite-safe strings."""
+
+    if raw_fields is None:
+        return None
+    return {
+        _utf8_escape_text(key): _utf8_escape_text(value)
+        for key, value in raw_fields.items()
+    }
+
+
+def normalize_signal_ingest_fields(
+    *,
+    validation_failed: bool,
+    symbol: str,
+    direction: str,
+    thesis: str,
+    provenance: dict[str, str],
+    suggested_quantity: Optional[int],
+    suggested_limit_price: Optional[float],
+) -> tuple[str, str, str, dict[str, str], Optional[int], Optional[float]]:
+    """Normalize the stored/hash representation once at the store boundary."""
+
+    thesis = _utf8_escape_text(thesis)
+    provenance = {
+        _utf8_escape_text(key): _utf8_escape_text(value)
+        for key, value in provenance.items()
+    }
+    quantity = safe_advisory_quantity(suggested_quantity)
+    price = safe_advisory_price(suggested_limit_price)
+    if validation_failed:
+        normalized_symbol = safe_quarantine_symbol(symbol)
+        normalized_direction = direction if direction in _SIGNAL_DIRECTIONS else "buy"
+    else:
+        stripped = symbol.strip()
+        if not stripped.isascii():
+            raise ValueError(f"signal symbol must be ASCII, got {symbol!r}")
+        normalized_symbol = normalize_symbol(stripped)
+        if direction not in _SIGNAL_DIRECTIONS:
+            raise ValueError(
+                "signal direction must be one of "
+                f"{sorted(_SIGNAL_DIRECTIONS)}, got {direction!r}"
+            )
+        normalized_direction = direction
+    return (
+        normalized_symbol,
+        normalized_direction,
+        thesis,
+        provenance,
+        quantity,
+        price,
+    )
+
+
+def signal_canonical_hash(payload: dict[str, Any]) -> str:
+    """SHA-256 of canonical producer proposal JSON."""
+
+    def _default(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        raise TypeError(f"unhashable proposal value: {value!r}")
+
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_default,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_signal_proposal_payload(
+    *,
+    signal_id: str,
+    symbol: str,
+    direction: str,
+    issued_at: Optional[datetime],
+    ttl_seconds: Optional[int],
+    suggested_quantity: Optional[int],
+    suggested_limit_price: Optional[float],
+    thesis: str,
+    provenance: dict[str, str],
+    raw_fields: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Canonical producer-controlled content for echo/conflict detection."""
+
+    return {
+        "signal_id": signal_id,
+        "symbol": symbol,
+        "direction": direction,
+        "issued_at": issued_at,
+        "ttl_seconds": ttl_seconds,
+        "suggested_quantity": suggested_quantity,
+        "suggested_limit_price": suggested_limit_price,
+        "thesis": thesis,
+        "provenance": provenance,
+        "raw_fields": raw_fields,
+    }
+
+
+@dataclass(frozen=True)
+class SignalFreshness:
+    """Pure A-3 classification for a typed signal proposal."""
+
+    expires_at: Optional[datetime]
+    status: SignalStatus
+    quarantine_reason: Optional[str]
+    detected_by: Optional[str]
+    ttl_nulled: bool
+    raw_fields: Optional[dict[str, str]]
+
+
+def classify_signal_freshness(
+    *,
+    issued_at: datetime,
+    ttl_seconds: int,
+    received_at: datetime,
+    server_max_ttl_seconds: int,
+) -> SignalFreshness:
+    """Apply ADR-009 A-3 with exact inclusive skew/TTL boundaries."""
+
+    _require_aware(issued_at, field_name="issued_at")
+    _require_aware(received_at, field_name="received_at")
+    _require_bounded_int(
+        server_max_ttl_seconds,
+        field_name="server_max_ttl_seconds",
+        minimum=1,
+        maximum=SIGNAL_TTL_MAX_SECONDS,
+    )
+    if (
+        isinstance(ttl_seconds, bool)
+        or not isinstance(ttl_seconds, int)
+        or ttl_seconds < SIGNAL_TTL_MIN_SECONDS
+        or ttl_seconds > SIGNAL_TTL_MAX_SECONDS
+    ):
+        return SignalFreshness(
+            expires_at=None,
+            status=SignalStatus.QUARANTINED,
+            quarantine_reason="ttl_out_of_range",
+            detected_by=None,
+            ttl_nulled=True,
+            raw_fields={"ttl_seconds": str(ttl_seconds)},
+        )
+
+    expires_at = min(
+        received_at + timedelta(seconds=server_max_ttl_seconds),
+        issued_at + timedelta(seconds=ttl_seconds),
+    )
+    if issued_at > received_at + timedelta(seconds=SIGNAL_FUTURE_SKEW_SECONDS):
+        return SignalFreshness(
+            expires_at=expires_at,
+            status=SignalStatus.QUARANTINED,
+            quarantine_reason="issued_at_future",
+            detected_by=None,
+            ttl_nulled=False,
+            raw_fields=None,
+        )
+    if issued_at < received_at - timedelta(seconds=SIGNAL_STALE_SECONDS):
+        return SignalFreshness(
+            expires_at=expires_at,
+            status=SignalStatus.QUARANTINED,
+            quarantine_reason="issued_at_stale",
+            detected_by=None,
+            ttl_nulled=False,
+            raw_fields=None,
+        )
+    if expires_at <= received_at:
+        return SignalFreshness(
+            expires_at=expires_at,
+            status=SignalStatus.EXPIRED,
+            quarantine_reason=None,
+            detected_by="ingest",
+            ttl_nulled=False,
+            raw_fields=None,
+        )
+    return SignalFreshness(
+        expires_at=expires_at,
+        status=SignalStatus.RECEIVED,
+        quarantine_reason=None,
+        detected_by=None,
+        ttl_nulled=False,
+        raw_fields=None,
+    )
+
+
+def _signal_record_payload(record: SignalRecord) -> dict[str, Any]:
+    return {
+        "producer_id": record.producer_id,
+        "signal_id": record.signal_id,
+        "record_id": record.id,
+        "received_at": record.received_at.isoformat(),
+        "expires_at": (
+            record.expires_at.isoformat() if record.expires_at is not None else None
+        ),
+        "record": record.model_dump(mode="json"),
+    }
+
+
+def signal_record_event(
+    record: SignalRecord,
+    event_type: ExecutionEventType,
+    *,
+    cycle_budget_limit: Optional[int] = None,
+    detected_by: Optional[str] = None,
+) -> ExecutionEvent:
+    """Create one replay-exact per-record birth event at the injected clock."""
+
+    payload = _signal_record_payload(record)
+    if record.quarantine_reason is not None:
+        payload["quarantine_reason"] = record.quarantine_reason
+    if cycle_budget_limit is not None:
+        payload["cycle_budget_limit"] = cycle_budget_limit
+    if detected_by is not None:
+        payload["detected_by"] = detected_by
+    return ExecutionEvent(
+        event_type=event_type,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=signal_dedupe_key(
+            "signal_create", record.producer_id, record.signal_id
+        ),
+        ts_event=record.received_at,
+        ts_init=record.received_at,
+        symbol=record.symbol,
+        payload=payload,
+    )
+
+
+def signal_duplicate_conflict_event(
+    *,
+    existing: SignalRecord,
+    new_payload_hash: str,
+    conflicting_proposal: dict[str, Any],
+    cycle_budget_limit: int,
+    received_at: datetime,
+) -> ExecutionEvent:
+    """Create the audit-only conflict fact; never mutate the original row."""
+
+    safe_proposal = {
+        key: (value.isoformat() if isinstance(value, datetime) else value)
+        for key, value in conflicting_proposal.items()
+    }
+    return ExecutionEvent(
+        event_type=ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=signal_dedupe_key(
+            "signal_conflict",
+            existing.producer_id,
+            existing.signal_id,
+            new_payload_hash,
+        ),
+        ts_event=received_at,
+        ts_init=received_at,
+        symbol=existing.symbol,
+        payload={
+            "producer_id": existing.producer_id,
+            "signal_id": existing.signal_id,
+            "record_id": existing.id,
+            "original_record_id": existing.id,
+            "original_payload_hash": existing.payload_hash,
+            "new_payload_hash": new_payload_hash,
+            "conflicting_proposal": safe_proposal,
+            "cycle_budget_limit": cycle_budget_limit,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class SignalIngestPlan:
+    """Pure signal-ingest decision for one already-looked-up identity."""
+
+    outcome: str
+    record: Optional[SignalRecord]
+    event: Optional[ExecutionEvent]
+    result_record: SignalRecord
+
+
+def _validation_freshness_fields(
+    *,
+    issued_at: Optional[datetime],
+    ttl_seconds: Optional[int],
+    received_at: datetime,
+    server_max_ttl_seconds: int,
+    raw_fields: Optional[dict[str, str]],
+) -> tuple[
+    Optional[datetime],
+    Optional[int],
+    Optional[datetime],
+    dict[str, str],
+]:
+    """Represent only typed/computable freshness values on a validation row."""
+
+    normalized_raw = dict(normalize_signal_raw_fields(raw_fields) or {})
+    record_issued_at = issued_at
+    if record_issued_at is not None and (
+        record_issued_at.tzinfo is None or record_issued_at.utcoffset() is None
+    ):
+        normalized_raw.setdefault("issued_at", record_issued_at.isoformat())
+        record_issued_at = None
+
+    record_ttl = ttl_seconds
+    if record_ttl is not None and (
+        isinstance(record_ttl, bool)
+        or not isinstance(record_ttl, int)
+        or not SIGNAL_TTL_MIN_SECONDS <= record_ttl <= SIGNAL_TTL_MAX_SECONDS
+    ):
+        normalized_raw.setdefault("ttl_seconds", str(record_ttl))
+        record_ttl = None
+
+    expires_at: Optional[datetime] = None
+    if record_issued_at is not None and record_ttl is not None:
+        expires_at = min(
+            received_at + timedelta(seconds=server_max_ttl_seconds),
+            record_issued_at + timedelta(seconds=record_ttl),
+        )
+    return record_issued_at, record_ttl, expires_at, normalized_raw
+
+
+def plan_signal_ingest(
+    *,
+    existing: Optional[SignalRecord],
+    producer_id: str,
+    signal_id: str,
+    symbol: str,
+    direction: str,
+    issued_at: Optional[datetime],
+    ttl_seconds: Optional[int],
+    suggested_quantity: Optional[int],
+    suggested_limit_price: Optional[float],
+    thesis: str,
+    provenance: dict[str, str],
+    payload_hash: str,
+    canonical_proposal: dict[str, Any],
+    validation_failed: bool,
+    raw_fields: Optional[dict[str, str]],
+    received_at: datetime,
+    server_max_ttl_seconds: int,
+    cycle_budget_limit: int,
+) -> SignalIngestPlan:
+    """Plan exactly one of the six R4 ingest outcomes without store access."""
+
+    _require_aware(received_at, field_name="received_at")
+    _require_bounded_int(
+        server_max_ttl_seconds,
+        field_name="server_max_ttl_seconds",
+        minimum=1,
+        maximum=SIGNAL_TTL_MAX_SECONDS,
+    )
+    _require_bounded_int(
+        cycle_budget_limit,
+        field_name="cycle_budget_limit",
+        minimum=1,
+        maximum=_SIGNAL_CYCLE_BUDGET_MAX,
+    )
+    suggested_quantity = safe_advisory_quantity(suggested_quantity)
+    suggested_limit_price = safe_advisory_price(suggested_limit_price)
+
+    if existing is not None:
+        if existing.payload_hash == payload_hash:
+            return SignalIngestPlan(
+                outcome=SIGNAL_REPLAYED,
+                record=None,
+                event=None,
+                result_record=existing,
+            )
+        return SignalIngestPlan(
+            outcome=SIGNAL_CONFLICT,
+            record=None,
+            event=signal_duplicate_conflict_event(
+                existing=existing,
+                new_payload_hash=payload_hash,
+                conflicting_proposal=canonical_proposal,
+                cycle_budget_limit=cycle_budget_limit,
+                received_at=received_at,
+            ),
+            result_record=existing,
+        )
+
+    if validation_failed:
+        record_issued_at, record_ttl, expires_at, record_raw_fields = (
+            _validation_freshness_fields(
+                issued_at=issued_at,
+                ttl_seconds=ttl_seconds,
+                received_at=received_at,
+                server_max_ttl_seconds=server_max_ttl_seconds,
+                raw_fields=raw_fields,
+            )
+        )
+        record = SignalRecord(
+            producer_id=producer_id,
+            signal_id=signal_id,
+            status=SignalStatus.QUARANTINED,
+            symbol=safe_quarantine_symbol(symbol),
+            direction=(direction if direction in _SIGNAL_DIRECTIONS else "buy"),
+            issued_at=record_issued_at,
+            ttl_seconds=record_ttl,
+            expires_at=expires_at,
+            received_at=received_at,
+            raw_fields=record_raw_fields,
+            suggested_quantity=suggested_quantity,
+            suggested_limit_price=suggested_limit_price,
+            thesis=_utf8_escape_text(thesis),
+            provenance={
+                _utf8_escape_text(key): _utf8_escape_text(value)
+                for key, value in provenance.items()
+            },
+            payload_hash=payload_hash,
+            quarantine_reason="validation",
+            quarantined_at=received_at,
+            created_at=received_at,
+            updated_at=received_at,
+        )
+        return SignalIngestPlan(
+            outcome=SIGNAL_QUARANTINED_VALIDATION,
+            record=record,
+            event=signal_record_event(
+                record,
+                ExecutionEventType.SIGNAL_QUARANTINED,
+                cycle_budget_limit=cycle_budget_limit,
+            ),
+            result_record=record,
+        )
+
+    if issued_at is None or ttl_seconds is None:
+        raise ValueError(
+            "issued_at and ttl_seconds are required when validation_failed is false"
+        )
+    symbol = normalize_symbol(symbol)
+    if direction not in _SIGNAL_DIRECTIONS:
+        raise ValueError(
+            f"signal direction must be one of {sorted(_SIGNAL_DIRECTIONS)}, "
+            f"got {direction!r}"
+        )
+    fresh = classify_signal_freshness(
+        issued_at=issued_at,
+        ttl_seconds=ttl_seconds,
+        received_at=received_at,
+        server_max_ttl_seconds=server_max_ttl_seconds,
+    )
+    record = SignalRecord(
+        producer_id=producer_id,
+        signal_id=signal_id,
+        status=fresh.status,
+        symbol=symbol,
+        direction=direction,
+        issued_at=issued_at,
+        ttl_seconds=None if fresh.ttl_nulled else ttl_seconds,
+        expires_at=fresh.expires_at,
+        received_at=received_at,
+        raw_fields=fresh.raw_fields,
+        suggested_quantity=suggested_quantity,
+        suggested_limit_price=suggested_limit_price,
+        thesis=_utf8_escape_text(thesis),
+        provenance={
+            _utf8_escape_text(key): _utf8_escape_text(value)
+            for key, value in provenance.items()
+        },
+        payload_hash=payload_hash,
+        quarantine_reason=fresh.quarantine_reason,
+        quarantined_at=(
+            received_at if fresh.status is SignalStatus.QUARANTINED else None
+        ),
+        expired_at=(received_at if fresh.status is SignalStatus.EXPIRED else None),
+        created_at=received_at,
+        updated_at=received_at,
+    )
+    if fresh.status is SignalStatus.RECEIVED:
+        outcome = SIGNAL_RECEIVED_OK
+        event = signal_record_event(record, ExecutionEventType.SIGNAL_RECEIVED)
+    elif fresh.status is SignalStatus.EXPIRED:
+        outcome = SIGNAL_EXPIRED_AT_INGEST
+        event = signal_record_event(
+            record,
+            ExecutionEventType.SIGNAL_EXPIRED,
+            cycle_budget_limit=cycle_budget_limit,
+            detected_by="ingest",
+        )
+    else:
+        outcome = SIGNAL_QUARANTINED_FRESHNESS
+        event = signal_record_event(
+            record,
+            ExecutionEventType.SIGNAL_QUARANTINED,
+            cycle_budget_limit=cycle_budget_limit,
+        )
+    return SignalIngestPlan(
+        outcome=outcome,
+        record=record,
+        event=event,
+        result_record=record,
+    )
