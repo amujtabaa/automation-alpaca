@@ -489,3 +489,90 @@ fable_done:
     - "The unchanged 61-case oracle run through pytest satisfies the gate; direct-script import context remains separate work."
   disposition: "WO is REVIEW and REV-0039 is staged for the Claude seat; no ledger, merge, or close-out claim."
 ```
+
+## REV-0039 F1/F2 tests-only pin-fix record (2026-07-22)
+
+`[FABLE • FULL • verification: DIRECT • task: REV-0039 F1/F2 pin-fix]`
+
+```yaml
+fable_gate:
+  goal: "Add failure-capable aggregate signal replay/parity pins and a memory signal rollback pin for REV-0039 F1/F2."
+  assumptions:
+    - "WO-0134 remains REVIEW and tests/** is the only implementation surface."
+    - "The exact M7a and M4a reviewer mutations are the acceptance bar."
+    - "The existing ten-path formatting exception remains bounded; both changed test modules must pass Ruff format."
+  approach: "Extend the aggregate comparator through a real SIGNAL_RECEIVED fold, ingest the same real signal independently on both stores, and inject a post-write memory ingest failure; mutation-test each pin before restored GREEN."
+  out_of_scope:
+    - "Any app/** source edit, REV-0039 disposition edit, ledger line, merge, or close-out"
+    - "REV-0039 F3-F6, WO-0135, R5/R6/R7, and WO-0136"
+  done_when:
+    - "M7a turns both F1 pins RED and M4a turns F2 RED for the intended reasons."
+    - "Both source files restore byte-exact and git diff -- app/ is empty."
+    - "Focused and full gates pass within the existing bounded formatter exception."
+    - "The tests-only commit is pushed for Claude-seat re-verification."
+  blast_radius: "Two test modules plus append-only WO/state evidence; no runtime behavior or event-log truth changes."
+```
+
+```yaml
+evidence:
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_phase6b_readmodel_parity.py::test_compare_read_models_detects_divergence tests/test_phase6b_readmodel_parity.py::test_signal_ingest_participates_in_dual_store_readmodel_parity (M7a applied)"
+    result: RED
+    decisive_output: "2 failed: both aggregate projections exposed signals == {} after signals=project_signal_records(materialized) was removed."
+    environment_note: "The first sandboxed attempt hit WinError 5 creating pytest's default OS-temp directory for the tmp_path case; the identical invocation with approved OS-temp access produced the decisive two-test RED. No repository scratch path was used."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_phase6b_readmodel_parity.py::test_compare_read_models_detects_divergence tests/test_phase6b_readmodel_parity.py::test_signal_ingest_participates_in_dual_store_readmodel_parity (M7a restored)"
+    result: PASS
+    decisive_output: "2 passed; app/events/replay.py restored to blob fa54f9c0ed985ab8761bf4155978d955b835dcb2."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_sqlite_schema.py::test_memory_signal_event_and_record_rollback_together (M4a applied)"
+    result: RED
+    decisive_output: "1 failed: get_signal returned the stranded SignalRecord after the injected post-write exception."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_signal_sqlite_schema.py::test_memory_signal_event_and_record_rollback_together (M4a restored)"
+    result: PASS
+    decisive_output: "1 passed; app/store/memory.py restored to blob 5a078d3b14a0977b4c014b702be8bf275b255c29."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_phase6b_readmodel_parity.py tests/test_signal_sqlite_schema.py"
+    result: PASS
+    decisive_output: "9 passed."
+  - command: ".venv/Scripts/python.exe -m ruff check --no-cache ."
+    result: PASS
+    decisive_output: "All checks passed!"
+  - command: ".venv/Scripts/python.exe -m ruff format --check --no-cache ."
+    result: BOUNDED_EXCEPTION
+    decisive_output: "Exactly the previously approved ten paths were named; 276 files were already formatted. Both changed test modules pass their focused format check."
+  - command: ".venv/Scripts/python.exe -m mypy app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 70 source files."
+  - command: ".venv/Scripts/lint-imports.exe"
+    result: PASS
+    decisive_output: "6 contracts kept, 0 broken."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q"
+    result: PASS
+    decisive_output: "Exit 0; progress reached 100% with the repository's existing skips/xfail."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/r2_conformance_oracle.py"
+    result: PASS
+    decisive_output: "61 cases passed under the operator-accepted canonical invocation."
+  - command: ".venv/Scripts/python.exe -m pytest -p no:cacheprovider -q tests/test_wo0113_repair_scaling.py"
+    result: PASS
+    decisive_output: "13 passed."
+  - command: "git diff --exit-code 215bb34..HEAD -- app/; git diff --exit-code -- app/"
+    result: PASS
+    decisive_output: "Both committed-range and working-tree app diffs were empty; production mutation restorations were byte-exact."
+```
+
+```yaml
+fable_fix:
+  - trigger: "M7a removed aggregate signal replay registration."
+    root_cause: "The defaulted signals field let two empty aggregate projections compare equal, and the existing comparator corpus never perturbed signals."
+    test_proof: "Both new F1 pins failed on empty aggregate signals; restored code passed both."
+    correction: "Retained the production registration byte-exact and committed only the aggregate comparator/detail and dual-store real-ingest pins."
+  - trigger: "M4a removed the memory _atomic signal restore assignment."
+    root_cause: "No prior test raised after both the event and signal-map writes, so stranded signal state survived unnoticed."
+    test_proof: "The new post-write injection pin observed the stranded record under M4a and full rollback plus a subsequent clean ingest after restoration."
+    correction: "Retained the production rollback byte-exact and committed only the memory atomicity pin."
+```
+
+```yaml
+fable_done:
+  status: REVIEW
+  implementation_commit: "27bcfbd5bf25cca0777e3c3b6296e5b6d68b2340"
+  verified: "Both reviewer mutations are killed for the intended reasons; focused modules and full gates are green; changed tests are Ruff-formatted; app/** is unchanged."
+  disposition: "WO-0134 and REV-0039 remain open for Claude-seat mutation re-verification; no result, ledger, source, merge, or close-out edit was made."
+```

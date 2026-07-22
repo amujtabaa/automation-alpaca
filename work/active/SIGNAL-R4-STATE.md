@@ -127,6 +127,7 @@ implementation is authorized by this record.
 | A / WO-0134 | projector + replay | VERIFIED | `4d9779d` | Same change; staged pure + memory projector tests and 108 replay regressions green. |
 | A / WO-0134 | green evidence | VERIFIED / BOUNDED EXCEPTION | `b87d464`, `d79bd6e`, `f8c6048`, `a6468a1` | Signal R4 suite: 66 passed across both stores; full pytest, Ruff check, mypy, import-linter, operator-accepted canonical R2 oracle, and repair-scaling pass. The formatting/whitespace exception is limited to the three exact staged blobs and seven byte-identical baseline Ruff findings. |
 | A / WO-0134 | REV-0039 staging | STAGED / READY | `d79bd6e`, `f8c6048`, `a6468a1` | Claude-seat request is frozen at `b87d464`; operator gate decisions are recorded and WO-0134 is REVIEW. |
+| A / WO-0134 | REV-0039 F1/F2 pin-fix | VERIFIED / READY FOR RE-REVIEW | `27bcfbd` | Tests only: M7a killed by both aggregate-signal pins; M4a killed by the memory rollback pin; restored focused modules 9 passed, full gates passed within the existing bounded formatter exception, and `app/**` stayed byte-exact. |
 | B / WO-0135 | `app/monitoring.py` escalation | BLOCKED | `249f9be`, `5e86fd0` | Creation/dedup works, but the pre-ratified lifecycle is unreachable; operator directed no implementation or ADR-012 weakening. |
 | B / WO-0135 | idempotency + post-reconcile + scope pins | BLOCKED | `249f9be`, `5e86fd0` | Typed attestation rejects empty broker id; both stores reject the missing-order lineage before ADR-012 release. |
 | B / WO-0135 | green evidence | BLOCKED | `249f9be`, `5e86fd0` | GATE stop condition fired before RED test/source work; blocker state explicitly retained. |
@@ -162,6 +163,32 @@ implementation is authorized by this record.
 - `VERIFIED` — post-disposition boundary recheck: all three staging hashes remain exact; all nine
   implementation-owned non-staged Python files report `already formatted`; all seven waived Ruff
   baseline files remain byte-identical to `origin/master`.
+
+## REV-0039 F1/F2 pin-fix evidence (2026-07-22)
+
+- `VERIFIED / RED` - with M7a applied (the aggregate replay registration line temporarily
+  removed), both F1 pins failed because their aggregate projections had `signals == {}`. The
+  first sandboxed invocation could not create pytest's default OS-temp directory for the
+  dual-store case; the identical approved OS-temp invocation produced the decisive `2 failed`.
+- `VERIFIED / GREEN` - after byte-exact restoration of
+  `app/events/replay.py` (`fa54f9c0ed985ab8761bf4155978d955b835dcb2`), both focused F1 pins
+  passed.
+- `VERIFIED / RED` - with M4a applied (the memory `_atomic` signal restore line temporarily
+  removed), the F2 pin failed because `get_signal("property", "memory-atomic")` returned the
+  stranded record after the injected post-write exception.
+- `VERIFIED / GREEN` - after byte-exact restoration of
+  `app/store/memory.py` (`5a078d3b14a0977b4c014b702be8bf275b255c29`), the F2 pin passed and
+  both changed modules passed together (`9 passed`).
+- `VERIFIED` - Ruff check passed; mypy found no issues in 70 source files; all 6 import
+  contracts were kept; full pytest exited 0 at 100%; the accepted canonical R2 oracle passed all
+  61 cases; repair scaling passed all 13 cases.
+- `VERIFIED / BOUNDED EXCEPTION` - repository-wide Ruff format check named exactly the same ten
+  approved paths (three immutable staging blobs and seven files byte-identical to
+  `origin/master`). Both changed test modules report `already formatted`, and all three staged
+  hashes remain exact (`9513d50e...`, `a3ed1b5d...`, `a4de2669...`).
+- `VERIFIED` - `git diff --exit-code 215bb34..HEAD -- app/` and the working-tree
+  `git diff --exit-code -- app/` were empty. WO-0134 remains REVIEW; REV-0039's result and
+  disposition were not edited.
 
 ## NEEDS-INPUT
 
