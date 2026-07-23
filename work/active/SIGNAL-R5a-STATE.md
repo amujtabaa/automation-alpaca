@@ -83,11 +83,11 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
 | config | GREEN | `6aee970`, `58ceb32` | 20/20 staged config tests pass |
-| launcher trio | GREEN (Windows-adapted) | `6aee970`, `3e6e3ed` + main implementation commit (this slice) | 9/9 unchanged staged cases pass when mandatory Windows child env is preserved |
+| launcher trio | GREEN (Windows-adapted) | `6aee970`, `3e6e3ed`, `c968d26` | 9/9 unchanged staged cases pass when mandatory Windows child env is preserved |
 | signal_rails seam | GREEN | `6aee970`, `b985174` | 3/3 staged conformity-rejection cases pass; provider remains R6 |
-| create_app skeleton | GREEN | `6aee970` + main implementation commit (this slice) | 14/14 ordered construction-guard cases pass |
+| create_app skeleton | GREEN | `6aee970`, `c968d26` | 14/14 ordered construction-guard cases pass |
 | helper + import-hunk | GREEN | `6aee970`, `3e6e3ed` | Helper imported; launcher allowlist hunk passes 6/6 boundary tests |
-| README | PENDING | — | UNDEFINED-not-None correction only |
+| README | GREEN | README commit (this slice) | Enabled-seat launch callout says name is undefined, never `None` |
 | green evidence | PENDING | — | Bootstrap plus full gate battery |
 | REV-0041 staging | PENDING | — | Claude-seat request; no result/disposition |
 

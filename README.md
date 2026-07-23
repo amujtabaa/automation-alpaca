@@ -136,6 +136,17 @@ uvicorn app.main:app --reload
 - On first run it creates the SQLite database at `./data/app.db` (gitignored).
   Data persists across restarts.
 
+> **Signal Seat enabled (`SIGNAL_SEAT_ENABLED=true`) — use `python -m app`, not
+> bare Uvicorn.** The sole sanctioned start command for an enabled seat is the
+> backend-owned launcher, which validates the proxy-private bind, mints the
+> launch-provenance capability, wires the real rails provider, and serves
+> Uvicorn programmatically. Bare `uvicorn app.main:app` is unsupported while the
+> flag is on: the module leaves the `app` name **undefined** (not `None`), so
+> Uvicorn fails app lookup before opening a listener (ADR-009 A-1 clause 6).
+> Enabling also requires `OPERATOR_API_KEY`, `SIGNAL_PRODUCER_KEYS`, and
+> WO-0104's real rails. The flag remains **off** by default, preserving the bare
+> Uvicorn development command above.
+
 Environment variables (optional):
 
 | Variable             | Default          | Meaning                                       |
