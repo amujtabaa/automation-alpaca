@@ -8,7 +8,7 @@ model_tier: strong (LOCAL Codex — human-gated auth/launcher/transport security
 risk: high
 owner: Ameen / implementer: Codex local session
 created: 2026-07-22
-war_gamed: ".ai-os/core/18 FULL — grounding map + M1–M3 + M4a; M4b refutation pending before ratification"
+war_gamed: ".ai-os/core/18 FULL — grounding + M1–M3 + M4a + M4b COMPLETE; 10/11 claims hold, 0 safety refuted, 3 tracing defects fixed; ratifiable"
 gated_surface: auth/launcher/transport bind — the localhost security boundary (D-HOST-1). Human-gated. NO schema/migration (config + launcher only) → NO mid-session DDL gate. Ends at status REVIEW with REV-0041 staged for the Claude seat.
 ---
 
@@ -63,15 +63,27 @@ middleware, docs-disable, cockpit, `.importlinter` (all R5b).
       raises `RuntimeError` on: (1) missing/forged launch capability (`is_sanctioned` False);
       (2) invalid config via `validate_signal_seat_settings` (blank/absent `operator_api_key`,
       empty/invalid producer map, operator≡producer role collision, transport ∉ policy set, budget
-      ∉ [1,1000], TTL > 86400); (3) non-conforming rails (`is_conforming_rails` False). — TRACED(
-      archive `app/main.py:120-148` + `test_signal_seat_launch_guard.py:25-69 @ staging` +
-      spec 04 §1).
+      ∉ [1,1000], TTL > 86400); (3) non-conforming rails (`is_conforming_rails` False). Error
+      messages MUST carry the tokens the staged regexes match — in particular the TTL-out-of-range
+      message must contain `A-3` (the field name `signal_server_max_ttl_seconds` is lowercase and
+      would not match a bare `TTL`; the staged regex is `budget|TTL|A-3|A-4`,
+      `test_signal_seat_launch_guard.py:150-174 @ staging`). — TRACED(archive `app/main.py:120-148`
+      + `test_signal_seat_launch_guard.py:25-69 @ staging` + spec 04 §1).
+      **BUILD HAZARD (M4b):** the R5a `create_app` skeleton EXCLUDES the archive's R5b module-level
+      imports — `routes_signals` (`app/main.py:57 @ archive`) and the `app.api.deps` helpers
+      (`DEFAULT_ACTOR`, `OPERATOR_KEY_HEADER`, `PRODUCER_KEY_HEADER`, `operator_key_valid`,
+      `producer_key_valid`, `app/main.py:60-66 @ archive`) — and the two operator/producer
+      middleware blocks. A verbatim port would `ImportError` (those R5b files are absent on master);
+      the skeleton constructs flag-on with master's EXISTING routers and NO signal middleware.
 - [x] **D-R5a-5 Conditional module-level `app` (the un-mintable serve edge).** Flag OFF → `app =
       create_app()` defined (bare uvicorn works, beta unchanged). Flag ON → `app` **NEVER assigned**
       (not even `None` — `None` is provably insufficient), so `uvicorn app.main:app` raises
       `ImportFromStringError` in `Config.load()` **before any socket binds**. — TRACED(archive
       `app/main.py:319-339` + the subprocess pin `test_signal_seat_launcher.py:153-198 @ staging`
-      asserting no-listener + `'Attribute "app" not found'`).
+      asserting no-listener + `'Attribute "app" not found'`). The `'Attribute "app" not found'`
+      string is uvicorn's `ImportFromStringError` text under the pinned `uvicorn==0.51.0`
+      (`constraints.txt:101 @ master`, M4b-verified) — a future uvicorn bump changing that text
+      would break the staged pin independent of R5a's code.
 - [x] **D-R5a-6 Bind guard = loopback-only, policy-name-agnostic.** `validate_transport_bind`
       returns `None` for a loopback host or a UDS, else the A-1 failure string (`"A-1"`,
       `"proxy-private"`, `"non-loopback"`); BOTH `loopback` and `tailnet_serve` bind loopback (the
@@ -126,11 +138,17 @@ post-session REV-0041 code review.
   existing consumer is affected by the additive fields. UCA sweep: the startup guard MUST fire before
   serve (server.py validates pre-serve) — pinned by the launcher subprocess test.
 - **Affected existing consumer — the sole serve path:** the module-level `app = create_app()`
-  (`app/main.py:168-169 @ master`) via bare `uvicorn app.main:app` (`README.md:132`,
-  `harness/bootstrap.py:40`). R5a makes it conditional. Flag-OFF (default) → unchanged, so bootstrap
-  and CI do not break. **Required verification (converts the one M3 residual-ASSUMED):** R5a must
-  confirm `harness/bootstrap.py`'s bare-uvicorn probe runs flag-OFF and does not regress, and land
-  the plan-mandated README correction ("app is None" → leave-name-UNDEFINED).
+  (`app/main.py:168-169 @ master`), which R5a makes conditional on the flag. Bare
+  `uvicorn app.main:app` appears as a doc/display string in `README.md:132` and
+  `cockpit/app.py:941` (a Streamlit "start it first" warning — display only, no runtime break;
+  cockpit is R5b scope, fixed there with the cockpit plumbing). **Bootstrap coupling (M4b-corrected
+  — the original `harness/bootstrap.py:40` anchor was WRONG: that line is a Windows py-version
+  probe, not a uvicorn call).** The real `bootstrap → app.main` path is the smoke gate's
+  `pytest -q --collect-only` (`harness/bootstrap.py:117 @ master`), which imports the signal test
+  modules → imports `app.main` **flag-OFF** → runs the module tail `app = create_app()`. That path
+  is flag-off safe, so the non-regression holds. **Required verification:** R5a runs
+  `python harness/bootstrap.py` and confirms the smoke gate stays green (the flag-off collect path),
+  and lands the plan-mandated README correction ("app is None" → leave-name-UNDEFINED).
 - **`create_app` callers:** signature gains `settings`/`launch_capability`/`signal_rails` (all
   defaulted None) → existing flag-off callers `create_app()` / `create_app(store)` unaffected;
   flag-on omission of the capability now correctly RAISES. Backward-compatible.
@@ -244,5 +262,20 @@ Scope: **FULL** (human-gated auth/launcher surface + mints a stateful capability
 M1 (above) + M2 + M3 complete. **M4a prospective-hindsight** — six failure narratives; four resolved
 `TRACED` (bare-uvicorn-serves, reachable-503, capability-leak, tailnet-non-loopback — all anchored +
 subprocess-pinned), two surfaced real findings (transport re-baseline D-R5a-3; the construction-vs-
-request boundary). **M4b refutation:** pending (dispatched against this decision block before
-ratification); its result appends here.
+request boundary).
+
+**M4b refutation (fresh-context agent, 2026-07-22) — COMPLETE.** 10 of 11 D-R5a claims HOLD against
+code; **0 safety invariants refuted** — the construction-time bind boundary, the construction-vs-
+request split, the rails-seam/R6 decoupling (the launcher's `_load_production_rails` import is
+function-local + caught, raising exactly the Runtimeable the positive-control test expects), and the
+`.importlinter`-untouched / hunk-only import handling all survived adversarial attack. It caught
+**three tracing defects (all bookkeeping, no design change), now fixed in this WO:**
+1. **Class-1 (my own miscited anchor):** M3 cited `harness/bootstrap.py:40` as a "bare-uvicorn probe"
+   — FALSE; that line is a Windows py-version probe. Real coupling = `pytest --collect-only`
+   (`bootstrap.py:117`) imports `app.main` flag-off. Corrected in M3 + D-R5a-11.
+2. **Class-2 (unenumerated consumer):** `cockpit/app.py:941` is a third `uvicorn app.main:app`
+   doc-string, missing from the inventory. Added (R5b fixes it with cockpit).
+3. **Build hazard:** the archive `main.py:57,60-66` R5b module-level imports + middleware must be
+   explicitly EXCLUDED from the R5a skeleton (verbatim port → ImportError). Written into D-R5a-4.
+All three corrections applied; no M4b finding remains un-resolved. **The R5a decision block is now
+ratifiable** per `.ai-os/core/18` (every M4a cause + M4b finding resolves to a `TRACED` fix).
