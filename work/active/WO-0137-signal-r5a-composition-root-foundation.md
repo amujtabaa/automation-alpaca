@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R5a — composition-root foundation (config + create_app construction guards + launcher trio + rails seam)"
-status: QUEUED
+status: ACTIVE
 work_order_id: WO-0137
 wave: signal-seat reconciliation ladder, step R5 (split; R5a = construction-time foundation)
 model_tier: strong (LOCAL Codex — human-gated auth/launcher/transport security boundary)
