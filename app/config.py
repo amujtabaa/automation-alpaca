@@ -16,8 +16,10 @@ import json
 import math
 import os
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Optional
 
 # Which StateStore implementation the running app uses.
@@ -202,7 +204,7 @@ class Settings:
     # out of any ``repr(settings)``/log line. The producer map is
     # producer-key -> producer-id.
     operator_api_key: Optional[str] = field(default=None, repr=False)
-    signal_producer_keys: dict[str, str] = field(default_factory=dict, repr=False)
+    signal_producer_keys: Mapping[str, str] = field(default_factory=dict, repr=False)
 
     # --- Phase 4: broker + monitoring loop ------------------------------- #
     # Paper-only credentials. ``None`` when unset (dev/CI). ``repr=False`` keeps
@@ -296,6 +298,24 @@ class Settings:
     # dedicated fast loop; beta keeps it in the tick.
     protection_cadence_seconds: Optional[float] = None
 
+    def __post_init__(self) -> None:
+        """Defensively freeze the credential map carried by frozen settings.
+
+        ``frozen=True`` prevents rebinding a dataclass field, but it does not
+        freeze a mutable object stored in that field. Copying a mapping before
+        wrapping it closes the post-validation mutation window without retaining
+        an alias to caller-owned credential state. Deliberately malformed
+        non-mapping injections remain untouched so the construction validator
+        can reject them with the documented ``ValueError``/``RuntimeError``.
+        """
+
+        if isinstance(self.signal_producer_keys, Mapping):
+            object.__setattr__(
+                self,
+                "signal_producer_keys",
+                MappingProxyType(dict(self.signal_producer_keys)),
+            )
+
     @property
     def db_file(self) -> Path:
         return Path(self.db_path)
@@ -388,7 +408,7 @@ def _parse_producer_keys(raw: Optional[str]) -> dict[str, str]:
 
 
 def operator_producer_key_overlap(
-    operator_api_key: Optional[str], signal_producer_keys: dict[str, str]
+    operator_api_key: Optional[str], signal_producer_keys: Mapping[str, str]
 ) -> bool:
     """Return whether the operator credential equals a producer credential.
 
@@ -415,28 +435,31 @@ def validate_signal_seat_settings(settings: "Settings") -> None:
     settings. Validation is a no-op while the feature flag is off.
     """
 
+    if type(settings.signal_seat_enabled) is not bool:
+        raise ValueError("signal_seat_enabled must be a boolean")
     if not settings.signal_seat_enabled:
         return
     operator_api_key = settings.operator_api_key
-    if not operator_api_key or not operator_api_key.strip():
+    if not isinstance(operator_api_key, str) or not operator_api_key.strip():
         raise ValueError(
             f"{OPERATOR_API_KEY_ENV} must be a non-blank credential when "
             "signal_seat_enabled"
         )
-    if not settings.signal_producer_keys:
+    producer_keys = settings.signal_producer_keys
+    if not isinstance(producer_keys, Mapping) or not producer_keys:
         raise ValueError(
             f"{SIGNAL_PRODUCER_KEYS_ENV} must be a non-empty map when "
             "signal_seat_enabled"
         )
-    for key, producer_id in settings.signal_producer_keys.items():
-        if not key or not key.strip():
+    for key, producer_id in producer_keys.items():
+        if not isinstance(key, str) or not key.strip():
             raise ValueError(
-                f"{SIGNAL_PRODUCER_KEYS_ENV} keys must be non-blank (a blank key "
-                "would let an unconfigured credential authenticate)"
+                f"{SIGNAL_PRODUCER_KEYS_ENV} keys must be non-blank strings "
+                "(a blank key would let an unconfigured credential authenticate)"
             )
-        if not producer_id or not producer_id.strip():
+        if not isinstance(producer_id, str) or not producer_id.strip():
             raise ValueError(
-                f"{SIGNAL_PRODUCER_KEYS_ENV} producer ids must be non-blank"
+                f"{SIGNAL_PRODUCER_KEYS_ENV} producer ids must be non-blank strings"
             )
         for part, label in ((key, "key"), (producer_id, "producer id")):
             try:
@@ -446,24 +469,27 @@ def validate_signal_seat_settings(settings: "Settings") -> None:
                     f"{SIGNAL_PRODUCER_KEYS_ENV} {label} contains invalid Unicode "
                     "(unpaired surrogate)"
                 )
-    if operator_producer_key_overlap(operator_api_key, settings.signal_producer_keys):
+    if operator_producer_key_overlap(operator_api_key, producer_keys):
         raise ValueError(
             f"{OPERATOR_API_KEY_ENV} must not equal any key in "
             f"{SIGNAL_PRODUCER_KEYS_ENV} (ADR-009 A-1 role separation)"
         )
     budget = settings.signal_invalid_budget_per_epoch
-    if not 1 <= budget <= SIGNAL_INVALID_BUDGET_HARD_CAP:
+    if type(budget) is not int or not 1 <= budget <= SIGNAL_INVALID_BUDGET_HARD_CAP:
         raise ValueError(
             f"signal_invalid_budget_per_epoch must be in "
             f"[1, {SIGNAL_INVALID_BUDGET_HARD_CAP}] (ADR-009 A-4), got {budget}"
         )
     ttl_cap = settings.signal_server_max_ttl_seconds
-    if not 1 <= ttl_cap <= SIGNAL_SERVER_MAX_TTL_HARD_CAP:
+    if type(ttl_cap) is not int or not 1 <= ttl_cap <= SIGNAL_SERVER_MAX_TTL_HARD_CAP:
         raise ValueError(
             f"signal_server_max_ttl_seconds must be in "
             f"[1, {SIGNAL_SERVER_MAX_TTL_HARD_CAP}] (ADR-009 A-3), got {ttl_cap}"
         )
-    if settings.signal_transport_policy not in SIGNAL_TRANSPORT_POLICIES:
+    if (
+        not isinstance(settings.signal_transport_policy, str)
+        or settings.signal_transport_policy not in SIGNAL_TRANSPORT_POLICIES
+    ):
         raise ValueError(
             f"signal_transport_policy must be one of "
             f"{sorted(SIGNAL_TRANSPORT_POLICIES)} (ADR-009 A-1), got "

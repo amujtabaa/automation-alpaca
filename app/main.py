@@ -56,7 +56,7 @@ from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
 from app.config import Settings, load_settings, validate_signal_seat_settings
 from app.facade.signal_rails import is_conforming_rails
-from app.launch_guard import is_sanctioned
+from app.launch_guard import consume_launch_capability
 from app.marketdata.factory import create_market_data_service
 from app.monitoring import monitoring_loop, run_startup_reconcile
 from app.store import create_state_store
@@ -91,16 +91,19 @@ def create_app(
         settings = load_settings()
 
     if settings.signal_seat_enabled:
-        if not is_sanctioned(launch_capability):
+        if not consume_launch_capability(launch_capability, settings=settings):
             raise RuntimeError(
                 "signal_seat_enabled requires the backend-owned launcher "
                 "(`python -m app`); constructing without its launch capability "
                 "is unsupported (ADR-009 A-1 clause 6)."
             )
-        try:
-            validate_signal_seat_settings(settings)
-        except ValueError as exc:
-            raise RuntimeError(f"signal_seat_enabled: {exc}") from exc
+
+    try:
+        validate_signal_seat_settings(settings)
+    except ValueError as exc:
+        raise RuntimeError(f"signal_seat_enabled: {exc}") from exc
+
+    if settings.signal_seat_enabled:
         if not is_conforming_rails(signal_rails):
             raise RuntimeError(
                 "signal_seat_enabled requires a conforming signal rails provider "
@@ -209,4 +212,9 @@ def create_app(
 _module_settings = load_settings()
 if not _module_settings.signal_seat_enabled:
     app = create_app(settings=_module_settings)
+else:
+    # ``importlib.reload`` retains names that the new execution does not
+    # overwrite. Remove a prior flag-off export so OFF -> ON cannot leave a
+    # stale, servable application object behind.
+    globals().pop("app", None)
 del _module_settings

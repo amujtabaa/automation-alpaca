@@ -25,7 +25,9 @@ trusted-code misuse, not a Python sandbox against hostile in-repository code.
 
 from __future__ import annotations
 
+from threading import RLock
 from typing import TYPE_CHECKING, Optional
+from weakref import WeakValueDictionary
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -47,6 +49,18 @@ def validate_transport_bind(
 
     if not settings.signal_seat_enabled:
         return None
+    if host is not None and type(host) is not str:
+        return (
+            "ADR-009 A-1: signal_seat_enabled requires host to be a string "
+            f"or None, got {type(host).__name__}; refusing malformed bind "
+            "before opening any listener."
+        )
+    if uds is not None and (type(uds) is not str or not uds.strip()):
+        return (
+            "ADR-009 A-1: signal_seat_enabled requires uds to be a non-blank "
+            f"string or None, got {type(uds).__name__}; refusing malformed bind "
+            "before opening any listener."
+        )
     if uds:
         return None
     if host is None or host not in _LOOPBACK_HOSTS:
@@ -62,7 +76,10 @@ def validate_transport_bind(
 class _LaunchCapability:
     """Opaque construction capability built only with the private mint token."""
 
-    __slots__ = ("host", "uds")
+    __slots__ = ("_host", "_mint_marker", "_uds", "__weakref__")
+    _host: Optional[str]
+    _mint_marker: object
+    _uds: Optional[str]
 
     def __init__(
         self,
@@ -76,8 +93,26 @@ class _LaunchCapability:
                 "_LaunchCapability is code-owned; obtain one via "
                 "mint_launch_capability() (ADR-009 A-1 clause 6)."
             )
-        self.host = host
-        self.uds = uds
+        object.__setattr__(self, "_host", host)
+        object.__setattr__(self, "_uds", uds)
+        object.__setattr__(self, "_mint_marker", token)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("_LaunchCapability is immutable")
+
+    @property
+    def host(self) -> Optional[str]:
+        return self._host
+
+    @property
+    def uds(self) -> Optional[str]:
+        return self._uds
+
+
+_ISSUED_CAPABILITIES: WeakValueDictionary[int, _LaunchCapability] = (
+    WeakValueDictionary()
+)
+_ISSUED_CAPABILITIES_LOCK = RLock()
 
 
 def mint_launch_capability(
@@ -104,10 +139,51 @@ def mint_launch_capability(
             "refusing to mint a launch capability for a non-proxy-private bind "
             f"(ADR-009 A-1): {reason}"
         )
-    return _LaunchCapability(_MINT_TOKEN, host=host, uds=uds)
+    capability = _LaunchCapability(_MINT_TOKEN, host=host, uds=uds)
+    with _ISSUED_CAPABILITIES_LOCK:
+        _ISSUED_CAPABILITIES[id(capability)] = capability
+    return capability
 
 
-def is_sanctioned(capability: object) -> bool:
-    """Return whether ``capability`` was minted by this module."""
+def is_sanctioned(capability: object, *, settings: Optional["Settings"] = None) -> bool:
+    """Return whether this module minted ``capability`` for an accepted bind.
 
-    return isinstance(capability, _LaunchCapability)
+    The weak identity registry distinguishes a real mint from an instance made
+    with ``object.__new__``. When current settings are supplied, construction
+    revalidates the recorded bind under those settings; a permissive flag-off
+    capability therefore cannot be replayed into an enabled app.
+    """
+
+    with _ISSUED_CAPABILITIES_LOCK:
+        if type(capability) is not _LaunchCapability:
+            return False
+        try:
+            if (
+                _ISSUED_CAPABILITIES.get(id(capability)) is not capability
+                or capability._mint_marker is not _MINT_TOKEN
+            ):
+                return False
+            if settings is not None:
+                return (
+                    validate_transport_bind(
+                        host=capability.host,
+                        uds=capability.uds,
+                        settings=settings,
+                    )
+                    is None
+                )
+        except (AttributeError, TypeError):
+            return False
+        return True
+
+
+def consume_launch_capability(capability: object, *, settings: "Settings") -> bool:
+    """Validate and retire a one-shot construction capability."""
+
+    with _ISSUED_CAPABILITIES_LOCK:
+        if type(capability) is not _LaunchCapability or not is_sanctioned(
+            capability, settings=settings
+        ):
+            return False
+        _ISSUED_CAPABILITIES.pop(id(capability), None)
+        return True
