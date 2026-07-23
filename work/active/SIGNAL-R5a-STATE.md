@@ -87,8 +87,8 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 | signal_rails seam | GREEN | `6aee970`, `b985174` | 3/3 staged conformity-rejection cases pass; provider remains R6 |
 | create_app skeleton | GREEN | `6aee970`, `c968d26` | 14/14 ordered construction-guard cases pass |
 | helper + import-hunk | GREEN | `6aee970`, `3e6e3ed` | Helper imported; launcher allowlist hunk passes 6/6 boundary tests |
-| README | GREEN | README commit (this slice) | Enabled-seat launch callout says name is undefined, never `None` |
-| green evidence | PENDING | — | Bootstrap plus full gate battery |
+| README | GREEN | `3dadec4` | Enabled-seat launch callout says name is undefined, never `None` |
+| green evidence | IN PROGRESS | gate-fix commit (this slice) | Bootstrap green; full battery pending |
 | REV-0041 staging | PENDING | — | Claude-seat request; no result/disposition |
 
 ## Evidence log
@@ -120,6 +120,9 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
   replacement `_ENV` contains a Unix-only `PATH` and omits Windows system variables. Raw local
   execution makes Uvicorn fail in stdlib `_overlapped` with WinError 10106 before it can import
   `app.main`; 7/9 pass raw. No staged-test edit was made.
+- VERIFIED — `python harness/bootstrap.py`: dependency set already satisfied; `ruff check .`
+  passed; `mypy app/` passed across 74 source files; full `pytest --collect-only` completed and
+  includes all 43 staged R5a cases. Network retry warnings from pip were non-blocking.
 - VERIFIED — staged corpus content imported without assertion/scenario changes. The single
   authorized transport-vocabulary reconciliation changes all three necessary textual occurrences
   in `test_signal_seat_config.py` (doc, env input, assertion) from `tls_proxy` to
@@ -135,6 +138,17 @@ fable_fix:
   evidence: "Six non-bare launcher cases passed; test_subprocess_loopback_passes_bind_then_fails_on_rails failed with WinError 10106 and no rails token."
   fix: "Keep bind validation first, then mint and load production rails before importing Uvicorn or app.main."
   regression_test: "tests/test_signal_seat_launcher.py::test_subprocess_loopback_passes_bind_then_fails_on_rails"
+  red_green_verified: true
+  attempt: 1
+```
+
+```yaml
+fable_fix:
+  symptom: "The first bootstrap stopped at mypy with two incompatible object-to-str-or-None bind arguments."
+  root_cause: "mint_launch_capability exposed host and uds as arbitrary object even though the shared bind validator and sanctioned server accept only str or None."
+  evidence: "mypy app/ reported app/launch_guard.py arg-type errors for host and uds."
+  fix: "Narrow capability host/uds and settings annotations to Optional[str] and Settings; remove the suppression."
+  regression_test: "mypy app/ plus tests/test_signal_seat_launch_guard.py"
   red_green_verified: true
   attempt: 1
 ```

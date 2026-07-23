@@ -65,7 +65,11 @@ class _LaunchCapability:
     __slots__ = ("host", "uds")
 
     def __init__(
-        self, token: object, *, host: object = None, uds: object = None
+        self,
+        token: object,
+        *,
+        host: Optional[str] = None,
+        uds: Optional[str] = None,
     ) -> None:
         if token is not _MINT_TOKEN:
             raise RuntimeError(
@@ -77,7 +81,10 @@ class _LaunchCapability:
 
 
 def mint_launch_capability(
-    *, host: object = None, uds: object = None, settings: object
+    *,
+    host: Optional[str] = None,
+    uds: Optional[str] = None,
+    settings: "Settings",
 ) -> _LaunchCapability:
     """Mint a capability only for a bind accepted by the A-1 policy.
 
@@ -90,7 +97,7 @@ def mint_launch_capability(
     reason = validate_transport_bind(
         host=host,
         uds=uds,
-        settings=settings,  # type: ignore[arg-type]
+        settings=settings,
     )
     if reason is not None:
         raise RuntimeError(
