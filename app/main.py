@@ -54,7 +54,9 @@ from app.api import (
 )
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
-from app.config import load_settings
+from app.config import Settings, load_settings, validate_signal_seat_settings
+from app.facade.signal_rails import is_conforming_rails
+from app.launch_guard import is_sanctioned
 from app.marketdata.factory import create_market_data_service
 from app.monitoring import monitoring_loop, run_startup_reconcile
 from app.store import create_state_store
@@ -64,16 +66,46 @@ from app.strategy_loop import strategy_loop
 _log = logging.getLogger(__name__)
 
 
-def create_app(store: Optional[StateStore] = None) -> FastAPI:
+def create_app(
+    store: Optional[StateStore] = None,
+    *,
+    settings: Optional[Settings] = None,
+    launch_capability: object = None,
+    signal_rails: object = None,
+) -> FastAPI:
     """Build the FastAPI app.
 
     If ``store`` is provided (tests), it is used as-is; otherwise the configured
     implementation is built from the environment. A store we create is closed on
-    shutdown; an injected one is left to its owner.
+    shutdown; an injected one is left to its owner. Tests and the sanctioned
+    launcher may inject resolved settings.
+
+    Under the Signal Seat flag, construction requires the bind-bound launch
+    capability carried forward from archive REV-0025-F-001 @
+    origin/archive/claude-wo-0001-install-checks-2x5ys8, valid signal settings,
+    and a conforming rails provider, in that order.
     """
 
     owns_store = store is None
-    settings = load_settings()
+    if settings is None:
+        settings = load_settings()
+
+    if settings.signal_seat_enabled:
+        if not is_sanctioned(launch_capability):
+            raise RuntimeError(
+                "signal_seat_enabled requires the backend-owned launcher "
+                "(`python -m app`); constructing without its launch capability "
+                "is unsupported (ADR-009 A-1 clause 6)."
+            )
+        try:
+            validate_signal_seat_settings(settings)
+        except ValueError as exc:
+            raise RuntimeError(f"signal_seat_enabled: {exc}") from exc
+        if not is_conforming_rails(signal_rails):
+            raise RuntimeError(
+                "signal_seat_enabled requires a conforming signal rails provider "
+                "(ADR-009 A-4 rails-presence guard); WO-0104 wires the real one."
+            )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -81,6 +113,8 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
         await active_store.initialize()
         app.state.store = active_store
         app.state.settings = settings
+        if settings.signal_seat_enabled:
+            app.state.signal_rails = signal_rails
         app.state.approval_gate = HumanApprovalGate(active_store)
         app.state.broker_adapter = create_broker_adapter(settings)
         app.state.market_data = create_market_data_service(settings)
@@ -165,5 +199,14 @@ def create_app(store: Optional[StateStore] = None) -> FastAPI:
     return app
 
 
-# Module-level app for `uvicorn app.main:app`.
-app = create_app()
+# Module-level app for the bare `uvicorn app.main:app` development command.
+# Flag off keeps the existing export. Flag on deliberately leaves the NAME
+# undefined (not ``None``), so Uvicorn's import lookup fails synchronously before
+# any socket binds. This preserves the construction-time control proven by
+# archive REV-0025-F-002 @
+# origin/archive/claude-wo-0001-install-checks-2x5ys8 while allowing
+# ``app.server`` to import and call ``create_app`` directly.
+_module_settings = load_settings()
+if not _module_settings.signal_seat_enabled:
+    app = create_app(settings=_module_settings)
+del _module_settings

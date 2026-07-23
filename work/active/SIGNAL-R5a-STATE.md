@@ -83,9 +83,9 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
 | config | GREEN | `6aee970`, `58ceb32` | 20/20 staged config tests pass |
-| launcher trio | PARTIAL GREEN | `6aee970`, `3e6e3ed` | 7/7 non-bare-Uvicorn cases pass; 2 socket cases await `main.py` |
-| signal_rails seam | GREEN | `6aee970` + rails implementation commit (this slice) | 3/3 staged conformity-rejection cases pass; provider remains R6 |
-| create_app skeleton | RED | `6aee970` | Guard corpus blocked at missing launch module first |
+| launcher trio | GREEN (Windows-adapted) | `6aee970`, `3e6e3ed` + main implementation commit (this slice) | 9/9 unchanged staged cases pass when mandatory Windows child env is preserved |
+| signal_rails seam | GREEN | `6aee970`, `b985174` | 3/3 staged conformity-rejection cases pass; provider remains R6 |
+| create_app skeleton | GREEN | `6aee970` + main implementation commit (this slice) | 14/14 ordered construction-guard cases pass |
 | helper + import-hunk | GREEN | `6aee970`, `3e6e3ed` | Helper imported; launcher allowlist hunk passes 6/6 boundary tests |
 | README | PENDING | — | UNDEFINED-not-None correction only |
 | green evidence | PENDING | — | Bootstrap plus full gate battery |
@@ -109,6 +109,17 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
   `app.server` and `app.__main__` while preserving the recorder reachers.
 - VERIFIED (RED→GREEN) — guard collection first failed on absent `app.facade.signal_rails`; after
   landing the Protocol seam, its three staged nonconforming-provider cases pass.
+- VERIFIED (RED→GREEN) — before the `create_app` rewrite, the guard corpus had 9 failures and 5
+  passes; after the ordered construction guards and conditional module export, all 14 pass.
+- VERIFIED — with a normal inherited Windows environment and the flag on, importing `app.main`
+  reports `APP_DEFINED=False`; bare Uvicorn exits before bind with exact
+  `Attribute "app" not found in module "app.main"`.
+- VERIFIED (platform-adapted) — all 9 unchanged staged launcher cases pass when the test child
+  retains mandatory Windows system variables/path in addition to its five explicit signal vars.
+- BLOCKED (raw harness portability, not repository import) — the unchanged staged launcher test's
+  replacement `_ENV` contains a Unix-only `PATH` and omits Windows system variables. Raw local
+  execution makes Uvicorn fail in stdlib `_overlapped` with WinError 10106 before it can import
+  `app.main`; 7/9 pass raw. No staged-test edit was made.
 - VERIFIED — staged corpus content imported without assertion/scenario changes. The single
   authorized transport-vocabulary reconciliation changes all three necessary textual occurrences
   in `test_signal_seat_config.py` (doc, env input, assertion) from `tls_proxy` to
