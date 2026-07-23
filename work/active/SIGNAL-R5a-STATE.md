@@ -82,11 +82,11 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
-| config | PENDING | — | RED corpus not imported yet |
-| launcher trio | PENDING | — | Includes sanctioned import-boundary hunk |
-| signal_rails seam | PENDING | — | Seam only; provider remains R6 |
-| create_app skeleton | PENDING | — | R5b imports and middleware forbidden |
-| helper + import-hunk | PENDING | — | Test helper plus `_SANCTIONED_*` only |
+| config | RED | RED corpus commit (this slice) | 20/20 targeted tests fail before implementation |
+| launcher trio | RED | RED corpus commit (this slice) | Collection fails: `app.server` / `app.launch_guard` absent |
+| signal_rails seam | RED | RED corpus commit (this slice) | Guard corpus blocked at missing launch module first |
+| create_app skeleton | RED | RED corpus commit (this slice) | Guard corpus blocked at missing launch module first |
+| helper + import-hunk | PARTIAL | RED corpus commit (this slice) | Helper imported; import hunk waits for launcher same-change |
 | README | PENDING | — | UNDEFINED-not-None correction only |
 | green evidence | PENDING | — | Bootstrap plus full gate battery |
 | REV-0041 staging | PENDING | — | Claude-seat request; no result/disposition |
@@ -96,4 +96,12 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 - VERIFIED — 2026-07-23 preflight: clean tree; `83a740b` is an ancestor of `origin/master`;
   feature branch created from `origin/master`; WO exists; ADR-009 Accepted 2026-07-21; staged and
   archive refs readable; `work/review/REV-0041/` free.
+- VERIFIED (RED) — targeted `pytest --collect-only`: config collected 20 cases; launcher and guard
+  collection failed on absent `app.server` and `app.launch_guard`.
+- VERIFIED (RED) — `pytest -q tests/test_signal_seat_config.py`: 20 failed; missing signal fields,
+  parsing, validation, and overlap guard.
+- VERIFIED — staged corpus content imported without assertion/scenario changes. The single
+  authorized transport-vocabulary reconciliation changes all three necessary textual occurrences
+  in `test_signal_seat_config.py` (doc, env input, assertion) from `tls_proxy` to
+  `tailnet_serve`; changing only one physical occurrence would make the test self-contradictory.
 - UNVERIFIED — implementation and all acceptance gates pending.
