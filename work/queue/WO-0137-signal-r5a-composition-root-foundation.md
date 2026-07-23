@@ -89,10 +89,19 @@ middleware, docs-disable, cockpit, `.importlinter` (all R5b).
       `"proxy-private"`, `"non-loopback"`); BOTH `loopback` and `tailnet_serve` bind loopback (the
       policy value gates the negative test + docs, not the bind). — TRACED(archive
       `app/launch_guard.py:53-73` + spec 04:13-17 + `test_signal_seat_launcher.py:39-68 @ staging`).
-- [x] **D-R5a-7 Capability = code-owned only.** The mint sentinel never leaves `app/launch_guard.py`;
-      the capability is NOT env/config/importable; `is_sanctioned(object())` and `is_sanctioned(None)`
-      are False; the mint re-validates the bind (bind-bound). — TRACED(archive
-      `app/launch_guard.py:42,76-132` + `test_signal_seat_launch_guard.py:51-91 @ staging`).
+- [x] **D-R5a-7 Capability = code-owned, exact-identity, one-shot (forgery-resistant).** The mint
+      sentinel never leaves `app/launch_guard.py`; the capability is NOT env/config/importable. The
+      recognizer accepts ONLY the exact issued instance: **exact-type** (`type(cap) is
+      _LaunchCapability`, not `isinstance` — a subclass is rejected) AND **exact-identity** issuance
+      tracking (the specific minted instance, tracked by identity, consumed ONE-SHOT) — NEVER
+      equality/hash/membership-based (a `WeakSet` `in`-check is spoofable via a crafted
+      `__eq__`/`__hash__`; that was the forgery vector the attempt-1 internal-adversarial test
+      surfaced and the root agent fixed). `is_sanctioned` returns False for `object()`, `None`, a
+      subclass instance, an equality-spoofing clone, a copied-private-fields clone, and an
+      already-consumed capability. The mint re-validates the bind (bind-bound). Add fail-closed
+      negative tests asserting each forged form is REJECTED (assertions of rejection, never
+      forgery proof-of-concept narratives). — TRACED(archive `app/launch_guard.py:42,76-132` +
+      `test_signal_seat_launch_guard.py:51-91 @ staging` + the attempt-1 adversarial forgery finding).
 - [x] **D-R5a-8 Rails SEAM only, not the provider.** R5a lands `app/facade/signal_rails.py`
       (Protocol + `is_conforming_rails`) and the create_app rails-presence guard; the REAL rails
       provider is **R6 (WO-0104)**. The launcher positive-control test EXPECTS the rails
