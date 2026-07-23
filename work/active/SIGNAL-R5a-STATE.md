@@ -82,14 +82,14 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
-| config | GREEN | `6aee970`, `58ceb32` | 20/20 staged config tests pass |
-| launcher trio | GREEN (Windows-adapted) | `6aee970`, `3e6e3ed`, `c968d26` | 9/9 unchanged staged cases pass when mandatory Windows child env is preserved |
+| config | GREEN | `6aee970`, `58ceb32`, `a410546` | 20/20 staged config tests pass; injected types and credential-map immutability hardened |
+| launcher trio | BLOCKED (raw Windows proof 7/9) | `6aee970`, `3e6e3ed`, `c968d26`, `a410546` | Seven cases pass; two bare-Uvicorn children fail in Windows stdlib before importing repository code |
 | signal_rails seam | GREEN | `6aee970`, `b985174` | 3/3 staged conformity-rejection cases pass; provider remains R6 |
-| create_app skeleton | GREEN | `6aee970`, `c968d26` | 14/14 ordered construction-guard cases pass |
-| helper + import-hunk | GREEN | `6aee970`, `3e6e3ed` | Helper imported; launcher allowlist hunk passes 6/6 boundary tests |
+| create_app skeleton | GREEN (direct corpus) | `6aee970`, `c968d26`, `a410546` | 14/14 ordered construction-guard cases pass; reload, exact identity, bind replay, and one-shot controls pass |
+| helper + import-hunk | BLOCKED (ADR conflict) | `6aee970`, `3e6e3ed` | Import boundary is 6/6 green, but the staged zero-argument helper is selectable by Uvicorn and conflicts with ADR-009 A-1/A-4 |
 | README | GREEN | `3dadec4` | Enabled-seat launch callout says name is undefined, never `None` |
-| green evidence | IN PROGRESS | gate-fix commit (this slice) | Bootstrap green; full battery pending |
-| REV-0041 staging | PENDING | — | Claude-seat request; no result/disposition |
+| green evidence | BLOCKED | `5d04d6f`, `a410546` | Lint/type/import/bootstrap/scaling green; raw pytest, formatter, and direct R2 command are not green |
+| REV-0041 staging | BLOCKED — NOT CREATED | — | Stop conditions reached; staging a review-ready packet or setting REVIEW would misstate the gates |
 
 ## Evidence log
 
@@ -111,23 +111,59 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
   landing the Protocol seam, its three staged nonconforming-provider cases pass.
 - VERIFIED (RED→GREEN) — before the `create_app` rewrite, the guard corpus had 9 failures and 5
   passes; after the ordered construction guards and conditional module export, all 14 pass.
+- VERIFIED (RED→GREEN, adversarial) — a public-bind capability minted flag-off could be replayed
+  into flag-on construction, and an `object.__new__` instance passed the former `isinstance` guard.
+  Exact-type/exact-identity issuance plus current-settings bind revalidation now refuse both.
+- VERIFIED (RED→GREEN, adversarial) — equality-based issuance tracking was forgeable; exact identity
+  in a weak value registry closes that path. A string subtype could disguise a non-loopback value;
+  exact built-in `str` checks now refuse it.
+- VERIFIED (RED→GREEN, concurrency) — the first one-shot consume was check-then-pop and two threads
+  could both succeed. Locked validation/consumption produced exactly 1 success and 15 refusals.
+- VERIFIED (RED→GREEN) — OFF→ON `importlib.reload` formerly retained the old module-level `app`;
+  the flag-on branch now removes a stale name and the fresh control reports it undefined.
+- VERIFIED (RED→GREEN) — malformed injected signal settings formerly raised raw
+  `AttributeError`/`TypeError`, and the frozen dataclass retained a mutable credential map. Invalid
+  flag/key/map/budget/TTL types now become construction `RuntimeError`; map and capability state are
+  immutable.
 - VERIFIED — with a normal inherited Windows environment and the flag on, importing `app.main`
   reports `APP_DEFINED=False`; bare Uvicorn exits before bind with exact
   `Attribute "app" not found in module "app.main"`.
 - VERIFIED (platform-adapted) — all 9 unchanged staged launcher cases pass when the test child
-  retains mandatory Windows system variables/path in addition to its five explicit signal vars.
+  inherits the normal Windows environment and then applies the staged signal overrides.
 - BLOCKED (raw harness portability, not repository import) — the unchanged staged launcher test's
   replacement `_ENV` contains a Unix-only `PATH` and omits Windows system variables. Raw local
   execution makes Uvicorn fail in stdlib `_overlapped` with WinError 10106 before it can import
   `app.main`; 7/9 pass raw. No staged-test edit was made.
-- VERIFIED — `python harness/bootstrap.py`: dependency set already satisfied; `ruff check .`
-  passed; `mypy app/` passed across 74 source files; full `pytest --collect-only` completed and
-  includes all 43 staged R5a cases. Network retry warnings from pip were non-blocking.
+- BLOCKED (accepted-authority conflict) — `uvicorn.Config(
+  "tests.signal_seat_helpers:build_flag_on_app", factory=True).load()` constructs the flag-on app
+  with permissive rails. The staged zero-argument helper is therefore selectable from a source-tree
+  deployment despite ADR-009 A-1 forbidding a zero-argument authorized factory and A-4 requiring a
+  fake to be unselectable by production config/environment. Fixing it changes the staged corpus and
+  needs operator authority.
+- VERIFIED — post-hardening focused corpus: 40/40 config + construction-guard + import-boundary
+  cases pass. Post-hardening raw full suite collected 4320 cases and ended with only the two known
+  bare-Uvicorn harness failures (4306 passed, 11 skipped, 1 expected failure, 2 failed).
+- VERIFIED — `python harness/bootstrap.py`: exit 0; `ruff check .` and `mypy app/` passed; full
+  `pytest --collect-only` completed and includes all 43 staged R5a cases.
+- VERIFIED — `ruff check .`, `mypy app/` (74 source files), `lint-imports` (6 contracts), and
+  `pytest -q tests/test_wo0113_repair_scaling.py` (13/13) pass.
+- BLOCKED (formatter contract) — `ruff format --check .` reports 12 files: ten inherited/out of
+  scope and the two immutable staged R5a launcher/guard tests. Formatting the staged files is beyond
+  the one authorized test edit; formatting the other ten is outside allowed paths.
+- BLOCKED (gate invocation) — the stipulated direct `python tests/r2_conformance_oracle.py` exits
+  with `ModuleNotFoundError: app`; the same unchanged oracle exits 0 when the repo root is supplied
+  on `PYTHONPATH`. No gate substitution was self-authorized.
 - VERIFIED — staged corpus content imported without assertion/scenario changes. The single
   authorized transport-vocabulary reconciliation changes all three necessary textual occurrences
   in `test_signal_seat_config.py` (doc, env input, assertion) from `tls_proxy` to
   `tailnet_serve`; changing only one physical occurrence would make the test self-contradictory.
-- UNVERIFIED — implementation and all acceptance gates pending.
+- VERIFIED — three staged files differ from their staging blobs only by normalization of one final
+  empty line; the config blob additionally has only the three coherent authorized transport-literal
+  replacements. No assertion or scenario changed.
+- NEEDS-INPUT — operator disposition is required for the three decision groups in
+  `work/active/SIGNAL-R5a-NEEDS-INPUT.md`.
+- BLOCKED — WO-0137 remains ACTIVE. REV-0041 is deliberately absent, the ledger is untouched, and
+  no REVIEW/completion claim is made.
 
 ## FIX records
 
@@ -140,6 +176,52 @@ fable_fix:
   regression_test: "tests/test_signal_seat_launcher.py::test_subprocess_loopback_passes_bind_then_fails_on_rails"
   red_green_verified: true
   attempt: 1
+```
+
+```yaml
+fable_fix:
+  symptom: "A capability minted for a public bind while flag-off could construct flag-on, and unissued instances passed the construction guard."
+  root_cause: "The guard used isinstance only; recorded bind data was never revalidated and issuance identity was not tracked."
+  evidence: "Live controls printed RED_PUBLIC_REUSE True ACCEPTED and RED_OBJECT_NEW True ACCEPTED."
+  fix: "Track exact issued identity weakly, require exact capability type/marker, revalidate its bind against current settings, and consume it once."
+  regression_test: "Adversarial public-replay, unissued-instance, equality-forgery, and sequential one-shot controls plus the staged guard corpus."
+  red_green_verified: true
+  attempt: 2
+```
+
+```yaml
+fable_fix:
+  symptom: "Equality tricks, string-subtype bind disguise, and concurrent consumers could defeat the first hardening."
+  root_cause: "WeakSet membership was equality-based, bind membership accepted str subclasses, and consume was not atomic."
+  evidence: "Independent disproof reproduced each path; the 16-worker pre-fix consume admitted more than one caller."
+  fix: "Use id-keyed WeakValueDictionary with identity comparison, exact built-in str bind types, and an RLock around issuance validation/consumption."
+  regression_test: "Equality-forgery refusal, disguised non-loopback refusal, and 16-worker consume control (1 true, 15 false)."
+  red_green_verified: true
+  attempt: 3
+```
+
+```yaml
+fable_fix:
+  symptom: "Reload retained a stale app export; malformed injected settings escaped as raw exceptions; the producer credential map was mutable."
+  root_cause: "Reload preserves unassigned globals, dataclass type hints do not validate runtime inputs, and frozen dataclasses do not freeze nested dictionaries."
+  evidence: "Pre-fix controls reported RED_RELOAD_AFTER True, raw AttributeError/TypeError cases, and RED_MUTABLE_MAP MUTATED."
+  fix: "Pop the app name on flag-on reload, explicitly validate runtime types, and defensively copy credentials into MappingProxyType."
+  regression_test: "Reload transition, invalid-type matrix, alias/direct map mutation, staged config and construction-guard corpus."
+  red_green_verified: true
+  attempt: 1
+```
+
+## Current terminal state
+
+```yaml
+fable_done:
+  status: BLOCKED
+  reason: "The immutable staged corpus conflicts with the required Windows proof and accepted zero-argument-factory boundary; two full-battery baseline commands also cannot pass within allowed paths."
+  review_ready: false
+  work_order_status: ACTIVE
+  review_packet_created: false
+  ledger_touched: false
+  merged: false
 ```
 
 ```yaml

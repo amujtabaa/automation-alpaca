@@ -170,10 +170,10 @@ post-session REV-0041 code review.
 
 ## Required behavior
 
-- [ ] **GATE** (fable_gate): restate goal/scope/done-when/blast-radius before building.
-- [ ] **Red-first:** pull the R5a test slices from staging; re-baseline the config test's `tls_proxy`
+- [x] **GATE** (fable_gate): restate goal/scope/done-when/blast-radius before building.
+- [x] **Red-first:** pull the R5a test slices from staging; re-baseline the config test's `tls_proxy`
       → `tailnet_serve` (D-R5a-3) and paste the diff + rationale; paste the RED collection.
-- [ ] **`app/config.py`:** all signal fields (`signal_seat_enabled`, `signal_transport_policy`,
+- [x] **`app/config.py`:** all signal fields (`signal_seat_enabled`, `signal_transport_policy`,
       `operator_api_key` (`repr=False`), `signal_producer_keys` (`repr=False`),
       `signal_invalid_budget_per_epoch`, `signal_server_max_ttl_seconds`) + env parsing +
       `validate_signal_seat_settings` + the operator/producer overlap helper. Turn
@@ -181,13 +181,13 @@ post-session REV-0041 code review.
 - [ ] **Launcher trio** `app/server.py` (programmatic uvicorn, bind re-validated + `SystemExit(2)`),
       `app/launch_guard.py` (leaf: `validate_transport_bind` + code-owned capability), `app/__main__.py`
       (`python -m app`). Turn `test_signal_seat_launcher.py` green (incl. the subprocess bind proofs).
-- [ ] **`app/facade/signal_rails.py`** Protocol seam (`RailsDecision`, `is_conforming_rails`).
-- [ ] **`app/main.py::create_app` skeleton:** new signature + the three construction guards + the
+- [x] **`app/facade/signal_rails.py`** Protocol seam (`RailsDecision`, `is_conforming_rails`).
+- [x] **`app/main.py::create_app` skeleton:** new signature + the three construction guards + the
       conditional module-level `app`. Turn `test_signal_seat_launch_guard.py` green. Keep the
       flag-OFF path byte-equivalent to today.
 - [ ] **`tests/signal_seat_helpers.py`** (construction seam) + the `test_import_boundaries.py`
       `_SANCTIONED_*` hunk (same change as the launcher) + the README correction.
-- [ ] **Bootstrap non-regression:** verify `harness/bootstrap.py` runs flag-off and its smoke gate
+- [x] **Bootstrap non-regression:** verify `harness/bootstrap.py` runs flag-off and its smoke gate
       still passes (paste evidence).
 - [ ] **Stage `work/review/REV-0041/request.md`** for the Claude seat (REV-0027 checklist,
       archive-ref-renumbered; the never-reviewed items: the master `create_app` REWRITE, the
