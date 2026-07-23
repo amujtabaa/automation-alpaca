@@ -82,11 +82,11 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
-| config | RED | RED corpus commit (this slice) | 20/20 targeted tests fail before implementation |
-| launcher trio | RED | RED corpus commit (this slice) | Collection fails: `app.server` / `app.launch_guard` absent |
-| signal_rails seam | RED | RED corpus commit (this slice) | Guard corpus blocked at missing launch module first |
-| create_app skeleton | RED | RED corpus commit (this slice) | Guard corpus blocked at missing launch module first |
-| helper + import-hunk | PARTIAL | RED corpus commit (this slice) | Helper imported; import hunk waits for launcher same-change |
+| config | GREEN | `6aee970` + config implementation commit (this slice) | 20/20 staged config tests pass |
+| launcher trio | RED | `6aee970` | Collection fails: `app.server` / `app.launch_guard` absent |
+| signal_rails seam | RED | `6aee970` | Guard corpus blocked at missing launch module first |
+| create_app skeleton | RED | `6aee970` | Guard corpus blocked at missing launch module first |
+| helper + import-hunk | PARTIAL | `6aee970` | Helper imported; import hunk waits for launcher same-change |
 | README | PENDING | — | UNDEFINED-not-None correction only |
 | green evidence | PENDING | — | Bootstrap plus full gate battery |
 | REV-0041 staging | PENDING | — | Claude-seat request; no result/disposition |
@@ -100,6 +100,8 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
   collection failed on absent `app.server` and `app.launch_guard`.
 - VERIFIED (RED) — `pytest -q tests/test_signal_seat_config.py`: 20 failed; missing signal fields,
   parsing, validation, and overlap guard.
+- VERIFIED (GREEN) — after the surgical `app/config.py` implementation,
+  `pytest -q tests/test_signal_seat_config.py`: 20 passed.
 - VERIFIED — staged corpus content imported without assertion/scenario changes. The single
   authorized transport-vocabulary reconciliation changes all three necessary textual occurrences
   in `test_signal_seat_config.py` (doc, env input, assertion) from `tls_proxy` to
