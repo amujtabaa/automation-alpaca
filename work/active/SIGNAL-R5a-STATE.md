@@ -83,10 +83,10 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
 | config | GREEN | `6aee970`, `58ceb32` | 20/20 staged config tests pass |
-| launcher trio | PARTIAL GREEN | `6aee970` + launcher implementation commit (this slice) | 7/7 non-bare-Uvicorn cases pass; 2 socket cases await `main.py` |
-| signal_rails seam | RED | `6aee970` | Guard corpus blocked at missing launch module first |
+| launcher trio | PARTIAL GREEN | `6aee970`, `3e6e3ed` | 7/7 non-bare-Uvicorn cases pass; 2 socket cases await `main.py` |
+| signal_rails seam | GREEN | `6aee970` + rails implementation commit (this slice) | 3/3 staged conformity-rejection cases pass; provider remains R6 |
 | create_app skeleton | RED | `6aee970` | Guard corpus blocked at missing launch module first |
-| helper + import-hunk | GREEN | `6aee970` + launcher implementation commit (this slice) | Helper imported; launcher allowlist hunk passes 6/6 boundary tests |
+| helper + import-hunk | GREEN | `6aee970`, `3e6e3ed` | Helper imported; launcher allowlist hunk passes 6/6 boundary tests |
 | README | PENDING | — | UNDEFINED-not-None correction only |
 | green evidence | PENDING | — | Bootstrap plus full gate battery |
 | REV-0041 staging | PENDING | — | Claude-seat request; no result/disposition |
@@ -107,6 +107,8 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
   downstream missing-R6 rails failure all hold.
 - VERIFIED (GREEN) — `pytest -q tests/test_import_boundaries.py`: 6 passed after adding only
   `app.server` and `app.__main__` while preserving the recorder reachers.
+- VERIFIED (RED→GREEN) — guard collection first failed on absent `app.facade.signal_rails`; after
+  landing the Protocol seam, its three staged nonconforming-provider cases pass.
 - VERIFIED — staged corpus content imported without assertion/scenario changes. The single
   authorized transport-vocabulary reconciliation changes all three necessary textual occurrences
   in `test_signal_seat_config.py` (doc, env input, assertion) from `tls_proxy` to
