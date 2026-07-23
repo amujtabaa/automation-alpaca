@@ -82,11 +82,11 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
-| config | GREEN | `6aee970` + config implementation commit (this slice) | 20/20 staged config tests pass |
-| launcher trio | RED | `6aee970` | Collection fails: `app.server` / `app.launch_guard` absent |
+| config | GREEN | `6aee970`, `58ceb32` | 20/20 staged config tests pass |
+| launcher trio | PARTIAL GREEN | `6aee970` + launcher implementation commit (this slice) | 7/7 non-bare-Uvicorn cases pass; 2 socket cases await `main.py` |
 | signal_rails seam | RED | `6aee970` | Guard corpus blocked at missing launch module first |
 | create_app skeleton | RED | `6aee970` | Guard corpus blocked at missing launch module first |
-| helper + import-hunk | PARTIAL | `6aee970` | Helper imported; import hunk waits for launcher same-change |
+| helper + import-hunk | GREEN | `6aee970` + launcher implementation commit (this slice) | Helper imported; launcher allowlist hunk passes 6/6 boundary tests |
 | README | PENDING | — | UNDEFINED-not-None correction only |
 | green evidence | PENDING | — | Bootstrap plus full gate battery |
 | REV-0041 staging | PENDING | — | Claude-seat request; no result/disposition |
@@ -102,8 +102,26 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
   parsing, validation, and overlap guard.
 - VERIFIED (GREEN) — after the surgical `app/config.py` implementation,
   `pytest -q tests/test_signal_seat_config.py`: 20 passed.
+- VERIFIED (PARTIAL GREEN) — launcher corpus excluding the two bare-Uvicorn cases: 7 passed;
+  bind refusal, loopback/UDS acceptance, `SystemExit(2)` subprocess behavior, and the distinct
+  downstream missing-R6 rails failure all hold.
+- VERIFIED (GREEN) — `pytest -q tests/test_import_boundaries.py`: 6 passed after adding only
+  `app.server` and `app.__main__` while preserving the recorder reachers.
 - VERIFIED — staged corpus content imported without assertion/scenario changes. The single
   authorized transport-vocabulary reconciliation changes all three necessary textual occurrences
   in `test_signal_seat_config.py` (doc, env input, assertion) from `tls_proxy` to
   `tailnet_serve`; changing only one physical occurrence would make the test self-contradictory.
 - UNVERIFIED — implementation and all acceptance gates pending.
+
+## FIX records
+
+```yaml
+fable_fix:
+  symptom: "The loopback launcher subprocess failed with WinError 10106 before reaching the expected missing-R6 rails diagnostic."
+  root_cause: "app.server imported Uvicorn under the staged test's minimal replacement environment before running the rails-presence guard, which initialized Windows networking first."
+  evidence: "Six non-bare launcher cases passed; test_subprocess_loopback_passes_bind_then_fails_on_rails failed with WinError 10106 and no rails token."
+  fix: "Keep bind validation first, then mint and load production rails before importing Uvicorn or app.main."
+  regression_test: "tests/test_signal_seat_launcher.py::test_subprocess_loopback_passes_bind_then_fails_on_rails"
+  red_green_verified: true
+  attempt: 1
+```

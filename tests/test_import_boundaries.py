@@ -39,14 +39,18 @@ _SANCTIONED_ALPACA_IMPORTERS = {
 
 # The full set of modules allowed to TRANSITIVELY reach the SDK: the two direct
 # importers above, the two credential-safe factories that build them, and the
-# two composition roots that wire them: the application and the separate,
-# read-only tape-recorder launcher. (ADR-006 Finding 1 — the factories were
+# composition roots that wire them: the application, backend-owned launcher,
+# and read-only tape-recorder launcher. (ADR-006 Finding 1 — the factories were
 # lifted out of the package __init__ so the bare `app.broker`/`app.marketdata`
 # packages, and thus the abstract port, never reach alpaca.)
 _SANCTIONED_ALPACA_REACHERS = _SANCTIONED_ALPACA_IMPORTERS | {
     "app.broker.factory",
     "app.marketdata.factory",
     "app.main",
+    # The backend-owned launch/composition root (ADR-009 A-1 clause 6):
+    # `python -m app` -> app.server.run() -> app.main.create_app().
+    "app.server",
+    "app.__main__",
     "app.recorder.__main__",
     "app.recorder.runner",
 }
