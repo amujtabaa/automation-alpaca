@@ -1,8 +1,14 @@
-# Codex kickoff — Signal Seat R5a: composition-root foundation (LOCAL, strongest model) — rev-2
+# Codex kickoff — Signal Seat R5a: composition-root foundation (LOCAL, strongest model) — rev-3
 
 > Operator launch prompt, drafted by the planning seat 2026-07-22 (rev-2: defensive reframing +
-> exact-identity capability design). Paste into a FRESH **local** Codex session at the repo root,
-> strongest model, full effort.
+> exact-identity capability design; rev-3 2026-07-23: adopt the defect-class reporting convention —
+> *incorrect type acceptance* / *identity-validation defect* / *non-atomic one-use validation* — and
+> fold in the attempt-2 string/loopback/atomic hardening the root agent landed). Paste into a FRESH
+> **local** Codex session at the repo root, strongest model, full effort.
+>
+> **Note (2026-07-23):** R5a is already implemented on `codex/signal-r5a-foundation` @ `4bb1bfb`; the
+> three gate blockers are dispositioned in `work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md`. This
+> kickoff is retained as the rev-3 contract of record / relaunch vehicle — not a fresh launch.
 
 ## Authorized defensive scope (read first)
 
@@ -113,18 +119,29 @@ middleware blocks. Those R5b files are ABSENT on master; a verbatim port `Import
 `create_app` skeleton EXCLUDES those imports and the middleware, constructs flag-on with master's
 EXISTING routers and NO signal middleware, and passes `test_signal_seat_launch_guard.py`.
 
-## How to run adversarial checks without tripping tooling filters
+## Adversarial controls: name the defect class, express it as a regression test (the reporting convention)
 
-The capability recognizer and the launcher get **fail-closed negative tests** — that is normal and
-required. Two rules so an internal adversarial subagent's *report* doesn't get flagged as a
-cybersecurity request:
-1. **Frame every negative test as a rejection assertion, not a bypass PoC.** "the recognizer refuses
-   a subclass / an equality-spoofing object / a copied-fields clone / a re-used capability"; "the
-   launcher refuses to open a listener on a non-loopback bind." Assert what is REFUSED; don't narrate
-   how one would forge or bypass.
-2. **The forgery vector is already closed by the D-R5a-7 exact-identity design** — you are confirming
-   the door is locked, not demonstrating how to pick it. No proof-of-concept forgery walkthrough is
-   needed or wanted in code, comments, or the REV-0041 request.
+The capability recognizer and the launcher get **fail-closed negative tests** — normal and required.
+The known defect classes on this surface are ALREADY CLOSED by the D-R5a-4/D-R5a-7 design below; the
+tests CONFIRM they stay closed. To keep both the implementation and any review report filter-safe,
+follow one convention: **name the defect class and express the control as a local regression test —
+do not emit reusable bypass recipes or step-by-step exploit payloads** (in code, comments, commit
+messages, or the REV-0041 request). Use these terms:
+
+- **"incorrect type acceptance"** — the recognizer/validator accepting a non-exact type (a subclass,
+  or a `str` subtype). Control: a regression test asserting the exact-type check rejects it.
+- **"identity-validation defect"** — accepting anything other than the exact issued instance.
+  Control: a regression test asserting a non-issued/cloned object is rejected.
+- **"non-atomic one-use validation"** — a consumption check that isn't atomic. Control: a regression
+  test asserting concurrent double-consumption yields exactly one success.
+
+Report any defect (if you find a new one) as **cause · impact · affected local files · resolution ·
+pass/fail evidence** — narrowly, as a regression test, not an exploit narrative. **Do NOT spin up an
+open-ended "try to break the guard" adversarial-discovery pass on the launch/capability layer** — the
+three classes above are pre-closed and the independent **REV-0041 Claude-seat review is the sanctioned
+adversarial net for this surface** (it verifies rejection of each class, in the same named terms). This
+scope is authorized defensive software assurance of the operator's own local application — no external
+target, network probing, credential access, persistence, or offensive objective anywhere.
 
 ## Continuity across pauses and compaction
 

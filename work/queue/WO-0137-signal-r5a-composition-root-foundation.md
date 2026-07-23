@@ -67,7 +67,12 @@ middleware, docs-disable, cockpit, `.importlinter` (all R5b).
       messages MUST carry the tokens the staged regexes match — in particular the TTL-out-of-range
       message must contain `A-3` (the field name `signal_server_max_ttl_seconds` is lowercase and
       would not match a bare `TTL`; the staged regex is `budget|TTL|A-3|A-4`,
-      `test_signal_seat_launch_guard.py:150-174 @ staging`). — TRACED(archive `app/main.py:120-148`
+      `test_signal_seat_launch_guard.py:150-174 @ staging`). **String-input hardening (attempt-2
+      finding):** `validate_signal_seat_settings` validates every string input on the security path
+      — producer-key-map keys/values, `operator_api_key`, `signal_transport_policy` — as an EXACT
+      built-in `str` (`type(x) is str`) BEFORE any dict lookup or comparison, so a crafted `str`
+      subclass with custom `__eq__`/`__hash__` cannot spoof a map lookup or an equality check.
+      — TRACED(archive `app/main.py:120-148`
       + `test_signal_seat_launch_guard.py:25-69 @ staging` + spec 04 §1).
       **BUILD HAZARD (M4b):** the R5a `create_app` skeleton EXCLUDES the archive's R5b module-level
       imports — `routes_signals` (`app/main.py:57 @ archive`) and the `app.api.deps` helpers
@@ -87,8 +92,13 @@ middleware, docs-disable, cockpit, `.importlinter` (all R5b).
 - [x] **D-R5a-6 Bind guard = loopback-only, policy-name-agnostic.** `validate_transport_bind`
       returns `None` for a loopback host or a UDS, else the A-1 failure string (`"A-1"`,
       `"proxy-private"`, `"non-loopback"`); BOTH `loopback` and `tailnet_serve` bind loopback (the
-      policy value gates the negative test + docs, not the bind). — TRACED(archive
-      `app/launch_guard.py:53-73` + spec 04:13-17 + `test_signal_seat_launcher.py:39-68 @ staging`).
+      policy value gates the negative test + docs, not the bind). **Loopback comparison hardening
+      (attempt-2 finding):** the `host in _LOOPBACK_HOSTS` membership/equality check validates the
+      host as an EXACT built-in `str` (`type(host) is str`) BEFORE the comparison, so a crafted `str`
+      subtype with a custom `__eq__`/`__hash__` cannot disguise a non-loopback value as loopback and
+      slip past the bind guard. — TRACED(archive `app/launch_guard.py:53-73` + spec 04:13-17 +
+      `test_signal_seat_launcher.py:39-68 @ staging` + the attempt-2 loopback-validation finding,
+      root-agent-fixed).
 - [x] **D-R5a-7 Capability = code-owned, exact-identity, one-shot (forgery-resistant).** The mint
       sentinel never leaves `app/launch_guard.py`; the capability is NOT env/config/importable. The
       recognizer accepts ONLY the exact issued instance: **exact-type** (`type(cap) is
@@ -98,10 +108,14 @@ middleware, docs-disable, cockpit, `.importlinter` (all R5b).
       `__eq__`/`__hash__`; that was the forgery vector the attempt-1 internal-adversarial test
       surfaced and the root agent fixed). `is_sanctioned` returns False for `object()`, `None`, a
       subclass instance, an equality-spoofing clone, a copied-private-fields clone, and an
-      already-consumed capability. The mint re-validates the bind (bind-bound). Add fail-closed
-      negative tests asserting each forged form is REJECTED (assertions of rejection, never
-      forgery proof-of-concept narratives). — TRACED(archive `app/launch_guard.py:42,76-132` +
-      `test_signal_seat_launch_guard.py:51-91 @ staging` + the attempt-1 adversarial forgery finding).
+      already-consumed capability. **Consumption is ATOMIC one-shot (attempt-2 finding):** a single lock
+      guards the check-and-consume so two concurrent callers can never both succeed (no
+      double-consumption race); the second caller observes the capability already consumed and is
+      rejected. The mint re-validates the bind (bind-bound). Add fail-closed negative tests asserting
+      each forged form is REJECTED and that concurrent double-consumption yields exactly one success
+      (assertions of the property, never forgery/race proof-of-concept narratives). — TRACED(archive
+      `app/launch_guard.py:42,76-132` + `test_signal_seat_launch_guard.py:51-91 @ staging` + the
+      attempt-1/attempt-2 adversarial findings, root-agent-fixed).
 - [x] **D-R5a-8 Rails SEAM only, not the provider.** R5a lands `app/facade/signal_rails.py`
       (Protocol + `is_conforming_rails`) and the create_app rails-presence guard; the REAL rails
       provider is **R6 (WO-0104)**. The launcher positive-control test EXPECTS the rails
