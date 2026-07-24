@@ -487,7 +487,7 @@ def validate_signal_seat_settings(settings: "Settings") -> None:
             f"[1, {SIGNAL_SERVER_MAX_TTL_HARD_CAP}] (ADR-009 A-3), got {ttl_cap}"
         )
     if (
-        not isinstance(settings.signal_transport_policy, str)
+        type(settings.signal_transport_policy) is not str
         or settings.signal_transport_policy not in SIGNAL_TRANSPORT_POLICIES
     ):
         raise ValueError(

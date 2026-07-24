@@ -235,11 +235,19 @@ def test_validate_rejects_surrogate_producer_id():
             "operator_api_key": "op",
             "signal_producer_keys": {"producer-key": _CredentialText("producer")},
         },
+        {
+            "operator_api_key": "op",
+            "signal_producer_keys": {"producer-key": "producer"},
+            "signal_transport_policy": _CredentialText("loopback"),
+        },
     ],
-    ids=["operator-key", "producer-key", "producer-id"],
+    ids=["operator-key", "producer-key", "producer-id", "transport-policy"],
 )
-def test_incorrect_type_acceptance_rejects_str_subclass_credentials(credentials):
-    with pytest.raises(ValueError, match="OPERATOR_API_KEY|SIGNAL_PRODUCER_KEYS"):
+def test_incorrect_type_acceptance_rejects_str_subclass_config_values(credentials):
+    with pytest.raises(
+        ValueError,
+        match="OPERATOR_API_KEY|SIGNAL_PRODUCER_KEYS|signal_transport_policy",
+    ):
         validate_signal_seat_settings(Settings(signal_seat_enabled=True, **credentials))
 
 

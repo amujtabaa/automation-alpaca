@@ -273,13 +273,38 @@ forbidden_paths:
   the boundary, not scope to absorb.
 - The bind guard cannot be made construction-time (only request-time achievable) → STOP; a
   reachable-503 is a safety regression, not an acceptable fallback (threat model T-16).
-- Never weaken a staged test (the D-R5a-3 re-baseline is the one authorized staged-test edit).
+- Never weaken a staged test. The bounded authorized edit surface is enumerated in the completion
+  disposition below; every existing assertion remains semantically intact except the explicitly
+  authorized D-R5a-3 vocabulary reconciliation.
 
 ## Completion disposition (post-review)
 
 Expected at close-out: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]` (signal-seat PKL R5a changelog). Close-out
-after REV-0041 ACCEPT/ACCEPT-WITH-CHANGES ships status flip + disposition + ledger + file move in one
-commit.
+only after the REV-0041 ACCEPT-WITH-CHANGES follow-ups clear independent re-review; the later
+close-out ships status flip + disposition + ledger + file move in one commit.
+
+REV-0041's bounded follow-up and eventual close-out must trace the complete authorized edit surface,
+not summarize it as three edits:
+
+- **D-R5a-1 / D-R5a-10:** the additive `test_import_boundaries.py` `_SANCTIONED_*` hunk for
+  `app.server` and `app.__main__`;
+- **D-R5a-3:** the staged transport vocabulary reconciliation from `tls_proxy` to
+  `tailnet_serve`;
+- **D1:** sanitized-inherited launcher child-environment plumbing and bounded subprocess timeout;
+- **D2:** explicit in-process test authority for the flag-on helper, its legitimate callers, and
+  rejection coverage; and
+- **D-R5a-4 / D-R5a-7 + Part B:** additive capability/config regression tests, including the
+  exact-type, exact-identity, atomic one-use, and credential-string controls.
+
+**R5b-N1 carry-forward requirement (record only; not implemented in R5a):** the request-time
+`X-Producer-Key` authentication seam must require the producer-key map to be an exact `dict` or
+re-derive a trusted `dict` before lookup. R5a construction validation intentionally remains at the
+`Mapping` container boundary; the future R5b work order must consume and test this requirement
+before any request-time producer authentication ships.
+
+This follow-up does not execute close-out: WO-0137 remains in REVIEW, the frozen REV-0041 request
+is unchanged, and the corrected surface requires independent re-review before any disposition,
+ledger update, move, merge, PR, or flag enablement.
 
 ## War-game record (.ai-os/core/18)
 

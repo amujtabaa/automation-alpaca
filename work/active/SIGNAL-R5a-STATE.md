@@ -82,14 +82,14 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
-| config | GREEN | `6aee970`, `58ceb32`, `a410546`, `d78e54f` | 23/23 config tests pass; exact built-in credential strings, injected types, and credential-map immutability are pinned |
+| config | GREEN | `6aee970`, `58ceb32`, `a410546`, `d78e54f`, post-REV-0041 follow-up | 24/24 config tests pass; exact built-in credential/policy strings, injected types, and credential-map immutability are pinned |
 | launcher trio | GREEN (raw 9/9) | `6aee970`, `3e6e3ed`, `c968d26`, `a410546`, `d78e54f` | Sanitized inherited child environment preserves platform state; every bind/UDS/exit/no-listener assertion passes raw |
 | signal_rails seam | GREEN | `6aee970`, `b985174` | 3/3 staged conformity-rejection cases pass; provider remains R6 |
-| create_app skeleton | GREEN (direct corpus) | `6aee970`, `c968d26`, `a410546` | 14/14 ordered construction-guard cases pass; reload, exact identity, bind replay, and one-shot controls pass |
+| create_app skeleton | GREEN (guard 18/18) | `6aee970`, `c968d26`, `a410546`, `d78e54f`, post-REV-0041 follow-up | Ordered construction guards, reload, exact type/identity, bind replay, factory confinement, and one-shot controls pass |
 | helper + import-hunk | GREEN | `6aee970`, `3e6e3ed`, `d78e54f` | Explicit in-process authority rejects zero-argument factory/bare selection; import boundary is 6/6 green |
 | README | GREEN | `3dadec4` | Enabled-seat launch callout says name is undefined, never `None` |
-| green evidence | VERIFIED (operator-dispositioned battery) | `5d04d6f`, `a410546`, `d78e54f` | Static gates, scoped formatter ratchet, raw R5a/import corpus, R2 oracle, scaling, bootstrap, and full pytest are green |
-| REV-0041 staging | STAGED — READY FOR INDEPENDENT REVIEW | current lifecycle commit | Frozen implementation range ends at `d78e54f`; no merge, PR, close, or ledger line |
+| green evidence | VERIFIED (post-review battery) | `5d04d6f`, `a410546`, `d78e54f`, post-REV-0041 follow-up | Static gates, scoped formatter ratchet, raw R5a/import corpus, R2 oracle, scaling, bootstrap, and 4,328-test full pytest are green |
+| REV-0041 | ACCEPT-WITH-CHANGES — FOLLOW-UPS GREEN, RE-REVIEW PENDING | reviewer result `0b556f5`, post-REV-0041 follow-up | Original frozen range ends at `d78e54f`; corrected surface is not independently re-reviewed; no disposition, merge, PR, close, or ledger line |
 
 ## Operator resume disposition and defect closure — 2026-07-23
 
@@ -224,8 +224,32 @@ superseded by this direct operator disposition.
   exit 0; expected skips/xfail and dependency deprecation warnings only.
 - VERIFIED — `git diff --check` passed; the implementation commit changes only five authorized
   R5a files. The ten formatter-baseline files and all R5b/R6/R7/schema/ledger paths are untouched.
-- VERIFIED — feature flag remains OFF; no master merge, PR, WO close, or ledger line was created.
-  REV-0041 is the next independent Claude-seat gate.
+- VERIFIED (at `466ff42`) — feature flag remained OFF; no master merge, PR, WO close, or ledger
+  line was created. REV-0041 was the next independent Claude-seat gate; its subsequent result and
+  bounded follow-up are recorded below.
+
+## REV-0041 ACCEPT-WITH-CHANGES follow-up — 2026-07-24
+
+The reviewer-owned result remains at planning-ref commit `0b556f5`; it was read without copying or
+editing it. This bounded implementer follow-up resolves C-1 through C-4 and records R5b-N1. It does
+not clear the independent-review gate; WO-0137 remains in REVIEW pending re-review.
+
+| Defect class | Cause | Impact | Affected local files | Fix/control | Fresh pass/fail evidence |
+|---|---|---|---|---|---|
+| C-1 — non-decisive regression pin | The capability subtype was rejected by identity before exact type became decisive | Weakening the exact-type recognizer did not fail its named test | `tests/test_signal_seat_launch_guard.py` | Register the subtype by exact identity before asserting rejection; remove the test entry in `finally` | PASS — bounded control mutation made only the named pin RED; restored exact-type control is GREEN |
+| C-2 — transport-policy type uniformity | Policy validation still used subclass-admitting `isinstance` | The exact-string invariant was inconsistent before future policy-value branching | `app/config.py`, `tests/test_signal_seat_config.py` | Require exact built-in `str`; add transport-policy to the subclass regression | PASS — new policy case was RED while three credential cases stayed green; focused post-fix set is 5/5 |
+| C-3 — evidence-verification ambiguity | Capability FIX blocks did not distinguish live controls from later committed regressions | Readers could infer that committed tests predated the fixes | `work/active/SIGNAL-R5a-STATE.md` | Qualify attempts 2/3 as live-control verification with regression committed in `d78e54f` | PASS — both capability FIX blocks carry the qualification |
+| C-4 — incomplete authorized-edit trace | The close-out text did not enumerate every staged hunk and additive regression class | A later disposition could under-report the approved change surface | `work/active/WO-0137-signal-r5a-composition-root-foundation.md` | Enumerate D-R5a-1/D-R5a-10, D-R5a-3, D1, D2, and D-R5a-4/D-R5a-7 + Part B | PASS — full surface is explicit and the stale one-edit stop condition is qualified |
+| R5b-N1 — producer-map trust boundary | R5a validates a `Mapping`, while request-time authentication will rely on lookup semantics | A future auth seam could consume an untrusted mapping implementation | `work/active/WO-0137-signal-r5a-composition-root-foundation.md` | Record exact-`dict` validation or trusted-`dict` re-derivation as an R5b requirement only | PASS — requirement recorded; no R5b implementation added |
+
+- VERIFIED — Ruff check passed; the scoped R5a format gate reports 11 files already formatted;
+  mypy reports no issues in 74 app files; import-linter kept all 6 contracts.
+- VERIFIED — raw config/launcher/guard corpus is 51/51; import-boundary corpus is 6/6. The
+  16-worker one-use regression passed three consecutive isolated runs with exactly one success.
+- VERIFIED — CI-form R2 oracle is 61/61; WO-0113 scaling is 13/13.
+- VERIFIED — bootstrap exited 0 and collected 4,328 tests on the flag-off path.
+- VERIFIED — full pytest collected 4,328 tests, reached 100%, and exited 0; only expected
+  skips/xfail and dependency deprecation warnings appeared.
 
 ## FIX records
 
@@ -248,6 +272,7 @@ fable_fix:
   fix: "Track exact issued identity weakly, require exact capability type/marker, revalidate its bind against current settings, and consume it once."
   regression_test: "Adversarial public-replay, unissued-instance, equality-forgery, and sequential one-shot controls plus the staged guard corpus."
   red_green_verified: true
+  verification: "live-control (regression committed d78e54f)"
   attempt: 2
 ```
 
@@ -259,6 +284,7 @@ fable_fix:
   fix: "Use id-keyed WeakValueDictionary with identity comparison, exact built-in str bind types, and an RLock around issuance validation/consumption."
   regression_test: "Equality-forgery refusal, disguised non-loopback refusal, and 16-worker consume control (1 true, 15 false)."
   red_green_verified: true
+  verification: "live-control (regression committed d78e54f)"
   attempt: 3
 ```
 
@@ -278,10 +304,11 @@ fable_fix:
 ```yaml
 fable_done:
   status: REVIEW
-  reason: "Operator-authorized Part B and D1-D3 corrections are applied and the fresh A-D gate battery is green; independent REV-0041 remains required."
+  reason: "REV-0041 C-1 through C-4 follow-ups are applied and the fresh gate battery is green; independent re-review remains required."
   review_ready: true
   work_order_status: REVIEW
   review_packet_created: true
+  post_review_followups_pending_re_review: true
   ledger_touched: false
   merged: false
   pr_opened: false

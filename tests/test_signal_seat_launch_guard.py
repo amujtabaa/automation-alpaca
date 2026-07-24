@@ -121,8 +121,7 @@ def test_incorrect_type_acceptance_rejects_launch_guard_subtypes():
         pass
 
     class CapabilitySubtype(launch_guard._LaunchCapability):
-        def __init__(self) -> None:
-            pass
+        pass
 
     reason = launch_guard.validate_transport_bind(
         host=BindText("127.0.0.1"),
@@ -130,7 +129,15 @@ def test_incorrect_type_acceptance_rejects_launch_guard_subtypes():
         settings=Settings(signal_seat_enabled=True),
     )
     assert reason is not None and "string" in reason
-    assert is_sanctioned(CapabilitySubtype()) is False
+    capability = CapabilitySubtype(launch_guard._MINT_TOKEN)
+    with launch_guard._ISSUED_CAPABILITIES_LOCK:
+        launch_guard._ISSUED_CAPABILITIES[id(capability)] = capability
+    try:
+        assert launch_guard._ISSUED_CAPABILITIES.get(id(capability)) is capability
+        assert is_sanctioned(capability) is False
+    finally:
+        with launch_guard._ISSUED_CAPABILITIES_LOCK:
+            launch_guard._ISSUED_CAPABILITIES.pop(id(capability), None)
 
 
 def test_identity_validation_rejects_nonidentical_registry_value(monkeypatch):
