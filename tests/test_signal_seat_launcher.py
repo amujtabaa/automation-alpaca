@@ -17,6 +17,7 @@ launch — an enabled app needs the real rails provider, which WO-0104 supplies.
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
@@ -37,9 +38,9 @@ def _settings(**over) -> Settings:
 
 
 def test_flag_off_bind_unrestricted():
-    assert validate_transport_bind(
-        host="0.0.0.0", uds=None, settings=_settings()
-    ) is None
+    assert (
+        validate_transport_bind(host="0.0.0.0", uds=None, settings=_settings()) is None
+    )
 
 
 def test_flag_on_non_loopback_refused():
@@ -50,15 +51,21 @@ def test_flag_on_non_loopback_refused():
 
 
 def test_flag_on_loopback_ok():
-    assert validate_transport_bind(
-        host="127.0.0.1", uds=None, settings=_settings(**_FLAG_ON)
-    ) is None
+    assert (
+        validate_transport_bind(
+            host="127.0.0.1", uds=None, settings=_settings(**_FLAG_ON)
+        )
+        is None
+    )
 
 
 def test_flag_on_unix_socket_ok():
-    assert validate_transport_bind(
-        host=None, uds="/tmp/app.sock", settings=_settings(**_FLAG_ON)
-    ) is None
+    assert (
+        validate_transport_bind(
+            host=None, uds="/tmp/app.sock", settings=_settings(**_FLAG_ON)
+        )
+        is None
+    )
 
 
 def test_flag_on_no_host_no_socket_refused():
@@ -68,13 +75,37 @@ def test_flag_on_no_host_no_socket_refused():
     assert reason is not None and "A-1" in reason
 
 
-_ENV = {
-    "SIGNAL_SEAT_ENABLED": "true",
-    "OPERATOR_API_KEY": "op",
-    "SIGNAL_PRODUCER_KEYS": '{"k": "p"}',
-    "STATE_STORE": "memory",
-    "PATH": "/usr/bin:/bin:/usr/local/bin",
-}
+_CHILD_ENV_EXACT_REMOVALS = frozenset(
+    {
+        "OPERATOR_API_KEY",
+        "STATE_STORE",
+        "MARKET_DATA_FEED",
+        "ENABLE_TAPE_RECORDER",
+    }
+)
+_CHILD_ENV_PREFIX_REMOVALS = ("SIGNAL_", "BROKER_", "ALPACA_")
+
+
+def _sanitized_child_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for name in tuple(env):
+        normalized_name = name.upper()
+        if normalized_name in _CHILD_ENV_EXACT_REMOVALS or normalized_name.startswith(
+            _CHILD_ENV_PREFIX_REMOVALS
+        ):
+            env.pop(name)
+    env.update(
+        {
+            "SIGNAL_SEAT_ENABLED": "true",
+            "OPERATOR_API_KEY": "op",
+            "SIGNAL_PRODUCER_KEYS": '{"k": "p"}',
+            "STATE_STORE": "memory",
+        }
+    )
+    return env
+
+
+_ENV = _sanitized_child_env()
 
 
 def _run(code: str):
@@ -84,6 +115,7 @@ def _run(code: str):
         capture_output=True,
         text=True,
         cwd=".",
+        timeout=15,
     )
 
 

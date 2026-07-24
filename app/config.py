@@ -440,7 +440,7 @@ def validate_signal_seat_settings(settings: "Settings") -> None:
     if not settings.signal_seat_enabled:
         return
     operator_api_key = settings.operator_api_key
-    if not isinstance(operator_api_key, str) or not operator_api_key.strip():
+    if type(operator_api_key) is not str or not operator_api_key.strip():
         raise ValueError(
             f"{OPERATOR_API_KEY_ENV} must be a non-blank credential when "
             "signal_seat_enabled"
@@ -452,12 +452,12 @@ def validate_signal_seat_settings(settings: "Settings") -> None:
             "signal_seat_enabled"
         )
     for key, producer_id in producer_keys.items():
-        if not isinstance(key, str) or not key.strip():
+        if type(key) is not str or not key.strip():
             raise ValueError(
                 f"{SIGNAL_PRODUCER_KEYS_ENV} keys must be non-blank strings "
                 "(a blank key would let an unconfigured credential authenticate)"
             )
-        if not isinstance(producer_id, str) or not producer_id.strip():
+        if type(producer_id) is not str or not producer_id.strip():
             raise ValueError(
                 f"{SIGNAL_PRODUCER_KEYS_ENV} producer ids must be non-blank strings"
             )

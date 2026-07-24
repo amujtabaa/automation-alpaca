@@ -26,6 +26,7 @@ from app.store.memory import InMemoryStateStore
 OPERATOR_KEY = "test-operator-key"
 PRODUCER_KEY = "test-producer-key"
 PRODUCER_ID = "vibe-trading"
+_IN_PROCESS_TEST_AUTHORITY = object()
 
 
 class PermissiveSignalRails:
@@ -51,6 +52,7 @@ def flag_on_settings(**overrides) -> Settings:
 
 def build_flag_on_app(
     *,
+    test_authority: object | None = None,
     store: Optional[StateStore] = None,
     settings: Optional[Settings] = None,
     rails: object = None,
@@ -60,6 +62,8 @@ def build_flag_on_app(
     """Construct a flag-on app via the sanctioned test seam. Toggles let a test
     prove a guard fires (``with_capability=False`` / ``with_rails=False``)."""
 
+    if test_authority is not _IN_PROCESS_TEST_AUTHORITY:
+        raise RuntimeError("explicit in-process test authority required")
     resolved_settings = settings if settings is not None else flag_on_settings()
     return create_app(
         store=store if store is not None else InMemoryStateStore(),

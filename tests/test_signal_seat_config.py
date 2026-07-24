@@ -15,7 +15,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.config import load_settings
+from app.config import Settings, load_settings, validate_signal_seat_settings
+
+
+class _CredentialText(str):
+    pass
 
 
 def _clear(monkeypatch) -> None:
@@ -206,8 +210,6 @@ def test_validate_rejects_surrogate_producer_id():
     # Auto-review round 16: a producer_id with an unpaired surrogate is copied onto
     # every SignalRecord and would 500 on response serialization — reject it at
     # STARTUP (the object-level validator), on both env-loaded and injected paths.
-    from app.config import Settings, validate_signal_seat_settings
-
     with pytest.raises(ValueError, match="Unicode|surrogate"):
         validate_signal_seat_settings(
             Settings(
@@ -216,6 +218,29 @@ def test_validate_rejects_surrogate_producer_id():
                 signal_producer_keys={"k": "\ud800"},
             )
         )
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {
+            "operator_api_key": _CredentialText("op"),
+            "signal_producer_keys": {"producer-key": "producer"},
+        },
+        {
+            "operator_api_key": "op",
+            "signal_producer_keys": {_CredentialText("producer-key"): "producer"},
+        },
+        {
+            "operator_api_key": "op",
+            "signal_producer_keys": {"producer-key": _CredentialText("producer")},
+        },
+    ],
+    ids=["operator-key", "producer-key", "producer-id"],
+)
+def test_incorrect_type_acceptance_rejects_str_subclass_credentials(credentials):
+    with pytest.raises(ValueError, match="OPERATOR_API_KEY|SIGNAL_PRODUCER_KEYS"):
+        validate_signal_seat_settings(Settings(signal_seat_enabled=True, **credentials))
 
 
 def test_non_ascii_operator_equal_to_producer_still_detected(monkeypatch):
