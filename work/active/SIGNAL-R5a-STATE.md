@@ -82,14 +82,45 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 
 | Slice | Status | Commits | Notes |
 |---|---|---|---|
-| config | GREEN | `6aee970`, `58ceb32`, `a410546` | 20/20 staged config tests pass; injected types and credential-map immutability hardened |
-| launcher trio | BLOCKED (raw Windows proof 7/9) | `6aee970`, `3e6e3ed`, `c968d26`, `a410546` | Seven cases pass; two bare-Uvicorn children fail in Windows stdlib before importing repository code |
+| config | GREEN | `6aee970`, `58ceb32`, `a410546`, `d78e54f` | 23/23 config tests pass; exact built-in credential strings, injected types, and credential-map immutability are pinned |
+| launcher trio | GREEN (raw 9/9) | `6aee970`, `3e6e3ed`, `c968d26`, `a410546`, `d78e54f` | Sanitized inherited child environment preserves platform state; every bind/UDS/exit/no-listener assertion passes raw |
 | signal_rails seam | GREEN | `6aee970`, `b985174` | 3/3 staged conformity-rejection cases pass; provider remains R6 |
 | create_app skeleton | GREEN (direct corpus) | `6aee970`, `c968d26`, `a410546` | 14/14 ordered construction-guard cases pass; reload, exact identity, bind replay, and one-shot controls pass |
-| helper + import-hunk | BLOCKED (ADR conflict) | `6aee970`, `3e6e3ed` | Import boundary is 6/6 green, but the staged zero-argument helper is selectable by Uvicorn and conflicts with ADR-009 A-1/A-4 |
+| helper + import-hunk | GREEN | `6aee970`, `3e6e3ed`, `d78e54f` | Explicit in-process authority rejects zero-argument factory/bare selection; import boundary is 6/6 green |
 | README | GREEN | `3dadec4` | Enabled-seat launch callout says name is undefined, never `None` |
-| green evidence | BLOCKED | `5d04d6f`, `a410546` | Lint/type/import/bootstrap/scaling green; raw pytest, formatter, and direct R2 command are not green |
-| REV-0041 staging | BLOCKED — NOT CREATED | — | Stop conditions reached; staging a review-ready packet or setting REVIEW would misstate the gates |
+| green evidence | VERIFIED (operator-dispositioned battery) | `5d04d6f`, `a410546`, `d78e54f` | Static gates, scoped formatter ratchet, raw R5a/import corpus, R2 oracle, scaling, bootstrap, and full pytest are green |
+| REV-0041 staging | STAGED — READY FOR INDEPENDENT REVIEW | current lifecycle commit | Frozen implementation range ends at `d78e54f`; no merge, PR, close, or ledger line |
+
+## Operator resume disposition and defect closure — 2026-07-23
+
+The operator's direct QA re-verification request is the authority for Part B and D1–D3. The
+referenced `work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md` does not exist at the confirmed base
+or fetched branch head, so this state record does not claim it was read. Implementation is frozen
+at `d78e54fda6a780546cd6892078b209f9ae33438f`.
+`work/active/SIGNAL-R5a-NEEDS-INPUT.md` is retained as the historical blocker record and is
+superseded by this direct operator disposition.
+
+| Defect class | Cause | Impact | Affected local files | Fix/control | Fresh pass/fail evidence |
+|---|---|---|---|---|---|
+| incorrect type acceptance | Trust-boundary recognizers admitted `str` or capability subtypes; config used `isinstance` for three credential positions | Illegitimate runtime types could satisfy exact-type contracts | `app/config.py`, `app/launch_guard.py`, config/guard regressions | Exact built-in type checks at every named position | PASS — four exact-type rejection cases; full config/guard corpus green |
+| identity-validation defect | Issuance membership alone did not prove the exact issued object | A nonidentical authority object could be treated as issued | `app/launch_guard.py`, `tests/test_signal_seat_launch_guard.py` | ID-keyed weak registry plus exact object-identity comparison | PASS — identity mismatch regression rejects |
+| non-atomic one-use validation | Validation and retirement were separable | Concurrent construction could consume one authority more than once | `app/launch_guard.py`, `app/main.py`, guard regression | One lock spans validation and retirement | PASS — 16 concurrent consumers yield exactly one success; three consecutive runs green |
+| capability reacquisition via importable factory | The test helper supplied authority on a zero-argument construction path | Test-only wiring could be selected without explicit in-process authorization | `tests/signal_seat_helpers.py`, `tests/test_signal_seat_launch_guard.py` | Exact explicit test authority required before construction | PASS — factory, bare-load, and direct zero-argument import selection all reject |
+| launcher child-environment isolation defect | The staged harness replaced the platform environment | Windows children failed before repository import, masking the intended pre-bind proof | `tests/test_signal_seat_launcher.py` | Sanitized inherited environment, four explicit staged overrides, and a 15-second `_run` timeout | PASS — all 9 launcher cases pass raw; exact pre-bind diagnostic and exit checks remain |
+
+### D3 formatter and oracle disposition
+
+- Ruff formatting/checking is a ratchet over the eleven R5a-owned Python paths: PASS, 11 already
+  formatted.
+- Repository-wide formatter diagnosis now names exactly the ten inherited baseline files below;
+  none was edited. A separate, not-yet-numbered cleanup WO is required:
+  `app/recorder/__init__.py`, `app/recorder/models.py`, `app/recorder/store.py`,
+  `harness/bootstrap.py`, `tests/test_signal_ingest_store.py`,
+  `tests/test_signal_projector_forward_compat.py`, `tests/test_signal_seat_models.py`,
+  `tests/test_tape_recorder.py`, `tests/test_wo0114_pd1_release_valve.py`, and
+  `work/review/AUDIT-0002-priorwork/probe_review_integrity.py`.
+- The unchanged R2 oracle runs through CI's module form:
+  `.venv\Scripts\python.exe -m pytest -q tests/r2_conformance_oracle.py`.
 
 ## Evidence log
 
@@ -165,6 +196,37 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 - BLOCKED — WO-0137 remains ACTIVE. REV-0041 is deliberately absent, the ledger is untouched, and
   no REVIEW/completion claim is made.
 
+- SUPERSEDED — the BLOCKED entries above are the preserved `4bb1bfb` historical record. The
+  operator's 2026-07-23 Part B/D1–D3 disposition authorized the bounded resume evidence below.
+- VERIFIED (RED→GREEN) — credential exact-type drift: the three new config cases first failed
+  because operator key, producer key, and producer id subclasses were accepted; after the three
+  `type(x) is str` alignments, all 3 passed and the full config file finished 23/23.
+- VERIFIED — Part A persisted local regressions: exact launch-guard type rejection, ID-keyed exact
+  identity rejection, and locked one-use consumption all pass. The timing-sensitive 16-worker
+  one-use control passed three consecutive isolated runs with exactly one success each.
+- VERIFIED — D1 raw launcher corpus: 9/9 passed under the sanitized inherited child environment.
+  The exact `Attribute "app" not found` pre-bind assertion, bind/UDS controls, and exit-code checks
+  remain present; Ruff changed layout only.
+- VERIFIED — D2 helper confinement: the authorized direct callers construct; the named
+  `capability reacquisition via importable factory` regression rejects all three zero-argument
+  import-selection forms.
+- VERIFIED — focused R5a plus import-boundary corpus:
+  `python -m pytest -q tests/test_signal_seat_config.py tests/test_signal_seat_launcher.py
+  tests/test_signal_seat_launch_guard.py tests/test_import_boundaries.py` → 56/56 passed.
+- VERIFIED — `ruff check .` → all checks passed; R5a `ruff format --check` → 11 already formatted;
+  `mypy app/` → success across 74 source files; `lint-imports` → 6 kept, 0 broken.
+- VERIFIED — CI-form R2 oracle → 61/61 passed; repair scaling → 13/13 passed. Initial restricted
+  sandbox attempts could not access the Windows pytest temp root and failed at fixture setup;
+  exact-command reruns with normal OS-temp access passed.
+- VERIFIED — `python harness/bootstrap.py` exited 0, reran Ruff/mypy, and collected all 4,327
+  tests with the flag-off import path intact.
+- VERIFIED — additional full-suite non-regression: 4,327 tests collected, progress reached 100%,
+  exit 0; expected skips/xfail and dependency deprecation warnings only.
+- VERIFIED — `git diff --check` passed; the implementation commit changes only five authorized
+  R5a files. The ten formatter-baseline files and all R5b/R6/R7/schema/ledger paths are untouched.
+- VERIFIED — feature flag remains OFF; no master merge, PR, WO close, or ledger line was created.
+  REV-0041 is the next independent Claude-seat gate.
+
 ## FIX records
 
 ```yaml
@@ -215,13 +277,15 @@ fable_fix:
 
 ```yaml
 fable_done:
-  status: BLOCKED
-  reason: "The immutable staged corpus conflicts with the required Windows proof and accepted zero-argument-factory boundary; two full-battery baseline commands also cannot pass within allowed paths."
-  review_ready: false
-  work_order_status: ACTIVE
-  review_packet_created: false
+  status: REVIEW
+  reason: "Operator-authorized Part B and D1-D3 corrections are applied and the fresh A-D gate battery is green; independent REV-0041 remains required."
+  review_ready: true
+  work_order_status: REVIEW
+  review_packet_created: true
   ledger_touched: false
   merged: false
+  pr_opened: false
+  reviewed_implementation_sha: "d78e54fda6a780546cd6892078b209f9ae33438f"
 ```
 
 ```yaml
