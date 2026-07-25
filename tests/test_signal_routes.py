@@ -6,6 +6,7 @@ operator-route enforcement, and the truncated actor-audit case remain in R5b-2.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 
@@ -121,6 +122,22 @@ def test_accept_received(client):
     assert body["producer_id"] == "vibe-trading"  # credential-derived
 
 
+@pytest.mark.parametrize(
+    "signal_id",
+    ["malformed:deadbeef", "x" * 65],
+    ids=["reserved-malformed-namespace", "over-64-characters"],
+)
+def test_signal_id_outside_wire_domain_is_validation_quarantine(client, signal_id):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(signal_id=signal_id),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["quarantine_reason"] == "validation"
+
+
 def test_idempotent_replay_then_conflict(client):
     prop = _proposal()  # one fixed payload — an identical resend must dedupe
     assert client.post("/api/signals", json=prop, headers=_PROD_H).status_code == 201
@@ -165,6 +182,17 @@ def test_numeric_issued_at_is_validation_quarantine(client):
     assert r.json()["quarantine_reason"] == "validation"
 
 
+def test_numeric_string_issued_at_is_validation_quarantine(client):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(issued_at="1752505200"),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["quarantine_reason"] == "validation"
+
+
 def test_boolean_suggested_quantity_is_validation_quarantine(client):
     # Auto-reviewer P2 #6: strict-type the advisory numerics — a bool/string
     # must not be silently coerced into a plausible-looking value.
@@ -187,17 +215,28 @@ def test_string_suggested_limit_price_is_validation_quarantine(client):
     assert r.json()["quarantine_reason"] == "validation"
 
 
+def test_infinite_suggested_limit_price_is_validation_quarantine(client):
+    response = client.post(
+        "/api/signals",
+        content=json.dumps(_proposal(suggested_limit_price=float("inf"))).encode(),
+        headers={**_PROD_H, "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["quarantine_reason"] == "validation"
+
+
 def test_non_ascii_symbol_is_validation_quarantine(client):
     # Auto-reviewer P2 #7: str.isalpha() accepts Unicode (full-width 'ＡＡＰＬ',
-    # Nordic 'Å') — the documented domain is ASCII [A-Z.]+. A non-ASCII symbol
+    # dotless 'ı') — the documented domain is ASCII [A-Z.]+. A non-ASCII symbol
     # must be quarantined at ingest, not slip through to a later normalization.
     r = client.post("/api/signals", json=_proposal(symbol="ＡＡＰＬ"), headers=_PROD_H)
     assert r.status_code == 422
     assert r.json()["quarantine_reason"] == "validation"
 
 
-def test_nordic_non_ascii_symbol_is_validation_quarantine(client):
-    r = client.post("/api/signals", json=_proposal(symbol="Å"), headers=_PROD_H)
+def test_case_expanding_non_ascii_symbol_is_validation_quarantine(client):
+    r = client.post("/api/signals", json=_proposal(symbol="ıBM"), headers=_PROD_H)
     assert r.status_code == 422
     assert r.json()["quarantine_reason"] == "validation"
 
@@ -227,6 +266,91 @@ def test_malformed_naive_datetime_quarantined(client):
     assert r.status_code == 422
     assert r.json()["status"] == "quarantined"
     assert r.json()["quarantine_reason"] == "validation"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"unknown_top_level": True}],
+    ids=["otherwise-valid", "validation-fallback"],
+)
+def test_max_issued_at_is_recorded_validation_quarantine(client, extra):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(
+            issued_at="9999-12-31T23:59:59+00:00",
+            **extra,
+        ),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["status"] == "quarantined"
+    assert body["quarantine_reason"] == "validation"
+    assert body["issued_at"] is None
+    assert body["expires_at"] is None
+    events = _events(client)
+    assert [event.event_type for event in events] == [
+        ExecutionEventType.SIGNAL_QUARANTINED
+    ]
+
+
+def test_allowed_upper_issued_at_is_normalized_before_freshness_math(client):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(
+            issued_at="9999-12-31T00:59:59.999999+01:00",
+            ttl_seconds=86400,
+        ),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "quarantined"
+    assert body["quarantine_reason"] == "issued_at_future"
+    assert body["issued_at"] == "9999-12-30T23:59:59.999999Z"
+
+
+def test_unknown_top_level_key_is_validation_quarantine(client):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(unknown_top_level=True),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["quarantine_reason"] == "validation"
+
+
+def test_empty_thesis_is_validation_quarantine(client):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(thesis=""),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["quarantine_reason"] == "validation"
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {f"key-{index}": "value" for index in range(21)},
+        {"source": "x" * 501},
+    ],
+    ids=["over-20-entries", "value-over-500-characters"],
+)
+def test_provenance_over_wire_caps_is_validation_quarantine(client, provenance):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(provenance=provenance),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["quarantine_reason"] == "validation"
 
 
 def test_identity_binding_mismatch_rejected(client):
@@ -327,8 +451,7 @@ def test_replay_is_write_free_and_conflict_is_audit_only(client):
         409,
     )
     assert replay.json()["id"] == first.json()["id"]
-    assert conflict.json()["id"] == first.json()["id"]
-    assert conflict.json()["status"] == first.json()["status"]
+    assert conflict.json() == first.json()
     events = _events(client)
     assert [event.event_type for event in events] == [
         ExecutionEventType.SIGNAL_RECEIVED,

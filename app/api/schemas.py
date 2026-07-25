@@ -8,10 +8,12 @@ responses that don't map to a single stored entity.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+
+from app.config import SIGNAL_SERVER_MAX_TTL_HARD_CAP
 
 # ExternalOrderView / PositionMismatchView are the reconciliation facade's own
 # typed return DTOs (app.facade.dtos). Imported here so ReconciliationStatusResponse
@@ -147,6 +149,26 @@ class ReconciliationStatusResponse(BaseModel):
 
 _BARE_NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 _SIGNAL_SYMBOL_RE = re.compile(r"^[A-Z.]+$")
+_SIGNAL_ISSUED_AT_MIN_UTC = datetime.min.replace(tzinfo=timezone.utc) + timedelta(
+    days=1
+)
+_SIGNAL_ISSUED_AT_MAX_UTC = datetime.max.replace(tzinfo=timezone.utc) - timedelta(
+    seconds=SIGNAL_SERVER_MAX_TTL_HARD_CAP
+)
+
+
+def _normalize_signal_issued_at(value: datetime) -> Optional[datetime]:
+    """Return a UTC timestamp safe for every accepted Signal TTL addition."""
+
+    try:
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            return None
+        normalized = value.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return None
+    if not _SIGNAL_ISSUED_AT_MIN_UTC <= normalized <= _SIGNAL_ISSUED_AT_MAX_UTC:
+        return None
+    return normalized
 
 
 class SignalProposal(BaseModel):
@@ -198,9 +220,12 @@ class SignalProposal(BaseModel):
     @field_validator("issued_at")
     @classmethod
     def _issued_at_must_be_timezone_aware(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
-            raise ValueError("issued_at must be timezone-aware")
-        return value
+        normalized = _normalize_signal_issued_at(value)
+        if normalized is None:
+            raise ValueError(
+                "issued_at must be timezone-aware and within the supported range"
+            )
+        return normalized
 
     @field_validator("symbol")
     @classmethod

@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from app.api.deps import check_signal_rails, get_signal_facade
 from app.api.schemas import (
     _BARE_NUMERIC_RE,
+    _normalize_signal_issued_at,
     SignalProposal,
     SignalRecordView,
 )
@@ -157,11 +158,9 @@ def _safe_optional_issued_at(raw: dict[str, Any]) -> Optional[datetime]:
         return None
     try:
         parsed = datetime.fromisoformat(stripped)
-    except ValueError:
+    except (OverflowError, ValueError):
         return None
-    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
-        return None
-    return parsed
+    return _normalize_signal_issued_at(parsed)
 
 
 def _safe_provenance(raw: dict[str, Any]) -> dict[str, str]:
