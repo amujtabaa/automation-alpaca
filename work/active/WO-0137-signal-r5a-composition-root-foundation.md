@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R5a — composition-root foundation (config + create_app construction guards + launcher trio + rails seam)"
-status: QUEUED
+status: REVIEW
 work_order_id: WO-0137
 wave: signal-seat reconciliation ladder, step R5 (split; R5a = construction-time foundation)
 model_tier: strong (LOCAL Codex — human-gated auth/launcher/transport security boundary)
@@ -168,28 +168,51 @@ post-session REV-0041 code review.
   launch/bind certified property is `work/review/REV-0027/result.md:46 @ archive`.
 - Plan verdicts: `work/queue/SIGNAL-SEAT-RECONCILIATION-PLAN.md` §5 runtime-config + §6 step 5.
 
+## Operator resume disposition — 2026-07-23
+
+The operator's QA re-verification request directly authorized the following tightening decisions.
+The referenced `work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md` is absent from both the confirmed
+`4bb1bfb` base and fetched `origin/codex/signal-r5a-foundation`; this recorded operator instruction
+is therefore the disposition authority used for this completion pass.
+
+- **Part B — exact credential strings:** `operator_api_key` and every producer-key-map key/value
+  must be exact built-in `str` values. Directly injected subclasses are rejected.
+- **D1 — launcher harness:** child processes inherit a sanitized parent environment, remove all
+  scoped Signal/Broker/Alpaca and named runtime variables, then apply only the staged overrides.
+  `_run` is bounded by a timeout. Launcher assertions and scenarios are unchanged apart from
+  Ruff-only layout.
+- **D2 — test construction authority:** the flag-on helper requires the exact explicit in-process
+  test authority. Zero-argument Uvicorn factory and bare-load selection both raise; every legitimate
+  caller supplies the authority.
+- **D3 — baseline and ratchet:** Ruff formats/checks only R5a-owned Python files. The ten inherited
+  formatter findings are grandfathered without edits, following ADR-007's baseline-and-ratchet
+  precedent. A separate, not-yet-numbered formatter-cleanup WO remains follow-up work. The R2
+  oracle runs unchanged through CI's pytest module invocation.
+
+The reviewed implementation is frozen at `d78e54fda6a780546cd6892078b209f9ae33438f`.
+
 ## Required behavior
 
-- [ ] **GATE** (fable_gate): restate goal/scope/done-when/blast-radius before building.
-- [ ] **Red-first:** pull the R5a test slices from staging; re-baseline the config test's `tls_proxy`
+- [x] **GATE** (fable_gate): restate goal/scope/done-when/blast-radius before building.
+- [x] **Red-first:** pull the R5a test slices from staging; re-baseline the config test's `tls_proxy`
       → `tailnet_serve` (D-R5a-3) and paste the diff + rationale; paste the RED collection.
-- [ ] **`app/config.py`:** all signal fields (`signal_seat_enabled`, `signal_transport_policy`,
+- [x] **`app/config.py`:** all signal fields (`signal_seat_enabled`, `signal_transport_policy`,
       `operator_api_key` (`repr=False`), `signal_producer_keys` (`repr=False`),
       `signal_invalid_budget_per_epoch`, `signal_server_max_ttl_seconds`) + env parsing +
       `validate_signal_seat_settings` + the operator/producer overlap helper. Turn
       `test_signal_seat_config.py` green.
-- [ ] **Launcher trio** `app/server.py` (programmatic uvicorn, bind re-validated + `SystemExit(2)`),
+- [x] **Launcher trio** `app/server.py` (programmatic uvicorn, bind re-validated + `SystemExit(2)`),
       `app/launch_guard.py` (leaf: `validate_transport_bind` + code-owned capability), `app/__main__.py`
       (`python -m app`). Turn `test_signal_seat_launcher.py` green (incl. the subprocess bind proofs).
-- [ ] **`app/facade/signal_rails.py`** Protocol seam (`RailsDecision`, `is_conforming_rails`).
-- [ ] **`app/main.py::create_app` skeleton:** new signature + the three construction guards + the
+- [x] **`app/facade/signal_rails.py`** Protocol seam (`RailsDecision`, `is_conforming_rails`).
+- [x] **`app/main.py::create_app` skeleton:** new signature + the three construction guards + the
       conditional module-level `app`. Turn `test_signal_seat_launch_guard.py` green. Keep the
       flag-OFF path byte-equivalent to today.
-- [ ] **`tests/signal_seat_helpers.py`** (construction seam) + the `test_import_boundaries.py`
+- [x] **`tests/signal_seat_helpers.py`** (construction seam) + the `test_import_boundaries.py`
       `_SANCTIONED_*` hunk (same change as the launcher) + the README correction.
-- [ ] **Bootstrap non-regression:** verify `harness/bootstrap.py` runs flag-off and its smoke gate
+- [x] **Bootstrap non-regression:** verify `harness/bootstrap.py` runs flag-off and its smoke gate
       still passes (paste evidence).
-- [ ] **Stage `work/review/REV-0041/request.md`** for the Claude seat (REV-0027 checklist,
+- [x] **Stage `work/review/REV-0041/request.md`** for the Claude seat (REV-0027 checklist,
       archive-ref-renumbered; the never-reviewed items: the master `create_app` REWRITE, the
       transport re-baseline, the D-2a flag-off intermediate state).
 
@@ -230,14 +253,16 @@ forbidden_paths:
 
 ## Acceptance criteria
 
-- [ ] `test_signal_seat_config.py`, `test_signal_seat_launcher.py`, `test_signal_seat_launch_guard.py`
+- [x] `test_signal_seat_config.py`, `test_signal_seat_launcher.py`, `test_signal_seat_launch_guard.py`
       green (the launcher subprocess proofs included); the config re-baseline diff pasted.
-- [ ] `test_import_boundaries.py` green with the hunk (no unsanctioned-reacher failure).
-- [ ] Flag-OFF path byte-equivalent to today; `harness/bootstrap.py` smoke gate green (pasted).
-- [ ] Full gate battery green (fresh pasted output): `ruff check .`, `ruff format --check .`,
-      `mypy app/`, `lint-imports`, `pytest -q` (OS-temp basetemp), `python tests/r2_conformance_oracle.py`,
-      `pytest -q tests/test_wo0113_repair_scaling.py`.
-- [ ] `status: REVIEW`, WO in `work/active/`, REV-0041 staged, branch pushed, nothing merged, no
+- [x] `test_import_boundaries.py` green with the hunk (no unsanctioned-reacher failure).
+- [x] Flag-OFF path byte-equivalent to today; `harness/bootstrap.py` smoke gate green (pasted).
+- [x] Operator-dispositioned full gate battery green: `ruff check .`, Ruff format check on the
+      eleven R5a-owned Python paths, `mypy app/`, `lint-imports`, the raw R5a/import corpus,
+      `python -m pytest -q tests/r2_conformance_oracle.py`,
+      `pytest -q tests/test_wo0113_repair_scaling.py`, and `python harness/bootstrap.py`.
+      The additional full `pytest -q` non-regression also reached 100% with exit 0.
+- [x] `status: REVIEW`, WO in `work/active/`, REV-0041 staged, branch pushed, nothing merged, no
       ledger line. Fable record + this WO's war-game record (M1–M4) present.
 
 ## Stop conditions
@@ -248,13 +273,38 @@ forbidden_paths:
   the boundary, not scope to absorb.
 - The bind guard cannot be made construction-time (only request-time achievable) → STOP; a
   reachable-503 is a safety regression, not an acceptable fallback (threat model T-16).
-- Never weaken a staged test (the D-R5a-3 re-baseline is the one authorized staged-test edit).
+- Never weaken a staged test. The bounded authorized edit surface is enumerated in the completion
+  disposition below; every existing assertion remains semantically intact except the explicitly
+  authorized D-R5a-3 vocabulary reconciliation.
 
 ## Completion disposition (post-review)
 
 Expected at close-out: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]` (signal-seat PKL R5a changelog). Close-out
-after REV-0041 ACCEPT/ACCEPT-WITH-CHANGES ships status flip + disposition + ledger + file move in one
-commit.
+only after the REV-0041 ACCEPT-WITH-CHANGES follow-ups clear independent re-review; the later
+close-out ships status flip + disposition + ledger + file move in one commit.
+
+REV-0041's bounded follow-up and eventual close-out must trace the complete authorized edit surface,
+not summarize it as three edits:
+
+- **D-R5a-1 / D-R5a-10:** the additive `test_import_boundaries.py` `_SANCTIONED_*` hunk for
+  `app.server` and `app.__main__`;
+- **D-R5a-3:** the staged transport vocabulary reconciliation from `tls_proxy` to
+  `tailnet_serve`;
+- **D1:** sanitized-inherited launcher child-environment plumbing and bounded subprocess timeout;
+- **D2:** explicit in-process test authority for the flag-on helper, its legitimate callers, and
+  rejection coverage; and
+- **D-R5a-4 / D-R5a-7 + Part B:** additive capability/config regression tests, including the
+  exact-type, exact-identity, atomic one-use, and credential-string controls.
+
+**R5b-N1 carry-forward requirement (record only; not implemented in R5a):** the request-time
+`X-Producer-Key` authentication seam must require the producer-key map to be an exact `dict` or
+re-derive a trusted `dict` before lookup. R5a construction validation intentionally remains at the
+`Mapping` container boundary; the future R5b work order must consume and test this requirement
+before any request-time producer authentication ships.
+
+This follow-up does not execute close-out: WO-0137 remains in REVIEW, the frozen REV-0041 request
+is unchanged, and the corrected surface requires independent re-review before any disposition,
+ledger update, move, merge, PR, or flag enablement.
 
 ## War-game record (.ai-os/core/18)
 
