@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, Header, Request
+import secrets
+from typing import Optional
+
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.approval.gate import ApprovalGate
 from app.broker.adapter import BrokerAdapter
 from app.config import Settings
 from app.facade.commands import ExecutionCommandFacade
 from app.facade.queries import ExecutionQueryFacade
+from app.facade.signal_commands import SignalCommandFacade
+from app.facade.signals import StoreBackedSignalFacade
 from app.facade.store_backed import StoreBackedCommandFacade, StoreBackedQueryFacade
 from app.marketdata.service import MarketDataService
 from app.store.base import StateStore
+
+PRODUCER_KEY_HEADER = "X-Producer-Key"
+OPERATOR_KEY_HEADER = "X-Operator-Key"
 
 # Default actor for command endpoints when no ``X-Actor`` header is sent. Beta is
 # single-user localhost with no authentication (docs/01_ARCHITECTURE.md), so
@@ -38,6 +46,114 @@ def get_settings(request: Request) -> Settings:
     """
 
     return request.app.state.settings
+
+
+def _credentials_equal(supplied: str, configured: str) -> bool:
+    """Compare arbitrary credential text without the ASCII-only ``str`` trap."""
+
+    try:
+        return secrets.compare_digest(
+            supplied.encode("utf-8"), configured.encode("utf-8")
+        )
+    except UnicodeEncodeError:
+        return False
+
+
+def operator_key_valid(operator_key: Optional[str], settings: Settings) -> bool:
+    """Recognize an operator credential only for producer-route role separation."""
+
+    configured = settings.operator_api_key
+    return (
+        type(configured) is str
+        and operator_key is not None
+        and _credentials_equal(operator_key, configured)
+    )
+
+
+def resolve_producer_id(
+    *,
+    producer_key: Optional[str],
+    operator_key: Optional[str],
+    settings: Settings,
+) -> str:
+    """Return the producer identity bound to a valid producer credential."""
+
+    matched: Optional[str] = None
+    if producer_key is not None:
+        # Walk the complete normalized map so lookup timing does not reveal the
+        # configured key's position.
+        for configured_key, producer_id in settings.signal_producer_keys.items():
+            if _credentials_equal(producer_key, configured_key):
+                matched = producer_id
+    if matched is not None:
+        return matched
+    if operator_key_valid(operator_key, settings):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="operator credential is not valid for POST /api/signals",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="missing or unknown producer key",
+    )
+
+
+def get_producer_id(
+    x_producer_key: Optional[str] = Header(default=None, alias=PRODUCER_KEY_HEADER),
+    x_operator_key: Optional[str] = Header(default=None, alias=OPERATOR_KEY_HEADER),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    """Body-blind authentication for the producer-only ingest route."""
+
+    return resolve_producer_id(
+        producer_key=x_producer_key,
+        operator_key=x_operator_key,
+        settings=settings,
+    )
+
+
+async def check_signal_rails(
+    request: Request,
+    producer_id: str = Depends(get_producer_id),
+) -> str:
+    """Apply the body-blind rails decision after producer authentication."""
+
+    rails = getattr(request.app.state, "signal_rails", None)
+    if rails is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="signal rails not wired",
+        )
+    decision = await rails.check_ingest(producer_id)
+    allowed = getattr(decision, "allowed", None)
+    if type(allowed) is not bool:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="signal rails returned a malformed decision",
+        )
+    if not allowed:
+        denied_status = getattr(decision, "http_status", 0)
+        if type(denied_status) is not int or not 400 <= denied_status <= 599:
+            denied_status = status.HTTP_429_TOO_MANY_REQUESTS
+        reason = getattr(decision, "reason", "")
+        raise HTTPException(
+            status_code=denied_status,
+            detail=(
+                reason
+                if type(reason) is str and reason
+                else "signal ingest rejected by rails"
+            ),
+        )
+    return producer_id
+
+
+def get_signal_facade(
+    store: StateStore = Depends(get_store),
+    settings: Settings = Depends(get_settings),
+) -> SignalCommandFacade:
+    """Build the write-only signal facade in the API composition root."""
+
+    return StoreBackedSignalFacade(store, settings)
 
 
 def get_approval_gate(request: Request) -> ApprovalGate | None:

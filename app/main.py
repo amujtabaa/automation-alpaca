@@ -48,6 +48,7 @@ from app.api import (
     routes_dev,
     routes_marketdata,
     routes_review,
+    routes_signals,
     routes_system,
     routes_trading,
     routes_watchlist,
@@ -194,6 +195,8 @@ def create_app(
     app.include_router(routes_controls.router)
     app.include_router(routes_review.router)
     app.include_router(routes_marketdata.router)
+    if settings.signal_seat_enabled:
+        app.include_router(routes_signals.router)
     # DEV/MOCK scaffolding — mounted only when enabled (default on in beta so the
     # candidate flow is exercisable; ENABLE_DEV_ROUTES=false keeps it off).
     if settings.enable_dev_routes:

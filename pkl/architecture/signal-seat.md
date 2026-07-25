@@ -95,3 +95,10 @@ ADR and review).
   capability, private bind guard, conditional module-level `app`, rails conformance seam, and
   Signal Settings plus validation. REV-0041 returned final ACCEPT after C-1 through C-4 cleared.
   D-2a remains OFF pending R5b + R6 + R7; R5b-N1 and formatter cleanup remain follow-up work.
+- 2026-07-25: R5b-1 ingest-only producer surface landed (WO-0138): typed write-only
+  `StoreBackedSignalFacade`, producer-key auth with server-bound identity, flag-gated
+  `POST /api/signals`, validation quarantine/event attribution, injective replay/conflict behavior,
+  and ingest-time dead-on-arrival expiry. REV-0042 returned ACCEPT after the F-1 wire-bound
+  remediation and seven reviewer-requested pin classes; disposition RESOLVED. `app/store/`
+  remained untouched. Facade reads, operator enforcement, and lazy expiry remain R5b-2;
+  F-8/F-10/F-11 carry to R5b-2/R7. D-2a stays OFF pending R5b-2 + R6 + R7.
