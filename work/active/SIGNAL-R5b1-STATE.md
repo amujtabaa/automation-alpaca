@@ -127,13 +127,13 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 |---|---|---|
 | Activation / predecessor gate | GREEN | Clean worktree; refreshed origin; `launch_guard.py` blob present; branch created from `origin/master`. |
 | Read facade | MOVED TO R5b-2 | Entire facade-read corpus, list/get methods, read clock, effective status, and lazy expiry moved by rev-3. |
-| Ingest route | GREEN | 38 response/event-log-terminating ingest tests pass; no GET signal route or read facade imported. |
+| Ingest route | GREEN | 49 response/event-log-terminating ingest tests pass; no GET signal route or read facade imported. |
 | Producer auth + identity binding | GREEN | Producer-map identity, wrong-role 403, no-event rejects, and zero-read auth/rails probes pass. |
 | Spec 413 amendment | GREEN | `04-auth-and-api.md` now records 413 + no event for the 64 KiB cap. |
 | Contract 5 | GREEN | `routes_signals` added; 6 kept / 0 broken. |
-| Flag-off non-regression | GREEN | Route-off 404 pin, full 4,366-test run, and bootstrap collection all pass. |
-| Green gate evidence | GREEN | Complete WO battery passed with fresh terminal evidence. |
-| REV-0042 staging | GREEN | `work/review/REV-0042/request.md` targets frozen range `ae87354..f5aaf7a`; no `result.md` authored. |
+| Flag-off non-regression | GREEN | Route-off 404 pin, full 4,377-test run, and bootstrap collection all pass. |
+| Green gate evidence | GREEN | Complete post-F-1 WO battery passed with fresh terminal evidence. |
+| REV-0042 | BLOCK — FIX GREEN, RE-REVIEW PENDING | Reviewer-owned result preserved unchanged; F-1 remediated at `a92c8b8`; WO remains REVIEW. |
 
 ## Historical stop record — RESOLVED by rev-3
 
@@ -334,6 +334,27 @@ fable_done:
   shared store's domain.
 - **Evidence:** RED `2 failed` (`201` instead of `422`) → GREEN route corpus `38 passed`.
 
+### FIX-R5B1-05 — issued_at boundary overflow on producer ingest (REV-0042 F-1)
+
+- **Defect level:** P0 — BLOCKING.
+- **Defect class:** unbounded trust-boundary timestamp causing an unhandled exception, loss of
+  outcome totality, and loss of audit attribution.
+- **Root cause:** `expires_at` arithmetic preceded the future-skew test, so an accepted
+  `issued_at` near `datetime.max` could overflow before the route received a typed ingest outcome.
+  The validation-fallback helper admitted the same timestamp, exposing the same ordering defect on
+  validation failures.
+- **Impact:** an authenticated, parseable producer proposal could terminate without an HTTP outcome,
+  signal record, or event.
+- **Files:** `app/api/schemas.py`, `app/api/routes_signals.py`,
+  `tests/test_signal_routes.py`.
+- **Fix:** normalize `issued_at` to UTC and admit only the inclusive API wire range
+  `[datetime.min + 1 day, datetime.max - 86400 seconds]`; apply the same predicate to the
+  validation-fallback extractor so out-of-range values become `None` and are recorded as validation
+  quarantines. The exact inclusive upper instant is normalized before existing freshness arithmetic.
+  `app/store/core.py` remains untouched.
+- **Evidence:** RED route corpus: 3 F-1 failures, all `OverflowError` (otherwise-valid,
+  validation-fallback, and offset-form upper boundary) → GREEN route corpus: `49 passed`.
+
 ### 2026-07-25 — full gate battery and review staging
 
 ```yaml
@@ -367,15 +388,72 @@ fable_done:
 An earlier pre-final full-suite orchestration attempt was terminated by its 120-second command
 allowance and is not counted as evidence. The final-SHA run above completed normally.
 
+### 2026-07-25 — REV-0042 F-1 remediation gate battery
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_routes.py --basetemp <OS temp> -p no:cacheprovider"
+    result: FAIL
+    decisive_output: "RED: 3 F-1 cases raised OverflowError; every F-2–F-7/F-9 pin held"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_routes.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "49 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m ruff check ."
+    result: PASS
+    decisive_output: "All checks passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m ruff format --check <R5b-1-owned Python files>"
+    result: PASS
+    decisive_output: "7 files already formatted"
+- evidence:
+    command: ".venv/Scripts/python.exe -m mypy app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 77 source files"
+- evidence:
+    command: ".venv/Scripts/lint-imports.exe"
+    result: PASS
+    decisive_output: "Contracts: 6 kept, 0 broken"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q <signal/store/launch batch> --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "147 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/r2_conformance_oracle.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "61 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_wo0113_repair_scaling.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "13 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "4,377 collected; 100%; exit 0; 11 skipped; 1 expected xfail; 386.9 s"
+- evidence:
+    command: ".venv/Scripts/python.exe harness/bootstrap.py"
+    result: PASS
+    decisive_output: "exit 0; Ruff/mypy/collection completed; 4,377 tests collected"
+    note: "restricted-network pip retries were non-fatal because dependencies were already satisfied"
+- evidence:
+    command: "git diff --check"
+    result: PASS
+    decisive_output: "empty output"
+```
+
 ## Review handoff
 
 - Frozen semantic base: `ae87354f3ca82439df227830747d3df9b9cab506`.
 - Frozen implementation head: `f5aaf7a0bd4055161018bdb80c1caaa41caf7293`.
 - Review request: `work/review/REV-0042/request.md`.
+- Reviewer result: `work/review/REV-0042/result.md`, verdict **BLOCK** on F-1; preserved
+  byte-for-byte from reviewer commit `41e1155`.
+- F-1 remediation head: `a92c8b86323d4ed1bd41a9e04a5bce675bcf226f`.
+- Independent re-review remains open; the WO stays at REVIEW.
 - Explicit amendment under review: the 413/no-event response row in
   `docs/spec/signal-seat/04-auth-and-api.md`.
-- No reviewer result was created. The independent-review gate remains open.
-- No ledger, completion move, merge, PR, flag enablement, or WO-0139 edit was performed.
+- No ledger, completion move, disposition, PR, flag enablement, or WO-0139 edit was performed.
 
 ```yaml
 fable_done:
