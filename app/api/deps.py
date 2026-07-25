@@ -228,6 +228,15 @@ def get_actor(
     return raw_label or DEFAULT_ACTOR
 
 
+def get_required_actor(
+    request: Request,
+    x_actor: str = Header(..., min_length=1),
+) -> str:
+    """Resolve a principal-led actor while preserving a required label contract."""
+
+    return get_actor(request=request, x_actor=x_actor)
+
+
 def get_query_facade(
     request: Request, store: StateStore = Depends(get_store)
 ) -> ExecutionQueryFacade:

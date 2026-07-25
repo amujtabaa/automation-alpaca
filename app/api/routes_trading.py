@@ -12,7 +12,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import get_actor, get_command_facade, get_query_facade
+from app.api.deps import (
+    get_actor,
+    get_command_facade,
+    get_query_facade,
+    get_required_actor,
+)
 from app.api.schemas import ReconciliationStatusResponse
 from app.facade.commands import ExecutionCommandFacade
 from app.facade.dtos import (
@@ -217,7 +222,7 @@ async def ingest_submit_recovery_fill(
     recovery_id: str,
     command: SubmitRecoveryFillCommand,
     command_facade: ExecutionCommandFacade = Depends(get_command_facade),
-    actor: str = Depends(get_actor),
+    actor: str = Depends(get_required_actor),
 ) -> SubmitRecoveryFillResult:
     """Ingest one evidenced venue execution before releasing quarantine."""
 
@@ -243,7 +248,7 @@ async def reconcile_submit_recovery(
     recovery_id: str,
     attestation: SubmitRecoveryAttestation,
     command_facade: ExecutionCommandFacade = Depends(get_command_facade),
-    actor: str = Depends(get_actor),
+    actor: str = Depends(get_required_actor),
 ) -> SubmitRecoveryRecord:
     """Release one needs-review contribution; this command writes no fill."""
 

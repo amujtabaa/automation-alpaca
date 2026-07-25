@@ -411,6 +411,19 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
     decisive_output: "258 passed; only existing Starlette deprecation warnings"
 ```
 
+### 2026-07-25 — first full-suite gate
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q --basetemp <OS temp> -p no:cacheprovider"
+    result: FAIL
+    decisive_output: "one failure: inherited recovery-route test expected missing X-Actor to return 422 but migration returned 200"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_wo0114_pd1_release_valve.py::test_http_requires_actor_and_uses_typed_command_facade tests/test_recovery_actor_provenance.py tests/test_route_authorization_matrix.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "156 passed after preserving the required-label contract through a principal-preferring wrapper"
+```
+
 ## FIX blocks
 
 ### FIX-R5B2-01 — missing mutation-free signal read projection
@@ -495,3 +508,17 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 - **Fix:** when the environment key is present, copy caller headers, remove any case-insensitive
   operator-key spelling, then inject the canonical header without mutating the caller dictionary.
 - **Evidence:** intended cockpit RED `1 failed / 6 passed` → included GREEN in `258 passed`.
+
+### FIX-R5B2-07 — recovery actor migration made a required header optional flag-off
+
+- **Defect class:** flag-off API compatibility regression.
+- **Root cause:** the two recovery routes moved from a required direct `X-Actor` header to
+  `get_actor`, whose established contract intentionally permits an omitted optional label.
+- **Impact:** a flag-off request that previously failed validation with 422 reached an event-writing
+  recovery command with the default actor.
+- **Files:** `app/api/deps.py`, `app/api/routes_trading.py`.
+- **Fix:** add a narrow `get_required_actor` dependency that retains FastAPI's required header
+  validation and delegates all accepted labels to the same principal-preferring resolver; use it
+  only on the two migrated recovery routes.
+- **Evidence:** full suite exposed expected `422`, actual `200`; focused inherited + dual-store +
+  matrix rerun GREEN `156 passed`.
