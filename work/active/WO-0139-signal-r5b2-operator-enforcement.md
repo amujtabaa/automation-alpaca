@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R5b-2 — operator enforcement, route-authorization matrix, principal-bound audit, cockpit credential plumbing"
-status: READY
+status: ACTIVE
 work_order_id: WO-0139
 wave: signal-seat reconciliation ladder, step R5 (split; R5b-2 = operator enforcement surface)
 model_tier: strong (LOCAL Codex — human-gated auth surface; operator-lockout + audit-attribution risk)
