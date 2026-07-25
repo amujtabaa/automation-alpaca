@@ -23,24 +23,39 @@ from conversation memory.
 
 ```yaml
 fable_gate:
-  goal: "Add the first authenticated producer-ingest route and typed signal facade, with server-bound producer identity."
+  goal: "Ship the authenticated, server-identity-bound POST /api/signals ingest path only."
   assumptions:
-    - "The pasted rev-2 decision block is ratified; no ASSUMED lines remain."
-    - "R5a is merged: the required launch_guard blob gate passed on refreshed master."
-    - "Only the staged producer/ingest subset plus facade-read corpus is authoritative here, with exactly the two named mechanical repairs."
+    - "The operator ratified the NEEDS-INPUT disposition and rev-3 ingest-only scope."
+    - "All read-side facade methods, lazy expiry, GET /api/signals, and test_signal_facade_reads.py are R5b-2."
+    - "Operator-key recognition is allowed only for wrong-role 403 on the producer POST."
+    - "app/api/schemas.py is allowed only for additive signal DTOs."
     - "The feature flag remains OFF; permissive rails remain test-authority-only."
-    - "413 is the one pre-authorized accepted-text amendment and must be reviewed explicitly."
-  approach: "Activate WO/state first, then run each facade/auth/route slice RED to GREEN, update evidence at every boundary, run the complete gate battery, stage REV-0042, and push only the delivery branch."
+  approach: "Import only response/event-log-terminating ingest tests, prove RED, implement the minimal write facade/auth/route/schema slices, run the complete gate battery, stage REV-0042, and push only the delivery branch."
   out_of_scope:
-    - "Operator authentication, get_actor/principal changes, existing-route behavior, route matrix, docs gating, cockpit, GET/list/approve/reject/release."
-    - "R6 rails enforcement, R7 conversion, schema/migration, event-log truth changes, flag enablement."
+    - "Signal read methods/routes, lazy-expiry behavior, operator middleware/principal/get_actor, cockpit, GET/list/approve/reject/release."
+    - "R6 rails enforcement, R7 conversion, DB schema/migration, event-log truth changes, flag enablement."
   done_when:
-    - "Dual-store facade and producer-ingest corpus pass without weakened assertions."
-    - "Body-blind auth, 64 KiB cap, identity binding, full M2 outcomes, 413 spec amendment, and import boundary are proven."
+    - "The ingest corpus passes without weakened assertions."
+    - "Body-blind auth, 64 KiB cap, identity binding, full ingest M2 outcomes, 413 spec amendment, and import boundary are proven."
     - "Flag-off behavior and all named gates pass with fresh evidence."
     - "WO is REVIEW, REV-0042 request exists, branch is pushed; no PR/result/ledger/completion move."
-  blast_radius: "Additive route/facade/auth dependency plus one spec row, one import-linter line, staged tests, WO/state/review artifacts; zero existing-route behavior change."
+  blast_radius: "Additive signal DTOs, write-only facade, producer auth dependency, one flag-gated POST route, one spec row, one import-linter line, ingest tests, and lifecycle artifacts; zero existing-route behavior change."
 ```
+
+## Rev-3 controlling disposition
+
+The operator ratified
+`work/queue/SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md` after commit `5402ed7`.
+Master merge `ae87354` was pulled and merged into this branch. The rev-3 scope in the active WO
+supersedes the historical pasted rev-2 ledger below wherever they differ:
+
+- R5b-1 is **ingest-only**.
+- Do not import `tests/test_signal_facade_reads.py`.
+- Move every ingest test that reads through `GET /api/signals` to R5b-2 without rewriting it.
+- Recognize the operator key only to return wrong-role 403 on `POST /api/signals`.
+- `app/api/schemas.py` is allowed for additive signal DTOs only.
+- Lazy expiry and its event-log-truth decision are entirely R5b-2; ingest-time dead-on-arrival
+  remains R5b-1.
 
 ## Decision block (M1 war-game ledger, rev-2 post-M4b; pre-checked = ratified on paste; edit to override)
 
@@ -111,8 +126,8 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 | Slice | Status | Evidence |
 |---|---|---|
 | Activation / predecessor gate | GREEN | Clean worktree; refreshed origin; `launch_guard.py` blob present; branch created from `origin/master`. |
-| Facade | NEEDS-INPUT before RED | Staged facade corpus needs 8 raw-store `received_at` repairs, while the ratified block authorizes 6. |
-| Ingest route | NEEDS-INPUT before RED | Three staged ingest tests observe through forbidden R5b-2 `GET /api/signals`; a fourth mixes operator-key behavior into producer auth. |
+| Read facade | MOVED TO R5b-2 | Entire facade-read corpus, list/get methods, read clock, effective status, and lazy expiry moved by rev-3. |
+| Ingest route | READY FOR RED | Import only staged cases terminating at HTTP response or event log. |
 | Producer auth + identity binding | PENDING | — |
 | Spec 413 amendment | PENDING | — |
 | Contract 5 | PENDING | — |
@@ -120,7 +135,10 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 | Green gate evidence | PENDING | — |
 | REV-0042 staging | PENDING | — |
 
-## Stop record — NEEDS-INPUT before corpus import
+## Historical stop record — RESOLVED by rev-3
+
+The operator disposition resolves all five items below. They remain here as the durable reason for
+the ingest-only re-scope and must not be re-opened or silently pulled back into R5b-1.
 
 No production or test corpus file was imported or edited. The bounded read-only corpus/design pass
 found accepted-text conflicts beyond D-R5b1-6's pre-authorized 413 amendment:
@@ -219,4 +237,21 @@ fable_done:
     command: "cross-check docs/spec/signal-seat/02-lifecycle.md:31-47 against staged facade no-mutation assertions"
     result: FAIL
     decisive_output: "accepted event row includes lazy read, while WO/tests require read-only effective status"
+```
+
+### 2026-07-25 — rev-3 resume
+
+```yaml
+- evidence:
+    command: "git pull --ff-only origin master"
+    result: PASS
+    decisive_output: "Already up to date at ae87354"
+- evidence:
+    command: "git merge --no-edit master"
+    result: PASS
+    decisive_output: "rev-3 disposition and amended WO merged into delivery branch"
+- evidence:
+    command: "re-read active WO-0138 rev-3 and SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md"
+    result: PASS
+    decisive_output: "ingest-only scope ratified; prior NEEDS-INPUT resolved"
 ```
