@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R5b-2 — operator enforcement, route-authorization matrix, principal-bound audit, cockpit credential plumbing"
-status: ACTIVE
+status: REVIEW
 work_order_id: WO-0139
 wave: signal-seat reconciliation ladder, step R5 (split; R5b-2 = operator enforcement surface)
 model_tier: strong (LOCAL Codex — human-gated auth surface; operator-lockout + audit-attribution risk)
@@ -14,6 +14,10 @@ filter_risk: HIGH
 ---
 
 # WO-0139 — Signal Seat R5b-2: the operator enforcement surface
+
+> **IMPLEMENTATION HANDOFF (2026-07-25).** R5b-2 passed its complete gate battery and is frozen at
+> `10d2bce1fc11591a1994b1be891fef231df52fb5` for independent REV-0043 review. The feature flag
+> remains OFF; this work order is not closed, merged, or beta-authorized.
 
 > **rev-2 (2026-07-25).** An M4b refutation pass produced **15 findings, 4 of them P0**, and the
 > planning seat verified every P0 against code before applying. rev-1's route-matrix design was
@@ -386,21 +390,21 @@ Deferred `REQUIRED` members: **`POST /api/producers/{producer_id}/release` + `/a
 
 ## Required behavior (Fable v3)
 
-- [ ] **GATE** + predecessor check (D-R5b2-1), else STOP. Report the Step-0 list.
-- [ ] Operator-key auth + **http-middleware** deny-by-default; 401/403 distinction.
-- [ ] Principal stamping (**distinct** identifier) + `get_actor` precedence + **the 2-route
+- [x] **GATE** + predecessor check (D-R5b2-1), else STOP. Report the Step-0 list.
+- [x] Operator-key auth + **http-middleware** deny-by-default; 401/403 distinction.
+- [x] Principal stamping (**distinct** identifier) + `get_actor` precedence + **the 2-route
       migration**, dual-store with an app per store.
-- [ ] Flag-off control-character regression for `get_actor` (D-R5b2-13).
-- [ ] `GET /api/signals` incl. authoring `effective_signal_status` + injected clock.
-- [ ] The matrix in its own module: literal `REQUIRED` + both subset assertions + derived bound +
+- [x] Flag-off control-character regression for `get_actor` (D-R5b2-13).
+- [x] `GET /api/signals` incl. authoring `effective_signal_status` + injected clock.
+- [x] The matrix in its own module: literal `REQUIRED` + both subset assertions + derived bound +
       auth-outcome-only + fresh app per case.
-- [ ] Auto-docs: middleware coverage **or** explicit disablement; assert never public.
-- [ ] `root_path` defense-in-depth regression (inline path computation).
-- [ ] Cockpit `X-Operator-Key` **merge** + no-lockout usability proof.
-- [ ] Complete the crown-jewel audit test with exact-equality on a distinct principal.
-- [ ] `.env.example` credential documentation.
-- [ ] Flag-off non-regression: zero existing-test edits, bootstrap green.
-- [ ] FIX blocks with root cause; fresh pasted evidence.
+- [x] Auto-docs: middleware coverage **or** explicit disablement; assert never public.
+- [x] `root_path` defense-in-depth regression (inline path computation).
+- [x] Cockpit `X-Operator-Key` **merge** + no-lockout usability proof.
+- [x] Complete the crown-jewel audit test with exact-equality on a distinct principal.
+- [x] `.env.example` credential documentation.
+- [x] Flag-off non-regression: zero existing-test edits, bootstrap green.
+- [x] FIX blocks with root cause; fresh pasted evidence.
 
 ## Gate battery (fresh, pasted)
 

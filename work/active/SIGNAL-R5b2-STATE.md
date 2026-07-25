@@ -1,7 +1,7 @@
 ---
 type: Work State
 work_order_id: WO-0139
-status: ACTIVE
+status: REVIEW
 branch: codex/signal-r5b2-operator-auth
 updated: 2026-07-25
 ---
@@ -301,8 +301,8 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 | Authorization matrix + docs/root-path | GREEN | Literal existence + classification ratchet, exact OpenAPI set, derived count, role outcomes, absent docs, unmatched denial, and root-path regression all GREEN in 218 passed. |
 | Cockpit + environment docs | GREEN | Header merge, case-insensitive env-key authority, caller-dict immutability, and critical-control/read seam GREEN; safe flag/key placeholders documented. |
 | Lifecycle amendment | GREEN | Accepted text now defines mutation-free effective read projection and removes `detected_by:"read"` from durable event truth. |
-| Full gate battery | PENDING | — |
-| REV-0043 staging / push | PENDING | — |
+| Full gate battery | GREEN | Static gates clean; focused 258; full 4,586 collected with exit 0; R2 61; scaling 13; bootstrap exit 0. |
+| REV-0043 staging / push | PARTIAL | REV-0043 request staged against `fa087deb..10d2bce`; push pending. |
 
 ## Evidence log
 
@@ -424,6 +424,56 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
     decisive_output: "156 passed after preserving the required-label contract through a principal-preferring wrapper"
 ```
 
+### 2026-07-25 — final gate battery and review staging
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/ruff.exe check ."
+    result: PASS
+    decisive_output: "All checks passed!"
+- evidence:
+    command: ".venv/Scripts/ruff.exe format --check <12 R5b-2-owned Python files>"
+    result: PASS
+    decisive_output: "12 files already formatted"
+- evidence:
+    command: ".venv/Scripts/mypy.exe app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 77 source files"
+- evidence:
+    command: ".venv/Scripts/lint-imports.exe"
+    result: PASS
+    decisive_output: "Contracts: 6 kept, 0 broken"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q <five-file R5b-2 corpus> --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "258 passed on final implementation head"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "4,586 collected; exit 0 at 100%; 4,574 passed, 11 skipped, 1 expected xfail marker; 407 s"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/r2_conformance_oracle.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "61 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_wo0113_repair_scaling.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "13 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe harness/bootstrap.py"
+    result: PASS
+    decisive_output: "exit 0; dependencies already satisfied; Ruff/mypy/collection completed; 4,586 tests collected"
+    note: "restricted-network pip retries were non-fatal because dependencies were already satisfied"
+- evidence:
+    command: "final flag-on route inventory"
+    result: PASS
+    decisive_output: "36 mounted HTTP operations; exact OpenAPI equality; all four auto-doc paths absent; dev route enabled"
+- evidence:
+    command: "git diff --check"
+    result: PASS
+    decisive_output: "empty output"
+```
+
 ## FIX blocks
 
 ### FIX-R5B2-01 — missing mutation-free signal read projection
@@ -522,3 +572,34 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
   only on the two migrated recovery routes.
 - **Evidence:** full suite exposed expected `422`, actual `200`; focused inherited + dual-store +
   matrix rerun GREEN `156 passed`.
+
+## Review handoff
+
+- Frozen semantic base: `fa087deb56bc58fa627e26a54de6e1bc39a27169`.
+- Frozen implementation head: `10d2bce1fc11591a1994b1be891fef231df52fb5`.
+- Curated commits: activation `a748c01`, implementation `75e328a`, compatibility fix `10d2bce`.
+- Review request: `work/review/REV-0043/request.md`.
+- Feature flag remains OFF. No rails, producer release/read, signal conversion, schema/migration,
+  PR, merge, ledger mutation, result, disposition, or completion move was created.
+- GAP-01 and mounted-route GAP-02 are closed by this implementation. The deferred item is the
+  distinct spec-04 required-present completeness obligation for the future R6/R7 routes.
+
+```yaml
+fable_done:
+  task: "WO-0139 Signal Seat R5b-2 operator enforcement"
+  done_when_results:
+    - "MET: literal existence and all-mounted-route classification ratchets pass"
+    - "MET: exact role outcomes, absent docs, unmatched denial, and root-path behavior pass"
+    - "MET: all 16 actor-consuming commands use principal-preferring attribution"
+    - "MET: signal reads use injected mutation-free effective status"
+    - "MET: cockpit credential merge and critical-operation usability pass"
+    - "MET: lifecycle text and safe environment template match the implementation"
+    - "MET: full gate battery passes with fresh evidence"
+    - "MET: WO status REVIEW and REV-0043 request staged"
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+    flag_enabled: false
+    rails_or_conversion_built: false
+  status: REVIEW
+```
