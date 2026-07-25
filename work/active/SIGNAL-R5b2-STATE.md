@@ -302,7 +302,7 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 | Cockpit + environment docs | GREEN | Header merge, case-insensitive env-key authority, caller-dict immutability, and critical-control/read seam GREEN; safe flag/key placeholders documented. |
 | Lifecycle amendment | GREEN | Accepted text now defines mutation-free effective read projection and removes `detected_by:"read"` from durable event truth. |
 | Full gate battery | GREEN | Static gates clean; focused 258; full 4,586 collected with exit 0; R2 61; scaling 13; bootstrap exit 0. |
-| REV-0043 staging / push | PARTIAL | REV-0043 request staged against `fa087deb..10d2bce`; push pending. |
+| REV-0043 staging / push | GREEN | REV-0043 staged against `fa087deb..10d2bce`; delivery branch published to origin with no PR. |
 
 ## Evidence log
 
@@ -472,6 +472,10 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
     command: "git diff --check"
     result: PASS
     decisive_output: "empty output"
+- evidence:
+    command: "git push -u origin codex/signal-r5b2-operator-auth"
+    result: PASS
+    decisive_output: "new remote branch created and upstream tracking configured; no PR created"
 ```
 
 ## FIX blocks
