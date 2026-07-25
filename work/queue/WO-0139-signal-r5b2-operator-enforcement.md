@@ -228,7 +228,8 @@ merged R5b-1 tree before building — R5b-1 was in flight when this was drafted.
       `SIGNAL_REPLAYED` import path fix (`app.store.core:5587`).
       — TRACED(repo-wide grep: absent; M4b F-12; `SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md` D1/D2/D5).
 
-- [x] **D-R5b2-18 ⚠ BLOCKED-PENDING-RATIFICATION — lazy reads vs `SIGNAL_EXPIRED` (event-log truth).**
+- [x] **D-R5b2-18 ✅ RATIFIED 2026-07-25 (Ameen): MUTATION-FREE READS — lazy reads vs `SIGNAL_EXPIRED`
+      (event-log truth).**
       Accepted `02-lifecycle.md:47` defines `SIGNAL_EXPIRED` as emitted by "sweep, **lazy-expiry**, or
       dead-on-arrival at ingest" with an accepted payload value **`detected_by: "read"`**, and `:97`
       says "TTL lapse … EXPIRED (**lazy** + sweep, rule A4)". The staged corpus asserts the opposite:
@@ -240,11 +241,20 @@ merged R5b-1 tree before building — R5b-1 was in flight when this was drafted.
       single-writer discipline (a producer-facing GET must not become a writer); write amplification on
       a hostile-input surface; `effective_signal_status` is already the designed derivation; and rule
       A3 holds either way because conversion re-checks TTL atomically.
-      **If ratified this requires a `02-lifecycle.md` amendment** (lazy expiry = projection-level
-      reclassification; `"read"` removed from `detected_by` or redefined as sweep-attributed) **with its
-      own review packet**. **Until ratified, the affected facade-read tests cannot go green — STOP and
-      report rather than choosing a side.**
-      — TRACED(`02-lifecycle.md:47,97`; staged `test_signal_facade_reads.py:112`; disposition D5).
+      **RATIFIED OUTCOME (operator, 2026-07-25): mutation-free reads.** Reads reclassify via a pure
+      `effective_signal_status(record, now)` and append **nothing**; the durable `SIGNAL_EXPIRED` is
+      written by the sweep, at ingest (dead-on-arrival, `detected_by:"ingest"`), or atomically inside
+      the A-2 conversion command. The staged pin
+      `test_list_signals_lazy_expiry_does_not_mutate_store` is therefore **correct and load-bearing** —
+      never weaken it.
+      **Required amendment shipping WITH this rung:** `docs/spec/signal-seat/02-lifecycle.md` — state
+      that lazy expiry is **projection-level reclassification**, and remove `"read"` from
+      `detected_by` (or redefine it as sweep-attributed). This is an **event-log-truth change on a
+      human-gated surface**: it ships in the same change, is called out explicitly in the REV-0043
+      request, and the reviewer verifies the amended text against the implementation. Do **not** ship
+      the code without the amendment, or the spec and behavior diverge silently.
+      — TRACED(`02-lifecycle.md:47,97`; staged `test_signal_facade_reads.py:112`; disposition D5;
+      operator ratification 2026-07-25).
 
 - [x] **D-R5b2-17 Matrix lives in its OWN test module — a planning-seat reoptimization.**
       `tests/test_signal_routes.py` is the shared target of R5b-1, R5b-2, R6 **and** R7; four rungs

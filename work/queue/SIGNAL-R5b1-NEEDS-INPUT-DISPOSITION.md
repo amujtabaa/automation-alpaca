@@ -68,7 +68,13 @@ produce a working route. **This is a defect in my work order, not an implementer
 DTOs only** (`SignalProposal` plus any ingest response view). No edits to existing schemas; the
 existing `ResponseSafeFloat` conventions apply.
 
-## D5 — lazy reads and `SIGNAL_EXPIRED`: an accepted-text conflict on event-log truth → **ESCALATED**
+## D5 — lazy reads and `SIGNAL_EXPIRED`: an accepted-text conflict on event-log truth → **RATIFIED: MUTATION-FREE READS (Ameen, 2026-07-25)**
+
+> **Outcome:** the operator ratified mutation-free reads. Reads reclassify via a pure
+> `effective_signal_status`; the durable `SIGNAL_EXPIRED` comes from the sweep, ingest
+> (dead-on-arrival), or the atomic conversion command. The `02-lifecycle.md` amendment ships **with
+> R5b-2** and is called out in the REV-0043 request for explicit review. Recorded as WO-0139
+> D-R5b2-18. The analysis below is retained as the decision record.
 
 **Verified — the conflict is real and squarely on a safety surface.** Accepted
 `docs/spec/signal-seat/02-lifecycle.md:47` defines `SIGNAL_EXPIRED` as emitted by "sweep,
