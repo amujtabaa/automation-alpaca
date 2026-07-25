@@ -4,9 +4,9 @@ title: "Signal Seat R5b-1 → D-2a: batch/sequencing plan (war-gamed, rev-2 post
 status: RATIFIED
 author: planning seat
 created: 2026-07-25
-revised: 2026-07-25 (rev-3 — operator ratified the four-round structure with R6 + R7a behind a named gate)
+revised: 2026-07-25 (rev-4 — hybrid: every WO reaches READY via M4b refutation BEFORE any build run; grouping decided per-WO after its war-game)
 wargame: "FULL per .ai-os/core/18 — M1/M2/M3/M4a/M4b complete"
-ratified_by: "Ameen, 2026-07-25 — four rounds; R6 + R7a grouped behind a named mid-session gate"
+ratified_by: "Ameen, 2026-07-25 — four rounds; R6 + R7a grouped behind a named mid-session gate; rev-4 hybrid authorized"
 ---
 
 # Signal Seat: R5b-1 → D-2a sequencing plan (rev-2)
@@ -85,14 +85,56 @@ gate**, prior to and independent of D-2a; and `.env.example` documents **none** 
 
 ---
 
+## The governing control (rev-4): the refutation gate, not the session boundary
+
+Three consecutive FULL war-games have refuted roughly half of every decision block they attacked:
+
+| Design attacked | Result |
+|---|---|
+| WO-0137 (R5a) | 3 tracing defects fixed pre-ratification |
+| WO-0138 (R5b) | **8 of 14 lines refuted, 2 P0** |
+| This sequencing plan | **4 of 8 claims refuted** |
+| WO-0139 (R5b-2) | **15 findings, 4 P0** — incl. a route matrix that would have shipped green while proving nothing about route existence |
+
+**Conclusion that reorders the plan:** the scarce, load-bearing control is **M4b refutation between
+drafting a WO and building on its output** — *not* the session boundary. A freshly drafted
+gated-surface WO is wrong about half the time, and the defects are the dangerous kind (green-but-inert,
+publicly-exposed, silently-behavior-changing). Session boundaries merely *avoid* compounding; the
+refutation gate *removes the defect*.
+
+**Therefore: no WO enters a build run as `DRAFT`.** Every remaining WO reaches `READY` through a FULL
+war-game with an M4b pass first. Once that holds, grouping the *building* is comparatively safe, and
+the round count becomes a context-capacity question rather than a correctness one.
+
+### Phase P — planning-only, runs now and in parallel with every build run
+
+| WO | State | Gate to READY |
+|---|---|---|
+| WO-0138 (R5b-1) | **READY** (building now) | M4b done — 8/14 refuted, applied |
+| **WO-0139 (R5b-2)** | **READY** | M4b done — 15 findings / 4 P0, applied (rev-2) |
+| **WO-0104 refresh (R6)** | DRAFT — not started | FULL war-game; must resolve **C-3** (the one-method rails Protocol cannot express the required step-4 atomic debit) and the allowed-paths defect that blocks `app/signals_rails_impl.py` |
+| **WO-R7a (buy conversion)** | not drafted | FULL war-game; the schema-migration human gate is raised separately |
+| **WO-R7b (sell conversion)** | not drafted | FULL war-game; needs `project_committed_sell_exposure` (absent) + the sell-refusal spec amendment |
+| **D-2a gate checklist** | not drafted | Not a WO — a joint-proof checklist + doc/ADR/PKL reconciliation |
+
+**Grouping is decided per-WO *after* its war-game, not in advance.** A rung that a war-game reveals to
+be larger than expected loses its grouping. WO-0139's rev-2 already demonstrates the effect: R5b-2 grew
+by authoring `effective_signal_status`, a dedicated matrix module, per-store apps for the actor
+migration, and the sanitization carve-out — which is why it stays **alone**.
+
 ## RATIFIED sequence — four rounds (Ameen, 2026-07-25)
 
 | Round | Codex session contents | Planning seat (parallel) | Review packet |
 |---|---|---|---|
 | **1** | **R5b-1** — WO-0138 (in flight) | ① **GAP-10 closure** citing D-SIG-7/D-SIG-8 ② draft **WO-0139** (R5b-2), C-2-rescoped, using the 1021-line archive corpus ③ start **WO-0104 refresh** | **REV-0042** |
 | **2** | **R5b-2** — WO-0139, **alone** (HIGH filter risk · R6's prerequisite · most likely to surface spec conflicts) | REV-0042 review; finish WO-0104 refresh incl. the C-3 Protocol-seam decision; draft **R7a** WO + the schema-gate request | **REV-0043** |
-| **3** | **R6 → [NAMED GATE] → R7a** in one session | REV-0043 review; draft **R7b** incl. `project_committed_sell_exposure` | **REV-0044** (covers both rungs) |
+| **3** | **R6 → [NAMED GATE] → R7a** in one session — **grouping CONDITIONAL** on both WOs reaching READY and neither war-game revealing WO-0139-style growth | REV-0043 review; draft **R7b** incl. `project_committed_sell_exposure` | **REV-0044** (covers both rungs) |
 | **4** | **R7b → [NAMED GATE] → D-2a tail** | REV-0044 review; run the joint-proof verification and the D-2a doc/ADR/PKL work | **REV-0045**, then the flip |
+
+**Reviews run asynchronously.** A REV packet cites a frozen commit range, so the planning seat reviews
+rung N's close-out SHA *while* Codex builds rung N+1. A BLOCK then stops the run at the next named gate
+rather than after everything is built — that is what buys grouping without surrendering review
+protection.
 
 **Why round 3 is the right place to spend the grouping:** R6 and R7a are both post-R5b-2 and **mutually
 independent** — neither consumes the other's output, so a defect in one does not invalidate the other.
