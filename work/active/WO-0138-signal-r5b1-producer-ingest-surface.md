@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "Signal Seat R5b-1 — producer ingest surface (typed signal facade + POST /api/signals + producer-key auth)"
-status: READY
+status: ACTIVE
 work_order_id: WO-0138
 wave: signal-seat reconciliation ladder, step R5 (split; R5b-1 = producer ingest surface)
 model_tier: strong (LOCAL Codex — human-gated auth surface)
