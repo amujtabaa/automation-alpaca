@@ -1,7 +1,7 @@
 ---
 type: Work State
 work_order_id: WO-0138
-status: ACTIVE
+status: REVIEW
 branch: codex/signal-r5b1-producer-ingest
 updated: 2026-07-25
 ---
@@ -127,13 +127,13 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 |---|---|---|
 | Activation / predecessor gate | GREEN | Clean worktree; refreshed origin; `launch_guard.py` blob present; branch created from `origin/master`. |
 | Read facade | MOVED TO R5b-2 | Entire facade-read corpus, list/get methods, read clock, effective status, and lazy expiry moved by rev-3. |
-| Ingest route | GREEN | 28 response/event-log-terminating ingest tests pass; no GET signal route or read facade imported. |
+| Ingest route | GREEN | 38 response/event-log-terminating ingest tests pass; no GET signal route or read facade imported. |
 | Producer auth + identity binding | GREEN | Producer-map identity, wrong-role 403, no-event rejects, and zero-read auth/rails probes pass. |
 | Spec 413 amendment | GREEN | `04-auth-and-api.md` now records 413 + no event for the 64 KiB cap. |
 | Contract 5 | GREEN | `routes_signals` added; 6 kept / 0 broken. |
-| Flag-off non-regression | PARTIAL | Targeted 404/public-health pin passes; full suite/bootstrap pending. |
-| Green gate evidence | PARTIAL | Ruff, owned-file format, mypy, import-linter, and targeted corpus pass; full battery pending. |
-| REV-0042 staging | PENDING | — |
+| Flag-off non-regression | GREEN | Route-off 404 pin, full 4,366-test run, and bootstrap collection all pass. |
+| Green gate evidence | GREEN | Complete WO battery passed with fresh terminal evidence. |
+| REV-0042 staging | GREEN | `work/review/REV-0042/request.md` targets frozen range `ae87354..f5aaf7a`; no `result.md` authored. |
 
 ## Historical stop record — RESOLVED by rev-3
 
@@ -271,7 +271,7 @@ fable_done:
 - evidence:
     command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_routes.py --basetemp <OS temp> -p no:cacheprovider"
     result: PASS
-    decisive_output: "28 passed"
+    decisive_output: "38 passed"
 - evidence:
     command: ".venv/Scripts/python.exe -m ruff check ."
     result: PASS
@@ -301,7 +301,7 @@ fable_done:
   `app/facade/signal_commands.py`, `app/facade/signals.py`, `app/main.py`.
 - **Fix:** add one flag-gated POST route, strict/manual DTO validation, server-derived producer
   identity, body-blind rails ordering, capped streaming, and a write-only facade.
-- **Evidence:** RED `1 passed, 14 failed` (all flag-on 404) → GREEN `28 passed`.
+- **Evidence:** RED `1 passed, 14 failed` (all flag-on 404) → GREEN `38 passed`.
 
 ### FIX-R5B1-02 — incomplete failure-path proof
 
@@ -322,3 +322,73 @@ fable_done:
 - **Files:** `docs/spec/signal-seat/04-auth-and-api.md`.
 - **Fix:** add the pre-authorized 413/no-event response row; carry it explicitly into REV-0042.
 - **Evidence:** oversized-body response/event-log test passes; spec diff contains the 413 row.
+
+### FIX-R5B1-04 — producer symbol wire-domain drift
+
+- **Root cause:** the shared store normalizer intentionally accepts digits and hyphens, while the
+  accepted SignalProposal wire contract is narrower (`[A-Z.]+`).
+- **Impact:** producer proposals with `A1` or `BRK-B` were recorded as valid despite violating the
+  signal-specific schema.
+- **Files:** `app/api/schemas.py`, `tests/test_signal_routes.py`.
+- **Fix:** enforce the signal-only wire alphabet after canonical uppercasing, without narrowing the
+  shared store's domain.
+- **Evidence:** RED `2 failed` (`201` instead of `422`) → GREEN route corpus `38 passed`.
+
+### 2026-07-25 — full gate battery and review staging
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q <signal/store/launch batch> --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "136 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/r2_conformance_oracle.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "61 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_wo0113_repair_scaling.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "13 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "4,366 collected; 100%; exit 0; 11 skipped; 1 expected xfail; 353.9 s"
+- evidence:
+    command: ".venv/Scripts/python.exe harness/bootstrap.py"
+    result: PASS
+    decisive_output: "exit 0; Ruff/mypy/collection completed; 4,366 tests collected"
+    note: "restricted-network pip retries were non-fatal because dependencies were already satisfied"
+- evidence:
+    command: "git diff --check"
+    result: PASS
+    decisive_output: "empty output"
+```
+
+An earlier pre-final full-suite orchestration attempt was terminated by its 120-second command
+allowance and is not counted as evidence. The final-SHA run above completed normally.
+
+## Review handoff
+
+- Frozen semantic base: `ae87354f3ca82439df227830747d3df9b9cab506`.
+- Frozen implementation head: `f5aaf7a0bd4055161018bdb80c1caaa41caf7293`.
+- Review request: `work/review/REV-0042/request.md`.
+- Explicit amendment under review: the 413/no-event response row in
+  `docs/spec/signal-seat/04-auth-and-api.md`.
+- No reviewer result was created. The independent-review gate remains open.
+- No ledger, completion move, merge, PR, flag enablement, or WO-0139 edit was performed.
+
+```yaml
+fable_done:
+  task: "WO-0138 rev-3 Signal R5b-1 producer ingest implementation"
+  done_when_results:
+    - "MET: ingest-only corpus passes without importing or rewriting the moved GET/read corpus"
+    - "MET: body-blind auth/rails, identity binding, 64 KiB cap, M2 outcomes, and ingest-time expiry proven"
+    - "MET: 413 amendment and contract-5 ratchet applied"
+    - "MET: complete gate battery passes with fresh evidence"
+    - "MET: WO status REVIEW and REV-0042 request staged"
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+    wo_0139_untouched: true
+  status: REVIEW
+```
