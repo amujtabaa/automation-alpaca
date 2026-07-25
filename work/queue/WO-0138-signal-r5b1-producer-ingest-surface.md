@@ -27,18 +27,39 @@ facade and `POST /api/signals`, authenticated by producer key, with identity bou
 
 ## Scope boundary
 
-**IN (R5b-1):**
-- `app/facade/signal_*` — the typed `StoreBackedSignalFacade` (**absent on master**) + protocols
-  mirroring the existing facade command/query split.
-- `app/api/routes_signals.py` — **`POST /api/signals` only** (producer-only).
-- `app/api/deps.py` — the **producer-key** authentication dependency + server-side identity binding.
-- `.importlinter` contract-5 `routes_signals` line (same change).
-- The staged producer/ingest + facade-read acceptance corpus.
+> **rev-3 (2026-07-25) — re-scoped to INGEST-ONLY** after Codex's NEEDS-INPUT stop, per
+> `work/queue/SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md`. rev-2 deferred `GET /api/signals` to R5b-2 but
+> kept the **read-side** facade corpus here; that corpus depends on `effective_signal_status`, which
+> WO-0139 already owns, so the read half was split across two rungs. It is now reunited in R5b-2.
 
-**OUT — deferred to WO-0139 (R5b-2):** operator-key enforcement on any route, principal stamping,
-`get_actor` precedence, the actor migration of the two recovery routes, `GET /api/signals`,
-`/api/producers`, the mounted-route authorization matrix, auto-docs disablement, cockpit
-`X-Operator-Key` plumbing, `.env.example` credential documentation.
+**IN (R5b-1) — the ingest write path only:**
+- `app/facade/signal_*` — the typed `StoreBackedSignalFacade` (**absent on master**), **write/ingest
+  surface only** + protocols mirroring the existing facade command/query split.
+- `app/api/routes_signals.py` — **`POST /api/signals` only** (producer-only).
+- `app/api/deps.py` — the **producer-key** authentication dependency + server-side identity binding,
+  **plus** recognizing the operator credential as a distinct type **solely** to return the wrong-role
+  **403 on `POST /api/signals`** (D1-D3 authorization; spec `04 §1`). No operator enforcement
+  anywhere else, no middleware, no principal stamping.
+- **`app/api/schemas.py` — signal DTOs ONLY** (`SignalProposal` + any ingest response view).
+  `01-schema.md:6` places `SignalProposal` there; rev-2's IN list omitted the path, which made the
+  contract unbuildable. Do not touch existing schemas; follow the `ResponseSafeFloat` conventions.
+- Ingest-time **dead-on-arrival** expiry (`expires_at ≤ received_at` ⇒ `SIGNAL_EXPIRED`,
+  `detected_by:"ingest"`) — a write on the write path, unaffected by the D5 read question.
+- `.importlinter` contract-5 `routes_signals` line (same change).
+- The staged **ingest** subset of `test_signal_routes.py` — only cases whose assertions terminate at
+  the **HTTP response or the event log**.
+
+**OUT — moved to WO-0139 (R5b-2) by the rev-3 re-scope:** the **entire**
+`tests/test_signal_facade_reads.py` corpus · facade `list_signals`/`get_signal` ·
+`effective_signal_status` · the injected read clock · **lazy-expiry semantics and the D5 event-log-truth
+decision** · any ingest test that reads back through `GET /api/signals` (e.g. staged `:231`).
+**Do not rewrite such an assertion to avoid the GET — moving it is correct; rewriting it is
+test-weakening.**
+
+**OUT — already deferred to WO-0139:** operator-key enforcement on any route other than the producer
+403 above, principal stamping, `get_actor` precedence, the actor migration of the two recovery routes,
+`GET /api/signals`, `/api/producers`, the mounted-route authorization matrix, auto-docs handling,
+cockpit `X-Operator-Key` plumbing, `.env.example` credential documentation.
 
 **OUT — later rungs:** R6 (WO-0104) real rails: ceiling/durable-budget/quarantine-opener/release and
 the paced-flood proof. R7: approve/reject routes + atomic conversion (see D-R5b1-3). Schema/migration;
@@ -70,9 +91,13 @@ no `ASSUMED` line is pre-checked (`.ai-os/core/18`).
       Branch `codex/signal-r5b1-producer-ingest` from the merged master.
       — TRACED(M4b F10, re-verified by the planning seat).
 
-- [x] **D-R5b1-2 Corpus, and it is INCOMPLETE — completing it is authorized.** Pull from
+- [x] **D-R5b1-2 Corpus, and it is INCOMPLETE — completing it is authorized.** *(rev-3: import the
+      **ingest subset ONLY**; `tests/test_signal_facade_reads.py` moved to R5b-2 in full. Where the
+      original repair list said "6 sites", the authorized repair is a **PREDICATE — every
+      `ingest_signal(` call site missing the required `received_at=` kwarg** — because the live count
+      is 8, not 6. Counting was the defect; do not encode a number.)* Pull from
       `origin/codex/signal-tests-staging`: the **producer/ingest subset** of
-      `tests/test_signal_routes.py` and all of `tests/test_signal_facade_reads.py`. The staged
+      `tests/test_signal_routes.py`. The staged
       `test_signal_routes.py` is **truncated at byte 14628, ending mid-comment (`# The forged X-Ac`)**
       inside `test_operator_command_audit_actor_is_principal_not_forged_x_actor` — it parses,
       collects, and **PASSES without asserting anything about the actor**. That test is R5b-2's
