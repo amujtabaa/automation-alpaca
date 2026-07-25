@@ -63,6 +63,7 @@ class _ReceiveProbe:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
         self.http_receive_calls = 0
+        self.http_headers: list[dict[bytes, bytes]] = []
 
     async def __call__(
         self,
@@ -74,6 +75,8 @@ class _ReceiveProbe:
             self.http_receive_calls += 1
             return await receive()
 
+        if scope["type"] == "http":
+            self.http_headers.append(dict(scope["headers"]))
         await self.app(
             scope,
             counted_receive if scope["type"] == "http" else receive,
@@ -88,6 +91,11 @@ class _QuarantinedRails:
             http_status=403,
             reason="producer is quarantined",
         )
+
+
+class _MalformedRails:
+    async def check_ingest(self, producer_id: str) -> object:
+        return object()
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +200,21 @@ def test_nordic_non_ascii_symbol_is_validation_quarantine(client):
     r = client.post("/api/signals", json=_proposal(symbol="Å"), headers=_PROD_H)
     assert r.status_code == 422
     assert r.json()["quarantine_reason"] == "validation"
+
+
+@pytest.mark.parametrize("symbol", ["A1", "BRK-B"])
+def test_ascii_symbol_outside_signal_wire_domain_is_validation_quarantine(
+    client,
+    symbol,
+):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(symbol=symbol),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["quarantine_reason"] == "validation"
 
 
 def test_malformed_naive_datetime_quarantined(client):
@@ -335,6 +358,39 @@ def test_malformed_body_identity_is_content_addressed_in_event_truth(client):
 
 
 @pytest.mark.parametrize(
+    "body",
+    [b"null", b"[]", b'"scalar"', b"7", b"true"],
+    ids=["null", "array", "string", "number", "boolean"],
+)
+def test_every_parseable_top_level_shape_is_recorded_quarantine(client, body):
+    response = client.post(
+        "/api/signals",
+        content=body,
+        headers={**_PROD_H, "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["status"] == "quarantined"
+    assert [event.event_type for event in _events(client)] == [
+        ExecutionEventType.SIGNAL_QUARANTINED
+    ]
+
+
+def test_non_string_body_producer_id_is_recorded_not_trusted(client):
+    response = client.post(
+        "/api/signals",
+        json=_proposal(producer_id=123),
+        headers=_PROD_H,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["producer_id"] == "vibe-trading"
+    assert [event.event_type for event in _events(client)] == [
+        ExecutionEventType.SIGNAL_QUARANTINED
+    ]
+
+
+@pytest.mark.parametrize(
     ("content", "headers", "expected_status"),
     [
         (b"not json", {**_PROD_H, "Content-Type": "application/json"}, 400),
@@ -417,6 +473,46 @@ def test_quarantined_producer_is_rejected_without_reading_or_recording():
 
     assert response.status_code == 403
     assert probe.http_receive_calls == 0
+    assert events == []
+
+
+def test_malformed_rails_decision_fails_closed_without_reading_body():
+    app = build_flag_on_app(
+        test_authority=_IN_PROCESS_TEST_AUTHORITY,
+        rails=_MalformedRails(),
+    )
+    probe = _ReceiveProbe(app)
+    with TestClient(probe) as client:
+        response = client.post(
+            "/api/signals",
+            content=b"x" * (65 * 1024),
+            headers=_PROD_H,
+        )
+
+    assert response.status_code == 503
+    assert probe.http_receive_calls == 0
+
+
+def test_streamed_oversize_is_rejected_without_content_length_or_event():
+    store = InMemoryStateStore()
+    app = build_flag_on_app(
+        test_authority=_IN_PROCESS_TEST_AUTHORITY,
+        store=store,
+    )
+    probe = _ReceiveProbe(app)
+    chunks = iter([b"x" * (32 * 1024), b"y" * (33 * 1024)])
+    with TestClient(probe) as client:
+        response = client.post(
+            "/api/signals",
+            content=chunks,
+            headers=_PROD_H,
+        )
+        assert client.portal is not None
+        events = client.portal.call(store.get_execution_events)
+
+    assert b"content-length" not in probe.http_headers[-1]
+    assert response.status_code == 413
+    assert probe.http_receive_calls > 0
     assert events == []
 
 

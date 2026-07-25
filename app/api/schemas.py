@@ -146,6 +146,7 @@ class ReconciliationStatusResponse(BaseModel):
 
 
 _BARE_NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
+_SIGNAL_SYMBOL_RE = re.compile(r"^[A-Z.]+$")
 
 
 class SignalProposal(BaseModel):
@@ -207,7 +208,10 @@ class SignalProposal(BaseModel):
         stripped = value.strip()
         if not stripped.isascii():
             raise ValueError("symbol must be ASCII")
-        return normalize_symbol(stripped)
+        normalized = normalize_symbol(stripped)
+        if not _SIGNAL_SYMBOL_RE.fullmatch(normalized):
+            raise ValueError("signal symbol must contain only A-Z and '.'")
+        return normalized
 
     @field_validator("provenance")
     @classmethod
