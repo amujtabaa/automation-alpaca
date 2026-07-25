@@ -1,12 +1,12 @@
 ---
 type: Planning Record
 title: "Signal Seat R5b-1 → D-2a: batch/sequencing plan (war-gamed, rev-2 post-M4b)"
-status: READY
+status: RATIFIED
 author: planning seat
 created: 2026-07-25
-revised: 2026-07-25 (rev-2 — M4b refuted 4 of rev-1's 8 claims; corrections applied and verified)
+revised: 2026-07-25 (rev-3 — operator ratified the four-round structure with R6 + R7a behind a named gate)
 wargame: "FULL per .ai-os/core/18 — M1/M2/M3/M4a/M4b complete"
-decides: nothing on its own — a sequencing recommendation for operator ratification
+ratified_by: "Ameen, 2026-07-25 — four rounds; R6 + R7a grouped behind a named mid-session gate"
 ---
 
 # Signal Seat: R5b-1 → D-2a sequencing plan (rev-2)
@@ -85,16 +85,45 @@ gate**, prior to and independent of D-2a; and `.env.example` documents **none** 
 
 ---
 
-## Recommended sequence (rev-2)
+## RATIFIED sequence — four rounds (Ameen, 2026-07-25)
 
-| Slot | Codex (implementer) | Planning seat (parallel) | Exit gate |
+| Round | Codex session contents | Planning seat (parallel) | Review packet |
 |---|---|---|---|
-| **now** | **R5b-1** (in flight) | ① **GAP-10 one-line closure** citing D-SIG-7/D-SIG-8 + record the threat-model divergence ② draft **WO-0139** (R5b-2) with FULL war-game, C-2-rescoped, using the **1021-line archive corpus** as reference ③ start **WO-0104 refresh** (allowed-paths fix, real missing settings, the C-3 Protocol seam) | R5b-1 → REVIEW, REV-0042 staged |
-| **A** | **R5b-2** (WO-0139) | REV-0042; finish WO-0104 refresh incl. the C-3 seam decision | R5b-2 → REVIEW; REV-0042 dispositioned |
-| **B** | **R6** (refreshed WO-0104) | REV-0043; draft **R7a** WO + the schema-migration gate request | R6 → REVIEW; REV-0043 dispositioned |
-| **C** | **R7a (buy-only)** — alone | REV-0044; draft **R7b (sell)** incl. `project_committed_sell_exposure` | R7a → REVIEW; schema gate approved |
-| **D** | **R7b (sell)** — alone | REV-0045 | R7b → REVIEW |
-| **E** | **D-2a joint enablement** | REV-0046 before the flip | all dispositioned + joint proof ⇒ flip; else flag stays OFF |
+| **1** | **R5b-1** — WO-0138 (in flight) | ① **GAP-10 closure** citing D-SIG-7/D-SIG-8 ② draft **WO-0139** (R5b-2), C-2-rescoped, using the 1021-line archive corpus ③ start **WO-0104 refresh** | **REV-0042** |
+| **2** | **R5b-2** — WO-0139, **alone** (HIGH filter risk · R6's prerequisite · most likely to surface spec conflicts) | REV-0042 review; finish WO-0104 refresh incl. the C-3 Protocol-seam decision; draft **R7a** WO + the schema-gate request | **REV-0043** |
+| **3** | **R6 → [NAMED GATE] → R7a** in one session | REV-0043 review; draft **R7b** incl. `project_committed_sell_exposure` | **REV-0044** (covers both rungs) |
+| **4** | **R7b → [NAMED GATE] → D-2a tail** | REV-0044 review; run the joint-proof verification and the D-2a doc/ADR/PKL work | **REV-0045**, then the flip |
+
+**Why round 3 is the right place to spend the grouping:** R6 and R7a are both post-R5b-2 and **mutually
+independent** — neither consumes the other's output, so a defect in one does not invalidate the other.
+Contrast R5b-2 + R6, which is a dependency chain (C-1) and the pair most likely to exhaust session
+context.
+
+### Named mid-session gate — the mechanism that makes rounds 3 and 4 safe
+
+A single session may carry two rungs **only** under this discipline:
+
+1. **Rung A closes completely first** — full gate battery, status flip, disposition, ledger line, file
+   move, both hygiene scripts green. A half-closed rung must never be followed by a second rung.
+2. **GATE: Codex stops and reports** — pasted gate evidence, the rung-A close-out SHA, and the rung-B
+   preflight (its predecessor checks re-verified against the *just-closed* tree, not against the WO's
+   drafting-time assumptions). It **waits for an explicit operator go/no-go**.
+3. **Rung B activates only after go** — its own STATE file, its own red-first cycle.
+4. **One combined REV packet** covers both rungs (`CLAUDE.md` permits milestone-batched review), with
+   the finding table segmented per rung so a BLOCK can be scoped to one.
+5. **Abort rule:** if context compaction occurs *after* the gate but *before* rung B's first green
+   slice, Codex stops and reports rather than pushing on — rung A is already safely closed, so the
+   session can end cleanly and rung B restarts fresh. This is the failure mode that makes ungated
+   grouping dangerous.
+6. **Collision serialization:** rungs sharing `app/store/*`, the route-matrix test, or the ledger run
+   strictly sequentially within the session — never interleaved.
+
+### Round-3 collision note (R6 ∥ R7a are independent, but not disjoint)
+
+Both touch `app/store/*` (R6: budget/quarantine tables; R7a: the conversion transaction) and both add
+routes the matrix test must classify. Sequential-within-session plus rule 6 handles it. **Order inside
+round 3: R6 first**, because R7a's approve route is the one the matrix's required-present set has been
+waiting on (C-2), so landing conversion last leaves the matrix closest to its D-2a green state.
 
 **Why this order:**
 - **GAP-10 is now a closure, not a decision** — it comes off the critical path entirely (B1).
@@ -112,7 +141,12 @@ gate**, prior to and independent of D-2a; and `.env.example` documents **none** 
 - **D-2a last** — env-driven and therefore requiring the joint proof, all dispositions, the INV probe
   lines, `.env.example`, and the schema gate already cleared.
 
-**Nothing may be grouped.** The only candidate pairing (R5b-2 + R6) is refuted by C-1.
+**Grouping rule (corrected in rev-3).** rev-2 said "nothing may be grouped" — that over-stated C-1.
+C-1 is an **ordering** constraint (R6 consumes R5b-2's operator-auth seam, so R6 comes after); it
+forbids **parallel or interleaved** work, not a single session running the rungs **sequentially behind
+a named gate**. What actually forces separate sessions is **context capacity** plus blast radius — and
+by that measure the dangerous pair is exactly R5b-2 + R6 (both in R5a's weight class, and a chain), not
+R6 + R7a (independent). Hence the ratified grouping.
 
 ---
 
@@ -180,14 +214,22 @@ when WO-0139 is drafted; R5b-1 does not implement the matrix, so nothing in flig
 
 ---
 
-## Operator decisions requested (rev-2)
+## Decisions — status
 
-1. **Ratify or amend the slot order** (now/A/B/C/D/E above).
-2. **GAP-10:** confirm the one-line closure citing ADR-009 D-SIG-7/D-SIG-8 (no design decision needed —
-   rev-1's request for a decision brief is withdrawn).
-3. **Ratify the R7a/R7b split** (buy-only, then sell) — including the one spec amendment defining the
-   sell-not-yet-convertible refusal before R7b.
-4. **Review cadence:** per-rung as it completes (recommended) versus all batched before D-2a (permitted
-   by `CLAUDE.md`, but multiplies rework risk).
-5. **Note:** R7's schema migration is a separate human gate; I will raise it as its own approval request
-   at slot B/C rather than folding it into a WO.
+| # | Decision | Status |
+|---|---|---|
+| 1 | Round structure | **RATIFIED** — four rounds; R6 + R7a grouped behind a named mid-session gate; R5b-2 alone (Ameen, 2026-07-25) |
+| 2 | GAP-10 | **CLOSED by the planning seat** — answered by ADR-009 D-SIG-7/D-SIG-8; recorded in the threat model's GAP register. No operator decision was required. |
+| 3 | R7a/R7b split | **RATIFIED** as part of the four-round structure (R7a in round 3, R7b in round 4) |
+| 4 | Review cadence | **One packet per round** (REV-0042…0045), all dispositioned before the D-2a flip — satisfies `CLAUDE.md` without a review between every rung |
+| 5 | R7 schema migration | **OPEN — separate human gate.** Raised as its own approval request in round 2's planning window, before R7a builds. Not folded into a WO. |
+| 6 | R7b spec amendment | **OPEN** — defining the sell-not-yet-convertible refusal code; drafted in round 3's planning window, reviewed with REV-0045. |
+
+## Standing obligations carried into each round
+
+- **Filter-safety pre-check** (above) runs as a named war-game step before every kickoff issues.
+- **WO-0138 register correction** (the archive-matrix attribution, §M4b) folds into WO-0139 when drafted.
+- **C-2 re-scope** must be honoured in WO-0139: R5b-2 closes the GAP-02 *ratchet*, not GAP-02 entire.
+- **C-3 Protocol seam** must be decided in the WO-0104 refresh before round 3 starts.
+- **D-2a never becomes automatic:** the flag stays OFF unless every gate is met; that is the safe default
+  and requires no work.
