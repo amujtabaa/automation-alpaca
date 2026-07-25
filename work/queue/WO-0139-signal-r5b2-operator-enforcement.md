@@ -216,12 +216,35 @@ merged R5b-1 tree before building — R5b-1 was in flight when this was drafted.
       **R6**, which owns producer state. Add it to `REQUIRED` then.
       — TRACED(`app/store/base.py:1315-1356`; `app/models.py:483`; M4b F-13).
 
-- [x] **D-R5b2-16 `GET /api/signals` is NOT a one-liner.** It needs `effective_signal_status` — which
-      **exists nowhere in the repo** (verified) — plus an **injected clock** (lazy TTL reclassification
-      on read) and facade `list_signals`/`get_signal` (archive `facade/signals.py:47,129`). Budget for
-      authoring `effective_signal_status`; no bare `datetime.now()`.
-      **⟨Step-0⟩** confirm whether R5b-1 authored `list_signals`/`get_signal` (its scope was POST-only).
-      — TRACED(repo-wide grep: absent; M4b F-12).
+- [x] **D-R5b2-16 `GET /api/signals` is NOT a one-liner — and R5b-2 now owns the WHOLE read half.**
+      It needs `effective_signal_status` — which **exists nowhere in the repo** (verified) — plus an
+      **injected clock** (lazy TTL reclassification on read) and facade `list_signals`/`get_signal`
+      (archive `facade/signals.py:47,129`). No bare `datetime.now()`.
+      **rev-3 addition (from the R5b-1 NEEDS-INPUT disposition):** R5b-2 also inherits **the entire
+      `tests/test_signal_facade_reads.py` corpus**, the facade read methods, and any ingest test that
+      reads back through `GET /api/signals` (staged `:231`). The authorized mechanical repair on that
+      corpus is a **PREDICATE — every `ingest_signal(` call site missing the required `received_at=`
+      kwarg** (live count 8, not the 6 originally written; do not encode a number) — plus the
+      `SIGNAL_REPLAYED` import path fix (`app.store.core:5587`).
+      — TRACED(repo-wide grep: absent; M4b F-12; `SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md` D1/D2/D5).
+
+- [x] **D-R5b2-18 ⚠ BLOCKED-PENDING-RATIFICATION — lazy reads vs `SIGNAL_EXPIRED` (event-log truth).**
+      Accepted `02-lifecycle.md:47` defines `SIGNAL_EXPIRED` as emitted by "sweep, **lazy-expiry**, or
+      dead-on-arrival at ingest" with an accepted payload value **`detected_by: "read"`**, and `:97`
+      says "TTL lapse … EXPIRED (**lazy** + sweep, rule A4)". The staged corpus asserts the opposite:
+      `test_list_signals_lazy_expiry_does_not_mutate_store` (`:112`). **A read that appends a durable
+      event is an event-log-truth question on a human-gated surface — it is not the implementer's
+      call.** Planning-seat recommendation: **mutation-free reads** — reclassify via a pure
+      `effective_signal_status(record, now)`; the durable `SIGNAL_EXPIRED` comes from the sweep, from
+      ingest (dead-on-arrival), or atomically inside the A-2 conversion command. Rationale:
+      single-writer discipline (a producer-facing GET must not become a writer); write amplification on
+      a hostile-input surface; `effective_signal_status` is already the designed derivation; and rule
+      A3 holds either way because conversion re-checks TTL atomically.
+      **If ratified this requires a `02-lifecycle.md` amendment** (lazy expiry = projection-level
+      reclassification; `"read"` removed from `detected_by` or redefined as sweep-attributed) **with its
+      own review packet**. **Until ratified, the affected facade-read tests cannot go green — STOP and
+      report rather than choosing a side.**
+      — TRACED(`02-lifecycle.md:47,97`; staged `test_signal_facade_reads.py:112`; disposition D5).
 
 - [x] **D-R5b2-17 Matrix lives in its OWN test module — a planning-seat reoptimization.**
       `tests/test_signal_routes.py` is the shared target of R5b-1, R5b-2, R6 **and** R7; four rungs
