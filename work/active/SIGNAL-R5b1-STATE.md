@@ -111,14 +111,67 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 | Slice | Status | Evidence |
 |---|---|---|
 | Activation / predecessor gate | GREEN | Clean worktree; refreshed origin; `launch_guard.py` blob present; branch created from `origin/master`. |
-| Facade | PENDING | — |
-| Ingest route | PENDING | — |
+| Facade | NEEDS-INPUT before RED | Staged facade corpus needs 8 raw-store `received_at` repairs, while the ratified block authorizes 6. |
+| Ingest route | NEEDS-INPUT before RED | Three staged ingest tests observe through forbidden R5b-2 `GET /api/signals`; a fourth mixes operator-key behavior into producer auth. |
 | Producer auth + identity binding | PENDING | — |
 | Spec 413 amendment | PENDING | — |
 | Contract 5 | PENDING | — |
 | Flag-off non-regression | PENDING | — |
 | Green gate evidence | PENDING | — |
 | REV-0042 staging | PENDING | — |
+
+## Stop record — NEEDS-INPUT before corpus import
+
+No production or test corpus file was imported or edited. The bounded read-only corpus/design pass
+found accepted-text conflicts beyond D-R5b1-6's pre-authorized 413 amendment:
+
+1. `tests/test_signal_facade_reads.py` on staging commit `24d3746` has **8** raw-store
+   `ingest_signal` calls missing the required keyword-only `received_at`, at lines
+   52, 235, 261, 269, 292, 293, 302, and 320. The ratified decision block authorizes 6.
+   Minimal repair needs 7 source insertion points because lines 292/293 share `common`.
+2. The staged producer/ingest tests for distinct malformed identities, identical malformed replay,
+   and unparseable-body/no-event prove their postconditions through operator-authenticated
+   `GET /api/signals`. R5b-1 explicitly forbids mounting that R5b-2 route. Replacing those
+   observations with direct store checks would edit staged tests beyond the authorized repairs;
+   omitting them would make the promised producer/ingest subset and M2 proof incomplete.
+3. The staged producer-auth test requires a valid operator key on `POST /api/signals` to return 403,
+   while the R5b-1 scope defers operator-key enforcement on any route. A producer-only extraction
+   would require splitting/editing that staged test.
+4. `SignalProposal` is absent on current master. Accepted
+   `docs/spec/signal-seat/01-schema.md` requires it in `app/api/schemas.py`, but that file is absent
+   from the literal R5b-1 IN list. Defining the model inside `routes_signals.py` would diverge from
+   accepted text; editing the mandated schema file needs an explicit scope correction.
+5. Accepted `docs/spec/signal-seat/02-lifecycle.md` says `SIGNAL_EXPIRED` is emitted for
+   lazy-expiry and names `detected_by: "read"`, while WO-0138 and the staged dual-store tests require
+   lazy reads to return an effective EXPIRED copy **without mutating durable state**. Appending the
+   named lifecycle event on read would mutate event-log truth; suppressing it silently chooses one
+   side of an accepted-text conflict.
+
+Planning/operator decisions needed before RED:
+
+- Correct the authorized `received_at` repair count to all 8 raw-store calls.
+- Authorize direct-store observation equivalents for the three mixed ingest tests, or define a
+  different complete R5b-1 corpus that does not mount GET.
+- Decide whether wrong-role operator-key detection on the producer route belongs in R5b-1.
+- Add `app/api/schemas.py` to the allowed scope.
+- Amend/reconcile the lazy-read `SIGNAL_EXPIRED` event wording versus the no-mutation-on-read
+  contract.
+
+```yaml
+fable_done:
+  task: "WO-0138 Signal R5b-1 implementation"
+  done_when_results:
+    - "NOT_MET: corpus import cannot be completed within the ratified edit boundary"
+    - "NOT_MET: production implementation intentionally not started"
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  evidence:
+    - "staging facade AST: 8 raw-store calls omit received_at"
+    - "staging route source: 3 ingest tests depend on GET /api/signals"
+    - "accepted schema path and lazy-expiry event text checked directly"
+  status: NEEDS-INPUT
+```
 
 ## Evidence log
 
@@ -145,4 +198,25 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
     command: "git fetch origin codex/signal-tests-staging archive/claude-wo-0001-install-checks-2x5ys8"
     result: PASS
     decisive_output: "both named refs fetched"
+```
+
+### 2026-07-25 — corpus preflight stop
+
+```yaml
+- evidence:
+    command: "AST inventory of origin/codex/signal-tests-staging:tests/test_signal_facade_reads.py"
+    result: FAIL
+    decisive_output: "RAW_STORE_MISSING=8 at lines 52,235,261,269,292,293,302,320; contract says 6"
+- evidence:
+    command: "source inventory of staged tests/test_signal_routes.py"
+    result: FAIL
+    decisive_output: "3 producer/ingest tests require deferred GET /api/signals; producer auth test mixes operator-key behavior"
+- evidence:
+    command: "rg class SignalProposal in app plus docs/spec/signal-seat/01-schema.md"
+    result: FAIL
+    decisive_output: "model absent; accepted path app/api/schemas.py is outside literal IN list"
+- evidence:
+    command: "cross-check docs/spec/signal-seat/02-lifecycle.md:31-47 against staged facade no-mutation assertions"
+    result: FAIL
+    decisive_output: "accepted event row includes lazy read, while WO/tests require read-only effective status"
 ```
