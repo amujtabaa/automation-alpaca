@@ -1,7 +1,7 @@
 ---
 type: Work State
 work_order_id: WO-0138
-status: REVIEW
+status: CLOSED
 branch: codex/signal-r5b1-producer-ingest
 updated: 2026-07-25
 ---
@@ -14,7 +14,7 @@ After any pause or compaction, re-read in order:
 
 1. The operator kickoff.
 2. This state file.
-3. `work/active/WO-0138-signal-r5b1-producer-ingest-surface.md`.
+3. `work/completed/keep/WO-0138-signal-r5b1-producer-ingest-surface.md`.
 
 Then verify the live branch and worktree with `git log` and `git status`; do not reconstruct state
 from conversation memory.
@@ -133,7 +133,8 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 | Contract 5 | GREEN | `routes_signals` added; 6 kept / 0 broken. |
 | Flag-off non-regression | GREEN | Route-off 404 pin, full 4,377-test run, and bootstrap collection all pass. |
 | Green gate evidence | GREEN | Complete post-F-1 WO battery passed with fresh terminal evidence. |
-| REV-0042 | BLOCK — FIX GREEN, RE-REVIEW PENDING | Reviewer-owned result preserved unchanged; F-1 remediated at `a92c8b8`; WO remains REVIEW. |
+| REV-0042 | ACCEPT — GATE CLEARED | Initial BLOCK preserved; addendum 01 independently accepted the F-1 remediation and pins at `472de42`. |
+| Close-out | CLOSED | Disposition RESOLVED; result summary kept; PKL and append-only ledger updated; files moved to `work/completed/keep/`. |
 
 ## Historical stop record — RESOLVED by rev-3
 
@@ -449,11 +450,13 @@ allowance and is not counted as evidence. The final-SHA run above completed norm
 - Review request: `work/review/REV-0042/request.md`.
 - Reviewer result: `work/review/REV-0042/result.md`, verdict **BLOCK** on F-1; preserved
   byte-for-byte from reviewer commit `41e1155`.
+- Reviewer addendum: `work/review/REV-0042/result-addendum-01.md`, final verdict **ACCEPT** at
+  `472de422c67cb14a9d0d21517031cdfe619e74b4`; review gate cleared.
 - F-1 remediation head: `a92c8b86323d4ed1bd41a9e04a5bce675bcf226f`.
-- Independent re-review remains open; the WO stays at REVIEW.
-- Explicit amendment under review: the 413/no-event response row in
-  `docs/spec/signal-seat/04-auth-and-api.md`.
-- No ledger, completion move, disposition, PR, flag enablement, or WO-0139 edit was performed.
+- Review disposition: `work/review/REV-0042/disposition.md`, RESOLVED.
+- The explicitly reviewed 413/no-event response row remains accepted.
+- Close-out includes the append-only ledger line, Signal Seat PKL changelog, and moves to
+  `work/completed/keep/`; no merge, PR, flag enablement, or WO-0139 edit was performed.
 
 ```yaml
 fable_done:
@@ -464,9 +467,10 @@ fable_done:
     - "MET: 413 amendment and contract-5 ratchet applied"
     - "MET: complete gate battery passes with fresh evidence"
     - "MET: WO status REVIEW and REV-0042 request staged"
+    - "MET: REV-0042 addendum 01 returned final ACCEPT and the close-out artifacts are atomic"
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
     wo_0139_untouched: true
-  status: REVIEW
+  status: CLOSED
 ```

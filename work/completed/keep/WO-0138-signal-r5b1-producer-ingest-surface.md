@@ -1,7 +1,8 @@
 ---
 type: Work Order
 title: "Signal Seat R5b-1 — producer ingest surface (typed signal facade + POST /api/signals + producer-key auth)"
-status: REVIEW
+status: CLOSED
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 work_order_id: WO-0138
 wave: signal-seat reconciliation ladder, step R5 (split; R5b-1 = producer ingest surface)
 model_tier: strong (LOCAL Codex — human-gated auth surface)
@@ -9,10 +10,18 @@ predecessors: [WO-0134 (R4 model+store), WO-0137 (R5a construction-time foundati
 successors: [WO-0139 (R5b-2 operator enforcement + route matrix + cockpit), R6 WO-0104 (rails), R7 (conversion)]
 review: "REV-0042 required (human-gated surface: producer authentication + ingest event truth)"
 wargame: "FULL per .ai-os/core/18 — M1 + M2 + M3 + M4a + M4b COMPLETE (rev-2 applied 12 M4b findings)"
+closed: 2026-07-25
 ---
 
 # WO-0138 — Signal Seat R5b-1: the producer ingest surface
 
+> **CLOSE-OUT (2026-07-25).** The ingest-only producer surface passed the full gate battery.
+> REV-0042 initially BLOCKED F-1, then independently re-reviewed the UTC-normalized wire-bound
+> remediation and seven added pin classes at `472de42`, returning final **ACCEPT**. The review
+> disposition is RESOLVED and this order closes with `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`.
+> `app/store/` remained untouched; facade reads/operator enforcement/lazy expiry remain R5b-2,
+> F-8/F-10/F-11 carry to R5b-2/R7, and the Signal Seat flag remains OFF pending R5b-2 + R6 + R7.
+>
 > **rev-2 (2026-07-25).** rev-1 scoped all of R5b as one WO. An M4b refutation pass **refuted 8 of 14
 > decision lines** and produced two P0 findings, both living in the operator-enforcement half. The
 > planning seat verified every blocking finding directly against code before acting. R5b is now
