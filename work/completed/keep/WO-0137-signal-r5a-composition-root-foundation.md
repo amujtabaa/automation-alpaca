@@ -1,25 +1,33 @@
 ---
 type: Work Order
 title: "Signal Seat R5a — composition-root foundation (config + create_app construction guards + launcher trio + rails seam)"
-status: QUEUED
+status: CLOSED
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 work_order_id: WO-0137
 wave: signal-seat reconciliation ladder, step R5 (split; R5a = construction-time foundation)
 model_tier: strong (LOCAL Codex — human-gated auth/launcher/transport security boundary)
 risk: high
 owner: Ameen / implementer: Codex local session
 created: 2026-07-22
+closed: 2026-07-25
 war_gamed: ".ai-os/core/18 FULL — grounding + M1–M3 + M4a + M4b COMPLETE; 10/11 claims hold, 0 safety refuted, 3 tracing defects fixed; ratifiable"
-gated_surface: auth/launcher/transport bind — the localhost security boundary (D-HOST-1). Human-gated. NO schema/migration (config + launcher only) → NO mid-session DDL gate. Ends at status REVIEW with REV-0041 staged for the Claude seat.
+gated_surface: auth/launcher/transport bind — the localhost security boundary (D-HOST-1). Human-gated. NO schema/migration (config + launcher only). REV-0041 final verdict ACCEPT; gate cleared and WO closed.
 ---
 
 # Work Order: Signal Seat R5a — composition-root foundation
 
+> **CLOSE-OUT (2026-07-25).** The R5a construction-time foundation landed on master. REV-0041
+> returned ACCEPT-WITH-CHANGES on the first pass, then addendum 01 independently re-reviewed
+> `b2a5667` and returned **ACCEPT**. C-1 through C-4 are cleared, the disposition is RESOLVED, and
+> this order closes with `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`. D-2a remains OFF pending R5b + R6 +
+> R7; R5b-N1 and the inherited formatter cleanup remain follow-up work.
+>
 > **HUMAN-GATED (auth/launcher/transport security boundary).** R5a builds the construction-time
-> bind guard that is the load-bearing localhost security boundary (D-HOST-1). It ends at
-> `status: REVIEW`, never self-closes, and stages `work/review/REV-0041/request.md` for the
+> bind guard that is the load-bearing localhost security boundary (D-HOST-1). Its implementation
+> phase ended at `status: REVIEW` and staged `work/review/REV-0041/request.md` for the
 > **Claude seat** (fresh code-review packet; REV-0027's certified-properties list + F-1/F-2/F-3 as
-> the checklist — archive-ref, id-collision-renumbered). No ledger close-out line until the
-> disposition lands.
+> the checklist — archive-ref, id-collision-renumbered). The reviewer result, addendum, and separate
+> implementer disposition now preserve and close that gate.
 
 > **The R5a / R5b boundary (construction-time vs request-time).** R5a owns everything that makes
 > `create_app` refuse to **construct** under a bad/absent config: the full signal `Settings` +
@@ -67,12 +75,7 @@ middleware, docs-disable, cockpit, `.importlinter` (all R5b).
       messages MUST carry the tokens the staged regexes match — in particular the TTL-out-of-range
       message must contain `A-3` (the field name `signal_server_max_ttl_seconds` is lowercase and
       would not match a bare `TTL`; the staged regex is `budget|TTL|A-3|A-4`,
-      `test_signal_seat_launch_guard.py:150-174 @ staging`). **String-input hardening (attempt-2
-      finding):** `validate_signal_seat_settings` validates every string input on the security path
-      — producer-key-map keys/values, `operator_api_key`, `signal_transport_policy` — as an EXACT
-      built-in `str` (`type(x) is str`) BEFORE any dict lookup or comparison, so a crafted `str`
-      subclass with custom `__eq__`/`__hash__` cannot spoof a map lookup or an equality check.
-      — TRACED(archive `app/main.py:120-148`
+      `test_signal_seat_launch_guard.py:150-174 @ staging`). — TRACED(archive `app/main.py:120-148`
       + `test_signal_seat_launch_guard.py:25-69 @ staging` + spec 04 §1).
       **BUILD HAZARD (M4b):** the R5a `create_app` skeleton EXCLUDES the archive's R5b module-level
       imports — `routes_signals` (`app/main.py:57 @ archive`) and the `app.api.deps` helpers
@@ -92,30 +95,12 @@ middleware, docs-disable, cockpit, `.importlinter` (all R5b).
 - [x] **D-R5a-6 Bind guard = loopback-only, policy-name-agnostic.** `validate_transport_bind`
       returns `None` for a loopback host or a UDS, else the A-1 failure string (`"A-1"`,
       `"proxy-private"`, `"non-loopback"`); BOTH `loopback` and `tailnet_serve` bind loopback (the
-      policy value gates the negative test + docs, not the bind). **Loopback comparison hardening
-      (attempt-2 finding):** the `host in _LOOPBACK_HOSTS` membership/equality check validates the
-      host as an EXACT built-in `str` (`type(host) is str`) BEFORE the comparison, so a crafted `str`
-      subtype with a custom `__eq__`/`__hash__` cannot disguise a non-loopback value as loopback and
-      slip past the bind guard. — TRACED(archive `app/launch_guard.py:53-73` + spec 04:13-17 +
-      `test_signal_seat_launcher.py:39-68 @ staging` + the attempt-2 loopback-validation finding,
-      root-agent-fixed).
-- [x] **D-R5a-7 Capability = code-owned, exact-identity, one-shot (forgery-resistant).** The mint
-      sentinel never leaves `app/launch_guard.py`; the capability is NOT env/config/importable. The
-      recognizer accepts ONLY the exact issued instance: **exact-type** (`type(cap) is
-      _LaunchCapability`, not `isinstance` — a subclass is rejected) AND **exact-identity** issuance
-      tracking (the specific minted instance, tracked by identity, consumed ONE-SHOT) — NEVER
-      equality/hash/membership-based (a `WeakSet` `in`-check is spoofable via a crafted
-      `__eq__`/`__hash__`; that was the forgery vector the attempt-1 internal-adversarial test
-      surfaced and the root agent fixed). `is_sanctioned` returns False for `object()`, `None`, a
-      subclass instance, an equality-spoofing clone, a copied-private-fields clone, and an
-      already-consumed capability. **Consumption is ATOMIC one-shot (attempt-2 finding):** a single lock
-      guards the check-and-consume so two concurrent callers can never both succeed (no
-      double-consumption race); the second caller observes the capability already consumed and is
-      rejected. The mint re-validates the bind (bind-bound). Add fail-closed negative tests asserting
-      each forged form is REJECTED and that concurrent double-consumption yields exactly one success
-      (assertions of the property, never forgery/race proof-of-concept narratives). — TRACED(archive
-      `app/launch_guard.py:42,76-132` + `test_signal_seat_launch_guard.py:51-91 @ staging` + the
-      attempt-1/attempt-2 adversarial findings, root-agent-fixed).
+      policy value gates the negative test + docs, not the bind). — TRACED(archive
+      `app/launch_guard.py:53-73` + spec 04:13-17 + `test_signal_seat_launcher.py:39-68 @ staging`).
+- [x] **D-R5a-7 Capability = code-owned only.** The mint sentinel never leaves `app/launch_guard.py`;
+      the capability is NOT env/config/importable; `is_sanctioned(object())` and `is_sanctioned(None)`
+      are False; the mint re-validates the bind (bind-bound). — TRACED(archive
+      `app/launch_guard.py:42,76-132` + `test_signal_seat_launch_guard.py:51-91 @ staging`).
 - [x] **D-R5a-8 Rails SEAM only, not the provider.** R5a lands `app/facade/signal_rails.py`
       (Protocol + `is_conforming_rails`) and the create_app rails-presence guard; the REAL rails
       provider is **R6 (WO-0104)**. The launcher positive-control test EXPECTS the rails
@@ -191,28 +176,51 @@ post-session REV-0041 code review.
   launch/bind certified property is `work/review/REV-0027/result.md:46 @ archive`.
 - Plan verdicts: `work/queue/SIGNAL-SEAT-RECONCILIATION-PLAN.md` §5 runtime-config + §6 step 5.
 
+## Operator resume disposition — 2026-07-23
+
+The planning-seat rulings recorded in
+`work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md` are the disposition authority used for this
+completion pass; the operator's QA re-verification request directly authorized their execution.
+
+- **Part B — exact credential strings:** `operator_api_key` and every producer-key-map key/value
+  must be exact built-in `str` values. Directly injected subclasses are rejected.
+- **D1 — launcher harness:** child processes inherit a sanitized parent environment, remove all
+  scoped Signal/Broker/Alpaca and named runtime variables, then apply only the staged overrides.
+  `_run` is bounded by a timeout. Launcher assertions and scenarios are unchanged apart from
+  Ruff-only layout.
+- **D2 — test construction authority:** the flag-on helper requires the exact explicit in-process
+  test authority. Zero-argument Uvicorn factory and bare-load selection both raise; every legitimate
+  caller supplies the authority.
+- **D3 — baseline and ratchet:** Ruff formats/checks only R5a-owned Python files. The ten inherited
+  formatter findings are grandfathered without edits, following ADR-007's baseline-and-ratchet
+  precedent. A separate, not-yet-numbered formatter-cleanup WO remains follow-up work. The R2
+  oracle runs unchanged through CI's pytest module invocation.
+
+The first-pass reviewed implementation was `d78e54f`; addendum 01 independently re-reviewed the
+four-follow-up implementation at `b2a5667172a63c201ba7f3062a3a01a6a28018fb` and returned ACCEPT.
+
 ## Required behavior
 
-- [ ] **GATE** (fable_gate): restate goal/scope/done-when/blast-radius before building.
-- [ ] **Red-first:** pull the R5a test slices from staging; re-baseline the config test's `tls_proxy`
+- [x] **GATE** (fable_gate): restate goal/scope/done-when/blast-radius before building.
+- [x] **Red-first:** pull the R5a test slices from staging; re-baseline the config test's `tls_proxy`
       → `tailnet_serve` (D-R5a-3) and paste the diff + rationale; paste the RED collection.
-- [ ] **`app/config.py`:** all signal fields (`signal_seat_enabled`, `signal_transport_policy`,
+- [x] **`app/config.py`:** all signal fields (`signal_seat_enabled`, `signal_transport_policy`,
       `operator_api_key` (`repr=False`), `signal_producer_keys` (`repr=False`),
       `signal_invalid_budget_per_epoch`, `signal_server_max_ttl_seconds`) + env parsing +
       `validate_signal_seat_settings` + the operator/producer overlap helper. Turn
       `test_signal_seat_config.py` green.
-- [ ] **Launcher trio** `app/server.py` (programmatic uvicorn, bind re-validated + `SystemExit(2)`),
+- [x] **Launcher trio** `app/server.py` (programmatic uvicorn, bind re-validated + `SystemExit(2)`),
       `app/launch_guard.py` (leaf: `validate_transport_bind` + code-owned capability), `app/__main__.py`
       (`python -m app`). Turn `test_signal_seat_launcher.py` green (incl. the subprocess bind proofs).
-- [ ] **`app/facade/signal_rails.py`** Protocol seam (`RailsDecision`, `is_conforming_rails`).
-- [ ] **`app/main.py::create_app` skeleton:** new signature + the three construction guards + the
+- [x] **`app/facade/signal_rails.py`** Protocol seam (`RailsDecision`, `is_conforming_rails`).
+- [x] **`app/main.py::create_app` skeleton:** new signature + the three construction guards + the
       conditional module-level `app`. Turn `test_signal_seat_launch_guard.py` green. Keep the
       flag-OFF path byte-equivalent to today.
-- [ ] **`tests/signal_seat_helpers.py`** (construction seam) + the `test_import_boundaries.py`
+- [x] **`tests/signal_seat_helpers.py`** (construction seam) + the `test_import_boundaries.py`
       `_SANCTIONED_*` hunk (same change as the launcher) + the README correction.
-- [ ] **Bootstrap non-regression:** verify `harness/bootstrap.py` runs flag-off and its smoke gate
+- [x] **Bootstrap non-regression:** verify `harness/bootstrap.py` runs flag-off and its smoke gate
       still passes (paste evidence).
-- [ ] **Stage `work/review/REV-0041/request.md`** for the Claude seat (REV-0027 checklist,
+- [x] **Stage `work/review/REV-0041/request.md`** for the Claude seat (REV-0027 checklist,
       archive-ref-renumbered; the never-reviewed items: the master `create_app` REWRITE, the
       transport re-baseline, the D-2a flag-off intermediate state).
 
@@ -253,15 +261,18 @@ forbidden_paths:
 
 ## Acceptance criteria
 
-- [ ] `test_signal_seat_config.py`, `test_signal_seat_launcher.py`, `test_signal_seat_launch_guard.py`
+- [x] `test_signal_seat_config.py`, `test_signal_seat_launcher.py`, `test_signal_seat_launch_guard.py`
       green (the launcher subprocess proofs included); the config re-baseline diff pasted.
-- [ ] `test_import_boundaries.py` green with the hunk (no unsanctioned-reacher failure).
-- [ ] Flag-OFF path byte-equivalent to today; `harness/bootstrap.py` smoke gate green (pasted).
-- [ ] Full gate battery green (fresh pasted output): `ruff check .`, `ruff format --check .`,
-      `mypy app/`, `lint-imports`, `pytest -q` (OS-temp basetemp), `python tests/r2_conformance_oracle.py`,
-      `pytest -q tests/test_wo0113_repair_scaling.py`.
-- [ ] `status: REVIEW`, WO in `work/active/`, REV-0041 staged, branch pushed, nothing merged, no
-      ledger line. Fable record + this WO's war-game record (M1–M4) present.
+- [x] `test_import_boundaries.py` green with the hunk (no unsanctioned-reacher failure).
+- [x] Flag-OFF path byte-equivalent to today; `harness/bootstrap.py` smoke gate green (pasted).
+- [x] Operator-dispositioned full gate battery green: `ruff check .`, Ruff format check on the
+      eleven R5a-owned Python paths, `mypy app/`, `lint-imports`, the raw R5a/import corpus,
+      `python -m pytest -q tests/r2_conformance_oracle.py`,
+      `pytest -q tests/test_wo0113_repair_scaling.py`, and `python harness/bootstrap.py`.
+      The additional full `pytest -q` non-regression also reached 100% with exit 0.
+- [x] The implementation reached `status: REVIEW` in `work/active/`, staged REV-0041, and preserved
+      the no-merge/no-ledger boundary until independent review. Fable and war-game records (M1–M4)
+      are present.
 
 ## Stop conditions
 
@@ -271,13 +282,38 @@ forbidden_paths:
   the boundary, not scope to absorb.
 - The bind guard cannot be made construction-time (only request-time achievable) → STOP; a
   reachable-503 is a safety regression, not an acceptable fallback (threat model T-16).
-- Never weaken a staged test (the D-R5a-3 re-baseline is the one authorized staged-test edit).
+- Never weaken a staged test. The bounded authorized edit surface is enumerated in the completion
+  disposition below; every existing assertion remains semantically intact except the explicitly
+  authorized D-R5a-3 vocabulary reconciliation.
 
 ## Completion disposition (post-review)
 
-Expected at close-out: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]` (signal-seat PKL R5a changelog). Close-out
-after REV-0041 ACCEPT/ACCEPT-WITH-CHANGES ships status flip + disposition + ledger + file move in one
-commit.
+Applied at close-out: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`. REV-0041 addendum 01 cleared every
+ACCEPT-WITH-CHANGES follow-up with final verdict ACCEPT. The finishing commit carries the CLOSED
+status, separate disposition, PKL changelog, append-only ledger line, and completed-file moves.
+
+REV-0041's bounded follow-up and eventual close-out must trace the complete authorized edit surface,
+not summarize it as three edits:
+
+- **D-R5a-1 / D-R5a-10:** the additive `test_import_boundaries.py` `_SANCTIONED_*` hunk for
+  `app.server` and `app.__main__`;
+- **D-R5a-3:** the staged transport vocabulary reconciliation from `tls_proxy` to
+  `tailnet_serve`;
+- **D1:** sanitized-inherited launcher child-environment plumbing and bounded subprocess timeout;
+- **D2:** explicit in-process test authority for the flag-on helper, its legitimate callers, and
+  rejection coverage; and
+- **D-R5a-4 / D-R5a-7 + Part B:** additive capability/config regression tests, including the
+  exact-type, exact-identity, atomic one-use, and credential-string controls.
+
+**R5b-N1 carry-forward requirement (record only; not implemented in R5a):** the request-time
+`X-Producer-Key` authentication seam must require the producer-key map to be an exact `dict` or
+re-derive a trusted `dict` before lookup. R5a construction validation intentionally remains at the
+`Mapping` container boundary; the future R5b work order must consume and test this requirement
+before any request-time producer authentication ships.
+
+Close-out changes governance state only. The reviewer-owned result and addendum remain unedited,
+the request remains the frozen first-pass packet, no PR is opened, and D-2a remains OFF until R5b,
+R6, and R7 close.
 
 ## War-game record (.ai-os/core/18)
 
