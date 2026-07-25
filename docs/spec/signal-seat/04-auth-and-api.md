@@ -134,6 +134,7 @@ paths:
         "201": {description: accepted -> RECEIVED (or recorded terminal: quarantined/expired at ingest), content: SignalRecordView}
         "200": {description: idempotent replay (identical payload_hash), content: SignalRecordView}
         "400": {description: unparseable body — no event}
+        "413": {description: body exceeds the 64 KiB ingest cap — no event}
         "401": {description: missing/unknown producer key — no event}
         "403": {description: producer quarantined — boundary reject, coalesced audit}
         "409": {description: duplicate-conflict (different payload, same (producer_id, signal_id))}

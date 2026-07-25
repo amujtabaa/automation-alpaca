@@ -127,12 +127,12 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 |---|---|---|
 | Activation / predecessor gate | GREEN | Clean worktree; refreshed origin; `launch_guard.py` blob present; branch created from `origin/master`. |
 | Read facade | MOVED TO R5b-2 | Entire facade-read corpus, list/get methods, read clock, effective status, and lazy expiry moved by rev-3. |
-| Ingest route | RED | Ingest-only corpus: 1 flag-off pass, 14 expected failures; every flag-on request returned 404 because the route is absent. |
-| Producer auth + identity binding | PENDING | — |
-| Spec 413 amendment | PENDING | — |
-| Contract 5 | PENDING | — |
-| Flag-off non-regression | PENDING | — |
-| Green gate evidence | PENDING | — |
+| Ingest route | GREEN | 28 response/event-log-terminating ingest tests pass; no GET signal route or read facade imported. |
+| Producer auth + identity binding | GREEN | Producer-map identity, wrong-role 403, no-event rejects, and zero-read auth/rails probes pass. |
+| Spec 413 amendment | GREEN | `04-auth-and-api.md` now records 413 + no event for the 64 KiB cap. |
+| Contract 5 | GREEN | `routes_signals` added; 6 kept / 0 broken. |
+| Flag-off non-regression | PARTIAL | Targeted 404/public-health pin passes; full suite/bootstrap pending. |
+| Green gate evidence | PARTIAL | Ruff, owned-file format, mypy, import-linter, and targeted corpus pass; full battery pending. |
 | REV-0042 staging | PENDING | — |
 
 ## Historical stop record — RESOLVED by rev-3
@@ -264,3 +264,61 @@ fable_done:
     result: FAIL
     decisive_output: "1 passed, 14 failed; every flag-on ingest assertion received 404 from the absent route"
 ```
+
+### 2026-07-25 — ingest implementation and M2 GREEN
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_routes.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "28 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m ruff check ."
+    result: PASS
+    decisive_output: "All checks passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m ruff format --check <R5b-1-owned Python files>"
+    result: PASS
+    decisive_output: "7 files already formatted"
+- evidence:
+    command: ".venv/Scripts/python.exe -m mypy app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 77 source files"
+- evidence:
+    command: ".venv/Scripts/lint-imports.exe"
+    result: PASS
+    decisive_output: "Contracts: 6 kept, 0 broken"
+```
+
+## FIX blocks
+
+### FIX-R5B1-01 — missing authenticated producer ingest surface
+
+- **Root cause:** R5a intentionally stopped at construction controls; no producer route, API DTO,
+  or typed write facade existed, so every flag-on ingest returned 404.
+- **Impact:** no external proposal could be authenticated, identity-bound, or recorded.
+- **Files:** `app/api/routes_signals.py`, `app/api/deps.py`, `app/api/schemas.py`,
+  `app/facade/signal_commands.py`, `app/facade/signals.py`, `app/main.py`.
+- **Fix:** add one flag-gated POST route, strict/manual DTO validation, server-derived producer
+  identity, body-blind rails ordering, capped streaming, and a write-only facade.
+- **Evidence:** RED `1 passed, 14 failed` (all flag-on 404) → GREEN `28 passed`.
+
+### FIX-R5B1-02 — incomplete failure-path proof
+
+- **Root cause:** the staged corpus's mixed read-back cases belonged to R5b-2, leaving R5b-1
+  without independent event-log proof for all ingest outcomes and boundary rejects.
+- **Impact:** a superficially green HTTP corpus could miss unwanted appends, body-before-auth
+  reads, replay writes, or conflict mutation.
+- **Files:** `tests/test_signal_routes.py`.
+- **Fix:** add failure-capable event-log and ASGI receive-probe controls without importing or
+  rewriting the moved GET-based tests.
+- **Evidence:** M2 cases prove recorded validation/DOA expiry, write-free replay, audit-only
+  conflict, no-event 400/401/403/413/mismatch, and zero body reads before auth/rails.
+
+### FIX-R5B1-03 — undocumented oversized-body outcome
+
+- **Root cause:** accepted API text omitted the staged corpus's required 413 response.
+- **Impact:** implementation and normative response contract would diverge on the hostile-body cap.
+- **Files:** `docs/spec/signal-seat/04-auth-and-api.md`.
+- **Fix:** add the pre-authorized 413/no-event response row; carry it explicitly into REV-0042.
+- **Evidence:** oversized-body response/event-log test passes; spec diff contains the 413 row.

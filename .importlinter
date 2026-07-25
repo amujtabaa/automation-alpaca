@@ -142,6 +142,7 @@ source_modules =
     app.api.routes_dev
     app.api.routes_marketdata
     app.api.routes_review
+    app.api.routes_signals
     app.api.routes_system
     app.api.routes_trading
     app.api.routes_watchlist

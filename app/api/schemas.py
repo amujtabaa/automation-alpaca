@@ -7,10 +7,11 @@ responses that don't map to a single stored entity.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 # ExternalOrderView / PositionMismatchView are the reconciliation facade's own
 # typed return DTOs (app.facade.dtos). Imported here so ReconciliationStatusResponse
@@ -23,9 +24,12 @@ from app.models import (
     Fill,
     Order,
     Position,
+    ResponseSafeFloat,
     SellIntent,
     SessionRecord,
+    SignalStatus,
 )
+from app.store.base import normalize_symbol
 
 
 class WatchlistCreate(BaseModel):
@@ -139,3 +143,118 @@ class ReconciliationStatusResponse(BaseModel):
 
     external_orders: list[ExternalOrderView]
     position_mismatches: list[PositionMismatchView]
+
+
+_BARE_NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
+
+
+class SignalProposal(BaseModel):
+    """Wire body for producer-authenticated ``POST /api/signals``.
+
+    The route binds this model manually after body-blind authentication and the
+    capped body read. ``producer_id`` is compatibility input only; the route
+    compares it with the credential-derived identity and never uses it as
+    authority.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    issued_at: datetime
+    # Range validation is store-owned freshness policy. Strict wire typing is
+    # API-owned so strings and bools become recorded validation quarantines.
+    ttl_seconds: int = Field(strict=True)
+    symbol: str = Field(min_length=1, max_length=10)
+    direction: Literal["buy", "sell"]
+    suggested_quantity: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=2**63 - 1,
+        strict=True,
+    )
+    suggested_limit_price: Optional[float] = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        strict=True,
+    )
+    thesis: str = Field(min_length=1, max_length=4000)
+    provenance: dict[str, str] = Field(default_factory=dict)
+    producer_id: Optional[str] = None
+
+    @field_validator("issued_at", mode="before")
+    @classmethod
+    def _issued_at_must_be_iso_string(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError("issued_at must be an ISO-8601 string")
+        stripped = value.strip()
+        if not any(
+            separator in stripped for separator in ("-", ":", "T", "t")
+        ) or _BARE_NUMERIC_RE.fullmatch(stripped):
+            raise ValueError("issued_at must be an ISO-8601-shaped string")
+        return value
+
+    @field_validator("issued_at")
+    @classmethod
+    def _issued_at_must_be_timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            raise ValueError("issued_at must be timezone-aware")
+        return value
+
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped.isascii():
+            raise ValueError("symbol must be ASCII")
+        return normalize_symbol(stripped)
+
+    @field_validator("provenance")
+    @classmethod
+    def _bound_provenance(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 20:
+            raise ValueError("provenance must contain at most 20 entries")
+        for key, item in value.items():
+            for part in (key, item):
+                try:
+                    part.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise ValueError(
+                        "provenance must contain valid UTF-8 text"
+                    ) from exc
+            if len(item) > 500:
+                raise ValueError("provenance values must be at most 500 characters")
+        return value
+
+
+class SignalRecordView(BaseModel):
+    """Response DTO for a recorded producer ingest outcome."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    producer_id: str
+    signal_id: str
+    status: SignalStatus
+    symbol: str
+    direction: str
+    issued_at: Optional[datetime] = None
+    ttl_seconds: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    received_at: datetime
+    raw_fields: Optional[dict[str, str]] = None
+    suggested_quantity: Optional[int] = None
+    suggested_limit_price: ResponseSafeFloat = None
+    thesis: str
+    provenance: dict[str, str]
+    payload_hash: str
+    quarantine_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    approved_at: Optional[datetime] = None
+    rejected_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    quarantined_at: Optional[datetime] = None
+    converted_kind: Optional[str] = None
+    converted_id: Optional[str] = None
+    approved_by: Optional[str] = None
