@@ -4,7 +4,7 @@ title: Signal Seat — external signal producers (contract summary)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-21
+last_verified: 2026-07-25
 tags: [signal-seat, architecture, boundaries, safety]
 source_refs: [docs/adr/ADR-009-signal-seat-boundary.md, docs/spec/signal-seat/00-overview.md]
 supersedes: []
@@ -91,3 +91,7 @@ ADR and review).
   + replay-parity registration. Both stores green; INV-1/INV-9 preserved. Independently reviewed
   REV-0039 ACCEPT-WITH-CHANGES → RESOLVED. Endpoint/auth/rails/conversion (R5–R7) remain unbuilt;
   the seat flag stays OFF until the joint D-2a milestone.
+- 2026-07-25: R5a construction-time foundation landed (WO-0137): exact-identity one-use launch
+  capability, private bind guard, conditional module-level `app`, rails conformance seam, and
+  Signal Settings plus validation. REV-0041 returned final ACCEPT after C-1 through C-4 cleared.
+  D-2a remains OFF pending R5b + R6 + R7; R5b-N1 and formatter cleanup remain follow-up work.

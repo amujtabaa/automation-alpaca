@@ -1,5 +1,10 @@
 # Signal Seat R5a — NEEDS-INPUT batch
 
+> **RESOLVED — 2026-07-25.** The planning-seat rulings are retained at
+> `work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md`. D1, D2, and D3 were implemented and verified;
+> REV-0041 addendum 01 returned final verdict ACCEPT. This file is preserved as the historical
+> blocker record and moves with WO-0137 into `work/completed/keep/`.
+
 WO-0137 cannot truthfully move to `REVIEW` under the ratified contract. The implementation is
 preserved on `codex/signal-r5a-foundation`; the feature flag remains off, and no review packet,
 ledger line, merge, or PR has been created.

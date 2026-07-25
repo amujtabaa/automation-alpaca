@@ -1,25 +1,33 @@
 ---
 type: Work Order
 title: "Signal Seat R5a — composition-root foundation (config + create_app construction guards + launcher trio + rails seam)"
-status: REVIEW
+status: CLOSED
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 work_order_id: WO-0137
 wave: signal-seat reconciliation ladder, step R5 (split; R5a = construction-time foundation)
 model_tier: strong (LOCAL Codex — human-gated auth/launcher/transport security boundary)
 risk: high
 owner: Ameen / implementer: Codex local session
 created: 2026-07-22
+closed: 2026-07-25
 war_gamed: ".ai-os/core/18 FULL — grounding + M1–M3 + M4a + M4b COMPLETE; 10/11 claims hold, 0 safety refuted, 3 tracing defects fixed; ratifiable"
-gated_surface: auth/launcher/transport bind — the localhost security boundary (D-HOST-1). Human-gated. NO schema/migration (config + launcher only) → NO mid-session DDL gate. Ends at status REVIEW with REV-0041 staged for the Claude seat.
+gated_surface: auth/launcher/transport bind — the localhost security boundary (D-HOST-1). Human-gated. NO schema/migration (config + launcher only). REV-0041 final verdict ACCEPT; gate cleared and WO closed.
 ---
 
 # Work Order: Signal Seat R5a — composition-root foundation
 
+> **CLOSE-OUT (2026-07-25).** The R5a construction-time foundation landed on master. REV-0041
+> returned ACCEPT-WITH-CHANGES on the first pass, then addendum 01 independently re-reviewed
+> `b2a5667` and returned **ACCEPT**. C-1 through C-4 are cleared, the disposition is RESOLVED, and
+> this order closes with `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`. D-2a remains OFF pending R5b + R6 +
+> R7; R5b-N1 and the inherited formatter cleanup remain follow-up work.
+>
 > **HUMAN-GATED (auth/launcher/transport security boundary).** R5a builds the construction-time
-> bind guard that is the load-bearing localhost security boundary (D-HOST-1). It ends at
-> `status: REVIEW`, never self-closes, and stages `work/review/REV-0041/request.md` for the
+> bind guard that is the load-bearing localhost security boundary (D-HOST-1). Its implementation
+> phase ended at `status: REVIEW` and staged `work/review/REV-0041/request.md` for the
 > **Claude seat** (fresh code-review packet; REV-0027's certified-properties list + F-1/F-2/F-3 as
-> the checklist — archive-ref, id-collision-renumbered). No ledger close-out line until the
-> disposition lands.
+> the checklist — archive-ref, id-collision-renumbered). The reviewer result, addendum, and separate
+> implementer disposition now preserve and close that gate.
 
 > **The R5a / R5b boundary (construction-time vs request-time).** R5a owns everything that makes
 > `create_app` refuse to **construct** under a bad/absent config: the full signal `Settings` +
@@ -170,10 +178,9 @@ post-session REV-0041 code review.
 
 ## Operator resume disposition — 2026-07-23
 
-The operator's QA re-verification request directly authorized the following tightening decisions.
-The referenced `work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md` is absent from both the confirmed
-`4bb1bfb` base and fetched `origin/codex/signal-r5a-foundation`; this recorded operator instruction
-is therefore the disposition authority used for this completion pass.
+The planning-seat rulings recorded in
+`work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md` are the disposition authority used for this
+completion pass; the operator's QA re-verification request directly authorized their execution.
 
 - **Part B — exact credential strings:** `operator_api_key` and every producer-key-map key/value
   must be exact built-in `str` values. Directly injected subclasses are rejected.
@@ -189,7 +196,8 @@ is therefore the disposition authority used for this completion pass.
   precedent. A separate, not-yet-numbered formatter-cleanup WO remains follow-up work. The R2
   oracle runs unchanged through CI's pytest module invocation.
 
-The reviewed implementation is frozen at `d78e54fda6a780546cd6892078b209f9ae33438f`.
+The first-pass reviewed implementation was `d78e54f`; addendum 01 independently re-reviewed the
+four-follow-up implementation at `b2a5667172a63c201ba7f3062a3a01a6a28018fb` and returned ACCEPT.
 
 ## Required behavior
 
@@ -262,8 +270,9 @@ forbidden_paths:
       `python -m pytest -q tests/r2_conformance_oracle.py`,
       `pytest -q tests/test_wo0113_repair_scaling.py`, and `python harness/bootstrap.py`.
       The additional full `pytest -q` non-regression also reached 100% with exit 0.
-- [x] `status: REVIEW`, WO in `work/active/`, REV-0041 staged, branch pushed, nothing merged, no
-      ledger line. Fable record + this WO's war-game record (M1–M4) present.
+- [x] The implementation reached `status: REVIEW` in `work/active/`, staged REV-0041, and preserved
+      the no-merge/no-ledger boundary until independent review. Fable and war-game records (M1–M4)
+      are present.
 
 ## Stop conditions
 
@@ -279,9 +288,9 @@ forbidden_paths:
 
 ## Completion disposition (post-review)
 
-Expected at close-out: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]` (signal-seat PKL R5a changelog). Close-out
-only after the REV-0041 ACCEPT-WITH-CHANGES follow-ups clear independent re-review; the later
-close-out ships status flip + disposition + ledger + file move in one commit.
+Applied at close-out: `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`. REV-0041 addendum 01 cleared every
+ACCEPT-WITH-CHANGES follow-up with final verdict ACCEPT. The finishing commit carries the CLOSED
+status, separate disposition, PKL changelog, append-only ledger line, and completed-file moves.
 
 REV-0041's bounded follow-up and eventual close-out must trace the complete authorized edit surface,
 not summarize it as three edits:
@@ -302,9 +311,9 @@ re-derive a trusted `dict` before lookup. R5a construction validation intentiona
 `Mapping` container boundary; the future R5b work order must consume and test this requirement
 before any request-time producer authentication ships.
 
-This follow-up does not execute close-out: WO-0137 remains in REVIEW, the frozen REV-0041 request
-is unchanged, and the corrected surface requires independent re-review before any disposition,
-ledger update, move, merge, PR, or flag enablement.
+Close-out changes governance state only. The reviewer-owned result and addendum remain unedited,
+the request remains the frozen first-pass packet, no PR is opened, and D-2a remains OFF until R5b,
+R6, and R7 close.
 
 ## War-game record (.ai-os/core/18)
 

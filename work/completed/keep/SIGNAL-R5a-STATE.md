@@ -89,7 +89,7 @@ middleware, constructs flag-on with master's EXISTING routers and NO signal midd
 | helper + import-hunk | GREEN | `6aee970`, `3e6e3ed`, `d78e54f` | Explicit in-process authority rejects zero-argument factory/bare selection; import boundary is 6/6 green |
 | README | GREEN | `3dadec4` | Enabled-seat launch callout says name is undefined, never `None` |
 | green evidence | VERIFIED (post-review battery) | `5d04d6f`, `a410546`, `d78e54f`, post-REV-0041 follow-up | Static gates, scoped formatter ratchet, raw R5a/import corpus, R2 oracle, scaling, bootstrap, and 4,328-test full pytest are green |
-| REV-0041 | ACCEPT-WITH-CHANGES — FOLLOW-UPS GREEN, RE-REVIEW PENDING | reviewer result `0b556f5`, post-REV-0041 follow-up | Original frozen range ends at `d78e54f`; corrected surface is not independently re-reviewed; no disposition, merge, PR, close, or ledger line |
+| REV-0041 | ACCEPT — GATE CLEARED, DISPOSITION RESOLVED | result `0b556f5`, addendum `334ba8a`, follow-up `b2a5667` | First pass returned ACCEPT-WITH-CHANGES; addendum 01 cleared C-1 through C-4 and carried R5b-N1 forward; D-2a remains OFF |
 
 ## Operator resume disposition and defect closure — 2026-07-23
 
@@ -97,8 +97,8 @@ The operator's direct QA re-verification request is the authority for Part B and
 referenced `work/queue/SIGNAL-R5a-NEEDS-INPUT-DISPOSITION.md` does not exist at the confirmed base
 or fetched branch head, so this state record does not claim it was read. Implementation is frozen
 at `d78e54fda6a780546cd6892078b209f9ae33438f`.
-`work/active/SIGNAL-R5a-NEEDS-INPUT.md` is retained as the historical blocker record and is
-superseded by this direct operator disposition.
+`work/completed/keep/SIGNAL-R5a-NEEDS-INPUT.md` (formerly under `work/active/`) is retained as the
+historical blocker record and is superseded by this direct operator disposition.
 
 | Defect class | Cause | Impact | Affected local files | Fix/control | Fresh pass/fail evidence |
 |---|---|---|---|---|---|
@@ -191,8 +191,9 @@ superseded by this direct operator disposition.
 - VERIFIED — three staged files differ from their staging blobs only by normalization of one final
   empty line; the config blob additionally has only the three coherent authorized transport-literal
   replacements. No assertion or scenario changed.
-- NEEDS-INPUT — operator disposition is required for the three decision groups in
-  `work/active/SIGNAL-R5a-NEEDS-INPUT.md`.
+- NEEDS-INPUT — operator disposition was required for the three decision groups in the then-active
+  `work/active/SIGNAL-R5a-NEEDS-INPUT.md`, now archived at
+  `work/completed/keep/SIGNAL-R5a-NEEDS-INPUT.md`.
 - BLOCKED — WO-0137 remains ACTIVE. REV-0041 is deliberately absent, the ledger is untouched, and
   no REVIEW/completion claim is made.
 
@@ -230,9 +231,9 @@ superseded by this direct operator disposition.
 
 ## REV-0041 ACCEPT-WITH-CHANGES follow-up — 2026-07-24
 
-The reviewer-owned result remains at planning-ref commit `0b556f5`; it was read without copying or
-editing it. This bounded implementer follow-up resolves C-1 through C-4 and records R5b-N1. It does
-not clear the independent-review gate; WO-0137 remains in REVIEW pending re-review.
+The reviewer-owned result at `0b556f5` was preserved without editing. Reviewer-owned addendum 01
+at `334ba8a` independently re-reviewed `b2a5667`, cleared C-1 through C-4, accepted R5b-N1 as a
+record-only carry-forward, and returned final verdict ACCEPT. The review gate is cleared.
 
 | Defect class | Cause | Impact | Affected local files | Fix/control | Fresh pass/fail evidence |
 |---|---|---|---|---|---|
@@ -250,6 +251,20 @@ not clear the independent-review gate; WO-0137 remains in REVIEW pending re-revi
 - VERIFIED — bootstrap exited 0 and collected 4,328 tests on the flag-off path.
 - VERIFIED — full pytest collected 4,328 tests, reached 100%, and exited 0; only expected
   skips/xfail and dependency deprecation warnings appeared.
+
+## Final merged-master close-out evidence — 2026-07-25
+
+- VERIFIED — both required AI Project OS checks pass:
+  `check_work_order_disposition.py` and `check_ledger.py`.
+- VERIFIED — Ruff check passes; the 11-file R5a format scope is already formatted; mypy reports
+  no issues in 74 app files; import-linter keeps all 6 contracts with 0 broken.
+- VERIFIED — R5a config/launcher/guard/import corpus is 57/57; R2 oracle is 61/61; WO-0113
+  scaling is 13/13.
+- VERIFIED — bootstrap exits 0 and collects 4,328 tests with D-2a OFF.
+- VERIFIED — full merged-master pytest reaches 100% and exits 0; expected skips/xfail and
+  dependency deprecation warnings only.
+- VERIFIED — reviewer-owned `result.md` and `result-addendum-01.md` retain their planning-branch
+  blob identities; the disposition is separate under P-1.
 
 ## FIX records
 
@@ -303,16 +318,18 @@ fable_fix:
 
 ```yaml
 fable_done:
-  status: REVIEW
-  reason: "REV-0041 C-1 through C-4 follow-ups are applied and the fresh gate battery is green; independent re-review remains required."
-  review_ready: true
-  work_order_status: REVIEW
+  status: CLOSED
+  reason: "R5a construction-time foundation delivered; REV-0041 final verdict ACCEPT after C-1 through C-4 cleared; disposition and durable close-out records completed."
+  review_ready: false
+  work_order_status: CLOSED
   review_packet_created: true
-  post_review_followups_pending_re_review: true
-  ledger_touched: false
-  merged: false
+  review_verdict: ACCEPT
+  disposition_status: RESOLVED
+  post_review_followups_pending_re_review: false
+  ledger_touched: true
+  merged: true
   pr_opened: false
-  reviewed_implementation_sha: "d78e54fda6a780546cd6892078b209f9ae33438f"
+  reviewed_implementation_sha: "b2a5667172a63c201ba7f3062a3a01a6a28018fb"
 ```
 
 ```yaml
