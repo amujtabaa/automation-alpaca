@@ -294,13 +294,13 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 | Hard gate / branch | GREEN | Clean tree; origin fetched; producer route blob and REV-0042 disposition present; branch from `origin/master`. |
 | Step 0 | GREEN | Seven findings re-derived; 35 API + 4 docs = 39; one non-blocking helper-wording divergence recorded. |
 | Activation / continuity | GREEN | Active WO + state file ready; decision block copy verified exact (17,372 characters). |
-| Staged corpus adaptation | PENDING | — |
-| Operator middleware + principal | PENDING | — |
-| Actor migration / dual-store | PENDING | — |
-| Signal read facade + route | PENDING | — |
-| Authorization matrix + docs/root-path | PENDING | — |
-| Cockpit + environment docs | PENDING | — |
-| Lifecycle amendment | PENDING | — |
+| Staged corpus adaptation | GREEN | Facade-read corpus mechanically repaired; route, matrix, and cockpit rows adapted to the current tree without copying stale production code. |
+| Operator middleware + principal | GREEN | Targeted auth corpus RED on every named gap → GREEN as part of 218 passed. |
+| Actor migration / dual-store | GREEN | Exact actor was RED as raw `desk-3` in 4/4 memory/SQLite cases → GREEN 4 passed as `operator:authenticated:desk-3`. |
+| Signal read facade + route | GREEN | Facade RED 16 failed / 14 passed → GREEN 30 passed; combined HTTP/auth corpus GREEN 218 passed. |
+| Authorization matrix + docs/root-path | GREEN | Literal existence + classification ratchet, exact OpenAPI set, derived count, role outcomes, absent docs, unmatched denial, and root-path regression all GREEN in 218 passed. |
+| Cockpit + environment docs | GREEN | Header merge, case-insensitive env-key authority, caller-dict immutability, and critical-control/read seam GREEN; safe flag/key placeholders documented. |
+| Lifecycle amendment | GREEN | Accepted text now defines mutation-free effective read projection and removes `detected_by:"read"` from durable event truth. |
 | Full gate battery | PENDING | — |
 | REV-0043 staging / push | PENDING | — |
 
@@ -342,3 +342,156 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
     result: PASS
     decisive_output: "POST-only producer route; facade reads absent; get_actor unchanged; operator helper only; docs enabled; exports verified; 14 + 2 actor routes"
 ```
+
+### 2026-07-25 — facade read slice
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_facade_reads.py --basetemp <OS temp> -p no:cacheprovider"
+    result: FAIL
+    decisive_output: "RED: 16 failed, 14 passed; list_signals/get_signal and read clock absent; replay/conflict echoed stored RECEIVED"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_facade_reads.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "GREEN: 30 passed across memory and SQLite"
+```
+
+### 2026-07-25 — operator enforcement, route matrix, and cockpit slice
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_routes.py tests/test_route_authorization_matrix.py tests/test_cockpit_operator_header.py --basetemp <OS temp> -p no:cacheprovider --tb=no"
+    result: FAIL
+    decisive_output: "RED after 49 inherited cases: signal reads/auth, producer helper, principal-led audit actor, credential matrix, docs, unmatched path, root-path matching, and cockpit operator header were absent"
+- evidence:
+    command: "same targeted command after first implementation"
+    result: FAIL
+    decisive_output: "collection stopped: FastAPI 0.139 rejects Optional[Request] as a dependency response field"
+- evidence:
+    command: "same targeted command after dependency-signature repair"
+    result: PASS
+    decisive_output: "218 passed; only existing Starlette deprecation warnings"
+```
+
+### 2026-07-25 — recovery actor migration
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_recovery_actor_provenance.py --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: FAIL
+    decisive_output: "initial harness defect: get_execution_events has no order_id parameter; all 4 cases stopped before the intended assertion"
+- evidence:
+    command: "same targeted command after local stream filtering"
+    result: FAIL
+    decisive_output: "intended RED: 4 failed; both recovery routes persisted raw desk-3 on memory and SQLite"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_recovery_actor_provenance.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "GREEN: 4 passed; exact operator:authenticated:desk-3 on both routes and stores"
+```
+
+### 2026-07-25 — independent corpus review and strengthening
+
+```yaml
+- evidence:
+    command: "read-only failure-capability review of the R5b-2 corpus"
+    result: FAIL
+    decisive_output: "nine gaps: schema-hidden non-API ratchet, near-path exemptions, get/list read immutability and clocks, real flag-off request shape, unlabeled principal, valid filters, full-map key traversal, and cockpit key precedence"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_cockpit_operator_header.py --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: FAIL
+    decisive_output: "intended RED: case-variant caller operator header survived beside the environment-owned credential"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_facade_reads.py tests/test_signal_routes.py tests/test_route_authorization_matrix.py tests/test_cockpit_operator_header.py tests/test_recovery_actor_provenance.py --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: FAIL
+    decisive_output: "test repair required: missing PRODUCER_ID import; 257 cases passed before the one test NameError"
+- evidence:
+    command: "same strengthened focused-corpus command after repair"
+    result: PASS
+    decisive_output: "258 passed; only existing Starlette deprecation warnings"
+```
+
+## FIX blocks
+
+### FIX-R5B2-01 — missing mutation-free signal read projection
+
+- **Defect class:** missing read-half implementation.
+- **Root cause:** R5b-1 intentionally delivered an ingest-only facade; there was no effective-status
+  function, query facade, injected read clock, or list/get implementation.
+- **Impact:** the operator read route could not be authored, and replay/conflict responses could echo
+  a stored RECEIVED status after the TTL elapsed.
+- **Files:** `app/facade/signal_commands.py`, `app/facade/signals.py`,
+  `tests/test_signal_facade_reads.py`.
+- **Fix:** add a typed query facade, pure effective-status projection, injected read clock, list/get
+  filtering, and effective status on echoed ingest outcomes. Reads copy records and append nothing.
+- **Evidence:** RED `16 failed / 14 passed` → GREEN `30 passed`; both stores; event-list equality
+  before/after lazy list reads.
+
+### FIX-R5B2-02 — sensitive mounted operations lacked request-time role enforcement
+
+- **Defect class:** missing authorization boundary and incomplete audit principal binding.
+- **Root cause:** the prior rung authenticated only producer ingest inside its route; the mounted app
+  had no deny-by-default operator boundary, no request principal, and auto-docs remained exposed.
+- **Impact:** sensitive reads and commands did not require the operator credential, while audit
+  attribution could still be derived from caller-controlled `X-Actor`.
+- **Files:** `app/main.py`, `app/api/deps.py`, `app/api/routes_signals.py`,
+  `cockpit/api_client.py`, `tests/test_signal_routes.py`,
+  `tests/test_route_authorization_matrix.py`, `tests/test_cockpit_operator_header.py`.
+- **Fix:** add exact method/path role classification, constant-time key helpers, flag-scoped
+  deny-by-default middleware, a distinct authenticated principal, operator-only signal reads,
+  absent docs, and cockpit header merging.
+- **Evidence:** named-gap RED → GREEN `218 passed`, including literal route existence,
+  discovered-subset classification, exact OpenAPI equality, all credential outcomes, unmatched
+  denial, root-path matching, crown-jewel actor equality, and critical cockpit operations.
+
+### FIX-R5B2-03 — dependency annotation incompatible with the installed FastAPI version
+
+- **Defect class:** collection-time framework incompatibility.
+- **Root cause:** the planned `Optional[Request]` dependency annotation is treated as a Pydantic
+  response field by FastAPI 0.139, so route registration fails before tests collect.
+- **Impact:** no application route could be exercised after the first auth implementation.
+- **Files:** `app/api/deps.py`.
+- **Fix:** retain the direct-call-compatible default but annotate it as `Request`, using an explicit
+  typed `None` cast; request injection still supplies the real object in HTTP execution.
+- **Evidence:** collection failure on the first GREEN attempt → `218 passed`.
+
+### FIX-R5B2-04 — recovery truth routes bypassed the authenticated actor dependency
+
+- **Defect class:** audit-provenance bypass on two event-writing commands.
+- **Root cause:** both recovery endpoints declared `X-Actor` directly instead of using
+  `Depends(get_actor)`.
+- **Impact:** canonical fill and human reconciliation truth recorded a caller label without the
+  authenticated operator principal.
+- **Files:** `app/api/routes_trading.py`, `tests/test_recovery_actor_provenance.py`.
+- **Fix:** migrate both routes to the common principal-preferring dependency; prove exact persisted
+  attribution with a fresh app for each store and command.
+- **Evidence:** intended RED `4 failed` with raw `desk-3` → GREEN `4 passed` with exact
+  `operator:authenticated:desk-3`.
+
+### FIX-R5B2-05 — initial authorization corpus was not failure-capable at nine boundaries
+
+- **Defect class:** incomplete negative and mutation-control coverage.
+- **Root cause:** the adapted corpus covered the primary examples but omitted schema-hidden
+  non-API mounts, near-path controls, event equality for singular reads, list-clock injection,
+  actual flag-off request shape, unlabeled principals, positive filters, full-map comparison, and
+  case-insensitive cockpit precedence.
+- **Impact:** several weakening mutations could pass while violating ratified exactness,
+  mutation-free reads, principal distinction, or credential authority.
+- **Files:** `tests/test_signal_facade_reads.py`, `tests/test_signal_routes.py`,
+  `tests/test_route_authorization_matrix.py`, `tests/test_cockpit_operator_header.py`.
+- **Fix:** add the missing independent assertions and extend mounted-operation discovery to every
+  flattened HTTP operation.
+- **Evidence:** read-only review found nine concrete gaps; strengthened focused corpus GREEN
+  `258 passed`.
+
+### FIX-R5B2-06 — cockpit could retain a case-variant caller operator credential
+
+- **Defect class:** ambiguous credential precedence.
+- **Root cause:** ordinary dictionary assignment replaced only an exactly cased
+  `X-Operator-Key`, leaving a case-variant spelling beside the environment-owned value.
+- **Impact:** downstream case-insensitive header normalization, rather than the cockpit seam, could
+  decide which credential reached the backend.
+- **Files:** `cockpit/api_client.py`, `tests/test_cockpit_operator_header.py`.
+- **Fix:** when the environment key is present, copy caller headers, remove any case-insensitive
+  operator-key spelling, then inject the canonical header without mutating the caller dictionary.
+- **Evidence:** intended cockpit RED `1 failed / 6 passed` → included GREEN in `258 passed`.

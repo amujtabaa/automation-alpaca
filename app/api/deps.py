@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from typing import Optional
+from typing import Optional, cast
 
 from fastapi import Depends, Header, HTTPException, Request, status
 
@@ -12,14 +12,14 @@ from app.broker.adapter import BrokerAdapter
 from app.config import Settings
 from app.facade.commands import ExecutionCommandFacade
 from app.facade.queries import ExecutionQueryFacade
-from app.facade.signal_commands import SignalCommandFacade
-from app.facade.signals import StoreBackedSignalFacade
+from app.facade.signals import SignalFacade, StoreBackedSignalFacade
 from app.facade.store_backed import StoreBackedCommandFacade, StoreBackedQueryFacade
 from app.marketdata.service import MarketDataService
 from app.store.base import StateStore
 
 PRODUCER_KEY_HEADER = "X-Producer-Key"
 OPERATOR_KEY_HEADER = "X-Operator-Key"
+AUTHENTICATED_OPERATOR_PRINCIPAL = "operator:authenticated"
 
 # Default actor for command endpoints when no ``X-Actor`` header is sent. Beta is
 # single-user localhost with no authentication (docs/01_ARCHITECTURE.md), so
@@ -60,7 +60,7 @@ def _credentials_equal(supplied: str, configured: str) -> bool:
 
 
 def operator_key_valid(operator_key: Optional[str], settings: Settings) -> bool:
-    """Recognize an operator credential only for producer-route role separation."""
+    """Recognize the configured operator credential in constant time."""
 
     configured = settings.operator_api_key
     return (
@@ -68,6 +68,17 @@ def operator_key_valid(operator_key: Optional[str], settings: Settings) -> bool:
         and operator_key is not None
         and _credentials_equal(operator_key, configured)
     )
+
+
+def producer_key_valid(producer_key: Optional[str], settings: Settings) -> bool:
+    """Recognize any configured producer credential without early return."""
+
+    if producer_key is None:
+        return False
+    matched = False
+    for configured_key in settings.signal_producer_keys:
+        matched = _credentials_equal(producer_key, configured_key) or matched
+    return matched
 
 
 def resolve_producer_id(
@@ -150,8 +161,8 @@ async def check_signal_rails(
 def get_signal_facade(
     store: StateStore = Depends(get_store),
     settings: Settings = Depends(get_settings),
-) -> SignalCommandFacade:
-    """Build the write-only signal facade in the API composition root."""
+) -> SignalFacade:
+    """Build the typed signal facade in the API composition root."""
 
     return StoreBackedSignalFacade(store, settings)
 
@@ -190,19 +201,31 @@ def get_market_data_service(request: Request) -> MarketDataService:
     return request.app.state.market_data
 
 
-def get_actor(x_actor: str | None = Header(default=None)) -> str:
-    """The audited actor for a command endpoint (Phase-6 minimal actor-audit).
+def get_actor(
+    # FastAPI 0.139 recognizes only the exact Request annotation for injection;
+    # the runtime default preserves the established direct get_actor(x_actor=...)
+    # call surface without an unused type-ignore.
+    request: Request = cast(Request, None),
+    x_actor: str | None = Header(default=None),
+) -> str:
+    """Return the principal-led audit actor, or the unchanged flag-off label.
 
-    Reads an optional ``X-Actor`` request header, falling back to
-    :data:`DEFAULT_ACTOR`. A blank/whitespace-only header falls back too rather
-    than recording an empty actor. This is an audit label, not authentication —
-    beta stays single-user localhost with no auth gate (the accepted Phase-6
-    resolution of the 01_ARCHITECTURE.md vs ADR-005 conflict).
+    Flag-on middleware stamps a distinct authenticated principal. ``X-Actor``
+    can then add only a printable sub-label. Without a stamped principal the
+    Phase-6 behavior stays byte-equivalent: strip outer whitespace, preserve
+    internal characters, and fall back to :data:`DEFAULT_ACTOR`.
     """
 
-    if x_actor is None or not x_actor.strip():
-        return DEFAULT_ACTOR
-    return x_actor.strip()
+    raw_label = x_actor.strip() if x_actor else ""
+    principal = (
+        getattr(request.state, "authenticated_actor", None)
+        if request is not None
+        else None
+    )
+    if principal:
+        label = "".join(character for character in raw_label if character.isprintable())
+        return f"{principal}:{label}" if label else principal
+    return raw_label or DEFAULT_ACTOR
 
 
 def get_query_facade(

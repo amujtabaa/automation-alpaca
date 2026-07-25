@@ -39,7 +39,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api import (
@@ -53,6 +54,13 @@ from app.api import (
     routes_trading,
     routes_watchlist,
 )
+from app.api.deps import (
+    AUTHENTICATED_OPERATOR_PRINCIPAL,
+    OPERATOR_KEY_HEADER,
+    PRODUCER_KEY_HEADER,
+    operator_key_valid,
+    producer_key_valid,
+)
 from app.approval.human import HumanApprovalGate
 from app.broker.factory import create_broker_adapter
 from app.config import Settings, load_settings, validate_signal_seat_settings
@@ -65,6 +73,9 @@ from app.store.base import StateStore
 from app.strategy_loop import strategy_loop
 
 _log = logging.getLogger(__name__)
+
+_PUBLIC_OPERATIONS = frozenset({("GET", "/api/health")})
+_PRODUCER_OPERATIONS = frozenset({("POST", "/api/signals")})
 
 
 def create_app(
@@ -181,12 +192,52 @@ def create_app(
             if owns_store:
                 await active_store.close()
 
+    docs_on = not settings.signal_seat_enabled
     app = FastAPI(
         title="Alpaca Clean-Sheet CAPI Option 2.5 — Backend",
         version=__version__,
         summary="Paper-first durable engine. Alpaca paper only — no live trading.",
         lifespan=lifespan,
+        docs_url="/docs" if docs_on else None,
+        redoc_url="/redoc" if docs_on else None,
+        openapi_url="/openapi.json" if docs_on else None,
     )
+
+    if settings.signal_seat_enabled:
+
+        @app.middleware("http")
+        async def operator_enforcement(request: Request, call_next):
+            routed_path = request.scope["path"]
+            root_path = request.scope.get("root_path", "")
+            if root_path and routed_path.startswith(root_path):
+                routed_path = routed_path[len(root_path) :] or "/"
+            operation = (request.method, routed_path)
+
+            if operation in _PUBLIC_OPERATIONS | _PRODUCER_OPERATIONS:
+                return await call_next(request)
+
+            if operator_key_valid(
+                request.headers.get(OPERATOR_KEY_HEADER),
+                settings,
+            ):
+                request.state.authenticated_actor = AUTHENTICATED_OPERATOR_PRINCIPAL
+                return await call_next(request)
+
+            if producer_key_valid(
+                request.headers.get(PRODUCER_KEY_HEADER),
+                settings,
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "producer credential is not valid for this operator route"
+                    },
+                )
+
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "operator credential required"},
+            )
 
     app.include_router(routes_system.router)
     app.include_router(routes_watchlist.router)

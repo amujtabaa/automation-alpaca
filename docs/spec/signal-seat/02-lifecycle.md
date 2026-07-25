@@ -6,7 +6,9 @@
 ```
                         ┌────────────► QUARANTINED   (validation | producer_sweep — duplicate-conflicts are audit-only, §2, and never transition a record)
                         │
-  POST /signals ──► RECEIVED ─────────► EXPIRED      (TTL lapse via sweep, or lazily at read/approve time)
+  POST /signals ──► RECEIVED ─────────► EXPIRED      (durable via sweep or atomic conversion;
+                        │                              reads project effective EXPIRED without writing;
+                        │                              dead-on-arrival ingest enters EXPIRED directly)
                         │
                         ├────────────► REJECTED      (operator, terminal)
                         │
@@ -28,10 +30,12 @@ Rules (each is a required property test in WO-0102/0103/0104, both stores):
   approve path re-checks `expires_at` and status under the same lock that writes. Property-style
   test contract (WO-0104): generate arbitrary interleavings of {receive, sweep, approve, reject,
   producer-quarantine}; assert A3 holds in both stores.
-- **A4 — expiry is checked lazily AND swept.** Reads and the approve path treat
-  `now ≥ expires_at` as EXPIRED regardless of stored status (lazy, injected clock); the periodic
-  sweep (`03-rails.md §3`) also transitions RECEIVED→EXPIRED durably so the panel and the event log
-  converge. A signal can never be approved between "expired in fact" and "expired in storage".
+- **A4 — expiry is projected lazily AND persisted by writer commands.** Reads treat
+  `now ≥ expires_at` as effectively EXPIRED regardless of stored status (pure projection with an
+  injected clock) and append no event. The periodic sweep (`03-rails.md §3`) transitions
+  RECEIVED→EXPIRED durably; dead-on-arrival ingest and the A2 conversion command also record expiry
+  atomically at their write boundary. A signal can never be approved between "expired in fact" and
+  "expired in storage".
 
 ## 2. Event-log vocabulary (append-only `ExecutionEvent` log)
 
@@ -44,7 +48,7 @@ self-decide if they judge otherwise:
 | `SIGNAL_RECEIVED` | proposal accepted into RECEIVED | full proposal fields + `payload_hash`, `producer_id`, `signal_id`, server `record_id`, **server-computed `received_at` + `expires_at`** (replay rebuilds the deadline byte-identically after restart — ADR-009 A-3; Codex rev-3) |
 | `SIGNAL_QUARANTINED` | validation failure (attributable) or producer-quarantine sweep — folds terminally onto ITS OWN record only | **`producer_id`, `signal_id`, `record_id`** (per-record fold target), `quarantine_reason`, offending fields / sweep ref |
 | `SIGNAL_DUPLICATE_CONFLICT` | **audit-only, excluded from the lifecycle fold**: a different-payload replay of an existing `(producer_id, signal_id)` — the original record's state is untouched (live path AND replay) | conflicting proposal, both hashes, original record id |
-| `SIGNAL_EXPIRED` | sweep, lazy-expiry, or dead-on-arrival at ingest | **`producer_id`, `signal_id`, server `record_id`** (REQUIRED — the projector must know which record to transition; with several RECEIVED signals expiring together, timing metadata alone is ambiguous, archive REV-0024-F P1), `received_at`, `expires_at`, `detected_by: "sweep" | "read" | "ingest"` (`"ingest"` = dead-on-arrival `expires_at ≤ received_at`, §3; debits the §1a budget per `03-rails.md`) |
+| `SIGNAL_EXPIRED` | sweep, dead-on-arrival at ingest, or expiry detected atomically by the A2 conversion command | **`producer_id`, `signal_id`, server `record_id`** (REQUIRED — the projector must know which record to transition; with several RECEIVED signals expiring together, timing metadata alone is ambiguous, archive REV-0024-F P1), `received_at`, `expires_at`, `detected_by: "sweep" | "ingest" | "conversion"` (`"ingest"` = dead-on-arrival `expires_at ≤ received_at`, §3; debits the §1a budget per `03-rails.md`) |
 | `SIGNAL_REJECTED` | operator reject | **`producer_id`, `signal_id`, `record_id`** (per-record fold target), `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `producer_id`, `signal_id`, **`record_id`** (per-record fold target — matches the §4 universal-identity rule, archive REV-0025 inline), `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id` |
 | `PRODUCER_QUARANTINED` | rate-bucket breach **or** non-refilling invalid/conflict budget exhaustion (`03-rails.md §1a`) — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach trigger + counters, epoch start |
@@ -94,13 +98,16 @@ regardless of its chosen TTL.
 | Future skew | `issued_at > received_at + 30s` | `SIGNAL_QUARANTINED` (`"issued_at_future"`) |
 | Implausibly old | `issued_at < received_at − 24h` | `SIGNAL_QUARANTINED` (`"issued_at_stale"`) |
 | Dead on arrival | `expires_at ≤ received_at` | `SIGNAL_EXPIRED` at ingest (recorded — a fact, not an error) |
-| TTL lapse | `now ≥ expires_at` while RECEIVED | EXPIRED (lazy + sweep, rule A4); re-checked atomically inside the A-2 conversion command |
+| TTL lapse | `now ≥ expires_at` while RECEIVED | effective EXPIRED on mutation-free reads; persisted by sweep or atomically inside the A-2 conversion command (rule A4) |
 | ttl bounds | `ttl_seconds ∉ [30, 86400]` | `SIGNAL_QUARANTINED` (`"ttl_out_of_range"`) |
 
 A stale/expired signal can **never** be approved (rule A3). Quarantined-at-ingest signals still get
 their `SIGNAL_RECEIVED`? **No** — one event per fact: ingest that lands directly in quarantine/
 expiry writes only the terminal event, whose payload embeds the proposal (recorded, never hidden,
 exactly once).
+
+Read projection is not event emission: `GET`/facade reads may return a copied record with effective
+status EXPIRED, but they do not change stored status and do not append `SIGNAL_EXPIRED`.
 
 ## 4. Replay / reconstruction contract (WO-0102 test)
 
