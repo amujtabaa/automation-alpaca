@@ -127,7 +127,7 @@ Every line is `TRACED` or `INHERITED`; anchors are in the WO. **No `ASSUMED` lin
 |---|---|---|
 | Activation / predecessor gate | GREEN | Clean worktree; refreshed origin; `launch_guard.py` blob present; branch created from `origin/master`. |
 | Read facade | MOVED TO R5b-2 | Entire facade-read corpus, list/get methods, read clock, effective status, and lazy expiry moved by rev-3. |
-| Ingest route | READY FOR RED | Import only staged cases terminating at HTTP response or event log. |
+| Ingest route | RED | Ingest-only corpus: 1 flag-off pass, 14 expected failures; every flag-on request returned 404 because the route is absent. |
 | Producer auth + identity binding | PENDING | — |
 | Spec 413 amendment | PENDING | — |
 | Contract 5 | PENDING | — |
@@ -254,4 +254,13 @@ fable_done:
     command: "re-read active WO-0138 rev-3 and SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md"
     result: PASS
     decisive_output: "ingest-only scope ratified; prior NEEDS-INPUT resolved"
+```
+
+### 2026-07-25 — ingest corpus RED
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_routes.py --basetemp <OS temp> -p no:cacheprovider"
+    result: FAIL
+    decisive_output: "1 passed, 14 failed; every flag-on ingest assertion received 404 from the absent route"
 ```
