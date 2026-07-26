@@ -1,21 +1,21 @@
 ---
 type: Planning Record
-title: "Signal Seat R5b-1 → D-2a: batch/sequencing plan (war-gamed, rev-2 post-M4b)"
+title: "Signal Seat R5b-1 → D-2a: staged sequencing plan (war-gamed, rev-5)"
 status: RATIFIED
 author: planning seat
 created: 2026-07-25
-revised: 2026-07-25 (rev-4 — hybrid: every WO reaches READY via M4b refutation BEFORE any build run; grouping decided per-WO after its war-game)
+revised: 2026-07-25 (rev-5 — R6 split into R6a/R6b after two M4b passes; staged graph with one parallel stage)
 wargame: "FULL per .ai-os/core/18 — M1/M2/M3/M4a/M4b complete"
-ratified_by: "Ameen, 2026-07-25 — four rounds; R6 + R7a grouped behind a named mid-session gate; rev-4 hybrid authorized"
+ratified_by: "Ameen, 2026-07-25 — rev-5: R6 split into R6a/R6b; FIVE sequential stages (worktree parallelism declined)"
 ---
 
-# Signal Seat: R5b-1 → D-2a sequencing plan (rev-2)
+# Signal Seat: R5b-1 → D-2a staged sequencing plan (rev-5)
 
 **Question:** can R5b-1, R5b-2, R6, R7, and D-2a run consecutively in one batch?
 
-**Answer: no.** Maximum safe grouping is **one rung per run**, ordered **R5b-2 → R6 → R7 → D-2a**,
-with planning pipelined against implementation. rev-1 offered "R5b-2 + R6" as an authorizable pairing;
-**that option is withdrawn — refuted, not undecided.**
+**Answer: no.** The ratified shape (rev-5) is **four stages** — R6a, then **R6b ∥ R7a in parallel**,
+then R7b, then D-2a — with planning pipelined against implementation throughout. R5b-1 and R5b-2 are
+complete. See §RATIFIED sequence for the verified dependency graph.
 
 ---
 
@@ -68,7 +68,15 @@ unauthenticated**, and a **positive lower bound**. "Required-present set complet
 joint proof**. Recording GAP-02 as closed at R5b-2 would be the REV-0041 "claimed-complete, actually
 inert" failure promoted to the matrix protecting all 34 routes.
 
-**C-3 — R6 is not additive-only; it will re-open R5b-1's route.** `app/facade/signal_rails.py:26-31`
+**C-3 — ~~R6 is not additive-only; it will re-open R5b-1's route~~ → SUPERSEDED by the R6 war-game
+(2026-07-25).** The atomicity requirement is real, but the conclusion was wrong: the debit belongs in
+`store.ingest_signal`, which **already** takes `cycle_budget_limit` (`app/store/base.py:1329`) and
+already performs the atomic append in one lock/transaction in both stores. So the debit lands *beneath*
+R5b-1's route, not through the Protocol. R6 **does** still need route-layer edits, but for a different
+reason found by the second M4b pass: the step-4 post-exhaustion reject originates inside the store and
+cannot be carried by `RailsDecision.http_status`. Original text retained below for the record.
+
+**C-3 (original, superseded):** `app/facade/signal_rails.py:26-31`
 declares exactly one method, `check_ingest(producer_id) -> RailsDecision` ("body-blind ingest
 admission", normative step 2). But `03-rails.md:44-54,142-149` require a **step-4 linearizable
 re-check-and-debit atomic with the terminal event append**, and `:55-66` require the exhausting append
@@ -122,75 +130,77 @@ be larger than expected loses its grouping. WO-0139's rev-2 already demonstrates
 by authoring `effective_signal_status`, a dedicated matrix module, per-store apps for the actor
 migration, and the sanitization carve-out — which is why it stays **alone**.
 
-## RATIFIED sequence — four rounds (Ameen, 2026-07-25)
+## RATIFIED sequence — rev-5: staged with one parallel stage (Ameen, 2026-07-25)
 
-| Round | Codex session contents | Planning seat (parallel) | Review packet |
+> **rev-5 supersedes the four-round and five-round structures.** R6 is split into **R6a/R6b** after two
+> M4b passes each returned ~12 findings including a P0 — the signal that R6 was mis-sized as one
+> contract (a mis-sizing that originated in this plan). With the split, the dependency graph admits
+> **one genuine parallel stage**, which recovers most of the wall-clock the split costs.
+
+### Dependency graph (verified, not assumed)
+
+```
+R5b-2  (DONE — merged, REV-0043 ACCEPT)
+  └── R6a   store rail surface + producer-rail projector + epoch/release + DDL gate   [no HTTP]
+       ├── R6b   §3 sweeps + /api/producers + release route + cockpit + launcher positive control
+       └── R7a   buy-only conversion  (needs R6a's epoch READ — 05-conversion.md:12)
+            └── R7b   sell conversion (needs project_committed_sell_exposure — spec-only today)
+                 └── D-2a   joint enablement  (also needs R6b)
+```
+
+**Edges verified:** `05-conversion.md:12` requires the A-2 command to re-check the "producer quarantine
+epoch", so **R7a depends on R6a**. `project_committed_sell_exposure` appears only at
+`05-conversion.md:79` and nowhere in `app/`, so **R7b depends on R7a** (same conversion command, and
+R7b authors the projection). R6b depends on R6a (the release route calls R6a's store primitive; the
+sweeps need epoch state; `/api/producers` reads rail state).
+
+### Staged plan — 5 sequential stages
+
+| Stage | Work | Concurrency | Why |
 |---|---|---|---|
-| **1** | **R5b-1** — WO-0138 (in flight) | ① **GAP-10 closure** citing D-SIG-7/D-SIG-8 ② draft **WO-0139** (R5b-2), C-2-rescoped, using the 1021-line archive corpus ③ start **WO-0104 refresh** | **REV-0042** |
-| **2** | **R5b-2** — WO-0139, **alone** (HIGH filter risk · R6's prerequisite · most likely to surface spec conflicts) | REV-0042 review; finish WO-0104 refresh incl. the C-3 Protocol-seam decision; draft **R7a** WO + the schema-gate request | **REV-0043** |
-| **3** | **R6 → [NAMED GATE] → R7a** in one session — **grouping CONDITIONAL** on both WOs reaching READY and neither war-game revealing WO-0139-style growth | REV-0043 review; draft **R7b** incl. `project_committed_sell_exposure` | **REV-0044** (covers both rungs) |
-| **4** | **R7b → [NAMED GATE] → D-2a tail** | REV-0044 review; run the joint-proof verification and the D-2a doc/ADR/PKL work | **REV-0045**, then the flip |
+| **1** | **R6a** | **alone** | The bottleneck: everything depends on it, and it carries the **human-gated DDL stop**, which falls cleanly at its end rather than mid-session |
+| **2** | **R6b**, then **R7a** | ~~parallel~~ → **SEQUENTIAL (operator, 2026-07-25: worktrees caused issues previously)** | They are graph-independent, so parallel was available — but the operator has run into worktree problems before, so the win is declined. Five stages, not four. |
+| **3** | **R7b** | alone | Extends R7a's conversion command; authors the missing exposure projection |
+| **4** | **D-2a** | alone (mostly planner/verification) | Needs every rung closed and every REV dispositioned |
 
-**Reviews run asynchronously.** A REV packet cites a frozen commit range, so the planning seat reviews
-rung N's close-out SHA *while* Codex builds rung N+1. A BLOCK then stops the run at the next named gate
-rather than after everything is built — that is what buys grouping without surrendering review
-protection.
+### The condition that makes stage 2 safe
 
-**Why round 3 is the right place to spend the grouping:** R6 and R7a are both post-R5b-2 and **mutually
-independent** — neither consumes the other's output, so a defect in one does not invalidate the other.
-Contrast R5b-2 + R6, which is a dependency chain (C-1) and the pair most likely to exhaust session
-context.
+**R6a's REV-0044 must be DISPOSITIONED before stage 2 launches** — not concurrently. Both stage-2
+branches build on R6a's store surface, so a BLOCK found after they start would invalidate two branches
+at once. This deliberately serializes one review to protect two builds. (Reviews *within* a stage still
+run async against frozen SHAs — that mechanism is unchanged.)
 
-### Named mid-session gate — the mechanism that makes rounds 3 and 4 safe
+### Stage-2 collision management (real, and bounded)
 
-A single session may carry two rungs **only** under this discipline:
+R6b and R7a are independent in *purpose* but overlap in four files. Per the repo primer, isolated
+worktrees plus these rules:
 
-1. **Rung A closes completely first** — full gate battery, status flip, disposition, ledger line, file
-   move, both hygiene scripts green. A half-closed rung must never be followed by a second rung.
-2. **GATE: Codex stops and reports** — pasted gate evidence, the rung-A close-out SHA, and the rung-B
-   preflight (its predecessor checks re-verified against the *just-closed* tree, not against the WO's
-   drafting-time assumptions). It **waits for an explicit operator go/no-go**.
-3. **Rung B activates only after go** — its own STATE file, its own red-first cycle.
-4. **One combined REV packet** covers both rungs (`CLAUDE.md` permits milestone-batched review), with
-   the finding table segmented per rung so a BLOCK can be scoped to one.
-5. **Abort rule:** if context compaction occurs *after* the gate but *before* rung B's first green
-   slice, Codex stops and reports rather than pushing on — rung A is already safely closed, so the
-   session can end cleanly and rung B restarts fresh. This is the failure mode that makes ungated
-   grouping dangerous.
-6. **Collision serialization:** rungs sharing `app/store/*`, the route-matrix test, or the ledger run
-   strictly sequentially within the session — never interleaved.
+| Shared surface | Rule |
+|---|---|
+| `tests/test_route_authorization_matrix.py` | Sharpest conflict — both add literal `REQUIRED` entries. Each adds **only its own** rows, in its own commit; resolve the small merge conflict at integration, never by rewriting the other's rows |
+| `app/facade/**` | Assign **non-overlapping modules** up front in each WO |
+| `.importlinter` | Each adds only its own contract-5 `source_modules` line |
+| `work/ledger.jsonl` | **Serialize close-outs** — second branch appends after the first merges |
+| `app/store/**` | R7a's conversion transaction only; R6b calls R6a's primitives and must not modify the store |
 
-### Round-3 collision note (R6 ∥ R7a are independent, but not disjoint)
+### What cannot be parallelized, and why
 
-Both touch `app/store/*` (R6: budget/quarantine tables; R7a: the conversion transaction) and both add
-routes the matrix test must classify. Sequential-within-session plus rule 6 handles it. **Order inside
-round 3: R6 first**, because R7a's approve route is the one the matrix's required-present set has been
-waiting on (C-2), so landing conversion last leaves the matrix closest to its D-2a green state.
+- **R6a** — sole bottleneck; a gated DDL approval mid-flight cannot have a co-tenant.
+- **R7b after R7a** — extends the same atomic conversion command; splitting them would mean two rungs
+  editing one transaction.
+- **D-2a last** — the flip requires every gated rung dispositioned (`CLAUDE.md`: gated changes queue for
+  independent review "before any beta-relevant milestone relies on them").
+- **Planning is already parallel** and stays so: the planning seat drafts stage N+1 and reviews stage
+  N−1 while Codex builds stage N. That has been the actual throughput multiplier all along.
 
-**Why this order:**
-- **GAP-10 is now a closure, not a decision** — it comes off the critical path entirely (B1).
-- **R5b-2 first** because its contract is nearly written *and* it is R6's prerequisite (C-1). It closes
-  GAP-01 and the GAP-02 **ratchet** — not GAP-02 entire (C-2).
-- **R6 second** — strictly after R5b-2's operator auth + cockpit plumbing exist and are reviewed.
-- **R7 split into R7a/R7b** — the better seam M4b identified, *within* the rung rather than across
-  rungs. R7a (buy) mints an ordinary `Candidate` through the existing
-  `plan_create_order_for_candidate`; R7b (sell) additionally requires authoring
-  `project_committed_sell_exposure` (**absent from the repo**) over five deduplicated contribution
-  categories, each mutation-pinned, plus T1.3 AST enumeration across a ~20 700-line store trio. That
-  is a different order of magnitude and deserves its own run. Cost of the split: **one spec amendment**
-  defining the refusal for an approved sell-direction signal before R7b, since `01-schema.md:18` admits
-  `direction: Literal["buy","sell"]` at ingest and no "sell not yet convertible" code exists.
-- **D-2a last** — env-driven and therefore requiring the joint proof, all dispositions, the INV probe
-  lines, `.env.example`, and the schema gate already cleared.
+### Net effect
 
-**Grouping rule (corrected in rev-3).** rev-2 said "nothing may be grouped" — that over-stated C-1.
-C-1 is an **ordering** constraint (R6 consumes R5b-2's operator-auth seam, so R6 comes after); it
-forbids **parallel or interleaved** work, not a single session running the rungs **sequentially behind
-a named gate**. What actually forces separate sessions is **context capacity** plus blast radius — and
-by that measure the dangerous pair is exactly R5b-2 + R6 (both in R5a's weight class, and a chain), not
-R6 + R7a (independent). Hence the ratified grouping.
+**Operator decision (2026-07-25): no worktree parallelism** — it has caused problems before. Stage 2
+runs **R6b then R7a sequentially**, giving **five stages**. The dependency graph is unchanged and stays
+valid; only the concurrency is declined. The stage-2 collision rules below therefore become ordinary
+sequential-merge hygiene rather than conflict management, and the "R6a review must disposition first"
+condition still holds — R6b and R7a both build on R6a's store surface.
 
----
 
 ## Filter-safety protocol (per operator request)
 
