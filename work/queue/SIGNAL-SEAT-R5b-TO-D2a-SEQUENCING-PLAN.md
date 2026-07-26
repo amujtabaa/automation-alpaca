@@ -6,7 +6,7 @@ author: planning seat
 created: 2026-07-25
 revised: 2026-07-25 (rev-5 — R6 split into R6a/R6b after two M4b passes; staged graph with one parallel stage)
 wargame: "FULL per .ai-os/core/18 — M1/M2/M3/M4a/M4b complete"
-ratified_by: "Ameen, 2026-07-25 — rev-5: R6 split into R6a/R6b; four stages with R6b || R7a run in parallel"
+ratified_by: "Ameen, 2026-07-25 — rev-5: R6 split into R6a/R6b; FIVE sequential stages (worktree parallelism declined)"
 ---
 
 # Signal Seat: R5b-1 → D-2a staged sequencing plan (rev-5)
@@ -154,12 +154,12 @@ epoch", so **R7a depends on R6a**. `project_committed_sell_exposure` appears onl
 R7b authors the projection). R6b depends on R6a (the release route calls R6a's store primitive; the
 sweeps need epoch state; `/api/producers` reads rail state).
 
-### Staged plan — 4 stages, not 6 rounds
+### Staged plan — 5 sequential stages
 
 | Stage | Work | Concurrency | Why |
 |---|---|---|---|
 | **1** | **R6a** | **alone** | The bottleneck: everything depends on it, and it carries the **human-gated DDL stop**, which falls cleanly at its end rather than mid-session |
-| **2** | **R6b ∥ R7a** | **two Codex sessions, isolated worktrees** | Both depend only on R6a and **not on each other** — the one real parallelism win in the whole ladder |
+| **2** | **R6b**, then **R7a** | ~~parallel~~ → **SEQUENTIAL (operator, 2026-07-25: worktrees caused issues previously)** | They are graph-independent, so parallel was available — but the operator has run into worktree problems before, so the win is declined. Five stages, not four. |
 | **3** | **R7b** | alone | Extends R7a's conversion command; authors the missing exposure projection |
 | **4** | **D-2a** | alone (mostly planner/verification) | Needs every rung closed and every REV dispositioned |
 
@@ -195,9 +195,11 @@ worktrees plus these rules:
 
 ### Net effect
 
-Six sequential rounds → **four stages**, with stage 2 doing two rungs at once. If you prefer to avoid
-running two Codex sessions simultaneously, stage 2 simply degrades to two sequential sessions (five
-stages) with no other change — the graph stays valid either way.
+**Operator decision (2026-07-25): no worktree parallelism** — it has caused problems before. Stage 2
+runs **R6b then R7a sequentially**, giving **five stages**. The dependency graph is unchanged and stays
+valid; only the concurrency is declined. The stage-2 collision rules below therefore become ordinary
+sequential-merge hygiene rather than conflict management, and the "R6a review must disposition first"
+condition still holds — R6b and R7a both build on R6a's store surface.
 
 
 ## Filter-safety protocol (per operator request)
