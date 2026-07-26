@@ -1,7 +1,8 @@
 ---
 type: Work Order
 title: "Signal Seat R5b-2 — operator enforcement, route-authorization matrix, principal-bound audit, cockpit credential plumbing"
-status: REVIEW
+status: CLOSED
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 work_order_id: WO-0139
 wave: signal-seat reconciliation ladder, step R5 (split; R5b-2 = operator enforcement surface)
 model_tier: strong (LOCAL Codex — human-gated auth surface; operator-lockout + audit-attribution risk)
@@ -11,20 +12,22 @@ review: "REV-0043 required (human-gated: authorization enforcement + event-log a
 wargame: "FULL per .ai-os/core/18 — M1/M2/M3/M4a/M4b COMPLETE (rev-2 applied 15 M4b findings incl. 4 P0)"
 round: "Round 2 of 4 — runs ALONE (highest filter risk; R6's prerequisite)"
 filter_risk: HIGH
+closed: 2026-07-25
 ---
 
 # WO-0139 — Signal Seat R5b-2: the operator enforcement surface
 
-> **REV-0043 REMEDIATION (2026-07-25).** REV-0043 returned `ACCEPT-WITH-CHANGES` at reviewer commit
-> `e881f52`. F-1/F-2 were repaired red-first; F-3/F-5/F-7 shipped with the remediation, and the
-> complete gate battery is green at 4,588 collected tests. F-4 remains **NEEDS-INPUT** for the
-> operator's explicit `detected_by:"conversion"` ruling; F-6/F-8 are recorded for R6 only. This work
-> order therefore remains `REVIEW`; the flag stays OFF, with no disposition, ledger mutation, PR,
-> merge, or completion move.
+> **CLOSE-OUT (2026-07-25).** REV-0043 first returned `ACCEPT-WITH-CHANGES` at reviewer commit
+> `e881f52`. F-1/F-2 were repaired red-first at `330ca0a`; F-3/F-5/F-7 shipped with the remediation,
+> and reviewer-owned addendum 01 returned final **ACCEPT**. Ameen explicitly acknowledged and
+> retained `detected_by:"conversion"` under F-4 for R7's future emitter. The disposition is
+> RESOLVED and this order closes with `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`; F-6/F-8 carry to R6.
+> D-2a and the feature flag stay OFF pending R6 + R7 and the joint gate. No merge or PR is included.
 >
-> **IMPLEMENTATION HANDOFF (2026-07-25).** R5b-2 passed its complete gate battery and is frozen at
-> `10d2bce1fc11591a1994b1be891fef231df52fb5` for independent REV-0043 review. The feature flag
-> remains OFF; this work order is not closed, merged, or beta-authorized.
+> **IMPLEMENTATION HANDOFF (2026-07-25, historical).** Before review, R5b-2 passed its complete gate
+> battery and was frozen at `10d2bce1fc11591a1994b1be891fef231df52fb5` for independent REV-0043
+> review. At that handoff, the feature flag remained OFF and this work order was not yet closed,
+> merged, or beta-authorized.
 
 > **rev-2 (2026-07-25).** An M4b refutation pass produced **15 findings, 4 of them P0**, and the
 > planning seat verified every P0 against code before applying. rev-1's route-matrix design was

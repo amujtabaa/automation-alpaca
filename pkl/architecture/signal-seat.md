@@ -102,7 +102,9 @@ ADR and review).
   remediation and seven reviewer-requested pin classes; disposition RESOLVED. `app/store/`
   remained untouched. At R5b-1 close, facade reads, operator enforcement, and lazy expiry were
   deferred to R5b-2; F-8/F-10/F-11 carried to R5b-2/R7.
-- 2026-07-25: R5b-2 is in REVIEW after REV-0043 ACCEPT-WITH-CHANGES (WO-0139): deny-by-default
-  operator enforcement, principal-bound actor attribution, cockpit credential plumbing, the literal
-  route-authorization matrix, and mutation-free effective-expiry projection for reads and
-  existing-record ingest echoes are built. D-2a stays OFF pending R6 + R7 and the joint gate.
+- 2026-07-25: R5b-2 closed (WO-0139): deny-by-default operator enforcement, principal-bound actor
+  attribution, cockpit credential plumbing, the literal route-authorization matrix, and
+  mutation-free effective-expiry projection for reads and existing-record ingest echoes were
+  delivered. REV-0043 returned ACCEPT-WITH-CHANGES, then final ACCEPT after F-1/F-2 remediation and
+  the operator's F-4 acknowledgement retaining `detected_by:"conversion"`; disposition RESOLVED.
+  F-6/F-8 carry to R6. D-2a stays OFF pending R6 + R7 and the joint gate.

@@ -1,7 +1,7 @@
 ---
 type: Work State
 work_order_id: WO-0139
-status: REVIEW
+status: CLOSED
 branch: codex/signal-r5b2-operator-auth
 updated: 2026-07-25
 ---
@@ -16,7 +16,7 @@ After any pause or compaction, re-read in order:
 
 1. The operator kickoff.
 2. This state file.
-3. `work/active/WO-0139-signal-r5b2-operator-enforcement.md`.
+3. `work/completed/keep/WO-0139-signal-r5b2-operator-enforcement.md`.
 
 Then verify the live branch and worktree with `git log` and `git status`; do not reconstruct state
 from conversation memory.
@@ -304,7 +304,7 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 | Full gate battery | GREEN | Static gates clean; focused 258; full 4,586 collected with exit 0; R2 61; scaling 13; bootstrap exit 0. |
 | REV-0043 staging / push | GREEN | REV-0043 staged against `fa087deb..10d2bce`; delivery branch published to origin with no PR. |
 | REV-0043 F-1/F-2 remediation | GREEN | F-1 weakening mutation failed the new `/fills` negative at 404 vs 422; F-2's natural RED reported lowercase `x-actor` for both routes, then GREEN with canonical `X-Actor`; recovery file 6 passed. |
-| REV-0043 close-out items | REVIEW / NEEDS-INPUT | F-3 helper pin, F-5 ingest-echo clause, and F-7 PKL refresh applied. F-4 awaits the operator; F-6/F-8 are recorded for R6 only. |
+| REV-0043 close-out items | CLOSED | F-3 helper pin, F-5 ingest-echo clause, and F-7 PKL refresh applied. Ameen acknowledged and retained `detected_by:"conversion"` under F-4; F-6/F-8 are recorded in the R6 carry-forward register. |
 | REV-0043 remediation gate battery | GREEN | Ruff/mypy/imports/PKL clean; focused 260; full 4,588 collected with exit 0; R2 61; scaling 13; bootstrap exit 0. |
 
 ## Evidence log
@@ -699,20 +699,29 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 - Curated commits: activation `a748c01`, implementation `75e328a`, compatibility fix `10d2bce`.
 - Review request: `work/review/REV-0043/request.md`.
 - Reviewer result: `e881f52ec94e36833e1db4b19abe12c0f1641142` on
-  `claude/signal-r4-kickoff-planning-354qc0`; verdict `ACCEPT-WITH-CHANGES`. The reviewer-owned
-  `result.md` remains absent from and unmodified on this delivery branch.
+  `claude/signal-r4-kickoff-planning-354qc0`; first-pass verdict `ACCEPT-WITH-CHANGES`.
+- Reviewer addendum: `work/review/REV-0043/result-addendum-01.md` on the planning branch; final
+  verdict **ACCEPT** after remediation at `330ca0a79f28f9a8894974e747996b30bccbe371`.
+  The F-4 ruling was recorded at planning head `4ab7a4d78b8c55b188494f9bf49b1aee750a2a5a`.
+- Review disposition: `work/review/REV-0043/disposition.md`, RESOLVED.
+- The reviewer-owned `result.md` and `result-addendum-01.md` remain absent from and unmodified on
+  this delivery branch.
 - Feature flag remains OFF. No rails, producer release/read, signal conversion, schema/migration,
-  PR, merge, ledger mutation, result copy, disposition, or completion move was created.
+  PR, merge, result copy, or flag enablement was created.
 - GAP-01 and mounted-route GAP-02 are closed by this implementation. The deferred item is the
   distinct spec-04 required-present completeness obligation for the future R6/R7 routes.
 - REV-0043 F-1/F-2 are remediated red-first; F-3/F-5/F-7 close-out updates are included.
-- The complete remediation gate battery passed with 4,588 tests collected; the branch remains in
-  REVIEW solely because the operator-gated F-4 decision is unresolved.
-- **NEEDS-INPUT (F-4):** the operator must acknowledge `detected_by:"conversion"` or direct its
-  reversion to `"sweep" | "ingest"` for R7 to add with the emitter. No choice was made here.
+- The complete remediation gate battery passed with 4,588 tests collected. Addendum 01 returned
+  final ACCEPT, so the review gate is cleared and WO-0139 is CLOSED.
+- **F-4 RESOLVED:** on 2026-07-25, Ameen selected option (a), explicitly acknowledging and retaining
+  `detected_by:"conversion"`. It is declared-but-unemitted until R7 ships the atomic A-2 conversion
+  command; no code or spec reversion is required.
 - **R6 carry-forward only:** F-6 records that the fixed principal and colon-composed label are not
   losslessly separable once producer principals exist; F-8 records that `list_signals` materializes
-  the full filtered scope because effective status cannot be pushed into the current store query.
+  the full selected scope because effective status cannot be pushed into the current store query.
+  Both are recorded in the REV-0043 disposition's carry-forward register.
+- Close-out includes the append-only ledger line, Signal Seat PKL refresh, review disposition, and
+  moves to `work/completed/keep/`; no merge, PR, or flag enablement was performed.
 
 ```yaml
 fable_done:
@@ -726,10 +735,11 @@ fable_done:
     - "MET: lifecycle text and safe environment template match the implementation"
     - "MET: full gate battery passes with fresh evidence"
     - "MET: WO status REVIEW and REV-0043 request staged"
+    - "MET: REV-0043 addendum 01 returned final ACCEPT, F-4 was explicitly acknowledged, and the close-out artifacts are atomic"
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
     flag_enabled: false
     rails_or_conversion_built: false
-  status: REVIEW
+  status: CLOSED
 ```
