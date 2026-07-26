@@ -1,26 +1,29 @@
-"""WO-0138 rev-3 — Signal Seat producer-ingest HTTP behavior.
+"""WO-0138/WO-0139 — Signal Seat ingest, read, and attribution behavior.
 
-This ingest-only subset terminates at the HTTP response. Read-back assertions,
-operator-route enforcement, and the truncated actor-audit case remain in R5b-2.
+R5b-1 owns the producer-ingest cases. R5b-2 adds the operator read-back and
+principal-bound audit cases without weakening the ingest assertions.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 from datetime import datetime, timedelta, timezone
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import Settings
 from app.facade.signal_rails import RailsDecision
 from app.main import create_app
-from app.models import ExecutionEventType
+from app.models import EventType, ExecutionEventType
 from app.store.memory import InMemoryStateStore
 from tests.signal_seat_helpers import (
     OPERATOR_KEY,
+    PRODUCER_ID,
     PRODUCER_KEY,
     _IN_PROCESS_TEST_AUTHORITY,
     build_flag_on_app,
@@ -676,3 +679,291 @@ def test_hostile_text_is_returned_verbatim_without_interpretation(client):
     assert response.status_code == 201
     assert response.json()["thesis"] == thesis
     assert response.json()["provenance"] == provenance
+
+
+# --------------------------------------------------------------------------- #
+# R5b-2 signal reads, credential outcomes, and audit attribution.
+# --------------------------------------------------------------------------- #
+def test_get_signals_is_operator_only(client):
+    assert client.get("/api/signals").status_code == 401
+    assert client.get("/api/signals", headers=_PROD_H).status_code == 403
+    assert client.get("/api/signals", headers=_OP_H).status_code == 200
+
+
+def test_health_is_the_only_public_flag_on_api_operation(client):
+    assert client.get("/api/health").status_code == 200
+    assert client.post("/api/health").status_code == 401
+
+
+def test_existing_sensitive_read_requires_operator(client):
+    assert client.get("/api/positions").status_code == 401
+    assert client.get("/api/positions", headers=_PROD_H).status_code == 403
+    assert client.get("/api/positions", headers=_OP_H).status_code == 200
+
+
+def test_unknown_producer_key_on_operator_route_is_401(client):
+    unknown = {"X-Producer-Key": "not-a-real-key"}
+    assert client.get("/api/positions", headers=unknown).status_code == 401
+    assert client.get("/api/signals", headers=unknown).status_code == 401
+    assert client.get("/api/positions", headers=_PROD_H).status_code == 403
+    assert client.get("/api/signals", headers=_PROD_H).status_code == 403
+
+
+def test_non_ascii_credentials_are_invalid_not_errors():
+    from app.api.deps import (
+        operator_key_valid,
+        producer_key_valid,
+        resolve_producer_id,
+    )
+
+    settings = Settings(
+        signal_seat_enabled=True,
+        operator_api_key=OPERATOR_KEY,
+        signal_producer_keys={PRODUCER_KEY: "vibe"},
+    )
+    assert operator_key_valid("é", settings) is False
+    assert producer_key_valid("é", settings) is False
+    with pytest.raises(HTTPException) as exc:
+        resolve_producer_id(producer_key="é", operator_key=None, settings=settings)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("supplied", "producer_id"),
+    [
+        ("first-key", "first-producer"),
+        ("middle-key", "middle-producer"),
+        ("last-key", "last-producer"),
+        ("unknown-key", None),
+    ],
+)
+def test_producer_credential_helpers_visit_the_complete_key_map(
+    monkeypatch,
+    supplied,
+    producer_id,
+):
+    from app.api import deps
+
+    settings = Settings(
+        signal_seat_enabled=True,
+        operator_api_key=OPERATOR_KEY,
+        signal_producer_keys={
+            "first-key": "first-producer",
+            "middle-key": "middle-producer",
+            "last-key": "last-producer",
+        },
+    )
+    configured_keys = list(settings.signal_producer_keys)
+    calls: list[str] = []
+    real_compare = deps._credentials_equal
+
+    def tracked_compare(candidate: str, configured: str) -> bool:
+        calls.append(configured)
+        return real_compare(candidate, configured)
+
+    monkeypatch.setattr(deps, "_credentials_equal", tracked_compare)
+
+    assert deps.producer_key_valid(supplied, settings) is (producer_id is not None)
+    assert calls == configured_keys
+
+    calls.clear()
+    if producer_id is None:
+        with pytest.raises(HTTPException) as exc:
+            deps.resolve_producer_id(
+                producer_key=supplied,
+                operator_key=None,
+                settings=settings,
+            )
+        assert exc.value.status_code == 401
+    else:
+        assert (
+            deps.resolve_producer_id(
+                producer_key=supplied,
+                operator_key=None,
+                settings=settings,
+            )
+            == producer_id
+        )
+    assert calls == configured_keys
+
+
+def test_get_signals_defaults_to_received_and_filters(client):
+    first = client.post(
+        "/api/signals",
+        json=_proposal(signal_id="received"),
+        headers=_PROD_H,
+    )
+    second = client.post(
+        "/api/signals",
+        json=_proposal(signal_id="quarantined", ttl_seconds=5),
+        headers=_PROD_H,
+    )
+    third = client.post(
+        "/api/signals",
+        json=_proposal(signal_id="received-msft", symbol="MSFT"),
+        headers=_PROD_H,
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert third.status_code == 201
+
+    default_records = client.get("/api/signals", headers=_OP_H)
+    assert default_records.status_code == 200
+    assert [record["signal_id"] for record in default_records.json()] == [
+        "received",
+        "received-msft",
+    ]
+
+    quarantined = client.get(
+        "/api/signals",
+        params={"status": "quarantined"},
+        headers=_OP_H,
+    )
+    assert quarantined.status_code == 200
+    assert [record["signal_id"] for record in quarantined.json()] == ["quarantined"]
+
+    aapl = client.get(
+        "/api/signals",
+        params={"symbol": "aapl"},
+        headers=_OP_H,
+    )
+    assert aapl.status_code == 200
+    assert [record["signal_id"] for record in aapl.json()] == ["received"]
+
+    producer = client.get(
+        "/api/signals",
+        params={"producer_id": PRODUCER_ID},
+        headers=_OP_H,
+    )
+    assert producer.status_code == 200
+    assert [record["signal_id"] for record in producer.json()] == [
+        "received",
+        "received-msft",
+    ]
+    other_producer = client.get(
+        "/api/signals",
+        params={"producer_id": "not-this-producer"},
+        headers=_OP_H,
+    )
+    assert other_producer.status_code == 200
+    assert other_producer.json() == []
+
+
+def test_get_signals_bad_filters_are_422(client):
+    assert (
+        client.get(
+            "/api/signals",
+            params={"symbol": "bad$"},
+            headers=_OP_H,
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            "/api/signals",
+            params={"status": "not-a-real-status"},
+            headers=_OP_H,
+        ).status_code
+        == 422
+    )
+
+
+def test_get_signals_reads_back_distinct_malformed_records(client):
+    first = client.post("/api/signals", json={"foo": 1}, headers=_PROD_H)
+    second = client.post("/api/signals", json={"bar": 2}, headers=_PROD_H)
+    replay = client.post("/api/signals", json={"foo": 1}, headers=_PROD_H)
+    assert (first.status_code, second.status_code, replay.status_code) == (
+        422,
+        422,
+        200,
+    )
+
+    records = client.get(
+        "/api/signals",
+        params={"status": "quarantined"},
+        headers=_OP_H,
+    )
+    assert records.status_code == 200
+    assert len(records.json()) == 2
+    assert len({record["signal_id"] for record in records.json()}) == 2
+
+
+def test_unparseable_body_has_empty_signal_readback(client):
+    response = client.post(
+        "/api/signals",
+        content=b"not json",
+        headers={**_PROD_H, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+    listed = client.get("/api/signals", headers=_OP_H)
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+
+def test_operator_command_audit_actor_is_principal_bound():
+    store = InMemoryStateStore()
+    app = build_flag_on_app(
+        test_authority=_IN_PROCESS_TEST_AUTHORITY,
+        store=store,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/controls/kill-switch",
+            json={"engaged": True},
+            headers={**_OP_H, "X-Actor": "desk-3"},
+        )
+        assert response.status_code == 200, response.text
+        assert client.portal is not None
+        events = client.portal.call(
+            functools.partial(
+                store.list_events,
+                event_type=EventType.KILL_SWITCH_ENGAGED.value,
+            )
+        )
+
+    assert events
+    assert events[-1].payload["actor"] == "operator:authenticated:desk-3"
+
+
+def test_operator_command_without_optional_label_uses_distinct_principal():
+    store = InMemoryStateStore()
+    app = build_flag_on_app(
+        test_authority=_IN_PROCESS_TEST_AUTHORITY,
+        store=store,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/controls/kill-switch",
+            json={"engaged": True},
+            headers=_OP_H,
+        )
+        assert response.status_code == 200, response.text
+        assert client.portal is not None
+        events = client.portal.call(
+            functools.partial(
+                store.list_events,
+                event_type=EventType.KILL_SWITCH_ENGAGED.value,
+            )
+        )
+
+    assert events
+    assert events[-1].payload["actor"] == "operator:authenticated"
+
+
+def test_get_actor_flag_off_preserves_internal_control_characters():
+    from app.api.deps import get_actor
+
+    request = SimpleNamespace(state=SimpleNamespace())
+    assert get_actor(request=request, x_actor="desk\tlabel\n2") == "desk\tlabel\n2"
+
+
+def test_get_actor_flag_on_sanitizes_only_the_optional_label():
+    from app.api.deps import get_actor
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(authenticated_actor="operator:authenticated")
+    )
+    assert (
+        get_actor(request=request, x_actor="desk\tlabel\n2")
+        == "operator:authenticated:desklabel2"
+    )

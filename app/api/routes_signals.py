@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -29,7 +29,11 @@ from app.facade.signal_commands import (
     SignalCommandFacade,
     SignalIngestOutcome,
     SignalIngestResult,
+    SignalQueryFacade,
 )
+from app.facade.errors import FacadeError
+from app.facade.http_mapping import facade_error_to_http
+from app.models import SignalStatus
 
 router = APIRouter(prefix="/api", tags=["signals"])
 
@@ -198,6 +202,29 @@ def _record_response(result: SignalIngestResult) -> JSONResponse:
         status_code=_OUTCOME_STATUS[result.outcome],
         content=view.model_dump(mode="json"),
     )
+
+
+@router.get("/signals", response_model=list[SignalRecordView])
+async def list_signals(
+    status_filter: SignalStatus = Query(
+        default=SignalStatus.RECEIVED,
+        alias="status",
+    ),
+    symbol: Optional[str] = Query(default=None),
+    producer_id: Optional[str] = Query(default=None),
+    facade: SignalQueryFacade = Depends(get_signal_facade),
+) -> list[SignalRecordView]:
+    """List effective signal projections for the authenticated operator."""
+
+    try:
+        records = await facade.list_signals(
+            status=status_filter,
+            symbol=symbol,
+            producer_id=producer_id,
+        )
+    except FacadeError as exc:
+        raise facade_error_to_http(exc) from exc
+    return [SignalRecordView.model_validate(record) for record in records]
 
 
 @router.post("/signals")

@@ -42,6 +42,7 @@ def flag_on_settings(**overrides) -> Settings:
         signal_seat_enabled=True,
         operator_api_key=OPERATOR_KEY,
         signal_producer_keys={PRODUCER_KEY: PRODUCER_ID},
+        enable_dev_routes=True,
         # keep background loops off so a TestClient lifespan is cheap + IO-free
         enable_monitoring=False,
         enable_strategy_engine=False,

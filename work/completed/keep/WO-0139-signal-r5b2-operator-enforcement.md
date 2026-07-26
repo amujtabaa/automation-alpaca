@@ -1,7 +1,8 @@
 ---
 type: Work Order
 title: "Signal Seat R5b-2 — operator enforcement, route-authorization matrix, principal-bound audit, cockpit credential plumbing"
-status: READY
+status: CLOSED
+disposition: [RESULT_SUMMARY_KEPT, PKL_UPDATED]
 work_order_id: WO-0139
 wave: signal-seat reconciliation ladder, step R5 (split; R5b-2 = operator enforcement surface)
 model_tier: strong (LOCAL Codex — human-gated auth surface; operator-lockout + audit-attribution risk)
@@ -11,9 +12,22 @@ review: "REV-0043 required (human-gated: authorization enforcement + event-log a
 wargame: "FULL per .ai-os/core/18 — M1/M2/M3/M4a/M4b COMPLETE (rev-2 applied 15 M4b findings incl. 4 P0)"
 round: "Round 2 of 4 — runs ALONE (highest filter risk; R6's prerequisite)"
 filter_risk: HIGH
+closed: 2026-07-25
 ---
 
 # WO-0139 — Signal Seat R5b-2: the operator enforcement surface
+
+> **CLOSE-OUT (2026-07-25).** REV-0043 first returned `ACCEPT-WITH-CHANGES` at reviewer commit
+> `e881f52`. F-1/F-2 were repaired red-first at `330ca0a`; F-3/F-5/F-7 shipped with the remediation,
+> and reviewer-owned addendum 01 returned final **ACCEPT**. Ameen explicitly acknowledged and
+> retained `detected_by:"conversion"` under F-4 for R7's future emitter. The disposition is
+> RESOLVED and this order closes with `[RESULT_SUMMARY_KEPT, PKL_UPDATED]`; F-6/F-8 carry to R6.
+> D-2a and the feature flag stay OFF pending R6 + R7 and the joint gate. No merge or PR is included.
+>
+> **IMPLEMENTATION HANDOFF (2026-07-25, historical).** Before review, R5b-2 passed its complete gate
+> battery and was frozen at `10d2bce1fc11591a1994b1be891fef231df52fb5` for independent REV-0043
+> review. At that handoff, the feature flag remained OFF and this work order was not yet closed,
+> merged, or beta-authorized.
 
 > **rev-2 (2026-07-25).** An M4b refutation pass produced **15 findings, 4 of them P0**, and the
 > planning seat verified every P0 against code before applying. rev-1's route-matrix design was
@@ -386,21 +400,21 @@ Deferred `REQUIRED` members: **`POST /api/producers/{producer_id}/release` + `/a
 
 ## Required behavior (Fable v3)
 
-- [ ] **GATE** + predecessor check (D-R5b2-1), else STOP. Report the Step-0 list.
-- [ ] Operator-key auth + **http-middleware** deny-by-default; 401/403 distinction.
-- [ ] Principal stamping (**distinct** identifier) + `get_actor` precedence + **the 2-route
+- [x] **GATE** + predecessor check (D-R5b2-1), else STOP. Report the Step-0 list.
+- [x] Operator-key auth + **http-middleware** deny-by-default; 401/403 distinction.
+- [x] Principal stamping (**distinct** identifier) + `get_actor` precedence + **the 2-route
       migration**, dual-store with an app per store.
-- [ ] Flag-off control-character regression for `get_actor` (D-R5b2-13).
-- [ ] `GET /api/signals` incl. authoring `effective_signal_status` + injected clock.
-- [ ] The matrix in its own module: literal `REQUIRED` + both subset assertions + derived bound +
+- [x] Flag-off control-character regression for `get_actor` (D-R5b2-13).
+- [x] `GET /api/signals` incl. authoring `effective_signal_status` + injected clock.
+- [x] The matrix in its own module: literal `REQUIRED` + both subset assertions + derived bound +
       auth-outcome-only + fresh app per case.
-- [ ] Auto-docs: middleware coverage **or** explicit disablement; assert never public.
-- [ ] `root_path` defense-in-depth regression (inline path computation).
-- [ ] Cockpit `X-Operator-Key` **merge** + no-lockout usability proof.
-- [ ] Complete the crown-jewel audit test with exact-equality on a distinct principal.
-- [ ] `.env.example` credential documentation.
-- [ ] Flag-off non-regression: zero existing-test edits, bootstrap green.
-- [ ] FIX blocks with root cause; fresh pasted evidence.
+- [x] Auto-docs: middleware coverage **or** explicit disablement; assert never public.
+- [x] `root_path` defense-in-depth regression (inline path computation).
+- [x] Cockpit `X-Operator-Key` **merge** + no-lockout usability proof.
+- [x] Complete the crown-jewel audit test with exact-equality on a distinct principal.
+- [x] `.env.example` credential documentation.
+- [x] Flag-off non-regression: zero existing-test edits, bootstrap green.
+- [x] FIX blocks with root cause; fresh pasted evidence.
 
 ## Gate battery (fresh, pasted)
 

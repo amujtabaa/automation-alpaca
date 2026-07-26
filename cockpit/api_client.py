@@ -27,6 +27,16 @@ class BackendError(RuntimeError):
 
 def _request(method: str, path: str, **kwargs: Any) -> Any:
     url = f"{base_url()}{path}"
+    headers = dict(kwargs.pop("headers", None) or {})
+    operator_key = os.environ.get("OPERATOR_API_KEY", "").strip()
+    if operator_key:
+        headers = {
+            name: value
+            for name, value in headers.items()
+            if name.lower() != "x-operator-key"
+        }
+        headers["X-Operator-Key"] = operator_key
+    kwargs["headers"] = headers
     try:
         resp = requests.request(method, url, timeout=TIMEOUT_SECONDS, **kwargs)
     except requests.exceptions.RequestException as exc:
