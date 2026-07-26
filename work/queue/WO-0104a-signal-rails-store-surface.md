@@ -10,19 +10,24 @@ model_tier: strong (LOCAL Codex — single-writer store mutation + event-log tru
 predecessors: [WO-0139 (R5b-2 — merged, REV-0043 dispositioned)]
 successors: [WO-0104b (R6b), R7a, R7b, D-2a]
 review: "REV-0044 required (human-gated: single-writer store mutation, event-log truth, SQLite DDL)"
-wargame: "FULL per .ai-os/core/18 — four M4b passes; rev-3 applies pass-4's 14 findings incl. 4 P0"
+wargame: "FULL per .ai-os/core/18 — five M4b passes; rev-4 applies pass-5's 10 findings incl. 1 P0"
 stage: "Stage 1 of 5 — runs ALONE; its REV-0044 must disposition before R6b or R7a start"
 filter_risk: LOW-MED
 ---
 
-# WO-0104a (rev-3) — Signal Seat R6a: the rails store surface
+# WO-0104a (rev-4) — Signal Seat R6a: the rails store surface
 
-> **rev-3 (2026-07-26).** A fourth M4b pass returned **14 findings including 4 P0**, all verified
-> against code by the planning seat. Every P0 sits in the two surfaces rev-2 *created* and nobody had
-> yet refuted: Option A's rate primitive and the "conditioned on an actual write" mechanism. **rev-2's
-> split survives; its *closure* claim did not** — `app/store/**` was not complete, because the token
-> bucket has a different truth model from the rest of the rail row. These are additive corrections to
-> existing D-lines plus two new D-lines and one new DDL item. No redesign.
+> **rev-4 (2026-07-26).** A fifth M4b pass, scoped to the two newest blocks (`D-R6a-16`, `D-R6a-17`),
+> returned **10 findings including 1 P0** — all verified against code. **The P0 is a second-order
+> consequence of Option A itself:** a second epoch opener decoupled "epoch open" from "budget
+> exhausted", and rev-3's gate and both its pins were written when those were one predicate. A separate
+> planning-seat probe independently found that rev-3's fractional-carry pin **cannot fail on the defect
+> it names**. Both `D-R6a-16` and `D-R6a-17` were **not ratifiable as written**; this revision fixes
+> that. `D-R6a-17` is promoted from an M1 checkbox to a **second human-gated stop**.
+>
+> **Standing lesson recorded for REV-0044:** across five passes, every claim in this document that was
+> **measured** has survived; nearly every P0 was a claim **derived by reading two files**. Two of this
+> revision's findings were a ~25-line simulation away. Prefer running something.
 
 **What R6a delivers:** the durable rail row behind **one** gated DDL, the producer-rail projector that
 makes the event log the source of truth for the *foldable* columns, epoch identity, **both** atomic
@@ -42,9 +47,14 @@ discriminator that does not discriminate. See D-R6a-4.
   **rate** check-and-debit primitive + breach opener (D-R6a-16); the release primitive; dual-store.
 - `app/events/**` — the producer-rail projector, its **registration in `replay.py`** (D-R6a-3.7), and
   a snapshot-free identity-only transition-event builder.
-- `app/models.py` — **required, not conditional**: the rate primitive's verdict DTO (D-R6a-16) and the
-  `PRODUCER_QUARANTINED` payload contract (D-R6a-17). No new event *types* —
-  `PRODUCER_QUARANTINED` / `PRODUCER_RELEASED` already exist at **`app/models.py:483-484`**.
+- **`app/models.py` is NOT needed** — `PRODUCER_QUARANTINED` / `PRODUCER_RELEASED` already exist at
+  **`app/models.py:483-484`**, no new event *types* are required, and both artefacts rev-3 put here
+  belong in the store layer by this repo's own precedent: the verdict DTO as a
+  `@dataclass(frozen=True)` beside `SignalIngestResult` (**`app/store/base.py:328-338`** — the very
+  anchor this WO already cites), and the payload as a `producer_quarantined_event(...)` builder in
+  `app/store/core.py` beside `signal_duplicate_conflict_event` (`:5922`). No signal event payload is
+  typed anywhere: `ExecutionEvent.payload` is `dict[str, Any]` (`models.py:1159`) and there is no
+  `TypedDict` in `app/`, so a typed payload model would be unenforced by the append path regardless.
 - **The new SQLite table + `_migrate` + startup guard + `tests/test_signal_sqlite_schema.py`** — behind
   the DDL gate below.
 - **`app/facade/signals.py`, `app/facade/signal_commands.py`, `app/api/routes_signals.py`** — minimal
@@ -70,7 +80,27 @@ the release **route** · the cockpit control · `signal_rate_limit_per_hour` / `
 
 ---
 
-## ⚠ HUMAN-GATED: the SQLite DDL — the one approval stop
+## ⚠ HUMAN-GATED: TWO approval stops, submitted as ONE request
+
+Both are human-gated per CLAUDE.md and **neither is covered by this WO's M1 ratification**. Submit them
+together so the operator has one decision point, not two.
+
+### Stop 2 — the `PRODUCER_QUARANTINED` payload (event-log truth)
+
+`D-R6a-17` ratifies an **append-only event-log payload vocabulary**, including
+`breach_trigger ∈ {budget_exhausted, rate_breach}`. CLAUDE.md lists "event-log truth changes" in the
+same human-gated sentence as "schema/DB migration", and **this repo has already ruled on exactly this
+class**: `work/queue/SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md:110-113` — *"This is an **event-log-truth
+change on a human-gated surface** ⇒ operator ratification **plus** its own review packet before any rung
+relies on it."* (The `detected_by:"conversion"` token in R5b-2 required exactly such an explicit
+ruling.) rev-3 self-ratified this in an M1 checkbox, which was wrong. **STOP and request approval of the
+field list and the `breach_trigger` vocabulary before the first append.** Nothing emits these events
+today — `grep -rn "PRODUCER_QUARANTINED\|PRODUCER_RELEASED"` over `app/ tests/ cockpit/ harness/`
+returns only the two enum members and their model test — so there is no back-compat cover and no
+migration owed (`ExecutionEvent.payload` is `dict[str, Any]`; `EXECUTION_EVENT_SCHEMA_VERSION = 1`
+marks incompatible *shape* changes, `models.py:1149-1150`).
+
+### Stop 1 — the SQLite DDL
 
 New durable state ⇒ schema/migration ⇒ human-gated per CLAUDE.md, **not** covered by this WO's
 ratification. **STOP and request approval with the proposed DDL** before creating or altering any table
@@ -79,10 +109,11 @@ or column. The request must include **all six** of:
 1. The full rail table — including the **token-bucket columns**, since Option A makes R6a their writer.
    One approval, one migration; **R6b adds no schema.** State the **column types and the fractional-carry
    form** chosen per D-R6a-16.1 — getting this wrong costs a *second* migration, i.e. a second human gate.
-2. **The pinned-limit column MUST be nullable.** A rate-breach epoch can open with **zero** attributable
-   rejections (`03-rails.md:66`), so a cycle can exist with no "first such event" and therefore no
-   pinnable limit. `NOT NULL` would force a backfill from live `Settings`, silently making config changes
-   retroactive against `03-rails.md:83-87`.
+2. **The pinned-limit column MUST be nullable** — because a **rate-breach-only** cycle has no first
+   attributable-rejection event to read a limit from (`03-rails.md:66,79`), so it can exist with no
+   pinnable limit. (A rate breach opening *mid-cycle* does have one — see D-R6a-17's two shapes; the
+   nullable case is the rate-breach-only cycle specifically.) `NOT NULL` would force a backfill from live
+   `Settings`, silently making config changes retroactive against `03-rails.md:83-87`.
 3. `_migrate` — and the disclosure that **`SCHEMA` + `_migrate` run flag-independently**
    (**`sqlite.py:562-563`**; the store layer has zero `signal_seat_enabled` references), so this table
    lands in the operator's live database **with the flag off**.
@@ -97,7 +128,7 @@ or column. The request must include **all six** of:
 
 ---
 
-## M1 — Assumption ledger / decision block (rev-3)
+## M1 — Assumption ledger / decision block (rev-4)
 
 **Pre-checked = ratified on paste; edit a line to override.** Every line is `TRACED` or `INHERITED`; no
 `ASSUMED` line is pre-checked.
@@ -175,7 +206,12 @@ or column. The request must include **all six** of:
       bucket columns and `rejected_count`** (D-R6a-7), for which the log holds no independent evidence
       and the claim would be vacuous. REV-0044 must not over-claim either.
       **Pin:** append events + spend the bucket, restart ⇒ the budget/quarantine/sequence rebuild from
-      the log **and** the bucket is neither refilled nor zeroed. Both stores.
+      the log **and** the bucket is neither refilled nor zeroed. Both stores — where **"restart" means a
+      fresh `SqliteStateStore` over the same file for SQLite, and a second `initialize()` on the same
+      instance for memory.** A memory-store process restart has nothing durable to preserve
+      (`memory.py:264-280` rebuilds an empty instance), so class-(B) preservation is unobservable there
+      through a real restart; the memory-side claim is that the rebuild is **bucket-idempotent**. Say which
+      reading is meant or the implementer must guess.
       — TRACED(`03-rails.md:11-12,71-82`; `02-lifecycle.md:109-124`; `core.py:6052-6059`;
       `replay.py:175-196,199-227,250-274`; REV-0039 disposition:21; M4b-4 F-2/F-9).
 
@@ -214,6 +250,11 @@ or column. The request must include **all six** of:
       P0 re-entering through the opener, and worse: an append-only quarantine the fold disagrees with.
       **Therefore the store ratifies the opener post-append — if `plan.event`'s append did not write, the
       store suppresses `plan.epoch_event` and performs no debit.** The planner proposes; the store decides.
+      **And the check is two-sided:** the store also inspects **`plan.epoch_event`'s own** append return.
+      A no-op there means an epoch was **already open** — a state D-R6a-8's gate should have refused
+      before the planner ran — so **fail closed** (raise, do not proceed): silently continuing is how the
+      D-R6a-8 P0 manifests as a log that says `rate_breach` while the store believes it opened a
+      budget-exhaustion epoch.
       **Pins (both stores):** (i) `A, B, B` ⇒ consumed == 1, cache == fold; (ii) consumed at limit−1, the
       same novel-hash conflict submitted twice ⇒ one conflict event, one debit, **exactly one** opener;
       (iii) the same at limit−1 with a *fresh* hash ⇒ one opener. Mutation-check: remove the suppression
@@ -242,6 +283,12 @@ or column. The request must include **all six** of:
       not `IntegrityError`. **State explicitly whether the write-time sequence comes from the log fold or
       the cache**, and pin it: zero/stale the cache, prove the opener still lands with the correct
       sequence inside the same atomic op.
+      **⚠ And state what the sequence function returns WHILE AN EPOCH IS OPEN.** There is no next epoch
+      until `PRODUCER_RELEASED`, so the only two candidate answers are (a) the current open epoch's
+      sequence — which makes a second opener's key **collide and silently no-op** (measured, both stores),
+      the D-R6a-8 P0 — or (b) N+1, which yields two simultaneously-open epochs and an unresolvable
+      `release_producer`. Neither is acceptable, which is why D-R6a-8's gate must make this code
+      unreachable; D-R6a-4's two-sided check is the backstop if it is not.
       **Pins:** release → re-quarantine → release ⇒ 2 openers, 2 releases; and exhaust → release →
       resubmit a cycle-1 novel hash ⇒ zero new events, zero debits, cache == fold. Both stores.
       — TRACED(anchors above; `01-schema.md:102-104`; M4b-4 F-10).
@@ -271,7 +318,7 @@ or column. The request must include **all six** of:
       the event log (diagnostic, **best-effort across restarts by design**)" (`03-rails.md:163-164`;
       `ADR-009:53,346-347`) and **T-14** requires post-quarantine rejects stay **write-free**
       (`THREAT_MODEL_SIGNAL_SEAT.md:64`); a durable counter would make every post-quarantine reject a
-      store write, contradicting `03-rails.md:156`. **R6b owns the in-memory holder.**
+      store write, contradicting `03-rails.md:157-158`. **R6b owns the in-memory holder.**
       Because the count is caller-supplied: **validate it** (`0 ≤ count ≤ cap`) in the primitive, on the
       `_require_bounded_int` precedent (`core.py:6043-6048`), and **define the saturation cap here** next
       to `_SIGNAL_CYCLE_BUDGET_MAX` (`core.py:5607`) — accepted text says "saturating" but never gives a
@@ -293,13 +340,36 @@ or column. The request must include **all six** of:
       the rest find zero and are handled as post-exhaustion". The slow-streamed-body case is the realistic
       one — that is *how* two requests both clear step 2 before either reaches step 4 — so the pin must
       model it, not just concurrency.
-      **⚠ In-store ordering (new).** `01-schema.md:86-92` is normative: "**Boundary rejection takes
+      **⚠ P0 — THE GATE IS `epoch-open OR zero-slots`, NOT EXHAUSTION ALONE. Option A decoupled them.**
+      Before Option A the only opener was budget exhaustion, co-appended with the last-slot terminal
+      event, so `epoch open ⟺ consumed ≥ limit` and one predicate served both. **The rate primitive is a
+      second opener**, so an epoch can now be open with the **entire budget unspent** — and that state is
+      not exotic, it is the *ordinary* rate breach: only attributable **rejections** debit the budget
+      (`03-rails.md:35-43`), so a fresh producer bursting `burst+1` **valid** signals breaches the rate
+      rail at `consumed == 0`. The race shape produces it too: X takes the last token and streams a slow
+      body; Y finds the bucket empty and opens the epoch; X then arrives at step 4 with the epoch open
+      and slots remaining.
+      An implementer reading rev-3's "epoch/exhaustion check" as `if consumed >= limit` satisfies **both**
+      of rev-3's pins and still ships a defect against accepted text: `ingest_signal` proceeds and appends
+      attributable-rejection events **inside an open epoch**, against
+      **`ADR-009-signal-seat-boundary.md:343-345`** — *"At most ONE `PRODUCER_QUARANTINED` event per
+      quarantine epoch … opened by **either** trigger … **Post-quarantine ingress appends nothing**"* —
+      and `03-rails.md:151-153`. Then, when the budget finally exhausts, the co-appended opener's
+      epoch-scoped `dedupe_key` **equals the already-open epoch's key and silently no-ops in both
+      stores** (measured): the store believes it opened a budget-exhaustion epoch while the log says
+      `rate_breach`. Build hazard 15 names the mechanism but rev-3 never connected it to `epoch_event`.
+      **So: the gate is `epoch_open OR consumed >= limit`.** The branch to move lives in
+      `plan_signal_ingest` (`core.py:6013`, the `existing` test at `:6052`) — reachable either by
+      reordering there or by gating in `ingest_signal` before the planner is called. Note the planner
+      **cannot** decide this today: measured, its parameters include `cycle_budget_limit` but **no**
+      consumed-count, epoch or quarantine input, so R6a adds one (the new required kwarg of D-R6a-6).
+      **⚠ In-store ordering.** `01-schema.md:86-92` is normative: "**Boundary rejection takes
       precedence over idempotent replay** … its request, *even an identical replay of an already-accepted
       signal*, is boundary-rejected **403/429**, not 200 … the dedupe contract below is scoped to
       **admitted** ingests only." `plan_signal_ingest` currently does the **opposite** — `core.py:6052`
-      `if existing is not None:` precedes anything budget-related. So a race loser that happens to be a
-      same-hash replay would earn a cheap 200. **The epoch/exhaustion check must precede the
-      `existing`/`payload_hash` dedupe branch inside `ingest_signal`.**
+      `if existing is not None:` precedes anything budget-related (measured: with `cycle_budget_limit=1`,
+      an identical replay returns `replayed`). **The gate above must precede the `existing`/`payload_hash`
+      dedupe branch.**
       **Representation.** Verified blockers:
       1. `SignalIngestResult.record` is **non-Optional** (`base.py:337-338`, `signal_commands.py:26-27`);
       2. **`SignalIngestPlan.result_record` (`core.py:5969`) becomes `Optional[SignalRecord]` — the ONE
@@ -329,10 +399,13 @@ or column. The request must include **all six** of:
       test seam already mounts the route flag-on with `PermissiveSignalRails`**
       (`tests/signal_seat_helpers.py:32-36`, mounted by `build_flag_on_app` at `:54-82`, used at
       `tests/test_signal_routes.py:52-56`) and the pin is stated in HTTP terms.
-      **Pins (both stores):** N requests **serialised by the single writer** (model the slow-body shape,
-      not just concurrency), one slot ⇒ exactly one terminal + N−1 record-free 403s + exactly one opener;
-      and with the epoch open, an **identical replay of an already-accepted signal** returns the 403,
-      never 200.
+      **Pins (both stores):** (i) N requests **serialised by the single writer** (model the slow-body
+      shape, not just concurrency), one slot ⇒ exactly one terminal + N−1 record-free 403s + exactly one
+      opener; (ii) with the epoch open, an **identical replay of an already-accepted signal** returns the
+      403, never 200; (iii) **⚠ the P0 pin — a rate-breach epoch at `consumed == 0`, then a novel-hash
+      invalid submission ⇒ ZERO new events, zero debit, and still exactly ONE `PRODUCER_QUARANTINED` row
+      in the log.** Mutation-check (iii) by weakening the gate to `consumed >= limit` ⇒ must go RED; that
+      mutation is precisely what rev-3's pins allowed.
       — TRACED(`01-schema.md:86-92`; `03-rails.md:48-51,145-146`; `core.py:6052-6059`; anchors above;
       M4b-3 F-4/F-5/P2-11; M4b-4 F-4/F-12).
 
@@ -408,8 +481,9 @@ or column. The request must include **all six** of:
 
 - [x] **D-R6a-15 Dual-store parity throughout.** Rail state, both debits, epoch, release, the projector
       fold, the `initialize()` rebuild **and its bucket-preservation counterpart**, and the `_atomic()`
-      rollback all prove out on **both** stores.
-      — TRACED(CLAUDE.md Testing; `conftest.py:29` `any_store`).
+      rollback all prove out on **both** stores — with **"restart" defined per store** as in D-R6a-3
+      (fresh `SqliteStateStore` over the same file; second `initialize()` on the same memory instance).
+      — TRACED(CLAUDE.md Testing; `conftest.py:29` `any_store`; `memory.py:264-280`).
 
 - [x] **D-R6a-16 ⚠ P0 RESOLUTION (operator: Option A) — the RATE-PATH store primitive is R6a's, it is a
       STEP-2 primitive, and it ships with ZERO consumers in this rung.** rev-1 gave R6a `app/store/**` but
@@ -426,30 +500,58 @@ or column. The request must include **all six** of:
          authenticated producer identity alone.
          **Signature ratified here:**
          **`check_and_debit_producer_rate(producer_id, *, now: datetime, limit_per_hour: int, burst: int)`**
-         → a **store-layer verdict DTO in `app/models.py`** discriminating `ok` / `quarantined` (403) /
-         `rate_breached` (429, opener appended). It must **not** return `RailsDecision` —
-         `app/facade/signal_rails.py` is R6b's, and the instinctive implementation silently edits an
-         out-of-scope file. R6b's provider maps the verdict.
+         → a **verdict DTO as a `@dataclass(frozen=True)` in `app/store/base.py`, beside
+         `SignalIngestResult` (`:328-338`)** — the store-layer DTO precedent, not `app/models.py` —
+         discriminating `ok` / `quarantined` (403) / `rate_breached` (429, opener appended). It must
+         **not** return `RailsDecision`: that lives in `app/facade/signal_rails.py`, which **R5a already
+         merged** and which is **OUT** for R6a, so returning it would silently edit an out-of-scope file.
+         R6b's provider maps the verdict.
+         **⚠ `lint-imports` does NOT guard this.** Measured: `app.store` is a **source** module in none of
+         the six contracts (it appears only in `forbidden_modules` at `.importlinter:104,150,192`), so
+         `app.store → app.facade` passes green (`lint-imports` → 6 kept, 0 broken). Enforce it with a grep
+         assertion in the R6a corpus — *no file under `app/store/` imports `app.facade`* (true today:
+         `grep -rn "from app.facade" app/store/` returns nothing) — plus review.
          `now` is **injected** (`03-rails.md:9`; do not copy `memory.py:274` or `sqlite.py:648`).
          `limit_per_hour` / `burst` are **validated** on the `_require_bounded_int` precedent
-         (`core.py:6043-6048`) against **caps ratified here**, next to `_SIGNAL_CYCLE_BUDGET_MAX`
-         (`core.py:5607`) — accepted text gives the budget rail a hard cap (`03-rails.md:32-34`) and the
-         rate rail **none**, so R6a must supply one.
+         (`core.py:6043-6048`). **⚠ Accepted text gives the rate rail NO cap** (`03-rails.md:11-15` gives
+         defaults only; the budget rail's `[1, 1000]` at `03-rails.md:32-34` is normative), so R6a
+         ratifies these three **literal values** — rev-3 said "caps ratified here" and stated no numbers,
+         which is unratifiable:
+         - **`SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600`** — one authenticated ingest per second already far
+           exceeds a single local paper operator's plausible need, and it keeps the "finite and small"
+           property from being configured away, mirroring the budget rail's hard 1000.
+         - **`SIGNAL_RATE_BURST_MAX = 100`** — bounds worst-case instantaneous pre-body work while
+           comfortably exceeding the default 10.
+         - **`SIGNAL_REJECTED_COUNT_MAX = 10_000`** (D-R6a-7's saturation cap) — informative across a long
+           hostile epoch, still bounded and readable inside an append-only event payload.
+         **Declare all three as PUBLIC module-level constants so R6b's `config.py` validation imports them
+         rather than re-declaring them.** The repo already carries the budget cap **twice** —
+         `SIGNAL_INVALID_BUDGET_HARD_CAP = 1000` (`app/config.py:47`, used at `:478`) and
+         `_SIGNAL_CYCLE_BUDGET_MAX = 1000` (`app/store/core.py:5607`, used at `:6047`) — with no shared
+         import. Since D-R6a-10 leaves config-side validation to R6b, a private constant here **guarantees**
+         that duplication recurs on a hostile-input rail. Do not repeat it.
       1. **The epoch check lives INSIDE the primitive**, in the same atomic op as the rate debit. That is
          what makes consequence 2 R6a-pinnable; if the epoch check sat in `deps.py` the ordering would be
          R6b's and `app/store/**` would not be complete after all.
       2. **Epoch-check precedes rate-debit** (`03-rails.md:139-141`): a quarantined producer gets **403,
-         not 429** (`:155-156`), and **must not burn tokens**.
+         not 429** (`:157-158`), and **must not burn tokens**.
       3. **The bucket is lazily refilled and evaluated READ-ONLY on the reject path.** This is sound
          because refill is a pure monotone function of `(anchor, tokens_at_anchor, now)` — recomputing
          from a stale anchor yields the same answer across restarts and idle gaps. A natural "update the
          anchor on every evaluation" makes post-quarantine 403s and 429s store writes, violating
-         `03-rails.md:156` and T-14.
-      4. **⚠ But the ACCEPT path must not lose the fractional remainder.** At 60/hr (1 token/min), two
-         accepts 90 s apart refill 1.5 tokens; truncating to 1 **and** advancing the anchor to `now`
-         discards 0.5 permanently, throttling the producer below its configured rate and drifting further
-         with every accept. Choose one and **state it in the DDL request with the column types**: store
-         tokens as `REAL`, or keep them `INTEGER` and advance the anchor only by whole-token increments
+         `03-rails.md:157-158` and T-14.
+      4. **⚠ The ACCEPT path must not lose the fractional remainder — and the failure is TOTAL, not
+         gradual.** Truncating the refill to an integer **and** advancing the anchor to `now` discards the
+         sub-token remainder permanently. rev-3 described this as "throttled below its configured rate,
+         drifting further with every accept" and illustrated it with two accepts 90 s apart. **Both were
+         wrong**, measured: at any arrival gap **shorter than one token interval** the truncated refill is
+         `floor(<1) = 0` while the anchor still advances, so **the bucket never refills at all.** At 60/hr
+         with 60 requests paced every 30 s: exact-carry grants **30**, truncate-and-advance grants **0**.
+         A producer running at **half its configured rate** is therefore starved permanently — and since a
+         bucket-empty ingest is what opens an epoch, it is **permanently quarantined**. That makes the
+         column-type choice a safety decision, not a tidiness one.
+         Choose one and **state it in the DDL request with the column types**: store tokens as `REAL`, or
+         keep them `INTEGER` and advance the anchor only by whole-token increments
          (`anchor += floor(elapsed·rate)/rate`).
       5. A rate breach opens an epoch **with no terminal event**, so the fold must handle a cycle whose
          pinned limit is unknowable — hence the nullable limit column (DDL item 2) and the
@@ -460,10 +562,32 @@ or column. The request must include **all six** of:
          with an injected clock and explicit values, not through HTTP; the write-free-reject property is
          pinned **at the store**, not at the boundary. This is *more* provable than a route-mediated
          version, not less.
+         **Gate-safety of dead code, checked:** no dead-code gate threatens it — no `vulture`, and
+         `pyproject.toml` has **no `[tool.ruff.lint]` section**, so ruff runs default `E4/E7/E9/F`, which
+         never flags an uncalled method; `tests/test_air_remediation.py:150-154` reads
+         `StateStore.__abstractmethods__` only to assert `create_order` is *absent*, so a new abstract
+         method is harmless. **But CI's branch-coverage ratchet does bite:** `fail_under = 93`
+         (`pyproject.toml:38`) under `pytest --cov=app --cov-branch` (`.github/workflows/ci.yml:101`).
+         The primitive's validation and reject branches, the record-free 403 branch, and the
+         `_migrate`/startup-guard path must all be **branch**-covered by their direct pins or CI fails.
       **Pins (both stores):** epoch open ⇒ 403, token count **unchanged**; bucket empty ⇒ 429 **and
-      exactly one** opener; two rejects past exhaustion ⇒ zero new event rows and zero bucket mutation;
-      accepts paced at 1.5× the token interval over a long window grant exactly the configured rate with
-      no drift; restart mid-window neither grants nor loses a token.
+      exactly one** opener; two rejects past exhaustion ⇒ zero new event rows and zero bucket mutation.
+      **⚠ The carry pin — rev-3's was INERT and must not be reused.** rev-3 pinned "accepts paced at
+      1.5× the token interval grant exactly the configured rate with no drift". Measured, the correct and
+      the defective implementations are **identical** there (40/40 and 60/60), for two compounding reasons:
+      at 1.5× the interval the producer runs *under* the configured rate, so a correct bucket sits at the
+      burst cap where truncation costs nothing; and `floor(1.5) = 1` refill against 1 consumption is
+      net-zero for the defective one. An idle-then-burst pin is inert too (10/10 both). **Use instead:**
+      from a **sub-cap** bucket, accepts paced at a **sub-token-interval** pace (e.g. 0.75× the interval)
+      over ≥ 60 requests ⇒ exactly `floor(rate·window) + initial_tokens` accepts, with the first rejection
+      at the arithmetically predicted index (measured: request 41 correct vs request 11 defective); **and**
+      a bank-then-burst case — pace under the rate, then submit `burst` requests (measured: 29/30 correct
+      vs 20/30 defective). D-R6a-13's mandatory mutation check for 16.4 comes out **GREEN** on rev-3's pin,
+      which is exactly the inert-pin class REV-0041 and REV-0043-F-1 established.
+      **Restart pin — define "restart" per store** (see D-R6a-3): a fresh `SqliteStateStore` over the same
+      file for SQLite; a **second `initialize()` on the same instance** for memory, where a process restart
+      has nothing durable to preserve (`memory.py:264-280`). The memory-side claim is that the rebuild is
+      **bucket-idempotent**, not that memory survives death.
       **No import-boundary blocker:** `.importlinter` Contract 5 forbids `app.store` only from the nine
       named `app.api.routes_*` modules; `app.api.deps` is explicitly excluded (`.importlinter:129-132`)
       and `app.signals_rails_impl` is not a contract source, so R6b's provider can reach this primitive
@@ -471,19 +595,40 @@ or column. The request must include **all six** of:
       — TRACED(`03-rails.md:9,11-12,32-34,44-54,66,139-141,151-152,155-156`; `base.py:1320-1332`;
       `.importlinter:129-132`; operator ratification 2026-07-25; M4b-4 F-7/F-8).
 
-- [x] **D-R6a-17 ⚠ The `PRODUCER_QUARANTINED` PAYLOAD is ratified here — append-only, so unfixable
-      later.** rev-2 specified the release event's payload (D-R6a-7) and left the *opener's* entirely
-      unstated, while Option A made R6a its writer on **two** paths that need different values.
-      `02-lifecycle.md:54` requires: "`producer_id`, **breach trigger + counters**, epoch start". R6a
-      ratifies:
+- [ ] **D-R6a-17 ⚠ NOT PRE-CHECKED — the `PRODUCER_QUARANTINED` PAYLOAD is HUMAN-GATED (Stop 2 above).**
+      rev-2 specified the release event's payload (D-R6a-7) and left the *opener's* entirely unstated,
+      while Option A made R6a its writer on **two** paths that need different values. rev-3 then ratified
+      it in a pre-checked M1 line — wrong: this is append-only event-log payload vocabulary, which
+      CLAUDE.md gates and which this repo has already ruled needs "operator ratification **plus** its own
+      review packet before any rung relies on it"
+      (`SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md:110-113`). **Proposed** field list, per
+      `02-lifecycle.md:54` ("`producer_id`, **breach trigger + counters**, epoch start"):
       - `producer_id`;
-      - **`breach_trigger` ∈ {`budget_exhausted`, `rate_breach`}** — without it the fold **cannot**
-        distinguish a rate-breach epoch (pinned limit NULL, consumed 0) from a budget-exhaustion epoch,
-        which is precisely the discrimination DDL item 2's nullable column and D-R6a-16.5 depend on;
+      - **`breach_trigger` ∈ {`budget_exhausted`, `rate_breach`}** — required by `02-lifecycle.md:54`, and
+        it records the cause **directly** instead of leaving the fold to infer it. **rev-3's necessity
+        argument was false** and is withdrawn: a budget-exhaustion opener co-appends with the event
+        consuming the last slot, so `consumed == pinned_limit` holds **iff** the epoch is a budget
+        exhaustion, and the fold *can* discriminate without the field. The field is still right — the
+        inference is correct only until a third opener path exists, and an append-only log cannot be
+        amended later — but the honest reason is directness plus `02-lifecycle.md:54`, not impossibility;
       - the counters in force — consumed/limit on the budget path; bucket capacity on the rate path;
-      - epoch start **and** the folded epoch sequence (D-R6a-5).
-      **Pin:** the fold recovers `breach_trigger` and distinguishes the two epoch kinds — both stores.
-      — TRACED(`02-lifecycle.md:54`; `03-rails.md:66`; M4b-4 F-6).
+      - **`epoch_start` carried as `.isoformat()`** — both stores normalise through
+        `normalize_json_payload` (`app/store/base.py:124-135`, called at `memory.py:5428` and
+        `sqlite.py:7426`), which **raises `InvalidEventError` on a raw `datetime`**; the repo convention is
+        `.isoformat()` (`core.py:5884`);
+      - the folded epoch sequence (D-R6a-5).
+      **Home:** a `producer_quarantined_event(...)` builder in `app/store/core.py` beside
+      `signal_duplicate_conflict_event` (`:5922`) — *not* a model in `app/models.py`; no signal payload is
+      typed anywhere (`ExecutionEvent.payload` is `dict[str, Any]`, `models.py:1159`; no `TypedDict` in
+      `app/`), so a typed model would be unenforced by the append path.
+      **⚠ Two epoch shapes, both of which the fold and the pin must handle:** a rate breach opening a
+      **fresh** cycle folds to `(pinned limit NULL, consumed 0)`; a rate breach opening **mid-cycle**,
+      after k attributable rejections, folds to `(pinned limit NON-NULL, consumed k > 0)` — the limit is
+      read from the cycle's *first attributable-rejection* event (`03-rails.md:79`), which exists in that
+      case. rev-3 asserted only the first shape.
+      **Pin:** the fold recovers `breach_trigger` and both shapes — both stores.
+      — TRACED(`02-lifecycle.md:54`; `03-rails.md:66,79`; `store/base.py:124-135`; `core.py:5884,5922`;
+      `SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md:110-113`; M4b-4 F-6; M4b-5 F-4/F-5/F-10).
 
 ---
 
@@ -499,6 +644,7 @@ or column. The request must include **all six** of:
 | **epoch birth (exactly once)** | epoch-scoped `dedupe_key` + the single lock | D-R6a-5 |
 | **post-exhaustion (steady state)** | any ingest once the epoch is open | rejected at **step 2**, write-free — **R6b's**; never reaches the store (D-R6a-8) |
 | **post-exhaustion (race)** | slow-body/concurrent requests that cleared step 2 | **403, write-free**, record-free response, **including for an identical replay** (D-R6a-8) |
+| **⚠ epoch open + budget slots REMAINING** | the ordinary rate breach (valid signals never debit, `03-rails.md:35-43`), or a request that cleared step 2 before a rate breach opened the epoch | **403, write-free, record-free** — **no** terminal event, **no** debit, **no** second opener. The gate is `epoch_open OR consumed >= limit`, never exhaustion alone (D-R6a-8 P0) |
 | **quarantined ingest** | any ingest while the epoch is open | **403, write-free, no token burn** (D-R6a-16.2) |
 | **epoch release** | `release_producer(..., actor, rejected_count, released_at)` | resets **both** rails; writes `PRODUCER_RELEASED` (D-R6a-7) |
 | **re-quarantine** | next breach after release | **new** sequence ⇒ a new opener survives dedupe; a cycle-1 hash resubmitted debits **nothing** (D-R6a-5) |
@@ -518,7 +664,7 @@ or column. The request must include **all six** of:
 | `SignalIngestPlan.result_record` (`core.py:5969`) | **affected — the one sanctioned retype** | Becomes Optional; why `memory.py:5609` is mypy-affected and `sqlite.py:7689` is not (D-R6a-8). |
 | `SignalIngestResult.record` (`base.py:337-338`, `signal_commands.py:26-27`) | **affected** | Optional, or post-exhaustion is unrepresentable. |
 | `_OUTCOME_STATUS` / `_record_response` — **two** call sites (`routes_signals.py:45-52,202,261-277,279-291`) | **affected** | A 7th outcome is a `KeyError` → 500; **static gates cannot see it**. |
-| `plan_signal_ingest` branch order (`core.py:6052`) | **⚠ affected — P0** | `existing` is checked first; `01-schema.md:86-92` requires boundary rejection to precede idempotent replay (D-R6a-8). |
+| `plan_signal_ingest` gate + branch order (`core.py:6013`, `:6052`) | **⚠ affected — P0** | It receives **no** consumed/epoch/quarantine input today (measured), so R6a adds one; the gate is `epoch_open OR consumed >= limit` — **not exhaustion alone**, which Option A decoupled — and it must precede the `existing`/`payload_hash` dedupe branch per `01-schema.md:86-92` (D-R6a-8). |
 | **`app/events/replay.py`** — `ReadModelProjection`, `project_read_models` (`:175-196`), `_describe_read_model_diff` (`:199-227`), `verify_dual_store_readmodel_parity` (`:250-274`) | **⚠ affected — P1** | R6a adds co-written read-model columns; without registration the `:176-178` docstring claim goes false and REV-0039's un-registered-fold class recurs (D-R6a-3.7). |
 | `app/facade/signals.py:88,102,104` | **affected — mypy-proven required** | Without the edit the new outcome is an `AttributeError` → 500. |
 | `app/store/memory.py:5609` | **affected — mypy-proven** | Optional-record narrowing. |
@@ -539,32 +685,42 @@ or column. The request must include **all six** of:
 
 1. *"A producer was charged twice for one logged event."* → debit not conditioned on an actual write, or keyed on `sequence` (D-R6a-4). **The original P0.**
 2. *"A quarantine opened at a count replay says is not exhaustion."* → opener not suppressed when the terminal append no-oped (D-R6a-4). **The P0 rev-2 left open.**
-3. *"A restart handed the producer a free full burst."* → the bucket was rebuilt as if it were a cache (D-R6a-3B).
-4. *"A rollback left the debit but truncated the log."* → a new rail collection missing from `_atomic()`'s enumeration (D-R6a-2).
-5. *"A quarantined producer earned cheap 200s by replaying an accepted signal."* → dedupe checked before the boundary (D-R6a-8, `01-schema.md:86-92`).
-6. *"A same-hash resubmission re-debited."* → missing third exclusion (D-R6a-4.3).
-7. *"A restart un-quarantined a quarantined producer."* → fold omitted quarantine state (D-R6a-3A.5).
-8. *"A restart re-granted a spent budget."* → no `initialize()` rebuild (D-R6a-3A.4).
-9. *"A second epoch never opened."* → non-epoch-scoped `PRODUCER_*` key, or a stale cache supplying the sequence (D-R6a-5).
-10. *"A post-release resubmission of an old hash re-debited."* → epoch-scoping the conflict key (D-R6a-5).
-11. *"A released producer re-quarantined immediately."* → release reset one rail (D-R6a-7).
-12. *"`PRODUCER_RELEASED` had no actor" / "the opener had no breach trigger."* → unfixable in an append-only log (D-R6a-7, D-R6a-17).
-13. *"The fold could not tell a rate breach from a budget exhaustion."* → no `breach_trigger` (D-R6a-17).
-14. *"Post-quarantine rejects wrote to the store."* → durable counter, or a bucket that writes on evaluation (D-R6a-7, D-R6a-16.3).
-15. *"A quarantined producer got 429 and burned tokens."* → epoch checked after rate, or outside the primitive (D-R6a-16.1/16.2).
-16. *"The producer was throttled below its configured rate and drifted."* → fractional remainder discarded on the accept path (D-R6a-16.4).
-17. *"Exhaustion returned 500."* → unmapped 7th outcome; **no static gate would catch it** (D-R6a-8).
-18. *"Dual-store replay parity passed while the new columns went unchecked."* → no `replay.py` registration (D-R6a-3A.7).
-19. *"Sweep events silently vanished."* → reused `signal_create` prefix (D-R6a-9).
-20. *"Sweep expiries ate the budget."* → missing `detected_by ≠ ingest` exclusion (D-R6a-4.2).
-21. *"An altered rail column silently served a wrong budget."* → no startup guard (DDL item 4).
-22. *"A config change retroactively moved a cycle's ceiling."* → non-nullable pinned limit backfilled from live `Settings` (DDL item 2).
-23. *"We needed a second migration."* → bucket column types / carry rule not settled in the one DDL request (DDL item 1).
-24. *"The authorization matrix went green while a producer route 403'd for a new reason."* → the M3 cross-rung coupling.
-25. *"Memory passed, SQLite overspent."* → dual-store parity (D-R6a-15).
-26. *"The corpus was green and proved nothing."* → mandatory mutation-checking (D-R6a-13).
-27. *"The gate said OK on a missing file."* → `git ls-tree` exit-0 (D-R6a-1).
-28. *"The WO was done but the rung left no knowledge trace."* → `work/**` and `pkl/**` omitted from scope (scope IN).
+3. *"A quarantined producer kept appending rejection events, against ADR-009."* → the gate tested exhaustion, not epoch-open; Option A decoupled them (D-R6a-8). **The P0 rev-3 left open.**
+4. *"The budget epoch's opener vanished into the rate epoch's dedupe key."* → same, plus a one-sided suppression check (D-R6a-4, D-R6a-5).
+5. *"A producer running at HALF its configured rate was permanently quarantined."* → integer refill truncated to zero while the anchor still advanced (D-R6a-16.4).
+6. *"The carry pin was green and the bucket never refilled."* → the pin paced above the token interval from a full bucket, where correct and defective are identical (D-R6a-16.4).
+7. *"The operator ratified caps that were not in the document."* → three "ratified here" values with no numbers (D-R6a-16.0).
+8. *"The rate cap drifted from config's copy."* → a private constant R6b had to re-declare, repeating the `SIGNAL_INVALID_BUDGET_HARD_CAP` / `_SIGNAL_CYCLE_BUDGET_MAX` split (D-R6a-16.0).
+9. *"Append-only event vocabulary shipped without an operator ruling."* → D-R6a-17 self-ratified in an M1 checkbox (Stop 2).
+10. *"`lint-imports` was green while the store imported the facade."* → `app.store` is a source module in no contract (D-R6a-16.0).
+11. *"CI's coverage ratchet failed on the zero-consumer primitive."* → branch coverage omitted from the battery (D-R6a-16.6).
+12. *"The opener carried a raw `datetime` and both stores raised."* → `normalize_json_payload` rejects it; use `.isoformat()` (D-R6a-17).
+13. *"A restart handed the producer a free full burst."* → the bucket was rebuilt as if it were a cache (D-R6a-3B).
+14. *"A rollback left the debit but truncated the log."* → a new rail collection missing from `_atomic()`'s enumeration (D-R6a-2).
+15. *"A quarantined producer earned cheap 200s by replaying an accepted signal."* → dedupe checked before the boundary (D-R6a-8, `01-schema.md:86-92`).
+16. *"A same-hash resubmission re-debited."* → missing third exclusion (D-R6a-4.3).
+17. *"A restart un-quarantined a quarantined producer."* → fold omitted quarantine state (D-R6a-3A.5).
+18. *"A restart re-granted a spent budget."* → no `initialize()` rebuild (D-R6a-3A.4).
+19. *"A second epoch never opened."* → non-epoch-scoped `PRODUCER_*` key, or a stale cache supplying the sequence (D-R6a-5).
+20. *"A post-release resubmission of an old hash re-debited."* → epoch-scoping the conflict key (D-R6a-5).
+21. *"A released producer re-quarantined immediately."* → release reset one rail (D-R6a-7).
+22. *"`PRODUCER_RELEASED` had no actor" / "the opener had no breach trigger."* → unfixable in an append-only log (D-R6a-7, D-R6a-17).
+23. *"The fold could not tell a rate breach from a budget exhaustion."* → no `breach_trigger` (D-R6a-17).
+24. *"Post-quarantine rejects wrote to the store."* → durable counter, or a bucket that writes on evaluation (D-R6a-7, D-R6a-16.3).
+25. *"A quarantined producer got 429 and burned tokens."* → epoch checked after rate, or outside the primitive (D-R6a-16.1/16.2).
+26. *"The producer was throttled below its configured rate and drifted."* → fractional remainder discarded on the accept path (D-R6a-16.4).
+27. *"Exhaustion returned 500."* → unmapped 7th outcome; **no static gate would catch it** (D-R6a-8).
+28. *"Dual-store replay parity passed while the new columns went unchecked."* → no `replay.py` registration (D-R6a-3A.7).
+29. *"Sweep events silently vanished."* → reused `signal_create` prefix (D-R6a-9).
+30. *"Sweep expiries ate the budget."* → missing `detected_by ≠ ingest` exclusion (D-R6a-4.2).
+31. *"An altered rail column silently served a wrong budget."* → no startup guard (DDL item 4).
+32. *"A config change retroactively moved a cycle's ceiling."* → non-nullable pinned limit backfilled from live `Settings` (DDL item 2).
+33. *"We needed a second migration."* → bucket column types / carry rule not settled in the one DDL request (DDL item 1).
+34. *"The authorization matrix went green while a producer route 403'd for a new reason."* → the M3 cross-rung coupling.
+35. *"Memory passed, SQLite overspent."* → dual-store parity (D-R6a-15).
+36. *"The corpus was green and proved nothing."* → mandatory mutation-checking (D-R6a-13).
+37. *"The gate said OK on a missing file."* → `git ls-tree` exit-0 (D-R6a-1).
+38. *"The WO was done but the rung left no knowledge trace."* → `work/**` and `pkl/**` omitted from scope (scope IN).
 
 ---
 
@@ -585,7 +741,9 @@ or column. The request must include **all six** of:
    `Any`, so the 500 is invisible to ruff, mypy and lint-imports alike. Only a runtime pin catches it.
 8. **The rate primitive cannot live in `ingest_signal`** — step 2 vs step 4; `base.py:1320-1332`'s
    required parsed fields prove it. And it must not return R6b's `RailsDecision`.
-9. **An INTEGER token column with `anchor = now` under-grants** and drifts (D-R6a-16.4).
+9. **An INTEGER token column with `anchor = now` does not "drift" — below one token interval per
+   arrival it NEVER refills** (measured: 0/60 granted vs 30/60). A compliant producer at half its rate is
+   permanently quarantined (D-R6a-16.4).
 10. **`test_route_authorization_matrix.py:238-247` collides with the new 403** — and green today only
     because `:239` builds a fresh app per case.
 11. **`_migrate` runs flag-independently** (`sqlite.py:562-563`) — the gated DDL touches every existing
@@ -602,6 +760,19 @@ or column. The request must include **all six** of:
     sibling `result_record` **does** get retyped. Do not generalise either way.
 18. **`app/events/replay.py` registration is easy to omit and green when omitted** — REV-0039 records the
     precedent.
+19. **⚠ `epoch open` ≠ `budget exhausted` after Option A** — the rate primitive is a second opener, so a
+    gate written as `consumed >= limit` passes every rev-3 pin and still appends inside an open epoch,
+    against `ADR-009:343-345`. The single most likely wrong build in this rung.
+20. **`lint-imports` cannot see `app.store → app.facade`** — `app.store` is a source module in none of the
+    six contracts.
+21. **CI runs a branch-coverage ratchet** (`fail_under = 93`, `--cov-branch`) that rev-3's battery omitted
+    — the one gate a zero-consumer primitive can trip.
+22. **rev-3 "ratified" three caps and stated no numbers** — and the repo already carries the budget cap
+    twice, in two modules, with no shared import.
+23. **`normalize_json_payload` raises on a raw `datetime`** (`store/base.py:124-135`) — the opener's
+    `epoch_start` must be `.isoformat()`.
+24. **A memory-store "restart" preserves nothing** — the class-(B) pin needs a per-store definition or it
+    is unsatisfiable as worded.
 
 ## Filter-safety clause (rung risk: **LOW-MED**)
 
@@ -614,11 +785,16 @@ level: cause · impact · affected local files · fix · pass/fail evidence. No 
 
 ## Gate battery
 
-`ruff check .` · `ruff format --check` on R6a-owned files · `mypy app/` · **`lint-imports`** (confirms
-D-R6a-16's contract reading) · the R6a corpus + full suite · `python -m pytest -q
+`ruff check .` · `ruff format --check` on R6a-owned files · `mypy app/` · **`lint-imports`** ·
+**`pytest --cov=app --cov-branch`** (CI's ratchet, floor `fail_under = 93`, `pyproject.toml:38` /
+`.github/workflows/ci.yml:101` — rev-3 omitted it, and it is the **one** gate a zero-consumer primitive
+plus a record-free branch can actually trip) · the R6a corpus + full suite · `python -m pytest -q
 tests/r2_conformance_oracle.py` · `pytest -q tests/test_wo0113_repair_scaling.py` ·
-`python harness/bootstrap.py` · all three hygiene scripts. **Note explicitly: the static gates cannot
-prove D-R6a-8** — that needs the runtime pin.
+`python harness/bootstrap.py` · all three hygiene scripts.
+**Two gates cannot prove what rev-3 implied they could:** the static gates cannot prove D-R6a-8 (needs the
+runtime pin), and **`lint-imports` cannot prove D-R6a-16.0's `RailsDecision` prohibition** — `app.store` is
+a *source* module in none of the six contracts, so `app.store → app.facade` passes green. That one needs
+the corpus grep assertion.
 
 ## Stop conditions
 
@@ -631,7 +807,7 @@ enable-able · any accepted-text conflict not recorded here · a P0-equivalent h
 
 ## Close-out
 
-Human-gated ⇒ **REV-0044 packet**; the gate clears only on a dispositioned `ACCEPT`/
+Human-gated on **two** surfaces (Stop 1 DDL, Stop 2 event-log payload) ⇒ **REV-0044 packet**; the gate clears only on a dispositioned `ACCEPT`/
 `ACCEPT-WITH-CHANGES`. Set WO-0104a to REVIEW and stage `work/review/REV-0044/request.md` stating: which
 GAP-08 clauses R6a closes and which remain R6b's; the approved DDL including the nullable columns, the
 bucket column types + carry form, the truth-model partition, and the startup guard; the live-vs-replay
@@ -639,6 +815,38 @@ agreement evidence **with the bucket columns and `rejected_count` explicitly exc
 the `01-schema.md:86-92` in-store ordering evidence; and the `test_route_authorization_matrix.py`
 403-overloading coupling **as a two-rung item R6b inherits**. **R6a runs alone**, and **its REV-0044 must
 disposition before R6b or R7a start.**
+
+## §M4b record — pass 5 (10 findings, 1 P0), scoped to D-R6a-16/17, all planning-seat verified
+
+*Scope: the two blocks rev-2/rev-3 created and nobody had refuted, plus their interactions with the rest
+of the document. Both were judged **not ratifiable as written**; rev-4 fixes that.*
+
+| # | Finding | Verified | Applied |
+|---|---|---|---|
+| **F-1 P0** | Option A gave the epoch a **second opener**, so `epoch open` and `budget exhausted` are no longer the same predicate. rev-3's gate and **both** its pins are satisfiable by `consumed >= limit`, which lets `ingest_signal` append inside an open epoch (against `ADR-009:343-345` "Post-quarantine ingress appends **nothing**") and then lose its own opener to the open epoch's dedupe key | **YES** — ADR + `03-rails.md:35-43,151-153` read; the ordinary rate breach (valid signals never debit) reaches it at consumed 0 | D-R6a-8 gate rewritten to `epoch_open OR consumed >= limit`; new M2 row; D-R6a-4 two-sided suppression; D-R6a-5 sequence-while-open; new pin + mutation check |
+| F-2 P1 | rev-3's fractional-carry pin is **inert** — correct and defective implementations are identical at 1.5× interval from a full bucket | **YES** — independently found by a planning-seat probe *before* the agent reported, and confirmed by both | D-R6a-16.4 rewritten (total starvation, not drift); new sub-cap/sub-interval + bank-then-burst pins |
+| F-3 P1 | Three caps "ratified here" carry **no values**, and the repo declares the budget cap **twice** (`config.py:47`, `core.py:5607`) with no shared import | **YES** — `grep` over the WO returns no cap literals | D-R6a-16.0: three literal values + rationale, declared **public** so R6b imports rather than re-declares |
+| F-4 P1 | `breach_trigger` is new **event-log payload vocabulary** self-ratified in an M1 checkbox, against this repo's own recorded ruling | **YES** — `SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md:110-113` quoted verbatim | D-R6a-17 **un-checked** and promoted to **Stop 2**, folded into the DDL request |
+| F-5 P2 | D-R6a-17's necessity argument is false — `consumed == pinned_limit` holds iff budget exhaustion, so the fold *can* discriminate; and a mid-cycle rate breach has a **non-NULL** limit and consumed k > 0 | **YES** | D-R6a-17 justification withdrawn and replaced; both epoch shapes recorded; DDL item 2 restated |
+| F-6 P2 | `lint-imports` **cannot** enforce the `RailsDecision` prohibition — `app.store` is a source module in no contract | **YES** — `.importlinter:104,150,192` are all `forbidden_modules` | D-R6a-16.0 caveat + corpus grep assertion; gate battery note; `signal_rails.py` re-attributed to R5a |
+| F-7 P2 | The battery omits CI's **branch-coverage ratchet** — the one gate a zero-consumer method can trip | **YES** — `pyproject.toml:38`, `ci.yml:101` | Gate battery + D-R6a-16.6 (which also records that no dead-code gate exists) |
+| F-8 P2 | The class-(B) restart pin has **no memory-store form** — a memory restart preserves nothing | **YES** — `memory.py:264-280` | "Restart" defined per store in D-R6a-3, D-R6a-15 and D-R6a-16 |
+| F-9 P3 | `03-rails.md:156` is a **blank line**; the 403/429 + no-store-write rule is at `:157-158` | **YES** — `awk` dump | Three citations retargeted |
+| F-10 P3 | `app/models.py` is the wrong home by precedent for both artefacts, and `epoch start` must be pre-serialised | **YES** — `base.py:328-338`; `normalize_json_payload` at `base.py:124-135`; no `TypedDict` in `app/` | Verdict DTO → `store/base.py`; payload → a `core.py` builder; `.isoformat()`; `app/models.py` dropped from Scope IN |
+
+**Claims pass 5 attacked and could NOT break:** consequence 0's signature is reachable and sufficient
+(the step-2 seam already passes producer identity alone); D-R6a-4's identity discriminator works and
+`sequence` genuinely does not (measured, both stores); D-R6a-17's field list is complete against every
+enumerated consumer; no schema-version or migration handling is owed for the payload; D-R6a-3.7's
+registration cannot contradict the class-(B) exclusion (`verify_dual_store_readmodel_parity` compares two
+*log-derived* projections, never a live column); **D-R6a-10 survives Option A** (`grep "signal_rate"
+app/config.py` → 0).
+
+**Planning-seat probes run this revision** (the process change that produced F-2 independently):
+`sequence` vs identity on a dedupe no-op; `plan_signal_ingest`'s parameter list (no consumed/epoch input
+exists today); the fractional-carry simulation across four pacings; `ingest_signal`'s required parsed
+fields. Scripts retained under the session scratchpad. **Every claim this document has measured has
+survived five passes; nearly every P0 was a claim derived by reading two files.**
 
 ## §M4b record — pass 4 (14 findings, 4 P0), all planning-seat verified
 
