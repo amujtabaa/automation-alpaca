@@ -9,7 +9,7 @@ verdict: ACCEPT
 re_review_head_sha: 330ca0a79f28f9a8894974e747996b30bccbe371
 re_review_range: d540258..330ca0a
 branch: codex/signal-r5b2-operator-auth
-open_operator_decision: "F-4 — the detected_by \"conversion\" token (NEEDS-INPUT; must resolve before close-out)"
+open_operator_decision: "F-4 — RESOLVED 2026-07-25 (Ameen): option (a), the detected_by \"conversion\" token is acknowledged and retained"
 reviewed: 2026-07-25
 ---
 
@@ -78,7 +78,18 @@ and the two register items were correctly deferred rather than absorbed.
 
 **The REV-0043 review gate for WO-0139 is CLEARED**, subject to the one open operator decision below.
 
-## ⚠ Open operator decision — F-4, required before close-out
+## F-4 — RESOLVED 2026-07-25 (Ameen): option (a), token acknowledged
+
+> **Ruling:** the operator acknowledged the `detected_by: "conversion"` token; it is **retained** in
+> `docs/spec/signal-seat/02-lifecycle.md:51` as ratified vocabulary. No code or spec change is required
+> in this rung. The event-log-vocabulary stop condition is satisfied by this explicit acknowledgement
+> rather than by reversion. **R7 ships the emitter** for `detected_by:"conversion"` when it implements
+> the atomic A-2 conversion command; until then the token is declared-but-unemitted, which is expected
+> and not a defect. The R6 register carries no action from this item.
+>
+> The analysis that produced the decision is retained below as the decision record.
+
+### Original open item (retained for the record)
 
 `docs/spec/signal-seat/02-lifecycle.md:51` declares
 `detected_by: "sweep" | "ingest" | "conversion"`. D-R5b2-18's ratified outcome authorized **removing**
