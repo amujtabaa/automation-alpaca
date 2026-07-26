@@ -32,7 +32,7 @@ fable_gate:
     - "The staged corpus is an incomplete RED input and the archive is design reference only; current code and the WO govern every adaptation."
     - "The feature flag remains OFF and remains independently un-enable-able until R6 and R7 satisfy the joint gate."
     - "Mutation-free lazy reads and the same-change 02-lifecycle.md amendment were ratified on 2026-07-25."
-    - "flag_on_settings currently receives enable_dev_routes=True from the Settings default rather than an explicit helper pin; route bounds derive from the built settings object."
+    - "flag_on_settings explicitly pins enable_dev_routes=True; route bounds still derive from the built settings object."
   approach: "Activate WO/state first, import and adapt the staged tests, record RED per slice, implement the minimum operator/auth/read/cockpit/spec changes, run targeted and full gates, stage REV-0043, and push only the delivery branch."
   out_of_scope:
     - "Rails enforcement, producer release, signal approve/reject, conversion, schema/migration, new event vocabulary, flag enablement."
@@ -279,10 +279,10 @@ production or test edit:
 7. **Mounted operations:** recursive discovery found 35 `/api` operations; `app.openapi()` found
    the same exact set; four auto-doc endpoints bring the canonical total to 39.
 
-**Divergence flagged:** `flag_on_settings()` does not explicitly pin `enable_dev_routes=True`.
-The built `Settings` currently resolves it to `True` from the class default, so the measured set
-still contains `POST /api/dev/candidates`. Matrix bounds must derive from the built settings and
-condition the row on `settings.enable_dev_routes`; they must not rely on the inaccurate wording.
+**Historical divergence (resolved after REV-0043 F-3):** Step 0 found that
+`flag_on_settings()` did not explicitly pin `enable_dev_routes=True`; the class default happened to
+resolve it to `True`. The helper now pins the value. Matrix bounds continue to derive from the built
+settings and condition the dev row on `settings.enable_dev_routes`.
 
 The actor-consumer re-grep also confirmed 14 `Depends(get_actor)` declarations plus the two direct
 required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
@@ -303,6 +303,9 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 | Lifecycle amendment | GREEN | Accepted text now defines mutation-free effective read projection and removes `detected_by:"read"` from durable event truth. |
 | Full gate battery | GREEN | Static gates clean; focused 258; full 4,586 collected with exit 0; R2 61; scaling 13; bootstrap exit 0. |
 | REV-0043 staging / push | GREEN | REV-0043 staged against `fa087deb..10d2bce`; delivery branch published to origin with no PR. |
+| REV-0043 F-1/F-2 remediation | GREEN | F-1 weakening mutation failed the new `/fills` negative at 404 vs 422; F-2's natural RED reported lowercase `x-actor` for both routes, then GREEN with canonical `X-Actor`; recovery file 6 passed. |
+| REV-0043 close-out items | REVIEW / NEEDS-INPUT | F-3 helper pin, F-5 ingest-echo clause, and F-7 PKL refresh applied. F-4 awaits the operator; F-6/F-8 are recorded for R6 only. |
+| REV-0043 remediation gate battery | GREEN | Ruff/mypy/imports/PKL clean; focused 260; full 4,588 collected with exit 0; R2 61; scaling 13; bootstrap exit 0. |
 
 ## Evidence log
 
@@ -478,6 +481,93 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
     decisive_output: "new remote branch created and upstream tracking configured; no PR created"
 ```
 
+### 2026-07-25 — REV-0043 ACCEPT-WITH-CHANGES remediation
+
+```yaml
+- evidence:
+    command: "git fetch origin claude/signal-r4-kickoff-planning-354qc0; git show e881f52:work/review/REV-0043/result.md"
+    result: PASS
+    decisive_output: "reviewer-owned result read at e881f52; verdict ACCEPT-WITH-CHANGES; artifact not copied to or edited on the delivery branch"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_recovery_actor_provenance.py --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: PASS
+    decisive_output: "pre-remediation baseline: 4 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_recovery_actor_provenance.py::test_flag_off_recovery_routes_require_canonical_x_actor_header --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: FAIL
+    decisive_output: "F-2 RED: 2 failed; both routes returned ('header', 'x-actor') instead of ('header', 'X-Actor')"
+- evidence:
+    command: "temporary /fills-only Depends(get_required_actor) -> Depends(get_actor) mutation; run the fills parameter; restore immediately"
+    result: FAIL
+    decisive_output: "F-1 mutation RED: expected 422, got 404; the new negative detects loosened requiredness"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_recovery_actor_provenance.py::test_flag_off_recovery_routes_require_canonical_x_actor_header --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: PASS
+    decisive_output: "F-1/F-2 GREEN after restoring requiredness and alias: 2 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_recovery_actor_provenance.py --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: PASS
+    decisive_output: "6 passed, including both flag-off negatives and both dual-store provenance controls"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_route_authorization_matrix.py::test_required_routes_exist_and_every_discovered_route_is_classified --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: PASS
+    decisive_output: "1 passed with enable_dev_routes explicitly pinned"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_signal_facade_reads.py -k '<two existing-record ingest echo tests>' --basetemp <OS temp> -p no:cacheprovider --tb=short"
+    result: PASS
+    decisive_output: "4 passed across memory and SQLite"
+```
+
+### 2026-07-25 — REV-0043 remediation final gate battery
+
+```yaml
+- evidence:
+    command: ".venv/Scripts/ruff.exe check ."
+    result: PASS
+    decisive_output: "All checks passed!"
+- evidence:
+    command: ".venv/Scripts/ruff.exe format --check <13 R5b-2-owned Python files, including signal_seat_helpers.py>"
+    result: PASS
+    decisive_output: "13 files already formatted"
+- evidence:
+    command: ".venv/Scripts/mypy.exe app/"
+    result: PASS
+    decisive_output: "Success: no issues found in 77 source files"
+- evidence:
+    command: ".venv/Scripts/lint-imports.exe"
+    result: PASS
+    decisive_output: "Contracts: 6 kept, 0 broken"
+- evidence:
+    command: ".venv/Scripts/python.exe .ai-os/scripts/check_pkl.py pkl/"
+    result: PASS
+    decisive_output: "PKL CHECK PASSED"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q <five-file R5b-2 corpus> --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "260 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "4,588 collected; exit 0 at 100% in 410.9 s; 11 skipped and 1 expected xfail marker; no FAILED or ERROR"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/r2_conformance_oracle.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "61 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe -m pytest -q tests/test_wo0113_repair_scaling.py --basetemp <OS temp> -p no:cacheprovider"
+    result: PASS
+    decisive_output: "13 passed"
+- evidence:
+    command: ".venv/Scripts/python.exe harness/bootstrap.py"
+    result: PASS
+    decisive_output: "exit 0; dependencies already satisfied; Ruff/mypy/collection completed; 4,588 tests collected"
+    note: "restricted-network pip upgrade retries were non-fatal because the environment was already satisfied"
+- evidence:
+    command: "flag-off OpenAPI inspection for both recovery POST operations"
+    result: PASS
+    decisive_output: "both expose one required header named exactly X-Actor"
+```
+
 ## FIX blocks
 
 ### FIX-R5B2-01 — missing mutation-free signal read projection
@@ -577,16 +667,52 @@ required `X-Actor` headers, and exactly 16 `command_facade.*` calls.
 - **Evidence:** full suite exposed expected `422`, actual `200`; focused inherited + dual-store +
   matrix rerun GREEN `156 passed`.
 
+### FIX-R5B2-08 — `/fills` required-actor contract lacked a flag-off negative pin
+
+- **Defect class:** inert regression pin / missing negative coverage (REV-0043 F-1).
+- **Root cause:** the inherited missing-`X-Actor` assertion exercised `/reconcile` only, while every
+  `/fills` call supplied the header.
+- **Impact:** the canonical-fill route's required actor label could be loosened without a test
+  failure, allowing a flag-off request to reach an event-writing command with the default actor.
+- **Files:** `tests/test_recovery_actor_provenance.py`.
+- **Fix:** add a valid-body flag-off `/fills` request without `X-Actor` and require 422; keep the
+  symmetric `/reconcile` case beside it.
+- **Evidence:** a temporary `/fills`-only weakening mutation made the new test fail at 404 vs 422;
+  after restoration, both route cases passed.
+
+### FIX-R5B2-09 — required actor header alias drifted from canonical `X-Actor`
+
+- **Defect class:** flag-off validation and OpenAPI contract regression (REV-0043 F-2).
+- **Root cause:** the shared `get_required_actor` wrapper retained requiredness and minimum length
+  but omitted the explicit alias that both master routes declared.
+- **Impact:** both 422 locations and both OpenAPI parameter names changed from `X-Actor` to
+  `x-actor`, contrary to D-R5b2-13's flag-off compatibility requirement.
+- **Files:** `app/api/deps.py`, `tests/test_recovery_actor_provenance.py`.
+- **Fix:** restore `alias="X-Actor"` and pin the exact 422 location for both recovery routes.
+- **Evidence:** natural RED `2 failed` with `('header', 'x-actor')` → GREEN `2 passed` with
+  `('header', 'X-Actor')`.
+
 ## Review handoff
 
 - Frozen semantic base: `fa087deb56bc58fa627e26a54de6e1bc39a27169`.
 - Frozen implementation head: `10d2bce1fc11591a1994b1be891fef231df52fb5`.
 - Curated commits: activation `a748c01`, implementation `75e328a`, compatibility fix `10d2bce`.
 - Review request: `work/review/REV-0043/request.md`.
+- Reviewer result: `e881f52ec94e36833e1db4b19abe12c0f1641142` on
+  `claude/signal-r4-kickoff-planning-354qc0`; verdict `ACCEPT-WITH-CHANGES`. The reviewer-owned
+  `result.md` remains absent from and unmodified on this delivery branch.
 - Feature flag remains OFF. No rails, producer release/read, signal conversion, schema/migration,
-  PR, merge, ledger mutation, result, disposition, or completion move was created.
+  PR, merge, ledger mutation, result copy, disposition, or completion move was created.
 - GAP-01 and mounted-route GAP-02 are closed by this implementation. The deferred item is the
   distinct spec-04 required-present completeness obligation for the future R6/R7 routes.
+- REV-0043 F-1/F-2 are remediated red-first; F-3/F-5/F-7 close-out updates are included.
+- The complete remediation gate battery passed with 4,588 tests collected; the branch remains in
+  REVIEW solely because the operator-gated F-4 decision is unresolved.
+- **NEEDS-INPUT (F-4):** the operator must acknowledge `detected_by:"conversion"` or direct its
+  reversion to `"sweep" | "ingest"` for R7 to add with the emitter. No choice was made here.
+- **R6 carry-forward only:** F-6 records that the fixed principal and colon-composed label are not
+  losslessly separable once producer principals exist; F-8 records that `list_signals` materializes
+  the full filtered scope because effective status cannot be pushed into the current store query.
 
 ```yaml
 fable_done:

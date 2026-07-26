@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import functools
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.config import Settings
+from app.main import create_app
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
     EventAuthority,
@@ -27,6 +30,65 @@ OPERATOR_HEADERS = {
     "X-Operator-Key": OPERATOR_KEY,
     "X-Actor": "desk-3",
 }
+_FLAG_OFF_REQUIRED_ACTOR_CASES = (
+    pytest.param(
+        "/api/order-recoveries/r1/fills",
+        {
+            "recovery_id": "r1",
+            "local_order_id": "o1",
+            "broker_order_id": "b1",
+            "client_order_id": None,
+            "symbol": "AAPL",
+            "side": "buy",
+            "candidate_id": "c1",
+            "sell_intent_id": None,
+            "envelope_id": None,
+            "fill_quantity": 1,
+            "cumulative_filled_quantity": 1,
+            "price": 10.0,
+            "reason": "checked",
+            "evidence_ref": "paper://evidence",
+        },
+        id="fills",
+    ),
+    pytest.param(
+        "/api/order-recoveries/r1/reconcile",
+        {
+            "recovery_id": "r1",
+            "local_order_id": "o1",
+            "broker_order_id": "b1",
+            "client_order_id": None,
+            "symbol": "AAPL",
+            "side": "buy",
+            "candidate_id": "c1",
+            "sell_intent_id": None,
+            "envelope_id": None,
+            "broker_terminal_state": "canceled",
+            "cumulative_filled_quantity": 0,
+            "reason": "checked",
+            "evidence_ref": "paper://evidence",
+        },
+        id="reconcile",
+    ),
+)
+
+
+@pytest.mark.parametrize(("path", "payload"), _FLAG_OFF_REQUIRED_ACTOR_CASES)
+def test_flag_off_recovery_routes_require_canonical_x_actor_header(path, payload):
+    app = create_app(
+        settings=Settings(
+            signal_seat_enabled=False,
+            state_store="memory",
+            enable_monitoring=False,
+            enable_strategy_engine=False,
+        )
+    )
+    with TestClient(app) as client:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 422
+    error_locations = {tuple(error["loc"]) for error in response.json()["detail"]}
+    assert ("header", "X-Actor") in error_locations
 
 
 async def _seed_needs_review_recovery(store):

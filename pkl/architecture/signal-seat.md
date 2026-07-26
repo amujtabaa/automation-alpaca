@@ -100,5 +100,9 @@ ADR and review).
   `POST /api/signals`, validation quarantine/event attribution, injective replay/conflict behavior,
   and ingest-time dead-on-arrival expiry. REV-0042 returned ACCEPT after the F-1 wire-bound
   remediation and seven reviewer-requested pin classes; disposition RESOLVED. `app/store/`
-  remained untouched. Facade reads, operator enforcement, and lazy expiry remain R5b-2;
-  F-8/F-10/F-11 carry to R5b-2/R7. D-2a stays OFF pending R5b-2 + R6 + R7.
+  remained untouched. At R5b-1 close, facade reads, operator enforcement, and lazy expiry were
+  deferred to R5b-2; F-8/F-10/F-11 carried to R5b-2/R7.
+- 2026-07-25: R5b-2 is in REVIEW after REV-0043 ACCEPT-WITH-CHANGES (WO-0139): deny-by-default
+  operator enforcement, principal-bound actor attribution, cockpit credential plumbing, the literal
+  route-authorization matrix, and mutation-free effective-expiry projection for reads and
+  existing-record ingest echoes are built. D-2a stays OFF pending R6 + R7 and the joint gate.

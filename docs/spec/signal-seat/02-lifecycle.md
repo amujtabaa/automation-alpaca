@@ -106,8 +106,9 @@ their `SIGNAL_RECEIVED`? **No** — one event per fact: ingest that lands direct
 expiry writes only the terminal event, whose payload embeds the proposal (recorded, never hidden,
 exactly once).
 
-Read projection is not event emission: `GET`/facade reads may return a copied record with effective
-status EXPIRED, but they do not change stored status and do not append `SIGNAL_EXPIRED`.
+Read projection is not event emission: `GET`/facade reads and existing-record ingest echoes
+(idempotent replay or duplicate conflict) may return a copied record with effective status EXPIRED,
+but they do not change stored status and do not append `SIGNAL_EXPIRED`.
 
 ## 4. Replay / reconstruction contract (WO-0102 test)
 

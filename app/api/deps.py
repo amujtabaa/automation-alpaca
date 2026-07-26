@@ -230,7 +230,7 @@ def get_actor(
 
 def get_required_actor(
     request: Request,
-    x_actor: str = Header(..., min_length=1),
+    x_actor: str = Header(..., alias="X-Actor", min_length=1),
 ) -> str:
     """Resolve a principal-led actor while preserving a required label contract."""
 

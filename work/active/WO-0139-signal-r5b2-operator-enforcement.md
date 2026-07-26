@@ -15,6 +15,13 @@ filter_risk: HIGH
 
 # WO-0139 — Signal Seat R5b-2: the operator enforcement surface
 
+> **REV-0043 REMEDIATION (2026-07-25).** REV-0043 returned `ACCEPT-WITH-CHANGES` at reviewer commit
+> `e881f52`. F-1/F-2 were repaired red-first; F-3/F-5/F-7 shipped with the remediation, and the
+> complete gate battery is green at 4,588 collected tests. F-4 remains **NEEDS-INPUT** for the
+> operator's explicit `detected_by:"conversion"` ruling; F-6/F-8 are recorded for R6 only. This work
+> order therefore remains `REVIEW`; the flag stays OFF, with no disposition, ledger mutation, PR,
+> merge, or completion move.
+>
 > **IMPLEMENTATION HANDOFF (2026-07-25).** R5b-2 passed its complete gate battery and is frozen at
 > `10d2bce1fc11591a1994b1be891fef231df52fb5` for independent REV-0043 review. The feature flag
 > remains OFF; this work order is not closed, merged, or beta-authorized.
