@@ -1,7 +1,8 @@
 ---
 type: Work Order
 title: "Signal Seat R6a — rails store surface: durable rail state, producer-rail projector, epoch identity, atomic budget + rate debits, release primitive"
-status: DRAFT
+status: READY
+ratified: "2026-07-26 (Ameen) — M1 decision block, the three D-R6a-16.0 cap literals, and the D-R6a-17 PRODUCER_QUARANTINED payload field list incl. the breach_trigger vocabulary. Stop 1 (SQLite DDL) remains OPEN and is unchanged by this ratification."
 work_order_id: WO-0104a
 splits_from: "work/queue/WO-0104-signal-rails-REFRESH.md (R6, split after two M4b passes)"
 sibling: "WO-0104b (R6b — provider wiring, sweeps, /api/producers, release route, cockpit, rate settings)"
@@ -10,7 +11,7 @@ model_tier: strong (LOCAL Codex — single-writer store mutation + event-log tru
 predecessors: [WO-0139 (R5b-2 — merged, REV-0043 dispositioned)]
 successors: [WO-0104b (R6b), R7a, R7b, D-2a]
 review: "REV-0044 required (human-gated: single-writer store mutation, event-log truth, SQLite DDL)"
-wargame: "FULL per .ai-os/core/18 — five M4b passes; rev-4 applies pass-5's 10 findings incl. 1 P0"
+wargame: "FULL per .ai-os/core/18 — five M4b passes (2+15+14+10 findings, 7 P0 total), all planning-seat verified; rev-4 closed the last of them; operator-ratified 2026-07-26"
 stage: "Stage 1 of 5 — runs ALONE; its REV-0044 must disposition before R6b or R7a start"
 filter_risk: LOW-MED
 ---
@@ -28,6 +29,12 @@ filter_risk: LOW-MED
 > **Standing lesson recorded for REV-0044:** across five passes, every claim in this document that was
 > **measured** has survived; nearly every P0 was a claim **derived by reading two files**. Two of this
 > revision's findings were a ~25-line simulation away. Prefer running something.
+>
+> **✅ RATIFIED 2026-07-26 (Ameen) — status READY.** The M1 decision block, the three D-R6a-16.0 cap
+> literals (`SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600`, `SIGNAL_RATE_BURST_MAX = 100`,
+> `SIGNAL_REJECTED_COUNT_MAX = 10_000`) and the D-R6a-17 payload field list including the
+> `breach_trigger` vocabulary are approved. **Stop 1 — the SQLite DDL — remains OPEN**; it is the single
+> implementer stop left in this rung and was not, and could not have been, pre-approved.
 
 **What R6a delivers:** the durable rail row behind **one** gated DDL, the producer-rail projector that
 makes the event log the source of truth for the *foldable* columns, epoch identity, **both** atomic
@@ -80,12 +87,27 @@ the release **route** · the cockpit control · `signal_rate_limit_per_hour` / `
 
 ---
 
-## ⚠ HUMAN-GATED: TWO approval stops, submitted as ONE request
+## ⚠ HUMAN-GATED stops — Stop 2 RESOLVED, **Stop 1 REMAINS OPEN**
 
-Both are human-gated per CLAUDE.md and **neither is covered by this WO's M1 ratification**. Submit them
-together so the operator has one decision point, not two.
+> **⚠ Read this before building.** The 2026-07-26 ratification cleared **Stop 2 only**. **Stop 1 — the
+> SQLite DDL — is untouched and still requires an implementer STOP with the proposed DDL in hand.** It
+> could not have been pre-approved: the DDL text does not exist yet. Creating or altering any table or
+> column before that approval remains a stop-condition violation.
 
-### Stop 2 — the `PRODUCER_QUARANTINED` payload (event-log truth)
+### Stop 2 — the `PRODUCER_QUARANTINED` payload (event-log truth) — **RESOLVED 2026-07-26 (Ameen)**
+
+> **Ruling:** the operator **ratified the field list and the `breach_trigger ∈ {budget_exhausted,
+> rate_breach}` vocabulary** as specified in D-R6a-17, together with the three D-R6a-16.0 cap literals.
+> This satisfies the "operator ratification" half of the
+> `SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md:110-113` requirement; **the "own review packet" half is
+> satisfied by REV-0044**, which must carry the payload as an explicit review item and disposition it.
+> R6a may append `PRODUCER_QUARANTINED` with this payload. Any *additional* field or vocabulary value
+> discovered necessary during the build is a **new** stop, not covered by this ruling — an append-only
+> log cannot be amended afterwards.
+>
+> The analysis that produced the decision is retained below as the decision record.
+
+**Original gate (retained for the record).**
 
 `D-R6a-17` ratifies an **append-only event-log payload vocabulary**, including
 `breach_trigger ∈ {budget_exhausted, rate_breach}`. CLAUDE.md lists "event-log truth changes" in the
@@ -100,11 +122,11 @@ returns only the two enum members and their model test — so there is no back-c
 migration owed (`ExecutionEvent.payload` is `dict[str, Any]`; `EXECUTION_EVENT_SCHEMA_VERSION = 1`
 marks incompatible *shape* changes, `models.py:1149-1150`).
 
-### Stop 1 — the SQLite DDL
+### Stop 1 — the SQLite DDL — **OPEN**
 
 New durable state ⇒ schema/migration ⇒ human-gated per CLAUDE.md, **not** covered by this WO's
-ratification. **STOP and request approval with the proposed DDL** before creating or altering any table
-or column. The request must include **all six** of:
+ratification and **not** cleared by the 2026-07-26 ruling above. **STOP and request approval with the
+proposed DDL** before creating or altering any table or column. The request must include **all six** of:
 
 1. The full rail table — including the **token-bucket columns**, since Option A makes R6a their writer.
    One approval, one migration; **R6b adds no schema.** State the **column types and the fractional-carry
@@ -516,7 +538,8 @@ or column. The request must include **all six** of:
          (`core.py:6043-6048`). **⚠ Accepted text gives the rate rail NO cap** (`03-rails.md:11-15` gives
          defaults only; the budget rail's `[1, 1000]` at `03-rails.md:32-34` is normative), so R6a
          ratifies these three **literal values** — rev-3 said "caps ratified here" and stated no numbers,
-         which is unratifiable:
+         which is unratifiable. **✅ All three OPERATOR-RATIFIED 2026-07-26 (Ameen).** Changing any of
+         them later is a config-surface decision, not an implementer's call:
          - **`SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600`** — one authenticated ingest per second already far
            exceeds a single local paper operator's plausible need, and it keeps the "finite and small"
            property from being configured away, mirroring the budget rail's hard 1000.
@@ -595,7 +618,12 @@ or column. The request must include **all six** of:
       — TRACED(`03-rails.md:9,11-12,32-34,44-54,66,139-141,151-152,155-156`; `base.py:1320-1332`;
       `.importlinter:129-132`; operator ratification 2026-07-25; M4b-4 F-7/F-8).
 
-- [ ] **D-R6a-17 ⚠ NOT PRE-CHECKED — the `PRODUCER_QUARANTINED` PAYLOAD is HUMAN-GATED (Stop 2 above).**
+- [x] **D-R6a-17 ✅ OPERATOR-RATIFIED 2026-07-26 (Ameen) — the `PRODUCER_QUARANTINED` PAYLOAD.** This line
+      was human-gated (Stop 2) and is now ratified: the field list below **and** the
+      `breach_trigger ∈ {budget_exhausted, rate_breach}` vocabulary are approved for append. REV-0044
+      still owes the packet half of the `SIGNAL-R5b1-NEEDS-INPUT-DISPOSITION.md:110-113` requirement, and
+      **any field or vocabulary value beyond this list is a NEW stop** — an append-only log cannot be
+      amended afterwards.
       rev-2 specified the release event's payload (D-R6a-7) and left the *opener's* entirely unstated,
       while Option A made R6a its writer on **two** paths that need different values. rev-3 then ratified
       it in a pre-checked M1 line — wrong: this is append-only event-log payload vocabulary, which
