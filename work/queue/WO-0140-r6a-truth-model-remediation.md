@@ -1,7 +1,7 @@
 ---
 type: Work Order
 title: "R6a-R — rails truth-model remediation: cache-authoritative live path, release-boundary bounded folds, tolerant startup, release as the universal recovery"
-status: READY
+status: REVIEW
 ratified: "2026-07-27 (Ameen) — rev-3 M1 block incl. the release-semantics amendment, the zero-width ruling + never-regress sequence rule, the D-R6a-5 supersession, the no-opener-segment anchoring disclosure, the ratified scaling disclosure, the one-packet ADR reconciliation, and the closed test-edit list. SEAT SWAP confirmed same date: Claude (planning seat) implements; Codex takes the gate-clearing independent review."
 work_order_id: WO-0140
 remediates: "work/review/REV-0044/result.md R-1..R-13 (WO-0104a, held in REVIEW)"
