@@ -64,7 +64,9 @@ from app.models import (
 from app.events.projectors import (
     ORDER_STATUS_EVENT_TYPES,
     PoisonedProducerMarker,
+    ProducerRailProjection,
     active_emergency_reduce_overrides,
+    fold_producer_rail,
     compose_trading_state,
     control_trading_state,
     current_trading_state,
@@ -112,6 +114,7 @@ from app.store.base import (
     normalize_symbol,
 )
 from app.store.core import (
+    signal_dedupe_key,
     SIGNAL_PRODUCER_QUARANTINED,
     CREATE_ORDER_REJECT,
     FILL_CONFLICT,
@@ -345,6 +348,20 @@ class InMemoryStateStore(StateStore):
             )
         self._poisoned_producers = dict(poisoned)
 
+    def _apply_incremental_budget_debit_unlocked(
+        self,
+        producer_id: str,
+        budget: _ProducerBudgetRail,
+        epoch_sequence: Optional[int],
+    ) -> None:
+        """WO-0140 D-R R-2: the incremental debit — the ONLY budget-rail
+        mutation on the attributable ingest path (a seam for the rollback
+        pin; the fold never runs here)."""
+
+        self._producer_budget_rails[producer_id] = budget
+        if epoch_sequence is not None:
+            self._producer_epoch_sequences[producer_id] = epoch_sequence
+
     def _projected_producer_rail_unlocked(self, producer_id: str) -> ProducerRailState:
         projected = project_producer_rails(self._execution_events).get(producer_id)
         rate = self._producer_rate_buckets.get(producer_id)
@@ -369,32 +386,104 @@ class InMemoryStateStore(StateStore):
     def _authoritative_epoch_sequence_unlocked(
         self, producer_id: str, cached: ProducerRailState
     ) -> int:
-        projected = project_producer_rails(self._execution_events).get(producer_id)
-        log_fields: tuple[Optional[int], int, bool, Optional[datetime], Optional[str]]
-        if projected is None:
-            log_fields = (None, 0, False, None, None)
-            sequence = 0
-        else:
-            log_fields = (
-                projected.cycle_budget_limit,
-                projected.cycle_budget_consumed,
-                projected.quarantine_epoch_open,
-                projected.quarantine_epoch_started_at,
-                projected.quarantine_breach_trigger,
+        """Bounded verification (WO-0140 D-R R-2) — mirrors the SQLite shape.
+
+        Fold this producer's events after its last ``PRODUCER_RELEASED``
+        (exclusive), seeded state-conditionally from the cache (an open epoch
+        seeds ``seq - 1`` because the cache advances at opener time). All six
+        fields must agree; no-opener segments are anchored by exact dedupe
+        key, and a closed sequence of 0 after any release boundary is a
+        regressed carrier. Raises ``InvalidEventError`` on disagreement.
+        """
+
+        boundary = 0
+        for event in reversed(self._execution_events):
+            if (
+                event.event_type is ExecutionEventType.PRODUCER_RELEASED
+                and event.payload.get("producer_id") == producer_id
+            ):
+                boundary = event.sequence
+                break
+        seed_sequence = cached.quarantine_epoch_sequence - (
+            1 if cached.quarantine_epoch_open else 0
+        )
+        if seed_sequence < 0:
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has an open epoch with no "
+                "sequence to seed from"
             )
-            sequence = projected.quarantine_epoch_sequence
+        if (
+            boundary > 0
+            and not cached.quarantine_epoch_open
+            and cached.quarantine_epoch_sequence < 1
+        ):
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} sequence regressed below its "
+                "release boundary"
+            )
+
+        def _belongs(event: ExecutionEvent) -> bool:
+            if event.payload.get("producer_id") == producer_id:
+                return True
+            record = event.payload.get("record")
+            return isinstance(record, dict) and record.get("producer_id") == producer_id
+
+        segment = [
+            event
+            for event in self._execution_events
+            if event.sequence > boundary and _belongs(event)
+        ]
+        folded = fold_producer_rail(
+            ProducerRailProjection(
+                producer_id=producer_id,
+                quarantine_epoch_sequence=seed_sequence,
+            ),
+            segment,
+        )
         cached_fields = (
             cached.cycle_budget_limit,
             cached.cycle_budget_consumed,
             cached.quarantine_epoch_open,
             cached.quarantine_epoch_started_at,
             cached.quarantine_breach_trigger,
+            cached.quarantine_epoch_sequence,
         )
-        if cached_fields != log_fields:
+        folded_fields = (
+            folded.cycle_budget_limit,
+            folded.cycle_budget_consumed,
+            folded.quarantine_epoch_open,
+            folded.quarantine_epoch_started_at,
+            folded.quarantine_breach_trigger,
+            folded.quarantine_epoch_sequence,
+        )
+        if cached_fields != folded_fields:
             raise InvalidEventError(
                 f"producer rail cache disagrees with event truth for {producer_id!r}"
             )
-        return sequence
+        has_opener = any(
+            event.event_type is ExecutionEventType.PRODUCER_QUARANTINED
+            for event in segment
+        )
+        if not has_opener and cached.quarantine_epoch_sequence >= 1:
+            anchor_keys = {
+                signal_dedupe_key(
+                    "producer_release",
+                    producer_id,
+                    str(cached.quarantine_epoch_sequence),
+                ),
+                signal_dedupe_key(
+                    "producer_quarantine",
+                    producer_id,
+                    str(cached.quarantine_epoch_sequence),
+                ),
+            }
+            if not any(
+                event.dedupe_key in anchor_keys for event in self._execution_events
+            ):
+                raise InvalidEventError(
+                    f"producer rail {producer_id!r} sequence has no log anchor"
+                )
+        return folded.quarantine_epoch_sequence
 
     def _backfill_order_status_events_unlocked(self) -> None:
         """WO-0007b read-flip migration: an order whose status predates WO-0007a
@@ -5734,9 +5823,24 @@ class InMemoryStateStore(StateStore):
                     producer_rail=producer_rail,
                 )
                 if plan.epoch_event is not None:
-                    epoch_sequence = self._authoritative_epoch_sequence_unlocked(
-                        producer_id, producer_rail
-                    )
+                    try:
+                        epoch_sequence = self._authoritative_epoch_sequence_unlocked(
+                            producer_id, producer_rail
+                        )
+                    except InvalidEventError as exc:
+                        # WO-0140 D-R R-1.1: boundary drift poisons the
+                        # producer, write-free.
+                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
+                            producer_id=producer_id,
+                            offending_sequence=0,
+                            reason=str(exc),
+                            last_known_epoch_sequence=(
+                                producer_rail.quarantine_epoch_sequence
+                            ),
+                        )
+                        return SignalIngestResult(
+                            outcome=SIGNAL_PRODUCER_QUARANTINED, record=None
+                        )
                     plan = replace(
                         plan,
                         epoch_event=producer_quarantined_event(
@@ -5761,6 +5865,27 @@ class InMemoryStateStore(StateStore):
                         )
                     if event_wrote:
                         if "cycle_budget_limit" in plan.event.payload:
+                            # WO-0140 D-R R-2: incremental debit — no fold on
+                            # the hot path; the bounded cross-check ran at the
+                            # opener proposal above.
+                            pinned_limit = (
+                                producer_rail.cycle_budget_limit or cycle_budget_limit
+                            )
+                            budget = _ProducerBudgetRail(
+                                cycle_budget_limit=pinned_limit,
+                                cycle_budget_consumed=(
+                                    producer_rail.cycle_budget_consumed + 1
+                                ),
+                                quarantine_epoch_open=(
+                                    producer_rail.quarantine_epoch_open
+                                ),
+                                quarantine_epoch_started_at=(
+                                    producer_rail.quarantine_epoch_started_at
+                                ),
+                                quarantine_breach_trigger=(
+                                    producer_rail.quarantine_breach_trigger
+                                ),
+                            )
                             if plan.epoch_event is not None:
                                 stored_epoch = self._append_execution_event_unlocked(
                                     plan.epoch_event
@@ -5769,7 +5894,22 @@ class InMemoryStateStore(StateStore):
                                     raise InvalidEventError(
                                         "producer epoch opener was already present"
                                     )
-                            self._rebuild_producer_rails_unlocked()
+                                budget = _ProducerBudgetRail(
+                                    cycle_budget_limit=pinned_limit,
+                                    cycle_budget_consumed=(
+                                        producer_rail.cycle_budget_consumed + 1
+                                    ),
+                                    quarantine_epoch_open=True,
+                                    quarantine_epoch_started_at=received_at,
+                                    quarantine_breach_trigger="budget_exhausted",
+                                )
+                                self._apply_incremental_budget_debit_unlocked(
+                                    producer_id, budget, epoch_sequence + 1
+                                )
+                            else:
+                                self._apply_incremental_budget_debit_unlocked(
+                                    producer_id, budget, None
+                                )
                         else:
                             self._producer_budget_rails.setdefault(
                                 producer_id,
@@ -5905,9 +6045,19 @@ class InMemoryStateStore(StateStore):
                     )
 
                 if available < 1.0:
-                    epoch_sequence = self._authoritative_epoch_sequence_unlocked(
-                        producer_id, rail
-                    )
+                    try:
+                        epoch_sequence = self._authoritative_epoch_sequence_unlocked(
+                            producer_id, rail
+                        )
+                    except InvalidEventError as exc:
+                        # WO-0140 D-R R-1.1: drift poisons, write-free.
+                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
+                            producer_id=producer_id,
+                            offending_sequence=0,
+                            reason=str(exc),
+                            last_known_epoch_sequence=(rail.quarantine_epoch_sequence),
+                        )
+                        return ProducerRateVerdict("quarantined", rail)
                     epoch_event = producer_quarantined_event(
                         producer_id=producer_id,
                         breach_trigger="rate_breach",
@@ -5920,7 +6070,15 @@ class InMemoryStateStore(StateStore):
                         raise InvalidEventError(
                             "producer rate-breach opener was already present"
                         )
-                    self._rebuild_producer_rails_unlocked()
+                    # WO-0140 D-R R-2: direct update, no fold on this path.
+                    self._producer_budget_rails[producer_id] = _ProducerBudgetRail(
+                        cycle_budget_limit=rail.cycle_budget_limit,
+                        cycle_budget_consumed=rail.cycle_budget_consumed,
+                        quarantine_epoch_open=True,
+                        quarantine_epoch_started_at=now,
+                        quarantine_breach_trigger="rate_breach",
+                    )
+                    self._producer_epoch_sequences[producer_id] = epoch_sequence + 1
                     return ProducerRateVerdict(
                         "rate_breached",
                         self._producer_rail_unlocked(producer_id),

@@ -476,27 +476,34 @@ async def test_epoch_sequence_is_taken_from_log_not_stale_cache(any_store) -> No
                WHERE producer_id='producer-sequence'"""
         )
 
+    # WO-0140 re-pin (authorized edit 1): under cache authority a regressed
+    # carrier is refused LOUDLY at the boundary cross-check — the release
+    # boundary proves epoch 1 existed, so a closed row at sequence 0 is
+    # impossible. The producer is poisoned write-free; no colliding opener is
+    # ever minted. (The pre-WO-0140 pin asserted silent out-derivation.)
+    before = await any_store.get_execution_events()
     await any_store.check_and_debit_producer_rate(
         "producer-sequence",
         now=NOW + timedelta(seconds=1),
         limit_per_hour=60,
         burst=1,
     )
-    reopened = await any_store.check_and_debit_producer_rate(
+    poisoned_verdict = await any_store.check_and_debit_producer_rate(
         "producer-sequence",
         now=NOW + timedelta(seconds=1),
         limit_per_hour=60,
         burst=1,
     )
 
-    assert reopened.outcome == "rate_breached"
-    assert reopened.rail.quarantine_epoch_sequence == 2
+    assert poisoned_verdict.outcome == "quarantined"
+    assert "producer-sequence" in any_store.poisoned_producers()
+    assert await any_store.get_execution_events() == before
     openers = [
         event
         for event in await any_store.get_execution_events()
         if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED
     ]
-    assert [event.payload["epoch_sequence"] for event in openers] == [1, 2]
+    assert [event.payload["epoch_sequence"] for event in openers] == [1]
 
 
 async def test_high_stale_epoch_sequence_cannot_block_log_derived_opener(
@@ -528,16 +535,20 @@ async def test_high_stale_epoch_sequence_cannot_block_log_derived_opener(
         )
     )
 
-    assert result.record is not None
-    rail = await any_store.get_producer_rail("producer-high-stale")
-    assert rail.quarantine_epoch_open is True
-    assert rail.quarantine_epoch_sequence == 1
+    # WO-0140 re-pin (authorized edit 1): a staled-high carrier has no log
+    # anchor (no producer_release/producer_quarantine dedupe key at that
+    # sequence), so the O(1) anchor refuses it at the cross-check and the
+    # producer is poisoned write-free — no opener is minted from a lying row.
+    # (The pre-WO-0140 pin asserted silent out-derivation.)
+    assert result.outcome == "producer_quarantined"
+    assert result.record is None
+    assert "producer-high-stale" in any_store.poisoned_producers()
     opener = [
         event
         for event in await any_store.get_execution_events()
         if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED
     ]
-    assert [event.payload["epoch_sequence"] for event in opener] == [1]
+    assert opener == []
 
 
 async def test_initialize_rebuilds_log_rail_without_resetting_bucket(any_store) -> None:
@@ -676,14 +687,18 @@ async def test_exception_after_real_rail_update_rolls_back_everything(
     ).rail
 
     if isinstance(any_store, InMemoryStateStore):
-        original = any_store._rebuild_producer_rails_unlocked
+        # WO-0140: the attributable debit is incremental now — the seam moved
+        # from the whole-log rebuild to the increment method (same property).
+        original = any_store._apply_incremental_budget_debit_unlocked
 
-        def update_then_fail():
-            original()
+        def update_then_fail(producer_id, budget, epoch_sequence):
+            original(producer_id, budget, epoch_sequence)
             raise RuntimeError("forced failure after rail update")
 
         monkeypatch.setattr(
-            any_store, "_rebuild_producer_rails_unlocked", update_then_fail
+            any_store,
+            "_apply_incremental_budget_debit_unlocked",
+            update_then_fail,
         )
     else:
         original = any_store._upsert_producer_log_rail

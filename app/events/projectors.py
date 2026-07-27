@@ -1326,6 +1326,42 @@ def project_producer_rails(
     return projected
 
 
+def fold_producer_rail(
+    seed: ProducerRailProjection,
+    events: Iterable[ExecutionEvent],
+) -> ProducerRailProjection:
+    """Fold ONE producer's rail events from a caller-supplied seed.
+
+    WO-0140 D-R R-2: the bounded verification fold. The caller supplies the
+    segment (this producer's events after its last ``PRODUCER_RELEASED``,
+    exclusive) and the state-conditional seed; the STRICT appliers run
+    unchanged, so every fail-closed property of the full fold holds here.
+    Events for other producers are skipped, not an error — the SQL-side
+    filter and this guard are belt and braces.
+    """
+
+    current = seed
+    for event in events:
+        if (
+            event.event_type not in _PRODUCER_RAIL_SIGNAL_EVENT_TYPES
+            and event.event_type
+            not in {
+                ExecutionEventType.PRODUCER_QUARANTINED,
+                ExecutionEventType.PRODUCER_RELEASED,
+            }
+        ):
+            continue
+        if _producer_id_from_event(event) != seed.producer_id:
+            continue
+        if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED:
+            current = _apply_producer_quarantined(current, event)
+        elif event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+            current = _apply_producer_released(current, event)
+        elif _is_attributable_signal_event(event):
+            current = _apply_attributable_signal_event(current, event)
+    return current
+
+
 @dataclass(frozen=True)
 class PoisonedProducerMarker:
     """Derived record of one producer whose rail history cannot be folded.

@@ -83,6 +83,7 @@ from app.events.projectors import (
     PoisonedProducerMarker,
     ProducerRailProjection,
     active_emergency_reduce_overrides,
+    fold_producer_rail,
     compose_trading_state,
     control_trading_state,
     current_trading_state,
@@ -130,6 +131,7 @@ from app.store.base import (
     normalize_symbol,
 )
 from app.store.core import (
+    signal_dedupe_key,
     SIGNAL_PRODUCER_QUARANTINED,
     CREATE_ORDER_REJECT,
     FILL_CONFLICT,
@@ -1559,32 +1561,106 @@ class SqliteStateStore(StateStore):
         producer_id: str,
         cached: ProducerRailState,
     ) -> int:
-        projected = self._projected_producer_rails_locked(cur).get(producer_id)
-        log_fields: tuple[Optional[int], int, bool, Optional[datetime], Optional[str]]
-        if projected is None:
-            log_fields = (None, 0, False, None, None)
-            sequence = 0
-        else:
-            log_fields = (
-                projected.cycle_budget_limit,
-                projected.cycle_budget_consumed,
-                projected.quarantine_epoch_open,
-                projected.quarantine_epoch_started_at,
-                projected.quarantine_breach_trigger,
+        """Bounded verification (WO-0140 D-R R-2), replacing the whole-log fold.
+
+        Fold this producer's events after its last ``PRODUCER_RELEASED``
+        (exclusive; genesis if none), seeded STATE-CONDITIONALLY from the
+        durable row — the row advances at opener time, so an open epoch seeds
+        ``row.seq - 1``. All five class-(A) fields plus the sequence must
+        agree with the cache. Where the segment has no opener the sequence
+        seed is tautological; the O(1) dedupe-key anchor validates it against
+        the log instead (exact-key lookups, no index, no scan). Raises
+        ``InvalidEventError`` on any disagreement — callers on write paths
+        poison the producer rather than propagate (D-R R-1.1).
+        """
+
+        boundary_row = cur.execute(
+            "SELECT sequence FROM execution_events WHERE event_type = ? "
+            "AND json_extract(payload, '$.producer_id') = ? "
+            "ORDER BY sequence DESC LIMIT 1",
+            (ExecutionEventType.PRODUCER_RELEASED.value, producer_id),
+        ).fetchone()
+        boundary = boundary_row["sequence"] if boundary_row is not None else 0
+        seed_sequence = cached.quarantine_epoch_sequence - (
+            1 if cached.quarantine_epoch_open else 0
+        )
+        if seed_sequence < 0:
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has an open epoch with no "
+                "sequence to seed from"
             )
-            sequence = projected.quarantine_epoch_sequence
+        if (
+            boundary > 0
+            and not cached.quarantine_epoch_open
+            and cached.quarantine_epoch_sequence < 1
+        ):
+            # A PRODUCER_RELEASED boundary proves at least one epoch existed,
+            # so a closed row at sequence 0 is a regressed carrier (WO-0140
+            # D-R R-2 anchor closure — catches stale-to-zero write-free).
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} sequence regressed below its "
+                "release boundary"
+            )
+        rows = cur.execute(
+            "SELECT * FROM execution_events WHERE sequence > ? "
+            "AND (json_extract(payload, '$.producer_id') = ? "
+            "OR json_extract(payload, '$.record.producer_id') = ?) "
+            "ORDER BY sequence",
+            (boundary, producer_id, producer_id),
+        ).fetchall()
+        segment = [self._execution_event(row) for row in rows]
+        folded = fold_producer_rail(
+            ProducerRailProjection(
+                producer_id=producer_id,
+                quarantine_epoch_sequence=seed_sequence,
+            ),
+            segment,
+        )
         cached_fields = (
             cached.cycle_budget_limit,
             cached.cycle_budget_consumed,
             cached.quarantine_epoch_open,
             cached.quarantine_epoch_started_at,
             cached.quarantine_breach_trigger,
+            cached.quarantine_epoch_sequence,
         )
-        if cached_fields != log_fields:
+        folded_fields = (
+            folded.cycle_budget_limit,
+            folded.cycle_budget_consumed,
+            folded.quarantine_epoch_open,
+            folded.quarantine_epoch_started_at,
+            folded.quarantine_breach_trigger,
+            folded.quarantine_epoch_sequence,
+        )
+        if cached_fields != folded_fields:
             raise InvalidEventError(
                 f"producer rail cache disagrees with event truth for {producer_id!r}"
             )
-        return sequence
+        has_opener = any(
+            event.event_type is ExecutionEventType.PRODUCER_QUARANTINED
+            for event in segment
+        )
+        if not has_opener and cached.quarantine_epoch_sequence >= 1:
+            anchor = cur.execute(
+                "SELECT 1 FROM execution_events WHERE dedupe_key IN (?, ?) LIMIT 1",
+                (
+                    signal_dedupe_key(
+                        "producer_release",
+                        producer_id,
+                        str(cached.quarantine_epoch_sequence),
+                    ),
+                    signal_dedupe_key(
+                        "producer_quarantine",
+                        producer_id,
+                        str(cached.quarantine_epoch_sequence),
+                    ),
+                ),
+            ).fetchone()
+            if anchor is None:
+                raise InvalidEventError(
+                    f"producer rail {producer_id!r} sequence has no log anchor"
+                )
+        return folded.quarantine_epoch_sequence
 
     @staticmethod
     def _upsert_producer_log_rail(cur: sqlite3.Cursor, rail: object) -> None:
@@ -8028,9 +8104,24 @@ class SqliteStateStore(StateStore):
                     producer_rail=producer_rail,
                 )
                 if plan.epoch_event is not None:
-                    epoch_sequence = self._authoritative_epoch_sequence_locked(
-                        cur, producer_id, producer_rail
-                    )
+                    try:
+                        epoch_sequence = self._authoritative_epoch_sequence_locked(
+                            cur, producer_id, producer_rail
+                        )
+                    except InvalidEventError as exc:
+                        # WO-0140 D-R R-1.1: boundary drift poisons the
+                        # producer, write-free, instead of bricking the path.
+                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
+                            producer_id=producer_id,
+                            offending_sequence=0,
+                            reason=str(exc),
+                            last_known_epoch_sequence=(
+                                producer_rail.quarantine_epoch_sequence
+                            ),
+                        )
+                        return SignalIngestResult(
+                            outcome=SIGNAL_PRODUCER_QUARANTINED, record=None
+                        )
                     plan = replace(
                         plan,
                         epoch_event=producer_quarantined_event(
@@ -8055,6 +8146,19 @@ class SqliteStateStore(StateStore):
                         )
                     if event_wrote:
                         if "cycle_budget_limit" in plan.event.payload:
+                            # WO-0140 D-R R-2: incremental debit in the same
+                            # atomic op — no fold on the hot path. The bounded
+                            # cross-check ran at the opener proposal above.
+                            updated = replace(
+                                producer_rail,
+                                cycle_budget_limit=(
+                                    producer_rail.cycle_budget_limit
+                                    or cycle_budget_limit
+                                ),
+                                cycle_budget_consumed=(
+                                    producer_rail.cycle_budget_consumed + 1
+                                ),
+                            )
                             if plan.epoch_event is not None:
                                 stored_epoch = self._insert_execution_event(
                                     cur, plan.epoch_event
@@ -8063,8 +8167,14 @@ class SqliteStateStore(StateStore):
                                     raise InvalidEventError(
                                         "producer epoch opener was already present"
                                     )
-                            projected = self._projected_producer_rails_locked(cur)
-                            self._upsert_producer_log_rail(cur, projected[producer_id])
+                                updated = replace(
+                                    updated,
+                                    quarantine_epoch_open=True,
+                                    quarantine_epoch_sequence=epoch_sequence + 1,
+                                    quarantine_epoch_started_at=received_at,
+                                    quarantine_breach_trigger="budget_exhausted",
+                                )
+                            self._upsert_producer_log_rail(cur, updated)
                         else:
                             self._upsert_producer_log_rail(cur, producer_rail)
                 if plan.record is not None:
@@ -8169,9 +8279,19 @@ class SqliteStateStore(StateStore):
                     )
 
                 if available < 1.0:
-                    epoch_sequence = self._authoritative_epoch_sequence_locked(
-                        cur, producer_id, rail
-                    )
+                    try:
+                        epoch_sequence = self._authoritative_epoch_sequence_locked(
+                            cur, producer_id, rail
+                        )
+                    except InvalidEventError as exc:
+                        # WO-0140 D-R R-1.1: drift poisons, write-free.
+                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
+                            producer_id=producer_id,
+                            offending_sequence=0,
+                            reason=str(exc),
+                            last_known_epoch_sequence=(rail.quarantine_epoch_sequence),
+                        )
+                        return ProducerRateVerdict("quarantined", rail)
                     epoch_event = producer_quarantined_event(
                         producer_id=producer_id,
                         breach_trigger="rate_breach",
@@ -8184,8 +8304,17 @@ class SqliteStateStore(StateStore):
                         raise InvalidEventError(
                             "producer rate-breach opener was already present"
                         )
-                    projected = self._projected_producer_rails_locked(cur)
-                    self._upsert_producer_log_rail(cur, projected[producer_id])
+                    # WO-0140 D-R R-2: direct update, no fold on this path.
+                    self._upsert_producer_log_rail(
+                        cur,
+                        replace(
+                            rail,
+                            quarantine_epoch_open=True,
+                            quarantine_epoch_sequence=epoch_sequence + 1,
+                            quarantine_epoch_started_at=now,
+                            quarantine_breach_trigger="rate_breach",
+                        ),
+                    )
                     return ProducerRateVerdict(
                         "rate_breached",
                         self._producer_rail_locked(cur, producer_id),

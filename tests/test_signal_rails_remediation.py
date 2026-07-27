@@ -159,3 +159,70 @@ async def test_parity_comparator_sees_poisoned_set_differences(tmp_path) -> None
     result = compare_read_models("a", clean, "b", marked)
     assert not result.ok
     assert "poisoned_producers" in result.detail
+
+
+def _ingest_kwargs(producer_id: str, signal_id: str, *, invalid: bool = False, **over):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    values = dict(
+        producer_id=producer_id,
+        signal_id=signal_id,
+        symbol="AAPL",
+        direction="buy",
+        issued_at=now,
+        ttl_seconds=300,
+        suggested_quantity=1,
+        suggested_limit_price=None,
+        thesis="t",
+        provenance={"src": "test"},
+        server_max_ttl_seconds=3600,
+        cycle_budget_limit=3,
+        validation_failed=invalid,
+        raw_fields=None,
+        received_at=now + timedelta(seconds=1),
+    )
+    values.update(over)
+    return values
+
+
+async def test_attributable_debit_does_not_rescan_event_log(
+    any_store, monkeypatch
+) -> None:
+    """WO-0140 D-R R-2 scaling pin: the DEBIT path folds nothing.
+
+    Mirrors the delivered rate-path no-rescan pin; the repo's
+    test_wo0113_repair_scaling.py gates this class. RED before the
+    incremental-debit change: the delivered code re-folds the whole log
+    per attributable rejection (REV-0044 R-2, measured 5.5->140.6 ms/reject
+    over 100->10k events).
+    """
+
+    from app.store.memory import InMemoryStateStore
+
+    await any_store.initialize()
+    first = await any_store.ingest_signal(
+        **_ingest_kwargs("producer-scale", "seed-signal")
+    )
+    assert first.outcome == "received"
+
+    def unexpected_fold(*_args, **_kwargs):
+        raise AssertionError("attributable debit rescanned the event log")
+
+    if isinstance(any_store, InMemoryStateStore):
+        monkeypatch.setattr("app.store.memory.project_producer_rails", unexpected_fold)
+        monkeypatch.setattr(
+            "app.store.memory.project_producer_rails_tolerant", unexpected_fold
+        )
+    else:
+        monkeypatch.setattr(
+            any_store, "_projected_producer_rails_locked", unexpected_fold
+        )
+        monkeypatch.setattr(
+            any_store, "_projected_producer_rails_tolerant_locked", unexpected_fold
+        )
+
+    result = await any_store.ingest_signal(
+        **_ingest_kwargs("producer-scale", "invalid-1", invalid=True)
+    )
+    assert result.outcome == "quarantined_validation"
