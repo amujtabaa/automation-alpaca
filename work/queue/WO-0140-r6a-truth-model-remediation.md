@@ -6,205 +6,216 @@ work_order_id: WO-0140
 remediates: "work/review/REV-0044/result.md R-1..R-13 (WO-0104a, held in REVIEW)"
 branch: codex/signal-r6a-rails-store (remediation commits on the same branch, per REV-0042/0043 precedent)
 model_tier: strong (LOCAL Codex — event-log truth, human-gated release semantics, single-writer hot path)
-review: "REV-0044 addendum re-review clears the gate; the ADR/spec amendment is a NAMED item in it"
-wargame: "FULL per .ai-os/core/18 — M4b pass complete (10 findings: 1 P0, 3 P1); rev-2 applies all ten"
+review: "REV-0044 addendum re-review clears the gate; reviewer-owned, explicit verdict over the named items"
+wargame: "FULL per .ai-os/core/18 — two M4b passes (10 + 10 findings, 3 P0 total); rev-3 applies pass 2"
 filter_risk: LOW-MED
 ---
 
-# WO-0140 (rev-2) — R6a-R: the truth-model remediation
+# WO-0140 (rev-3) — R6a-R: the truth-model remediation
 
-> **rev-2 (2026-07-27).** The M4b pass returned **10 findings including 1 P0** — and the P0 landed in
-> rev-1's own pre-M4b amendment: the checkpoint machinery was internally inconsistent (R-2's checkpoint
-> was the last opener, R-3's was the release; sequence-adoption existed only at one of them; and
-> `last_known_epoch_sequence` had no evaluable source after heal-plus-restart). Followed literally it
-> either exploded at the checkpoint under the delivered appliers or re-emitted a **colliding epoch
-> sequence whose dedupe no-op fails closed forever** — a stuck state the "universal recovery" could not
-> reach, invisible to both pinned corpora because pre-R6a logs contain no openers. **The direction
-> survived; the checkpoint did not.** rev-2 re-founds it on one measured fact: the delivered release
-> applier **preserves `quarantine_epoch_sequence`** (its `replace()` omits it), giving the design a
-> durable sequence carrier that makes the opener appliers work **unchanged**.
+> **rev-3 (2026-07-27).** The scoped second M4b pass returned **10 findings including 2 P0** — both,
+> again, in the sequence carrier, and both **measured against the delivered appliers**. rev-2's seed
+> rule was correct only at the one instant premise 7 had measured (just after a release): the rail row
+> advances **at opener time** (`sqlite.py:8118-8121` upserts the fold state right after the opener
+> append), so a fold seeded with the row's sequence during an **open** epoch demands `seed+1` of the
+> very opener the segment contains — every state-1 release failed closed and every open-epoch restart
+> poisoned a healthy producer. And the heal path's marker was **blind to sequences consumed by
+> zero-width releases** (the release payload carries none), so a second heal re-minted a byte-identical
+> dedupe key — the exact permanent fail-closed wedge this WO exists to eliminate, on the recovery path
+> itself. Both fixes are one-line rules; the architecture direction survived both passes.
+>
+> **Process disclosure for the addendum:** rev-2's pass-1 table carried a false `Verified: YES` — the
+> planning seat propagated pass-1's F-7 ("memory has no budget-counter cache") without re-reading the
+> anchors. Pass 2 refuted it: **`_producer_budget_rails` already exists** (`memory.py:271`, both
+> `_atomic()` halves `:633`/`:658`, gate-read `:5810`), with a delivered drop-one pin. Withdrawn below.
 >
 > **The one decision (operator ratifies by pasting):** the rail cache is **authoritative for live
-> gating**; the log remains the source of truth it verifies against — verification at **epoch
+> gating**; the log remains the source of truth it is verified against — verification at **epoch
 > boundaries and startup only**, bounded to the producer's events **after its last `PRODUCER_RELEASED`
-> (exclusive)**, seeded from the durable rail row. Startup is **tolerant per producer**.
-> `release_producer` is the **single human recovery** for every stuck rail state, including a
-> **no-epoch (zero-width-window) release** that consumes the next epoch sequence. The ADR/spec text
-> this invalidates ships in the same change and is a **named item in the REV-0044 addendum**.
+> (exclusive)**, seeded **state-conditionally** from the durable rail row. Startup is **tolerant per
+> producer** — including when the *verification itself* finds drift. `release_producer` is the
+> **single human recovery** for every stuck rail state; a no-epoch (zero-width-window) release
+> consumes the next epoch sequence and **never regresses the durable carrier**. The ADR/spec text this
+> invalidates ships in the same change; the reviewer-owned REV-0044 addendum carries an explicit
+> verdict over it.
 
-## Measured premises (planning seat; rev-2 items re-verified against `b48235e` on 2026-07-27)
+## Measured premises (all re-verified against `b48235e`; pass-2 corrections marked)
 
-1. `PRODUCER_RELEASED`'s **payload** carries no `epoch_sequence` (`producer_id, actor, rejected_count,
-   epoch_start, released_at`) — but (premise 6) its **builder** requires one anyway.
-2. The fold bounds two payload numbers against mutable caps (`bucket_capacity` vs `rate_burst_max`;
-   `rejected_count` vs `SIGNAL_REJECTED_COUNT_MAX`) — and (premise 8) the **row validator** does it too.
-3. `models-is-a-leaf` (`.importlinter`) forbids `app.models` importing any layer — the constants
-   relocate there legally, imports go eager, the lazy loader is deleted.
-4. The appliers are separable functions — **but partially refuted (M4b F-1):** a budget-exhaustion
-   opener's applier **reads budget arithmetic** (`consumed != current.cycle_budget_consumed`,
-   `projectors.py:1210-1218`), so `PRODUCER_*` events are *readable* from an invalid prefix (payloads,
-   sequences) while their *appliers* are not runnable from a mid-cycle checkpoint. Checkpoints must be
-   **cycle boundaries**, nothing else.
-5. `epoch_start` is load-bearing at four layers — **corrected (M4b F-10):** the fold's *first* blocker
-   for a no-epoch release is `if not current.quarantine_epoch_open: raise` (`projectors.py:1242-1246`),
-   before any equality check is reachable.
-6. **(New, M4b F-3.)** `producer_released_event` requires `epoch_sequence ∈ [1, 2^63−1]` for its dedupe
-   key `producer_release:{producer}:{sequence}` (`core.py:6154-6166`) even though the payload omits it —
-   a **fifth layer** premise 5 missed. A wedge producer's sequence is 0; the no-epoch release therefore
-   needs a ratified key rule (D-R/R-3 below).
-7. **(New — the linchpin.)** `_apply_producer_released`'s `replace()` resets `cycle_budget_limit`,
-   `cycle_budget_consumed`, `quarantine_epoch_open`, `quarantine_epoch_started_at`,
-   `quarantine_breach_trigger` and **omits `quarantine_epoch_sequence`** — the sequence survives release
-   in fold state, and the rail row persists it durably. Seed a post-release fold with the row's sequence
-   and the delivered opener checks (`expected = current.quarantine_epoch_sequence + 1`,
-   `projectors.py:1183-1188`) pass **unchanged**.
-8. **(New, M4b F-4.)** `_producer_rail` (`sqlite.py:1503` region) raises unless
-   `0.0 <= tokens <= SIGNAL_RATE_BURST_MAX`, and `sqlite.py:1460` carries a bare `1000` — the R-5
-   retroactive-brick class exists **below the fold**, in the row validator, against durable class-B
-   state no rebuild can heal.
+1. `PRODUCER_RELEASED`'s payload carries no `epoch_sequence` — **which is exactly why the heal marker
+   must never be derived from payloads alone** (pass-2 F-B).
+2. The fold bounds two payload numbers against mutable caps; the **row validator** does it too
+   (`sqlite.py:1503` region tokens-vs-burst-cap; `:1460` bare `1000`).
+3. `models-is-a-leaf` holds; constants relocate to `app/models.py`, imports go eager, the lazy loader
+   is deleted.
+4. `PRODUCER_*` events are *readable* from an invalid prefix; their *appliers* are not runnable from a
+   mid-cycle checkpoint (`projectors.py:1210-1218` re-checks budget arithmetic; `:1183-1188` demands
+   `current+1`). Checkpoints must be cycle boundaries.
+5. A no-epoch release's first fold blocker is `if not current.quarantine_epoch_open: raise`
+   (`projectors.py:1242-1246`).
+6. `producer_released_event` requires `epoch_sequence ∈ [1, 2^63−1]` for its dedupe key
+   (`core.py:6154-6166`) though the payload omits it.
+7. `_apply_producer_released`'s `replace()` omits `quarantine_epoch_sequence` — the sequence survives
+   release in fold state and persists in the rail row. **Pass-2 caveat (F-A): the row also advances at
+   OPENER time** (`sqlite.py:8118-8121`), so "the delivered appliers pass unchanged" holds only when
+   the seed is corrected for an open epoch — see D-R R-2.
+8. The row validator bounds durable class-B `rate_tokens` by the mutable burst cap — the R-5 brick
+   class below the fold.
+9. **(Corrected — pass-2 F-G, planning-seat re-read.)** `_producer_budget_rails` **exists** at
+   `b48235e`: `memory.py:271` (init `:315`), both `_atomic()` halves (`:633`/`:658`) with a delivered
+   drop-one pin (`tests/test_signal_rails_store.py:52`), debit-path write `:5748`, gate read `:5810`.
+   The real memory-side deliverables are two call-site changes: the attributable-debit path's full-log
+   `_rebuild_producer_rails_unlocked()` (`memory.py:5746`) becomes an in-place increment, and
+   `release_producer`'s fold-read (`:5922`) becomes cache + bounded cross-check.
 
 ## Decision block (pre-checked = ratified on paste; edit a line to override)
 
-- [x] **D-R — R-1: startup is TOLERANT PER PRODUCER; fail-closed per store only for the unattributable.**
-      `project_producer_rails` catches `ProjectionError` **per producer**, marks that producer
-      **poisoned** (in-memory, log-derived: producer_id, offending sequence, reason, and
-      `last_known_epoch_sequence` = the max **payload** `epoch_sequence` among its readable `PRODUCER_*`
-      events — payload, not `event.sequence`), and continues. The marker is DERIVED state — identical on
-      both stores and on replay, so parity holds by construction; no DDL, no vocabulary, no durable
-      record. **The tolerant fold also writes `last_known_epoch_sequence` into the rail row's
-      `quarantine_epoch_sequence` column** — the durable carrier the heal path reads (premise 7).
-      **Scoped exception (M4b F-5):** an event whose `producer_id` is itself unreadable
-      (`projectors.py:1012-1016`) fails **before attribution** — there is no producer to poison; that
-      stays a store-wide refusal, disclosed here. Not producible by any `6955208` writer, so the pinned
-      claim is: **`initialize()` succeeds on any `6955208`-producible log.**
-      **Poisoned-surface semantics (M4b F-9), all four stated:** ingest and rate checks reuse
-      `SignalIngestOutcome.PRODUCER_QUARANTINED` / verdict `"quarantined"` → the existing record-free 403
-      (**no new vocabulary — the stop conditions hold**); `ProducerRateVerdict.rail` (non-Optional) and
-      `get/list_producer_rails` serve the rail row as persisted (zeros + carried sequence), never a fold;
-      `ReadModelProjection` gains a **`poisoned_producers`** field (additive, like `producer_rails` was)
-      and `_describe_read_model_diff` compares it — parity covers the marker itself.
-      **Pins:** both REV-0044 reproduction corpora (over-budget; changed-limit-mid-cycle) open, poison
-      exactly the offending producer, leave all else intact; `project_read_models` returns the identical
-      poisoned set (both stores); delete the `poisoned_producers` comparison ⇒ RED (the REV-0039 class).
+- [x] **D-R — R-1: startup is TOLERANT PER PRODUCER — including when VERIFICATION ITSELF finds drift
+      (pass-2 F-E).** As rev-2 (per-producer `ProjectionError` catch; derived in-memory poisoned marker;
+      `last_known_epoch_sequence` written into the rail row's `quarantine_epoch_sequence`; the
+      unattributable-event store-wide exception disclosed; claim scoped to `6955208`-producible logs;
+      the four poisoned-surface semantics; `poisoned_producers` in `ReadModelProjection` + the diff),
+      **plus two pass-2 rules:**
+      1. **The five-field cross-check is a poisoning trigger, not a brick.** Under cache authority,
+         drift is the design's primary anticipated failure and previously had **no exit**: the delivered
+         check raises `InvalidEventError` (`sqlite.py:1571-1578`) — a different type than R-1's catch —
+         and `release_producer` re-runs the same check, raising identically on retry. Rule: a boundary
+         or startup five-field mismatch **poisons that producer** (catch **both** exception types,
+         per producer), funnelling it into release-state 3. Never a store-wide refusal, never an
+         unreleasable live wedge. **Pin:** inject the REV-0044 drift probe, restart ⇒ producer poisoned,
+         store opens, release heals — both stores.
+      2. **Tolerance lives in a WRAPPER** used by `initialize()` and `project_read_models`;
+         **`project_producer_rails` itself stays strict** — otherwise the file's eight strict
+         `pytest.raises(ProjectionError)` pins and REV-0044's three payload-conformance RED tests invert
+         (pass-2 F-D).
+      — Marker rule moved to R-3 (never-regress), where its failure mode lives.
 
-- [x] **D-R — R-2: the debit becomes INCREMENTAL; folds retreat to boundaries; the CHECKPOINT is the
-      last `PRODUCER_RELEASED`, EXCLUSIVE — never an opener (⚠ M4b P0 fix).** rev-1 checkpointed on the
-      last opener; measured, that cannot work: the opener's own applier re-checks budget arithmetic whose
-      evidence lies before the checkpoint (premise 4) and demands `current+1` sequence continuity
-      (premise 7's anchors). **A release is the only true cycle boundary** — after it, budget state
-      legitimately folds from zero. The bounded verification fold therefore: starts **after** the
-      producer's last `PRODUCER_RELEASED` (from genesis if none — a never-released producer's whole
-      history *is* the current cycle, disclosed as unbounded-by-design for that case); is **seeded** with
-      the durable rail row's `quarantine_epoch_sequence`; and runs the delivered appliers **unchanged**
-      (`:1183-1188` and `:1210-1218` both pass by construction — enumerate in the diff that they did not
-      change). The SQL filter must match **both** payload locations (`$.producer_id` **and**
-      `$.record.producer_id`) or the bounded fold silently under-counts.
-      **Live path:** cache-authoritative gating; the debit updates the cached counters in the same
-      atomic op as the append, conditioned on `stored.id == plan.event.id` (unchanged, pinned). **The
-      memory store has NO budget-counter cache today** (`memory.py:272-273` holds only epoch sequences
-      and rate buckets; `_projected_producer_rail_unlocked` folds live) — R6a-R adds
-      **`_producer_budget_rails`** (M4b F-7), which joins **both halves** of `_atomic()`'s enumeration
-      with a drop-one-field mutation pin (the parent D-R6a-2 P0 class).
-      **Honest cost claim (M4b F-6):** the DEBIT path must flatten — it folds nothing; pin it with the
-      repo's scaling-gate pattern. The epoch-boundary and release folds remain **linear filtered scans
-      inside the writer lock** (measured ~9 ms at 10k, ~36 ms at 40k rows; the stop conditions forbid the
-      index that would bound them) — at most 2 per epoch. **That residual cost is a RATIFIED SCALING
-      DISCLOSURE** (the alternative REV-0044 R-2 itself offered), recorded here and in the addendum
-      evidence; "must flatten" applies to the debit path only.
-      **Pins:** rejection-path scaling pin (debit reads no unrelated log rows); cache == bounded fold ==
-      unbounded fold at every boundary of a mixed 12-step sequence, both stores; the R-2 measurement
-      flattens on the debit path.
+- [x] **D-R — R-2: incremental debit; folds at boundaries only; release-exclusive checkpoint with a
+      STATE-CONDITIONAL seed (⚠ pass-2 F-A, P0 fix).** The bounded verification fold starts after the
+      producer's last `PRODUCER_RELEASED` (genesis if none) and is seeded
+      **`seed = row.quarantine_epoch_sequence − (1 if row.quarantine_epoch_open else 0)`** — because the
+      row advances at opener time (premise 7 caveat), a flat seed demands `seed+1` of the very opener an
+      open-epoch segment contains. With the corrected seed the delivered appliers (`:1183-1188`,
+      `:1210-1218`) pass unchanged at **every** boundary, not just the post-release instant. **The
+      12-step mixed pin explicitly includes a state-1 (open-epoch) release and an open-epoch restart** —
+      the two shapes rev-2's pin would have detonated on.
+      **Honest verification scope (pass-2 F-F):** in **no-opener segments** (wedge release, heal, first
+      post-release boundary) the seed is a tautology — fold seq == row seq verifies nothing. Add the
+      **O(1) structural anchor**: if `row.quarantine_epoch_sequence >= 1`, the log must contain dedupe
+      key `producer_release:{p}:{seq}` **or** `producer_quarantine:{p}:{seq}` (exact-key lookups; no
+      index, no scan, no new field). Disclose the residual narrowing (the sequence is anchored, not
+      re-derived, in those segments) in the addendum rather than claiming full preservation of the
+      delivered net. **This supersedes parent D-R6a-5's "the write-time sequence comes from the log
+      fold" ruling** — the sequence now comes from the durable row, anchored to the log; the two
+      delivered stale-cache pins (`tests/test_signal_rails_store.py:448`, `:496`) are **authorized test
+      edits**, re-pinned as *loud fail-closed* (a stale row now raises via the anchor/two-sided checks
+      rather than being silently out-derived).
+      **Memory deliverables corrected (pass-2 F-G):** `memory.py:5746` rebuild → in-place increment;
+      `:5922` fold-read → cache + bounded cross-check. No new collection; the delivered drop-one
+      `_atomic()` pin already covers `_producer_budget_rails`.
+      **Cost, stated tightly (pass-2 F-J):** the debit path folds nothing (scaling pin as rev-2). A
+      never-released producer's boundary fold applies at most `pinned_limit + 1` events (one cycle can
+      exist); only the row **scan** is O(global log), identical at every boundary, already priced
+      (9→36 ms at 10k→40k). The O(1) release-key lookup may be used to range-bound the scan; the
+      **index** remains stop-conditioned. The boundary-fold cost stays a **ratified scaling disclosure**.
 
-- [x] **D-R — R-3 + R-4: `release_producer` is the ONE human recovery, identically on both stores —
-      with the no-epoch release fully specified this time. ⚠ HUMAN-GATED AMENDMENT, ratified by the
-      operator pasting this WO; its spec/ADR text refresh ships in the same change (M4b F-8):**
-      `02-lifecycle.md`'s release row ("closes the epoch … epoch window") and ADR-009's "one summary on
-      epoch close" gain the no-epoch case; **that ADR amendment is a NAMED review item in the REV-0044
-      addendum** — one packet, independently reviewed, honoring the cross-model-review rule's substance;
-      the operator ratifies this reconciliation by paste.
-      Release accepts, both stores reading the **cache** cross-checked by the **bounded fold** (the
-      SQLite `_authoritative_*` shape — which compares **all five fields including consumed**, a drift
-      net the redesign must and does preserve — adopted by memory):
-      1. an **open epoch** (unchanged, exact `epoch_start` equality as today);
-      2. the **R-4 wedge** (`consumed >= pinned_limit ∧ ¬epoch_open`) — resetting the cycle;
-      3. a **poisoned producer** — the release IS the new fold boundary: **release heals.**
-      **The no-epoch (zero-width) release, complete ruling:** payload `epoch_start = released_at`
-      (never null; ratified-field domain gains one degenerate case); `rejected_count` 0 unless R6b's
-      live holder has a count; **the release consumes the NEXT epoch sequence** — builder key
-      `producer_release:{producer}:{row_sequence + 1}` (satisfying premise 6's `>= 1` bound even from a
-      wedge's 0), and the fold **advances `quarantine_epoch_sequence` by one** on a no-epoch release so
-      live row and fold stay equal. Two heals of one producer thus key distinctly (M4b F-3's collision),
-      and the next opener continues at `current+1` unchanged. Changed lines enumerated in the diff:
-      `projectors.py:1242-1269` (state-conditional acceptance + sequence advance) and `core.py:6154`
-      region (the no-epoch key rule). **Fold-side acceptance of a zero-width release from zero state is
-      an accepted weakening, stated plainly:** the fold cannot see live gating; legitimacy is enforced at
-      `release_producer` (which still refuses anything outside states 1–3), and the zero-width form is
-      machine-recognizable in audit.
-      **Pins (M4b F-2 — the inert-mutation repair):** the named mutation is now the **forged** shape:
-      epoch OPEN in fold state, release carrying `epoch_start == released_at ≠ true start` ⇒
-      `ProjectionError`, both stores — widen the state-conditional check ⇒ THIS pin goes RED (rev-1's
-      wrong-value pin provably could not); wedge → 403 → zero-width release → ingest resumes → next
-      opener folds at `current+1`; poisoned → release → `initialize()` folds clean from the boundary;
-      two consecutive heals key distinctly; the REV-0044 drift probe yields identical outcomes on both
-      stores; revert memory to fold-only gating ⇒ RED.
+- [x] **D-R — R-3 + R-4: the three-state release — with the carrier that NEVER REGRESSES
+      (⚠ pass-2 F-B, P0 fix). HUMAN-GATED AMENDMENT, ratified on paste; ADR/spec refresh ships
+      in-change.** As rev-2 (three states; both stores gate on cache + bounded cross-check; zero-width
+      `epoch_start = released_at`; `rejected_count` 0 unless held; changed lines
+      `projectors.py:1242-1269`, `core.py:6154` region; spec/ADR text refresh; fold-side zero-state
+      acceptance as a stated weakening), **plus four pass-2 rules:**
+      1. **The marker never regresses the durable carrier:**
+         `last_known_epoch_sequence = max(row.quarantine_epoch_sequence, max payload epoch_sequence
+         among readable PRODUCER_* events)`. rev-2's payload-only rule was blind to sequences consumed
+         by zero-width releases (the release payload carries none — premise 1), so poison → heal →
+         re-poison **regressed the row** and heal #2 minted a **byte-identical** key
+         (`producer_release:{p}:{N+1}`, measured), which `release_producer`'s two-sided check turns into
+         a retry-proof raise (`sqlite.py:8175`, `memory.py:5940`) — the recovery permanently wedged.
+         **Live `release_producer` explicitly advances the row on a no-epoch release.**
+      2. **The genesis-fold heal rule mirrors the write side:** a zero-width release folding in sets the
+         sequence to `max(high-water mark at poison, running max opener payload in segment) + 1` — both
+         reconstructible at the release point, agreeing with the write side in every traced composition,
+         preserving parent D-R6a-3's class-A agreement claim.
+      3. **The forged-shape pin is narrowed (pass-2 F-C):** the named mutation is `epoch OPEN in fold
+         state **and the producer not poisoned-in-fold**, release carrying
+         `epoch_start == released_at ≠ true start`` ⇒ `ProjectionError`. The tolerant wrapper accepts a
+         zero-width release for a producer **it has poisoned** regardless of that producer's last
+         coherent epoch state — otherwise every legitimate mid-epoch heal re-poisons on every replay, a
+         live-vs-replay divergence the fold-vs-fold parity pin structurally cannot see.
+      4. **The zero-width fold-acceptance domain is closed (pass-2 F-H):** the fold rejects a zero-width
+         release outside **{poisoned-in-fold, wedge, zero state}** — the interior shape
+         (`0 < consumed < pinned_limit`, hand-appendable through the raw event seam R6b's sweeps use)
+         would otherwise silently launder a partially-consumed budget in replay. The interior shape
+         joins the forged-pin family.
+      **Pins:** rev-2's set, **plus**: poison → heal → poison (no intervening opener) → heal ⇒ distinct
+      keys, both releases land; the narrowed forged shape ⇒ RED on widen; the interior zero-width shape
+      ⇒ RED; a poisoned mid-epoch producer heals and **stays healed across replay** (poisoned set empty
+      after, both stores).
 
-- [x] **D-R — R-5 + R-7 + R-13 + (M4b F-4): constants to `app/models.py`; the read path — fold AND row
-      validator — validates STRUCTURALLY; caps bind at write time only.** As rev-1, plus: the row
-      validator's `tokens <= SIGNAL_RATE_BURST_MAX` bound (`sqlite.py:1503` region) and the bare `1000`
-      (`sqlite.py:1460`) become structural checks (finite, non-negative, `<= _SQLITE_MAX_SIGNED_INT`) —
-      class-B durable state is precisely the state **no rebuild can heal**, so a cap-lowering brick there
-      is worse than the fold's. The exactness ratchet is untouched. Standing rule to `pkl/`: **lowering a
-      ratified cap is a log-truth change, not a config change.**
-      **Pins:** rev-1's cap-lowering refold pin, **plus** write the bucket at cap → lower the constant →
-      reopen the store ⇒ must serve (RED today); fresh-interpreter imports (eager); grep pin: the budget
-      cap literal appears exactly once in `app/`.
+- [x] **D-R — R-5 + R-7 + R-13 (+ row validator): unchanged from rev-2**, with the **three delivered cap
+      pins re-homed as authorized edits (pass-2 F-D):** `tests/test_signal_rails_projector.py:451-487`'s
+      `cycle_budget_limit=1001` / `bucket_capacity=101` / `rejected_count=10_001` cases assert
+      `ProjectionError` on the read path; under read-structural/write-capped they move to **write-time**
+      pins (builder/`_require_bounded_int` level), same values, same RED expectations.
 
-- [x] **D-R — R-6: unchanged from rev-1** (R6b constraint recorded in `pkl/`; the boundary cross-checks
-      stay as the divergence net).
+- [x] **D-R — R-6, R-8..R-12: unchanged from rev-1/rev-2.**
 
-- [x] **D-R — R-8..R-12: unchanged from rev-1** (module-anchored non-empty grep pin; the wedge pin is now
-      a *designed* state exercised by R-3/R-4's pins; outcome-keyed `_record_response`; the
-      `Protocol`-typed upsert; the property-corpus rail parametrisation).
+## Authorized existing-test edits (closed list — anything else is a STOP)
+
+1. `tests/test_signal_rails_store.py:448` and `:496` — the two stale-cache pins, re-pinned loud
+   fail-closed (D-R R-2's supersession of parent D-R6a-5).
+2. `tests/test_signal_rails_projector.py:451-487` — the three cap cases, re-homed to write-time.
+3. Any pin named in this WO's own pin lists.
+`project_producer_rails`' eight strict-raise pins and REV-0044's payload-conformance tests are **not**
+authorized — the tolerance wrapper exists precisely so they stand.
 
 ## Stop conditions — report, never self-authorize
 
-Any DDL, schema, or **index** change · any new event payload **field** or vocabulary value (the
-zero-width ruling changes a domain, not the field list; `SignalIngestOutcome` gains nothing) · any
-durable poisoned record · any weakening of the exactness ratchet or of the five-field drift net · any
-existing-test edit beyond the pins named here · R6b surfaces · `app/server.py` · the flag.
+Any DDL, schema, or **index** change · any new event payload **field** or vocabulary value · any durable
+poisoned record · any weakening of the exactness ratchet, the five-field net (beyond the disclosed
+no-opener-segment anchoring), or the strict projector · any existing-test edit beyond the closed list
+above · R6b surfaces · `app/server.py` · the flag.
 
 ## Gate battery
 
-Unchanged from rev-1 (full battery incl. `--cov-branch` floor 93.0), plus: both legacy corpora as
-committed fixtures; the debit-path scaling pin; the **forged zero-width** pin; the drift-parity pin; the
-row-validator cap-lowering pin; the `poisoned_producers` parity-deletion mutation.
+As rev-2, plus: the state-1-release and open-epoch-restart steps in the mixed pin; the double-heal
+distinct-keys pin; the narrowed forged pin + interior-shape pin; the drift-poisoning restart pin; the
+O(1) anchor pin (corrupt the row sequence in a no-opener state ⇒ loud refusal, not a minted key).
 
 ## Close-out
 
-Remediation commits on `codex/signal-r6a-rails-store`; WO-0104a stays REVIEW. Stage evidence for the
-**REV-0044 addendum**, which must carry as NAMED items: the release-amendment pins (all of them — M4b
-F-10), the ADR-009/`02-lifecycle.md` amendment, the ratified scaling disclosure, and the zero-width
-payload ruling. The addendum clears the R6a gate; WO-0140 closes atomically (disposition + ledger +
-`pkl/` in the finishing commit). D-2a stays OFF; R6b starts only after the addendum disposition.
+Remediation commits on `codex/signal-r6a-rails-store`; WO-0104a stays REVIEW. The implementer **stages
+evidence only**; the **reviewer authors the REV-0044 addendum** (protocol P-1), which must carry **an
+explicit verdict over the named items** — the release amendment + zero-width ruling, the ADR-009/
+`02-lifecycle.md` amendment, the ratified scaling disclosure, the D-R6a-5 supersession, the no-opener
+anchoring disclosure, and the rev-2 F-7 process disclosure — plus `disposition.md` and the ledger line
+per the Disposition Loop (pass-2 F-I: a named item clears "for that item" only with its own verdict).
+The addendum clears the R6a gate; WO-0140 closes atomically. D-2a stays OFF; R6b starts only after the
+addendum disposition.
 
-## §M4b record — pass 1 on this WO (10 findings: 1 P0, 3 P1, 5 P2, 1 P3)
-
-*(Three dispatch attempts died on server-side 529s with zero tool calls — investigated and recorded as
-capacity, not content. The completed pass ran on the session-model pool.)*
+## §M4b record — pass 2 (scoped to R-2/R-3+R-4; 10 findings: 2 P0, 3 P1, 3 P2, 2 P3)
 
 | # | Sev | Finding | Verified | Applied |
 |---|---|---|---|---|
-| F-1 | **P0** | Checkpoint cluster internally inconsistent: opener checkpoints unbuildable under the delivered appliers (budget cross-check + `current+1` both fail); `last_known_epoch_sequence` unevaluable post-heal; "(0 if none)" re-emits a byte-identical dedupe key ⇒ permanent fail-closed wedge the recovery cannot reach; both pinned corpora blind to it (no openers pre-R6a) | **YES** — planning seat re-read `:1183-1188`, `:1210-1218`, `:1242-1246`; agent probes pasted | R-2 re-founded: release-exclusive checkpoint, durable row-sequence seed, appliers unchanged; premise 4 corrected |
-| F-2 | P1 | rev-1's "widen ⇒ RED" mutation was **inert** — the widened mutant passes the named pin and accepts exactly the forged `epoch_start == released_at` drift shape | YES — agent implemented both mutant and pin; REV-0041/0043 class | R-3 pins: the forged shape is now the named mutation |
-| F-3 | P1 | The release **builder** requires `epoch_sequence >= 1` for its dedupe key — a fifth layer; a fixed sentinel collides across two heals and fails closed | **YES** — `core.py:6154-6166` re-read | No-epoch release consumes the next sequence; fold advances to match |
-| F-4 | P1 | The row validator bounds durable class-B `rate_tokens` by the mutable burst cap — the R-5 brick class below the fold, unhealable by rebuild | **YES** — planning seat had read the same lines in REV-0044 | R-5 extended to the row validator + reopen pin |
-| F-5 | P2 | Pre-attribution `ProjectionError` (unreadable `producer_id`) fires before any producer exists to poison | YES — `:1012-1016` | R-1 scoped exception disclosed; claim re-scoped to `6955208`-producible logs |
-| F-6 | P2 | "Must flatten" oversold: boundary folds stay linear filtered scans (measured 9→36 ms at 10k→40k); the index is stop-conditioned away; filter must match both payload locations | YES — agent measurements; `EXPLAIN` = SCAN | Debit-scoped flatten + ratified scaling disclosure + dual-location filter |
-| F-7 | P2 | Memory has **no** budget-counter cache — the incremental design forces a new collection nobody named, straight into the `_atomic()` P0 class | YES — `memory.py:272-273`, `:330-331` | `_producer_budget_rails` named + both-halves + drop-one pin |
-| F-8 | P2 | The amendment invalidates `02-lifecycle.md` + ADR-009 epoch-close text; no refresh shipped; "no new packet" unreconciled with the ADR-packet rule | YES — spec rows quoted | Refresh ships in-change; ADR amendment a NAMED addendum item |
-| F-9 | P2 | Poisoned-surface semantics unstated against delivered types (non-Optional `rail`, outcome reuse, `ReadModelProjection` shape, diff comparison) | YES — `base.py:369-373` | R-1 states all four; no new vocabulary |
-| F-10 | P3 | Premise-5 mechanism wrong (`:1242` blocks first); addendum evidence list omitted the release pins | YES | Premise corrected; close-out list extended |
+| F-A | **P0** | The seed rule was valid only just-after-release: the row advances at opener time, so every state-1 release failed closed and every open-epoch restart poisoned a healthy producer — then F-C re-poisoned it on every replay | **YES** — planning seat re-read `sqlite.py:8118-8121`; agent measured the applier rejection | State-conditional seed; the two detonating shapes added to the mixed pin; premise 7 caveat |
+| F-B | **P0** | The payload-only marker regresses the row across a heal (release payload carries no sequence), so heal #2 mints a byte-identical retry-proof key — the recovery permanently wedged | **YES** — `core.py:6154-6166`, `sqlite.py:8172-8177` re-read; agent measured the collision | Never-regress max rule; genesis heal rule; explicit live row advance; double-heal pin |
+| F-C | P1 | The forged-shape pin condemned every legitimate mid-epoch heal on replay — permanent re-poisoning invisible to fold-vs-fold parity | YES — follows from `:1242-1246` + rev-2's pin text | Pin narrowed to not-poisoned-in-fold; wrapper accepts poisoned-producer heals |
+| F-D | P1 | rev-2 was unbuildable without unauthorized edits to ≥5 delivered tests; tolerance at `project_producer_rails` would invert 8 strict pins + 3 REV-0044 RED tests | **YES** — both stale-cache pin names read at `:448`/`:496` | Closed authorized-edit list; tolerance wrapper; D-R6a-5 supersession note |
+| F-E | P1 | Five-field drift had no ruled exit: `InvalidEventError` escapes R-1's catch and release re-raises it — a fourth stuck state on the primary anticipated failure | YES — `sqlite.py:1571-1578` type read | Drift poisons per producer (both exception types); restart pin |
+| F-F | P2 | In no-opener segments the seed is a tautology — the delivered net's independent derivation quietly narrowed exactly where the new release lives | YES | O(1) dedupe-key anchor; residual disclosed in the addendum |
+| F-G | P2 | rev-2's premise/F-7 row was **false**: `_producer_budget_rails` exists, enumerated, pinned; the table carried an unverified `Verified: YES` | **YES** — planning-seat re-read `:271,:315,:633,:658,:5748,:5810` | Premise 9; pass-1 F-7 **withdrawn**; process disclosure in the header |
+| F-H | P2 | The zero-width acceptance domain was ruled only at its endpoints; the interior shape launders a partial budget in replay via the raw-append seam | YES | Domain closed to {poisoned, wedge, zero}; interior pin |
+| F-I | P3 | One-packet reconciliation is protocol-compatible (P-2 "tracked packet", P-1 addenda), but the addendum needs its own explicit verdict + disposition + ledger line, reviewer-owned | YES — protocol clauses quoted by agent | Close-out rewritten |
+| F-J | P3 | "Unbounded-by-design" over-disclosed genesis (≤ limit+1 applied events; only the scan is O(log)); the O(1) anchor permits a range-bound without the index | YES | Cost paragraph tightened |
 
-**Also surviving attack, per the pass:** R-1's tolerance direction, R-6, R-8..R-12, the zero-width form
-itself ("sound and spec-tolerable once ratified"), the cap relocation (models-is-a-leaf verified clean),
-and the five-field drift net (`_authoritative_*` compares consumed too — preserved by the redesign).
+**Pass-2 verdict quoted:** "All fixes are statable inside rev-2's stop conditions — no new payload
+field, no DDL, no index, no vocabulary — so a rev-3 applying F-A/F-B/F-C/F-D/F-E should ratify."
+**Also surviving pass 2:** the release-exclusive boundary itself, the incremental debit, the scaling
+disclosure, the wedge/normal sequence rule (the epoch-1 collision hypothesis was **disproven** — fold
+and row both advance, so no normal release can reuse a consumed sequence), and parent D-R6a-5's
+two-openers pin.
+
+## §M4b record — pass 1 (10 findings: 1 P0, 3 P1, 5 P2, 1 P3) — retained, one row amended
+
+As recorded in rev-2, unchanged except: **F-7 is WITHDRAWN** (pass-2 F-G — the claim was false at
+`b48235e` and the planning seat's `Verified: YES` was not a verification). The remaining nine rows stand.
