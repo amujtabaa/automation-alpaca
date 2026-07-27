@@ -8468,7 +8468,7 @@ class SqliteStateStore(StateStore):
                     ):
                         # Zero or INTERIOR log: per log truth nothing is
                         # releasable — releasing mid-cycle is the budget
-                        # laundering F-H forbids. Repair the cache from the
+                        # unauthorized cycle reset F-H forbids. Repair from the
                         # log, clear the poison, and refuse AFTER committing.
                         repaired_rail = folded
                     else:

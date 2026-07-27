@@ -1308,8 +1308,9 @@ def _apply_producer_released(
     # WO-0140 D-R R-3: the no-epoch (zero-width) release. Accepted ONLY as a
     # zero-width window, and ONLY from the zero state or the legacy wedge
     # (consumed >= pinned limit with no opener — a pre-R6a shape). The
-    # interior shape (0 < consumed < limit) would launder a partially
-    # consumed budget in replay and is refused (pass-2 F-H). The consumed
+    # interior shape (0 < consumed < limit) would be an UNAUTHORIZED CYCLE
+    # RESET of a partially consumed budget in replay and is refused
+    # (pass-2 F-H). The consumed
     # sequence lives in the dedupe key — the ratified payload carries none.
     if epoch_start != released_at:
         raise ProjectionError(
@@ -1326,7 +1327,7 @@ def _apply_producer_released(
     if not (is_zero_state or is_wedge):
         raise ProjectionError(
             f"PRODUCER_RELEASED event sequence={event.sequence} is a zero-width "
-            "heal of a mid-cycle rail (budget laundering refused)"
+            "heal of a mid-cycle rail (unauthorized cycle reset refused)"
         )
     consumed_sequence = sequence_from_release_dedupe_key(event.dedupe_key or "")
     if consumed_sequence <= current.quarantine_epoch_sequence:

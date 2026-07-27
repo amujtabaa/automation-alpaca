@@ -47,14 +47,14 @@
   healthy epoch); log folds WEDGE or is UNFOLDABLE → the zero-width heal; log folds ZERO or
   INTERIOR → **repair-and-refuse** — the cache is repaired from log truth, the poison cleared,
   and the release refused as not-quarantined, with the repair COMMITTING before the raise
-  (releasing a mid-cycle producer is exactly the F-H budget laundering, so no event is the correct
+  (releasing a mid-cycle producer is exactly the F-H unauthorized cycle reset, so no event is the correct
   outcome; the refined interior/zero rule is an implementation-level completion of the operator's
   Option A, disclosed here for REV-0045). Pins: open-log drift ⇒ state-1 payload from log truth,
   replay + restart agree; interior-log drift ⇒ PNQ raise, poison cleared, row repaired, no release
   event, next ingest received, replay clean. Mutant: classification blinded (the pre-Option-A
   always-heal) ⇒ both pins RED; restored GREEN. 189-test corpus green.
 
-- 2026-07-27 (refutation pass): a fresh-context agent attacked the full diff with runnable probes.
+- 2026-07-27 (refutation pass): a fresh-context agent probed the full diff with runnable checks.
   **Finding 1 (P0, mine, mechanical):** the six runtime boundary sites caught only
   `InvalidEventError`; drift detonating INSIDE a strict applier raises `ProjectionError` (disjoint
   hierarchies) and escaped uncaught — release wedged retry-proof. rev-3 R-1.1's own sentence says
@@ -70,7 +70,7 @@
   poisoned-403 mounted-app pin added (finding 5, the D-R6a-8 class); two dead pre-R6a fold methods
   deleted with the three delivered no-rescan guards re-aimed at live seams (finding 6 — one guard
   broke when ruff --fix dropped a dead import, caught by the regression run); the release-key
-  parser refuses single-part and non-canonical-digit variants (finding 7). **Held under attack:**
+  parser refuses single-part and non-canonical-digit variants (finding 7). **Held under refutation:**
   the composed heal→breach→restart→release journey agrees at every boundary on both stores; the
   SQL/memory filters are symmetric; both disclosed refinements judged faithful strengthenings.
 

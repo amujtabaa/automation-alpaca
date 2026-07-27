@@ -464,7 +464,7 @@ async def test_forged_and_interior_zero_width_fail_the_strict_fold() -> None:
     )
     forged_release = producer_released_event(
         producer_id="p-forged",
-        actor="mallory",
+        actor="operator",
         rejected_count=0,
         epoch_start=later,
         released_at=later,
@@ -477,12 +477,12 @@ async def test_forged_and_interior_zero_width_fail_the_strict_fold() -> None:
     assert "p-forged" in poisoned  # the funnel, not a silent fold
 
     # Interior: one real attributable rejection (consumed 1 of limit 5, from
-    # the fixture corpus), then a zero-width release — laundering a partially
-    # consumed budget must be refused (F-H).
+    # the fixture corpus), then a zero-width release — an unauthorized cycle
+    # reset of a partially consumed budget must be refused (F-H).
     first_attributable = _events_from_fixture("legacy_changed_limit_events")[0]
     interior_release = producer_released_event(
         producer_id=LEGACY_PRODUCER,
-        actor="mallory",
+        actor="operator",
         rejected_count=0,
         epoch_start=later,
         released_at=later,
@@ -737,7 +737,7 @@ async def test_open_log_drift_release_is_state1_and_replay_agrees(
 
 async def test_interior_log_drift_is_repaired_and_refused(tmp_path) -> None:
     """Option A: an INTERIOR log means the producer is genuinely mid-cycle —
-    releasing it would be the budget laundering F-H forbids. The release
+    releasing it would be the unauthorized cycle reset F-H forbids. The release
     repairs the cache from log truth, clears the poison, and refuses; the
     repair survives the refusal."""
 

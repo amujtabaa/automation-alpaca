@@ -27,6 +27,28 @@ files, fix, and pass/fail evidence — without narrating reusable bypass procedu
 payloads. Vocabulary: *paced-arrival accounting* · *budget-exhaustion accounting defect* ·
 *refill-accounting defect* · *non-atomic transaction boundary* · *drift-repair semantics*.
 
+## Vocabulary and framing (read before the diff)
+
+This rung is bounded resource accounting inside a local store. Three terms in the code and the
+ratified work order have security-adjacent surface readings; their meanings here are narrow and
+mechanical, and the repo's `filter_risk` clause governs how findings are reported:
+
+- **"poisoned" / `poisoned_producers` / `PoisonedProducerMarker`** — a *derived, in-memory
+  refusal marker*: one producer whose rail history cannot be folded is refused write-free until a
+  human release, instead of the store refusing to open. It is quarantine bookkeeping, not tainted
+  data. The term is load-bearing API (~115 references in `app/`, ~188 in `tests/`, 27 in the
+  ratified work order) and is deliberately NOT renamed — renaming mid-review would diverge the code
+  from operator-ratified text for no behavioural gain.
+- **"unauthorized cycle reset"** — the code and pins use this for what the ratified work order's
+  refutation table (pass-2 finding F-H) calls "budget laundering": a zero-width release applied to a
+  *mid-cycle* rail, which would clear a partially consumed non-refilling budget with no epoch to
+  close. Same concept, same F-H identifier; the neutral wording is preferred in this repository
+  because the application is financial and the older phrase reads across domains.
+- **"forged" / "zero-width forgery"** — established test vocabulary in this repository since before
+  this rung (`test_wo0113_attribution_repair.py`, `test_wo0113_submit_acceptance_fallback.py`,
+  `test_wo0113_emergency_override.py`, `test_signal_seat_launch_guard.py`), meaning a hand-built
+  event whose fields do not match the state it claims. Kept for consistency with that convention.
+
 ## What changed (one paragraph)
 
 REV-0044 found the delivered R6a made the event-log fold authoritative on live paths where the
@@ -61,7 +83,8 @@ tolerant per producer (derived poisoned markers; a `6955208`-generated database 
    release from log truth; wedge/unfoldable → zero-width heal; **zero/interior → repair-and-refuse**
    (the repair COMMITS before the refusal raises). The interior/zero completion is an
    implementer-level refinement of the operator's ruling — verify it against F-H (no mid-cycle
-   release event exists to launder a budget) and against replay/restart agreement (pinned).
+   release event exists to reset a partially consumed budget) and against replay/restart
+   agreement (pinned).
 6. **Read-structural, write-capped** (fold AND the SQLite row validator): logged/durable values above
    a ratified cap fold and serve; the caps bind in the builders. The standing rule is recorded in
    `pkl/` and `app/models.py`. The three re-homed cap pins and the re-aimed `overflow_bucket` case
