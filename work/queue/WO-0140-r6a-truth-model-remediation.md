@@ -45,6 +45,12 @@ filter_risk: LOW-MED
    `_apply_producer_quarantined` `:1151`, `_apply_producer_released` `:1237`), so per-producer tolerance
    is implementable in `project_producer_rails`' loop (`:1291`) — and `PRODUCER_*` events remain readable
    from a prefix whose *budget arithmetic* is invalid, because they are applied by different functions.
+5. **(Added pre-M4b, 2026-07-27 — refutes this draft's own first release amendment.) `epoch_start` is
+   load-bearing at FOUR layers**, so a no-epoch release is unfoldable as delivered: the builder requires
+   an aware datetime (`core.py:6141`) and rejects `released_at < epoch_start` (`:6146`); the fold
+   requires it parse (`_required_aware_datetime`) and **cross-checks equality** against the fold state's
+   `quarantine_epoch_started_at` (`ProjectionError` on mismatch). Null fails the parse; any datetime
+   fails the equality check against `None`. The amendment below is written against this measurement.
 
 ## Decision block (pre-checked = ratified on paste; edit a line to override)
 
@@ -92,9 +98,27 @@ filter_risk: LOW-MED
       3. a **poisoned producer** (R-1) — the release append becomes the fold checkpoint, so the invalid
          prefix falls out of scope on the next rebuild: **release heals**.
       Anything else still raises `ProducerNotQuarantinedError`, both stores, same type.
+      **⚠ The no-epoch release payload (measured premise 5 forces this to be explicit):** a wedge or
+      poisoned release carries **`epoch_start = released_at`** — a machine-recognizable **zero-width
+      window** — never null (null fails the fold's `_required_aware_datetime`; a ratified field's type
+      does not change). The builder's `released_at < epoch_start` check passes on equality untouched.
+      The fold's equality cross-check is **state-conditional**: with an open epoch in fold state, exact
+      equality against `quarantine_epoch_started_at` is required exactly as today (the drift net stays);
+      with no open epoch (wedge, or a release that IS the poisoned-heal checkpoint), the fold accepts
+      precisely the zero-width form and nothing else. `rejected_count` on a no-epoch release is **0**
+      unless R6b's live holder has a count. **This is a payload-semantics amendment on a ratified field
+      (domain gains one degenerate case; the field list is untouched) — ratified by the operator pasting
+      this WO, and named as an explicit item in the REV-0044 addendum.**
+      **Checkpoint sequence adoption:** a bounded fold that begins at a release checkpoint holds the
+      zero state, so it must **adopt the next opener's payload `epoch_sequence`** (validated positive
+      and strictly greater than `last_known_epoch_sequence`) rather than incrementing from zero —
+      otherwise every post-heal opener mis-folds as a sequence mismatch.
       **Pins:** the REV-0044 drift probe (cache/log divergence, both directions) now yields identical
-      outcomes on both stores; wedge → 403 → release → ingest resumes; poisoned → release → next
-      `initialize()` folds clean. Mutation: revert memory to fold-only gating ⇒ the drift pin goes RED.
+      outcomes on both stores; wedge → 403 → release (zero-width window) → ingest resumes → the fold
+      accepts the release AND the next opener at `last_known+1`; poisoned → release → next
+      `initialize()` folds clean; a normal release with a *wrong* `epoch_start` still fails the fold
+      (the drift net is provably not weakened — mutation: widen the state-conditional check ⇒ RED).
+      Mutation: revert memory to fold-only gating ⇒ the drift pin goes RED.
 
 - [x] **D-R — R-5 + R-7 + R-13: constants move to `app/models.py`; replay validates STRUCTURALLY;
       write-time validates against caps.** `SIGNAL_RATE_LIMIT_PER_HOUR_MAX`, `SIGNAL_RATE_BURST_MAX`,
