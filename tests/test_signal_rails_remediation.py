@@ -681,3 +681,105 @@ async def test_open_epoch_drift_poisons_instead_of_raising(tmp_path) -> None:
     # The drift funnelled into the heal — no uncaught ProjectionError, no wedge.
     assert released.quarantine_epoch_open is False
     assert store.poisoned_producers() == {}  # healed in the same call
+
+
+# --------------------------------------------------------------------------- #
+# Option A (Ameen 2026-07-27): the log-classified release for drift poisons
+# --------------------------------------------------------------------------- #
+
+
+async def test_open_log_drift_release_is_state1_and_replay_agrees(
+    tmp_path,
+) -> None:
+    """Refutation finding 2, Option A: a drift-poisoned producer whose LOG
+    folds OPEN gets a NORMAL state-1 release from log truth — replay agrees,
+    no re-poison, no divergence."""
+
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    path = str(tmp_path / "opendrift2.db")
+    store = SqliteStateStore(path)
+    await store.initialize()
+    for _ in range(2):
+        await store.check_and_debit_producer_rate(
+            "p-a", now=now, limit_per_hour=60, burst=1
+        )
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE signal_producer_rails SET quarantine_epoch_sequence=4 "
+        "WHERE producer_id='p-a'"
+    )
+    store._conn.commit()
+
+    released = await store.release_producer(
+        "p-a", actor="operator", rejected_count=0, released_at=now
+    )
+    assert store.poisoned_producers() == {}
+    assert released.quarantine_epoch_sequence == 1  # the LOG's epoch, not row+1
+
+    releases = [
+        e
+        for e in await store.get_execution_events()
+        if e.event_type.value == "producer_released"
+    ]
+    assert len(releases) == 1
+    payload = releases[0].payload
+    # A REAL window closed from log truth — NOT a zero-width heal.
+    assert payload["epoch_start"] == now.isoformat()
+
+    projection = project_read_models(await store.get_execution_events())
+    assert projection.poisoned_producers == {}  # replay AGREES — the P0 shape
+    fresh = SqliteStateStore(path)
+    await fresh.initialize()
+    assert fresh.poisoned_producers() == {}
+
+
+async def test_interior_log_drift_is_repaired_and_refused(tmp_path) -> None:
+    """Option A: an INTERIOR log means the producer is genuinely mid-cycle —
+    releasing it would be the budget laundering F-H forbids. The release
+    repairs the cache from log truth, clears the poison, and refuses; the
+    repair survives the refusal."""
+
+    from app.store.base import ProducerNotQuarantinedError
+
+    path = str(tmp_path / "interior.db")
+    store = SqliteStateStore(path)
+    await store.initialize()
+    r = await store.ingest_signal(
+        **_ingest_kwargs("p-b", "bad-1", invalid=True, cycle_budget_limit=3)
+    )
+    assert r.outcome == "quarantined_validation"
+
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE signal_producer_rails SET cycle_budget_consumed=2 "
+        "WHERE producer_id='p-b'"
+    )
+    store._conn.commit()
+
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    with pytest.raises(ProducerNotQuarantinedError):
+        await store.release_producer(
+            "p-b", actor="operator", rejected_count=0, released_at=now
+        )
+
+    # The refusal HEALED: poison cleared, row repaired to log truth, no event.
+    assert store.poisoned_producers() == {}
+    rail = await store.get_producer_rail("p-b")
+    assert (rail.cycle_budget_limit, rail.cycle_budget_consumed) == (3, 1)
+    releases = [
+        e
+        for e in await store.get_execution_events()
+        if e.event_type.value == "producer_released"
+    ]
+    assert releases == []  # no event for a mid-cycle producer — F-H holds
+
+    ok = await store.ingest_signal(
+        **_ingest_kwargs("p-b", "good-after", cycle_budget_limit=3)
+    )
+    assert ok.outcome == "received"
+    projection = project_read_models(await store.get_execution_events())
+    assert projection.poisoned_producers == {}

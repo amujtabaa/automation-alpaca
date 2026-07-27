@@ -26,10 +26,23 @@
 | 4 | Three-state release + zero-width/no-epoch rules + never-regress carrier | **VERIFIED** — 13 remediation pins green; 4 decisive mutants RED→GREEN (flat-seed, widened acceptance, heal removal, key-blind floor); 182-test corpus green |
 | 5 | Constants → models.py; read-structural/write-capped (fold + row validator); cap-pin re-home | **VERIFIED** — 3 pins RED→GREEN; both mutants RED (cap-bound restored; literal re-declared); lazy loader deleted; 183-test corpus green |
 | 6 | R-8..R-12 mechanical | **VERIFIED** — R-8 module-anchored + non-vacuous; R-9 mutant (lens A's M5, the one nothing caught) now RED on TWO pins; R-10 outcome-keyed; R-11 read-only-property Protocol, getattr gone, mypy green; R-12 property slice over open-epoch + at-limit rails |
-| 7 | Refutation pass + remediation; full battery pending | **IN PROGRESS** — fresh-context pass over `b48235e..d14a65e`: 8 findings (2 P0). Findings 1/3/4/5/6/7 fixed+pinned this commit; finding 8 → addendum disclosure; **finding 2 is an OPEN DECISION GAP (operator)** |
+| 7 | Refutation pass + remediation; full battery pending | **IN PROGRESS** — fresh-context pass over `b48235e..d14a65e`: 8 findings (2 P0). Findings 1/3/4/5/6/7 fixed+pinned this commit; finding 8 → addendum disclosure; finding 2 RESOLVED by operator ruling (Option A, 2026-07-27) — see below |
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | pending |
 
 ## Evidence log
+
+- 2026-07-27 (Option A, operator-ratified): **the log-classified release closes refutation
+  finding 2.** A poisoned producer is classified by LOG truth at release time, on both stores:
+  log folds OPEN → a normal state-1 release of the log's epoch (never a zero-width heal of a
+  healthy epoch); log folds WEDGE or is UNFOLDABLE → the zero-width heal; log folds ZERO or
+  INTERIOR → **repair-and-refuse** — the cache is repaired from log truth, the poison cleared,
+  and the release refused as not-quarantined, with the repair COMMITTING before the raise
+  (releasing a mid-cycle producer is exactly the F-H budget laundering, so no event is the correct
+  outcome; the refined interior/zero rule is an implementation-level completion of the operator's
+  Option A, disclosed here for REV-0045). Pins: open-log drift ⇒ state-1 payload from log truth,
+  replay + restart agree; interior-log drift ⇒ PNQ raise, poison cleared, row repaired, no release
+  event, next ingest received, replay clean. Mutant: classification blinded (the pre-Option-A
+  always-heal) ⇒ both pins RED; restored GREEN. 189-test corpus green.
 
 - 2026-07-27 (refutation pass): a fresh-context agent attacked the full diff with runnable probes.
   **Finding 1 (P0, mine, mechanical):** the six runtime boundary sites caught only

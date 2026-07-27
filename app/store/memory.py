@@ -6131,11 +6131,65 @@ class InMemoryStateStore(StateStore):
                             last_known_epoch_sequence=0,
                         )
                         poisoned = True
+                repaired_rail = None
                 if poisoned:
-                    epoch_start = released_at  # zero-width heal window
-                    epoch_sequence = (
-                        self._release_sequence_floor_unlocked(producer_id) + 1
-                    )
+                    # Option A (Ameen 2026-07-27): classify by LOG truth so
+                    # every release outcome is replay-consistent (sqlite
+                    # mirror — R-3 parity).
+                    def _belongs(event: ExecutionEvent) -> bool:
+                        if event.payload.get("producer_id") == producer_id:
+                            return True
+                        record = event.payload.get("record")
+                        return (
+                            isinstance(record, dict)
+                            and record.get("producer_id") == producer_id
+                        )
+
+                    folded = None
+                    try:
+                        folded = fold_producer_rail(
+                            ProducerRailProjection(producer_id=producer_id),
+                            (
+                                event
+                                for event in self._execution_events
+                                if _belongs(event)
+                            ),
+                        )
+                    except ProjectionError:
+                        folded = None
+                    if folded is not None and folded.quarantine_epoch_open:
+                        if folded.quarantine_epoch_started_at is None:
+                            raise InvalidEventError(
+                                f"producer rail {producer_id!r} log epoch has no start"
+                            )
+                        epoch_start = folded.quarantine_epoch_started_at
+                        epoch_sequence = folded.quarantine_epoch_sequence
+                    elif folded is not None and not (
+                        folded.cycle_budget_limit is not None
+                        and folded.cycle_budget_consumed >= folded.cycle_budget_limit
+                    ):
+                        repaired_rail = folded
+                    else:
+                        epoch_start = released_at
+                        epoch_sequence = (
+                            self._release_sequence_floor_unlocked(producer_id) + 1
+                        )
+                    if repaired_rail is not None:
+                        self._producer_budget_rails[producer_id] = _ProducerBudgetRail(
+                            cycle_budget_limit=(repaired_rail.cycle_budget_limit),
+                            cycle_budget_consumed=(repaired_rail.cycle_budget_consumed),
+                            quarantine_epoch_open=(repaired_rail.quarantine_epoch_open),
+                            quarantine_epoch_started_at=(
+                                repaired_rail.quarantine_epoch_started_at
+                            ),
+                            quarantine_breach_trigger=(
+                                repaired_rail.quarantine_breach_trigger
+                            ),
+                        )
+                        self._producer_epoch_sequences[producer_id] = (
+                            repaired_rail.quarantine_epoch_sequence
+                        )
+                        self._poisoned_producers.pop(producer_id, None)
                 elif rail is not None and rail.quarantine_epoch_open:
                     if rail.quarantine_epoch_started_at is None:
                         raise InvalidEventError(
@@ -6156,24 +6210,34 @@ class InMemoryStateStore(StateStore):
                     raise ProducerNotQuarantinedError(
                         f"signal producer {producer_id!r} is not quarantined"
                     )
-                release = producer_released_event(
-                    producer_id=producer_id,
-                    actor=actor,
-                    rejected_count=rejected_count,
-                    epoch_start=epoch_start,
-                    released_at=released_at,
-                    epoch_sequence=epoch_sequence,
-                )
-                stored = self._append_execution_event_unlocked(release)
-                if stored.id != release.id:
-                    raise InvalidEventError(
-                        "producer release event was already present"
+                release_result = None
+                if repaired_rail is None:
+                    release = producer_released_event(
+                        producer_id=producer_id,
+                        actor=actor,
+                        rejected_count=rejected_count,
+                        epoch_start=epoch_start,
+                        released_at=released_at,
+                        epoch_sequence=epoch_sequence,
                     )
-                self._producer_rate_buckets.pop(producer_id, None)
-                self._producer_budget_rails[producer_id] = _ProducerBudgetRail()
-                self._producer_epoch_sequences[producer_id] = epoch_sequence
-                self._poisoned_producers.pop(producer_id, None)
-                return self._producer_rail_unlocked(producer_id)
+                    stored = self._append_execution_event_unlocked(release)
+                    if stored.id != release.id:
+                        raise InvalidEventError(
+                            "producer release event was already present"
+                        )
+                    self._producer_rate_buckets.pop(producer_id, None)
+                    self._producer_budget_rails[producer_id] = _ProducerBudgetRail()
+                    self._producer_epoch_sequences[producer_id] = epoch_sequence
+                    self._poisoned_producers.pop(producer_id, None)
+                    release_result = self._producer_rail_unlocked(producer_id)
+            # Outside the atomic block: the repair survives this raise
+            # (Option A — the refusal must heal, not roll back).
+            if release_result is None:
+                raise ProducerNotQuarantinedError(
+                    f"signal producer {producer_id!r} is not quarantined "
+                    "(rail drift repaired from log truth)"
+                )
+            return release_result
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags
