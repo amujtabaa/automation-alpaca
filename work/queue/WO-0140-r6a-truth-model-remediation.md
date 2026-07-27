@@ -1,12 +1,13 @@
 ---
 type: Work Order
 title: "R6a-R — rails truth-model remediation: cache-authoritative live path, release-boundary bounded folds, tolerant startup, release as the universal recovery"
-status: DRAFT
+status: READY
+ratified: "2026-07-27 (Ameen) — rev-3 M1 block incl. the release-semantics amendment, the zero-width ruling + never-regress sequence rule, the D-R6a-5 supersession, the no-opener-segment anchoring disclosure, the ratified scaling disclosure, the one-packet ADR reconciliation, and the closed test-edit list. SEAT SWAP confirmed same date: Claude (planning seat) implements; Codex takes the gate-clearing independent review."
 work_order_id: WO-0140
 remediates: "work/review/REV-0044/result.md R-1..R-13 (WO-0104a, held in REVIEW)"
 branch: codex/signal-r6a-rails-store (remediation commits on the same branch, per REV-0042/0043 precedent)
 model_tier: strong (LOCAL Codex — event-log truth, human-gated release semantics, single-writer hot path)
-review: "REV-0044 addendum re-review clears the gate; reviewer-owned, explicit verdict over the named items"
+review: "SEAT SWAP (Ameen 2026-07-27): the implementer is now the REV-0044 author, so the gate-clearing review moves to Codex — a Codex-owned REV-0045 packet referencing REV-0044, explicit verdict over every named item. No seat reviews its own work."
 wargame: "FULL per .ai-os/core/18 — two M4b passes (10 + 10 findings, 3 P0 total); rev-3 applies pass 2"
 filter_risk: LOW-MED
 ---
@@ -184,9 +185,10 @@ O(1) anchor pin (corrupt the row sequence in a no-opener state ⇒ loud refusal,
 
 ## Close-out
 
-Remediation commits on `codex/signal-r6a-rails-store`; WO-0104a stays REVIEW. The implementer **stages
-evidence only**; the **reviewer authors the REV-0044 addendum** (protocol P-1), which must carry **an
-explicit verdict over the named items** — the release amendment + zero-width ruling, the ADR-009/
+Remediation commits on `codex/signal-r6a-rails-store`; WO-0104a stays REVIEW. **Seat swap in force:**
+Claude (the REV-0044 author) implements, so the gate-clearing review is **Codex-owned — REV-0045,
+referencing REV-0044** (the reviewer-owns-result rule mirrored, per P-1). The implementer stages
+evidence only; **Codex's REV-0045 must carry an explicit verdict over the named items** — the release amendment + zero-width ruling, the ADR-009/
 `02-lifecycle.md` amendment, the ratified scaling disclosure, the D-R6a-5 supersession, the no-opener
 anchoring disclosure, and the rev-2 F-7 process disclosure — plus `disposition.md` and the ledger line
 per the Disposition Loop (pass-2 F-I: a named item clears "for that item" only with its own verdict).
