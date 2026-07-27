@@ -11,7 +11,7 @@ from app.models import SignalRecord, SignalStatus
 
 
 class SignalIngestOutcome(str, Enum):
-    """Facade-owned exhaustive vocabulary for the six R4 ingest outcomes."""
+    """Facade-owned exhaustive vocabulary for the seven ingest outcomes."""
 
     RECEIVED = "received"
     EXPIRED = "expired"
@@ -19,12 +19,13 @@ class SignalIngestOutcome(str, Enum):
     QUARANTINED_FRESHNESS = "quarantined_freshness"
     REPLAYED = "replayed"
     CONFLICT = "conflict"
+    PRODUCER_QUARANTINED = "producer_quarantined"
 
 
 @dataclass(frozen=True)
 class SignalIngestResult:
     outcome: SignalIngestOutcome
-    record: SignalRecord
+    record: Optional[SignalRecord]
 
 
 @runtime_checkable

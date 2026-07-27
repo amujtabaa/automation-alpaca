@@ -25,7 +25,8 @@ below implement the same "events → read model" shape (see
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Iterable
+from datetime import datetime
+from typing import Iterable, Literal
 
 from app.models import (
     ExecutionEvent,
@@ -887,3 +888,439 @@ def project_signal_records(
                 update[destination_field] = payload[source_key]
         records[(producer_id, signal_id)] = existing.model_copy(update=update)
     return records
+
+
+# --------------------------------------------------------------------------- #
+# Signal Seat producer-rail fold (ADR-009 / WO-0104a).
+#
+# Only the budget/quarantine columns are event-derived. The paced-arrival
+# bucket is primary durable state because authenticated replays consume tokens
+# without necessarily appending an event, so it deliberately does not appear in
+# this projection.
+# --------------------------------------------------------------------------- #
+
+_PRODUCER_RAIL_SIGNAL_EVENT_TYPES = frozenset(
+    {
+        ExecutionEventType.SIGNAL_RECEIVED,
+        ExecutionEventType.SIGNAL_QUARANTINED,
+        ExecutionEventType.SIGNAL_EXPIRED,
+        ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT,
+        ExecutionEventType.SIGNAL_REJECTED,
+        ExecutionEventType.SIGNAL_APPROVED,
+    }
+)
+
+_PRODUCER_CYCLE_BUDGET_MAX = 1000
+_SQLITE_MAX_SIGNED_INT = 2**63 - 1
+
+
+def _producer_rail_contract() -> tuple[frozenset[str], frozenset[str], int, int]:
+    """Load single-source rail vocabulary/caps without a package import cycle.
+
+    Importing ``app.store.core`` while this module loads executes the eager
+    ``app.store`` package initializer, which imports the memory store and this
+    module again. Projection runs only after module loading, so a lazy import
+    preserves standalone projector imports while keeping the ratified public
+    constants single-sourced.
+    """
+
+    from app.store.core import (
+        SIGNAL_EXPIRY_DETECTORS,
+        SIGNAL_QUARANTINE_REASONS,
+        SIGNAL_RATE_BURST_MAX,
+        SIGNAL_REJECTED_COUNT_MAX,
+    )
+
+    return (
+        SIGNAL_QUARANTINE_REASONS,
+        SIGNAL_EXPIRY_DETECTORS,
+        SIGNAL_RATE_BURST_MAX,
+        SIGNAL_REJECTED_COUNT_MAX,
+    )
+
+
+_PRODUCER_QUARANTINE_COMMON_FIELDS = frozenset(
+    {
+        "producer_id",
+        "breach_trigger",
+        "epoch_start",
+        "epoch_sequence",
+    }
+)
+
+_PRODUCER_RELEASE_FIELDS = frozenset(
+    {
+        "producer_id",
+        "actor",
+        "rejected_count",
+        "epoch_start",
+        "released_at",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ProducerRailProjection:
+    """Replay-derived budget and quarantine state for one signal producer.
+
+    ``cycle_budget_*`` and ``quarantine_*`` are reconstructed from the
+    append-only event log. The paced-arrival token bucket is intentionally
+    absent: requests can debit it without appending an event, so replay has no
+    independent evidence from which to rebuild those primary-durable columns.
+    """
+
+    producer_id: str
+    cycle_budget_limit: int | None = None
+    cycle_budget_consumed: int = 0
+    quarantine_epoch_open: bool = False
+    quarantine_epoch_sequence: int = 0
+    quarantine_epoch_started_at: datetime | None = None
+    quarantine_breach_trigger: Literal["budget_exhausted", "rate_breach"] | None = None
+
+
+def _producer_id_from_event(event: ExecutionEvent) -> str:
+    """Read and cross-check the producer identity carried by a rail event."""
+
+    payload = event.payload
+    direct = payload.get("producer_id")
+    if direct is not None and not isinstance(direct, str):
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has invalid "
+            "producer_id"
+        )
+
+    snapshot = payload.get("record")
+    snapshot_producer: object = None
+    if isinstance(snapshot, dict):
+        snapshot_producer = snapshot.get("producer_id")
+        if snapshot_producer is not None and not isinstance(snapshot_producer, str):
+            raise ProjectionError(
+                f"{event.event_type.value} event sequence={event.sequence} has "
+                "invalid record producer_id"
+            )
+    if (
+        isinstance(direct, str)
+        and isinstance(snapshot_producer, str)
+        and direct != snapshot_producer
+    ):
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has "
+            "conflicting producer identity"
+        )
+
+    producer_id = direct if isinstance(direct, str) else snapshot_producer
+    if not isinstance(producer_id, str):
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} is missing "
+            "required producer_id"
+        )
+    return producer_id
+
+
+def _required_str(
+    payload: dict[str, object],
+    field_name: str,
+    *,
+    event: ExecutionEvent,
+) -> str:
+    value = payload.get(field_name)
+    if not isinstance(value, str):
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has invalid "
+            f"{field_name}"
+        )
+    return value
+
+
+def _required_int(
+    payload: dict[str, object],
+    field_name: str,
+    *,
+    event: ExecutionEvent,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = payload.get(field_name)
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has invalid "
+            f"{field_name}"
+        )
+    return value
+
+
+def _required_aware_datetime(
+    payload: dict[str, object],
+    field_name: str,
+    *,
+    event: ExecutionEvent,
+) -> datetime:
+    value = payload.get(field_name)
+    if not isinstance(value, str):
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has invalid "
+            f"{field_name}"
+        )
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has invalid "
+            f"{field_name}"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has naive "
+            f"{field_name}"
+        )
+    return parsed
+
+
+def _require_exact_payload_fields(
+    event: ExecutionEvent, expected: frozenset[str]
+) -> None:
+    actual = frozenset(event.payload)
+    if actual != expected:
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has "
+            f"unratified payload fields: expected={sorted(expected)!r} "
+            f"actual={sorted(actual)!r}"
+        )
+
+
+def _is_attributable_signal_event(event: ExecutionEvent) -> bool:
+    payload = event.payload
+    quarantine_reasons, expiry_detectors, _, _ = _producer_rail_contract()
+    if event.event_type is ExecutionEventType.SIGNAL_QUARANTINED:
+        reason = _required_str(payload, "quarantine_reason", event=event)
+        if reason == "producer_sweep":
+            return False
+        if reason not in quarantine_reasons:
+            raise ProjectionError(
+                f"SIGNAL_QUARANTINED event sequence={event.sequence} has "
+                f"unrecognized quarantine_reason {reason!r}"
+            )
+        return True
+    if event.event_type is ExecutionEventType.SIGNAL_EXPIRED:
+        detected_by = _required_str(payload, "detected_by", event=event)
+        if detected_by not in expiry_detectors:
+            raise ProjectionError(
+                f"SIGNAL_EXPIRED event sequence={event.sequence} has "
+                f"unrecognized detected_by {detected_by!r}"
+            )
+        return detected_by == "ingest"
+    return event.event_type is ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT
+
+
+def _apply_attributable_signal_event(
+    current: ProducerRailProjection, event: ExecutionEvent
+) -> ProducerRailProjection:
+    if current.quarantine_epoch_open:
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} attempts a "
+            "budget debit while the producer quarantine epoch is open"
+        )
+
+    limit = _required_int(
+        event.payload,
+        "cycle_budget_limit",
+        event=event,
+        minimum=1,
+        maximum=_PRODUCER_CYCLE_BUDGET_MAX,
+    )
+    pinned_limit = current.cycle_budget_limit
+    if pinned_limit is None:
+        pinned_limit = limit
+    elif limit != pinned_limit:
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} has "
+            f"cycle_budget_limit={limit}, expected pinned value {pinned_limit}"
+        )
+    if current.cycle_budget_consumed >= pinned_limit:
+        raise ProjectionError(
+            f"{event.event_type.value} event sequence={event.sequence} exceeds "
+            "the projected cycle budget"
+        )
+    return replace(
+        current,
+        cycle_budget_limit=pinned_limit,
+        cycle_budget_consumed=current.cycle_budget_consumed + 1,
+    )
+
+
+def _apply_producer_quarantined(
+    current: ProducerRailProjection, event: ExecutionEvent
+) -> ProducerRailProjection:
+    _, _, rate_burst_max, _ = _producer_rail_contract()
+    payload = event.payload
+    trigger = payload.get("breach_trigger")
+    if trigger == "budget_exhausted":
+        expected_fields = _PRODUCER_QUARANTINE_COMMON_FIELDS | {
+            "cycle_budget_consumed",
+            "cycle_budget_limit",
+        }
+    elif trigger == "rate_breach":
+        expected_fields = _PRODUCER_QUARANTINE_COMMON_FIELDS | {"bucket_capacity"}
+    else:
+        raise ProjectionError(
+            f"PRODUCER_QUARANTINED event sequence={event.sequence} has invalid "
+            "breach_trigger"
+        )
+    _require_exact_payload_fields(event, frozenset(expected_fields))
+
+    if current.quarantine_epoch_open:
+        raise ProjectionError(
+            f"PRODUCER_QUARANTINED event sequence={event.sequence} attempts to "
+            "open an already-open quarantine epoch"
+        )
+    epoch_sequence = _required_int(
+        payload,
+        "epoch_sequence",
+        event=event,
+        minimum=1,
+        maximum=_SQLITE_MAX_SIGNED_INT,
+    )
+    expected_sequence = current.quarantine_epoch_sequence + 1
+    if epoch_sequence != expected_sequence:
+        raise ProjectionError(
+            f"PRODUCER_QUARANTINED event sequence={event.sequence} has "
+            f"epoch_sequence={epoch_sequence}, expected {expected_sequence}"
+        )
+    epoch_start = _required_aware_datetime(
+        payload,
+        "epoch_start",
+        event=event,
+    )
+
+    if trigger == "budget_exhausted":
+        consumed = _required_int(
+            payload,
+            "cycle_budget_consumed",
+            event=event,
+            minimum=1,
+            maximum=_PRODUCER_CYCLE_BUDGET_MAX,
+        )
+        limit = _required_int(
+            payload,
+            "cycle_budget_limit",
+            event=event,
+            minimum=1,
+            maximum=_PRODUCER_CYCLE_BUDGET_MAX,
+        )
+        if (
+            consumed != limit
+            or consumed != current.cycle_budget_consumed
+            or limit != current.cycle_budget_limit
+        ):
+            raise ProjectionError(
+                f"PRODUCER_QUARANTINED event sequence={event.sequence} budget "
+                "counters disagree with the attributable-event fold"
+            )
+    else:
+        _required_int(
+            payload,
+            "bucket_capacity",
+            event=event,
+            minimum=1,
+            maximum=rate_burst_max,
+        )
+
+    return replace(
+        current,
+        quarantine_epoch_open=True,
+        quarantine_epoch_sequence=epoch_sequence,
+        quarantine_epoch_started_at=epoch_start,
+        quarantine_breach_trigger=trigger,
+    )
+
+
+def _apply_producer_released(
+    current: ProducerRailProjection, event: ExecutionEvent
+) -> ProducerRailProjection:
+    _, _, _, rejected_count_max = _producer_rail_contract()
+    _require_exact_payload_fields(event, _PRODUCER_RELEASE_FIELDS)
+    if not current.quarantine_epoch_open:
+        raise ProjectionError(
+            f"PRODUCER_RELEASED event sequence={event.sequence} has no open "
+            "quarantine epoch"
+        )
+
+    actor = _required_str(event.payload, "actor", event=event)
+    if not actor.strip() or actor != actor.strip():
+        raise ProjectionError(
+            f"PRODUCER_RELEASED event sequence={event.sequence} has invalid actor"
+        )
+    _required_int(
+        event.payload,
+        "rejected_count",
+        event=event,
+        minimum=0,
+        maximum=rejected_count_max,
+    )
+    epoch_start = _required_aware_datetime(
+        event.payload,
+        "epoch_start",
+        event=event,
+    )
+    if epoch_start != current.quarantine_epoch_started_at:
+        raise ProjectionError(
+            f"PRODUCER_RELEASED event sequence={event.sequence} epoch_start does "
+            "not match the open quarantine epoch"
+        )
+    released_at = _required_aware_datetime(
+        event.payload,
+        "released_at",
+        event=event,
+    )
+    if released_at < epoch_start:
+        raise ProjectionError(
+            f"PRODUCER_RELEASED event sequence={event.sequence} has released_at "
+            "before epoch_start"
+        )
+
+    return replace(
+        current,
+        cycle_budget_limit=None,
+        cycle_budget_consumed=0,
+        quarantine_epoch_open=False,
+        quarantine_epoch_started_at=None,
+        quarantine_breach_trigger=None,
+    )
+
+
+def project_producer_rails(
+    events: Iterable[ExecutionEvent],
+) -> dict[str, ProducerRailProjection]:
+    """Fold ordered signal/producer events into per-producer rail projections.
+
+    Every encountered signal producer remains in the mapping, including one
+    whose only event is excluded from budget accounting or whose epoch has been
+    released. Malformed required payloads, counter drift, illegal post-open
+    debits, and non-monotonic epoch identities fail closed.
+    """
+
+    projected: dict[str, ProducerRailProjection] = {}
+    for event in events:
+        if (
+            event.event_type not in _PRODUCER_RAIL_SIGNAL_EVENT_TYPES
+            and event.event_type
+            not in {
+                ExecutionEventType.PRODUCER_QUARANTINED,
+                ExecutionEventType.PRODUCER_RELEASED,
+            }
+        ):
+            continue
+
+        producer_id = _producer_id_from_event(event)
+        current = projected.setdefault(
+            producer_id,
+            ProducerRailProjection(producer_id=producer_id),
+        )
+
+        if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED:
+            projected[producer_id] = _apply_producer_quarantined(current, event)
+        elif event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+            projected[producer_id] = _apply_producer_released(current, event)
+        elif _is_attributable_signal_event(event):
+            projected[producer_id] = _apply_attributable_signal_event(current, event)
+    return projected

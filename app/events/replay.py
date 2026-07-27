@@ -24,9 +24,11 @@ from app.events.projectors import (
     EnvelopeProjection,
     PositionProjection,
     PositionProjector,
+    ProducerRailProjection,
     active_emergency_reduce_overrides,
     current_trading_state,
     project_envelopes,
+    project_producer_rails,
     project_signal_records,
     quarantined_symbols,
     timeout_quarantined_order_ids,
@@ -151,7 +153,8 @@ class ReadModelProjection:
     log, other than position (which has its own :class:`PositionProjection`).
     Session-scoped models (``trading_state``, ``emergency_overrides``) are keyed
     by ``session_id`` so a multi-session log is compared session-by-session;
-    envelopes are keyed by immutable ``envelope_id``."""
+    envelopes are keyed by immutable ``envelope_id`` and producer rails by
+    authenticated ``producer_id``."""
 
     quarantined_symbols: frozenset[str]
     timeout_quarantined_order_ids: frozenset[str]
@@ -159,6 +162,7 @@ class ReadModelProjection:
     emergency_overrides: Mapping[str, frozenset[str]] = field(default_factory=dict)
     envelopes: Mapping[str, EnvelopeProjection] = field(default_factory=dict)
     signals: Mapping[tuple[str, str], SignalRecord] = field(default_factory=dict)
+    producer_rails: Mapping[str, ProducerRailProjection] = field(default_factory=dict)
 
 
 def _session_ids(events: Sequence[ExecutionEvent]) -> list[str]:
@@ -193,6 +197,7 @@ def project_read_models(events: Iterable[ExecutionEvent]) -> ReadModelProjection
         },
         envelopes=project_envelopes(materialized),
         signals=project_signal_records(materialized),
+        producer_rails=project_producer_rails(materialized),
     )
 
 
@@ -224,6 +229,14 @@ def _describe_read_model_diff(
             return (
                 f"signal {signal_key!r} differs: "
                 f"{label_a}={signal_a!r} {label_b}={signal_b!r}"
+            )
+    for producer_id in sorted(set(a.producer_rails) | set(b.producer_rails)):
+        rail_a = a.producer_rails.get(producer_id)
+        rail_b = b.producer_rails.get(producer_id)
+        if rail_a != rail_b:
+            return (
+                f"producer_rails for {producer_id!r} differ: "
+                f"{label_a}={rail_a!r} {label_b}={rail_b!r}"
             )
     for sid in sorted(set(a.trading_state) | set(b.trading_state)):
         sa = a.trading_state.get(sid)
@@ -264,8 +277,8 @@ async def verify_dual_store_readmodel_parity(
 ) -> ParityResult:
     """Assert the in-memory and SQLite event logs project to the same NON-position
     read models — quarantine, timeout-quarantine, per-session ``TradingState``,
-    per-session emergency-reduce overrides, and execution envelopes (Phase 6 /
-    WO-0125). Complements
+    per-session emergency-reduce overrides, execution envelopes, signals, and
+    producer budget/quarantine rails (Phase 6 / WO-0125 / WO-0104a). Complements
     :func:`verify_dual_store_parity` (position) so the dual-store "strict parity"
     rule covers the full event-truth read-model surface, proving every co-written
     read-model column is reconstructable identically from either store's log."""

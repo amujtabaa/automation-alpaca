@@ -28,9 +28,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Literal, Mapping, Optional, Sequence
 
 from app.models import (
     Candidate,
@@ -85,6 +85,7 @@ from app.store.base import (
     InvalidStatusError,
     OrderIntentBlockedError,
     OrderTransitionError,
+    ProducerRailState,
     RecoveryTransitionError,
     RiskLimitBlockedError,
     RiskLimits,
@@ -5574,7 +5575,7 @@ class EnvelopeActionStageResult:
 # =========================================================================== #
 # Signal Seat ingest (ADR-009 / WO-0134; specs 01-schema + 02-lifecycle)
 #
-# Pure decision/event construction shared by both stores. The six outcome
+# Pure decision/event construction shared by both stores. The seven outcome
 # constants deliberately live here because the authoritative staged corpus pins
 # this import surface (D-R4-2); the archived implementation placed them in the
 # model module and is provenance only.
@@ -5586,6 +5587,7 @@ SIGNAL_QUARANTINED_VALIDATION = "quarantined_validation"
 SIGNAL_QUARANTINED_FRESHNESS = "quarantined_freshness"
 SIGNAL_REPLAYED = "replayed"
 SIGNAL_CONFLICT = "conflict"
+SIGNAL_PRODUCER_QUARANTINED = "producer_quarantined"
 
 SIGNAL_INGEST_OUTCOMES = frozenset(
     {
@@ -5595,6 +5597,7 @@ SIGNAL_INGEST_OUTCOMES = frozenset(
         SIGNAL_QUARANTINED_FRESHNESS,
         SIGNAL_REPLAYED,
         SIGNAL_CONFLICT,
+        SIGNAL_PRODUCER_QUARANTINED,
     }
 )
 
@@ -5606,6 +5609,20 @@ SIGNAL_TTL_MAX_SECONDS = 86400
 _SIGNAL_DIRECTIONS = frozenset({"buy", "sell"})
 _SIGNAL_CYCLE_BUDGET_MAX = 1000
 _SQLITE_MAX_SIGNED_INT = 2**63 - 1
+
+SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600
+SIGNAL_RATE_BURST_MAX = 100
+SIGNAL_REJECTED_COUNT_MAX = 10_000
+SIGNAL_QUARANTINE_REASONS = frozenset(
+    {
+        "validation",
+        "issued_at_future",
+        "issued_at_stale",
+        "ttl_out_of_range",
+        "producer_sweep",
+    }
+)
+SIGNAL_EXPIRY_DETECTORS = frozenset({"ingest", "sweep", "conversion"})
 
 
 def _require_bounded_int(
@@ -5919,6 +5936,67 @@ def signal_record_event(
     )
 
 
+_SIGNAL_TRANSITION_EVENT_TYPES = frozenset(
+    {
+        ExecutionEventType.SIGNAL_QUARANTINED,
+        ExecutionEventType.SIGNAL_EXPIRED,
+    }
+)
+
+
+def signal_transition_event(
+    record: SignalRecord,
+    event_type: ExecutionEventType,
+    *,
+    transitioned_at: datetime,
+    transition_fields: Optional[Mapping[str, Any]] = None,
+) -> ExecutionEvent:
+    """Build a snapshot-free event targeting one already-born signal record."""
+
+    _require_aware(transitioned_at, field_name="transitioned_at")
+    if event_type not in _SIGNAL_TRANSITION_EVENT_TYPES:
+        raise ValueError(f"{event_type.value} is not a signal transition event")
+    extras = dict(transition_fields or {})
+    reserved = {"producer_id", "signal_id", "record_id", "record"}
+    overlap = reserved.intersection(extras)
+    if overlap:
+        raise ValueError(
+            "transition_fields cannot override identity/snapshot keys: "
+            + ", ".join(sorted(overlap))
+        )
+    if event_type is ExecutionEventType.SIGNAL_QUARANTINED:
+        if extras.get("quarantine_reason") != "producer_sweep":
+            raise ValueError(
+                "snapshot-free SIGNAL_QUARANTINED requires "
+                "quarantine_reason='producer_sweep'"
+            )
+    if event_type is ExecutionEventType.SIGNAL_EXPIRED:
+        if extras.get("detected_by") not in {"sweep", "conversion"}:
+            raise ValueError(
+                "snapshot-free SIGNAL_EXPIRED requires detected_by='sweep' "
+                "or 'conversion'"
+            )
+    return ExecutionEvent(
+        event_type=event_type,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=signal_dedupe_key(
+            f"signal_transition_{event_type.value}",
+            record.producer_id,
+            record.signal_id,
+        ),
+        ts_event=transitioned_at,
+        ts_init=transitioned_at,
+        symbol=record.symbol,
+        payload={
+            "producer_id": record.producer_id,
+            "signal_id": record.signal_id,
+            "record_id": record.id,
+            **extras,
+        },
+    )
+
+
 def signal_duplicate_conflict_event(
     *,
     existing: SignalRecord,
@@ -5959,6 +6037,170 @@ def signal_duplicate_conflict_event(
     )
 
 
+def producer_quarantined_event(
+    *,
+    producer_id: str,
+    breach_trigger: Literal["budget_exhausted", "rate_breach"],
+    epoch_start: datetime,
+    epoch_sequence: int,
+    cycle_budget_consumed: Optional[int] = None,
+    cycle_budget_limit: Optional[int] = None,
+    bucket_capacity: Optional[int] = None,
+) -> ExecutionEvent:
+    """Build one epoch-scoped producer opener using the ratified payload."""
+
+    _require_aware(epoch_start, field_name="epoch_start")
+    _require_bounded_int(
+        epoch_sequence,
+        field_name="epoch_sequence",
+        minimum=1,
+        maximum=_SQLITE_MAX_SIGNED_INT,
+    )
+    payload: dict[str, Any] = {
+        "producer_id": producer_id,
+        "breach_trigger": breach_trigger,
+    }
+    if breach_trigger == "budget_exhausted":
+        if (
+            cycle_budget_consumed is None
+            or cycle_budget_limit is None
+            or bucket_capacity is not None
+        ):
+            raise ValueError(
+                "budget_exhausted requires consumed/limit and no bucket capacity"
+            )
+        limit = _require_bounded_int(
+            cycle_budget_limit,
+            field_name="cycle_budget_limit",
+            minimum=1,
+            maximum=_SIGNAL_CYCLE_BUDGET_MAX,
+        )
+        consumed = _require_bounded_int(
+            cycle_budget_consumed,
+            field_name="cycle_budget_consumed",
+            minimum=1,
+            maximum=_SIGNAL_CYCLE_BUDGET_MAX,
+        )
+        if consumed != limit:
+            raise ValueError(
+                "budget_exhausted requires cycle_budget_consumed == cycle_budget_limit"
+            )
+        payload.update(
+            {
+                "cycle_budget_consumed": consumed,
+                "cycle_budget_limit": limit,
+            }
+        )
+    elif breach_trigger == "rate_breach":
+        if (
+            bucket_capacity is None
+            or cycle_budget_consumed is not None
+            or cycle_budget_limit is not None
+        ):
+            raise ValueError(
+                "rate_breach requires bucket capacity and no budget counters"
+            )
+        payload["bucket_capacity"] = _require_bounded_int(
+            bucket_capacity,
+            field_name="bucket_capacity",
+            minimum=1,
+            maximum=SIGNAL_RATE_BURST_MAX,
+        )
+    else:
+        raise ValueError(f"unsupported producer breach trigger: {breach_trigger!r}")
+    payload.update(
+        {
+            "epoch_start": epoch_start.isoformat(),
+            "epoch_sequence": epoch_sequence,
+        }
+    )
+    return ExecutionEvent(
+        event_type=ExecutionEventType.PRODUCER_QUARANTINED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=signal_dedupe_key(
+            "producer_quarantine", producer_id, str(epoch_sequence)
+        ),
+        ts_event=epoch_start,
+        ts_init=epoch_start,
+        payload=payload,
+    )
+
+
+def producer_released_event(
+    *,
+    producer_id: str,
+    actor: str,
+    rejected_count: int,
+    epoch_start: datetime,
+    released_at: datetime,
+    epoch_sequence: int,
+) -> ExecutionEvent:
+    """Build the epoch-scoped release fact and its bounded diagnostic count."""
+
+    _require_aware(epoch_start, field_name="epoch_start")
+    _require_aware(released_at, field_name="released_at")
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError("actor must not be blank")
+    actor = actor.strip()
+    if released_at < epoch_start:
+        raise ValueError("released_at must not precede epoch_start")
+    _require_bounded_int(
+        rejected_count,
+        field_name="rejected_count",
+        minimum=0,
+        maximum=SIGNAL_REJECTED_COUNT_MAX,
+    )
+    _require_bounded_int(
+        epoch_sequence,
+        field_name="epoch_sequence",
+        minimum=1,
+        maximum=_SQLITE_MAX_SIGNED_INT,
+    )
+    return ExecutionEvent(
+        event_type=ExecutionEventType.PRODUCER_RELEASED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        dedupe_key=signal_dedupe_key(
+            "producer_release", producer_id, str(epoch_sequence)
+        ),
+        ts_event=released_at,
+        ts_init=released_at,
+        payload={
+            "producer_id": producer_id,
+            "actor": actor,
+            "rejected_count": rejected_count,
+            "epoch_start": epoch_start.isoformat(),
+            "released_at": released_at.isoformat(),
+        },
+    )
+
+
+def validate_producer_rate_inputs(
+    *,
+    now: datetime,
+    limit_per_hour: int,
+    burst: int,
+) -> tuple[int, int]:
+    """Validate caller-supplied rate policy and injected evaluation clock."""
+
+    _require_aware(now, field_name="now")
+    return (
+        _require_bounded_int(
+            limit_per_hour,
+            field_name="limit_per_hour",
+            minimum=1,
+            maximum=SIGNAL_RATE_LIMIT_PER_HOUR_MAX,
+        ),
+        _require_bounded_int(
+            burst,
+            field_name="burst",
+            minimum=1,
+            maximum=SIGNAL_RATE_BURST_MAX,
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class SignalIngestPlan:
     """Pure signal-ingest decision for one already-looked-up identity."""
@@ -5966,7 +6208,8 @@ class SignalIngestPlan:
     outcome: str
     record: Optional[SignalRecord]
     event: Optional[ExecutionEvent]
-    result_record: SignalRecord
+    result_record: Optional[SignalRecord]
+    epoch_event: Optional[ExecutionEvent] = None
 
 
 def _validation_freshness_fields(
@@ -6010,6 +6253,41 @@ def _validation_freshness_fields(
     return record_issued_at, record_ttl, expires_at, normalized_raw
 
 
+def _with_budget_epoch_opener(
+    plan: SignalIngestPlan,
+    *,
+    producer_rail: ProducerRailState,
+    cycle_budget_limit: int,
+    received_at: datetime,
+) -> SignalIngestPlan:
+    """Propose an opener only for an attributable event using the last slot.
+
+    The proposal uses sequence ``1`` deliberately: cached sequence is not
+    authoritative and must not make an otherwise-valid plan unreachable. Each
+    store replaces this preliminary event under its write lock/transaction
+    with an event whose sequence is derived from the event-log fold before it
+    can append the opener.
+    """
+
+    event = plan.event
+    if event is None or "cycle_budget_limit" not in event.payload:
+        return plan
+    next_consumed = producer_rail.cycle_budget_consumed + 1
+    if next_consumed < cycle_budget_limit:
+        return plan
+    return replace(
+        plan,
+        epoch_event=producer_quarantined_event(
+            producer_id=producer_rail.producer_id,
+            breach_trigger="budget_exhausted",
+            epoch_start=received_at,
+            epoch_sequence=1,
+            cycle_budget_consumed=next_consumed,
+            cycle_budget_limit=cycle_budget_limit,
+        ),
+    )
+
+
 def plan_signal_ingest(
     *,
     existing: Optional[SignalRecord],
@@ -6030,8 +6308,9 @@ def plan_signal_ingest(
     received_at: datetime,
     server_max_ttl_seconds: int,
     cycle_budget_limit: int,
+    producer_rail: Optional[ProducerRailState],
 ) -> SignalIngestPlan:
-    """Plan exactly one of the six R4 ingest outcomes without store access."""
+    """Plan exactly one of the seven ingest outcomes without store access."""
 
     _require_aware(received_at, field_name="received_at")
     _require_bounded_int(
@@ -6046,8 +6325,61 @@ def plan_signal_ingest(
         minimum=1,
         maximum=_SIGNAL_CYCLE_BUDGET_MAX,
     )
+    producer_rail = producer_rail or ProducerRailState(producer_id=producer_id)
+    if producer_rail.producer_id != producer_id:
+        raise ValueError("producer rail identity does not match ingest producer")
+    consumed = _require_bounded_int(
+        producer_rail.cycle_budget_consumed,
+        field_name="cycle_budget_consumed",
+        minimum=0,
+        maximum=_SIGNAL_CYCLE_BUDGET_MAX,
+    )
+    pinned_limit = producer_rail.cycle_budget_limit
+    if pinned_limit is not None:
+        pinned_limit = _require_bounded_int(
+            pinned_limit,
+            field_name="pinned_cycle_budget_limit",
+            minimum=1,
+            maximum=_SIGNAL_CYCLE_BUDGET_MAX,
+        )
+    if (pinned_limit is None and consumed != 0) or (
+        pinned_limit is not None and not 1 <= consumed <= pinned_limit
+    ):
+        raise ValueError("producer rail budget fields are inconsistent")
+    _require_bounded_int(
+        producer_rail.quarantine_epoch_sequence,
+        field_name="quarantine_epoch_sequence",
+        minimum=0,
+        maximum=_SQLITE_MAX_SIGNED_INT,
+    )
+    if producer_rail.quarantine_epoch_open:
+        if (
+            producer_rail.quarantine_epoch_sequence < 1
+            or producer_rail.quarantine_epoch_started_at is None
+            or producer_rail.quarantine_breach_trigger
+            not in {"budget_exhausted", "rate_breach"}
+        ):
+            raise ValueError("open producer rail epoch fields are incomplete")
+        _require_aware(
+            producer_rail.quarantine_epoch_started_at,
+            field_name="quarantine_epoch_started_at",
+        )
+    elif (
+        producer_rail.quarantine_epoch_started_at is not None
+        or producer_rail.quarantine_breach_trigger is not None
+    ):
+        raise ValueError("closed producer rail carries open-epoch fields")
+    effective_cycle_budget_limit = pinned_limit or cycle_budget_limit
     suggested_quantity = safe_advisory_quantity(suggested_quantity)
     suggested_limit_price = safe_advisory_price(suggested_limit_price)
+
+    if producer_rail.quarantine_epoch_open or consumed >= effective_cycle_budget_limit:
+        return SignalIngestPlan(
+            outcome=SIGNAL_PRODUCER_QUARANTINED,
+            record=None,
+            event=None,
+            result_record=None,
+        )
 
     if existing is not None:
         if existing.payload_hash == payload_hash:
@@ -6057,17 +6389,22 @@ def plan_signal_ingest(
                 event=None,
                 result_record=existing,
             )
-        return SignalIngestPlan(
-            outcome=SIGNAL_CONFLICT,
-            record=None,
-            event=signal_duplicate_conflict_event(
-                existing=existing,
-                new_payload_hash=payload_hash,
-                conflicting_proposal=canonical_proposal,
-                cycle_budget_limit=cycle_budget_limit,
-                received_at=received_at,
+        return _with_budget_epoch_opener(
+            SignalIngestPlan(
+                outcome=SIGNAL_CONFLICT,
+                record=None,
+                event=signal_duplicate_conflict_event(
+                    existing=existing,
+                    new_payload_hash=payload_hash,
+                    conflicting_proposal=canonical_proposal,
+                    cycle_budget_limit=effective_cycle_budget_limit,
+                    received_at=received_at,
+                ),
+                result_record=existing,
             ),
-            result_record=existing,
+            producer_rail=producer_rail,
+            cycle_budget_limit=effective_cycle_budget_limit,
+            received_at=received_at,
         )
 
     if validation_failed:
@@ -6104,15 +6441,20 @@ def plan_signal_ingest(
             created_at=received_at,
             updated_at=received_at,
         )
-        return SignalIngestPlan(
-            outcome=SIGNAL_QUARANTINED_VALIDATION,
-            record=record,
-            event=signal_record_event(
-                record,
-                ExecutionEventType.SIGNAL_QUARANTINED,
-                cycle_budget_limit=cycle_budget_limit,
+        return _with_budget_epoch_opener(
+            SignalIngestPlan(
+                outcome=SIGNAL_QUARANTINED_VALIDATION,
+                record=record,
+                event=signal_record_event(
+                    record,
+                    ExecutionEventType.SIGNAL_QUARANTINED,
+                    cycle_budget_limit=effective_cycle_budget_limit,
+                ),
+                result_record=record,
             ),
-            result_record=record,
+            producer_rail=producer_rail,
+            cycle_budget_limit=effective_cycle_budget_limit,
+            received_at=received_at,
         )
 
     if issued_at is None or ttl_seconds is None:
@@ -6166,7 +6508,7 @@ def plan_signal_ingest(
         event = signal_record_event(
             record,
             ExecutionEventType.SIGNAL_EXPIRED,
-            cycle_budget_limit=cycle_budget_limit,
+            cycle_budget_limit=effective_cycle_budget_limit,
             detected_by="ingest",
         )
     else:
@@ -6174,11 +6516,16 @@ def plan_signal_ingest(
         event = signal_record_event(
             record,
             ExecutionEventType.SIGNAL_QUARANTINED,
-            cycle_budget_limit=cycle_budget_limit,
+            cycle_budget_limit=effective_cycle_budget_limit,
         )
-    return SignalIngestPlan(
-        outcome=outcome,
-        record=record,
-        event=event,
-        result_record=record,
+    return _with_budget_epoch_opener(
+        SignalIngestPlan(
+            outcome=outcome,
+            record=record,
+            event=event,
+            result_record=record,
+        ),
+        producer_rail=producer_rail,
+        cycle_budget_limit=effective_cycle_budget_limit,
+        received_at=received_at,
     )

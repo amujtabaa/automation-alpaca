@@ -73,6 +73,8 @@ class StoreBackedSignalFacade:
         raw_fields: Optional[dict[str, str]] = None,
     ) -> SignalIngestResult:
         received_at = self._received_at_clock()
+        # This live setting is only a candidate for a fresh cycle; the store
+        # continues using any limit already pinned in event-derived rail state.
         store_result = await self._store.ingest_signal(
             producer_id=producer_id,
             signal_id=signal_id,
@@ -99,10 +101,14 @@ class StoreBackedSignalFacade:
         record = store_result.record
         return SignalIngestResult(
             outcome=outcome,
-            record=record.model_copy(
-                update={
-                    "status": effective_signal_status(record, now=self._clock()),
-                }
+            record=(
+                record.model_copy(
+                    update={
+                        "status": effective_signal_status(record, now=self._clock()),
+                    }
+                )
+                if record is not None
+                else None
             ),
         )
 

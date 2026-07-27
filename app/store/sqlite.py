@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import sqlite3
 from contextlib import contextmanager, nullcontext
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
@@ -83,6 +85,7 @@ from app.events.projectors import (
     control_trading_state,
     current_trading_state,
     project_order_status,
+    project_producer_rails,
     project_symbol_position,
     quarantined_symbols,
     reconcile_trading_state,
@@ -106,6 +109,9 @@ from app.store.base import (
     InvalidOrderError,
     OrderIntentBlockedError,
     OrderTransitionError,
+    ProducerNotQuarantinedError,
+    ProducerRailState,
+    ProducerRateVerdict,
     ProtectionHaltedError,
     RecoveryTransitionError,
     RiskLimits,
@@ -205,6 +211,10 @@ from app.store.core import (
     normalize_signal_raw_fields,
     plan_signal_ingest,
     signal_canonical_hash,
+    SIGNAL_RATE_BURST_MAX,
+    producer_quarantined_event,
+    producer_released_event,
+    validate_producer_rate_inputs,
 )
 from app.transitions import (
     ENVELOPE_TRANSITIONS,
@@ -453,6 +463,19 @@ CREATE INDEX IF NOT EXISTS idx_signal_records_status
 CREATE INDEX IF NOT EXISTS idx_signal_records_symbol
     ON signal_records(symbol);
 
+CREATE TABLE IF NOT EXISTS signal_producer_rails (
+    producer_id TEXT NOT NULL,
+    cycle_budget_limit INTEGER,
+    cycle_budget_consumed INTEGER NOT NULL,
+    quarantine_epoch_open INTEGER NOT NULL,
+    quarantine_epoch_sequence INTEGER NOT NULL,
+    quarantine_epoch_started_at TEXT,
+    quarantine_breach_trigger TEXT,
+    rate_tokens REAL,
+    rate_refill_anchor TEXT,
+    UNIQUE (producer_id)
+);
+
 -- Execution envelopes (ADR-010 / WO-0016): the pre-approved, immutable,
 -- bounded mandate for one sell intent. Bounds NEVER update in place —
 -- amendment is a new row via the atomic supersede operation. Only status,
@@ -644,6 +667,8 @@ class SqliteStateStore(StateStore):
             self._backfill_fill_events_locked()
             self._backfill_trading_state_events_locked()
             self._backfill_order_status_events_locked()
+            with self._tx() as cur:
+                self._rebuild_producer_rails_locked(cur)
             with self._tx() as cur:
                 now = utcnow()
                 rows = cur.execute(
@@ -1100,6 +1125,55 @@ class SqliteStateStore(StateStore):
                 f"actual_unique_keys={sorted(signal_unique_keys)!r}"
             )
 
+        expected_signal_rail_columns: dict[str, tuple[str, bool, bool]] = {
+            "producer_id": ("TEXT", True, False),
+            "cycle_budget_limit": ("INTEGER", False, False),
+            "cycle_budget_consumed": ("INTEGER", True, False),
+            "quarantine_epoch_open": ("INTEGER", True, False),
+            "quarantine_epoch_sequence": ("INTEGER", True, False),
+            "quarantine_epoch_started_at": ("TEXT", False, False),
+            "quarantine_breach_trigger": ("TEXT", False, False),
+            "rate_tokens": ("REAL", False, False),
+            "rate_refill_anchor": ("TEXT", False, False),
+        }
+        actual_signal_rail_columns = {
+            row["name"]: (
+                str(row["type"]).upper(),
+                bool(row["notnull"]),
+                bool(row["pk"]),
+            )
+            for row in conn.execute(
+                "PRAGMA table_info(signal_producer_rails)"
+            ).fetchall()
+        }
+        if actual_signal_rail_columns != expected_signal_rail_columns:
+            raise RuntimeError(
+                "signal_producer_rails schema mismatch; refusing startup: "
+                f"expected={expected_signal_rail_columns!r} "
+                f"actual={actual_signal_rail_columns!r}"
+            )
+
+        signal_rail_unique_keys: set[tuple[str, ...]] = set()
+        for index_row in conn.execute(
+            "PRAGMA index_list(signal_producer_rails)"
+        ).fetchall():
+            if not bool(index_row["unique"]):
+                continue
+            key = tuple(
+                str(column_row["name"])
+                for column_row in conn.execute(
+                    "SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+                    (index_row["name"],),
+                ).fetchall()
+            )
+            signal_rail_unique_keys.add(key)
+        if ("producer_id",) not in signal_rail_unique_keys:
+            raise RuntimeError(
+                "signal_producer_rails schema mismatch; refusing startup: "
+                "missing UNIQUE(producer_id); "
+                f"actual_unique_keys={sorted(signal_rail_unique_keys)!r}"
+            )
+
         # Item 5 / F1: dedup moved from a column-level UNIQUE on source_fill_id to
         # a composite (order_id, source_fill_id) index. SQLite can't ALTER away a
         # column constraint, so a DB created with the old `source_fill_id TEXT
@@ -1356,6 +1430,215 @@ class SqliteStateStore(StateStore):
             converted_id=row["converted_id"],
             approved_by=row["approved_by"],
         )
+
+    @staticmethod
+    def _producer_rail(row: sqlite3.Row) -> ProducerRailState:
+        producer_id = row["producer_id"]
+        limit = row["cycle_budget_limit"]
+        consumed = row["cycle_budget_consumed"]
+        raw_open = row["quarantine_epoch_open"]
+        sequence = row["quarantine_epoch_sequence"]
+        trigger = row["quarantine_breach_trigger"]
+        raw_started_at = row["quarantine_epoch_started_at"]
+        tokens = row["rate_tokens"]
+        raw_refill_anchor = row["rate_refill_anchor"]
+        if raw_open not in (0, 1):
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has invalid epoch-open bit"
+            )
+        if (
+            not isinstance(consumed, int)
+            or not isinstance(sequence, int)
+            or consumed < 0
+            or sequence < 0
+        ):
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has invalid counters"
+            )
+        if (limit is None and consumed != 0) or (
+            limit is not None
+            and (not isinstance(limit, int) or not 1 <= consumed <= limit <= 1000)
+        ):
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has inconsistent budget fields"
+            )
+        try:
+            started_at = (
+                datetime.fromisoformat(raw_started_at)
+                if raw_started_at is not None
+                else None
+            )
+            refill_anchor = (
+                datetime.fromisoformat(raw_refill_anchor)
+                if raw_refill_anchor is not None
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has invalid timestamps"
+            ) from exc
+        if bool(raw_open):
+            if (
+                sequence < 1
+                or started_at is None
+                or started_at.tzinfo is None
+                or started_at.utcoffset() is None
+                or trigger not in {"budget_exhausted", "rate_breach"}
+            ):
+                raise InvalidEventError(
+                    f"producer rail {producer_id!r} has incomplete open epoch"
+                )
+        elif started_at is not None or trigger is not None:
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has closed-epoch residue"
+            )
+        if (tokens is None) != (refill_anchor is None):
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has a partial rate bucket"
+            )
+        if tokens is not None and (
+            isinstance(tokens, bool)
+            or not isinstance(tokens, (int, float))
+            or not math.isfinite(float(tokens))
+            or not 0.0 <= float(tokens) <= float(SIGNAL_RATE_BURST_MAX)
+            or refill_anchor is None
+            or refill_anchor.tzinfo is None
+            or refill_anchor.utcoffset() is None
+        ):
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has an invalid rate bucket"
+            )
+        return ProducerRailState(
+            producer_id=producer_id,
+            cycle_budget_limit=limit,
+            cycle_budget_consumed=consumed,
+            quarantine_epoch_open=bool(raw_open),
+            quarantine_epoch_sequence=sequence,
+            quarantine_epoch_started_at=started_at,
+            quarantine_breach_trigger=trigger,
+            rate_tokens=float(tokens) if tokens is not None else None,
+            rate_refill_anchor=refill_anchor,
+        )
+
+    def _projected_producer_rails_locked(self, cur: sqlite3.Cursor):
+        rows = cur.execute(
+            "SELECT * FROM execution_events ORDER BY sequence"
+        ).fetchall()
+        return project_producer_rails(self._execution_event(row) for row in rows)
+
+    def _producer_rail_locked(
+        self, cur: sqlite3.Cursor, producer_id: str
+    ) -> ProducerRailState:
+        row = cur.execute(
+            "SELECT * FROM signal_producer_rails WHERE producer_id = ?",
+            (producer_id,),
+        ).fetchone()
+        return (
+            self._producer_rail(row)
+            if row is not None
+            else ProducerRailState(producer_id=producer_id)
+        )
+
+    def _authoritative_epoch_sequence_locked(
+        self,
+        cur: sqlite3.Cursor,
+        producer_id: str,
+        cached: ProducerRailState,
+    ) -> int:
+        projected = self._projected_producer_rails_locked(cur).get(producer_id)
+        log_fields: tuple[Optional[int], int, bool, Optional[datetime], Optional[str]]
+        if projected is None:
+            log_fields = (None, 0, False, None, None)
+            sequence = 0
+        else:
+            log_fields = (
+                projected.cycle_budget_limit,
+                projected.cycle_budget_consumed,
+                projected.quarantine_epoch_open,
+                projected.quarantine_epoch_started_at,
+                projected.quarantine_breach_trigger,
+            )
+            sequence = projected.quarantine_epoch_sequence
+        cached_fields = (
+            cached.cycle_budget_limit,
+            cached.cycle_budget_consumed,
+            cached.quarantine_epoch_open,
+            cached.quarantine_epoch_started_at,
+            cached.quarantine_breach_trigger,
+        )
+        if cached_fields != log_fields:
+            raise InvalidEventError(
+                f"producer rail cache disagrees with event truth for {producer_id!r}"
+            )
+        return sequence
+
+    @staticmethod
+    def _upsert_producer_log_rail(cur: sqlite3.Cursor, rail: object) -> None:
+        cur.execute(
+            """INSERT INTO signal_producer_rails
+               (producer_id, cycle_budget_limit, cycle_budget_consumed,
+                quarantine_epoch_open, quarantine_epoch_sequence,
+                quarantine_epoch_started_at, quarantine_breach_trigger,
+                rate_tokens, rate_refill_anchor)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(producer_id) DO UPDATE SET
+                 cycle_budget_limit=excluded.cycle_budget_limit,
+                 cycle_budget_consumed=excluded.cycle_budget_consumed,
+                 quarantine_epoch_open=excluded.quarantine_epoch_open,
+                 quarantine_epoch_sequence=excluded.quarantine_epoch_sequence,
+                 quarantine_epoch_started_at=excluded.quarantine_epoch_started_at,
+                 quarantine_breach_trigger=excluded.quarantine_breach_trigger""",
+            (
+                getattr(rail, "producer_id"),
+                getattr(rail, "cycle_budget_limit"),
+                getattr(rail, "cycle_budget_consumed"),
+                _bit(getattr(rail, "quarantine_epoch_open")),
+                getattr(rail, "quarantine_epoch_sequence"),
+                _dt(getattr(rail, "quarantine_epoch_started_at")),
+                getattr(rail, "quarantine_breach_trigger"),
+                None,
+                None,
+            ),
+        )
+
+    @staticmethod
+    def _upsert_producer_rate_bucket(
+        cur: sqlite3.Cursor,
+        *,
+        producer_id: str,
+        tokens: Optional[float],
+        refill_anchor: Optional[datetime],
+    ) -> None:
+        cur.execute(
+            """INSERT INTO signal_producer_rails
+               (producer_id, cycle_budget_limit, cycle_budget_consumed,
+                quarantine_epoch_open, quarantine_epoch_sequence,
+                quarantine_epoch_started_at, quarantine_breach_trigger,
+                rate_tokens, rate_refill_anchor)
+               VALUES (?,NULL,0,0,0,NULL,NULL,?,?)
+               ON CONFLICT(producer_id) DO UPDATE SET
+                 rate_tokens=excluded.rate_tokens,
+                 rate_refill_anchor=excluded.rate_refill_anchor""",
+            (producer_id, tokens, _dt(refill_anchor)),
+        )
+
+    def _rebuild_producer_rails_locked(self, cur: sqlite3.Cursor) -> None:
+        projected = self._projected_producer_rails_locked(cur)
+        cur.execute(
+            """UPDATE signal_producer_rails SET
+               cycle_budget_limit=NULL,
+               cycle_budget_consumed=0,
+               quarantine_epoch_open=0,
+               quarantine_epoch_sequence=0,
+               quarantine_epoch_started_at=NULL,
+               quarantine_breach_trigger=NULL"""
+        )
+        for rail in projected.values():
+            self._upsert_producer_log_rail(cur, rail)
+        for row in cur.execute(
+            "SELECT * FROM signal_producer_rails ORDER BY producer_id"
+        ).fetchall():
+            self._producer_rail(row)
 
     @staticmethod
     def _session(row: sqlite3.Row) -> SessionRecord:
@@ -7660,6 +7943,7 @@ class SqliteStateStore(StateStore):
                     (producer_id, signal_id),
                 ).fetchone()
                 existing = self._signal_record(row) if row is not None else None
+                producer_rail = self._producer_rail_locked(cur, producer_id)
                 plan = plan_signal_ingest(
                     existing=existing,
                     producer_id=producer_id,
@@ -7679,9 +7963,48 @@ class SqliteStateStore(StateStore):
                     received_at=received_at,
                     server_max_ttl_seconds=server_max_ttl_seconds,
                     cycle_budget_limit=cycle_budget_limit,
+                    producer_rail=producer_rail,
                 )
+                if plan.epoch_event is not None:
+                    epoch_sequence = self._authoritative_epoch_sequence_locked(
+                        cur, producer_id, producer_rail
+                    )
+                    plan = replace(
+                        plan,
+                        epoch_event=producer_quarantined_event(
+                            producer_id=producer_id,
+                            breach_trigger="budget_exhausted",
+                            epoch_start=received_at,
+                            epoch_sequence=epoch_sequence + 1,
+                            cycle_budget_consumed=(
+                                producer_rail.cycle_budget_consumed + 1
+                            ),
+                            cycle_budget_limit=(
+                                producer_rail.cycle_budget_limit or cycle_budget_limit
+                            ),
+                        ),
+                    )
                 if plan.event is not None:
-                    self._insert_execution_event(cur, plan.event)
+                    stored_event = self._insert_execution_event(cur, plan.event)
+                    event_wrote = stored_event.id == plan.event.id
+                    if plan.record is not None and not event_wrote and existing is None:
+                        raise InvalidEventError(
+                            "signal creation event deduped without a signal record"
+                        )
+                    if event_wrote:
+                        if "cycle_budget_limit" in plan.event.payload:
+                            if plan.epoch_event is not None:
+                                stored_epoch = self._insert_execution_event(
+                                    cur, plan.epoch_event
+                                )
+                                if stored_epoch.id != plan.epoch_event.id:
+                                    raise InvalidEventError(
+                                        "producer epoch opener was already present"
+                                    )
+                            projected = self._projected_producer_rails_locked(cur)
+                            self._upsert_producer_log_rail(cur, projected[producer_id])
+                        else:
+                            self._upsert_producer_log_rail(cur, producer_rail)
                 if plan.record is not None:
                     self._insert_signal_record(cur, plan.record)
                 return SignalIngestResult(
@@ -7725,6 +8048,142 @@ class SqliteStateStore(StateStore):
                 tuple(params),
             )
             return [self._signal_record(row) for row in rows]
+
+    async def get_producer_rail(self, producer_id: str) -> ProducerRailState:
+        async with self._lock:
+            row = self._read_one(
+                "SELECT * FROM signal_producer_rails WHERE producer_id = ?",
+                (producer_id,),
+            )
+            return (
+                self._producer_rail(row)
+                if row is not None
+                else ProducerRailState(producer_id=producer_id)
+            )
+
+    async def list_producer_rails(self) -> list[ProducerRailState]:
+        async with self._lock:
+            rows = self._read_all(
+                "SELECT * FROM signal_producer_rails ORDER BY producer_id"
+            )
+            return [self._producer_rail(row) for row in rows]
+
+    async def check_and_debit_producer_rate(
+        self,
+        producer_id: str,
+        *,
+        now: datetime,
+        limit_per_hour: int,
+        burst: int,
+    ) -> ProducerRateVerdict:
+        limit_per_hour, burst = validate_producer_rate_inputs(
+            now=now,
+            limit_per_hour=limit_per_hour,
+            burst=burst,
+        )
+        async with self._lock:
+            with self._tx() as cur:
+                rail = self._producer_rail_locked(cur, producer_id)
+                if rail.quarantine_epoch_open:
+                    return ProducerRateVerdict("quarantined", rail)
+
+                if rail.rate_tokens is None or rail.rate_refill_anchor is None:
+                    available = float(burst)
+                else:
+                    if now < rail.rate_refill_anchor:
+                        raise ValueError("now must not precede the rate refill anchor")
+                    elapsed_seconds = (now - rail.rate_refill_anchor).total_seconds()
+                    available = min(
+                        float(burst),
+                        rail.rate_tokens
+                        + elapsed_seconds * float(limit_per_hour) / 3600.0,
+                    )
+
+                if available < 1.0:
+                    epoch_sequence = self._authoritative_epoch_sequence_locked(
+                        cur, producer_id, rail
+                    )
+                    epoch_event = producer_quarantined_event(
+                        producer_id=producer_id,
+                        breach_trigger="rate_breach",
+                        epoch_start=now,
+                        epoch_sequence=epoch_sequence + 1,
+                        bucket_capacity=burst,
+                    )
+                    stored = self._insert_execution_event(cur, epoch_event)
+                    if stored.id != epoch_event.id:
+                        raise InvalidEventError(
+                            "producer rate-breach opener was already present"
+                        )
+                    projected = self._projected_producer_rails_locked(cur)
+                    self._upsert_producer_log_rail(cur, projected[producer_id])
+                    return ProducerRateVerdict(
+                        "rate_breached",
+                        self._producer_rail_locked(cur, producer_id),
+                    )
+
+                self._upsert_producer_rate_bucket(
+                    cur,
+                    producer_id=producer_id,
+                    tokens=available - 1.0,
+                    refill_anchor=now,
+                )
+                return ProducerRateVerdict(
+                    "ok", self._producer_rail_locked(cur, producer_id)
+                )
+
+    async def release_producer(
+        self,
+        producer_id: str,
+        *,
+        actor: str,
+        rejected_count: int,
+        released_at: datetime,
+    ) -> ProducerRailState:
+        async with self._lock:
+            with self._tx() as cur:
+                projected = self._projected_producer_rails_locked(cur)
+                row = cur.execute(
+                    "SELECT 1 FROM signal_producer_rails WHERE producer_id = ?",
+                    (producer_id,),
+                ).fetchone()
+                if producer_id not in projected and row is None:
+                    raise UnknownEntityError(
+                        f"signal producer {producer_id!r} does not exist"
+                    )
+                rail = self._producer_rail_locked(cur, producer_id)
+                if (
+                    not rail.quarantine_epoch_open
+                    or rail.quarantine_epoch_started_at is None
+                ):
+                    raise ProducerNotQuarantinedError(
+                        f"signal producer {producer_id!r} is not quarantined"
+                    )
+                epoch_sequence = self._authoritative_epoch_sequence_locked(
+                    cur, producer_id, rail
+                )
+                release = producer_released_event(
+                    producer_id=producer_id,
+                    actor=actor,
+                    rejected_count=rejected_count,
+                    epoch_start=rail.quarantine_epoch_started_at,
+                    released_at=released_at,
+                    epoch_sequence=epoch_sequence,
+                )
+                stored = self._insert_execution_event(cur, release)
+                if stored.id != release.id:
+                    raise InvalidEventError(
+                        "producer release event was already present"
+                    )
+                projected = self._projected_producer_rails_locked(cur)
+                self._upsert_producer_log_rail(cur, projected[producer_id])
+                self._upsert_producer_rate_bucket(
+                    cur,
+                    producer_id=producer_id,
+                    tokens=None,
+                    refill_anchor=None,
+                )
+                return self._producer_rail_locked(cur, producer_id)
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

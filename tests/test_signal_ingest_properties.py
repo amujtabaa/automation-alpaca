@@ -77,6 +77,7 @@ def _plan(
         received_at=NOW,
         server_max_ttl_seconds=server_max_ttl_seconds,
         cycle_budget_limit=CYCLE_BUDGET,
+        producer_rail=None,
     )
 
 

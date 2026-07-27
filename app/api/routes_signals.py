@@ -49,6 +49,7 @@ _OUTCOME_STATUS: dict[SignalIngestOutcome, int] = {
     SignalIngestOutcome.QUARANTINED_FRESHNESS: status.HTTP_201_CREATED,
     SignalIngestOutcome.REPLAYED: status.HTTP_200_OK,
     SignalIngestOutcome.CONFLICT: status.HTTP_409_CONFLICT,
+    SignalIngestOutcome.PRODUCER_QUARANTINED: status.HTTP_403_FORBIDDEN,
 }
 
 
@@ -197,6 +198,14 @@ def _validation_raw_fields(exc: ValidationError) -> dict[str, str]:
 
 
 def _record_response(result: SignalIngestResult) -> JSONResponse:
+    if result.record is None:
+        return JSONResponse(
+            status_code=_OUTCOME_STATUS[result.outcome],
+            content={
+                "detail": "producer is quarantined",
+                "reason": result.outcome.value,
+            },
+        )
     view = SignalRecordView.model_validate(result.record)
     return JSONResponse(
         status_code=_OUTCOME_STATUS[result.outcome],

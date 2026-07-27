@@ -1,8 +1,8 @@
 ---
 type: Work Order
 title: "Signal Seat R6a — rails store surface: durable rail state, producer-rail projector, epoch identity, atomic budget + rate debits, release primitive"
-status: READY
-ratified: "2026-07-26 (Ameen) — M1 decision block, the three D-R6a-16.0 cap literals, and the D-R6a-17 PRODUCER_QUARANTINED payload field list incl. the breach_trigger vocabulary. Stop 1 (SQLite DDL) remains OPEN and is unchanged by this ratification."
+status: REVIEW
+ratified: "2026-07-26 (Ameen) — M1 decision block, the three D-R6a-16.0 cap literals, the D-R6a-17 PRODUCER_QUARANTINED payload field list incl. the breach_trigger vocabulary, and the separately presented Stop 1 SQLite DDL with all six required disclosures."
 work_order_id: WO-0104a
 splits_from: "work/queue/WO-0104-signal-rails-REFRESH.md (R6, split after two M4b passes)"
 sibling: "WO-0104b (R6b — provider wiring, sweeps, /api/producers, release route, cockpit, rate settings)"
@@ -30,11 +30,12 @@ filter_risk: LOW-MED
 > **measured** has survived; nearly every P0 was a claim **derived by reading two files**. Two of this
 > revision's findings were a ~25-line simulation away. Prefer running something.
 >
-> **✅ RATIFIED 2026-07-26 (Ameen) — status READY.** The M1 decision block, the three D-R6a-16.0 cap
+> **✅ RATIFIED 2026-07-26 (Ameen) — status REVIEW.** The M1 decision block, the three D-R6a-16.0 cap
 > literals (`SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600`, `SIGNAL_RATE_BURST_MAX = 100`,
 > `SIGNAL_REJECTED_COUNT_MAX = 10_000`) and the D-R6a-17 payload field list including the
-> `breach_trigger` vocabulary are approved. **Stop 1 — the SQLite DDL — remains OPEN**; it is the single
-> implementer stop left in this rung and was not, and could not have been, pre-approved.
+> `breach_trigger` vocabulary are approved. The implementer then stopped, presented the exact SQLite
+> DDL with all six required disclosures, and received explicit operator approval before creating or
+> altering any table or column. **Both human-gated stops are resolved.**
 
 **What R6a delivers:** the durable rail row behind **one** gated DDL, the producer-rail projector that
 makes the event log the source of truth for the *foldable* columns, epoch identity, **both** atomic
@@ -87,12 +88,11 @@ the release **route** · the cockpit control · `signal_rate_limit_per_hour` / `
 
 ---
 
-## ⚠ HUMAN-GATED stops — Stop 2 RESOLVED, **Stop 1 REMAINS OPEN**
+## ⚠ HUMAN-GATED stops — **BOTH RESOLVED 2026-07-26**
 
-> **⚠ Read this before building.** The 2026-07-26 ratification cleared **Stop 2 only**. **Stop 1 — the
-> SQLite DDL — is untouched and still requires an implementer STOP with the proposed DDL in hand.** It
-> could not have been pre-approved: the DDL text does not exist yet. Creating or altering any table or
-> column before that approval remains a stop-condition violation.
+> **Gate record.** The initial 2026-07-26 ratification cleared Stop 2 only. The implementer honored
+> Stop 1 separately: setup and Step 0 were completed first, the exact DDL plus all six required items
+> were presented, and Ameen explicitly approved them before any table or column was created or altered.
 
 ### Stop 2 — the `PRODUCER_QUARANTINED` payload (event-log truth) — **RESOLVED 2026-07-26 (Ameen)**
 
@@ -122,11 +122,19 @@ returns only the two enum members and their model test — so there is no back-c
 migration owed (`ExecutionEvent.payload` is `dict[str, Any]`; `EXECUTION_EVENT_SCHEMA_VERSION = 1`
 marks incompatible *shape* changes, `models.py:1149-1150`).
 
-### Stop 1 — the SQLite DDL — **OPEN**
+### Stop 1 — the SQLite DDL — **RESOLVED 2026-07-26 (Ameen)**
 
-New durable state ⇒ schema/migration ⇒ human-gated per CLAUDE.md, **not** covered by this WO's
-ratification and **not** cleared by the 2026-07-26 ruling above. **STOP and request approval with the
-proposed DDL** before creating or altering any table or column. The request must include **all six** of:
+> **Ruling:** after the required implementer stop, the operator approved the exact
+> `signal_producer_rails` DDL, nullable pinned limit, paired-null/REAL fractional-carry bucket,
+> flag-independent `SCHEMA` + `_migrate`, exact-column and UNIQUE-key startup guards, schema tests,
+> and the per-column log-derived/primary-durable truth partition. No DDL mutation preceded approval.
+>
+> The original gate is retained below as the decision record.
+
+New durable state ⇒ schema/migration ⇒ human-gated per CLAUDE.md, **was not** covered by the initial
+WO ratification and **was not** cleared by the Stop 2 ruling above. The implementer had to **STOP and
+request approval with the proposed DDL** before creating or altering any table or column. The request
+had to include **all six** of:
 
 1. The full rail table — including the **token-bucket columns**, since Option A makes R6a their writer.
    One approval, one migration; **R6b adds no schema.** State the **column types and the fractional-carry

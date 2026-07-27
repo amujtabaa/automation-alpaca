@@ -45,6 +45,18 @@ EXPECTED_SIGNAL_COLUMNS: dict[str, tuple[str, bool, bool]] = {
     "approved_by": ("TEXT", False, False),
 }
 
+EXPECTED_SIGNAL_RAIL_COLUMNS: dict[str, tuple[str, bool, bool]] = {
+    "producer_id": ("TEXT", True, False),
+    "cycle_budget_limit": ("INTEGER", False, False),
+    "cycle_budget_consumed": ("INTEGER", True, False),
+    "quarantine_epoch_open": ("INTEGER", True, False),
+    "quarantine_epoch_sequence": ("INTEGER", True, False),
+    "quarantine_epoch_started_at": ("TEXT", False, False),
+    "quarantine_breach_trigger": ("TEXT", False, False),
+    "rate_tokens": ("REAL", False, False),
+    "rate_refill_anchor": ("TEXT", False, False),
+}
+
 
 def _signal_table_ddl(*, ttl_type: str = "INTEGER", unique_key: bool = True) -> str:
     unique_clause = ", UNIQUE (producer_id, signal_id)" if unique_key else ""
@@ -83,9 +95,35 @@ def _signal_table_ddl(*, ttl_type: str = "INTEGER", unique_key: bool = True) -> 
     """
 
 
-def _unique_keys(conn: sqlite3.Connection) -> set[tuple[str, ...]]:
+def _signal_rail_table_ddl(
+    *,
+    rate_tokens_type: str = "REAL",
+    nullable_cycle_limit: bool = True,
+    unique_key: bool = True,
+) -> str:
+    cycle_limit_suffix = "" if nullable_cycle_limit else " NOT NULL"
+    unique_clause = ", UNIQUE (producer_id)" if unique_key else ""
+    return f"""
+        CREATE TABLE signal_producer_rails (
+            producer_id TEXT NOT NULL,
+            cycle_budget_limit INTEGER{cycle_limit_suffix},
+            cycle_budget_consumed INTEGER NOT NULL,
+            quarantine_epoch_open INTEGER NOT NULL,
+            quarantine_epoch_sequence INTEGER NOT NULL,
+            quarantine_epoch_started_at TEXT,
+            quarantine_breach_trigger TEXT,
+            rate_tokens {rate_tokens_type},
+            rate_refill_anchor TEXT
+            {unique_clause}
+        );
+    """
+
+
+def _unique_keys(
+    conn: sqlite3.Connection, table: str = "signal_records"
+) -> set[tuple[str, ...]]:
     keys: set[tuple[str, ...]] = set()
-    for index_row in conn.execute("PRAGMA index_list(signal_records)").fetchall():
+    for index_row in conn.execute(f"PRAGMA index_list({table})").fetchall():
         if not bool(index_row[2]):
             continue
         keys.add(
@@ -134,6 +172,63 @@ async def test_approved_signal_schema_shape_and_indexes(tmp_path) -> None:
         store._conn = None
 
 
+async def test_approved_signal_rail_schema_shape_and_unique_key(tmp_path) -> None:
+    store = SqliteStateStore(tmp_path / "approved-signal-rail-schema.db")
+    await store.initialize()
+    assert store._conn is not None
+    try:
+        rows = store._conn.execute(
+            "PRAGMA table_info(signal_producer_rails)"
+        ).fetchall()
+        actual = {
+            row["name"]: (
+                str(row["type"]).upper(),
+                bool(row["notnull"]),
+                bool(row["pk"]),
+            )
+            for row in rows
+        }
+
+        assert actual == EXPECTED_SIGNAL_RAIL_COLUMNS
+        assert ("producer_id",) in _unique_keys(store._conn, "signal_producer_rails")
+    finally:
+        store._conn.close()
+        store._conn = None
+
+
+async def test_signal_rail_schema_is_added_to_legacy_database(tmp_path) -> None:
+    path = tmp_path / "legacy-before-signal-rails.db"
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE legacy_sentinel (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO legacy_sentinel (value) VALUES ('preserved')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = SqliteStateStore(path)
+    await store.initialize()
+    assert store._conn is not None
+    try:
+        rail_columns = {
+            row["name"]: (
+                str(row["type"]).upper(),
+                bool(row["notnull"]),
+                bool(row["pk"]),
+            )
+            for row in store._conn.execute(
+                "PRAGMA table_info(signal_producer_rails)"
+            ).fetchall()
+        }
+        sentinel = store._conn.execute("SELECT value FROM legacy_sentinel").fetchone()
+
+        assert rail_columns == EXPECTED_SIGNAL_RAIL_COLUMNS
+        assert sentinel is not None and sentinel["value"] == "preserved"
+    finally:
+        store._conn.close()
+        store._conn = None
+
+
 @pytest.mark.parametrize(
     ("ttl_type", "unique_key", "error_fragment"),
     [
@@ -151,6 +246,52 @@ async def test_signal_schema_guard_fails_closed(
     conn = sqlite3.connect(path)
     try:
         conn.executescript(_signal_table_ddl(ttl_type=ttl_type, unique_key=unique_key))
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = SqliteStateStore(path)
+    try:
+        with pytest.raises(RuntimeError, match=re.escape(error_fragment)):
+            await store.initialize()
+    finally:
+        if store._conn is not None:
+            store._conn.close()
+            store._conn = None
+
+
+@pytest.mark.parametrize(
+    (
+        "rate_tokens_type",
+        "nullable_cycle_limit",
+        "unique_key",
+        "error_fragment",
+    ),
+    [
+        ("INTEGER", True, True, "schema mismatch"),
+        ("REAL", False, True, "schema mismatch"),
+        ("REAL", True, False, "missing UNIQUE(producer_id)"),
+    ],
+)
+async def test_signal_rail_schema_guard_fails_closed(
+    tmp_path,
+    rate_tokens_type: str,
+    nullable_cycle_limit: bool,
+    unique_key: bool,
+    error_fragment: str,
+) -> None:
+    path = tmp_path / (
+        f"malformed-rail-{rate_tokens_type}-{nullable_cycle_limit}-{unique_key}.db"
+    )
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            _signal_rail_table_ddl(
+                rate_tokens_type=rate_tokens_type,
+                nullable_cycle_limit=nullable_cycle_limit,
+                unique_key=unique_key,
+            )
+        )
         conn.commit()
     finally:
         conn.close()

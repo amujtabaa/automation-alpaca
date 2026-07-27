@@ -121,6 +121,10 @@ class InvalidEventError(StoreError):
     """An append-only audit/execution event violates the durable contract."""
 
 
+class ProducerNotQuarantinedError(StoreError):
+    """A producer release was requested without an open quarantine epoch."""
+
+
 def normalize_json_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
     """Validate and canonicalize a payload to SQLite's JSON serialization domain."""
 
@@ -329,13 +333,44 @@ class FillAppendResult:
 class SignalIngestResult:
     """Outcome of :meth:`StateStore.ingest_signal` (ADR-009 / WO-0134).
 
-    ``outcome`` is one of the six signal-ingest constants in
-    :mod:`app.store.core`; ``record`` is either the newly persisted record or
-    the pre-existing record returned for an idempotent replay/conflict.
+    ``outcome`` is one of the seven signal-ingest constants in
+    :mod:`app.store.core`; ``record`` is the persisted/pre-existing record, or
+    ``None`` for a write-free producer-quarantine boundary rejection.
     """
 
     outcome: str
-    record: SignalRecord
+    record: Optional[SignalRecord]
+
+
+@dataclass(frozen=True)
+class ProducerRailState:
+    """One producer's durable Signal Seat rail state (ADR-009 / WO-0104a).
+
+    Budget/quarantine fields are event-derived and rebuilt during store
+    initialization. The nullable rate-token pair is primary durable state:
+    ``None``/``None`` means uninitialized or reset-full, while a populated pair
+    preserves fractional token carry across restarts.
+    """
+
+    producer_id: str
+    cycle_budget_limit: Optional[int] = None
+    cycle_budget_consumed: int = 0
+    quarantine_epoch_open: bool = False
+    quarantine_epoch_sequence: int = 0
+    quarantine_epoch_started_at: Optional[datetime] = None
+    quarantine_breach_trigger: Optional[Literal["budget_exhausted", "rate_breach"]] = (
+        None
+    )
+    rate_tokens: Optional[float] = None
+    rate_refill_anchor: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class ProducerRateVerdict:
+    """Result of the pre-body per-producer rate check and atomic debit."""
+
+    outcome: Literal["ok", "quarantined", "rate_breached"]
+    rail: ProducerRailState
 
 
 @dataclass(frozen=True)
@@ -1334,10 +1369,12 @@ class StateStore(ABC):
         """Ingest one attributable signal atomically with its event truth.
 
         Dedupe is injective on ``(producer_id, signal_id)``. An identical
-        payload is a write-free replay; a changed payload appends only an
-        audit-conflict execution event and never mutates the original record.
+        payload is a write-free replay; a novel changed payload appends an
+        audit-conflict event, debits the pinned invalid budget, and may
+        co-append the epoch opener, while never mutating the original record.
         ``received_at`` is the injected planning clock. The caller supplies the
-        A-3 server TTL cap and current-cycle invalid-budget limit.
+        A-3 server TTL cap and the budget limit to pin only if a new cycle
+        begins.
         """
 
     @abstractmethod
@@ -1355,6 +1392,36 @@ class StateStore(ABC):
         producer_id: Optional[str] = None,
     ) -> list[SignalRecord]:
         """Stored signals, optionally filtered by durable status/scope."""
+
+    @abstractmethod
+    async def get_producer_rail(self, producer_id: str) -> ProducerRailState:
+        """Current rail state; an unseen producer reads as the zero state."""
+
+    @abstractmethod
+    async def list_producer_rails(self) -> list[ProducerRailState]:
+        """All materialized producer rail rows in stable producer-id order."""
+
+    @abstractmethod
+    async def check_and_debit_producer_rate(
+        self,
+        producer_id: str,
+        *,
+        now: datetime,
+        limit_per_hour: int,
+        burst: int,
+    ) -> ProducerRateVerdict:
+        """Atomically check epoch state and debit one authenticated ingest."""
+
+    @abstractmethod
+    async def release_producer(
+        self,
+        producer_id: str,
+        *,
+        actor: str,
+        rejected_count: int,
+        released_at: datetime,
+    ) -> ProducerRailState:
+        """Close one quarantine epoch and reset both producer rails."""
 
     # ------------------------------------------------------------------ #
     # Execution envelopes (Spine v2 / ADR-010 — the autonomous sell-side

@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import dataclass, replace
 from datetime import date, datetime
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Literal, Optional
 
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
@@ -67,6 +68,7 @@ from app.events.projectors import (
     control_trading_state,
     current_trading_state,
     project_order_status,
+    project_producer_rails,
     project_symbol_position,
     quarantined_symbols,
     reconcile_trading_state,
@@ -90,6 +92,9 @@ from app.store.base import (
     InvalidOrderError,
     OrderIntentBlockedError,
     OrderTransitionError,
+    ProducerNotQuarantinedError,
+    ProducerRailState,
+    ProducerRateVerdict,
     ProtectionHaltedError,
     RecoveryTransitionError,
     RiskLimits,
@@ -189,6 +194,9 @@ from app.store.core import (
     normalize_signal_raw_fields,
     plan_signal_ingest,
     signal_canonical_hash,
+    producer_quarantined_event,
+    producer_released_event,
+    validate_producer_rate_inputs,
 )
 from app.transitions import (
     ENVELOPE_TRANSITIONS,
@@ -211,6 +219,23 @@ from app.policy import (
     unrepresented_accepted_buy_exposure,
     whole_count_reason,
 )
+
+
+@dataclass(frozen=True)
+class _ProducerBudgetRail:
+    cycle_budget_limit: Optional[int] = None
+    cycle_budget_consumed: int = 0
+    quarantine_epoch_open: bool = False
+    quarantine_epoch_started_at: Optional[datetime] = None
+    quarantine_breach_trigger: Optional[Literal["budget_exhausted", "rate_breach"]] = (
+        None
+    )
+
+
+@dataclass(frozen=True)
+class _ProducerRateBucket:
+    tokens: float
+    refill_anchor: datetime
 
 
 class InMemoryStateStore(StateStore):
@@ -243,6 +268,9 @@ class InMemoryStateStore(StateStore):
         self._sell_intents: dict[str, SellIntent] = {}  # Phase 7
         self._envelopes: dict[str, ExecutionEnvelope] = {}  # ADR-010 / WO-0016
         self._signals: dict[tuple[str, str], SignalRecord] = {}
+        self._producer_budget_rails: dict[str, _ProducerBudgetRail] = {}
+        self._producer_epoch_sequences: dict[str, int] = {}
+        self._producer_rate_buckets: dict[str, _ProducerRateBucket] = {}
         # Spine v2 execution-event log (Phase 2): append-only, sequence order.
         # `_execution_event_dedupe` maps a non-null dedupe_key to its event for
         # O(1) INV-5 idempotency without scanning the log.
@@ -267,6 +295,7 @@ class InMemoryStateStore(StateStore):
                 self._backfill_fill_events_unlocked()
                 self._backfill_trading_state_events_unlocked()
                 self._backfill_order_status_events_unlocked()
+                self._rebuild_producer_rails_unlocked()
                 # R2 migration/convergence: a pre-link database may contain an
                 # APPROVED owner whose entire Envelope lineage already ended.
                 # Re-project persisted facts on every open; idempotency makes a
@@ -278,6 +307,76 @@ class InMemoryStateStore(StateStore):
                     self._reconcile_envelope_owner_unlocked(intent_id, now=now)
                 self._reconcile_envelope_symbol_conflicts_unlocked(now=now)
                 self._ensure_current_session_unlocked()
+
+    def _rebuild_producer_rails_unlocked(self) -> None:
+        """Replace only log-derived rail state; preserve primary bucket state."""
+
+        projected = project_producer_rails(self._execution_events)
+        self._producer_budget_rails = {
+            producer_id: _ProducerBudgetRail(
+                cycle_budget_limit=rail.cycle_budget_limit,
+                cycle_budget_consumed=rail.cycle_budget_consumed,
+                quarantine_epoch_open=rail.quarantine_epoch_open,
+                quarantine_epoch_started_at=rail.quarantine_epoch_started_at,
+                quarantine_breach_trigger=rail.quarantine_breach_trigger,
+            )
+            for producer_id, rail in projected.items()
+        }
+        self._producer_epoch_sequences = {
+            producer_id: rail.quarantine_epoch_sequence
+            for producer_id, rail in projected.items()
+        }
+
+    def _projected_producer_rail_unlocked(self, producer_id: str) -> ProducerRailState:
+        projected = project_producer_rails(self._execution_events).get(producer_id)
+        rate = self._producer_rate_buckets.get(producer_id)
+        if projected is None:
+            return ProducerRailState(
+                producer_id=producer_id,
+                rate_tokens=rate.tokens if rate is not None else None,
+                rate_refill_anchor=rate.refill_anchor if rate is not None else None,
+            )
+        return ProducerRailState(
+            producer_id=producer_id,
+            cycle_budget_limit=projected.cycle_budget_limit,
+            cycle_budget_consumed=projected.cycle_budget_consumed,
+            quarantine_epoch_open=projected.quarantine_epoch_open,
+            quarantine_epoch_sequence=projected.quarantine_epoch_sequence,
+            quarantine_epoch_started_at=projected.quarantine_epoch_started_at,
+            quarantine_breach_trigger=projected.quarantine_breach_trigger,
+            rate_tokens=rate.tokens if rate is not None else None,
+            rate_refill_anchor=rate.refill_anchor if rate is not None else None,
+        )
+
+    def _authoritative_epoch_sequence_unlocked(
+        self, producer_id: str, cached: ProducerRailState
+    ) -> int:
+        projected = project_producer_rails(self._execution_events).get(producer_id)
+        log_fields: tuple[Optional[int], int, bool, Optional[datetime], Optional[str]]
+        if projected is None:
+            log_fields = (None, 0, False, None, None)
+            sequence = 0
+        else:
+            log_fields = (
+                projected.cycle_budget_limit,
+                projected.cycle_budget_consumed,
+                projected.quarantine_epoch_open,
+                projected.quarantine_epoch_started_at,
+                projected.quarantine_breach_trigger,
+            )
+            sequence = projected.quarantine_epoch_sequence
+        cached_fields = (
+            cached.cycle_budget_limit,
+            cached.cycle_budget_consumed,
+            cached.quarantine_epoch_open,
+            cached.quarantine_epoch_started_at,
+            cached.quarantine_breach_trigger,
+        )
+        if cached_fields != log_fields:
+            raise InvalidEventError(
+                f"producer rail cache disagrees with event truth for {producer_id!r}"
+            )
+        return sequence
 
     def _backfill_order_status_events_unlocked(self) -> None:
         """WO-0007b read-flip migration: an order whose status predates WO-0007a
@@ -531,6 +630,9 @@ class InMemoryStateStore(StateStore):
             k: v.model_copy(deep=True) for k, v in self._sell_intents.items()
         }
         saved_signals = dict(self._signals)
+        saved_producer_budget_rails = dict(self._producer_budget_rails)
+        saved_producer_epoch_sequences = dict(self._producer_epoch_sequences)
+        saved_producer_rate_buckets = dict(self._producer_rate_buckets)
         saved_fills = list(self._fills)
         saved_source_ids = set(self._fill_source_ids)
         saved_events = list(self._events)
@@ -553,6 +655,9 @@ class InMemoryStateStore(StateStore):
             self._envelopes = saved_envelopes
             self._sell_intents = saved_sell_intents
             self._signals = saved_signals
+            self._producer_budget_rails = saved_producer_budget_rails
+            self._producer_epoch_sequences = saved_producer_epoch_sequences
+            self._producer_rate_buckets = saved_producer_rate_buckets
             self._fills = saved_fills
             self._submit_recoveries = saved_recoveries
             self._rebuild_submit_recovery_indexes_unlocked()
@@ -5580,6 +5685,7 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             with self._atomic():
                 existing = self._signals.get((producer_id, signal_id))
+                producer_rail = self._producer_rail_unlocked(producer_id)
                 plan = plan_signal_ingest(
                     existing=existing,
                     producer_id=producer_id,
@@ -5599,14 +5705,79 @@ class InMemoryStateStore(StateStore):
                     received_at=received_at,
                     server_max_ttl_seconds=server_max_ttl_seconds,
                     cycle_budget_limit=cycle_budget_limit,
+                    producer_rail=producer_rail,
                 )
+                if plan.epoch_event is not None:
+                    epoch_sequence = self._authoritative_epoch_sequence_unlocked(
+                        producer_id, producer_rail
+                    )
+                    plan = replace(
+                        plan,
+                        epoch_event=producer_quarantined_event(
+                            producer_id=producer_id,
+                            breach_trigger="budget_exhausted",
+                            epoch_start=received_at,
+                            epoch_sequence=epoch_sequence + 1,
+                            cycle_budget_consumed=(
+                                producer_rail.cycle_budget_consumed + 1
+                            ),
+                            cycle_budget_limit=(
+                                producer_rail.cycle_budget_limit or cycle_budget_limit
+                            ),
+                        ),
+                    )
                 if plan.event is not None:
-                    self._append_execution_event_unlocked(plan.event)
+                    stored_event = self._append_execution_event_unlocked(plan.event)
+                    event_wrote = stored_event.id == plan.event.id
+                    if plan.record is not None and not event_wrote and existing is None:
+                        raise InvalidEventError(
+                            "signal creation event deduped without a signal record"
+                        )
+                    if event_wrote:
+                        if "cycle_budget_limit" in plan.event.payload:
+                            if plan.epoch_event is not None:
+                                stored_epoch = self._append_execution_event_unlocked(
+                                    plan.epoch_event
+                                )
+                                if stored_epoch.id != plan.epoch_event.id:
+                                    raise InvalidEventError(
+                                        "producer epoch opener was already present"
+                                    )
+                            self._rebuild_producer_rails_unlocked()
+                        else:
+                            self._producer_budget_rails.setdefault(
+                                producer_id,
+                                _ProducerBudgetRail(
+                                    cycle_budget_limit=(
+                                        producer_rail.cycle_budget_limit
+                                    ),
+                                    cycle_budget_consumed=(
+                                        producer_rail.cycle_budget_consumed
+                                    ),
+                                    quarantine_epoch_open=(
+                                        producer_rail.quarantine_epoch_open
+                                    ),
+                                    quarantine_epoch_started_at=(
+                                        producer_rail.quarantine_epoch_started_at
+                                    ),
+                                    quarantine_breach_trigger=(
+                                        producer_rail.quarantine_breach_trigger
+                                    ),
+                                ),
+                            )
+                            self._producer_epoch_sequences.setdefault(
+                                producer_id,
+                                producer_rail.quarantine_epoch_sequence,
+                            )
                 if plan.record is not None:
                     self._signals[(producer_id, signal_id)] = plan.record
                 return SignalIngestResult(
                     outcome=plan.outcome,
-                    record=plan.result_record.model_copy(deep=True),
+                    record=(
+                        plan.result_record.model_copy(deep=True)
+                        if plan.result_record is not None
+                        else None
+                    ),
                 )
 
     async def get_signal(
@@ -5634,6 +5805,144 @@ class InMemoryStateStore(StateStore):
                 and (normalized_symbol is None or record.symbol == normalized_symbol)
                 and (producer_id is None or record.producer_id == producer_id)
             ]
+
+    def _producer_rail_unlocked(self, producer_id: str) -> ProducerRailState:
+        budget = self._producer_budget_rails.get(producer_id, _ProducerBudgetRail())
+        rate = self._producer_rate_buckets.get(producer_id)
+        return ProducerRailState(
+            producer_id=producer_id,
+            cycle_budget_limit=budget.cycle_budget_limit,
+            cycle_budget_consumed=budget.cycle_budget_consumed,
+            quarantine_epoch_open=budget.quarantine_epoch_open,
+            quarantine_epoch_sequence=self._producer_epoch_sequences.get(
+                producer_id, 0
+            ),
+            quarantine_epoch_started_at=budget.quarantine_epoch_started_at,
+            quarantine_breach_trigger=budget.quarantine_breach_trigger,
+            rate_tokens=rate.tokens if rate is not None else None,
+            rate_refill_anchor=rate.refill_anchor if rate is not None else None,
+        )
+
+    async def get_producer_rail(self, producer_id: str) -> ProducerRailState:
+        async with self._lock:
+            return self._producer_rail_unlocked(producer_id)
+
+    async def list_producer_rails(self) -> list[ProducerRailState]:
+        async with self._lock:
+            producer_ids = (
+                set(self._producer_budget_rails)
+                | set(self._producer_epoch_sequences)
+                | set(self._producer_rate_buckets)
+            )
+            return [
+                self._producer_rail_unlocked(producer_id)
+                for producer_id in sorted(producer_ids)
+            ]
+
+    async def check_and_debit_producer_rate(
+        self,
+        producer_id: str,
+        *,
+        now: datetime,
+        limit_per_hour: int,
+        burst: int,
+    ) -> ProducerRateVerdict:
+        limit_per_hour, burst = validate_producer_rate_inputs(
+            now=now,
+            limit_per_hour=limit_per_hour,
+            burst=burst,
+        )
+        async with self._lock:
+            with self._atomic():
+                rail = self._producer_rail_unlocked(producer_id)
+                if rail.quarantine_epoch_open:
+                    return ProducerRateVerdict("quarantined", rail)
+
+                bucket = self._producer_rate_buckets.get(producer_id)
+                if bucket is None:
+                    available = float(burst)
+                else:
+                    if now < bucket.refill_anchor:
+                        raise ValueError("now must not precede the rate refill anchor")
+                    elapsed_seconds = (now - bucket.refill_anchor).total_seconds()
+                    available = min(
+                        float(burst),
+                        bucket.tokens
+                        + elapsed_seconds * float(limit_per_hour) / 3600.0,
+                    )
+
+                if available < 1.0:
+                    epoch_sequence = self._authoritative_epoch_sequence_unlocked(
+                        producer_id, rail
+                    )
+                    epoch_event = producer_quarantined_event(
+                        producer_id=producer_id,
+                        breach_trigger="rate_breach",
+                        epoch_start=now,
+                        epoch_sequence=epoch_sequence + 1,
+                        bucket_capacity=burst,
+                    )
+                    stored = self._append_execution_event_unlocked(epoch_event)
+                    if stored.id != epoch_event.id:
+                        raise InvalidEventError(
+                            "producer rate-breach opener was already present"
+                        )
+                    self._rebuild_producer_rails_unlocked()
+                    return ProducerRateVerdict(
+                        "rate_breached",
+                        self._producer_rail_unlocked(producer_id),
+                    )
+
+                self._producer_rate_buckets[producer_id] = _ProducerRateBucket(
+                    tokens=available - 1.0,
+                    refill_anchor=now,
+                )
+                return ProducerRateVerdict(
+                    "ok", self._producer_rail_unlocked(producer_id)
+                )
+
+    async def release_producer(
+        self,
+        producer_id: str,
+        *,
+        actor: str,
+        rejected_count: int,
+        released_at: datetime,
+    ) -> ProducerRailState:
+        async with self._lock:
+            with self._atomic():
+                projected = project_producer_rails(self._execution_events)
+                if (
+                    producer_id not in projected
+                    and producer_id not in self._producer_rate_buckets
+                ):
+                    raise UnknownEntityError(
+                        f"signal producer {producer_id!r} does not exist"
+                    )
+                rail = self._projected_producer_rail_unlocked(producer_id)
+                if (
+                    not rail.quarantine_epoch_open
+                    or rail.quarantine_epoch_started_at is None
+                ):
+                    raise ProducerNotQuarantinedError(
+                        f"signal producer {producer_id!r} is not quarantined"
+                    )
+                release = producer_released_event(
+                    producer_id=producer_id,
+                    actor=actor,
+                    rejected_count=rejected_count,
+                    epoch_start=rail.quarantine_epoch_started_at,
+                    released_at=released_at,
+                    epoch_sequence=rail.quarantine_epoch_sequence,
+                )
+                stored = self._append_execution_event_unlocked(release)
+                if stored.id != release.id:
+                    raise InvalidEventError(
+                        "producer release event was already present"
+                    )
+                self._producer_rate_buckets.pop(producer_id, None)
+                self._rebuild_producer_rails_unlocked()
+                return self._producer_rail_unlocked(producer_id)
 
     # ------------------------------------------------------------------ #
     # Sessions / control flags

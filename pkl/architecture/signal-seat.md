@@ -108,3 +108,12 @@ ADR and review).
   delivered. REV-0043 returned ACCEPT-WITH-CHANGES, then final ACCEPT after F-1/F-2 remediation and
   the operator's F-4 acknowledgement retaining `detected_by:"conversion"`; disposition RESOLVED.
   F-6/F-8 carry to R6. D-2a stays OFF pending R6 + R7 and the joint gate.
+- 2026-07-26: R6a rails store surface implemented (WO-0104a): the
+  operator-approved nine-column producer-rail table and fail-closed startup
+  guards; event-authoritative budget/quarantine/epoch projection registered in
+  replay; identity-conditioned atomic budget debit and epoch opener; primary
+  durable REAL token bucket with fractional carry; record-free late-body
+  rejection; human release resetting both rails; and a snapshot-free signal
+  transition-event builder. The seat flag remains OFF: R6b still owns provider,
+  route/sweep/cockpit wiring and rate settings, and REV-0044 must disposition
+  before R6b or R7a starts.
