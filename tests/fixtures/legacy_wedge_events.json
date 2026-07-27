@@ -1,0 +1,50 @@
+{
+ "generated_by": "6955208 (pre-R6a master) real SqliteStateStore",
+ "generator": "WO-0140 slice-4 wedge corpus, 2026-07-27",
+ "events": [
+  {
+   "id": "0110d29609284e43a83b27877ad8fd41",
+   "sequence": 1,
+   "schema_version": 1,
+   "event_type": "signal_quarantined",
+   "source": "engine",
+   "authority": "local",
+   "dedupe_key": "signal_create:11:legacy-prod|5:sig-0",
+   "ts_event": "2026-07-20T12:00:00+00:00",
+   "ts_init": "2026-07-20T12:00:00+00:00",
+   "symbol": "AAPL",
+   "side": null,
+   "quantity": null,
+   "price": null,
+   "order_id": null,
+   "envelope_id": null,
+   "primary_id": null,
+   "spawn_id": null,
+   "session_id": null,
+   "correlation_id": null,
+   "payload": "{\"producer_id\": \"legacy-prod\", \"signal_id\": \"sig-0\", \"record_id\": \"e6ac84daf84f4f449f3671825edd0ae5\", \"received_at\": \"2026-07-20T12:00:00+00:00\", \"expires_at\": \"2026-07-11T12:05:00+00:00\", \"record\": {\"id\": \"e6ac84daf84f4f449f3671825edd0ae5\", \"producer_id\": \"legacy-prod\", \"signal_id\": \"sig-0\", \"status\": \"quarantined\", \"symbol\": \"AAPL\", \"direction\": \"buy\", \"issued_at\": \"2026-07-11T12:00:00Z\", \"ttl_seconds\": 300, \"expires_at\": \"2026-07-11T12:05:00Z\", \"received_at\": \"2026-07-20T12:00:00Z\", \"raw_fields\": null, \"suggested_quantity\": 1, \"suggested_limit_price\": null, \"thesis\": \"t\", \"provenance\": {\"src\": \"legacy\"}, \"payload_hash\": \"800f462ecb63ccbb6f56384905643f14c5a5d946bbb950f8c06dbc44784937d1\", \"quarantine_reason\": \"issued_at_stale\", \"created_at\": \"2026-07-20T12:00:00Z\", \"updated_at\": \"2026-07-20T12:00:00Z\", \"approved_at\": null, \"rejected_at\": null, \"expired_at\": null, \"quarantined_at\": \"2026-07-20T12:00:00Z\", \"converted_kind\": null, \"converted_id\": null, \"approved_by\": null}, \"quarantine_reason\": \"issued_at_stale\", \"cycle_budget_limit\": 2}"
+  },
+  {
+   "id": "a50d99027bec4985bbc69f4f9405876a",
+   "sequence": 2,
+   "schema_version": 1,
+   "event_type": "signal_quarantined",
+   "source": "engine",
+   "authority": "local",
+   "dedupe_key": "signal_create:11:legacy-prod|5:sig-1",
+   "ts_event": "2026-07-20T12:00:01+00:00",
+   "ts_init": "2026-07-20T12:00:01+00:00",
+   "symbol": "AAPL",
+   "side": null,
+   "quantity": null,
+   "price": null,
+   "order_id": null,
+   "envelope_id": null,
+   "primary_id": null,
+   "spawn_id": null,
+   "session_id": null,
+   "correlation_id": null,
+   "payload": "{\"producer_id\": \"legacy-prod\", \"signal_id\": \"sig-1\", \"record_id\": \"2b659d714cb84b50a83d3dbd89011e15\", \"received_at\": \"2026-07-20T12:00:01+00:00\", \"expires_at\": \"2026-07-11T12:05:00+00:00\", \"record\": {\"id\": \"2b659d714cb84b50a83d3dbd89011e15\", \"producer_id\": \"legacy-prod\", \"signal_id\": \"sig-1\", \"status\": \"quarantined\", \"symbol\": \"AAPL\", \"direction\": \"buy\", \"issued_at\": \"2026-07-11T12:00:00Z\", \"ttl_seconds\": 300, \"expires_at\": \"2026-07-11T12:05:00Z\", \"received_at\": \"2026-07-20T12:00:01Z\", \"raw_fields\": null, \"suggested_quantity\": 1, \"suggested_limit_price\": null, \"thesis\": \"t\", \"provenance\": {\"src\": \"legacy\"}, \"payload_hash\": \"fb90551519c6fd8b979cbf7a2ce480fcd72ab7ed35b97f160569028450356b2d\", \"quarantine_reason\": \"issued_at_stale\", \"created_at\": \"2026-07-20T12:00:01Z\", \"updated_at\": \"2026-07-20T12:00:01Z\", \"approved_at\": null, \"rejected_at\": null, \"expired_at\": null, \"quarantined_at\": \"2026-07-20T12:00:01Z\", \"converted_kind\": null, \"converted_id\": null, \"approved_by\": null}, \"quarantine_reason\": \"issued_at_stale\", \"cycle_budget_limit\": 2}"
+  }
+ ]
+}

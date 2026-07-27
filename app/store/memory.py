@@ -65,6 +65,7 @@ from app.events.projectors import (
     ORDER_STATUS_EVENT_TYPES,
     PoisonedProducerMarker,
     ProducerRailProjection,
+    ProjectionError,
     active_emergency_reduce_overrides,
     fold_producer_rail,
     compose_trading_state,
@@ -74,6 +75,7 @@ from app.events.projectors import (
     project_producer_rails,
     project_producer_rails_tolerant,
     project_symbol_position,
+    sequence_from_release_dedupe_key,
     quarantined_symbols,
     reconcile_trading_state,
     timeout_quarantined_order_ids,
@@ -347,6 +349,27 @@ class InMemoryStateStore(StateStore):
                 marker.last_known_epoch_sequence,
             )
         self._poisoned_producers = dict(poisoned)
+
+    def _release_sequence_floor_unlocked(self, producer_id: str) -> int:
+        """Highest epoch sequence the LOG proves consumed (WO-0140 D-R R-3)."""
+
+        floor = 0
+        for event in self._execution_events:
+            if event.payload.get("producer_id") != producer_id:
+                continue
+            if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED:
+                raw = event.payload.get("epoch_sequence")
+                if isinstance(raw, int) and not isinstance(raw, bool):
+                    floor = max(floor, raw)
+            elif event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+                try:
+                    floor = max(
+                        floor,
+                        sequence_from_release_dedupe_key(event.dedupe_key or ""),
+                    )
+                except ProjectionError:
+                    continue
+        return floor
 
     def _apply_incremental_budget_debit_unlocked(
         self,
@@ -6102,19 +6125,53 @@ class InMemoryStateStore(StateStore):
     ) -> ProducerRailState:
         async with self._lock:
             with self._atomic():
-                projected = project_producer_rails(self._execution_events)
-                if (
-                    producer_id not in projected
-                    and producer_id not in self._producer_rate_buckets
-                ):
+                # WO-0140 D-R R-3: three states, gated on the CACHE with the
+                # bounded cross-check — the same shape as SQLite (R-3 parity).
+                known = (
+                    producer_id in self._producer_budget_rails
+                    or producer_id in self._producer_epoch_sequences
+                    or producer_id in self._producer_rate_buckets
+                )
+                if not known and producer_id not in self._poisoned_producers:
                     raise UnknownEntityError(
                         f"signal producer {producer_id!r} does not exist"
                     )
-                rail = self._projected_producer_rail_unlocked(producer_id)
-                if (
-                    not rail.quarantine_epoch_open
-                    or rail.quarantine_epoch_started_at is None
+                poisoned = producer_id in self._poisoned_producers
+                rail: Optional[ProducerRailState] = None
+                if not poisoned:
+                    try:
+                        rail = self._producer_rail_unlocked(producer_id)
+                        self._authoritative_epoch_sequence_unlocked(producer_id, rail)
+                    except InvalidEventError as exc:
+                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
+                            producer_id=producer_id,
+                            offending_sequence=0,
+                            reason=str(exc),
+                            last_known_epoch_sequence=0,
+                        )
+                        poisoned = True
+                if poisoned:
+                    epoch_start = released_at  # zero-width heal window
+                    epoch_sequence = (
+                        self._release_sequence_floor_unlocked(producer_id) + 1
+                    )
+                elif rail is not None and rail.quarantine_epoch_open:
+                    if rail.quarantine_epoch_started_at is None:
+                        raise InvalidEventError(
+                            f"producer rail {producer_id!r} open epoch has no start"
+                        )
+                    epoch_start = rail.quarantine_epoch_started_at
+                    epoch_sequence = rail.quarantine_epoch_sequence
+                elif (
+                    rail is not None
+                    and rail.cycle_budget_limit is not None
+                    and rail.cycle_budget_consumed >= rail.cycle_budget_limit
                 ):
+                    epoch_start = released_at
+                    epoch_sequence = (
+                        self._release_sequence_floor_unlocked(producer_id) + 1
+                    )
+                else:
                     raise ProducerNotQuarantinedError(
                         f"signal producer {producer_id!r} is not quarantined"
                     )
@@ -6122,9 +6179,9 @@ class InMemoryStateStore(StateStore):
                     producer_id=producer_id,
                     actor=actor,
                     rejected_count=rejected_count,
-                    epoch_start=rail.quarantine_epoch_started_at,
+                    epoch_start=epoch_start,
                     released_at=released_at,
-                    epoch_sequence=rail.quarantine_epoch_sequence,
+                    epoch_sequence=epoch_sequence,
                 )
                 stored = self._append_execution_event_unlocked(release)
                 if stored.id != release.id:
@@ -6132,7 +6189,9 @@ class InMemoryStateStore(StateStore):
                         "producer release event was already present"
                     )
                 self._producer_rate_buckets.pop(producer_id, None)
-                self._rebuild_producer_rails_unlocked()
+                self._producer_budget_rails[producer_id] = _ProducerBudgetRail()
+                self._producer_epoch_sequences[producer_id] = epoch_sequence
+                self._poisoned_producers.pop(producer_id, None)
                 return self._producer_rail_unlocked(producer_id)
 
     # ------------------------------------------------------------------ #

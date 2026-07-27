@@ -81,9 +81,11 @@ from app.models import (
 from app.events.projectors import (
     ORDER_STATUS_EVENT_TYPES,
     PoisonedProducerMarker,
+    ProjectionError,
     ProducerRailProjection,
     active_emergency_reduce_overrides,
     fold_producer_rail,
+    sequence_from_release_dedupe_key,
     compose_trading_state,
     control_trading_state,
     current_trading_state,
@@ -1661,6 +1663,40 @@ class SqliteStateStore(StateStore):
                     f"producer rail {producer_id!r} sequence has no log anchor"
                 )
         return folded.quarantine_epoch_sequence
+
+    def _release_sequence_floor_locked(
+        self, cur: sqlite3.Cursor, producer_id: str
+    ) -> int:
+        """Highest epoch sequence the LOG proves consumed (WO-0140 D-R R-3).
+
+        Openers carry it in their payload; releases carry it only in their
+        dedupe key (the ratified payload list is closed), so both are read —
+        a floor derived from the log alone can never re-mint a consumed key
+        and never trusts a drifted row. Runs only on the human release path.
+        """
+
+        floor = 0
+        row = cur.execute(
+            "SELECT MAX(json_extract(payload, '$.epoch_sequence')) AS m "
+            "FROM execution_events WHERE event_type = ? "
+            "AND json_extract(payload, '$.producer_id') = ?",
+            (ExecutionEventType.PRODUCER_QUARANTINED.value, producer_id),
+        ).fetchone()
+        if row is not None and isinstance(row["m"], int):
+            floor = max(floor, row["m"])
+        for key_row in cur.execute(
+            "SELECT dedupe_key FROM execution_events WHERE event_type = ? "
+            "AND json_extract(payload, '$.producer_id') = ?",
+            (ExecutionEventType.PRODUCER_RELEASED.value, producer_id),
+        ).fetchall():
+            try:
+                floor = max(
+                    floor,
+                    sequence_from_release_dedupe_key(key_row["dedupe_key"]),
+                )
+            except ProjectionError:
+                continue
+        return floor
 
     @staticmethod
     def _upsert_producer_log_rail(cur: sqlite3.Cursor, rail: object) -> None:
@@ -8340,31 +8376,66 @@ class SqliteStateStore(StateStore):
     ) -> ProducerRailState:
         async with self._lock:
             with self._tx() as cur:
-                projected = self._projected_producer_rails_locked(cur)
+                # WO-0140 D-R R-3: release is the ONE human recovery — three
+                # states: an open epoch, the legacy wedge, and a poisoned
+                # producer (the heal). Gate on the cache, cross-checked by the
+                # bounded fold; drift found here funnels into the heal.
                 row = cur.execute(
                     "SELECT 1 FROM signal_producer_rails WHERE producer_id = ?",
                     (producer_id,),
                 ).fetchone()
-                if producer_id not in projected and row is None:
+                if row is None and producer_id not in self._poisoned_producers:
                     raise UnknownEntityError(
                         f"signal producer {producer_id!r} does not exist"
                     )
-                rail = self._producer_rail_locked(cur, producer_id)
-                if (
-                    not rail.quarantine_epoch_open
-                    or rail.quarantine_epoch_started_at is None
+                poisoned = producer_id in self._poisoned_producers
+                rail: Optional[ProducerRailState] = None
+                if not poisoned:
+                    try:
+                        rail = self._producer_rail_locked(cur, producer_id)
+                        self._authoritative_epoch_sequence_locked(
+                            cur, producer_id, rail
+                        )
+                    except InvalidEventError as exc:
+                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
+                            producer_id=producer_id,
+                            offending_sequence=0,
+                            reason=str(exc),
+                            last_known_epoch_sequence=0,
+                        )
+                        poisoned = True
+                if poisoned:
+                    epoch_start = released_at  # zero-width heal window
+                    epoch_sequence = (
+                        self._release_sequence_floor_locked(cur, producer_id) + 1
+                    )
+                elif rail is not None and rail.quarantine_epoch_open:
+                    if rail.quarantine_epoch_started_at is None:
+                        raise InvalidEventError(
+                            f"producer rail {producer_id!r} open epoch has no start"
+                        )
+                    epoch_start = rail.quarantine_epoch_started_at
+                    epoch_sequence = rail.quarantine_epoch_sequence
+                elif (
+                    rail is not None
+                    and rail.cycle_budget_limit is not None
+                    and rail.cycle_budget_consumed >= rail.cycle_budget_limit
                 ):
+                    # The R-4 wedge: exhausted with no epoch — a legacy-only
+                    # state with no other exit. Zero-width heal.
+                    epoch_start = released_at
+                    epoch_sequence = (
+                        self._release_sequence_floor_locked(cur, producer_id) + 1
+                    )
+                else:
                     raise ProducerNotQuarantinedError(
                         f"signal producer {producer_id!r} is not quarantined"
                     )
-                epoch_sequence = self._authoritative_epoch_sequence_locked(
-                    cur, producer_id, rail
-                )
                 release = producer_released_event(
                     producer_id=producer_id,
                     actor=actor,
                     rejected_count=rejected_count,
-                    epoch_start=rail.quarantine_epoch_started_at,
+                    epoch_start=epoch_start,
                     released_at=released_at,
                     epoch_sequence=epoch_sequence,
                 )
@@ -8373,14 +8444,22 @@ class SqliteStateStore(StateStore):
                     raise InvalidEventError(
                         "producer release event was already present"
                     )
-                projected = self._projected_producer_rails_locked(cur)
-                self._upsert_producer_log_rail(cur, projected[producer_id])
+                # Direct row write — zero class-(A) with the consumed/preserved
+                # sequence; never a fold on this path (D-R R-2).
+                self._upsert_producer_log_rail(
+                    cur,
+                    ProducerRailProjection(
+                        producer_id=producer_id,
+                        quarantine_epoch_sequence=epoch_sequence,
+                    ),
+                )
                 self._upsert_producer_rate_bucket(
                     cur,
                     producer_id=producer_id,
                     tokens=None,
                     refill_anchor=None,
                 )
+                self._poisoned_producers.pop(producer_id, None)
                 return self._producer_rail_locked(cur, producer_id)
 
     # ------------------------------------------------------------------ #

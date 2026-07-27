@@ -1234,16 +1234,45 @@ def _apply_producer_quarantined(
     )
 
 
+def sequence_from_release_dedupe_key(dedupe_key: str) -> int:
+    """Parse the epoch sequence a ``PRODUCER_RELEASED`` dedupe key consumed.
+
+    WO-0140 D-R R-3: the no-epoch (zero-width) release consumes the next
+    epoch sequence, and the payload deliberately carries no sequence — the
+    ratified field list is closed. The dedupe key is the one place the
+    consumed sequence structurally lives (``producer_release:{len}:{pid}|
+    {len}:{seq}``, length-prefixed), so every consumer derives it from the
+    key: stores when computing the release floor, the fold when applying a
+    zero-width heal. Raises :class:`ProjectionError` on any malformed key —
+    a release whose key cannot be parsed cannot be sequenced.
+    """
+
+    prefix = "producer_release:"
+    if not dedupe_key.startswith(prefix):
+        raise ProjectionError(f"release dedupe key {dedupe_key!r} has the wrong prefix")
+    tail = dedupe_key[len(prefix) :].rsplit("|", 1)[-1]
+    length_text, _, sequence_text = tail.partition(":")
+    if (
+        not length_text.isdigit()
+        or not sequence_text.isdigit()
+        or int(length_text) != len(sequence_text)
+    ):
+        raise ProjectionError(
+            f"release dedupe key {dedupe_key!r} has a malformed sequence part"
+        )
+    sequence = int(sequence_text)
+    if sequence < 1:
+        raise ProjectionError(
+            f"release dedupe key {dedupe_key!r} carries a non-positive sequence"
+        )
+    return sequence
+
+
 def _apply_producer_released(
     current: ProducerRailProjection, event: ExecutionEvent
 ) -> ProducerRailProjection:
     _, _, _, rejected_count_max = _producer_rail_contract()
     _require_exact_payload_fields(event, _PRODUCER_RELEASE_FIELDS)
-    if not current.quarantine_epoch_open:
-        raise ProjectionError(
-            f"PRODUCER_RELEASED event sequence={event.sequence} has no open "
-            "quarantine epoch"
-        )
 
     actor = _required_str(event.payload, "actor", event=event)
     if not actor.strip() or actor != actor.strip():
@@ -1262,11 +1291,6 @@ def _apply_producer_released(
         "epoch_start",
         event=event,
     )
-    if epoch_start != current.quarantine_epoch_started_at:
-        raise ProjectionError(
-            f"PRODUCER_RELEASED event sequence={event.sequence} epoch_start does "
-            "not match the open quarantine epoch"
-        )
     released_at = _required_aware_datetime(
         event.payload,
         "released_at",
@@ -1278,6 +1302,54 @@ def _apply_producer_released(
             "before epoch_start"
         )
 
+    if current.quarantine_epoch_open:
+        # The open-epoch drift net, unchanged: the release must name the
+        # exact epoch it closes. A zero-width forgery while an epoch is open
+        # fails here (epoch_start == released_at != true start).
+        if epoch_start != current.quarantine_epoch_started_at:
+            raise ProjectionError(
+                f"PRODUCER_RELEASED event sequence={event.sequence} epoch_start "
+                "does not match the open quarantine epoch"
+            )
+        return replace(
+            current,
+            cycle_budget_limit=None,
+            cycle_budget_consumed=0,
+            quarantine_epoch_open=False,
+            quarantine_epoch_started_at=None,
+            quarantine_breach_trigger=None,
+        )
+
+    # WO-0140 D-R R-3: the no-epoch (zero-width) release. Accepted ONLY as a
+    # zero-width window, and ONLY from the zero state or the legacy wedge
+    # (consumed >= pinned limit with no opener — a pre-R6a shape). The
+    # interior shape (0 < consumed < limit) would launder a partially
+    # consumed budget in replay and is refused (pass-2 F-H). The consumed
+    # sequence lives in the dedupe key — the ratified payload carries none.
+    if epoch_start != released_at:
+        raise ProjectionError(
+            f"PRODUCER_RELEASED event sequence={event.sequence} has no open "
+            "quarantine epoch and is not a zero-width heal"
+        )
+    is_zero_state = (
+        current.cycle_budget_limit is None and current.cycle_budget_consumed == 0
+    )
+    is_wedge = (
+        current.cycle_budget_limit is not None
+        and current.cycle_budget_consumed >= current.cycle_budget_limit
+    )
+    if not (is_zero_state or is_wedge):
+        raise ProjectionError(
+            f"PRODUCER_RELEASED event sequence={event.sequence} is a zero-width "
+            "heal of a mid-cycle rail (budget laundering refused)"
+        )
+    consumed_sequence = sequence_from_release_dedupe_key(event.dedupe_key or "")
+    if consumed_sequence <= current.quarantine_epoch_sequence:
+        raise ProjectionError(
+            f"PRODUCER_RELEASED event sequence={event.sequence} consumes epoch "
+            f"sequence {consumed_sequence} at or below the carrier "
+            f"{current.quarantine_epoch_sequence}"
+        )
     return replace(
         current,
         cycle_budget_limit=None,
@@ -1285,6 +1357,7 @@ def _apply_producer_released(
         quarantine_epoch_open=False,
         quarantine_epoch_started_at=None,
         quarantine_breach_trigger=None,
+        quarantine_epoch_sequence=consumed_sequence,
     )
 
 
@@ -1425,8 +1498,38 @@ def project_producer_rails_tolerant(
                 last_known[producer_id] = max(
                     last_known.get(producer_id, 0), raw_sequence
                 )
+        if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+            # A release's consumed sequence lives in its dedupe key (the
+            # ratified payload carries none) — track it so the never-regress
+            # rule sees sequences consumed by zero-width heals too (F-B).
+            try:
+                last_known[producer_id] = max(
+                    last_known.get(producer_id, 0),
+                    sequence_from_release_dedupe_key(event.dedupe_key or ""),
+                )
+            except ProjectionError:
+                pass  # unparseable key: the strict path below will judge it
 
         if producer_id in poisoned_at:
+            if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+                raw_start = event.payload.get("epoch_start")
+                raw_released = event.payload.get("released_at")
+                if raw_start is not None and raw_start == raw_released:
+                    # WO-0140 D-R R-3 state 3: the zero-width release IS the
+                    # heal — the fold boundary. The producer un-poisons and
+                    # folding restarts from the zero state at the consumed
+                    # sequence; an unparseable key leaves it poisoned.
+                    try:
+                        healed_sequence = sequence_from_release_dedupe_key(
+                            event.dedupe_key or ""
+                        )
+                    except ProjectionError:
+                        continue
+                    del poisoned_at[producer_id]
+                    projected[producer_id] = ProducerRailProjection(
+                        producer_id=producer_id,
+                        quarantine_epoch_sequence=healed_sequence,
+                    )
             continue
 
         current = projected.setdefault(

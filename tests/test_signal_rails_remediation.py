@@ -226,3 +226,273 @@ async def test_attributable_debit_does_not_rescan_event_log(
         **_ingest_kwargs("producer-scale", "invalid-1", invalid=True)
     )
     assert result.outcome == "quarantined_validation"
+
+
+# --------------------------------------------------------------------------- #
+# Slice 4 — the three-state release (WO-0140 D-R R-3 + R-4)
+# --------------------------------------------------------------------------- #
+
+
+def _events_from_fixture(fixture: str):
+    data = json.loads((FIXTURES / f"{fixture}.json").read_text())
+    from app.models import ExecutionEvent
+
+    return [
+        ExecutionEvent.model_validate({**e, "payload": json.loads(e["payload"])})
+        for e in data["events"]
+    ]
+
+
+async def _sqlite_with_fixture(tmp_path, fixture: str) -> SqliteStateStore:
+    path = str(tmp_path / f"{fixture}.db")
+    await _fresh_schema(path)
+    _write_legacy_db(path, fixture)
+    store = SqliteStateStore(path)
+    await store.initialize()
+    return store
+
+
+async def test_wedge_producer_is_gated_and_release_heals(tmp_path) -> None:
+    """R-4: consumed == limit with no opener (legacy wedge) folds cleanly, is
+    boundary-rejected on ingest, and release — state 2 — is the exit."""
+
+    from datetime import datetime, timedelta, timezone
+
+    store = await _sqlite_with_fixture(tmp_path, "legacy_wedge_events")
+    assert store.poisoned_producers() == {}  # a wedge is NOT poisoned
+    rail = await store.get_producer_rail(LEGACY_PRODUCER)
+    assert (rail.cycle_budget_limit, rail.cycle_budget_consumed) == (2, 2)
+    assert rail.quarantine_epoch_open is False
+
+    gated = await store.ingest_signal(
+        **_ingest_kwargs(LEGACY_PRODUCER, "post-wedge", cycle_budget_limit=2)
+    )
+    assert gated.outcome == "producer_quarantined"
+    assert gated.record is None
+
+    released_at = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    healed = await store.release_producer(
+        LEGACY_PRODUCER, actor="operator", rejected_count=0, released_at=released_at
+    )
+    assert healed.cycle_budget_limit is None
+    assert healed.cycle_budget_consumed == 0
+    assert healed.quarantine_epoch_open is False
+    assert healed.quarantine_epoch_sequence == 1  # floor 0 + 1, consumed
+
+    releases = [
+        e
+        for e in await store.get_execution_events()
+        if e.event_type.value == "producer_released"
+    ]
+    assert len(releases) == 1
+    payload = releases[0].payload
+    assert payload["epoch_start"] == payload["released_at"]  # zero-width window
+
+    resumed = await store.ingest_signal(
+        **_ingest_kwargs(
+            LEGACY_PRODUCER,
+            "post-heal",
+            cycle_budget_limit=2,
+            issued_at=released_at,
+            received_at=released_at + timedelta(seconds=1),
+        )
+    )
+    assert resumed.outcome == "received"
+
+    projection = project_read_models(await store.get_execution_events())
+    assert projection.poisoned_producers == {}
+    replay_rail = projection.producer_rails[LEGACY_PRODUCER]
+    assert replay_rail.quarantine_epoch_sequence == 1
+
+
+async def test_poisoned_release_heals_and_stays_healed_across_replay(
+    tmp_path,
+) -> None:
+    """R-1 state 3 + pass-2 F-C: release IS the heal; a healed producer must
+    not re-poison on replay, and the fold boundary is the release itself."""
+
+    from datetime import datetime, timedelta, timezone
+
+    store = await _sqlite_with_fixture(tmp_path, "legacy_overbudget_events")
+    assert set(store.poisoned_producers()) == {LEGACY_PRODUCER}
+
+    released_at = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    healed = await store.release_producer(
+        LEGACY_PRODUCER, actor="operator", rejected_count=0, released_at=released_at
+    )
+    assert store.poisoned_producers() == {}
+    assert healed.quarantine_epoch_sequence == 1
+    assert healed.cycle_budget_limit is None
+
+    resumed = await store.ingest_signal(
+        **_ingest_kwargs(
+            LEGACY_PRODUCER,
+            "post-heal",
+            cycle_budget_limit=50,
+            issued_at=released_at,
+            received_at=released_at + timedelta(seconds=1),
+        )
+    )
+    assert resumed.outcome == "received"
+
+    projection = project_read_models(await store.get_execution_events())
+    assert projection.poisoned_producers == {}  # healed producers STAY healed
+    assert projection.producer_rails[LEGACY_PRODUCER].quarantine_epoch_sequence == 1
+
+    fresh = SqliteStateStore(store._db_path)
+    await fresh.initialize()
+    assert fresh.poisoned_producers() == {}
+
+
+async def test_state1_release_and_open_epoch_restart_still_work(tmp_path) -> None:
+    """The two F-A detonation shapes: a NORMAL open-epoch release, and a
+    release after an open-epoch restart. The flat-seed mutant fails both."""
+
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    path = str(tmp_path / "state1.db")
+    store = SqliteStateStore(path)
+    await store.initialize()
+
+    for _ in range(2):  # burst 1: second call breaches, opens epoch 1
+        await store.check_and_debit_producer_rate(
+            "producer-open", now=now, limit_per_hour=60, burst=1
+        )
+    rail = await store.get_producer_rail("producer-open")
+    assert rail.quarantine_epoch_open is True
+
+    # F-A shape 2: restart with the epoch OPEN, then release on the restarted
+    # store — the bounded check must seed row.seq - 1, not row.seq.
+    restarted = SqliteStateStore(path)
+    await restarted.initialize()
+    assert restarted.poisoned_producers() == {}  # a healthy open epoch
+
+    released = await restarted.release_producer(
+        "producer-open", actor="operator", rejected_count=3, released_at=now
+    )
+    assert released.quarantine_epoch_open is False
+    assert released.quarantine_epoch_sequence == 1  # preserved, not consumed
+    assert "producer-open" not in restarted.poisoned_producers()
+
+    releases = [
+        e
+        for e in await restarted.get_execution_events()
+        if e.event_type.value == "producer_released"
+    ]
+    assert len(releases) == 1
+    payload = releases[0].payload
+    assert payload["epoch_start"] != payload["released_at"] or (
+        payload["epoch_start"] == payload["released_at"]
+        and payload["epoch_start"] == now.isoformat()
+    )  # a REAL window: epoch_start is the opener's start
+
+
+async def test_double_heal_mints_distinct_keys(tmp_path) -> None:
+    """Pass-2 F-B: two heals of one producer must key distinctly — the
+    carrier never regresses, so heal #2 consumes the NEXT sequence."""
+
+    from datetime import datetime, timezone
+
+    store = await _sqlite_with_fixture(tmp_path, "legacy_overbudget_events")
+    released_at = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    await store.release_producer(
+        LEGACY_PRODUCER, actor="operator", rejected_count=0, released_at=released_at
+    )
+
+    # Re-poison via row drift (no matching log anchor at the drifted value).
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE signal_producer_rails SET quarantine_epoch_sequence=7 "
+        "WHERE producer_id=?",
+        (LEGACY_PRODUCER,),
+    )
+    for _ in range(2):
+        await store.check_and_debit_producer_rate(
+            LEGACY_PRODUCER, now=released_at, limit_per_hour=60, burst=1
+        )
+    verdict = await store.check_and_debit_producer_rate(
+        LEGACY_PRODUCER, now=released_at, limit_per_hour=60, burst=1
+    )
+    assert verdict.outcome == "quarantined"
+    assert LEGACY_PRODUCER in store.poisoned_producers()
+
+    healed = await store.release_producer(
+        LEGACY_PRODUCER, actor="operator", rejected_count=0, released_at=released_at
+    )
+    assert store.poisoned_producers() == {}
+    assert healed.quarantine_epoch_sequence == 2  # floor saw heal #1's key
+
+    keys = [
+        e.dedupe_key
+        for e in await store.get_execution_events()
+        if e.event_type.value == "producer_released"
+    ]
+    assert len(keys) == 2
+    assert len(set(keys)) == 2  # DISTINCT — the F-B collision is dead
+
+
+async def test_forged_and_interior_zero_width_fail_the_strict_fold() -> None:
+    """Pass-2 F-C (narrowed) + F-H: a zero-width release is REFUSED by the
+    strict fold when an epoch is open (forged) or mid-cycle (interior)."""
+
+    from datetime import datetime, timezone
+
+    from app.events.projectors import (
+        ProjectionError,
+        project_producer_rails,
+        project_producer_rails_tolerant,
+    )
+    from app.store.core import (
+        producer_quarantined_event,
+        producer_released_event,
+    )
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc)
+
+    def _seq(events):
+        out = []
+        for i, e in enumerate(events, start=1):
+            out.append(e.model_copy(update={"sequence": i}))
+        return out
+
+    # Forged: epoch OPEN (started at `now`), zero-width release at `later`.
+    opener = producer_quarantined_event(
+        producer_id="p-forged",
+        breach_trigger="rate_breach",
+        epoch_start=now,
+        epoch_sequence=1,
+        bucket_capacity=5,
+    )
+    forged_release = producer_released_event(
+        producer_id="p-forged",
+        actor="mallory",
+        rejected_count=0,
+        epoch_start=later,
+        released_at=later,
+        epoch_sequence=2,
+    )
+    forged_log = _seq([opener, forged_release])
+    with pytest.raises(ProjectionError):
+        project_producer_rails(forged_log)
+    _, poisoned = project_producer_rails_tolerant(forged_log)
+    assert "p-forged" in poisoned  # the funnel, not a silent fold
+
+    # Interior: one real attributable rejection (consumed 1 of limit 5, from
+    # the fixture corpus), then a zero-width release — laundering a partially
+    # consumed budget must be refused (F-H).
+    first_attributable = _events_from_fixture("legacy_changed_limit_events")[0]
+    interior_release = producer_released_event(
+        producer_id=LEGACY_PRODUCER,
+        actor="mallory",
+        rejected_count=0,
+        epoch_start=later,
+        released_at=later,
+        epoch_sequence=1,
+    )
+    interior_log = _seq([first_attributable, interior_release])
+    with pytest.raises(ProjectionError):
+        project_producer_rails(interior_log)
+    _, poisoned = project_producer_rails_tolerant(interior_log)
+    assert LEGACY_PRODUCER in poisoned
