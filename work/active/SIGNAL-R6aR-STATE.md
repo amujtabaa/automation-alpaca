@@ -26,10 +26,30 @@
 | 4 | Three-state release + zero-width/no-epoch rules + never-regress carrier | **VERIFIED** — 13 remediation pins green; 4 decisive mutants RED→GREEN (flat-seed, widened acceptance, heal removal, key-blind floor); 182-test corpus green |
 | 5 | Constants → models.py; read-structural/write-capped (fold + row validator); cap-pin re-home | **VERIFIED** — 3 pins RED→GREEN; both mutants RED (cap-bound restored; literal re-declared); lazy loader deleted; 183-test corpus green |
 | 6 | R-8..R-12 mechanical | **VERIFIED** — R-8 module-anchored + non-vacuous; R-9 mutant (lens A's M5, the one nothing caught) now RED on TWO pins; R-10 outcome-keyed; R-11 read-only-property Protocol, getattr gone, mypy green; R-12 property slice over open-epoch + at-limit rails |
-| 7 | Mutation-check sweep (every decisive pin RED→GREEN) + full gate battery | pending |
+| 7 | Refutation pass + remediation; full battery pending | **IN PROGRESS** — fresh-context pass over `b48235e..d14a65e`: 8 findings (2 P0). Findings 1/3/4/5/6/7 fixed+pinned this commit; finding 8 → addendum disclosure; **finding 2 is an OPEN DECISION GAP (operator)** |
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | pending |
 
 ## Evidence log
+
+- 2026-07-27 (refutation pass): a fresh-context agent attacked the full diff with runnable probes.
+  **Finding 1 (P0, mine, mechanical):** the six runtime boundary sites caught only
+  `InvalidEventError`; drift detonating INSIDE a strict applier raises `ProjectionError` (disjoint
+  hierarchies) and escaped uncaught — release wedged retry-proof. rev-3 R-1.1's own sentence says
+  "catch both exception types"; I half-implemented it. Fixed at all six sites; pinned
+  (open-epoch sequence drift → release heals, no raise); mutant (catch narrowed at the release
+  site) RED→GREEN. **Finding 2 (P0, a collision between two RATIFIED rules) — OPEN DECISION GAP,
+  recorded per the CLAUDE.md conflict rule:** R-1.1 funnels ROW-drift poisons into the zero-width
+  heal, but the strict fold's ratified acceptance domain {zero, wedge, poisoned-in-fold} cannot see
+  row drift, so a drift-poisoned producer with a healthy interior/open log heals live and
+  RE-POISONS on replay — live-vs-replay class-A divergence until restart + second heal. Needs an
+  operator ruling (options staged in the turn report); no code change made on this path.
+  Also fixed: rate-path marker check hoisted above the row read (finding 4, parity); the
+  poisoned-403 mounted-app pin added (finding 5, the D-R6a-8 class); two dead pre-R6a fold methods
+  deleted with the three delivered no-rescan guards re-aimed at live seams (finding 6 — one guard
+  broke when ruff --fix dropped a dead import, caught by the regression run); the release-key
+  parser refuses single-part and non-canonical-digit variants (finding 7). **Held under attack:**
+  the composed heal→breach→restart→release journey agrees at every boundary on both stores; the
+  SQL/memory filters are symmetric; both disclosed refinements judged faithful strengthenings.
 
 - 2026-07-27 (slice 6): R-8 — the store→facade pin anchors to `Path(app.store.__file__).parent`
   with a >= 4-file non-vacuous assertion (it is the ONLY enforcement of that boundary). R-9 — the

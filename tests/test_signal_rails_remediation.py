@@ -210,14 +210,11 @@ async def test_attributable_debit_does_not_rescan_event_log(
         raise AssertionError("attributable debit rescanned the event log")
 
     if isinstance(any_store, InMemoryStateStore):
-        monkeypatch.setattr("app.store.memory.project_producer_rails", unexpected_fold)
         monkeypatch.setattr(
             "app.store.memory.project_producer_rails_tolerant", unexpected_fold
         )
+        monkeypatch.setattr("app.store.memory.fold_producer_rail", unexpected_fold)
     else:
-        monkeypatch.setattr(
-            any_store, "_projected_producer_rails_locked", unexpected_fold
-        )
         monkeypatch.setattr(
             any_store, "_projected_producer_rails_tolerant_locked", unexpected_fold
         )
@@ -603,3 +600,84 @@ async def test_ratified_cap_literals_are_single_sourced() -> None:
             offenders.append(f"{rel}: bare 1000 bound")
     assert (app_dir / "models.py").exists()
     assert offenders == [], offenders
+
+
+async def test_poisoned_producer_gets_403_through_the_mounted_app() -> None:
+    """Refutation finding 5 (the D-R6a-8 class): the store-gate poisoned
+    rejection composes through facade coercion and the route's outcome map —
+    provable only at runtime; every static gate is blind to it."""
+
+    from fastapi.testclient import TestClient
+
+    from app.events.projectors import PoisonedProducerMarker
+    from app.store.memory import InMemoryStateStore
+    from tests.signal_seat_helpers import (
+        _IN_PROCESS_TEST_AUTHORITY,
+        PRODUCER_KEY,
+        build_flag_on_app,
+        flag_on_settings,
+    )
+
+    headers = {"X-Producer-Key": PRODUCER_KEY}
+
+    store = InMemoryStateStore()
+    app = build_flag_on_app(
+        test_authority=_IN_PROCESS_TEST_AUTHORITY,
+        store=store,
+        settings=flag_on_settings(),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        store._poisoned_producers["vibe-trading"] = PoisonedProducerMarker(
+            producer_id="vibe-trading",
+            offending_sequence=1,
+            reason="probe",
+            last_known_epoch_sequence=0,
+        )
+        before = client.portal.call(store.get_execution_events)
+        response = client.post(
+            "/api/signals",
+            json={
+                "signal_id": "poisoned-sig",
+                "symbol": "AAPL",
+                "direction": "buy",
+                "thesis": "test",
+                "provenance": {"model": "test"},
+            },
+            headers=headers,
+        )
+        assert response.status_code == 403
+        assert response.json()["reason"] == "producer_quarantined"
+        assert client.portal.call(store.get_execution_events) == before
+
+
+async def test_open_epoch_drift_poisons_instead_of_raising(tmp_path) -> None:
+    """Refutation finding 1 (P0): drift that detonates INSIDE a strict applier
+    (ProjectionError, not InvalidEventError) must poison per producer at every
+    boundary — never escape as an uncaught exception, never wedge release."""
+
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    path = str(tmp_path / "opendrift.db")
+    store = SqliteStateStore(path)
+    await store.initialize()
+    for _ in range(2):  # burst 1: opens epoch 1
+        await store.check_and_debit_producer_rate(
+            "p-drift", now=now, limit_per_hour=60, burst=1
+        )
+
+    # Drift the carrier while the epoch is OPEN: the bounded fold's segment
+    # contains the opener, so the strict applier's current+1 check detonates.
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE signal_producer_rails SET quarantine_epoch_sequence=4 "
+        "WHERE producer_id='p-drift'"
+    )
+    store._conn.commit()
+
+    released = await store.release_producer(
+        "p-drift", actor="operator", rejected_count=0, released_at=now
+    )
+    # The drift funnelled into the heal — no uncaught ProjectionError, no wedge.
+    assert released.quarantine_epoch_open is False
+    assert store.poisoned_producers() == {}  # healed in the same call

@@ -158,7 +158,9 @@ class TapeRecord:
     def from_json_line(cls, line: str) -> TapeRecord:
         payload = json.loads(line)
         if payload.get("schema_version") != SCHEMA_VERSION:
-            raise ValueError(f"unsupported tape schema version: {payload.get('schema_version')!r}")
+            raise ValueError(
+                f"unsupported tape schema version: {payload.get('schema_version')!r}"
+            )
         raw_snapshot = payload["snapshot"]
         snapshot = MarketSnapshot(
             symbol=raw_snapshot["symbol"],

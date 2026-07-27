@@ -1231,12 +1231,17 @@ def sequence_from_release_dedupe_key(dedupe_key: str) -> int:
     prefix = "producer_release:"
     if not dedupe_key.startswith(prefix):
         raise ProjectionError(f"release dedupe key {dedupe_key!r} has the wrong prefix")
-    tail = dedupe_key[len(prefix) :].rsplit("|", 1)[-1]
-    length_text, _, sequence_text = tail.partition(":")
+    parts = dedupe_key[len(prefix) :].split("|")
+    if len(parts) != 2:
+        raise ProjectionError(
+            f"release dedupe key {dedupe_key!r} does not have exactly two parts"
+        )
+    length_text, _, sequence_text = parts[-1].partition(":")
     if (
         not length_text.isdigit()
         or not sequence_text.isdigit()
         or int(length_text) != len(sequence_text)
+        or str(int(sequence_text)) != sequence_text
     ):
         raise ProjectionError(
             f"release dedupe key {dedupe_key!r} has a malformed sequence part"

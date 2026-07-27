@@ -90,7 +90,6 @@ from app.events.projectors import (
     control_trading_state,
     current_trading_state,
     project_order_status,
-    project_producer_rails,
     project_producer_rails_tolerant,
     project_symbol_position,
     quarantined_symbols,
@@ -1557,12 +1556,6 @@ class SqliteStateStore(StateStore):
             rate_tokens=float(tokens) if tokens is not None else None,
             rate_refill_anchor=refill_anchor,
         )
-
-    def _projected_producer_rails_locked(self, cur: sqlite3.Cursor):
-        rows = cur.execute(
-            "SELECT * FROM execution_events ORDER BY sequence"
-        ).fetchall()
-        return project_producer_rails(self._execution_event(row) for row in rows)
 
     def _projected_producer_rails_tolerant_locked(self, cur: sqlite3.Cursor):
         rows = cur.execute(
@@ -8174,7 +8167,7 @@ class SqliteStateStore(StateStore):
                         epoch_sequence = self._authoritative_epoch_sequence_locked(
                             cur, producer_id, producer_rail
                         )
-                    except InvalidEventError as exc:
+                    except (InvalidEventError, ProjectionError) as exc:
                         # WO-0140 D-R R-1.1: boundary drift poisons the
                         # producer, write-free, instead of bricking the path.
                         self._poisoned_producers[producer_id] = PoisonedProducerMarker(
@@ -8326,9 +8319,15 @@ class SqliteStateStore(StateStore):
         )
         async with self._lock:
             with self._tx() as cur:
-                rail = self._producer_rail_locked(cur, producer_id)
                 if producer_id in self._poisoned_producers:
-                    return ProducerRateVerdict("quarantined", rail)
+                    # WO-0140 refutation finding 4: the marker check precedes
+                    # the row read — a poisoned producer with a validator-
+                    # refused row must get the verdict, not a raise.
+                    return ProducerRateVerdict(
+                        "quarantined",
+                        ProducerRailState(producer_id=producer_id),
+                    )
+                rail = self._producer_rail_locked(cur, producer_id)
                 if rail.quarantine_epoch_open:
                     return ProducerRateVerdict("quarantined", rail)
 
@@ -8349,7 +8348,7 @@ class SqliteStateStore(StateStore):
                         epoch_sequence = self._authoritative_epoch_sequence_locked(
                             cur, producer_id, rail
                         )
-                    except InvalidEventError as exc:
+                    except (InvalidEventError, ProjectionError) as exc:
                         # WO-0140 D-R R-1.1: drift poisons, write-free.
                         self._poisoned_producers[producer_id] = PoisonedProducerMarker(
                             producer_id=producer_id,
@@ -8426,7 +8425,7 @@ class SqliteStateStore(StateStore):
                         self._authoritative_epoch_sequence_locked(
                             cur, producer_id, rail
                         )
-                    except InvalidEventError as exc:
+                    except (InvalidEventError, ProjectionError) as exc:
                         self._poisoned_producers[producer_id] = PoisonedProducerMarker(
                             producer_id=producer_id,
                             offending_sequence=0,

@@ -72,7 +72,6 @@ from app.events.projectors import (
     control_trading_state,
     current_trading_state,
     project_order_status,
-    project_producer_rails,
     project_producer_rails_tolerant,
     project_symbol_position,
     sequence_from_release_dedupe_key,
@@ -384,27 +383,6 @@ class InMemoryStateStore(StateStore):
         self._producer_budget_rails[producer_id] = budget
         if epoch_sequence is not None:
             self._producer_epoch_sequences[producer_id] = epoch_sequence
-
-    def _projected_producer_rail_unlocked(self, producer_id: str) -> ProducerRailState:
-        projected = project_producer_rails(self._execution_events).get(producer_id)
-        rate = self._producer_rate_buckets.get(producer_id)
-        if projected is None:
-            return ProducerRailState(
-                producer_id=producer_id,
-                rate_tokens=rate.tokens if rate is not None else None,
-                rate_refill_anchor=rate.refill_anchor if rate is not None else None,
-            )
-        return ProducerRailState(
-            producer_id=producer_id,
-            cycle_budget_limit=projected.cycle_budget_limit,
-            cycle_budget_consumed=projected.cycle_budget_consumed,
-            quarantine_epoch_open=projected.quarantine_epoch_open,
-            quarantine_epoch_sequence=projected.quarantine_epoch_sequence,
-            quarantine_epoch_started_at=projected.quarantine_epoch_started_at,
-            quarantine_breach_trigger=projected.quarantine_breach_trigger,
-            rate_tokens=rate.tokens if rate is not None else None,
-            rate_refill_anchor=rate.refill_anchor if rate is not None else None,
-        )
 
     def _authoritative_epoch_sequence_unlocked(
         self, producer_id: str, cached: ProducerRailState
@@ -5850,7 +5828,7 @@ class InMemoryStateStore(StateStore):
                         epoch_sequence = self._authoritative_epoch_sequence_unlocked(
                             producer_id, producer_rail
                         )
-                    except InvalidEventError as exc:
+                    except (InvalidEventError, ProjectionError) as exc:
                         # WO-0140 D-R R-1.1: boundary drift poisons the
                         # producer, write-free.
                         self._poisoned_producers[producer_id] = PoisonedProducerMarker(
@@ -6048,9 +6026,12 @@ class InMemoryStateStore(StateStore):
         )
         async with self._lock:
             with self._atomic():
-                rail = self._producer_rail_unlocked(producer_id)
                 if producer_id in self._poisoned_producers:
-                    return ProducerRateVerdict("quarantined", rail)
+                    return ProducerRateVerdict(
+                        "quarantined",
+                        ProducerRailState(producer_id=producer_id),
+                    )
+                rail = self._producer_rail_unlocked(producer_id)
                 if rail.quarantine_epoch_open:
                     return ProducerRateVerdict("quarantined", rail)
 
@@ -6072,7 +6053,7 @@ class InMemoryStateStore(StateStore):
                         epoch_sequence = self._authoritative_epoch_sequence_unlocked(
                             producer_id, rail
                         )
-                    except InvalidEventError as exc:
+                    except (InvalidEventError, ProjectionError) as exc:
                         # WO-0140 D-R R-1.1: drift poisons, write-free.
                         self._poisoned_producers[producer_id] = PoisonedProducerMarker(
                             producer_id=producer_id,
@@ -6142,7 +6123,7 @@ class InMemoryStateStore(StateStore):
                     try:
                         rail = self._producer_rail_unlocked(producer_id)
                         self._authoritative_epoch_sequence_unlocked(producer_id, rail)
-                    except InvalidEventError as exc:
+                    except (InvalidEventError, ProjectionError) as exc:
                         self._poisoned_producers[producer_id] = PoisonedProducerMarker(
                             producer_id=producer_id,
                             offending_sequence=0,

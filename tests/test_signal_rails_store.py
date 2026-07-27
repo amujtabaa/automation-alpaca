@@ -137,10 +137,12 @@ async def test_received_signal_materialization_does_not_scan_the_global_log(
         raise AssertionError("plain SIGNAL_RECEIVED rescanned the global event log")
 
     if isinstance(any_store, InMemoryStateStore):
-        monkeypatch.setattr("app.store.memory.project_producer_rails", unexpected_fold)
+        monkeypatch.setattr(
+            "app.store.memory.project_producer_rails_tolerant", unexpected_fold
+        )
     else:
         monkeypatch.setattr(
-            any_store, "_projected_producer_rails_locked", unexpected_fold
+            any_store, "_projected_producer_rails_tolerant_locked", unexpected_fold
         )
 
     await any_store.ingest_signal(**_signal_kwargs(producer_id="producer-no-rescan"))
@@ -277,10 +279,12 @@ async def test_quarantined_rate_check_does_not_rescan_event_log(
         raise AssertionError("post-quarantine check rescanned the event log")
 
     if isinstance(any_store, InMemoryStateStore):
-        monkeypatch.setattr("app.store.memory.project_producer_rails", unexpected_fold)
+        monkeypatch.setattr(
+            "app.store.memory.project_producer_rails_tolerant", unexpected_fold
+        )
     else:
         monkeypatch.setattr(
-            any_store, "_projected_producer_rails_locked", unexpected_fold
+            any_store, "_projected_producer_rails_tolerant_locked", unexpected_fold
         )
 
     verdict = await any_store.check_and_debit_producer_rate(
