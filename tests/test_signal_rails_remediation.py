@@ -783,3 +783,171 @@ async def test_interior_log_drift_is_repaired_and_refused(tmp_path) -> None:
     assert ok.outcome == "received"
     projection = project_read_models(await store.get_execution_events())
     assert projection.poisoned_producers == {}
+
+
+# --------------------------------------------------------------------------- #
+# Memory-store parity for the poisoned/heal machinery (R-3: both stores are
+# first-class — the sqlite pins above have exact memory twins here)
+# --------------------------------------------------------------------------- #
+
+
+async def _memory_with_fixture(fixture: str):
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    await store.initialize()
+    for event in _events_from_fixture(fixture):
+        await store.append_execution_event(event.model_copy(update={"sequence": 0}))
+    await store.initialize()  # the tolerant rebuild derives the poison
+    return store
+
+
+async def test_memory_legacy_tolerance_heal_and_resume() -> None:
+    """Memory twin of the sqlite legacy pins: poisoned at rebuild, healed by
+    the zero-width release, resumed, replay-clean."""
+
+    from datetime import datetime, timedelta, timezone
+
+    store = await _memory_with_fixture("legacy_overbudget_events")
+    assert set(store.poisoned_producers()) == {LEGACY_PRODUCER}
+
+    gated = await store.ingest_signal(
+        **_ingest_kwargs(LEGACY_PRODUCER, "gated", cycle_budget_limit=50)
+    )
+    assert gated.outcome == "producer_quarantined"
+    assert gated.record is None
+
+    released_at = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    healed = await store.release_producer(
+        LEGACY_PRODUCER, actor="operator", rejected_count=0, released_at=released_at
+    )
+    assert store.poisoned_producers() == {}
+    assert healed.quarantine_epoch_sequence == 1
+
+    resumed = await store.ingest_signal(
+        **_ingest_kwargs(
+            LEGACY_PRODUCER,
+            "post-heal",
+            cycle_budget_limit=50,
+            issued_at=released_at,
+            received_at=released_at + timedelta(seconds=1),
+        )
+    )
+    assert resumed.outcome == "received"
+    projection = project_read_models(await store.get_execution_events())
+    assert projection.poisoned_producers == {}
+
+
+async def test_memory_wedge_gate_and_heal() -> None:
+    """Memory twin of the wedge pin: exactly-at-limit legacy state folds as a
+    wedge, gates ingest, and releases via the zero-width heal."""
+
+    from datetime import datetime, timezone
+
+    store = await _memory_with_fixture("legacy_wedge_events")
+    assert store.poisoned_producers() == {}
+    rail = await store.get_producer_rail(LEGACY_PRODUCER)
+    assert (rail.cycle_budget_limit, rail.cycle_budget_consumed) == (2, 2)
+
+    gated = await store.ingest_signal(
+        **_ingest_kwargs(LEGACY_PRODUCER, "gated", cycle_budget_limit=2)
+    )
+    assert gated.outcome == "producer_quarantined"
+
+    now = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    healed = await store.release_producer(
+        LEGACY_PRODUCER, actor="operator", rejected_count=0, released_at=now
+    )
+    assert healed.quarantine_epoch_sequence == 1
+    assert store.poisoned_producers() == {}
+
+
+async def test_memory_open_log_drift_release_is_state1() -> None:
+    """Memory twin of the Option-A open-log pin."""
+
+    from datetime import datetime, timezone
+
+    from app.store.memory import InMemoryStateStore
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    store = InMemoryStateStore()
+    await store.initialize()
+    for _ in range(2):
+        await store.check_and_debit_producer_rate(
+            "p-a", now=now, limit_per_hour=60, burst=1
+        )
+    store._producer_epoch_sequences["p-a"] = 4  # the drift
+
+    released = await store.release_producer(
+        "p-a", actor="operator", rejected_count=0, released_at=now
+    )
+    assert store.poisoned_producers() == {}
+    assert released.quarantine_epoch_sequence == 1  # the LOG's epoch
+
+    releases = [
+        e
+        for e in await store.get_execution_events()
+        if e.event_type.value == "producer_released"
+    ]
+    assert releases[0].payload["epoch_start"] == now.isoformat()
+    projection = project_read_models(await store.get_execution_events())
+    assert projection.poisoned_producers == {}
+
+
+async def test_memory_interior_log_drift_is_repaired_and_refused() -> None:
+    """Memory twin of the Option-A interior pin — repair survives the raise
+    (the dict updates commit outside the atomic rollback)."""
+
+    from datetime import datetime, timezone
+
+    from app.store.base import ProducerNotQuarantinedError
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    await store.initialize()
+    r = await store.ingest_signal(
+        **_ingest_kwargs("p-b", "bad-1", invalid=True, cycle_budget_limit=3)
+    )
+    assert r.outcome == "quarantined_validation"
+    budget = store._producer_budget_rails["p-b"]
+    store._producer_budget_rails["p-b"] = type(budget)(
+        cycle_budget_limit=budget.cycle_budget_limit,
+        cycle_budget_consumed=2,  # the drift
+        quarantine_epoch_open=budget.quarantine_epoch_open,
+        quarantine_epoch_started_at=budget.quarantine_epoch_started_at,
+        quarantine_breach_trigger=budget.quarantine_breach_trigger,
+    )
+
+    now = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    with pytest.raises(ProducerNotQuarantinedError):
+        await store.release_producer(
+            "p-b", actor="operator", rejected_count=0, released_at=now
+        )
+
+    assert store.poisoned_producers() == {}
+    rail = await store.get_producer_rail("p-b")
+    assert (rail.cycle_budget_limit, rail.cycle_budget_consumed) == (3, 1)
+    ok = await store.ingest_signal(
+        **_ingest_kwargs("p-b", "good-after", cycle_budget_limit=3)
+    )
+    assert ok.outcome == "received"
+
+
+async def test_release_key_parser_refuses_non_mintable_variants() -> None:
+    """Refutation finding 7 pins, as tests rather than a probe transcript."""
+
+    from app.events.projectors import (
+        ProjectionError,
+        sequence_from_release_dedupe_key,
+    )
+
+    assert sequence_from_release_dedupe_key("producer_release:1:p|1:7") == 7
+    for bad in (
+        "producer_release:1:3",  # single part
+        "producer_release:1:p|2:07",  # non-canonical digits
+        "producer_release:1:p|1:7|1:9",  # three parts
+        "producer_quarantine:1:p|1:7",  # wrong prefix
+        "producer_release:1:p|1:0",  # non-positive
+    ):
+        with pytest.raises(ProjectionError):
+            sequence_from_release_dedupe_key(bad)
