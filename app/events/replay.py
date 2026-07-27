@@ -22,13 +22,14 @@ from typing import Iterable, Mapping, Sequence
 
 from app.events.projectors import (
     EnvelopeProjection,
+    PoisonedProducerMarker,
     PositionProjection,
     PositionProjector,
     ProducerRailProjection,
     active_emergency_reduce_overrides,
     current_trading_state,
     project_envelopes,
-    project_producer_rails,
+    project_producer_rails_tolerant,
     project_signal_records,
     quarantined_symbols,
     timeout_quarantined_order_ids,
@@ -163,6 +164,9 @@ class ReadModelProjection:
     envelopes: Mapping[str, EnvelopeProjection] = field(default_factory=dict)
     signals: Mapping[tuple[str, str], SignalRecord] = field(default_factory=dict)
     producer_rails: Mapping[str, ProducerRailProjection] = field(default_factory=dict)
+    poisoned_producers: Mapping[str, PoisonedProducerMarker] = field(
+        default_factory=dict
+    )
 
 
 def _session_ids(events: Sequence[ExecutionEvent]) -> list[str]:
@@ -183,6 +187,9 @@ def project_read_models(events: Iterable[ExecutionEvent]) -> ReadModelProjection
 
     materialized = list(events)
     sessions = _session_ids(materialized)
+    # WO-0140 D-R R-1: producer rails fold tolerantly here and at store startup;
+    # project_producer_rails itself stays strict for the conformance pins.
+    _rails, _poisoned = project_producer_rails_tolerant(materialized)
     return ReadModelProjection(
         quarantined_symbols=frozenset(quarantined_symbols(materialized)),
         timeout_quarantined_order_ids=frozenset(
@@ -197,7 +204,8 @@ def project_read_models(events: Iterable[ExecutionEvent]) -> ReadModelProjection
         },
         envelopes=project_envelopes(materialized),
         signals=project_signal_records(materialized),
-        producer_rails=project_producer_rails(materialized),
+        producer_rails=_rails,
+        poisoned_producers=_poisoned,
     )
 
 
@@ -237,6 +245,14 @@ def _describe_read_model_diff(
             return (
                 f"producer_rails for {producer_id!r} differ: "
                 f"{label_a}={rail_a!r} {label_b}={rail_b!r}"
+            )
+    for producer_id in sorted(set(a.poisoned_producers) | set(b.poisoned_producers)):
+        marker_a = a.poisoned_producers.get(producer_id)
+        marker_b = b.poisoned_producers.get(producer_id)
+        if marker_a != marker_b:
+            return (
+                f"poisoned_producers for {producer_id!r} differ: "
+                f"{label_a}={marker_a!r} {label_b}={marker_b!r}"
             )
     for sid in sorted(set(a.trading_state) | set(b.trading_state)):
         sa = a.trading_state.get(sid)

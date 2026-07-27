@@ -80,12 +80,15 @@ from app.models import (
 )
 from app.events.projectors import (
     ORDER_STATUS_EVENT_TYPES,
+    PoisonedProducerMarker,
+    ProducerRailProjection,
     active_emergency_reduce_overrides,
     compose_trading_state,
     control_trading_state,
     current_trading_state,
     project_order_status,
     project_producer_rails,
+    project_producer_rails_tolerant,
     project_symbol_position,
     quarantined_symbols,
     reconcile_trading_state,
@@ -127,6 +130,7 @@ from app.store.base import (
     normalize_symbol,
 )
 from app.store.core import (
+    SIGNAL_PRODUCER_QUARANTINED,
     CREATE_ORDER_REJECT,
     FILL_CONFLICT,
     FILL_DUPLICATE,
@@ -542,6 +546,8 @@ class SqliteStateStore(StateStore):
         self._lock = asyncio.Lock()
         self._recovery_truth_lock = asyncio.Lock()
         self._conn: Optional[sqlite3.Connection] = None
+        # WO-0140 D-R R-1: derived, never persisted; rebuilt at every initialize().
+        self._poisoned_producers: dict[str, PoisonedProducerMarker] = {}
         self._accepted_submit_uncertainty_events: list[ExecutionEvent] = []
         self._accepted_submit_uncertainty_event_ids: set[str] = set()
         self._accepted_submit_uncertainty_events_by_broker: dict[
@@ -1526,6 +1532,14 @@ class SqliteStateStore(StateStore):
         ).fetchall()
         return project_producer_rails(self._execution_event(row) for row in rows)
 
+    def _projected_producer_rails_tolerant_locked(self, cur: sqlite3.Cursor):
+        rows = cur.execute(
+            "SELECT * FROM execution_events ORDER BY sequence"
+        ).fetchall()
+        return project_producer_rails_tolerant(
+            self._execution_event(row) for row in rows
+        )
+
     def _producer_rail_locked(
         self, cur: sqlite3.Cursor, producer_id: str
     ) -> ProducerRailState:
@@ -1623,7 +1637,27 @@ class SqliteStateStore(StateStore):
         )
 
     def _rebuild_producer_rails_locked(self, cur: sqlite3.Cursor) -> None:
-        projected = self._projected_producer_rails_locked(cur)
+        """Rebuild class-(A) columns tolerantly (WO-0140 D-R R-1).
+
+        A producer whose history cannot be folded is POISONED — marked in
+        derived, never-persisted state — instead of refusing the store. Its
+        row keeps only the never-regressed epoch-sequence carrier
+        (``max(prior row value, max readable PRODUCER_* payload sequence)``);
+        bucket columns are class-(B) and untouched, as ever. A persisted row
+        the validator refuses likewise poisons only that producer
+        (startup drift-poisoning, D-R R-1.1) — note replay cannot see
+        row-level drift, so store-side poisons may be a superset of
+        replay-side ones; log-derived poisons agree exactly.
+        """
+
+        projected, poisoned = self._projected_producer_rails_tolerant_locked(cur)
+        prior_sequences: dict[str, int] = {}
+        for row in cur.execute(
+            "SELECT producer_id, quarantine_epoch_sequence FROM signal_producer_rails"
+        ).fetchall():
+            raw = row["quarantine_epoch_sequence"]
+            if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+                prior_sequences[row["producer_id"]] = raw
         cur.execute(
             """UPDATE signal_producer_rails SET
                cycle_budget_limit=NULL,
@@ -1635,10 +1669,32 @@ class SqliteStateStore(StateStore):
         )
         for rail in projected.values():
             self._upsert_producer_log_rail(cur, rail)
+        for producer_id, marker in poisoned.items():
+            self._upsert_producer_log_rail(
+                cur,
+                ProducerRailProjection(
+                    producer_id=producer_id,
+                    quarantine_epoch_sequence=max(
+                        prior_sequences.get(producer_id, 0),
+                        marker.last_known_epoch_sequence,
+                    ),
+                ),
+            )
+        markers = dict(poisoned)
         for row in cur.execute(
             "SELECT * FROM signal_producer_rails ORDER BY producer_id"
         ).fetchall():
-            self._producer_rail(row)
+            try:
+                self._producer_rail(row)
+            except InvalidEventError as exc:
+                producer_id = row["producer_id"]
+                markers[producer_id] = PoisonedProducerMarker(
+                    producer_id=producer_id,
+                    offending_sequence=0,
+                    reason=str(exc),
+                    last_known_epoch_sequence=prior_sequences.get(producer_id, 0),
+                )
+        self._poisoned_producers = markers
 
     @staticmethod
     def _session(row: sqlite3.Row) -> SessionRecord:
@@ -7937,6 +7993,12 @@ class SqliteStateStore(StateStore):
         payload_hash = signal_canonical_hash(canonical)
         async with self._lock:
             with self._tx() as cur:
+                if producer_id in self._poisoned_producers:
+                    # WO-0140 D-R R-1: write-free record-free rejection; no new
+                    # outcome vocabulary — the existing 7th outcome is reused.
+                    return SignalIngestResult(
+                        outcome=SIGNAL_PRODUCER_QUARANTINED, record=None
+                    )
                 row = cur.execute(
                     "SELECT * FROM signal_records WHERE producer_id = ? "
                     "AND signal_id = ?",
@@ -8049,6 +8111,11 @@ class SqliteStateStore(StateStore):
             )
             return [self._signal_record(row) for row in rows]
 
+    def poisoned_producers(self) -> dict[str, PoisonedProducerMarker]:
+        """Copy of the derived poisoned-producer markers (WO-0140 D-R R-1)."""
+
+        return dict(self._poisoned_producers)
+
     async def get_producer_rail(self, producer_id: str) -> ProducerRailState:
         async with self._lock:
             row = self._read_one(
@@ -8084,6 +8151,8 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             with self._tx() as cur:
                 rail = self._producer_rail_locked(cur, producer_id)
+                if producer_id in self._poisoned_producers:
+                    return ProducerRateVerdict("quarantined", rail)
                 if rail.quarantine_epoch_open:
                     return ProducerRateVerdict("quarantined", rail)
 

@@ -63,12 +63,14 @@ from app.models import (
 )
 from app.events.projectors import (
     ORDER_STATUS_EVENT_TYPES,
+    PoisonedProducerMarker,
     active_emergency_reduce_overrides,
     compose_trading_state,
     control_trading_state,
     current_trading_state,
     project_order_status,
     project_producer_rails,
+    project_producer_rails_tolerant,
     project_symbol_position,
     quarantined_symbols,
     reconcile_trading_state,
@@ -110,6 +112,7 @@ from app.store.base import (
     normalize_symbol,
 )
 from app.store.core import (
+    SIGNAL_PRODUCER_QUARANTINED,
     CREATE_ORDER_REJECT,
     FILL_CONFLICT,
     FILL_DUPLICATE,
@@ -269,6 +272,8 @@ class InMemoryStateStore(StateStore):
         self._envelopes: dict[str, ExecutionEnvelope] = {}  # ADR-010 / WO-0016
         self._signals: dict[tuple[str, str], SignalRecord] = {}
         self._producer_budget_rails: dict[str, _ProducerBudgetRail] = {}
+        # WO-0140 D-R R-1: derived, never persisted; rebuilt at initialize().
+        self._poisoned_producers: dict[str, PoisonedProducerMarker] = {}
         self._producer_epoch_sequences: dict[str, int] = {}
         self._producer_rate_buckets: dict[str, _ProducerRateBucket] = {}
         # Spine v2 execution-event log (Phase 2): append-only, sequence order.
@@ -309,9 +314,15 @@ class InMemoryStateStore(StateStore):
                 self._ensure_current_session_unlocked()
 
     def _rebuild_producer_rails_unlocked(self) -> None:
-        """Replace only log-derived rail state; preserve primary bucket state."""
+        """Replace only log-derived rail state; preserve primary bucket state.
 
-        projected = project_producer_rails(self._execution_events)
+        WO-0140 D-R R-1: tolerant per producer. A producer whose history
+        cannot be folded is poisoned in derived state; its epoch-sequence
+        carrier never regresses (``max(prior value, marker.last_known)``).
+        """
+
+        projected, poisoned = project_producer_rails_tolerant(self._execution_events)
+        prior_sequences = dict(self._producer_epoch_sequences)
         self._producer_budget_rails = {
             producer_id: _ProducerBudgetRail(
                 cycle_budget_limit=rail.cycle_budget_limit,
@@ -326,6 +337,13 @@ class InMemoryStateStore(StateStore):
             producer_id: rail.quarantine_epoch_sequence
             for producer_id, rail in projected.items()
         }
+        for producer_id, marker in poisoned.items():
+            self._producer_budget_rails[producer_id] = _ProducerBudgetRail()
+            self._producer_epoch_sequences[producer_id] = max(
+                prior_sequences.get(producer_id, 0),
+                marker.last_known_epoch_sequence,
+            )
+        self._poisoned_producers = dict(poisoned)
 
     def _projected_producer_rail_unlocked(self, producer_id: str) -> ProducerRailState:
         projected = project_producer_rails(self._execution_events).get(producer_id)
@@ -631,6 +649,7 @@ class InMemoryStateStore(StateStore):
         }
         saved_signals = dict(self._signals)
         saved_producer_budget_rails = dict(self._producer_budget_rails)
+        saved_poisoned_producers = dict(self._poisoned_producers)
         saved_producer_epoch_sequences = dict(self._producer_epoch_sequences)
         saved_producer_rate_buckets = dict(self._producer_rate_buckets)
         saved_fills = list(self._fills)
@@ -656,6 +675,7 @@ class InMemoryStateStore(StateStore):
             self._sell_intents = saved_sell_intents
             self._signals = saved_signals
             self._producer_budget_rails = saved_producer_budget_rails
+            self._poisoned_producers = saved_poisoned_producers
             self._producer_epoch_sequences = saved_producer_epoch_sequences
             self._producer_rate_buckets = saved_producer_rate_buckets
             self._fills = saved_fills
@@ -5684,6 +5704,12 @@ class InMemoryStateStore(StateStore):
         payload_hash = signal_canonical_hash(canonical)
         async with self._lock:
             with self._atomic():
+                if producer_id in self._poisoned_producers:
+                    # WO-0140 D-R R-1: write-free record-free rejection; the
+                    # existing 7th outcome is reused, no new vocabulary.
+                    return SignalIngestResult(
+                        outcome=SIGNAL_PRODUCER_QUARANTINED, record=None
+                    )
                 existing = self._signals.get((producer_id, signal_id))
                 producer_rail = self._producer_rail_unlocked(producer_id)
                 plan = plan_signal_ingest(
@@ -5823,6 +5849,11 @@ class InMemoryStateStore(StateStore):
             rate_refill_anchor=rate.refill_anchor if rate is not None else None,
         )
 
+    def poisoned_producers(self) -> dict[str, PoisonedProducerMarker]:
+        """Copy of the derived poisoned-producer markers (WO-0140 D-R R-1)."""
+
+        return dict(self._poisoned_producers)
+
     async def get_producer_rail(self, producer_id: str) -> ProducerRailState:
         async with self._lock:
             return self._producer_rail_unlocked(producer_id)
@@ -5855,6 +5886,8 @@ class InMemoryStateStore(StateStore):
         async with self._lock:
             with self._atomic():
                 rail = self._producer_rail_unlocked(producer_id)
+                if producer_id in self._poisoned_producers:
+                    return ProducerRateVerdict("quarantined", rail)
                 if rail.quarantine_epoch_open:
                     return ProducerRateVerdict("quarantined", rail)
 

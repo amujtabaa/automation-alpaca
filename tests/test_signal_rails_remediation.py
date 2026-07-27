@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.anyio
-
 from app.events.replay import project_read_models
 from app.store.sqlite import SqliteStateStore
+
+pytestmark = pytest.mark.anyio
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LEGACY_PRODUCER = "legacy-prod"
@@ -53,9 +53,7 @@ def _read_events(path: str):
     store = SqliteStateStore(path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM execution_events ORDER BY sequence"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM execution_events ORDER BY sequence").fetchall()
     out = [store._execution_event(r) for r in rows]
     conn.close()
     return out
@@ -133,3 +131,31 @@ async def test_other_producers_unaffected_by_a_poisoned_one(tmp_path) -> None:
     )
     assert result.outcome == "received"
     assert set(store.poisoned_producers()) == {LEGACY_PRODUCER}
+
+
+async def test_parity_comparator_sees_poisoned_set_differences(tmp_path) -> None:
+    """REV-0039 class guard: the read-model comparator must COMPARE the
+    poisoned set, not merely carry it."""
+
+    from app.events.replay import ReadModelProjection, compare_read_models
+    from app.events.projectors import PoisonedProducerMarker
+
+    base_kwargs = dict(
+        quarantined_symbols=frozenset(),
+        timeout_quarantined_order_ids=frozenset(),
+    )
+    clean = ReadModelProjection(**base_kwargs)
+    marked = ReadModelProjection(
+        **base_kwargs,
+        poisoned_producers={
+            LEGACY_PRODUCER: PoisonedProducerMarker(
+                producer_id=LEGACY_PRODUCER,
+                offending_sequence=51,
+                reason="probe",
+                last_known_epoch_sequence=0,
+            )
+        },
+    )
+    result = compare_read_models("a", clean, "b", marked)
+    assert not result.ok
+    assert "poisoned_producers" in result.detail

@@ -1324,3 +1324,99 @@ def project_producer_rails(
         elif _is_attributable_signal_event(event):
             projected[producer_id] = _apply_attributable_signal_event(current, event)
     return projected
+
+
+@dataclass(frozen=True)
+class PoisonedProducerMarker:
+    """Derived record of one producer whose rail history cannot be folded.
+
+    WO-0140 D-R R-1: the marker is DERIVED, in-memory state — recomputed
+    identically by both stores and by replay from the same log, never
+    persisted. ``last_known_epoch_sequence`` is the max readable payload
+    ``epoch_sequence`` among the producer's ``PRODUCER_*`` events (0 if none);
+    the stores combine it with the durable rail row under the never-regress
+    rule before minting any later dedupe key.
+    """
+
+    producer_id: str
+    offending_sequence: int
+    reason: str
+    last_known_epoch_sequence: int
+
+
+def project_producer_rails_tolerant(
+    events: Iterable[ExecutionEvent],
+) -> tuple[dict[str, ProducerRailProjection], dict[str, PoisonedProducerMarker]]:
+    """Per-producer tolerant fold (WO-0140 D-R R-1).
+
+    Mirrors :func:`project_producer_rails` event-for-event, but a
+    ``ProjectionError`` poisons ONLY the producer it arose on: that producer
+    leaves the projection and gains a marker; every other producer folds
+    exactly as the strict fold would. An event whose producer identity is
+    itself unreadable still raises store-wide — there is no producer to
+    poison (the one disclosed exception; not producible by pre-R6a writers).
+
+    ``project_producer_rails`` itself stays strict on purpose: the replay
+    conformance pins and the payload-exactness ratchet rely on it raising.
+    """
+
+    projected: dict[str, ProducerRailProjection] = {}
+    poisoned_at: dict[str, tuple[int, str]] = {}
+    last_known: dict[str, int] = {}
+    for event in events:
+        if (
+            event.event_type not in _PRODUCER_RAIL_SIGNAL_EVENT_TYPES
+            and event.event_type
+            not in {
+                ExecutionEventType.PRODUCER_QUARANTINED,
+                ExecutionEventType.PRODUCER_RELEASED,
+            }
+        ):
+            continue
+
+        producer_id = _producer_id_from_event(event)
+
+        if event.event_type in {
+            ExecutionEventType.PRODUCER_QUARANTINED,
+            ExecutionEventType.PRODUCER_RELEASED,
+        }:
+            raw_sequence = event.payload.get("epoch_sequence")
+            if (
+                isinstance(raw_sequence, int)
+                and not isinstance(raw_sequence, bool)
+                and raw_sequence >= 1
+            ):
+                last_known[producer_id] = max(
+                    last_known.get(producer_id, 0), raw_sequence
+                )
+
+        if producer_id in poisoned_at:
+            continue
+
+        current = projected.setdefault(
+            producer_id,
+            ProducerRailProjection(producer_id=producer_id),
+        )
+        try:
+            if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED:
+                projected[producer_id] = _apply_producer_quarantined(current, event)
+            elif event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+                projected[producer_id] = _apply_producer_released(current, event)
+            elif _is_attributable_signal_event(event):
+                projected[producer_id] = _apply_attributable_signal_event(
+                    current, event
+                )
+        except ProjectionError as exc:
+            projected.pop(producer_id, None)
+            poisoned_at[producer_id] = (event.sequence, str(exc))
+
+    poisoned = {
+        producer_id: PoisonedProducerMarker(
+            producer_id=producer_id,
+            offending_sequence=sequence,
+            reason=reason,
+            last_known_epoch_sequence=last_known.get(producer_id, 0),
+        )
+        for producer_id, (sequence, reason) in poisoned_at.items()
+    }
+    return projected, poisoned

@@ -54,20 +54,26 @@ async def test_memory_atomic_restores_all_signal_rail_collections() -> None:
 
     budget_before = object()
     bucket_before = object()
+    poisoned_before = object()
     store._producer_budget_rails["producer-a"] = budget_before  # type: ignore[assignment]
     store._producer_epoch_sequences["producer-a"] = 7
     store._producer_rate_buckets["producer-a"] = bucket_before  # type: ignore[assignment]
+    # WO-0140 D-R R-1: the poisoned-marker dict joined _atomic()'s enumeration
+    # (release heals mutate it inside an atomic op).
+    store._poisoned_producers["producer-a"] = poisoned_before  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="forced rail rollback"):
         with store._atomic():
             store._producer_budget_rails["producer-a"] = object()  # type: ignore[assignment]
             store._producer_epoch_sequences["producer-a"] = 99
             store._producer_rate_buckets["producer-a"] = object()  # type: ignore[assignment]
+            store._poisoned_producers.pop("producer-a")
             raise RuntimeError("forced rail rollback")
 
     assert store._producer_budget_rails == {"producer-a": budget_before}
     assert store._producer_epoch_sequences == {"producer-a": 7}
     assert store._producer_rate_buckets == {"producer-a": bucket_before}
+    assert store._poisoned_producers == {"producer-a": poisoned_before}
 
 
 async def test_missing_producer_rail_reads_as_zero_state(any_store) -> None:
