@@ -1215,8 +1215,9 @@ def _apply_producer_quarantined(
     )
 
 
-def sequence_from_release_dedupe_key(dedupe_key: str) -> int:
-    """Parse the epoch sequence a ``PRODUCER_RELEASED`` dedupe key consumed.
+def sequence_from_release_dedupe_key(dedupe_key: str, *, producer_id: str) -> int:
+    """Parse the epoch sequence a ``PRODUCER_RELEASED`` dedupe key consumed,
+    binding it to the producer that is expected to own it.
 
     WO-0140 D-R R-3: the no-epoch (zero-width) release consumes the next
     epoch sequence, and the payload deliberately carries no sequence — the
@@ -1224,8 +1225,12 @@ def sequence_from_release_dedupe_key(dedupe_key: str) -> int:
     consumed sequence structurally lives (``producer_release:{len}:{pid}|
     {len}:{seq}``, length-prefixed), so every consumer derives it from the
     key: stores when computing the release floor, the fold when applying a
-    zero-width heal. Raises :class:`ProjectionError` on any malformed key —
-    a release whose key cannot be parsed cannot be sequenced.
+    zero-width heal. Raises :class:`ProjectionError` on any malformed key, a
+    key whose encoded producer component does not match ``producer_id``
+    (REV-0045 P0-3/P1-1 — a release cannot be sequenced against a carrier it
+    was never minted for), or a sequence outside the SQLite-representable
+    signed range (REV-0045 P0-3 — an out-of-domain carrier must be refused
+    identically in-memory and on SQLite, never diverge on overflow).
     """
 
     prefix = "producer_release:"
@@ -1235,6 +1240,18 @@ def sequence_from_release_dedupe_key(dedupe_key: str) -> int:
     if len(parts) != 2:
         raise ProjectionError(
             f"release dedupe key {dedupe_key!r} does not have exactly two parts"
+        )
+    producer_length_text, _, producer_text = parts[0].partition(":")
+    if not producer_length_text.isdigit() or int(producer_length_text) != len(
+        producer_text
+    ):
+        raise ProjectionError(
+            f"release dedupe key {dedupe_key!r} has a malformed producer part"
+        )
+    if producer_text != producer_id:
+        raise ProjectionError(
+            f"release dedupe key {dedupe_key!r} is bound to producer "
+            f"{producer_text!r}, not {producer_id!r}"
         )
     length_text, _, sequence_text = parts[-1].partition(":")
     if (
@@ -1247,16 +1264,26 @@ def sequence_from_release_dedupe_key(dedupe_key: str) -> int:
             f"release dedupe key {dedupe_key!r} has a malformed sequence part"
         )
     sequence = int(sequence_text)
-    if sequence < 1:
+    if sequence < 1 or sequence > _SQLITE_MAX_SIGNED_INT:
         raise ProjectionError(
-            f"release dedupe key {dedupe_key!r} carries a non-positive sequence"
+            f"release dedupe key {dedupe_key!r} carries an out-of-range sequence"
         )
     return sequence
 
 
-def _apply_producer_released(
-    current: ProducerRailProjection, event: ExecutionEvent
-) -> ProducerRailProjection:
+def _validated_release_event_shape(
+    event: ExecutionEvent,
+) -> tuple[datetime, datetime]:
+    """Validate a ``PRODUCER_RELEASED`` event's full structural shape —
+    closed payload, actor hygiene, bounded rejected_count, aware timestamps
+    ordered correctly — independent of any prior folded producer state.
+
+    REV-0045 P0-4: shared by the strict applier AND the poisoned-heal fast
+    path in :func:`project_producer_rails_tolerant`, so a release event
+    cannot clear a poison marker by any lesser standard than a normal
+    release must meet. Returns ``(epoch_start, released_at)``.
+    """
+
     _require_exact_payload_fields(event, _PRODUCER_RELEASE_FIELDS)
 
     actor = _required_str(event.payload, "actor", event=event)
@@ -1286,15 +1313,34 @@ def _apply_producer_released(
             f"PRODUCER_RELEASED event sequence={event.sequence} has released_at "
             "before epoch_start"
         )
+    return epoch_start, released_at
+
+
+def _apply_producer_released(
+    current: ProducerRailProjection, event: ExecutionEvent
+) -> ProducerRailProjection:
+    epoch_start, released_at = _validated_release_event_shape(event)
 
     if current.quarantine_epoch_open:
-        # The open-epoch drift net, unchanged: the release must name the
-        # exact epoch it closes. A zero-width forgery while an epoch is open
-        # fails here (epoch_start == released_at != true start).
+        # The open-epoch drift net: the release must name the exact epoch it
+        # closes. A zero-width forgery while an epoch is open fails here
+        # (epoch_start == released_at != true start). REV-0045 expanded
+        # P1-1: a normal close does not MINT a new sequence, it closes the
+        # currently open one — so the dedupe key must be parsed and bound
+        # here too, and must name that exact (not "next") sequence.
         if epoch_start != current.quarantine_epoch_started_at:
             raise ProjectionError(
                 f"PRODUCER_RELEASED event sequence={event.sequence} epoch_start "
                 "does not match the open quarantine epoch"
+            )
+        closed_sequence = sequence_from_release_dedupe_key(
+            event.dedupe_key or "", producer_id=current.producer_id
+        )
+        if closed_sequence != current.quarantine_epoch_sequence:
+            raise ProjectionError(
+                f"PRODUCER_RELEASED event sequence={event.sequence} closes epoch "
+                f"sequence {closed_sequence}, expected the open epoch's own "
+                f"{current.quarantine_epoch_sequence}"
             )
         return replace(
             current,
@@ -1329,12 +1375,17 @@ def _apply_producer_released(
             f"PRODUCER_RELEASED event sequence={event.sequence} is a zero-width "
             "heal of a mid-cycle rail (unauthorized cycle reset refused)"
         )
-    consumed_sequence = sequence_from_release_dedupe_key(event.dedupe_key or "")
-    if consumed_sequence <= current.quarantine_epoch_sequence:
+    consumed_sequence = sequence_from_release_dedupe_key(
+        event.dedupe_key or "", producer_id=current.producer_id
+    )
+    # REV-0045 expanded P1-1: the ratified rule mints the NEXT sequence, not
+    # merely a higher one — accepting any upward jump would let a forged or
+    # gapped key skip sequences no opener or prior release ever claimed.
+    if consumed_sequence != current.quarantine_epoch_sequence + 1:
         raise ProjectionError(
             f"PRODUCER_RELEASED event sequence={event.sequence} consumes epoch "
-            f"sequence {consumed_sequence} at or below the carrier "
-            f"{current.quarantine_epoch_sequence}"
+            f"sequence {consumed_sequence}, expected the exact next "
+            f"{current.quarantine_epoch_sequence + 1}"
         )
     return replace(
         current,
@@ -1470,6 +1521,7 @@ def project_producer_rails_tolerant(
             continue
 
         producer_id = _producer_id_from_event(event)
+        prior_high_water = last_known.get(producer_id, 0)
 
         if event.event_type in {
             ExecutionEventType.PRODUCER_QUARANTINED,
@@ -1491,25 +1543,41 @@ def project_producer_rails_tolerant(
             try:
                 last_known[producer_id] = max(
                     last_known.get(producer_id, 0),
-                    sequence_from_release_dedupe_key(event.dedupe_key or ""),
+                    sequence_from_release_dedupe_key(
+                        event.dedupe_key or "", producer_id=producer_id
+                    ),
                 )
             except ProjectionError:
                 pass  # unparseable key: the strict path below will judge it
 
         if producer_id in poisoned_at:
             if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
-                raw_start = event.payload.get("epoch_start")
-                raw_released = event.payload.get("released_at")
-                if raw_start is not None and raw_start == raw_released:
+                # REV-0045 P0-4: the heal is a release like any other one —
+                # it must pass the SAME structural validator (closed
+                # payload, actor hygiene, bounded counters, aware
+                # timestamps) before its zero-width shape or sequence are
+                # even inspected. A malformed recovery event must never
+                # clear a poison marker just because it happens to look
+                # zero-width.
+                try:
+                    epoch_start, released_at = _validated_release_event_shape(event)
+                except ProjectionError:
+                    continue
+                if epoch_start == released_at:
                     # WO-0140 D-R R-3 state 3: the zero-width release IS the
                     # heal — the fold boundary. The producer un-poisons and
                     # folding restarts from the zero state at the consumed
-                    # sequence; an unparseable key leaves it poisoned.
+                    # sequence, which must be EXACTLY the next sequence the
+                    # log has ever proven for this producer (not merely
+                    # higher) — an unparseable key or a non-next sequence
+                    # leaves it poisoned.
                     try:
                         healed_sequence = sequence_from_release_dedupe_key(
-                            event.dedupe_key or ""
+                            event.dedupe_key or "", producer_id=producer_id
                         )
                     except ProjectionError:
+                        continue
+                    if healed_sequence != prior_high_water + 1:
                         continue
                     del poisoned_at[producer_id]
                     projected[producer_id] = ProducerRailProjection(

@@ -22,6 +22,7 @@ from app.models import (
     ExecutionEvent,
     ExecutionEventType,
 )
+from app.store.core import signal_dedupe_key
 
 _NOW = datetime(2026, 7, 26, 12, 0, tzinfo=timezone.utc)
 
@@ -51,6 +52,7 @@ def _event(
     *,
     sequence: int,
     payload: dict[str, object],
+    dedupe_key: str | None = None,
 ) -> ExecutionEvent:
     return ExecutionEvent(
         sequence=sequence,
@@ -59,6 +61,7 @@ def _event(
         authority=EventAuthority.LOCAL,
         ts_init=_NOW,
         payload=payload,
+        dedupe_key=dedupe_key,
     )
 
 
@@ -130,6 +133,7 @@ def _release(
     sequence: int,
     epoch_start: datetime = _NOW,
     released_at: datetime | None = None,
+    epoch_sequence: int = 1,
 ) -> ExecutionEvent:
     released_at = released_at or epoch_start + timedelta(minutes=5)
     return _event(
@@ -142,6 +146,9 @@ def _release(
             "epoch_start": epoch_start.isoformat(),
             "released_at": released_at.isoformat(),
         },
+        dedupe_key=signal_dedupe_key(
+            "producer_release", producer_id, str(epoch_sequence)
+        ),
     )
 
 
@@ -276,7 +283,7 @@ def test_budget_epoch_release_and_requarantine_retain_monotonic_sequence() -> No
             consumed=2,
             limit=2,
         ),
-        _release(producer_id="producer-a", sequence=4),
+        _release(producer_id="producer-a", sequence=4, epoch_sequence=1),
         _attributable(
             ExecutionEventType.SIGNAL_DUPLICATE_CONFLICT,
             producer_id="producer-a",
@@ -418,6 +425,26 @@ def test_release_requires_an_open_matching_epoch_and_exact_payload() -> None:
     )
     with pytest.raises(ProjectionError, match="payload|field"):
         project_producer_rails([opened, extra_payload])
+
+
+def test_release_of_open_epoch_must_name_its_own_sequence_not_another() -> None:
+    """REV-0045 expanded P1-1: a normal close's dedupe key must name the
+    CURRENTLY open epoch's own sequence — not merely parse, and not "next".
+    ``epoch_start`` matching alone is not sufficient; a release minted for a
+    different (even higher) sequence must still be refused."""
+
+    opened = _rate_opener(
+        producer_id="producer-a",
+        sequence=1,
+        epoch_sequence=1,
+    )
+    wrong_sequence = _release(
+        producer_id="producer-a",
+        sequence=2,
+        epoch_sequence=2,  # the open epoch is 1, not 2
+    )
+    with pytest.raises(ProjectionError, match="closes epoch"):
+        project_producer_rails([opened, wrong_sequence])
 
 
 @pytest.mark.parametrize(

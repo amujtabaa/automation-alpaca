@@ -28,8 +28,82 @@
 | 6 | R-8..R-12 mechanical | **VERIFIED** — R-8 module-anchored + non-vacuous; R-9 mutant (lens A's M5, the one nothing caught) now RED on TWO pins; R-10 outcome-keyed; R-11 read-only-property Protocol, getattr gone, mypy green; R-12 property slice over open-epoch + at-limit rails |
 | 7 | Refutation pass + remediation + full battery | **VERIFIED** — 8 findings (2 P0) all resolved: 6 fixed+pinned, finding 2 via operator ruling Option A, finding 8 → REV-0045 disclosure. Full battery at `dd31fc2`: **4,722 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.0430%** (floor 93.0; the FIRST run FAILED the ratchet at 92.72% — memory-side heal branches uncovered — fixed with five memory-parity pins). Oracle 61, scaling 13, bootstrap, hygiene ×3, ruff/format/mypy/lint-imports all green |
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | **VERIFIED** — `02-lifecycle.md` release row + ADR-009 epoch-close amended (operator-ratified no-epoch case); `pkl/` change-log entry + standing rule; `work/review/REV-0045/request.md` staged with ten named items |
+| 9 | REV-0045 remediation: 4 P0s + 3 P1s (cumulative, both Codex passes) fixed at root cause | **VERIFIED** — all 7 findings fixed, each with a fresh RED→GREEN mutation-verified pin; 4 slice-4 decisive mutants re-verified against the new code; full battery green (4,727 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.07%); ruff/mypy/lint-imports/oracle/scaling all green |
 
 ## Evidence log
+
+- 2026-07-27 (REV-0045 remediation round): operator directive — "Continue in the implementation
+  seat — remediate all seven, plus anything else found in-flight (at the root cause level)" —
+  after Codex's two-pass BLOCK verdict (Terra: P0-1, P0-2, P1-1, P1-2, P1-3; Sol addendum: P0-3,
+  P0-4, expanded P1-1). All findings independently reproduced before fixing (no disputes filed).
+  Fixed at root cause, each with a fresh RED→GREEN mutation-verified pin:
+  - **P0-1** (Windows-unsafe path comparison): `test_ratified_cap_literals_are_single_sourced`
+    compared `str(Path.relative_to(...))` against a forward-slash literal — fails on Windows'
+    backslash separator. Fixed with `.as_posix()`, which is guaranteed cross-platform.
+  - **P0-2** (inert flat-seed mutant): the named pin's final-state assertion doesn't discriminate
+    the mutant any more — Option A's log-classification fallback silently re-derives the identical
+    correct numbers from a full unseeded refold whenever the bounded check wrongly raises on a
+    HEALTHY segment, masking the seed formula being broken. Root cause: mutation evidence goes
+    stale silently once the guarded path changes (here: Option A's addition after the mutant was
+    last verified) — the fix is a NEW property, not a stronger version of the old one. Added a
+    spy on `_authoritative_epoch_sequence_locked`/`_unlocked` (both stores) asserting it succeeds
+    on the FIRST try for a healthy open-epoch release — a healthy segment must never transit the
+    poison-then-heal fallback at all. New memory-store parity pin added (the SQLite-only original
+    had no twin). Both stores' flat-seed mutants now RED on the new assertion.
+  - **P0-3** (missing upper bound + producer binding in `sequence_from_release_dedupe_key`):
+    parsed only the sequence component of the dedupe key, never validating the producer component
+    or an upper bound — an out-of-domain sequence opens as a Python int in memory but overflows in
+    SQLite (dual-store class-A divergence); a key minted for a different producer would still
+    parse. Fixed: parse and bind both length-prefixed components, reject `producer_text !=
+    producer_id`, reject `sequence > 2**63-1`. Every call site (both stores' release-floor
+    calculations, both `_apply_producer_released` branches, both `project_producer_rails_tolerant`
+    sites) now passes the expected producer id.
+  - **P0-4** (poisoned-heal path bypasses strict release validation): the tolerant fold's heal
+    branch checked only raw zero-width equality and sequence-parseability — skipping payload
+    exactness, actor hygiene, bounded counters, and monotonicity that `_apply_producer_released`
+    enforces on every other release. A malformed recovery event (e.g. invalid actor) could clear a
+    poison marker; a non-next sequence could too. Fixed by extracting the strict applier's
+    field/actor/timestamp validation into a shared `_validated_release_event_shape` helper used by
+    BOTH the strict path and the heal path, and requiring the healed sequence equal the log's own
+    high-water mark + 1 (not merely parseable) before clearing the marker. New pin drives three
+    cases through the fixture-poisoned path: well-formed heals, a malformed-actor heal (must NOT
+    heal), and a skipped-sequence heal (must NOT heal) — each independently mutation-verified.
+  - **P1-1 + its addendum expansion**: producer binding fixed as part of P0-3. Separately, the
+    strict applier's OPEN-epoch close branch returned without ever parsing the dedupe key at all
+    (accepted on `epoch_start` match alone), and the zero-width branch accepted any upward jump
+    instead of the ratified exact "next" sequence. Fixed: the open-epoch branch now parses and
+    requires the dedupe key name the currently-open epoch's OWN sequence; the zero-width branch
+    now requires exactly `carrier + 1`. New pins for both; both mutation-verified RED on reverting
+    to the old looser checks. `test_double_heal_mints_distinct_keys` (a pre-existing pin) confirmed
+    the exact-next invariant holds across the accumulated fix set without alteration.
+  - **P1-2** (memory.py anchor uses a linear scan): `_authoritative_epoch_sequence_unlocked`'s
+    O(1) anchor check scanned `self._execution_events` instead of the existing
+    `_execution_event_dedupe` dict (SQLite's counterpart already uses a keyed query). Fixed to use
+    the dict. New pin proves it via decoupling: the anchor lives ONLY in the dict, the raw event
+    list stays empty — a scan-based check would find nothing and raise; RED on reverting to the
+    scan.
+  - **P1-3** (unrelated recorder formatting): `app/recorder/__init__.py`/`models.py`/`store.py`
+    carried ruff-format-only line-wrapping changes outside signal-seat scope, introduced
+    incidentally by `ccfd3d0`. Reverted to their pre-remediation form. Disclosed: this returns
+    those 3 files to the SAME `ruff format --check` non-canonical state as 6 other pre-existing,
+    unrelated files already on this branch's base (`harness/bootstrap.py` and others) — not a new
+    class of gate gap, just parity with existing untouched debt.
+  - Re-verified (not just today's new pins) the four slice-4 decisive mutants against the
+    accumulated code, per the P0-2 lesson that mutation evidence expires at the next change to its
+    guarded path: flat-seed (superseded by the new P0-2 pins), widened acceptance
+    (`test_forged_and_interior_zero_width_fail_the_strict_fold`), heal removal
+    (`test_poisoned_release_heals_and_stays_healed_across_replay`), key-blind floor
+    (`test_double_heal_mints_distinct_keys`) — all four still RED on their original mutation,
+    confirmed by direct reproduction (mutate, run, observe RED, restore, confirm GREEN).
+  - Full battery: **4,727 passed / 11 skipped / 1 xfailed / 0 failed** (up from 4,722 — five new
+    test functions), branch coverage **93.07%** vs the 93.0 floor (up from 93.0430%). `ruff check .`
+    clean; `ruff format --check .` clean for every file this round touched (the pre-existing,
+    unrelated 10-file debt noted above is untouched by this round); `mypy app/` — no issues in 77
+    source files; `lint-imports` — 6 contracts kept, 0 broken; `tests/r2_conformance_oracle.py` exit
+    0; `tests/test_wo0113_repair_scaling.py` — 13 passed.
+  - Not yet re-disposed: this entry stages fresh evidence for a NEW Codex review round (a REV-0045
+    addendum or REV-0046, per the reviewer's own closing instruction). No reviewer-owned file was
+    edited in place; corrections return only as a new, separately authored artifact.
 
 - 2026-07-27 (close-out): full CI-equivalent battery at `dd31fc2`: 4,722 passed / 11 skipped /
   1 xfailed / 0 failed; branch coverage **93.0430%** vs the 93.0 floor. **Disclosure for REV-0045:**

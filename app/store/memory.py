@@ -364,7 +364,9 @@ class InMemoryStateStore(StateStore):
                 try:
                     floor = max(
                         floor,
-                        sequence_from_release_dedupe_key(event.dedupe_key or ""),
+                        sequence_from_release_dedupe_key(
+                            event.dedupe_key or "", producer_id=producer_id
+                        ),
                     )
                 except ProjectionError:
                     continue
@@ -478,9 +480,9 @@ class InMemoryStateStore(StateStore):
                     str(cached.quarantine_epoch_sequence),
                 ),
             }
-            if not any(
-                event.dedupe_key in anchor_keys for event in self._execution_events
-            ):
+            # REV-0045 P1-2: O(1) keyed lookup (mirrors SQLite's dedupe_key
+            # IN (?, ?) query) — no scan of the whole log per boundary check.
+            if not any(key in self._execution_event_dedupe for key in anchor_keys):
                 raise InvalidEventError(
                     f"producer rail {producer_id!r} sequence has no log anchor"
                 )

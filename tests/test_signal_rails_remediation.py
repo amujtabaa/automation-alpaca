@@ -341,11 +341,26 @@ async def test_poisoned_release_heals_and_stays_healed_across_replay(
     assert fresh.poisoned_producers() == {}
 
 
-async def test_state1_release_and_open_epoch_restart_still_work(tmp_path) -> None:
+async def test_state1_release_and_open_epoch_restart_still_work(
+    tmp_path, monkeypatch
+) -> None:
     """The two F-A detonation shapes: a NORMAL open-epoch release, and a
-    release after an open-epoch restart. The flat-seed mutant fails both."""
+    release after an open-epoch restart. The flat-seed mutant fails both.
+
+    REV-0045 P0-2: the final released state alone does not discriminate the
+    mutant, because Option A's log-classification fallback silently produces
+    the identical correct numbers whenever the bounded check wrongly raises
+    on a HEALTHY segment. The behavioral property that actually pins the
+    formula: a healthy open epoch must clear the bounded check on the first
+    try and must never transit ``poisoned_producers`` at all. A spy on the
+    bounded-check method (not just the final outcome) is what turns red when
+    the ``- (1 if ... else 0)`` term is removed.
+    """
 
     from datetime import datetime, timezone
+
+    from app.events.projectors import ProjectionError
+    from app.store.base import InvalidEventError
 
     now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
     path = str(tmp_path / "state1.db")
@@ -365,9 +380,26 @@ async def test_state1_release_and_open_epoch_restart_still_work(tmp_path) -> Non
     await restarted.initialize()
     assert restarted.poisoned_producers() == {}  # a healthy open epoch
 
+    bounded_check_raised: list[BaseException] = []
+    original_bounded_check = SqliteStateStore._authoritative_epoch_sequence_locked
+
+    def _spy(self, cur, producer_id, cached):
+        try:
+            return original_bounded_check(self, cur, producer_id, cached)
+        except (InvalidEventError, ProjectionError) as exc:
+            bounded_check_raised.append(exc)
+            raise
+
+    monkeypatch.setattr(SqliteStateStore, "_authoritative_epoch_sequence_locked", _spy)
+
     released = await restarted.release_producer(
         "producer-open", actor="operator", rejected_count=3, released_at=now
     )
+    # The bounded check must succeed on the FIRST try — a healthy open epoch
+    # must never be routed through the poison-then-heal fallback, which
+    # would mask a broken seed formula by re-deriving the same numbers from
+    # a full, unseeded refold.
+    assert bounded_check_raised == []
     assert released.quarantine_epoch_open is False
     assert released.quarantine_epoch_sequence == 1  # preserved, not consumed
     assert "producer-open" not in restarted.poisoned_producers()
@@ -495,6 +527,82 @@ async def test_forged_and_interior_zero_width_fail_the_strict_fold() -> None:
     assert LEGACY_PRODUCER in poisoned
 
 
+async def test_zero_width_heal_requires_the_exact_next_sequence_not_any_higher() -> (
+    None
+):
+    """REV-0045 expanded P1-1: a zero-width release from a KNOWN (already
+    folded, not poisoned) zero state must consume EXACTLY the next sequence
+    — skipping ahead to a higher one is refused, not only a regression at or
+    below the carrier."""
+
+    from datetime import datetime, timezone
+
+    from app.events.projectors import ProjectionError, project_producer_rails
+    from app.store.core import producer_released_event
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    skipping_release = producer_released_event(
+        producer_id="p-skip",
+        actor="operator",
+        rejected_count=0,
+        epoch_start=now,
+        released_at=now,
+        epoch_sequence=5,  # the zero state's carrier is 0; next is 1, not 5
+    ).model_copy(update={"sequence": 1})
+    with pytest.raises(ProjectionError, match="expected the exact next"):
+        project_producer_rails([skipping_release])
+
+
+async def test_poisoned_heal_requires_full_structural_validation() -> None:
+    """REV-0045 P0-4: the poisoned-heal fast path is not a lesser standard.
+    A malformed recovery event (invalid actor) or a non-exact-next sequence
+    must NOT clear the poison marker just because it is zero-width — every
+    release, including a heal, passes through the SAME strict validator."""
+
+    from datetime import datetime, timezone
+
+    from app.events.projectors import project_producer_rails_tolerant
+    from app.store.core import producer_released_event
+
+    later = datetime(2026, 7, 27, 13, 0, 0, tzinfo=timezone.utc)
+    fixture_events = _events_from_fixture("legacy_overbudget_events")
+    next_sequence = max(e.sequence for e in fixture_events) + 1
+
+    _, poisoned = project_producer_rails_tolerant(fixture_events)
+    assert LEGACY_PRODUCER in poisoned  # baseline: the fixture alone poisons it
+
+    good_release = producer_released_event(
+        producer_id=LEGACY_PRODUCER,
+        actor="operator",
+        rejected_count=0,
+        epoch_start=later,
+        released_at=later,
+        epoch_sequence=1,
+    ).model_copy(update={"sequence": next_sequence})
+    _, poisoned = project_producer_rails_tolerant([*fixture_events, good_release])
+    assert LEGACY_PRODUCER not in poisoned  # baseline sanity: this DOES heal
+
+    bad_actor_release = good_release.model_copy(
+        update={"payload": {**good_release.payload, "actor": " operator "}}
+    )
+    _, poisoned = project_producer_rails_tolerant([*fixture_events, bad_actor_release])
+    assert LEGACY_PRODUCER in poisoned  # malformed actor must NOT heal it
+
+    wrong_sequence_release = producer_released_event(
+        producer_id=LEGACY_PRODUCER,
+        actor="operator",
+        rejected_count=0,
+        epoch_start=later,
+        released_at=later,
+        epoch_sequence=2,  # skips ahead — prior high-water is 0, next is 1
+    ).model_copy(update={"sequence": next_sequence})
+    _, poisoned = project_producer_rails_tolerant(
+        [*fixture_events, wrong_sequence_release]
+    )
+    assert LEGACY_PRODUCER in poisoned  # skipped sequence must NOT heal it
+
+
 # --------------------------------------------------------------------------- #
 # Slice 5 — read-structural, write-capped (WO-0140 D-R R-5)
 # --------------------------------------------------------------------------- #
@@ -586,7 +694,7 @@ async def test_ratified_cap_literals_are_single_sourced() -> None:
     app_dir = Path(__file__).resolve().parents[1] / "app"
     offenders: list[str] = []
     for py in app_dir.rglob("*.py"):
-        rel = str(py.relative_to(app_dir.parent))
+        rel = py.relative_to(app_dir.parent).as_posix()
         text = py.read_text()
         for name in (
             "SIGNAL_INVALID_BUDGET_HARD_CAP",
@@ -862,6 +970,55 @@ async def test_memory_wedge_gate_and_heal() -> None:
     assert store.poisoned_producers() == {}
 
 
+async def test_memory_state1_release_and_open_epoch_restart_still_work(
+    monkeypatch,
+) -> None:
+    """Memory twin of the SQLite F-A healthy-release pin (REV-0045 P0-2): a
+    normal, undrifted open-epoch release must clear the bounded check on the
+    first try — never transiting the poison-then-heal fallback, which would
+    silently re-derive the identical correct numbers from a full unseeded
+    refold and mask a broken seed formula."""
+
+    from datetime import datetime, timezone
+
+    from app.events.projectors import ProjectionError
+    from app.store.base import InvalidEventError
+    from app.store.memory import InMemoryStateStore
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    store = InMemoryStateStore()
+    await store.initialize()
+    for _ in range(2):  # burst 1: second call breaches, opens epoch 1
+        await store.check_and_debit_producer_rate(
+            "producer-open", now=now, limit_per_hour=60, burst=1
+        )
+    rail = await store.get_producer_rail("producer-open")
+    assert rail.quarantine_epoch_open is True
+    assert store.poisoned_producers() == {}  # a healthy open epoch
+
+    bounded_check_raised: list[BaseException] = []
+    original_bounded_check = InMemoryStateStore._authoritative_epoch_sequence_unlocked
+
+    def _spy(self, producer_id, cached):
+        try:
+            return original_bounded_check(self, producer_id, cached)
+        except (InvalidEventError, ProjectionError) as exc:
+            bounded_check_raised.append(exc)
+            raise
+
+    monkeypatch.setattr(
+        InMemoryStateStore, "_authoritative_epoch_sequence_unlocked", _spy
+    )
+
+    released = await store.release_producer(
+        "producer-open", actor="operator", rejected_count=3, released_at=now
+    )
+    assert bounded_check_raised == []
+    assert released.quarantine_epoch_open is False
+    assert released.quarantine_epoch_sequence == 1  # preserved, not consumed
+    assert "producer-open" not in store.poisoned_producers()
+
+
 async def test_memory_open_log_drift_release_is_state1() -> None:
     """Memory twin of the Option-A open-log pin."""
 
@@ -934,20 +1091,64 @@ async def test_memory_interior_log_drift_is_repaired_and_refused() -> None:
 
 
 async def test_release_key_parser_refuses_non_mintable_variants() -> None:
-    """Refutation finding 7 pins, as tests rather than a probe transcript."""
+    """Refutation finding 7 pins, as tests rather than a probe transcript.
+
+    REV-0045 P0-3/P1-1: the parser also binds the key to the expected
+    producer and rejects a sequence outside the SQLite-representable signed
+    range, so a carrier minted for one producer (or one that would overflow
+    SQLite but not a Python int) can never be accepted for another.
+    """
 
     from app.events.projectors import (
+        _SQLITE_MAX_SIGNED_INT,
         ProjectionError,
         sequence_from_release_dedupe_key,
     )
 
-    assert sequence_from_release_dedupe_key("producer_release:1:p|1:7") == 7
+    assert (
+        sequence_from_release_dedupe_key("producer_release:1:p|1:7", producer_id="p")
+        == 7
+    )
+    overflow_value = str(_SQLITE_MAX_SIGNED_INT + 1)
     for bad in (
         "producer_release:1:3",  # single part
         "producer_release:1:p|2:07",  # non-canonical digits
         "producer_release:1:p|1:7|1:9",  # three parts
         "producer_quarantine:1:p|1:7",  # wrong prefix
         "producer_release:1:p|1:0",  # non-positive
+        f"producer_release:1:p|{len(overflow_value)}:{overflow_value}",  # overflow
+        "producer_release:3:pq|1:7",  # malformed producer length prefix
     ):
         with pytest.raises(ProjectionError):
-            sequence_from_release_dedupe_key(bad)
+            sequence_from_release_dedupe_key(bad, producer_id="p")
+
+    # Bound to a DIFFERENT producer: well-formed key, wrong owner.
+    with pytest.raises(ProjectionError):
+        sequence_from_release_dedupe_key("producer_release:1:p|1:7", producer_id="q")
+
+
+async def test_memory_anchor_check_uses_dedupe_index_not_a_log_scan() -> None:
+    """REV-0045 P1-2: the O(1) anchor lookup must consult the dedupe index
+    (mirroring SQLite's keyed query), never scan the raw event list.
+
+    Proven by decoupling the two structures — something only a test can do:
+    the anchor key lives ONLY in ``_execution_event_dedupe``, and the raw
+    event list stays empty. A scan-based check would find no anchor and
+    raise; the dict-based check finds it and succeeds.
+    """
+
+    from app.store.base import ProducerRailState
+    from app.store.core import signal_dedupe_key
+    from app.store.memory import InMemoryStateStore
+
+    store = InMemoryStateStore()
+    await store.initialize()
+
+    producer_id = "p-anchor"
+    anchor_key = signal_dedupe_key("producer_release", producer_id, "3")
+    store._execution_event_dedupe[anchor_key] = object()
+    assert store._execution_events == []  # the scan target is deliberately bare
+
+    cached = ProducerRailState(producer_id=producer_id, quarantine_epoch_sequence=3)
+    result = store._authoritative_epoch_sequence_unlocked(producer_id, cached)
+    assert result == 3

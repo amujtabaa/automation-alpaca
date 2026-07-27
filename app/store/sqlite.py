@@ -1713,7 +1713,9 @@ class SqliteStateStore(StateStore):
             try:
                 floor = max(
                     floor,
-                    sequence_from_release_dedupe_key(key_row["dedupe_key"]),
+                    sequence_from_release_dedupe_key(
+                        key_row["dedupe_key"], producer_id=producer_id
+                    ),
                 )
             except ProjectionError:
                 continue

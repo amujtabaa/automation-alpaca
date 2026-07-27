@@ -37,10 +37,7 @@ class TapeStore:
         encoded = line.encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         write_mode = "a"
-        if (
-            self.path.exists()
-            and self.path.stat().st_size + len(encoded) > self.max_bytes
-        ):
+        if self.path.exists() and self.path.stat().st_size + len(encoded) > self.max_bytes:
             if self.max_segments == 1:
                 write_mode = "w"
             else:
@@ -54,9 +51,7 @@ class TapeStore:
     def replay(self) -> list[TapeRecord]:
         """Read retained tape segments from oldest to newest without mutation."""
         records: list[TapeRecord] = []
-        paths = [
-            self._archive_path(index) for index in range(self.max_segments - 1, 0, -1)
-        ]
+        paths = [self._archive_path(index) for index in range(self.max_segments - 1, 0, -1)]
         paths.append(self.path)
         for path in paths:
             if not path.exists():
