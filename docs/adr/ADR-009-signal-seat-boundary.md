@@ -345,6 +345,12 @@ correctly showed is unbounded over indefinite hostility):
   exhaustion. Post-quarantine ingress appends **nothing**.
 - Rejected-request counting is a **saturating in-memory counter outside the event log**
   (diagnostic, best-effort across restarts by design).
+- **WO-0140 amendment (Ameen 2026-07-27):** `PRODUCER_RELEASED` may also close a *degenerate*
+  epoch — the no-epoch heal of a legacy wedge or an unfoldable rail history — carrying a zero-width
+  window (`epoch_start == released_at`) and consuming the next epoch sequence via its dedupe key.
+  Release remains the single human recovery for every stuck rail state; a drift-poisoned producer
+  whose log folds healthy is repaired from log truth instead (mid-cycle: repair-and-refuse, so no
+  release event can launder a partially consumed budget).
 - **One summary on epoch close:** `PRODUCER_RELEASED` carries the saturated rejected-count and
   epoch window, and **resets BOTH rails — the §1 refilling bucket AND the §1a non-refilling
   invalid/conflict budget** (archive REV-0024-F P1: releasing without resetting the budget re-quarantines the

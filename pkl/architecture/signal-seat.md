@@ -108,6 +108,19 @@ ADR and review).
   delivered. REV-0043 returned ACCEPT-WITH-CHANGES, then final ACCEPT after F-1/F-2 remediation and
   the operator's F-4 acknowledgement retaining `detected_by:"conversion"`; disposition RESOLVED.
   F-6/F-8 carry to R6. D-2a stays OFF pending R6 + R7 and the joint gate.
+- 2026-07-27: R6a truth-model remediation implemented (WO-0140, REV-0044 R-1..R-13; implementer
+  Claude by operator seat swap, gate-clearing review Codex-owned REV-0045): per-producer tolerant
+  startup with derived poisoned markers (a pre-R6a log OPENS; exactly the offender is refused);
+  cache-authoritative live gating with the incremental debit (the attributable path folds nothing);
+  bounded release-exclusive verification folds with a state-conditional seed, an O(1) dedupe-key
+  anchor, and the release-boundary regression rule; the three-state log-classified release (open →
+  state-1 from log truth; wedge/unfoldable → zero-width heal consuming the next sequence via the
+  dedupe key; zero/interior → repair-and-refuse); ratified caps single-sourced in `app/models.py`.
+  **STANDING RULE (WO-0140): the ratified rail caps bind at WRITE time only — the fold and the row
+  validator judge logged/durable values structurally, and lowering a ratified cap is a log-truth
+  change, not a config change.** Two fresh-context refutation passes ran during implementation;
+  their P0s (exception-hierarchy escape; the drift-heal replay divergence) were fixed under
+  operator ruling Option A. D-2a remains OFF; R6b starts only after REV-0045 dispositions.
 - 2026-07-26: R6a rails store surface implemented (WO-0104a): the
   operator-approved nine-column producer-rail table and fail-closed startup
   guards; event-authoritative budget/quarantine/epoch projection registered in
