@@ -26,10 +26,20 @@
 | 4 | Three-state release + zero-width/no-epoch rules + never-regress carrier | **VERIFIED** — 13 remediation pins green; 4 decisive mutants RED→GREEN (flat-seed, widened acceptance, heal removal, key-blind floor); 182-test corpus green |
 | 5 | Constants → models.py; read-structural/write-capped (fold + row validator); cap-pin re-home | **VERIFIED** — 3 pins RED→GREEN; both mutants RED (cap-bound restored; literal re-declared); lazy loader deleted; 183-test corpus green |
 | 6 | R-8..R-12 mechanical | **VERIFIED** — R-8 module-anchored + non-vacuous; R-9 mutant (lens A's M5, the one nothing caught) now RED on TWO pins; R-10 outcome-keyed; R-11 read-only-property Protocol, getattr gone, mypy green; R-12 property slice over open-epoch + at-limit rails |
-| 7 | Refutation pass + remediation; full battery pending | **IN PROGRESS** — fresh-context pass over `b48235e..d14a65e`: 8 findings (2 P0). Findings 1/3/4/5/6/7 fixed+pinned this commit; finding 8 → addendum disclosure; finding 2 RESOLVED by operator ruling (Option A, 2026-07-27) — see below |
-| 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | pending |
+| 7 | Refutation pass + remediation + full battery | **VERIFIED** — 8 findings (2 P0) all resolved: 6 fixed+pinned, finding 2 via operator ruling Option A, finding 8 → REV-0045 disclosure. Full battery at `dd31fc2`: **4,722 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.0430%** (floor 93.0; the FIRST run FAILED the ratchet at 92.72% — memory-side heal branches uncovered — fixed with five memory-parity pins). Oracle 61, scaling 13, bootstrap, hygiene ×3, ruff/format/mypy/lint-imports all green |
+| 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | **VERIFIED** — `02-lifecycle.md` release row + ADR-009 epoch-close amended (operator-ratified no-epoch case); `pkl/` change-log entry + standing rule; `work/review/REV-0045/request.md` staged with ten named items |
 
 ## Evidence log
+
+- 2026-07-27 (close-out): full CI-equivalent battery at `dd31fc2`: 4,722 passed / 11 skipped /
+  1 xfailed / 0 failed; branch coverage **93.0430%** vs the 93.0 floor. **Disclosure for REV-0045:**
+  the FIRST battery run failed the ratchet at 92.72% — every heal pin was sqlite-fixture-based and
+  memory's Option-A classification block was uncovered; five memory-parity pins fixed it (the R-3
+  both-stores principle applies to tests too). The passing margin is **0.043pp**, down from the
+  delivered 0.16pp; the residual uncovered new branches are defensive raises (log-epoch-no-start,
+  seed<0, unparseable-key skip) — Codex should weigh whether any deserves a pin. Verification used
+  the PYTEST_EXIT marker, never the wrapper exit code (the wrapper reported 0 on the FAILING first
+  run). Conformance oracle 61 green; repair-scaling 13 green; bootstrap green; hygiene ×3 green.
 
 - 2026-07-27 (Option A, operator-ratified): **the log-classified release closes refutation
   finding 2.** A poisoned producer is classified by LOG truth at release time, on both stores:
