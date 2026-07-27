@@ -219,7 +219,7 @@ from app.store.core import (
     normalize_signal_raw_fields,
     plan_signal_ingest,
     signal_canonical_hash,
-    SIGNAL_RATE_BURST_MAX,
+    _SQLITE_MAX_SIGNED_INT,
     producer_quarantined_event,
     producer_released_event,
     validate_producer_rate_inputs,
@@ -1467,7 +1467,10 @@ class SqliteStateStore(StateStore):
             )
         if (limit is None and consumed != 0) or (
             limit is not None
-            and (not isinstance(limit, int) or not 1 <= consumed <= limit <= 1000)
+            and (
+                not isinstance(limit, int)
+                or not 1 <= consumed <= limit <= _SQLITE_MAX_SIGNED_INT
+            )
         ):
             raise InvalidEventError(
                 f"producer rail {producer_id!r} has inconsistent budget fields"
@@ -1510,7 +1513,7 @@ class SqliteStateStore(StateStore):
             isinstance(tokens, bool)
             or not isinstance(tokens, (int, float))
             or not math.isfinite(float(tokens))
-            or not 0.0 <= float(tokens) <= float(SIGNAL_RATE_BURST_MAX)
+            or not 0.0 <= float(tokens) <= float(_SQLITE_MAX_SIGNED_INT)
             or refill_anchor is None
             or refill_anchor.tzinfo is None
             or refill_anchor.utcoffset() is None

@@ -24,12 +24,28 @@
 | 2 | Tolerant wrapper + poisoned marker + drift-poisoning + `poisoned_producers` parity | **VERIFIED** — GREEN at `b13836d`; comparator mutation RED→GREEN; `_atomic` both halves + drop-one pin extended |
 | 3 | Bounded fold (release-exclusive, state-conditional seed) + O(1) anchor + incremental debit | **VERIFIED** — scaling pin RED→GREEN both stores; both stale-cache pins re-pinned loud fail-closed (authorized edit 1); anchor closure: seq 0 after a release boundary is refused; 177-test corpus green |
 | 4 | Three-state release + zero-width/no-epoch rules + never-regress carrier | **VERIFIED** — 13 remediation pins green; 4 decisive mutants RED→GREEN (flat-seed, widened acceptance, heal removal, key-blind floor); 182-test corpus green |
-| 5 | Constants → models.py; read-structural/write-capped (fold + row validator); cap-pin re-home | pending |
+| 5 | Constants → models.py; read-structural/write-capped (fold + row validator); cap-pin re-home | **VERIFIED** — 3 pins RED→GREEN; both mutants RED (cap-bound restored; literal re-declared); lazy loader deleted; 183-test corpus green |
 | 6 | R-8..R-12 mechanical; stale-cache pin re-pin (authorized list) | pending |
 | 7 | Mutation-check sweep (every decisive pin RED→GREEN) + full gate battery | pending |
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | pending |
 
 ## Evidence log
+
+- 2026-07-27 (slice 5): the four ratified caps + two vocabulary sets single-sourced in
+  `app/models.py` (the leaf — every consumer imports eagerly; the lazy loader and its per-event
+  import cost are deleted, closing R-13). The fold and the SQLite row validator judge logged/durable
+  values STRUCTURALLY (`<= 2**63-1`); caps bind at write time only — pins: logged above-cap values
+  fold; a row with tokens above the burst cap still serves after reopen; the cap literals are
+  single-sourced (source-scan pin). The three read-side cap cases re-homed to write-time builder
+  pins (authorized edit 2), keeping the whitespace-actor HYGIENE case read-side; the delivered
+  `overflow_bucket` row case re-aimed at a STRUCTURAL overflow (1.0e19) so fail-closed coverage
+  survives the cap's departure. Mutants: cap-bound restored in the fold ⇒ folds pin RED; literal
+  re-declared in config ⇒ source-scan pin RED.
+- **PROCESS DEFECT (mine), recorded for REV-0045:** during slice-5 mutant restoration I ran
+  `git checkout --` on files carrying UNCOMMITTED slice-5 work, silently reverting projectors.py and
+  config.py to the slice-4 state — caught immediately by the 3-failure regression that followed, and
+  both files re-applied from the edit script. Slice-4's mutants used file-copy backups, which is the
+  correct mechanism; slice-5's first two mutants deviated. All later mutants use file copies.
 
 - 2026-07-27: seat swap + ratification recorded; branch `codex/signal-r6a-rails-store` checked out
   clean at `b48235e`; Step-0 anchors re-verified (this file's scoreboard row 0).

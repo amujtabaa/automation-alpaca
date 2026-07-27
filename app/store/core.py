@@ -33,6 +33,10 @@ from datetime import datetime, timedelta
 from typing import Any, Literal, Mapping, Optional, Sequence
 
 from app.models import (
+    SIGNAL_INVALID_BUDGET_HARD_CAP,
+    SIGNAL_RATE_BURST_MAX,
+    SIGNAL_RATE_LIMIT_PER_HOUR_MAX,
+    SIGNAL_REJECTED_COUNT_MAX,
     Candidate,
     CandidateStatus,
     EnvelopeStatus,
@@ -5607,22 +5611,11 @@ SIGNAL_TTL_MIN_SECONDS = 30
 SIGNAL_TTL_MAX_SECONDS = 86400
 
 _SIGNAL_DIRECTIONS = frozenset({"buy", "sell"})
-_SIGNAL_CYCLE_BUDGET_MAX = 1000
+# WO-0140 D-R R-5: the ratified constants live in app/models.py (the leaf).
+# These names are re-exports/aliases, not declarations — the grep pin in
+# tests/test_signal_rails_remediation.py holds the single-source property.
+_SIGNAL_CYCLE_BUDGET_MAX = SIGNAL_INVALID_BUDGET_HARD_CAP
 _SQLITE_MAX_SIGNED_INT = 2**63 - 1
-
-SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600
-SIGNAL_RATE_BURST_MAX = 100
-SIGNAL_REJECTED_COUNT_MAX = 10_000
-SIGNAL_QUARANTINE_REASONS = frozenset(
-    {
-        "validation",
-        "issued_at_future",
-        "issued_at_stale",
-        "ttl_out_of_range",
-        "producer_sweep",
-    }
-)
-SIGNAL_EXPIRY_DETECTORS = frozenset({"ingest", "sweep", "conversion"})
 
 
 def _require_bounded_int(

@@ -496,3 +496,110 @@ async def test_forged_and_interior_zero_width_fail_the_strict_fold() -> None:
         project_producer_rails(interior_log)
     _, poisoned = project_producer_rails_tolerant(interior_log)
     assert LEGACY_PRODUCER in poisoned
+
+
+# --------------------------------------------------------------------------- #
+# Slice 5 — read-structural, write-capped (WO-0140 D-R R-5)
+# --------------------------------------------------------------------------- #
+
+
+async def test_logged_values_above_current_caps_still_fold() -> None:
+    """R-5: an append-only log is never re-judged by a mutable constant.
+
+    Values above today's ratified caps, once LOGGED, must fold — lowering a
+    cap must never retroactively brick startup or replay. Caps bind at WRITE
+    time only (the builder pins below this one).
+    """
+
+    from datetime import datetime, timezone
+
+    from app.events.projectors import project_producer_rails
+    from app.store.core import producer_quarantined_event, producer_released_event
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _seq(events):
+        return [e.model_copy(update={"sequence": i}) for i, e in enumerate(events, 1)]
+
+    opener = producer_quarantined_event(
+        producer_id="p-cap",
+        breach_trigger="rate_breach",
+        epoch_start=now,
+        epoch_sequence=1,
+        bucket_capacity=100,
+    )
+    opener = opener.model_copy(
+        update={"payload": {**opener.payload, "bucket_capacity": 101}}
+    )
+    release = producer_released_event(
+        producer_id="p-cap",
+        actor="operator",
+        rejected_count=0,
+        epoch_start=now,
+        released_at=now,
+        epoch_sequence=1,
+    )
+    release = release.model_copy(
+        update={"payload": {**release.payload, "rejected_count": 10_001}}
+    )
+    rail = project_producer_rails(_seq([opener, release]))["p-cap"]
+    assert rail.quarantine_epoch_open is False  # both folded, no ProjectionError
+
+    over_limit = _events_from_fixture("legacy_changed_limit_events")[0]
+    over_limit = over_limit.model_copy(
+        update={
+            "payload": {**over_limit.payload, "cycle_budget_limit": 1001},
+            "sequence": 1,
+        }
+    )
+    rail = project_producer_rails([over_limit])[LEGACY_PRODUCER]
+    assert rail.cycle_budget_limit == 1001  # logged truth, folded as-is
+
+
+async def test_row_with_tokens_above_burst_cap_still_serves_after_reopen(
+    tmp_path,
+) -> None:
+    """R-5 below the fold: class-B durable state no rebuild can heal must not
+    be re-judged by a mutable cap at the row validator either."""
+
+    path = str(tmp_path / "capdrift.db")
+    store = SqliteStateStore(path)
+    await store.initialize()
+    r = await store.ingest_signal(**_ingest_kwargs("p-cap", "s-1"))
+    assert r.outcome == "received"
+
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE signal_producer_rails SET rate_tokens=150.0, "
+        "rate_refill_anchor='2026-07-27T12:00:00+00:00' WHERE producer_id='p-cap'"
+    )
+    store._conn.commit()
+
+    reopened = SqliteStateStore(path)
+    await reopened.initialize()  # a lowered cap must never brick the store
+    rail = await reopened.get_producer_rail("p-cap")
+    assert rail.rate_tokens == 150.0  # served, not refused
+
+
+async def test_ratified_cap_literals_are_single_sourced() -> None:
+    """R-7 closure: every ratified cap literal lives in app/models.py ONLY."""
+
+    import re
+
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    offenders: list[str] = []
+    for py in app_dir.rglob("*.py"):
+        rel = str(py.relative_to(app_dir.parent))
+        text = py.read_text()
+        for name in (
+            "SIGNAL_INVALID_BUDGET_HARD_CAP",
+            "SIGNAL_RATE_LIMIT_PER_HOUR_MAX",
+            "SIGNAL_RATE_BURST_MAX",
+            "SIGNAL_REJECTED_COUNT_MAX",
+        ):
+            if re.search(rf"^{name}\s*=\s*\d", text, re.M) and rel != "app/models.py":
+                offenders.append(f"{rel}: {name}")
+        if rel != "app/models.py" and re.search(r"<=\s*1000\b", text):
+            offenders.append(f"{rel}: bare 1000 bound")
+    assert (app_dir / "models.py").exists()
+    assert offenders == [], offenders

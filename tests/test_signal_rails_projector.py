@@ -424,48 +424,6 @@ def test_release_requires_an_open_matching_epoch_and_exact_payload() -> None:
     "events",
     [
         [
-            _attributable(
-                ExecutionEventType.SIGNAL_QUARANTINED,
-                producer_id="producer-a",
-                sequence=1,
-                cycle_budget_limit=1001,
-                quarantine_reason="validation",
-            )
-        ],
-        [
-            _rate_opener(
-                producer_id="producer-a",
-                sequence=1,
-                epoch_sequence=1,
-            ).model_copy(
-                update={
-                    "payload": {
-                        **_rate_opener(
-                            producer_id="producer-a",
-                            sequence=1,
-                            epoch_sequence=1,
-                        ).payload,
-                        "bucket_capacity": 101,
-                    }
-                }
-            )
-        ],
-        [
-            _rate_opener(
-                producer_id="producer-a",
-                sequence=1,
-                epoch_sequence=1,
-            ),
-            _release(producer_id="producer-a", sequence=2).model_copy(
-                update={
-                    "payload": {
-                        **_release(producer_id="producer-a", sequence=2).payload,
-                        "rejected_count": 10_001,
-                    }
-                }
-            ),
-        ],
-        [
             _rate_opener(
                 producer_id="producer-a",
                 sequence=1,
@@ -482,9 +440,67 @@ def test_release_requires_an_open_matching_epoch_and_exact_payload() -> None:
         ],
     ],
 )
-def test_projector_rejects_values_above_ratified_caps(events) -> None:
+def test_projector_rejects_malformed_payload_values(events) -> None:
+    # WO-0140 D-R R-5 (authorized edit 2): the three above-cap cases moved to
+    # write-time builder pins below — the fold is read-structural now and a
+    # logged above-cap value FOLDS (see test_signal_rails_remediation.py).
+    # Payload HYGIENE (whitespace actor) remains a read-side rejection.
     with pytest.raises(ProjectionError):
         project_producer_rails(events)
+
+
+def test_builders_reject_values_above_ratified_caps() -> None:
+    """WO-0140 D-R R-5: the caps bind at WRITE time — same three values the
+    read-side pins used to hold, same RED expectations, new home."""
+
+    from datetime import datetime, timezone
+
+    from app.store.core import (
+        plan_signal_ingest,
+        producer_quarantined_event,
+        producer_released_event,
+    )
+
+    now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+    with pytest.raises(ValueError):
+        producer_quarantined_event(
+            producer_id="producer-a",
+            breach_trigger="rate_breach",
+            epoch_start=now,
+            epoch_sequence=1,
+            bucket_capacity=101,
+        )
+    with pytest.raises(ValueError):
+        producer_released_event(
+            producer_id="producer-a",
+            actor="operator",
+            rejected_count=10_001,
+            epoch_start=now,
+            released_at=now,
+            epoch_sequence=1,
+        )
+    with pytest.raises(ValueError):
+        plan_signal_ingest(
+            existing=None,
+            producer_id="producer-a",
+            signal_id="sig-1",
+            symbol="AAPL",
+            direction="buy",
+            issued_at=now,
+            ttl_seconds=300,
+            suggested_quantity=1,
+            suggested_limit_price=None,
+            thesis="t",
+            provenance={"src": "test"},
+            payload_hash="h",
+            canonical_proposal={},
+            validation_failed=False,
+            raw_fields=None,
+            received_at=now,
+            server_max_ttl_seconds=3600,
+            cycle_budget_limit=1001,
+            producer_rail=None,
+        )
 
 
 def test_project_read_models_registers_and_compares_producer_rails() -> None:

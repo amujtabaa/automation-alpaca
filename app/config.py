@@ -15,6 +15,10 @@ from __future__ import annotations
 import json
 import math
 import os
+
+from app.models import (
+    SIGNAL_INVALID_BUDGET_HARD_CAP as _SIGNAL_INVALID_BUDGET_HARD_CAP,
+)
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -44,7 +48,8 @@ DEFAULT_SIGNAL_SERVER_MAX_TTL_SECONDS = 3600
 # ADR-009 A-4 hard cap on the non-refilling per-producer invalid/conflict
 # budget: [1, 1000], startup fails outside.
 DEFAULT_SIGNAL_INVALID_BUDGET_PER_EPOCH = 50
-SIGNAL_INVALID_BUDGET_HARD_CAP = 1000
+SIGNAL_INVALID_BUDGET_HARD_CAP = _SIGNAL_INVALID_BUDGET_HARD_CAP
+
 # Valid transport policies (ADR-009 A-1). Both keep the backend listener
 # proxy-private; the difference is only how external exposure is fronted.
 SIGNAL_TRANSPORT_POLICIES = frozenset({"loopback", "tailnet_serve"})

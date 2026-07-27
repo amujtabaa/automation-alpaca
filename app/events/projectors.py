@@ -29,6 +29,8 @@ from datetime import datetime
 from typing import Iterable, Literal
 
 from app.models import (
+    SIGNAL_EXPIRY_DETECTORS,
+    SIGNAL_QUARANTINE_REASONS,
     ExecutionEvent,
     ExecutionEventType,
     EnvelopeStatus,
@@ -910,33 +912,10 @@ _PRODUCER_RAIL_SIGNAL_EVENT_TYPES = frozenset(
     }
 )
 
-_PRODUCER_CYCLE_BUDGET_MAX = 1000
+# WO-0140 D-R R-5: read-structural. The fold judges logged values against
+# structural bounds only; the ratified caps bind at write time (builders and
+# validate_producer_rate_inputs). Vocabulary sets ARE log truth and stay.
 _SQLITE_MAX_SIGNED_INT = 2**63 - 1
-
-
-def _producer_rail_contract() -> tuple[frozenset[str], frozenset[str], int, int]:
-    """Load single-source rail vocabulary/caps without a package import cycle.
-
-    Importing ``app.store.core`` while this module loads executes the eager
-    ``app.store`` package initializer, which imports the memory store and this
-    module again. Projection runs only after module loading, so a lazy import
-    preserves standalone projector imports while keeping the ratified public
-    constants single-sourced.
-    """
-
-    from app.store.core import (
-        SIGNAL_EXPIRY_DETECTORS,
-        SIGNAL_QUARANTINE_REASONS,
-        SIGNAL_RATE_BURST_MAX,
-        SIGNAL_REJECTED_COUNT_MAX,
-    )
-
-    return (
-        SIGNAL_QUARANTINE_REASONS,
-        SIGNAL_EXPIRY_DETECTORS,
-        SIGNAL_RATE_BURST_MAX,
-        SIGNAL_REJECTED_COUNT_MAX,
-    )
 
 
 _PRODUCER_QUARANTINE_COMMON_FIELDS = frozenset(
@@ -1090,7 +1069,10 @@ def _require_exact_payload_fields(
 
 def _is_attributable_signal_event(event: ExecutionEvent) -> bool:
     payload = event.payload
-    quarantine_reasons, expiry_detectors, _, _ = _producer_rail_contract()
+    quarantine_reasons, expiry_detectors = (
+        SIGNAL_QUARANTINE_REASONS,
+        SIGNAL_EXPIRY_DETECTORS,
+    )
     if event.event_type is ExecutionEventType.SIGNAL_QUARANTINED:
         reason = _required_str(payload, "quarantine_reason", event=event)
         if reason == "producer_sweep":
@@ -1126,7 +1108,7 @@ def _apply_attributable_signal_event(
         "cycle_budget_limit",
         event=event,
         minimum=1,
-        maximum=_PRODUCER_CYCLE_BUDGET_MAX,
+        maximum=_SQLITE_MAX_SIGNED_INT,
     )
     pinned_limit = current.cycle_budget_limit
     if pinned_limit is None:
@@ -1151,7 +1133,6 @@ def _apply_attributable_signal_event(
 def _apply_producer_quarantined(
     current: ProducerRailProjection, event: ExecutionEvent
 ) -> ProducerRailProjection:
-    _, _, rate_burst_max, _ = _producer_rail_contract()
     payload = event.payload
     trigger = payload.get("breach_trigger")
     if trigger == "budget_exhausted":
@@ -1198,14 +1179,14 @@ def _apply_producer_quarantined(
             "cycle_budget_consumed",
             event=event,
             minimum=1,
-            maximum=_PRODUCER_CYCLE_BUDGET_MAX,
+            maximum=_SQLITE_MAX_SIGNED_INT,
         )
         limit = _required_int(
             payload,
             "cycle_budget_limit",
             event=event,
             minimum=1,
-            maximum=_PRODUCER_CYCLE_BUDGET_MAX,
+            maximum=_SQLITE_MAX_SIGNED_INT,
         )
         if (
             consumed != limit
@@ -1222,7 +1203,7 @@ def _apply_producer_quarantined(
             "bucket_capacity",
             event=event,
             minimum=1,
-            maximum=rate_burst_max,
+            maximum=_SQLITE_MAX_SIGNED_INT,
         )
 
     return replace(
@@ -1271,7 +1252,6 @@ def sequence_from_release_dedupe_key(dedupe_key: str) -> int:
 def _apply_producer_released(
     current: ProducerRailProjection, event: ExecutionEvent
 ) -> ProducerRailProjection:
-    _, _, _, rejected_count_max = _producer_rail_contract()
     _require_exact_payload_fields(event, _PRODUCER_RELEASE_FIELDS)
 
     actor = _required_str(event.payload, "actor", event=event)
@@ -1284,7 +1264,7 @@ def _apply_producer_released(
         "rejected_count",
         event=event,
         minimum=0,
-        maximum=rejected_count_max,
+        maximum=_SQLITE_MAX_SIGNED_INT,
     )
     epoch_start = _required_aware_datetime(
         event.payload,

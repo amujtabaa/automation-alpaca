@@ -555,6 +555,32 @@ class EventAuthority(str, Enum):
 # change to ``ExecutionEvent``'s persisted shape.
 EXECUTION_EVENT_SCHEMA_VERSION = 1
 
+# --------------------------------------------------------------------------- #
+# Signal Seat ratified rail constants (WO-0104a D-R6a-16.0, operator-ratified
+# 2026-07-26; relocated here by WO-0140 D-R R-5). ``app.models`` is the leaf
+# layer, so every consumer — store validation, config validation (R6b), the
+# projectors — imports these eagerly from ONE source with no package cycle.
+#
+# STANDING RULE (WO-0140, pkl/architecture/signal-seat.md): these caps bind at
+# WRITE time only. The fold and the row validator judge logged/durable values
+# STRUCTURALLY — lowering a ratified cap is a log-truth change, not a config
+# change, and must never retroactively invalidate an append-only log.
+# --------------------------------------------------------------------------- #
+SIGNAL_INVALID_BUDGET_HARD_CAP = 1000
+SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600
+SIGNAL_RATE_BURST_MAX = 100
+SIGNAL_REJECTED_COUNT_MAX = 10_000
+SIGNAL_QUARANTINE_REASONS = frozenset(
+    {
+        "validation",
+        "issued_at_future",
+        "issued_at_stale",
+        "ttl_out_of_range",
+        "producer_sweep",
+    }
+)
+SIGNAL_EXPIRY_DETECTORS = frozenset({"ingest", "sweep", "conversion"})
+
 # A broker acceptance whose recovery-ledger write fails is retained as
 # UNKNOWN_RECONCILE_REQUIRED execution truth with this reason, regardless of
 # whether its best-effort ordinary audit write succeeded. Both stores treat an

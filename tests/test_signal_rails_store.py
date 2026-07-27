@@ -923,7 +923,8 @@ async def test_sqlite_producer_rail_rows_fail_closed(tmp_path, mutation) -> None
             ),
             "closed_residue": (f"quarantine_epoch_started_at='{NOW.isoformat()}'"),
             "partial_bucket": "rate_refill_anchor=NULL",
-            "overflow_bucket": "rate_tokens=101.0",
+            # structural overflow (> 2**63-1); cap judgment moved write-side (WO-0140 R-5)
+            "overflow_bucket": "rate_tokens=1.0e19",
             "naive_anchor": "rate_refill_anchor='2026-07-26T12:00:00'",
         }
         store._conn.execute(
