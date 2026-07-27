@@ -12,8 +12,12 @@ from datetime import datetime, timedelta, timezone
 from hypothesis import assume, given, settings, strategies as st
 
 from app.events.projectors import project_signal_records
+import pytest
+
 from app.models import ExecutionEventType, SignalRecord
+from app.store.base import ProducerRailState
 from app.store.core import (
+    SIGNAL_PRODUCER_QUARANTINED,
     SIGNAL_CONFLICT,
     SIGNAL_EXPIRED_AT_INGEST,
     SIGNAL_INGEST_OUTCOMES,
@@ -45,6 +49,7 @@ def _plan(
     validation_failed: bool = False,
     raw_fields: dict[str, str] | None = None,
     server_max_ttl_seconds: int = SERVER_MAX_TTL,
+    producer_rail=None,
 ):
     canonical = build_signal_proposal_payload(
         signal_id=signal_id,
@@ -77,7 +82,7 @@ def _plan(
         received_at=NOW,
         server_max_ttl_seconds=server_max_ttl_seconds,
         cycle_budget_limit=CYCLE_BUDGET,
-        producer_rail=None,
+        producer_rail=producer_rail,
     )
 
 
@@ -306,3 +311,38 @@ def test_safety_payload_fields_reach_the_signal_projector() -> None:
     assert payload["cycle_budget_limit"] == CYCLE_BUDGET
     projected = project_signal_records([plan.event])
     assert projected[("producer", "signal")] == plan.result_record
+
+
+@pytest.mark.parametrize(
+    ("rail", "reason"),
+    [
+        (
+            ProducerRailState(
+                producer_id="producer",
+                quarantine_epoch_open=True,
+                quarantine_epoch_sequence=1,
+                quarantine_epoch_started_at=NOW,
+                quarantine_breach_trigger="rate_breach",
+            ),
+            "open epoch",
+        ),
+        (
+            ProducerRailState(
+                producer_id="producer",
+                cycle_budget_limit=CYCLE_BUDGET,
+                cycle_budget_consumed=CYCLE_BUDGET,
+            ),
+            "at-limit (wedge)",
+        ),
+    ],
+)
+def test_gate_rejects_open_epoch_and_at_limit_rails(rail, reason) -> None:
+    """WO-0140 R-12: the property corpus exercises the NON-zero rail states —
+    the gate is `epoch_open OR consumed >= limit`, and both disjuncts must
+    reject record-free with no event and no debit."""
+
+    plan = _plan(validation_failed=True, producer_rail=rail)
+    assert plan.outcome == SIGNAL_PRODUCER_QUARANTINED, reason
+    assert plan.result_record is None
+    assert plan.event is None
+    assert plan.epoch_event is None

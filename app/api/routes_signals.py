@@ -198,7 +198,9 @@ def _validation_raw_fields(exc: ValidationError) -> dict[str, str]:
 
 
 def _record_response(result: SignalIngestResult) -> JSONResponse:
-    if result.record is None:
+    # WO-0140 R-10: keyed on the OUTCOME — a future record-free outcome must
+    # not silently inherit the quarantine label.
+    if result.outcome is SignalIngestOutcome.PRODUCER_QUARANTINED:
         return JSONResponse(
             status_code=_OUTCOME_STATUS[result.outcome],
             content={

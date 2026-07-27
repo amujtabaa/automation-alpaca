@@ -243,8 +243,16 @@ def test_signal_transition_builder_rejects_nontransition_or_snapshot_fields(
 
 
 def test_store_layer_does_not_import_the_facade() -> None:
+    # WO-0140 R-8: this grep is the ONLY enforcement of the store->facade
+    # boundary (lint-imports has app.store as a source module in no contract),
+    # so it must be CWD-independent and provably non-vacuous.
+    import app.store
+
+    store_dir = Path(app.store.__file__).resolve().parent
+    scanned = list(store_dir.rglob("*.py"))
+    assert len(scanned) >= 4, "vacuous scan — store package not found"
     offenders = []
-    for path in Path("app/store").rglob("*.py"):
+    for path in scanned:
         source = path.read_text(encoding="utf-8")
         if "from app.facade" in source or "import app.facade" in source:
             offenders.append(str(path))

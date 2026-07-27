@@ -25,11 +25,22 @@
 | 3 | Bounded fold (release-exclusive, state-conditional seed) + O(1) anchor + incremental debit | **VERIFIED** — scaling pin RED→GREEN both stores; both stale-cache pins re-pinned loud fail-closed (authorized edit 1); anchor closure: seq 0 after a release boundary is refused; 177-test corpus green |
 | 4 | Three-state release + zero-width/no-epoch rules + never-regress carrier | **VERIFIED** — 13 remediation pins green; 4 decisive mutants RED→GREEN (flat-seed, widened acceptance, heal removal, key-blind floor); 182-test corpus green |
 | 5 | Constants → models.py; read-structural/write-capped (fold + row validator); cap-pin re-home | **VERIFIED** — 3 pins RED→GREEN; both mutants RED (cap-bound restored; literal re-declared); lazy loader deleted; 183-test corpus green |
-| 6 | R-8..R-12 mechanical; stale-cache pin re-pin (authorized list) | pending |
+| 6 | R-8..R-12 mechanical | **VERIFIED** — R-8 module-anchored + non-vacuous; R-9 mutant (lens A's M5, the one nothing caught) now RED on TWO pins; R-10 outcome-keyed; R-11 read-only-property Protocol, getattr gone, mypy green; R-12 property slice over open-epoch + at-limit rails |
 | 7 | Mutation-check sweep (every decisive pin RED→GREEN) + full gate battery | pending |
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | pending |
 
 ## Evidence log
+
+- 2026-07-27 (slice 6): R-8 — the store→facade pin anchors to `Path(app.store.__file__).parent`
+  with a >= 4-file non-vacuous assertion (it is the ONLY enforcement of that boundary). R-9 — the
+  `consumed >= limit` disjunct is now held by two independent pins (the slice-4 wedge integration
+  pin and the new R-12 at-limit property case); the exact lens-A M5 mutant that previously left the
+  corpus green goes RED on both (first mutant attempt used a self-defeating regex and ran against
+  unmutated code — discarded as non-evidence, redone with a plain replace). R-10 —
+  `_record_response` keys on `SignalIngestOutcome.PRODUCER_QUARANTINED`. R-11 — the upsert takes a
+  read-only-property Protocol; the seven `getattr` string lookups are typed attribute access; mypy
+  green. R-12 — `_plan()` gains a rail parameter (default None, zero corpus churn) and a
+  parametrised slice over the two non-zero rail states.
 
 - 2026-07-27 (slice 5): the four ratified caps + two vocabulary sets single-sourced in
   `app/models.py` (the leaf — every consumer imports eagerly; the lazy loader and its per-event

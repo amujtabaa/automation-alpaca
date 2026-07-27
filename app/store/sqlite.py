@@ -37,7 +37,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional, Protocol
 
 from app.models import (
     RECOVERY_NEEDS_REVIEW,
@@ -542,6 +542,31 @@ def _dt(value: Optional[datetime]) -> Optional[str]:
 
 def _bit(value: bool) -> int:
     return 1 if value else 0
+
+
+class _ClassARailFields(Protocol):
+    """The six log-derived class-(A) columns a rail upsert co-writes.
+
+    WO-0140 R-11: `_upsert_producer_log_rail` used to take ``object`` and read
+    seven columns via ``getattr`` string lookups — mypy-invisible. Both real
+    callers (:class:`ProducerRailState`, ``ProducerRailProjection``) satisfy
+    this structurally.
+    """
+
+    @property
+    def producer_id(self) -> str: ...
+    @property
+    def cycle_budget_limit(self) -> Optional[int]: ...
+    @property
+    def cycle_budget_consumed(self) -> int: ...
+    @property
+    def quarantine_epoch_open(self) -> bool: ...
+    @property
+    def quarantine_epoch_sequence(self) -> int: ...
+    @property
+    def quarantine_epoch_started_at(self) -> Optional[datetime]: ...
+    @property
+    def quarantine_breach_trigger(self) -> Optional[str]: ...
 
 
 class SqliteStateStore(StateStore):
@@ -1702,7 +1727,9 @@ class SqliteStateStore(StateStore):
         return floor
 
     @staticmethod
-    def _upsert_producer_log_rail(cur: sqlite3.Cursor, rail: object) -> None:
+    def _upsert_producer_log_rail(
+        cur: sqlite3.Cursor, rail: "_ClassARailFields"
+    ) -> None:
         cur.execute(
             """INSERT INTO signal_producer_rails
                (producer_id, cycle_budget_limit, cycle_budget_consumed,
@@ -1718,13 +1745,13 @@ class SqliteStateStore(StateStore):
                  quarantine_epoch_started_at=excluded.quarantine_epoch_started_at,
                  quarantine_breach_trigger=excluded.quarantine_breach_trigger""",
             (
-                getattr(rail, "producer_id"),
-                getattr(rail, "cycle_budget_limit"),
-                getattr(rail, "cycle_budget_consumed"),
-                _bit(getattr(rail, "quarantine_epoch_open")),
-                getattr(rail, "quarantine_epoch_sequence"),
-                _dt(getattr(rail, "quarantine_epoch_started_at")),
-                getattr(rail, "quarantine_breach_trigger"),
+                rail.producer_id,
+                rail.cycle_budget_limit,
+                rail.cycle_budget_consumed,
+                _bit(rail.quarantine_epoch_open),
+                rail.quarantine_epoch_sequence,
+                _dt(rail.quarantine_epoch_started_at),
+                rail.quarantine_breach_trigger,
                 None,
                 None,
             ),
