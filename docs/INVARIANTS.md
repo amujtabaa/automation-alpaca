@@ -750,7 +750,9 @@ divergence tripwire. A divergence event now ALWAYS merits investigation.
 *Pinned by:* `tests/test_wo0019_engine_seam.py`
 (`test_write_time_rejection_freezes_with_divergence_event`,
 `test_divergence_makes_zero_venue_calls`,
-`test_structural_disagreement_is_also_divergence`).
+`test_structural_disagreement_is_a_stale_refusal` — asserts the WO-0029A
+amended behavior above: structural disagreement is a benign stale refusal,
+not a divergence; citation repaired 2026-07-28 per AUDIT-0003 wave-2 census).
 
 **INV-083 — Envelope budget accounting is atomic with the order it pays for,
 and a quarantined leg pauses the envelope.** The ENVELOPE_ACTION event (the
@@ -848,7 +850,8 @@ no outgoing edge to BREACHED).
 `test_frozen_exact_fill_still_completes_on_resume`) +
 `tests/test_wo0016_envelope_transitions.py` (ADR-mirror table) +
 `tests/test_wo0034_eventlog_fidelity.py`
-(`test_late_fill_on_terminal_envelope_is_recorded_not_breached`).
+(`test_spec0_late_fill_on_terminal_envelope_is_recorded_not_breached`;
+citation repaired 2026-07-28 — the pin was cited under its pre-rename name).
 
 **INV-086 — The working stop is monotone over the ENVELOPE LIFETIME, and only
 validated data ever drives it.** Three mechanisms, all in the pure policy:
