@@ -11,6 +11,7 @@ exists. An empty ledger passes.
 Usage:
   python scripts/check_ledger.py
 """
+
 from __future__ import annotations
 import json
 import re
@@ -48,7 +49,9 @@ def validate_ledger(root: Path) -> list[str]:
                 problems.append(f"line {i}: missing required field {key!r}")
         status = entry.get("status")
         if status and statuses and status not in statuses:
-            problems.append(f"line {i}: status {status!r} not in rules/ai-os-rules.yaml vocabulary")
+            problems.append(
+                f"line {i}: status {status!r} not in rules/ai-os-rules.yaml vocabulary"
+            )
         disposition = entry.get("disposition")
         if disposition is not None:
             if not isinstance(disposition, list):
@@ -56,10 +59,20 @@ def validate_ledger(root: Path) -> list[str]:
             else:
                 for d in disposition:
                     if dispositions and d not in dispositions:
-                        problems.append(f"line {i}: disposition {d!r} not in rules/ai-os-rules.yaml vocabulary")
+                        problems.append(
+                            f"line {i}: disposition {d!r} not in rules/ai-os-rules.yaml vocabulary"
+                        )
+        # REV-0045 addendum-03 P1-6: both the format check and the commit-SHA
+        # ratchet were guarded by `if date`, so a blank or null date bypassed
+        # BOTH — a new row could carry the exact unverifiable commit: "HEAD"
+        # the ratchet exists to stop while CI reported PASSED. The date is
+        # required to be a nonblank YYYY-MM-DD string before anything else.
         date = entry.get("date")
-        if date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(date)):
-            problems.append(f"line {i}: date {date!r} must be YYYY-MM-DD")
+        if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            problems.append(
+                f"line {i}: date {date!r} must be a nonblank YYYY-MM-DD string"
+            )
+            date = None
         # P-6 provenance ratchet (operator-ratified 2026-07-28; AUDIT-0003 S-5):
         # 51 of the first 119 rows recorded "commit": "HEAD", which is
         # unverifiable the moment the branch moves — WO-0116 had to re-prove
@@ -67,7 +80,7 @@ def validate_ledger(root: Path) -> list[str]:
         # debt is grandfathered by date; every row AFTER the cutoff must carry
         # a real abbreviated-or-full hex SHA. Resolution against history is a
         # review-time step (CI checkouts are shallow); format is enforced here.
-        if date and str(date) > _COMMIT_SHA_CUTOFF:
+        if date is not None and date > _COMMIT_SHA_CUTOFF:
             commit = str(entry.get("commit", ""))
             if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
                 problems.append(

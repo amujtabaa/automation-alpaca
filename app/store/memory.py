@@ -4727,6 +4727,8 @@ class InMemoryStateStore(StateStore):
                         and existing_event.order_id == order.id
                         and existing_event.envelope_id == envelope_id
                         and all(
+                            # derived-truth-gate: dynamic-key-ok: idempotency comparison over a
+                            # caller-supplied expected-field map; never a sequence derivation.
                             existing_event.payload.get(k) == v
                             for k, v in payload.items()
                         )

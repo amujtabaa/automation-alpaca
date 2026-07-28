@@ -44,25 +44,14 @@ jobs:
         run: |
           set +e
           mutmut run
-          run_exit=$?
+          echo "mutmut run exit: $?"
           set -e
-          # mutmut exits nonzero when survivors exist — that is a REPORT, not
-          # an error. Distinguish it from a tool failure via the results call.
-          if ! mutmut results > results.txt 2>&1; then
-            echo "::error::TOOL_ERROR — mutmut produced no readable results (run exit $run_exit)"
-            exit 1
-          fi
-          generated=$(grep -cE "^[a-zA-Z_]" results.txt || true)
-          if [ "$generated" -eq 0 ]; then
-            echo "::error::NO_MUTANTS — empty mutant population; scope or config is broken"
-            exit 1
-          fi
-          echo "run state: COMPLETE (generated lines: $generated, run exit: $run_exit)"
-      - name: Enforce the ratchet (sentinel until baseline)
-        run: |
-          survivors=$(grep -c "survived" results.txt || true)
-          echo "surviving mutants: $survivors (max: $MAX_SURVIVORS)"
-          if [ "$survivors" -gt "$MAX_SURVIVORS" ]; then
-            echo "::error::mutation ratchet regressed: $survivors survivors > $MAX_SURVIVORS"
-            exit 1
-          fi
+          # --all is REQUIRED: without it mutmut suppresses killed results, so
+          # a fully-killed run looks identical to an empty population.
+          mutmut results --all > results.txt 2>&1 || true
+          head -20 results.txt
+      - name: Classify the run and enforce the ratchet
+        # Parsing lives in a committed, unit-tested script (P1-5): the previous
+        # inline grep could not match mutmut 3.6.0's indented output, so the
+        # job was permanently NO_MUTANTS and the ratchet was unreachable.
+        run: python .ai-os/scripts/check_mutation_run.py results.txt --max-survivors "$MAX_SURVIVORS"
