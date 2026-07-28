@@ -9,7 +9,7 @@
 | `external-assumption-register.md` | **Deliverable 2** — 30 XA rows + the machine-join design that keeps it from rotting |
 | `phase-gate-ADRs.md` | **Deliverable 3** — ADR-016…019 drafts in evidence-ratchet form |
 | `sequencing-proposal.md` | **Deliverable 4** — one ordered plan, reconciled with the standing queue |
-| `M4b-refutation.md` | Protocol §M4b — fresh-context adversarial pass over the decision block below |
+| `M4b-refutation.md` | Protocol §M4b — adversarial panel over the decision block below. **Read this first: it found two P0s against this packet, including one against its own headline** |
 
 - **Protocol:** `.ai-os/core/18_WARGAME_PROTOCOL.md`, **FULL scope** (M1–M4).
 - **Base:** `14ff12f`, branch `claude/wargame-roadmap-kickoff-2v2tan`.
@@ -19,14 +19,30 @@
 
 ## Headline
 
-The seven seed hazards are all real, but **five of the seven seed *controls* are themselves instances of
-the defect classes they claim to cure** — and the two highest-value controls found anywhere in this
-war-game are a one-line `.importlinter` edit and a one-line `pyproject.toml` edit, each converting an
-already-written but currently inert check into a build failure.
+*(Corrected after M4b — see `M4b-refutation.md`. The original headline overstated two of its three
+claims and both corrections are recorded rather than quietly removed.)*
 
-Three live fail-open paths were found and verified in passing: a duplicate-order path
-(`app/broker/alpaca_paper.py:741-743` vs `:804-808`), a stranded-position path (`:1171-1172`), and an
-unguarded route to whole-process lock starvation (`.importlinter:70-81` omitting `app.store`).
+The seven seed hazards are all real, but **several seed *controls* are themselves instances of the
+defect classes they claim to cure** — specifically: the tape-recorder extension (inverts the recorder's
+own isolation spec), the assumption register as a table (the prose form already died once in REV-0011),
+the INV registry tier (structurally blind to the missing row its own title names first), the
+runbook-script class (would manufacture a second recovery implementation), and the control manifest
+(would certify roughly half its census wrongly today).
+
+**Two live fail-open paths** were found and verified, both in the broker adapter:
+
+1. **Duplicate-order path** — `app/broker/alpaca_paper.py:741-743` vs `:804-808`: 422 matches *both* the
+   duplicate branch and the terminal branch, disambiguated only by a substring test against Alpaca's
+   error prose. A duplicate rejection worded differently classifies a live venue order as
+   never-submitted. *(Attacked in M4b and held — the packet's highest-yield concrete finding.)*
+2. **Stranded-position path** — `:1171-1172` → `app/monitoring.py:2937-2946`: a 404 is read as "never
+   landed"; an aged-out filled order resolves to `REJECTED`, stranding real shares with no protective
+   sell.
+
+A third claimed path — that `.importlinter:70-81` omitting `app.store` leaves lock-starvation unguarded
+— **was refuted by M4b (F1) and is withdrawn.** Contract 3 forbids only *concrete* adapters; the
+abstract port is deliberately permitted, so the proposed edit could not have enforced INV-052. Only the
+AST check can, and it is M-cost, not a one-line edit.
 
 ## Decision block — M1 assumption ledger
 
@@ -52,13 +68,24 @@ resolution.
 | D-WG-12 | **D-1…D-5 are operator decisions the planning seat cannot resolve**, and three of them gate later waves | `TRACED` for D-1/D-2/D-3/D-5 (each anchored in the register) |
 | **D-WG-13** | **"WO-A/B/C kernel program" and "WO-E permits" — the kickoff's own named queue items — have no content anywhere in the repo.** Wave 3 is scoped from hazard analysis, not from these names, and may be wrong about their intent | **`ASSUMED` → NOT PRE-CHECKED. Converted to named operator gate D-4.** Per the governing principle, the planning seat declines to reconstruct them by inference |
 
+### M4b status
+
+The panel returned **three surviving findings — two P0** — against this block. All three are resolved
+per protocol §M4b (two `TRACED` fixes, one named gate) and the amendments are applied above and in the
+deliverables. **The block is ratifiable as amended.** Two of the P0s attacked this packet's own headline
+and its ADR gate text; both corrections are recorded in place rather than silently removed. Read
+`M4b-refutation.md` before ratifying.
+
 ### Ratification boxes (operator)
 
 - [ ] **P-0** — amend `pkl/project/goals.md` + CLAUDE.md safety core to admit a live-capital destination
-- [ ] **Wave 0** (W0.1–W0.6) authorized to run now, in parallel with the critical path
+- [ ] **Wave 0 as amended** (W0.1a, W0.1b, W0.3–W0.6) authorized to run now, in parallel with the
+      critical path. **W0.2 is excluded pending its named gate** (a pasted `pytest .ai-os/scripts/tests/`
+      run under the root config — M4b F3)
 - [ ] **D-1** live-paper probe: permitted / not permitted
 - [ ] **D-2** calendar source: `GetCalendarRequest` / committed static table
-- [ ] **D-3** max-daily-loss: beta requirement / pre-live requirement
+- [ ] **D-3** **account-level** daily-loss ceiling: beta requirement / pre-live requirement — *note the
+      M4b F2 correction: a per-position 8% stop-loss already exists and is on by default*
 - [ ] **D-4** clarify "WO-A/B/C kernel program" and "WO-E permits" *(blocks Wave 3 scoping)*
 - [ ] **D-5** ADR-019: one ADR for two transitions / split
 - [ ] Hazard rows 8–13 admitted

@@ -29,11 +29,17 @@ surface.
 
 ## The one-sentence version
 
-**The seed map's seven rows are all real hazards, but five of the seven seed *controls* are
-themselves instances of the defect classes they claim to cure** — and the two cheapest, highest-yield
-controls found in this war-game are not on the map at all: a one-line `.importlinter` edit and a
-one-line `pyproject.toml` edit, each of which converts an already-written but currently inert control
-into a failure-capable gate.
+**The seed map's seven rows are all real hazards, but several of the seed *controls* are themselves
+instances of the defect classes they claim to cure** — named individually in the README headline rather
+than asserted as a count (the count was refuted in M4b). The cheapest high-yield controls found are not
+on the map at all: closing two fail-open branches in the broker adapter, adding one missing
+`@invariant()` to a state machine that already generates the fault composition, and dedu&#8203;ping an audit
+event on `(order_id, reason)`.
+
+> **M4b correction.** An earlier version of this line claimed the two highest-value controls were a
+> one-line `.importlinter` edit and a one-line `pyproject.toml` edit. The first could not have enforced
+> the invariant it was sold as closing (F1); the second is unpriced pending a spike (F3). See
+> `M4b-refutation.md`.
 
 ## Pricing schema
 
@@ -509,11 +515,25 @@ local-process round trip under artificial conditions.
 **The hazard is real and materially worse than the row states: two of its three named invariants do
 not exist, and the seed control is structurally incapable of detecting a missing row.**
 
-- **Max daily loss does not exist.** `daily_loss`, `max_daily`, `drawdown`, `daily_pnl` return **zero
-  hits across `app/`**. The complete capital-limit inventory is three knobs:
-  `capi_max_shares_per_order`, `capi_max_notional_per_order`, `capi_max_total_exposure`
-  (`app/config.py:287-289`). **There is no P&L-based control anywhere in the system.** The platform
-  can lose an unbounded amount within its exposure ceiling. Verified.
+- **No *account-level daily-loss or drawdown* control exists.** `daily_loss`, `max_daily`, `drawdown`,
+  `daily_pnl` return zero hits across `app/` — but note that is an **account-level-daily search only**,
+  and the conclusion originally drawn from it was wrong.
+  > **CORRECTED after M4b F2 — the original text claimed "there is no P&L-based control anywhere in the
+  > system." That is false.** `app/protection.py` is an always-on **per-position hard stop-loss**:
+  > `stop_loss_pct: float = 0.08` (`:48`), `floor_price = average_price * (1.0 - stop_loss_pct)`
+  > (`:66-70`), producing a full-exit `FloorBreach`. It ships enabled by default —
+  > `protection_enabled: bool = True` (`app/config.py:295`) under the comment *"On by default: a beta
+  > operator shouldn't have to opt in to a stop-loss"* (`:293`). Unrealized loss measured against
+  > average cost and enforced by an order is a P&L-based control by any ordinary reading.
+- **The capital-limit inventory is six knobs, not three:** `capi_max_shares_per_order`,
+  `capi_max_notional_per_order`, `capi_max_total_exposure`, `capi_trading_allowlist`
+  (`app/config.py:286-290`), plus `protection_stop_loss_pct` and `protection_limit_buffer_pct`
+  (`:297,:300`). Row 5's coverage checker and ADR-017 gate E6 are scoped against this corrected set.
+- **What remains true, and is the real finding:** there is no *account-level* loss ceiling. Per-position
+  loss is floored at ~8% **except through the floor's own failure modes** — gap-through, a halted book,
+  and no evaluation at all on a stale feed (XA-13/XA-14) — none of which this row originally named. So
+  the platform's aggregate loss is bounded only by the exposure ceiling times the number of positions,
+  and the per-position floor is only as good as the market-data path that feeds it.
 - **Position limits have no invariant.** The registry's 55 entries contain no row asserting "an order
   exceeding `capi_max_total_exposure` is refused." The limit is enforced in code
   (`app/facade/store_backed.py:855-866` pre-check, authoritative in the planner) but is not an
@@ -607,9 +627,13 @@ seventh consumer under the same universal claim. **P-14 as written would not cat
   requirement.** This is the fork the row turns on and the seed map does not ask it. Pre-live → the
   sentinel row suffices now and the control lands with the phase-gate ADR. Beta → WO-2 grows a real
   P&L subsystem and the cost becomes L.
-- `verdict:` **RE-CUT** into three artifacts. **(i) RATIFY-NOW** — `app.store` into Contract 3 + the
-  INV-052 AST checker + negative fixture: the cheapest failure-capable control found anywhere in this
-  war-game, closing a hole one edit from N5's outcome. **(ii) RATIFY-NOW** — bidirectional capital-limit
+- `verdict:` **RE-CUT** into three artifacts. **(i) RATIFY-NOW, but split and re-priced after M4b F1** —
+  the INV-052 **AST checker + committed negative fixture** carries the entire invariant claim and is
+  **M-cost, not S**. Adding `app.store` to `.importlinter` Contract 3 is a *separate, marginal*
+  direct-edge guard against `app.store.* → app.broker.{alpaca_paper,mock,sim}` and is **explicitly not an
+  INV-052 control**: Contract 3 forbids only concrete adapters, deliberately permitting the abstract port
+  (`.importlinter:61-64, 82-88`), and import-linter has no concept of a call site, an `await`, or a lock
+  context. **(ii) RATIFY-NOW** — bidirectional capital-limit
   ↔ INV coverage with `NO-CONTROL` sentinels: its first run converts "we forgot max daily loss" from an
   omission into a tracked fact. **(iii) RATIFY-AFTER(a lane registry exists)** — the P-14 quantifier
   upgrade: a universal-claim INV must enumerate its lanes and name a pin per lane. That lane registry is

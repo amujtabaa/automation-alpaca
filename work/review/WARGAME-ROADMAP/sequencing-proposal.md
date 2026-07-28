@@ -24,8 +24,13 @@ The principle that replaces it, and that orders everything below:
 > quarter and produces a document. Order by *(defects structurally prevented) ÷ (cost)*, and treat any
 > control that cannot fail as costing infinity.
 
-Under that principle the two highest-ranked items in the entire roadmap are a one-line
-`.importlinter` edit and a one-line `pyproject.toml` edit.
+> **M4b correction (F1/F3).** This section originally claimed the two highest-ranked items were a
+> one-line `.importlinter` edit and a one-line `pyproject.toml` edit. **Both halves were wrong.** The
+> linter edit cannot express the invariant it was sold as closing; the pytest edit is unpriced pending a
+> spike. The principle stands — the worked example does not. The highest-ranked items under it are
+> **W0.3** (two fail-open branches, capital-critical, no venue access needed), **W0.6** (one missing
+> `@invariant()` on a generator that already produces the fault composition) and **W0.4** (an audit
+> dedupe whose absence is only discovered after it is needed).
 
 ## 2. Wave 0 — free wins (no prerequisites, all S-cost, all failure-capable)
 
@@ -35,17 +40,28 @@ mediocre run cannot skip.
 
 | id | Work | Why first | Anchor |
 |---|---|---|---|
-| **W0.1** | Add `app.store` to `.importlinter` Contract 3; add the INV-052 no-`await`-on-adapter-under-lock AST check + committed negative fixture | Contract 3's `source_modules` omits `app.store`, so nothing prevents a broker call under the store lock — the M4a N5 outcome is one careless edit away and every control that should stop it is inert. `lint-imports` is already a CI step | `.importlinter:70-81`; `docs/INVARIANTS.md:420-422` |
-| **W0.2** | Set pytest to collect `.ai-os/scripts/tests/`; wire `check_fable_done.py`, `check_work_order_scope.py`, `check_mcp_spec.py` into CI | ~30 committed red/green pairs proving six checkers can fail are excluded from every pytest invocation in the repo. The control plane's own S-3 | `pyproject.toml:5`; `.github/workflows/ci.yml` |
+| **W0.1b** | The INV-052 AST check — no `await` on an adapter-typed call inside a lock-held region — plus a committed negative fixture. **Cost M, not S** | INV-052 is "*Pinned by:* structural", i.e. unenforced. This is the **only** artifact that can enforce it: import-linter has no concept of a call site, an `await`, or a lock context | `docs/INVARIANTS.md:414-422` |
+| **W0.1a** | *(separate, marginal)* Add `app.store` to `.importlinter` Contract 3 | **Explicitly NOT an INV-052 control** — see M4b F1. Contract 3 forbids only concrete adapters and deliberately permits the abstract port, and `allow_indirect_imports = True` limits it to direct edges. Residual value: a narrow direct-edge guard against `app.store.* → app.broker.{alpaca_paper,mock,sim}`, an import nobody has written. Defence-in-depth, not closure | `.importlinter:61-64, 69, 82-88` |
+| **W0.2** | Set pytest to collect `.ai-os/scripts/tests/`; wire `check_fable_done.py`, `check_work_order_scope.py`, `check_mcp_spec.py` into CI. **UNPRICED — gated, see below** | ~30 committed red/green pairs proving six checkers can fail are excluded from every pytest invocation in the repo. The control plane's own S-3 | `pyproject.toml:5`; `.github/workflows/ci.yml` |
+
+> **Named gate on W0.2 (M4b F3).** That tree has never run under this repo's root pytest config, and
+> this war-game verified nothing about whether it can. It ships its own `conftest.py` alongside the root
+> one; the root config promotes `ResourceWarning` and `PytestUnraisableExceptionWarning` to session-wide
+> errors (`pyproject.toml:24-27`); and `[tool.ruff] extend-exclude` (`:46`) means `.ai-os/` has never
+> been linted or format-checked here. **W0.2 may not be authorized until one throwaway
+> `pytest .ai-os/scripts/tests/` run under the root config is pasted as evidence**, with the
+> conftest-collision and warnings-promotion outcomes stated. If it is red, W0.2 is remediation work, not
+> a free win.
 | **W0.3** | Close the two fail-open broker branches: the 422 duplicate/terminal collision, and the 404⟹never-landed inference | Both are capital-critical and need no venue access. A duplicate rejection worded without the magic substrings classifies a **live order as never-submitted**; a 404 on an aged-out filled order marks it `REJECTED`, stranding real shares with no protective sell | `app/broker/alpaca_paper.py:741-743` vs `:804-808`; `:1171-1172` → `app/monitoring.py:2937-2946` |
 | **W0.4** | Dedupe `ORDER_SUBMISSION_BLOCKED` on `(order_id, reason)` | An order held for any earlier reason records **no event** when the kill switch later holds it. The event log cannot answer the first question a live incident review asks | `app/monitoring.py:2406-2421`; `app/policy.py:895,929-930` |
 | **W0.5** | Holdout-ownership enforcement: CODEOWNERS on the holdout path + a CI check that an implementation commit does not touch it | AUDIT-0003's S-8 cure ("the implementation seat may not amend the holdout") is currently prose in an audit file — S-4 by that audit's own meta-law. This is a CODEOWNERS line and a five-line check | AUDIT-0003 S-8 §Control |
 | **W0.6** | Add kill-switch `@invariant()`s to the existing `RuleBasedStateMachine` | The generator already has `crash_after_claim`, `divergent_fill_and_reconcile` and `set_kill_switch` as rules; `kill_switch` appears in **none** of its ten invariants. The composition M4a N7 feared is already generatable — only the assertion is missing | `tests/test_lifecycle_state_machine.py:127,256,297,503` |
 
-**Wave 0 is the single highest-value recommendation in this war-game.** It is roughly one session of
-work and it closes: one live fail-open path to duplicate orders, one to stranded positions, one
-unguarded route to whole-process lock starvation, six checkers whose failure-proofs never run, the
-event-log gap that would blind a post-incident review, and the S-8 cure's own missing enforcement.
+**Wave 0 is the single highest-value recommendation in this war-game**, as amended. It closes: one live
+fail-open path to duplicate orders, one to stranded positions, the event-log gap that would blind a
+post-incident review, the missing kill-switch assertion on an existing generator, and the S-8 cure's own
+missing enforcement. **W0.1b is M-cost and W0.2 is gated**, so Wave 0 is no longer "one session of
+work" — that estimate was built on the two rows M4b corrected.
 
 ## 3. Wave 1 — operator decisions (no code, but they gate later waves)
 
@@ -57,7 +73,7 @@ wrong rather than merely delayed.
 | **P-0** | Amend `pkl/project/goals.md` and the CLAUDE.md safety core to admit a live-capital destination | ADR-016…019 | The active goals page says **paper-only** and the safety core says no live trading in beta. The roadmap's terminal state contradicts the repo's highest-authority statement of intent |
 | **D-1** | May any credentialed live-paper probe run in this program? | the XA register's `verified` column; ADR-018 F1 | If no, the column becomes `unverifiable-in-beta` and those rows stay `ASSUMED` permanently. A legitimate answer — but it changes what the beta→shadow gate can honestly claim |
 | **D-2** | Calendar source: `GetCalendarRequest` (a new external call inside the adapter boundary, making a currently pure IO-free layer network-dependent) vs a committed static table with an expiry date | Row 3's generator; ADR-019 G2 | The generator cannot be specified until this lands, and a generator built without it re-certifies the half-day misclassification |
-| **D-3** | Is max-daily-loss a **beta** requirement or a **pre-live** requirement? | Row 5 cost (M vs L); ADR-018 F3 | No P&L control exists anywhere in `app/`. Pre-live ⇒ a `NO-CONTROL` sentinel row suffices now. Beta ⇒ a real P&L subsystem, and Row 5 becomes L |
+| **D-3** | Is an **account-level** daily-loss/drawdown ceiling a **beta** requirement or a **pre-live** requirement? | Row 5 cost (M vs L); ADR-018 F3 | **Corrected after M4b F2 — read the corrected inventory before deciding.** A per-position 8% hard stop-loss **already exists and is on by default** (`app/protection.py:48`, `app/config.py:295`). What is absent is an account-level ceiling. The floor's residuals are gap-through, halted books, and stale-feed non-evaluation. Pre-live ⇒ a sentinel row suffices now. Beta ⇒ an account-level P&L subsystem, and Row 5 becomes L |
 | **D-4** | **What are "WO-A/B/C kernel program" and "WO-E permits"?** | Wave 3 scoping | These appear **only** in the kickoff — nowhere else in the repo. Per the governing principle, the planning seat will not reconstruct their content from inference. Marked `ASSUMED` → **NEEDS-INPUT** |
 | **D-5** | Does `LIVE_CONTROLLED`→`LIVE_PROD` share ADR-019 with `LIVE_MICRO`→`LIVE_CONTROLLED`, or split? | ADR-019 | The ratified ladder has four transitions; the kickoff named three gates |
 
