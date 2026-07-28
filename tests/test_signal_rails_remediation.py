@@ -1152,3 +1152,390 @@ async def test_memory_anchor_check_uses_dedupe_index_not_a_log_scan() -> None:
     cached = ProducerRailState(producer_id=producer_id, quarantine_epoch_sequence=3)
     result = store._authoritative_epoch_sequence_unlocked(producer_id, cached)
     assert result == 3
+
+
+# --------------------------------------------------------------------------- #
+# REV-0045 addendum-02 — round-2 findings (P0-5, P0-4, P0-3, P0-2)
+# --------------------------------------------------------------------------- #
+
+
+# Producer ids the ratified config admits (non-blank, valid UTF-8). The mint is
+# length-prefixed precisely so EVERY one of these round-trips; '|' is the key
+# separator and ':' the length separator, so both must survive, as must a value
+# shaped like an entire encoded part.
+_ADVERSARIAL_PRODUCER_IDS = (
+    "plain-producer",
+    "team|alpha",
+    "a|b|c",
+    "ns:scoped",
+    "3:weird",
+    "10:team|alpha",
+    "münchen-Ω",
+    "|",
+    ":",
+    "|:|",
+    "0:",
+)
+
+
+async def test_release_key_parser_is_a_total_inverse_of_the_ratified_mint() -> None:
+    """REV-0045 addendum-02 P0-5: the parser must be a TOTAL INVERSE of the
+    ratified mint over every producer id configuration admits.
+
+    ``signal_dedupe_key`` length-prefixes each part exactly so that arbitrary
+    strings round-trip ("Length-prefixed parts preserve tuple boundaries for
+    every string and therefore keep live/replay truth aligned"). A decoder
+    that splits the body on the separator instead of consuming each declared
+    character count breaks that contract for any producer id containing the
+    separator — the store mints a key it can never read back.
+    """
+
+    from app.events.projectors import (
+        _SQLITE_MAX_SIGNED_INT,
+        sequence_from_release_dedupe_key,
+    )
+    from app.store.core import signal_dedupe_key
+
+    for producer_id in _ADVERSARIAL_PRODUCER_IDS:
+        for sequence in (1, 2, 42, _SQLITE_MAX_SIGNED_INT):
+            key = signal_dedupe_key("producer_release", producer_id, str(sequence))
+            assert (
+                sequence_from_release_dedupe_key(key, producer_id=producer_id)
+                == sequence
+            ), f"mint/parse round-trip failed for {producer_id!r} at {sequence}"
+
+
+async def test_release_key_parser_stays_injective_across_producers() -> None:
+    """The inverse must also stay OWNER-BOUND over adversarial ids: a key
+    minted for one producer must never parse as another, including the
+    ambiguous pairs the length prefix exists to separate."""
+
+    from app.events.projectors import (
+        ProjectionError,
+        sequence_from_release_dedupe_key,
+    )
+    from app.store.core import signal_dedupe_key
+
+    for minted_for in _ADVERSARIAL_PRODUCER_IDS:
+        key = signal_dedupe_key("producer_release", minted_for, "7")
+        for claimed_by in _ADVERSARIAL_PRODUCER_IDS:
+            if claimed_by == minted_for:
+                continue
+            with pytest.raises(ProjectionError):
+                sequence_from_release_dedupe_key(key, producer_id=claimed_by)
+
+
+async def test_release_key_parser_refuses_a_null_key_on_both_stores() -> None:
+    """REV-0045 addendum-02 P0-3 (NULL-key limb): ``dedupe_key`` is nullable on
+    the model and the column, and no append path validates it per event type.
+    The parser itself must refuse ``None`` as a ProjectionError so BOTH floors
+    ignore it identically — SQLite previously passed the raw column value and
+    raised an uncaught AttributeError where memory normalized to ''."""
+
+    from app.events.projectors import (
+        ProjectionError,
+        sequence_from_release_dedupe_key,
+    )
+
+    with pytest.raises(ProjectionError):
+        sequence_from_release_dedupe_key(None, producer_id="p")
+
+
+async def test_delimiter_bearing_producer_agrees_live_replay_and_restart(
+    tmp_path,
+) -> None:
+    """REV-0045 addendum-02 P0-5 end-to-end: a producer id containing the key
+    separator must open, release, replay, and restart in agreement on BOTH
+    stores. Before the decoder fix each store released live and then marked
+    that same producer on replay and on every restart — a store-minted
+    class-A divergence, and unhealable, because each heal minted an equally
+    unreadable key."""
+
+    from datetime import datetime, timezone
+
+    from app.store.memory import InMemoryStateStore
+
+    now = datetime(2026, 7, 28, 12, 0, 0, tzinfo=timezone.utc)
+    producer_id = "team|alpha"
+
+    path = str(tmp_path / "pipe.db")
+    sqlite_store = SqliteStateStore(path)
+    await sqlite_store.initialize()
+    memory_store = InMemoryStateStore()
+    await memory_store.initialize()
+
+    for store in (sqlite_store, memory_store):
+        for _ in range(2):  # burst 1: the second call breaches and opens epoch 1
+            await store.check_and_debit_producer_rate(
+                producer_id, now=now, limit_per_hour=60, burst=1
+            )
+        released = await store.release_producer(
+            producer_id, actor="operator", rejected_count=0, released_at=now
+        )
+        assert released.quarantine_epoch_open is False
+        assert store.poisoned_producers() == {}
+
+        projection = project_read_models(await store.get_execution_events())
+        assert projection.poisoned_producers == {}, (
+            f"replay disagrees with live state for {producer_id!r} "
+            f"on {type(store).__name__}"
+        )
+        assert projection.producer_rails[producer_id].quarantine_epoch_sequence == 1
+
+    restarted = SqliteStateStore(path)
+    await restarted.initialize()
+    assert restarted.poisoned_producers() == {}  # restart agrees too
+
+
+def _raw_release(
+    *, producer_id: str, sequence: int, key_sequence: int, **extra_payload: object
+):
+    """A PRODUCER_RELEASED event built directly, so a test can attach a payload
+    field the ratified builder refuses to mint."""
+
+    from datetime import datetime, timezone
+
+    from app.models import (
+        EventAuthority,
+        EventSource,
+        ExecutionEvent,
+        ExecutionEventType,
+    )
+    from app.store.core import signal_dedupe_key
+
+    when = datetime(2026, 7, 28, 12, 0, 0, tzinfo=timezone.utc)
+    return ExecutionEvent(
+        sequence=sequence,
+        event_type=ExecutionEventType.PRODUCER_RELEASED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        ts_event=when,
+        ts_init=when,
+        dedupe_key=signal_dedupe_key(
+            "producer_release", producer_id, str(key_sequence)
+        ),
+        payload={
+            "producer_id": producer_id,
+            "actor": "operator",
+            "rejected_count": 0,
+            "epoch_start": when.isoformat(),
+            "released_at": when.isoformat(),
+            **extra_payload,
+        },
+    )
+
+
+def _raw_opener(*, producer_id: str, sequence: int, epoch_sequence: object):
+    """A PRODUCER_QUARANTINED event built directly, so a test can place an
+    out-of-domain value in the payload carrier the builder would refuse."""
+
+    from datetime import datetime, timezone
+
+    from app.models import (
+        EventAuthority,
+        EventSource,
+        ExecutionEvent,
+        ExecutionEventType,
+    )
+    from app.store.core import signal_dedupe_key
+
+    when = datetime(2026, 7, 28, 12, 0, 0, tzinfo=timezone.utc)
+    return ExecutionEvent(
+        sequence=sequence,
+        event_type=ExecutionEventType.PRODUCER_QUARANTINED,
+        source=EventSource.ENGINE,
+        authority=EventAuthority.LOCAL,
+        ts_event=when,
+        ts_init=when,
+        dedupe_key=signal_dedupe_key("producer_quarantine", producer_id, str(sequence)),
+        payload={
+            "producer_id": producer_id,
+            "breach_trigger": "rate_breach",
+            "bucket_capacity": 5,
+            "epoch_start": when.isoformat(),
+            "epoch_sequence": epoch_sequence,
+        },
+    )
+
+
+async def test_release_high_water_ignores_a_forbidden_payload_sequence() -> None:
+    """REV-0045 addendum-02 P0-4: high-water state must not be updated from an
+    event before that event's structural source has been validated.
+
+    ``PRODUCER_RELEASED`` has a CLOSED payload that does not ratify
+    ``epoch_sequence``; its only structural sequence source is the
+    producer-bound dedupe key. Reading the forbidden payload field let an
+    unratifiable in-range value raise the marker's high-water, after which the
+    live floors (which correctly ignore that field) and replay no longer agree
+    on the predecessor sequence — the live store cleared its marker while
+    replay and every restart kept it.
+    """
+
+    from app.events.projectors import project_producer_rails_tolerant
+
+    producer_id = "p-highwater"
+    # Structurally invalid (the extra field breaks the closed payload), so the
+    # producer poisons — and the forbidden field must contribute NOTHING.
+    contaminated = _raw_release(
+        producer_id=producer_id, sequence=1, key_sequence=1, epoch_sequence=5
+    )
+
+    _, poisoned = project_producer_rails_tolerant([contaminated])
+    assert producer_id in poisoned
+    assert poisoned[producer_id].last_known_epoch_sequence == 1, (
+        "high-water must come from the producer-bound key (1), never from the "
+        "forbidden payload field (5)"
+    )
+
+
+async def test_release_floors_agree_across_stores_on_adversarial_openers(
+    tmp_path,
+) -> None:
+    """REV-0045 addendum-02 P0-3 (floor limb): both stores' release floors must
+    judge logged values in ONE type domain.
+
+    SQLite used ``MAX(json_extract(...))`` then an ``isinstance`` check on the
+    aggregate, while memory tested each event's Python value. JSON ``true``
+    counted as 1 on SQLite and was skipped by memory; a digit string made
+    SQLite's cross-type MAX drop every valid opener. Identical logs then minted
+    different release keys — the append-only histories themselves diverged.
+    """
+
+    from app.store.memory import InMemoryStateStore
+
+    producer_id = "p-floor"
+    for adversarial in (True, "9", 3.5, 2**63, None):
+        opener = _raw_opener(
+            producer_id=producer_id, sequence=1, epoch_sequence=adversarial
+        )
+        valid = _raw_opener(producer_id=producer_id, sequence=2, epoch_sequence=2)
+
+        memory_store = InMemoryStateStore()
+        await memory_store.initialize()
+        memory_store._execution_events.extend([opener, valid])
+        memory_floor = memory_store._release_sequence_floor_unlocked(producer_id)
+
+        path = str(tmp_path / f"floor-{adversarial!r}.db".replace("/", "_"))
+        sqlite_store = SqliteStateStore(path)
+        await sqlite_store.initialize()
+        assert sqlite_store._conn is not None
+        with sqlite_store._tx() as insert_cur:
+            for event in (opener, valid):
+                sqlite_store._insert_execution_event(
+                    insert_cur, event.model_copy(update={"sequence": 0})
+                )
+        cur = sqlite_store._conn.cursor()
+        sqlite_floor = sqlite_store._release_sequence_floor_locked(cur, producer_id)
+
+        assert memory_floor == sqlite_floor == 2, (
+            f"floors disagree for opener epoch_sequence={adversarial!r}: "
+            f"memory={memory_floor} sqlite={sqlite_floor} (both must ignore the "
+            "out-of-domain value and honour the valid opener at 2)"
+        )
+
+
+async def test_durable_rail_sink_refuses_an_out_of_domain_carrier(tmp_path) -> None:
+    """REV-0045 addendum-02 P0-3 (sink limb): the ONE non-literal SQLite
+    carrier sink must refuse an out-of-domain epoch sequence with a typed
+    store error, not let sqlite3 raise ``OverflowError`` mid-``initialize()``
+    and leave the database permanently unopenable.
+
+    Every current ingress is now bounded by ``contributed_epoch_sequence``
+    and the strict appliers, so this is reached by direct call — that is the
+    point. The guard is structural: it holds for a future ingress that
+    forgets to bound, which is exactly how this defect class recurred.
+    """
+
+    from app.events.projectors import ProducerRailProjection
+    from app.store.base import InvalidEventError
+
+    store = SqliteStateStore(str(tmp_path / "sink.db"))
+    await store.initialize()
+    assert store._conn is not None
+
+    over_domain = ProducerRailProjection(
+        producer_id="p-sink",
+        quarantine_epoch_sequence=2**63,
+    )
+    with store._tx() as cur:
+        with pytest.raises(InvalidEventError):
+            store._upsert_producer_log_rail(cur, over_domain)
+
+    # And the database is still openable afterwards — the refusal is clean.
+    reopened = SqliteStateStore(store._db_path)
+    await reopened.initialize()
+    assert reopened.poisoned_producers() == {}
+
+
+@pytest.mark.parametrize("store_kind", ["sqlite", "memory"])
+async def test_bounded_check_never_falls_back_across_consecutive_epochs(
+    tmp_path, monkeypatch, store_kind
+) -> None:
+    """REV-0045 addendum-02 P0-2: the first-try/no-fallback property must hold
+    across CONSECUTIVE epochs, not only the first one.
+
+    The round-1 replacement pins released a healthy epoch whose sequence was
+    always 1. They distinguish deleting the subtraction, but not a
+    subtraction wrongly conditioned on the sequence being exactly 1 — that
+    mutant left both pins and the whole 161-test rails corpus green, then at
+    epoch 2 raised on a healthy segment and silently entered the
+    poison/classification fallback, which re-derives the correct rail so no
+    result assertion ever fires.
+
+    Driving three consecutive open/release cycles and asserting the bounded
+    verifier succeeds on the FIRST try at every one of them is what makes the
+    epoch-2+ path observable.
+    """
+
+    from datetime import datetime, timezone
+
+    from app.events.projectors import ProjectionError
+    from app.store.base import InvalidEventError
+    from app.store.memory import InMemoryStateStore
+
+    now = datetime(2026, 7, 28, 12, 0, 0, tzinfo=timezone.utc)
+    producer_id = "p-epochs"
+    raised: list[BaseException] = []
+
+    if store_kind == "sqlite":
+        store = SqliteStateStore(str(tmp_path / "epochs.db"))
+        cls, attr = SqliteStateStore, "_authoritative_epoch_sequence_locked"
+    else:
+        store = InMemoryStateStore()
+        cls, attr = InMemoryStateStore, "_authoritative_epoch_sequence_unlocked"
+    await store.initialize()
+
+    original = getattr(cls, attr)
+
+    def _spy(self, *args):
+        try:
+            return original(self, *args)
+        except (InvalidEventError, ProjectionError) as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(cls, attr, _spy)
+
+    for epoch in (1, 2, 3):
+        for _ in range(2):  # burst 1: the second call breaches
+            await store.check_and_debit_producer_rate(
+                producer_id, now=now, limit_per_hour=60, burst=1
+            )
+        rail = await store.get_producer_rail(producer_id)
+        assert rail.quarantine_epoch_open is True
+        assert rail.quarantine_epoch_sequence == epoch
+
+        released = await store.release_producer(
+            producer_id, actor="operator", rejected_count=0, released_at=now
+        )
+        assert released.quarantine_epoch_open is False
+        assert released.quarantine_epoch_sequence == epoch
+        assert store.poisoned_producers() == {}
+        assert raised == [], (
+            f"the bounded verifier fell back at epoch {epoch} on a HEALTHY "
+            f"segment ({store_kind}): {raised!r}"
+        )
+
+    projection = project_read_models(await store.get_execution_events())
+    assert projection.poisoned_producers == {}
+    assert projection.producer_rails[producer_id].quarantine_epoch_sequence == 3

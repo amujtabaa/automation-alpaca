@@ -1215,7 +1215,68 @@ def _apply_producer_quarantined(
     )
 
 
-def sequence_from_release_dedupe_key(dedupe_key: str, *, producer_id: str) -> int:
+_ASCII_DIGITS = frozenset("0123456789")
+
+
+def _canonical_ascii_int(text: str) -> int | None:
+    """Return the value of a canonical ASCII decimal literal, else ``None``.
+
+    Deliberately stricter than ``str.isdigit()``, which accepts non-ASCII
+    decimal forms (e.g. Arabic-Indic digits) that ``int()`` also parses —
+    two distinct strings would then decode to one value and the encoding
+    would stop being injective. Leading zeros are rejected for the same
+    reason (``"07"`` and ``"7"`` must not both decode to 7).
+    """
+
+    if not text or not _ASCII_DIGITS.issuperset(text):
+        return None
+    if len(text) > 1 and text[0] == "0":
+        return None
+    return int(text)
+
+
+def _decode_length_prefixed_parts(body: str) -> list[str]:
+    """Invert ``signal_dedupe_key``'s length-prefixed encoding exactly.
+
+    REV-0045 addendum-02 P0-5. The encoder joins ``{len}:{part}`` groups with
+    ``|`` *because* length prefixes preserve tuple boundaries for every
+    string — including parts that themselves contain ``|`` or ``:``. A
+    decoder that splits the body on ``|`` throws that guarantee away and
+    cannot read back keys the store legitimately minted. This decoder instead
+    consumes each declared character count and only then requires the next
+    separator, so it is a total inverse over arbitrary parts.
+
+    Raises :class:`ProjectionError` on any input that is not exactly the
+    image of some tuple under the encoder.
+    """
+
+    parts: list[str] = []
+    index = 0
+    length_of_body = len(body)
+    while True:
+        cursor = index
+        while cursor < length_of_body and body[cursor] in _ASCII_DIGITS:
+            cursor += 1
+        declared_length = _canonical_ascii_int(body[index:cursor])
+        if declared_length is None:
+            raise ProjectionError("length-prefixed key has a malformed length prefix")
+        if cursor >= length_of_body or body[cursor] != ":":
+            raise ProjectionError("length-prefixed key is missing a length separator")
+        cursor += 1
+        end = cursor + declared_length
+        if end > length_of_body:
+            raise ProjectionError("length-prefixed key declares more text than it has")
+        parts.append(body[cursor:end])
+        if end == length_of_body:
+            return parts
+        if body[end] != "|":
+            raise ProjectionError("length-prefixed key has a misaligned part boundary")
+        index = end + 1
+
+
+def sequence_from_release_dedupe_key(
+    dedupe_key: str | None, *, producer_id: str
+) -> int:
     """Parse the epoch sequence a ``PRODUCER_RELEASED`` dedupe key consumed,
     binding it to the producer that is expected to own it.
 
@@ -1225,50 +1286,99 @@ def sequence_from_release_dedupe_key(dedupe_key: str, *, producer_id: str) -> in
     consumed sequence structurally lives (``producer_release:{len}:{pid}|
     {len}:{seq}``, length-prefixed), so every consumer derives it from the
     key: stores when computing the release floor, the fold when applying a
-    zero-width heal. Raises :class:`ProjectionError` on any malformed key, a
-    key whose encoded producer component does not match ``producer_id``
-    (REV-0045 P0-3/P1-1 — a release cannot be sequenced against a carrier it
-    was never minted for), or a sequence outside the SQLite-representable
-    signed range (REV-0045 P0-3 — an out-of-domain carrier must be refused
-    identically in-memory and on SQLite, never diverge on overflow).
+    zero-width heal.
+
+    This function is the exact inverse of ``signal_dedupe_key`` for that
+    prefix, over EVERY producer id configuration admits (REV-0045
+    addendum-02 P0-5 — the previous separator-splitting decoder could not
+    read back keys the store itself minted for ids containing ``|``, which
+    made those producers open and release live and then diverge on replay and
+    restart, unhealably). It raises :class:`ProjectionError` on a missing key
+    (``None`` — nullable on both the model and the column, so both floors
+    must ignore it identically rather than one raising ``AttributeError``),
+    on any key that is not the image of the ratified mint, on a key whose
+    encoded producer does not match ``producer_id``, and on a sequence
+    outside the SQLite-representable signed range.
     """
 
+    if dedupe_key is None:
+        raise ProjectionError("release dedupe key is absent")
     prefix = "producer_release:"
     if not dedupe_key.startswith(prefix):
         raise ProjectionError(f"release dedupe key {dedupe_key!r} has the wrong prefix")
-    parts = dedupe_key[len(prefix) :].split("|")
+    try:
+        parts = _decode_length_prefixed_parts(dedupe_key[len(prefix) :])
+    except ProjectionError as exc:
+        raise ProjectionError(f"release dedupe key {dedupe_key!r}: {exc}") from exc
     if len(parts) != 2:
         raise ProjectionError(
             f"release dedupe key {dedupe_key!r} does not have exactly two parts"
         )
-    producer_length_text, _, producer_text = parts[0].partition(":")
-    if not producer_length_text.isdigit() or int(producer_length_text) != len(
-        producer_text
-    ):
-        raise ProjectionError(
-            f"release dedupe key {dedupe_key!r} has a malformed producer part"
-        )
-    if producer_text != producer_id:
+    key_producer, sequence_text = parts
+    if key_producer != producer_id:
         raise ProjectionError(
             f"release dedupe key {dedupe_key!r} is bound to producer "
-            f"{producer_text!r}, not {producer_id!r}"
+            f"{key_producer!r}, not {producer_id!r}"
         )
-    length_text, _, sequence_text = parts[-1].partition(":")
-    if (
-        not length_text.isdigit()
-        or not sequence_text.isdigit()
-        or int(length_text) != len(sequence_text)
-        or str(int(sequence_text)) != sequence_text
-    ):
+    sequence = _canonical_ascii_int(sequence_text)
+    if sequence is None:
         raise ProjectionError(
             f"release dedupe key {dedupe_key!r} has a malformed sequence part"
         )
-    sequence = int(sequence_text)
     if sequence < 1 or sequence > _SQLITE_MAX_SIGNED_INT:
         raise ProjectionError(
             f"release dedupe key {dedupe_key!r} carries an out-of-range sequence"
         )
     return sequence
+
+
+def contributed_epoch_sequence(
+    event: ExecutionEvent, *, producer_id: str
+) -> int | None:
+    """The epoch sequence an event structurally PROVES for ``producer_id``.
+
+    REV-0045 addendum-02 P0-3/P0-4. This is the single source of derived
+    sequence truth: every consumer — the tolerant fold's high-water
+    bookkeeping, both stores' release floors, and the poisoned-heal
+    next-sequence check — must agree on what a logged event proves, or the
+    same append-only history yields different results across live, replay,
+    restart, memory and SQLite.
+
+    The rule is event-type-specific, and no other field of any other event
+    contributes anything:
+
+    * ``PRODUCER_QUARANTINED`` ratifies ``epoch_sequence`` in its payload, so
+      it contributes that value — but only as a real, bounded Python ``int``
+      belonging to this producer. ``bool`` is excluded (JSON ``true`` is not
+      an epoch), as are floats, digit strings, and values outside the
+      SQLite-representable signed range.
+    * ``PRODUCER_RELEASED`` has a CLOSED payload that does NOT ratify
+      ``epoch_sequence``; its only structural source is its own
+      producer-bound dedupe key. Reading a forbidden payload field here let
+      an unratifiable value raise the high-water while the live floors
+      ignored it, so live recovery and replay stopped agreeing on the
+      predecessor sequence.
+
+    Returns ``None`` when the event proves nothing for this producer.
+    """
+
+    if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED:
+        if event.payload.get("producer_id") != producer_id:
+            return None
+        raw = event.payload.get("epoch_sequence")
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            return None
+        if raw < 1 or raw > _SQLITE_MAX_SIGNED_INT:
+            return None
+        return raw
+    if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+        try:
+            return sequence_from_release_dedupe_key(
+                event.dedupe_key, producer_id=producer_id
+            )
+        except ProjectionError:
+            return None
+    return None
 
 
 def _validated_release_event_shape(
@@ -1334,7 +1444,7 @@ def _apply_producer_released(
                 "does not match the open quarantine epoch"
             )
         closed_sequence = sequence_from_release_dedupe_key(
-            event.dedupe_key or "", producer_id=current.producer_id
+            event.dedupe_key, producer_id=current.producer_id
         )
         if closed_sequence != current.quarantine_epoch_sequence:
             raise ProjectionError(
@@ -1376,7 +1486,7 @@ def _apply_producer_released(
             "heal of a mid-cycle rail (unauthorized cycle reset refused)"
         )
     consumed_sequence = sequence_from_release_dedupe_key(
-        event.dedupe_key or "", producer_id=current.producer_id
+        event.dedupe_key, producer_id=current.producer_id
     )
     # REV-0045 expanded P1-1: the ratified rule mints the NEXT sequence, not
     # merely a higher one — accepting any upward jump would let a forged or
@@ -1523,32 +1633,13 @@ def project_producer_rails_tolerant(
         producer_id = _producer_id_from_event(event)
         prior_high_water = last_known.get(producer_id, 0)
 
-        if event.event_type in {
-            ExecutionEventType.PRODUCER_QUARANTINED,
-            ExecutionEventType.PRODUCER_RELEASED,
-        }:
-            raw_sequence = event.payload.get("epoch_sequence")
-            if (
-                isinstance(raw_sequence, int)
-                and not isinstance(raw_sequence, bool)
-                and raw_sequence >= 1
-            ):
-                last_known[producer_id] = max(
-                    last_known.get(producer_id, 0), raw_sequence
-                )
-        if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
-            # A release's consumed sequence lives in its dedupe key (the
-            # ratified payload carries none) — track it so the never-regress
-            # rule sees sequences consumed by zero-width heals too (F-B).
-            try:
-                last_known[producer_id] = max(
-                    last_known.get(producer_id, 0),
-                    sequence_from_release_dedupe_key(
-                        event.dedupe_key or "", producer_id=producer_id
-                    ),
-                )
-            except ProjectionError:
-                pass  # unparseable key: the strict path below will judge it
+        # REV-0045 addendum-02 P0-4: high-water advances ONLY from a source
+        # the event type structurally ratifies, judged before the event is
+        # otherwise trusted. An opener contributes its bounded payload
+        # carrier; a release contributes only its producer-bound key.
+        contributed = contributed_epoch_sequence(event, producer_id=producer_id)
+        if contributed is not None:
+            last_known[producer_id] = max(prior_high_water, contributed)
 
         if producer_id in poisoned_at:
             if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
@@ -1573,7 +1664,7 @@ def project_producer_rails_tolerant(
                     # leaves it poisoned.
                     try:
                         healed_sequence = sequence_from_release_dedupe_key(
-                            event.dedupe_key or "", producer_id=producer_id
+                            event.dedupe_key, producer_id=producer_id
                         )
                     except ProjectionError:
                         continue

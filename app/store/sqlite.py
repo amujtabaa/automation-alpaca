@@ -85,7 +85,7 @@ from app.events.projectors import (
     ProducerRailProjection,
     active_emergency_reduce_overrides,
     fold_producer_rail,
-    sequence_from_release_dedupe_key,
+    contributed_epoch_sequence,
     compose_trading_state,
     control_trading_state,
     current_trading_state,
@@ -1696,35 +1696,50 @@ class SqliteStateStore(StateStore):
         and never trusts a drifted row. Runs only on the human release path.
         """
 
+        # REV-0045 addendum-02 P0-3: decode the rows and apply the SAME
+        # derived-sequence rule memory and the fold use. The previous
+        # JSON-aggregate form judged values in SQL's type domain, where a
+        # digit string wins a cross-type MAX and drops every valid opener,
+        # and JSON true counts as 1 — so identical histories minted
+        # different release keys on the two stores.
         floor = 0
-        row = cur.execute(
-            "SELECT MAX(json_extract(payload, '$.epoch_sequence')) AS m "
-            "FROM execution_events WHERE event_type = ? "
-            "AND json_extract(payload, '$.producer_id') = ?",
-            (ExecutionEventType.PRODUCER_QUARANTINED.value, producer_id),
-        ).fetchone()
-        if row is not None and isinstance(row["m"], int):
-            floor = max(floor, row["m"])
-        for key_row in cur.execute(
-            "SELECT dedupe_key FROM execution_events WHERE event_type = ? "
-            "AND json_extract(payload, '$.producer_id') = ?",
-            (ExecutionEventType.PRODUCER_RELEASED.value, producer_id),
-        ).fetchall():
-            try:
-                floor = max(
-                    floor,
-                    sequence_from_release_dedupe_key(
-                        key_row["dedupe_key"], producer_id=producer_id
-                    ),
-                )
-            except ProjectionError:
-                continue
+        rows = cur.execute(
+            "SELECT * FROM execution_events WHERE event_type IN (?, ?) "
+            "AND json_extract(payload, '$.producer_id') = ? ORDER BY sequence",
+            (
+                ExecutionEventType.PRODUCER_QUARANTINED.value,
+                ExecutionEventType.PRODUCER_RELEASED.value,
+                producer_id,
+            ),
+        ).fetchall()
+        for row in rows:
+            contributed = contributed_epoch_sequence(
+                self._execution_event(row), producer_id=producer_id
+            )
+            if contributed is not None:
+                floor = max(floor, contributed)
         return floor
 
     @staticmethod
     def _upsert_producer_log_rail(
         cur: sqlite3.Cursor, rail: "_ClassARailFields"
     ) -> None:
+        # REV-0045 addendum-02 P0-3 (sink limb): this is the only non-literal
+        # carrier sink. Every ingress above is bounded, but an unbounded one
+        # reaching here binds a value sqlite3 cannot represent and raises
+        # OverflowError mid-initialize(), leaving the database unopenable
+        # while the same history stays readable in memory. Refuse structurally
+        # so the failure is typed, local, and identical on both stores.
+        sequence = rail.quarantine_epoch_sequence
+        if (
+            not isinstance(sequence, int)
+            or isinstance(sequence, bool)
+            or not 0 <= sequence <= _SQLITE_MAX_SIGNED_INT
+        ):
+            raise InvalidEventError(
+                f"producer rail {rail.producer_id!r} epoch sequence "
+                f"{sequence!r} is outside the storable signed-integer domain"
+            )
         cur.execute(
             """INSERT INTO signal_producer_rails
                (producer_id, cycle_budget_limit, cycle_budget_consumed,

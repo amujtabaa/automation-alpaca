@@ -74,7 +74,7 @@ from app.events.projectors import (
     project_order_status,
     project_producer_rails_tolerant,
     project_symbol_position,
-    sequence_from_release_dedupe_key,
+    contributed_epoch_sequence,
     quarantined_symbols,
     reconcile_trading_state,
     timeout_quarantined_order_ids,
@@ -354,22 +354,11 @@ class InMemoryStateStore(StateStore):
 
         floor = 0
         for event in self._execution_events:
-            if event.payload.get("producer_id") != producer_id:
-                continue
-            if event.event_type is ExecutionEventType.PRODUCER_QUARANTINED:
-                raw = event.payload.get("epoch_sequence")
-                if isinstance(raw, int) and not isinstance(raw, bool):
-                    floor = max(floor, raw)
-            elif event.event_type is ExecutionEventType.PRODUCER_RELEASED:
-                try:
-                    floor = max(
-                        floor,
-                        sequence_from_release_dedupe_key(
-                            event.dedupe_key or "", producer_id=producer_id
-                        ),
-                    )
-                except ProjectionError:
-                    continue
+            # REV-0045 addendum-02 P0-3: one shared derived-sequence rule for
+            # both stores and the fold — no store-local type domain.
+            contributed = contributed_epoch_sequence(event, producer_id=producer_id)
+            if contributed is not None:
+                floor = max(floor, contributed)
         return floor
 
     def _apply_incremental_budget_debit_unlocked(
