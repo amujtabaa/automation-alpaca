@@ -159,7 +159,7 @@ paths:
   /api/producers:
     get:  {security: [OperatorKey], responses: {"200": {content: list[ProducerStateView]}}}  # quarantine states, counters
   /api/producers/{producer_id}/release:
-    post: {security: [OperatorKey], responses: {"200": released (PRODUCER_RELEASED), "404": unknown, "409": not quarantined}}
+    post: {security: [OperatorKey], responses: {"200": released (PRODUCER_RELEASED — a normal epoch close OR a no-epoch zero-width heal), "404": unknown, "409": not quarantined (incl. mid-cycle drift: repaired from log truth and the repair RETAINED through the refusal — WO-0140 three-state release)}}
 ```
 
 `SignalRecordView` / `ProducerStateView` are read DTOs in `app/api/schemas.py` following the

@@ -51,8 +51,8 @@ self-decide if they judge otherwise:
 | `SIGNAL_EXPIRED` | sweep, dead-on-arrival at ingest, or expiry detected atomically by the A2 conversion command | **`producer_id`, `signal_id`, server `record_id`** (REQUIRED — the projector must know which record to transition; with several RECEIVED signals expiring together, timing metadata alone is ambiguous, archive REV-0024-F P1), `received_at`, `expires_at`, `detected_by: "sweep" | "ingest" | "conversion"` (`"ingest"` = dead-on-arrival `expires_at ≤ received_at`, §3; debits the §1a budget per `03-rails.md`) |
 | `SIGNAL_REJECTED` | operator reject | **`producer_id`, `signal_id`, `record_id`** (per-record fold target), `actor`, optional `reason` |
 | `SIGNAL_APPROVED` | operator approve, atomically with conversion | `producer_id`, `signal_id`, **`record_id`** (per-record fold target — matches the §4 universal-identity rule, archive REV-0025 inline), `actor`, `operator_quantity`, `operator_limit_price`, `converted_kind`, `converted_id` |
-| `PRODUCER_QUARANTINED` | rate-bucket breach **or** non-refilling invalid/conflict budget exhaustion (`03-rails.md §1a`) — **at most one per quarantine epoch** (ADR-009 A-4) | `producer_id`, breach trigger + counters, epoch start |
-| `PRODUCER_RELEASED` | operator release — closes the epoch, **resets both the §1 rate bucket and the §1a non-refilling invalid/conflict budget** (`03-rails.md §5`; else the producer re-quarantines on its next ingest). **WO-0140 amendment (Ameen 2026-07-27): a release may also HEAL a rail state with no open epoch** — a legacy wedge (`consumed >= limit`, no opener) or a producer whose history cannot be folded — carrying a **zero-width window** (`epoch_start == released_at`) and **consuming the next epoch sequence via its dedupe key** (the payload field list is unchanged). The fold accepts the zero-width form ONLY from the zero, wedge, or unfoldable states; a mid-cycle zero-width release is refused as budget laundering | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log); **a zero-width window marks a no-epoch heal** |
+| `PRODUCER_QUARANTINED` | rate-bucket breach **or** non-refilling invalid/conflict budget exhaustion (`03-rails.md §1a`) — **at most one per quarantine epoch** (ADR-009 A-4) | **CLOSED exact field set** (REV-0045; extra or missing fields invalidate the event): `producer_id`, `breach_trigger`, `epoch_start`, `epoch_sequence`, plus `cycle_budget_consumed`+`cycle_budget_limit` (budget trigger) or `bucket_capacity` (rate trigger). `epoch_sequence` is bounded to the storable signed domain and must be exactly the producer's prior sequence + 1 — the epoch-sequence chain never skips |
+| `PRODUCER_RELEASED` | operator release — closes the epoch, **resets both the §1 rate bucket and the §1a non-refilling invalid/conflict budget** (`03-rails.md §5`; else the producer re-quarantines on its next ingest). **WO-0140 amendment (Ameen 2026-07-27): a release may also HEAL a rail state with no open epoch** — a legacy wedge (`consumed >= limit`, no opener) or a producer whose history cannot be folded — carrying a **zero-width window** (`epoch_start == released_at`) and **consuming the EXACT next epoch sequence via its dedupe key** (the payload field list is unchanged; a higher-but-gapped key is refused, not just a regressed one). **Round-2 strengthening (REV-0045 addendum-02):** EVERY `PRODUCER_RELEASED` dedupe key is parsed and producer-bound, not only heals — a normal open-epoch close must name exactly the open epoch's own sequence, and the parser is a total inverse of the ratified mint over every config-legal producer id (`\|`, `:`, Unicode included; NULL keys refused identically on both stores). The fold accepts the zero-width form ONLY from the zero, wedge, or unfoldable states; a mid-cycle zero-width release is refused as an unratified cycle reset | `producer_id`, `actor`, saturated `rejected_count` + epoch window (the ONLY rejected-traffic audit record; the counter itself lives outside the event log); **a zero-width window marks a no-epoch heal** |
 
 A terminal-at-ingest event (`SIGNAL_QUARANTINED`/`SIGNAL_EXPIRED` written directly at ingest with no
 preceding `SIGNAL_RECEIVED`) carries `received_at` always, and `expires_at` **only when the freshness
@@ -133,3 +133,19 @@ RECEIVED signals expiring in one sweep and assert each transitions to EXPIRED in
 original signal's state is unchanged after replay. Rejected-traffic counting lives OUTSIDE the event log entirely (ADR-009
 A-4): only the epoch-open (`PRODUCER_QUARANTINED`) / epoch-close (`PRODUCER_RELEASED`, carrying
 the saturated count) pair is ever appended.
+
+**Strict/tolerant duality (WO-0140, REV-0045-reviewed):** the strict fold above is the
+CONFORMANCE contract — any malformed producer history invalidates that producer's projection.
+STARTUP, by contrast, uses the tolerant per-producer fold: an unfoldable history invalidates
+ONLY the offending producer, which receives a derived, never-persisted `InvalidProjectionMarker`
+(ADR-014 vocabulary) and is refused write-free until a human release; every other producer folds
+normally, and a pre-R6a database OPENS. Folding for a marked producer restarts only via the
+zero-width release at exactly the log's high-water sequence + 1 (§2 release row). **Derived
+sequence truth is single-sourced:** `contributed_epoch_sequence()` is the one definition of what
+a logged event proves — an opener contributes its bounded payload carrier, a release contributes
+ONLY its producer-bound dedupe key (the closed release payload ratifies no sequence field) — and
+the tolerant fold's high-water, BOTH stores' release floors, and the heal check all consume it
+(enforced by `tests/test_derived_truth_single_source.py`). Store-side row validation can refuse
+states replay cannot see (drift-invalidation is a live-store superset); replay parity is asserted
+on the event-derived read models, and SQLite's durable rail sink refuses an out-of-domain epoch
+sequence with a typed store error rather than an unopenable database.

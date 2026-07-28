@@ -4,7 +4,7 @@ title: Signal Seat — external signal producers (contract summary)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-25
+last_verified: 2026-07-28
 tags: [signal-seat, architecture, boundaries, safety]
 source_refs: [docs/adr/ADR-009-signal-seat-boundary.md, docs/spec/signal-seat/00-overview.md]
 supersedes: []
@@ -43,7 +43,12 @@ governance state are not ported.
 - **Rails:** every authenticated ingest debits the refilling rate bucket. Attributable terminal
   ingest facts debit a durable, non-refilling per-cycle budget; the final debit co-opens one
   quarantine epoch, post-quarantine ingress is write-free, and human release resets both rails.
-  Flag-on construction requires the real rails provider.
+  Flag-on construction requires the real rails provider. Startup is tolerant per producer: an
+  unfoldable history yields a derived, never-persisted invalid-projection marker (ADR-014) that
+  refuses the offender write-free while every other producer folds, and release is three-state
+  (open-epoch close / no-epoch heal / mid-cycle repair-and-refuse). Derived sequence truth is
+  single-sourced through `contributed_epoch_sequence()` and the release-key parser is a total
+  inverse of the mint (REV-0045; enforced by `tests/test_derived_truth_single_source.py`).
 - **Conversion:** producer suggestions are display-only. BUY mints the same Candidate and SELL the
   same SellIntent as cockpit/manual flow. Downstream candidate/sell-intent, envelope, claim,
   adapter, and reconciliation paths are unchanged; there is no signal execution lane.
@@ -108,6 +113,15 @@ ADR and review).
   delivered. REV-0043 returned ACCEPT-WITH-CHANGES, then final ACCEPT after F-1/F-2 remediation and
   the operator's F-4 acknowledgement retaining `detected_by:"conversion"`; disposition RESOLVED.
   F-6/F-8 carry to R6. D-2a stays OFF pending R6 + R7 and the joint gate.
+- 2026-07-26: R6a rails store surface implemented (WO-0104a): the
+  operator-approved nine-column producer-rail table and fail-closed startup
+  guards; event-authoritative budget/quarantine/epoch projection registered in
+  replay; identity-conditioned atomic budget debit and epoch opener; primary
+  durable REAL token bucket with fractional carry; record-free late-body
+  rejection; human release resetting both rails; and a snapshot-free signal
+  transition-event builder. The seat flag remains OFF: R6b still owns provider,
+  route/sweep/cockpit wiring and rate settings, and REV-0044 must disposition
+  before R6b or R7a starts.
 - 2026-07-27: R6a truth-model remediation implemented (WO-0140, REV-0044 R-1..R-13; implementer
   Claude by operator seat swap, gate-clearing review Codex-owned REV-0045): per-producer tolerant
   startup with derived invalid-projection markers (a pre-R6a log OPENS; exactly the offender is refused; vocabulary per ADR-014 — formerly "poisoned");
@@ -121,12 +135,3 @@ ADR and review).
   change, not a config change.** Two fresh-context refutation passes ran during implementation;
   their P0s (exception-hierarchy escape; the drift-heal replay divergence) were fixed under
   operator ruling Option A. D-2a remains OFF; R6b starts only after REV-0045 dispositions.
-- 2026-07-26: R6a rails store surface implemented (WO-0104a): the
-  operator-approved nine-column producer-rail table and fail-closed startup
-  guards; event-authoritative budget/quarantine/epoch projection registered in
-  replay; identity-conditioned atomic budget debit and epoch opener; primary
-  durable REAL token bucket with fractional carry; record-free late-body
-  rejection; human release resetting both rails; and a snapshot-free signal
-  transition-event builder. The seat flag remains OFF: R6b still owns provider,
-  route/sweep/cockpit wiring and rate settings, and REV-0044 must disposition
-  before R6b or R7a starts.

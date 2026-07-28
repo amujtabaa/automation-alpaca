@@ -33,7 +33,6 @@ trading belongs in beta: credentials, when deliberately configured, are Alpaca *
 app/                 FastAPI backend, engine, adapters, stores, configuration
 cockpit/             Streamlit thin client and typed API client
 tests/               Unit, integration, import-boundary, oracle, and mutation pins
-audit_harness/        Replay/parity and audit utilities
 docs/                Invariants, specifications, and accepted/proposed ADRs
 pkl/                 Project knowledge and architecture/process records
 work/                Work orders, review packets, append-only ledger, completed artifacts

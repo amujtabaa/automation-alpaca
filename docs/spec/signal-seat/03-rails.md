@@ -174,7 +174,13 @@ For any ingest from a quarantined producer, or beyond a rate/budget limit:
 `POST /api/producers/{producer_id}/release` — **operator-only** credential (a producer key can
 never release its own quarantine; negative test). Appends `PRODUCER_RELEASED` (actor recorded),
 resets **BOTH** the §1 refilling bucket **and the §1a non-refilling invalid/conflict budget**, and
-re-opens ingestion. **Resetting the §1a budget is mandatory (archive REV-0024-F P1):** a producer quarantined
+re-opens ingestion. **Release is three-state, classified by LOG truth (WO-0140, operator Option A):**
+an OPEN log epoch gets a normal state-1 close of the log's own epoch; a legacy WEDGE
+(`consumed >= limit`, no opener) or an unfoldable history gets the zero-width heal (§2 of
+`02-lifecycle.md`); a healthy MID-CYCLE rail (including row drift repaired from log truth) is
+**repair-and-refuse** — the cache repair COMMITS, the marker clears, and the release itself is
+refused `409 not quarantined`, because releasing a partially consumed budget would be an
+unratified cycle reset. **Resetting the §1a budget is mandatory (archive REV-0024-F P1):** a producer quarantined
 by budget exhaustion that is released without a budget reset re-enters quarantine on its very next
 ingest, making the browser release control inert — test asserts a released producer can ingest again
 without immediate re-quarantine, both stores. Signals swept to quarantine by §3 stay terminal —
