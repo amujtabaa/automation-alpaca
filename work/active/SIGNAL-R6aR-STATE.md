@@ -29,9 +29,78 @@
 | 7 | Refutation pass + remediation + full battery | **VERIFIED** — 8 findings (2 P0) all resolved: 6 fixed+pinned, finding 2 via operator ruling Option A, finding 8 → REV-0045 disclosure. Full battery at `dd31fc2`: **4,722 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.0430%** (floor 93.0; the FIRST run FAILED the ratchet at 92.72% — memory-side heal branches uncovered — fixed with five memory-parity pins). Oracle 61, scaling 13, bootstrap, hygiene ×3, ruff/format/mypy/lint-imports all green |
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | **VERIFIED** — `02-lifecycle.md` release row + ADR-009 epoch-close amended (operator-ratified no-epoch case); `pkl/` change-log entry + standing rule; `work/review/REV-0045/request.md` staged with ten named items |
 | 9 | REV-0045 remediation: 4 P0s + 3 P1s (cumulative, both Codex passes) | **CORRECTED — the root-cause claim is WITHDRAWN; see slice 10.** Claimed at the time: "all 7 findings fixed at root cause." Independent round-2 review (`e990269`) found only P0-1, P1-2 and P1-3 fixed; P0-2, P0-3 and P0-4 remain open at class level, and the P1-1 fix introduced a new P0-5 on the same parser surface. The measured figures stand and were reproduced by the reviewer (4,727 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.0770%; ruff/mypy/lint-imports/scaling green). The *interpretation* — that green plus per-finding pins equalled root-cause closure — did not. |
+| 11 | Round-2 remediation: the four open P0s closed by single-sourcing derived sequence truth | **VERIFIED** — P0-2/P0-3/P0-4/P0-5 fixed at class level (`807d38b`); 9 new pins, every one mutation-verified RED→GREEN; all 6 previously recorded decisive mutants re-verified against the changed code and still red; full battery **4,736 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.13%** (floor 93.0, read from the coverage line); oracle 61/61, scaling 13/13, ruff/mypy(77)/lint-imports(6 kept) green. **Gate NOT cleared** — awaiting a further Codex-owned artifact. |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-28 (round-2 remediation, `807d38b` + this entry): **the four open P0s are closed at
+  class level.** Implementer: Claude seat running Opus 5, by operator ratification. The gate is
+  **not** cleared by this entry — only a Codex-owned artifact can do that.
+
+  **Root cause, stated once because all four shared it.** "What epoch sequence does this history
+  prove?" had **seven independent implementations** across the two stores and the projector: each
+  consumer re-derived it, slightly differently. That is why the previous round's per-finding fixes
+  did not hold — fixing one implementation said nothing about the other six, and the reviewer
+  simply walked to the next one. The remediation collapses the concept to a single definition and
+  routes every consumer through it.
+
+  - **P0-5 — the decoder was not an inverse of the mint.** `signal_dedupe_key` length-prefixes each
+    part *specifically* so arbitrary strings round-trip, and its docstring says so; the parser split
+    the encoded body on the separator instead. A producer id containing `|` — which config admits,
+    reserving nothing — was therefore minted successfully and could never be read back: both stores
+    opened and released it live, then replay and every restart marked it, and the mark was permanent
+    because each attempted heal minted an equally unreadable key. Replaced with
+    `_decode_length_prefixed_parts`, which consumes each declared character count before looking for
+    the next separator, over strict ASCII digits with no leading zeros (so the encoding stays
+    injective — `str.isdigit()` accepts non-ASCII decimal forms that `int()` also parses). The
+    parser now also refuses a `None` key itself rather than each call site normalizing, which closes
+    the NULL-key limb of P0-3 at one point instead of two. Pins: round-trip over `|`, `:`, Unicode
+    and part-shaped ids; owner-binding across every adversarial pair; and an end-to-end
+    live/replay/restart agreement pin on both stores.
+  - **P0-3 + P0-4 — one helper, `contributed_epoch_sequence()`.** An opener contributes its payload
+    carrier and only as a real, bounded, non-`bool` `int` belonging to that producer; a release
+    contributes **only** its producer-bound key, never the `epoch_sequence` field its closed payload
+    does not ratify. The tolerant fold's high-water bookkeeping and *both* stores' release floors now
+    call it. That removes P0-4's pre-validation contamination (a forbidden in-range payload field
+    could raise the marker's high-water, after which live recovery and replay disagreed on the
+    predecessor sequence) and P0-3's floor asymmetry (SQLite's `MAX(json_extract(...))` judged values
+    in SQL's type domain, where a digit string wins a cross-type MAX and drops **every** valid
+    opener while memory keeps them — measured: memory floor 2, SQLite floor 0 on the same log).
+  - **P0-3 sink limb.** Every ingress is now bounded, so the durable sink is unreachable through the
+    fold — which is exactly why it is guarded rather than left implicit: this defect class recurred
+    twice by a *sibling* ingress forgetting to bound. `_upsert_producer_log_rail`, the only
+    non-literal carrier sink, now refuses an out-of-domain sequence with a typed `InvalidEventError`
+    instead of letting sqlite3 raise `OverflowError` mid-`initialize()` and leave the database
+    permanently unopenable. Pinned by direct call, and mutation-verified.
+  - **P0-2 — reproduced before fixing.** Codex's epoch-1-only seed mutant was applied to both stores
+    and **161 tests passed**, confirming the round-1 replacement pins were blind to it. The pins only
+    ever released epoch 1, so a subtraction wrongly conditioned on the sequence being exactly 1 was
+    correct there and wrong at epoch 2+, where the bounded verifier raises on a healthy segment and
+    the classification fallback silently re-derives the correct rail — no result assertion can see
+    it. Replaced with a parameterized pin driving **three consecutive** open/release cycles on both
+    stores, asserting the verifier succeeds on the first try at *every* epoch. It fails at epoch 2 on
+    both stores under that mutant.
+
+  **Mutation evidence (all fresh, none inherited).** Nine new pins, each RED under its mutation and
+  GREEN on file-copy restore. Additionally all six previously recorded decisive mutants were re-run
+  against the changed code — flat-seed (both stores), widened acceptance, heal removal, exact-next
+  reverted to `<=`, heal skipping the shared validator, and the memory anchor reverted to a linear
+  scan — and every one still turns its pin red. This re-verification is now standing practice here:
+  a mutation proof expires the moment its guarded path changes.
+
+  **Battery.** 4,736 passed / 11 skipped / 1 xfailed / **0 failed**, branch coverage **93.13%**
+  against the 93.0 floor, read from the coverage line and the summary line — never the exit code,
+  which this repo's ratchet does not reliably set. Conformance oracle 61/61 via the reviewer's
+  corrected invocation (`python -m pytest -q tests/r2_conformance_oracle.py`); scaling gate 13/13;
+  `ruff check` clean; `ruff format --check` shows exactly the ten disclosed base-debt files and no
+  eleventh; `mypy app/` clean across 77 files; `lint-imports` 6 contracts kept, 0 broken.
+
+  **Disclosure — scope.** `sequence_from_release_dedupe_key` gained a nullable parameter type and
+  five call sites dropped their local `or ""` normalization, because the parser now owns that
+  decision. Two unused imports were removed from the stores by `ruff --fix` once both floors stopped
+  calling the parser directly. No test was weakened, no payload field added, no vocabulary value
+  changed, and no DDL, index, `server.py`, or R6b surface was touched.
 
 - 2026-07-28 (round-2 review, pre-review disclosure, and provenance correction): **the R6a gate did
   NOT clear.** REV-0045 addendum-02 (`e990269`, Codex-owned, reviewer-authored) returns **BLOCK**,
