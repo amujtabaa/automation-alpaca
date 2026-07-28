@@ -30,9 +30,36 @@
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | **VERIFIED** — `02-lifecycle.md` release row + ADR-009 epoch-close amended (operator-ratified no-epoch case); `pkl/` change-log entry + standing rule; `work/review/REV-0045/request.md` staged with ten named items |
 | 9 | REV-0045 remediation: 4 P0s + 3 P1s (cumulative, both Codex passes) | **CORRECTED — the root-cause claim is WITHDRAWN; see slice 10.** Claimed at the time: "all 7 findings fixed at root cause." Independent round-2 review (`e990269`) found only P0-1, P1-2 and P1-3 fixed; P0-2, P0-3 and P0-4 remain open at class level, and the P1-1 fix introduced a new P0-5 on the same parser surface. The measured figures stand and were reproduced by the reviewer (4,727 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.0770%; ruff/mypy/lint-imports/scaling green). The *interpretation* — that green plus per-finding pins equalled root-cause closure — did not. |
 | 11 | Round-2 remediation: the four open P0s closed by single-sourcing derived sequence truth | **VERIFIED** — P0-2/P0-3/P0-4/P0-5 fixed at class level (`807d38b`); 9 new pins, every one mutation-verified RED→GREEN; all 6 previously recorded decisive mutants re-verified against the changed code and still red; full battery **4,736 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.13%** (floor 93.0, read from the coverage line); oracle 61/61, scaling 13/13, ruff/mypy(77)/lint-imports(6 kept) green. **Gate NOT cleared** — awaiting a further Codex-owned artifact. |
+| 12 | Ratified hardening: vocabulary rename + process gates + assurance retrospective | **VERIFIED** — ADR-014 rename landed (zero behavior change, full battery green post-rename); ADR-015 nightly generated-mutation ratchet configured; single-source AST gate live and mutation-verified (`tests/test_derived_truth_single_source.py`); conformance oracle wired into CI (closes AUDIT-0002 AUD2-C002); repo-primer oracle invocation corrected; `pkl/` standing rules ×3; AUDIT-0003 retrospective across the full review corpus with a 14-item ratification queue. Gate state unchanged: REV-0045 Codex-owned, R-1/R-2 open, D-2a OFF, R6b blocked. |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-28 (ratified hardening round — rename, process gates, retrospective): operator
+  ratification ("You can perform the rename and process changes"), then scope broadened to a
+  corpus-wide retrospective. **(1) ADR-014 vocabulary rename**, mechanical and behavior-free:
+  `PoisonedProducerMarker`→`InvalidProjectionMarker`, `poisoned_producers()`→
+  `invalid_projection_markers()`, prose neutralized on the R6a surface ("forged"→invalid fixture,
+  "unauthorized"→"unratified" cycle reset). Survey before renaming confirmed no durable value,
+  dedupe key, or HTTP surface ever carried the terms; historical artifacts (packets, WOs, ledger,
+  this log's earlier entries) are records and stay verbatim — ADR-014's table is the bridge.
+  Unrelated generic "poison" prose in other subsystems (dedup sets, market prints, cost-basis) is
+  NOT this API and was left alone. Full battery green post-rename (figures in scoreboard row 12's
+  finishing commit). **(2) Process gates**: `tests/test_derived_truth_single_source.py` — AST gate
+  refusing parallel derivations of the epoch-sequence truth and second release-key parsers,
+  verified RED against a planted violation; ADR-015 + `.github/workflows/mutation-nightly.yml` +
+  `requirements-mutation.txt` (mutmut 3.6.0, separate pin file — main closure untouched) with the
+  ratchet baseline to be recorded on first run; conformance oracle added to `ci.yml` (AUDIT-0002
+  AUD2-C002 closed); `.claude/rules/repo-primer.md` oracle invocation corrected; three standing
+  rules appended to `pkl/architecture/testing-model.md` (single-sourced derived truth; total
+  round-trip pins for every mint/parse pair; mutation-proof expiry + path-assertion over
+  fallback-shadowed guards). **(3) AUDIT-0003** (`work/review/AUDIT-0003-assurance-retrospective.md`):
+  four parallel fresh-context analysts over REV-0001..0045, the FINDING/AUDIT/CAMPAIGN/PROC
+  corpus, and the ledger + completed WOs; seven structural findings (S-1..S-7) and a 14-item
+  ratification queue (P-1..P-14). Headline: AUDIT-0001 had already diagnosed this month's meta-root
+  ("the same truth derived independently in two places") a full campaign earlier — the retrospective's
+  strongest conclusion is that lessons here die with their file unless they reach CI or a template,
+  which is what items (1) and (2) mechanize for this round's lessons.
 
 - 2026-07-28 (round-2 remediation, `807d38b` + this entry): **the four open P0s are closed at
   class level.** Implementer: Claude seat running Opus 5, by operator ratification. The gate is
