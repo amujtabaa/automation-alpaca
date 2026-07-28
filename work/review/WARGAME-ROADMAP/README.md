@@ -78,10 +78,16 @@ and its ADR gate text; both corrections are recorded in place rather than silent
 
 ### Ratification boxes (operator)
 
-- [ ] **P-0** — amend `pkl/project/goals.md` + CLAUDE.md safety core to admit a live-capital destination
-- [ ] **Wave 0 as amended** (W0.1a, W0.1b, W0.3–W0.6) authorized to run now, in parallel with the
-      critical path. **W0.2 is excluded pending its named gate** (a pasted `pytest .ai-os/scripts/tests/`
-      run under the root config — M4b F3)
+- [ ] **Wave 0 — ungated subset** (W0.1a, W0.1b, W0.5, W0.6) authorized to run now, in parallel with the
+      critical path
+- [ ] **Wave 0 — gated subset** (W0.3 order submission; W0.4 event-log truth): explicit scope approval,
+      each with a tracked `REV-*` packet. *These are the two highest-value items in the wave; they are
+      cheap but they are not routine*
+- [ ] **W0.2** stays gated pending a pasted `pytest .ai-os/scripts/tests/` run under the root config
+      (M4b F3)
+- [ ] **P-0** — amend `pkl/project/goals.md` + CLAUDE.md safety core to admit a live-capital
+      destination. *No Wave 0 item depends on this; it gates only the Wave 5 phase-gate ADRs. Deferring
+      it costs nothing*
 - [ ] **D-1** live-paper probe: permitted / not permitted
 - [ ] **D-2** calendar source: `GetCalendarRequest` / committed static table
 - [ ] **D-3** **account-level** daily-loss ceiling: beta requirement / pre-live requirement — *note the

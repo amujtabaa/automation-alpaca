@@ -32,11 +32,30 @@ The principle that replaces it, and that orders everything below:
 > `@invariant()` on a generator that already produces the fault composition) and **W0.4** (an audit
 > dedupe whose absence is only discovered after it is needed).
 
-## 2. Wave 0 — free wins (no prerequisites, all S-cost, all failure-capable)
+## 2. Wave 0 — cheap, high-yield, independently valuable
 
-Every item is independently valuable, none blocks another, and none requires a decision. This is the
-de-dicing wave: each converts an obligation that currently lives in prose or memory into something a
-mediocre run cannot skip.
+Every item is independently valuable and none blocks another. This is the de-dicing wave: each converts
+an obligation that currently lives in prose or memory into something a mediocre run cannot skip.
+
+> **CORRECTION (post-M4b, planning seat).** An earlier version of this section was headed "free wins"
+> and stated that "none requires a decision." **That is wrong for two of the six items, and they are the
+> two highest-value ones.**
+>
+> - **W0.3 touches a human-gated surface — order submission.** Reclassifying an ambiguous 422 from
+>   `TerminalBrokerError` to `AmbiguousBrokerError` changes whether an order is treated as
+>   never-submitted and therefore redrivable, and changes what enters `TIMEOUT_QUARANTINE`. Same for the
+>   404 inference.
+> - **W0.4 touches a human-gated surface — event-log truth.** It causes `ORDER_SUBMISSION_BLOCKED` rows
+>   to be written that are not written today.
+>
+> Per `CLAUDE.md`, both require **explicit operator scope approval beyond the ratified decision block**,
+> and per `.ai-os/core/15` each ships with a tracked `REV-*` packet whose verdict clears the gate. They
+> are still the right work and still cheap — they are not *routine*. W0.1a, W0.1b, W0.5 and W0.6 are
+> ungated and need no approval beyond the wave.
+>
+> This correction is recorded rather than silently applied because ratifying the previous wording would
+> have authorized gated-surface work as ordinary work — the exact class of quiet scope expansion the
+> safety core exists to prevent.
 
 | id | Work | Why first | Anchor |
 |---|---|---|---|
