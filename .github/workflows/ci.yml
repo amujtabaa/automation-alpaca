@@ -49,13 +49,6 @@ jobs:
         # tests/test_import_boundaries.py, so the gate holds even if this step is
         # ever removed).
         run: lint-imports
-      - name: Conformance oracle (R2 spec)
-        # AUDIT-0002 AUD2-C002: the 61-case AST/spec oracle was prescribed as a
-        # gate and then never wired into CI — pytest does not collect the file
-        # (its name lacks the test_ prefix), so "the suite is green" never
-        # included it. Runs via pytest per the REV-0045 round-2 runbook
-        # correction: invoking the script directly does not resolve `app`.
-        run: python -m pytest -q tests/r2_conformance_oracle.py
       - name: No out-of-scope tooling trees (contamination guard)
         # REV-0029 NEW-P1-2: a stale clone twice re-merged 403 tracked files under
         # .agents/ and .codex/ (ClaudeFast/Codex tooling, ~91k lines, outside every

@@ -35,6 +35,27 @@
 
 ## Evidence log
 
+- 2026-07-28 (external process audit, round 2 — bundle applied): the ChatGPT seat's follow-up
+  deliverables (round-2 report, amendment blocks, 62-row S-6 cohort with 33 attributable WOs)
+  were verified and applied under operator ratification. AUDIT-0003 amended per the blocks:
+  headline now "recurrence-amplified capability problem"; "seven implementations" and "all eight
+  twins" withdrawn; S-6 recast on the cohort (umbrella-scored work: 13/14 material findings,
+  5/14 BLOCK, 8/14 multi-round); S-7 split; **S-8 oracle capture added**; meta-law replaced with
+  machine-consumed / semantically-complete / failure-capable / negatively-fixtured / current.
+  Repair batch landed: `round:`/`surface:` fields added to the review templates (the placement
+  gap in my own P-1/P-4 landing); my duplicate CI oracle step removed (the pre-existing step at
+  the file's tail predated my commit — AUD2-C002 was stale when I "closed" it, disclosed);
+  mutation-nightly gains a run-state guard (TOOL_ERROR / NO_MUTANTS fail loudly) and an explicit
+  REPORT-ONLY marker pending baseline; `check_ledger.py` docstring no longer cites a nonexistent
+  schema; committed hermetic negative fixtures (`tests/test_assurance_gate_fixtures.py`, 4 pins)
+  convert both P-6 gates' failure-capability from session attestation to tree property.
+  **Operator ruling (§2.6 decision gap): RESERVE** — a refused release with a canonical
+  producer-bound key keeps its sequence in high-water, matching the UNIQUE-dedupe-key append
+  reality; pinned in the existing high-water test with the ruling recorded, and stated in
+  `02-lifecycle.md §4`. Gate state unchanged: REV-0045 Codex-owned, R-1/R-2 open, D-2a OFF,
+  R6b blocked; Codex round-3 remains the critical path.
+
+
 - 2026-07-28 (ratified hardening round — rename, process gates, retrospective): operator
   ratification ("You can perform the rename and process changes"), then scope broadened to a
   corpus-wide retrospective. **(1) ADR-014 vocabulary rename**, mechanical and behavior-free:

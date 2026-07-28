@@ -1,4 +1,6 @@
 ---
+surface: <subsystem — P-1/P-4 counting key>
+round: <N>
 type: Review Result
 rev_id: REV-XXXX
 reviewer_model: <model name>

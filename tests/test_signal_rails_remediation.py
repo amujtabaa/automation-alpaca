@@ -1384,9 +1384,16 @@ async def test_release_high_water_ignores_a_forbidden_payload_sequence() -> None
 
     _, invalidated = project_producer_rails_tolerant([contaminated])
     assert producer_id in invalidated
+    # OPERATOR RULING (Ameen 2026-07-28, AUDIT-0003 round-2 §2.6): a malformed
+    # release whose dedupe key is canonical and producer-bound RESERVES its
+    # sequence in the high-water mark even though the event is refused. This
+    # matches append-layer reality — the UNIQUE dedupe-key constraint consumes
+    # that key regardless of event validity, so a later heal minting the same
+    # sequence would collide and be refused. Reservation is truthful; releasing
+    # it would advertise a key the store cannot mint.
     assert invalidated[producer_id].last_known_epoch_sequence == 1, (
-        "high-water must come from the producer-bound key (1), never from the "
-        "forbidden payload field (5)"
+        "high-water must come from the producer-bound key (1) — reserved even "
+        "for a refused event — never from the forbidden payload field (5)"
     )
 
 

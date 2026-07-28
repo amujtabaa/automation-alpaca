@@ -4,8 +4,9 @@
 Every non-blank line must be a JSON object with the fields from doc 12's
 ledger contract (id, title, status, disposition[], commit, date, reason);
 statuses and dispositions are bound to the vocabularies in
-rules/ai-os-rules.yaml. The formal contract is mcp/schemas/ledger_entry.schema.json.
-An empty ledger passes.
+rules/ai-os-rules.yaml. At this repository version the executable contract lives in
+this checker plus those vocabularies; no mcp/schemas/ledger_entry.schema.json file
+exists. An empty ledger passes.
 
 Usage:
   python scripts/check_ledger.py

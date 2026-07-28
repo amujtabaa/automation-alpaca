@@ -46,16 +46,29 @@ forbidden_paths:
 ## Twin-lane enumeration (P-2, operator-ratified 2026-07-28)
 
 Mandatory for any change touching stores, rails, order/fill/position truth, or a guard.
-The dominant defect class in this repo's review history is the rail enforced on one path
-and absent on a sibling (AUDIT-0003 S-2: all eight findings of one three-round review
-chain were symmetric twins of already-fixed sites). Enumerate EVERY lane that reaches the
-same state or venue effect, one line each, marked `covered` or `N/A because <reason>`:
+A high-yield recurrent defect class is a rail enforced on one path and absent on a
+sibling. WO-0110 explicitly classified its three findings as twins; REV-0029 P0-3 and
+the REV-0045 carrier/floor failures independently demonstrate the same omission shape.
+WO-0111/0112 also contain related but non-identical retry, idempotence, and store-parity
+defects, so this template deliberately does not repeat the withdrawn "all eight twins"
+claim. Enumerate EVERY lane that reaches the same state or venue effect, one line each,
+marked `covered` or `N/A because <structural reason>`:
 
 - [ ] memory store / sqlite store (both, in the same change — never one)
 - [ ] fresh path / redrive / reconcile-inferred / restart-recovery
 - [ ] stage / protection / flatten (exit-effect surfaces)
 - [ ] dispatch / claim; declared scope / referenced-order scope
 - [ ] any OTHER lane this surface adds: <enumerate or state "none — checked">
+
+For each `covered` lane, name:
+- the implementation anchor;
+- the common effect sink or state transition;
+- the test node ID;
+- the expected pre-fix failure or counterexample; and
+- the mutation/holdout evidence, when the lane is load-bearing.
+
+`N/A` must name a structural impossibility (for example, "the sink accepts only
+AuthorizedVenueEffect and this lane cannot construct it"), not a scope preference.
 
 A FIX block that closes a finding on one lane without this table is incomplete by
 definition; "the review only showed lane X" is not an N/A reason.

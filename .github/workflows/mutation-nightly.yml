@@ -35,13 +35,32 @@ jobs:
         run: |
           pip install -r requirements.txt -c constraints.txt
           pip install -r requirements-mutation.txt
+      # STATUS: REPORT-ONLY until the first reviewed baseline is recorded
+      # (ADR-015; AUDIT-0003 amendment 2026-07-28). Run-state guard below makes
+      # silence fail loudly: a tool crash or an empty mutant population is a
+      # distinct failure, never a clean pass — a zero-survivor grep over a run
+      # that never happened is exactly the inert-evidence class S-3 names.
       - name: Run mutation testing
         run: |
-          mutmut run || true # survivors are counted, not fatal mid-run
-      - name: Enforce the ratchet
+          set +e
+          mutmut run
+          run_exit=$?
+          set -e
+          # mutmut exits nonzero when survivors exist — that is a REPORT, not
+          # an error. Distinguish it from a tool failure via the results call.
+          if ! mutmut results > results.txt 2>&1; then
+            echo "::error::TOOL_ERROR — mutmut produced no readable results (run exit $run_exit)"
+            exit 1
+          fi
+          generated=$(grep -cE "^[a-zA-Z_]" results.txt || true)
+          if [ "$generated" -eq 0 ]; then
+            echo "::error::NO_MUTANTS — empty mutant population; scope or config is broken"
+            exit 1
+          fi
+          echo "run state: COMPLETE (generated lines: $generated, run exit: $run_exit)"
+      - name: Enforce the ratchet (sentinel until baseline)
         run: |
-          mutmut results
-          survivors=$(mutmut results | grep -c "survived" || true)
+          survivors=$(grep -c "survived" results.txt || true)
           echo "surviving mutants: $survivors (max: $MAX_SURVIVORS)"
           if [ "$survivors" -gt "$MAX_SURVIVORS" ]; then
             echo "::error::mutation ratchet regressed: $survivors survivors > $MAX_SURVIVORS"

@@ -5,6 +5,8 @@ title: <Short descriptive title>
 status: AWAITING_REVIEW
 targets: [e.g. WO-0007b, ADR-008]
 human_gated_surfaces: []
+surface: <subsystem this packet reviews — P-1/P-4 counting key>
+round: <1..N — consecutive finding-bearing rounds on this delivery>
 commit_range: <start>..<end>
 created: YYYY-MM-DD
 ---
