@@ -29,11 +29,61 @@
 | 7 | Refutation pass + remediation + full battery | **VERIFIED** — 8 findings (2 P0) all resolved: 6 fixed+pinned, finding 2 via operator ruling Option A, finding 8 → REV-0045 disclosure. Full battery at `dd31fc2`: **4,722 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.0430%** (floor 93.0; the FIRST run FAILED the ratchet at 92.72% — memory-side heal branches uncovered — fixed with five memory-parity pins). Oracle 61, scaling 13, bootstrap, hygiene ×3, ruff/format/mypy/lint-imports all green |
 | 8 | Spec/ADR/pkl refresh + REV-0045 request staging for Codex | **VERIFIED** — `02-lifecycle.md` release row + ADR-009 epoch-close amended (operator-ratified no-epoch case); `pkl/` change-log entry + standing rule; `work/review/REV-0045/request.md` staged with ten named items |
 | 9 | REV-0045 remediation: 4 P0s + 3 P1s (cumulative, both Codex passes) | **CORRECTED — the root-cause claim is WITHDRAWN; see slice 10.** Claimed at the time: "all 7 findings fixed at root cause." Independent round-2 review (`e990269`) found only P0-1, P1-2 and P1-3 fixed; P0-2, P0-3 and P0-4 remain open at class level, and the P1-1 fix introduced a new P0-5 on the same parser surface. The measured figures stand and were reproduced by the reviewer (4,727 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.0770%; ruff/mypy/lint-imports/scaling green). The *interpretation* — that green plus per-finding pins equalled root-cause closure — did not. |
-| 11 | Round-2 remediation: the four open P0s closed by single-sourcing derived sequence truth | **VERIFIED** — P0-2/P0-3/P0-4/P0-5 fixed at class level (`807d38b`); 9 new pins, every one mutation-verified RED→GREEN; all 6 previously recorded decisive mutants re-verified against the changed code and still red; full battery **4,736 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.13%** (floor 93.0, read from the coverage line); oracle 61/61, scaling 13/13, ruff/mypy(77)/lint-imports(6 kept) green. **Gate NOT cleared** — awaiting a further Codex-owned artifact. |
+| 11 | Round-2 remediation: the four open P0s | **CORRECTED — the class-level claim is WITHDRAWN; see slice 13.** Round-3 (`48cae49`) found P0-2, P0-3 and P0-4 still open; only P0-5 (and earlier P0-1) are fixed. The measured figures stand and the reviewer reproduced them. This is the SECOND withdrawal of a root-cause claim by this seat (slice 9 was the first): pins on named instances were twice mistaken for closure of the class. Original text: **VERIFIED** — P0-2/P0-3/P0-4/P0-5 fixed at class level (`807d38b`); 9 new pins, every one mutation-verified RED→GREEN; all 6 previously recorded decisive mutants re-verified against the changed code and still red; full battery **4,736 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.13%** (floor 93.0, read from the coverage line); oracle 61/61, scaling 13/13, ruff/mypy(77)/lint-imports(6 kept) green. **Gate NOT cleared** — awaiting a further Codex-owned artifact. |
 | 12 | Ratified hardening: vocabulary rename + process gates + assurance retrospective | **VERIFIED** — ADR-014 rename landed (zero behavior change, full battery green post-rename); ADR-015 nightly generated-mutation ratchet configured; single-source AST gate live and mutation-verified (`tests/test_derived_truth_single_source.py`); conformance oracle wired into CI (closes AUDIT-0002 AUD2-C002); repo-primer oracle invocation corrected; `pkl/` standing rules ×3; AUDIT-0003 retrospective across the full review corpus with a 14-item ratification queue. Gate state unchanged: REV-0045 Codex-owned, R-1/R-2 open, D-2a OFF, R6b blocked. |
+| 13 | Round-3 independent gate + assurance-control defects | **BLOCK** — REV-0045 addendum-03 (`48cae49`, Codex/GPT-5, reviewed head `14ff12f`): delta 1 P0 + 3 P1; cumulative **6 P0 / 6 P1**. Rail surface: P0-2/P0-3/P0-4 remain open at class level, new **P0-6** (a reservation at `2**63-1` has no in-domain successor — the human release path cannot recover either store). **The operator's §2.6 RESERVE ruling is judged UNSAFE** and is hereby suspended pending re-ratification: faithful only for same-owner, below-maximum releases. **Three of the four new findings are defects in THIS SEAT'S OWN assurance controls** — P1-4 (the single-source AST gate is defeated by a split string literal; 3/3 tests green with a parallel derivation planted), P1-5 (the mutation workflow's grep cannot match mutmut 3.6.0's indented output, so the job is permanently NO_MUTANTS and the ratchet is unreachable), P1-6 (blank/null `date` bypasses the ledger commit-SHA ratchet entirely). All three independently reproduced by this seat. P0-5 FIXED (61,068 generated round trips clean). Battery 4,743/11/1/0, coverage 93.12%. **P-1 tripwire fires.** |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-28 (round-3 gate — BLOCK; the tripwire fires): REV-0045 addendum-03 (`48cae49`)
+  returns **BLOCK**, cumulative 6 P0 / 6 P1. Every finding independently reproduced by this seat
+  before recording; **no disputes filed**.
+
+  **The finding pattern is the story.** Three of the four new findings are defects in the
+  assurance controls THIS SEAT built and declared landed — not in the product:
+  - **P1-4:** the single-source AST gate is defeated by `event.payload.get("epoch_" + "sequence")`.
+    Reproduced: a parallel derivation planted in `memory.py` left all 3/3 gate tests green. The
+    external audit predicted this evasion class verbatim; this seat recorded it at "reduced
+    severity" and did not test it. The gate attests spelling, not derivation.
+  - **P1-5:** the mutation workflow counts result lines with `grep -cE "^[a-zA-Z_]"`, but
+    mutmut 3.6.0 prints `f"    {k}: {status}"` — four leading spaces. Reproduced from the
+    installed package source. The NO_MUTANTS guard this seat added to make silence fail loudly
+    fires on **every** run: the job is permanently red and the ratchet is unreachable.
+  - **P1-6:** `check_ledger.py` guards both the date-format and post-cutoff commit checks behind
+    `if date:`, so `date: ""` and `date: null` bypass both. Reproduced: rows carrying
+    `commit: "HEAD"` return `problems=[]`. The committed negative fixtures tested the happy path
+    and one violation, not the evasions.
+
+  The corrected meta-law this seat adopted last round requires controls to be *failure-capable and
+  exercised by a committed negative fixture*. These three were fixtured against the obvious
+  violation and never against an adversary. Writing the law did not confer compliance with it.
+
+  **P0-6 is a direct consequence of this seat's own recommendation.** The §2.6 RESERVE ruling was
+  argued on the grounds that the UNIQUE dedupe key is consumed at the append layer regardless of
+  event validity — locally true, and the reviewer confirms the same-owner case reproduces. But the
+  argument silently assumed a valid successor always exists. At `2**63-1` it does not:
+  `producer_released_event()` correctly refuses `high-water + 1`, so a marked producer can never be
+  released on either store. **The ruling is suspended as UNSAFE pending re-ratification**; the
+  claim in `02-lifecycle.md` §4 is faithful only for same-owner, below-maximum releases.
+
+  **P0-3's real shape, now visible:** the numeric and NULL limbs are fixed, but the append layer
+  dedupes on a GLOBAL key while every consumer selects events by PAYLOAD OWNER — memory scans all
+  events and asks the helper, SQLite pre-filters by owner, replay assigns by owner then asks. A
+  malformed release naming one owner while consuming another's canonical key therefore produces
+  SQLite floor 0 / memory floor 1 on the same log, and live/replay disagreement. Single-sourcing
+  the *helper* did not single-source the *ownership domain* it is applied over.
+
+  **Disposition:** slice 11's class-level claim is withdrawn (the second such withdrawal by this
+  seat). The P-1 tripwire fires on the fourth consecutive BLOCK for this surface. Per the operator
+  pre-commitment recorded in `work/queue/CLOSEOUT-R6a-CHECKLIST.md` §0, the rail-surface P0s
+  (P0-2/3/4/6) route to the WO-A/B/C kernel-consolidation program, **not** a fourth patch round.
+  The assurance-control P1s (P1-4/5/6) are separable, bounded, and blocking for that program —
+  they are the instruments it will be verified with — and are proposed for immediate repair.
+  P0-5 is FIXED (61,068 generated round trips, twelve adversarial ids through live/replay/restart
+  on both stores). REV-0044 addendum-01's R-1 caveat is **not discharged** and carries forward.
+  Gate state: R-1/R-2 open, D-2a OFF, R6b blocked.
+
 
 - 2026-07-28 (external process audit, round 2 — bundle applied): the ChatGPT seat's follow-up
   deliverables (round-2 report, amendment blocks, 62-row S-6 cohort with 33 attributable WOs)

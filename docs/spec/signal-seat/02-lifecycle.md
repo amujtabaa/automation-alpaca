@@ -148,7 +148,11 @@ the tolerant fold's high-water, BOTH stores' release floors, and the heal check 
 (enforced by `tests/test_derived_truth_single_source.py`). Store-side row validation can refuse
 states replay cannot see (drift-invalidation is a live-store superset); replay parity is asserted
 on the event-derived read models, and SQLite's durable rail sink refuses an out-of-domain epoch
-sequence with a typed store error rather than an unopenable database. **Sequence
+sequence with a typed store error rather than an unopenable database. **Sequence reservation — RULING SUSPENDED AS UNSAFE (REV-0045 addendum-03, 2026-07-28;
+awaiting re-ratification).** The rule below is faithful ONLY for same-owner releases below the
+maximum sequence: at `2**63-1` no in-domain successor exists, so recovery becomes impossible, and
+cross-owner key consumption makes the stores disagree. Do not rely on it as a total recovery rule.
+Original ruling text: **Sequence
 reservation (operator ruling 2026-07-28):** a refused release whose dedupe key is canonical and
 producer-bound still reserves its sequence in the high-water mark — the append layer's UNIQUE
 dedupe-key constraint has already consumed that key, so a heal at that sequence could never mint.
