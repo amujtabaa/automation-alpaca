@@ -348,7 +348,7 @@ correctly showed is unbounded over indefinite hostility):
 - **WO-0140 amendment (Ameen 2026-07-27):** `PRODUCER_RELEASED` may also close a *degenerate*
   epoch — the no-epoch heal of a legacy wedge or an unfoldable rail history — carrying a zero-width
   window (`epoch_start == released_at`) and consuming the next epoch sequence via its dedupe key.
-  Release remains the single human recovery for every stuck rail state; a drift-poisoned producer
+  Release remains the single human recovery for every stuck rail state; a drift-invalidated producer (ADR-014 vocabulary)
   whose log folds healthy is repaired from log truth instead (mid-cycle: repair-and-refuse, so no
   release event can launder a partially consumed budget).
 - **One summary on epoch close:** `PRODUCER_RELEASED` carries the saturated rejected-count and

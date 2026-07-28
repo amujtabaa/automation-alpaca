@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional
 
-from app.events.projectors import PoisonedProducerMarker
+from app.events.projectors import InvalidProjectionMarker
 from app.models import (
     RECOVERY_UNRESOLVED,
     Candidate,
@@ -1395,11 +1395,11 @@ class StateStore(ABC):
         """Stored signals, optionally filtered by durable status/scope."""
 
     @abstractmethod
-    def poisoned_producers(self) -> dict[str, "PoisonedProducerMarker"]:
+    def invalid_projection_markers(self) -> dict[str, "InvalidProjectionMarker"]:
         """Derived markers for producers whose rail history cannot be folded.
 
         WO-0140 D-R R-1: never persisted, rebuilt at every ``initialize()``.
-        A poisoned producer's ingest and rate checks are rejected write-free
+        A invalid-projection producer's ingest and rate checks are rejected write-free
         with the existing producer-quarantined outcome until a human release.
         """
 

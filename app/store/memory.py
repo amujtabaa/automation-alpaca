@@ -63,7 +63,7 @@ from app.models import (
 )
 from app.events.projectors import (
     ORDER_STATUS_EVENT_TYPES,
-    PoisonedProducerMarker,
+    InvalidProjectionMarker,
     ProducerRailProjection,
     ProjectionError,
     active_emergency_reduce_overrides,
@@ -277,7 +277,7 @@ class InMemoryStateStore(StateStore):
         self._signals: dict[tuple[str, str], SignalRecord] = {}
         self._producer_budget_rails: dict[str, _ProducerBudgetRail] = {}
         # WO-0140 D-R R-1: derived, never persisted; rebuilt at initialize().
-        self._poisoned_producers: dict[str, PoisonedProducerMarker] = {}
+        self._invalid_projection_markers: dict[str, InvalidProjectionMarker] = {}
         self._producer_epoch_sequences: dict[str, int] = {}
         self._producer_rate_buckets: dict[str, _ProducerRateBucket] = {}
         # Spine v2 execution-event log (Phase 2): append-only, sequence order.
@@ -321,11 +321,11 @@ class InMemoryStateStore(StateStore):
         """Replace only log-derived rail state; preserve primary bucket state.
 
         WO-0140 D-R R-1: tolerant per producer. A producer whose history
-        cannot be folded is poisoned in derived state; its epoch-sequence
+        cannot be folded is invalidated in derived state; its epoch-sequence
         carrier never regresses (``max(prior value, marker.last_known)``).
         """
 
-        projected, poisoned = project_producer_rails_tolerant(self._execution_events)
+        projected, invalidated = project_producer_rails_tolerant(self._execution_events)
         prior_sequences = dict(self._producer_epoch_sequences)
         self._producer_budget_rails = {
             producer_id: _ProducerBudgetRail(
@@ -341,13 +341,13 @@ class InMemoryStateStore(StateStore):
             producer_id: rail.quarantine_epoch_sequence
             for producer_id, rail in projected.items()
         }
-        for producer_id, marker in poisoned.items():
+        for producer_id, marker in invalidated.items():
             self._producer_budget_rails[producer_id] = _ProducerBudgetRail()
             self._producer_epoch_sequences[producer_id] = max(
                 prior_sequences.get(producer_id, 0),
                 marker.last_known_epoch_sequence,
             )
-        self._poisoned_producers = dict(poisoned)
+        self._invalid_projection_markers = dict(invalidated)
 
     def _release_sequence_floor_unlocked(self, producer_id: str) -> int:
         """Highest epoch sequence the LOG proves consumed (WO-0140 D-R R-3)."""
@@ -703,7 +703,7 @@ class InMemoryStateStore(StateStore):
 
         Snapshots store state on enter; on ANY exception restores it, so a failed
         audit-event append can't leave a half-applied mutation (a fill recorded
-        without its ``fill_appended`` event and a poisoned dedup set; a flipped
+        without its ``fill_appended`` event and a invalidated dedup set; a flipped
         control flag with no audit row). Mirrors ``SqliteStateStore``'s
         BEGIN/COMMIT/ROLLBACK.
 
@@ -730,7 +730,7 @@ class InMemoryStateStore(StateStore):
         }
         saved_signals = dict(self._signals)
         saved_producer_budget_rails = dict(self._producer_budget_rails)
-        saved_poisoned_producers = dict(self._poisoned_producers)
+        saved_invalid_projection_markers = dict(self._invalid_projection_markers)
         saved_producer_epoch_sequences = dict(self._producer_epoch_sequences)
         saved_producer_rate_buckets = dict(self._producer_rate_buckets)
         saved_fills = list(self._fills)
@@ -756,7 +756,7 @@ class InMemoryStateStore(StateStore):
             self._sell_intents = saved_sell_intents
             self._signals = saved_signals
             self._producer_budget_rails = saved_producer_budget_rails
-            self._poisoned_producers = saved_poisoned_producers
+            self._invalid_projection_markers = saved_invalid_projection_markers
             self._producer_epoch_sequences = saved_producer_epoch_sequences
             self._producer_rate_buckets = saved_producer_rate_buckets
             self._fills = saved_fills
@@ -5502,7 +5502,7 @@ class InMemoryStateStore(StateStore):
 
             # FILL_APPEND — atomically append the fill + dedup key + audit event
             # + the shadow ExecutionEvent (wave 3a), so a failed write can't leave
-            # a position-changing fill with no fill_appended row, a poisoned dedup
+            # a position-changing fill with no fill_appended row, a invalidated dedup
             # set, or a fill/event-log divergence (Item 4 + shadow parity).
             assert plan.fill is not None  # FILL_APPEND builds the fill row
             fill = plan.fill
@@ -5785,7 +5785,7 @@ class InMemoryStateStore(StateStore):
         payload_hash = signal_canonical_hash(canonical)
         async with self._lock:
             with self._atomic():
-                if producer_id in self._poisoned_producers:
+                if producer_id in self._invalid_projection_markers:
                     # WO-0140 D-R R-1: write-free record-free rejection; the
                     # existing 7th outcome is reused, no new vocabulary.
                     return SignalIngestResult(
@@ -5820,15 +5820,17 @@ class InMemoryStateStore(StateStore):
                             producer_id, producer_rail
                         )
                     except (InvalidEventError, ProjectionError) as exc:
-                        # WO-0140 D-R R-1.1: boundary drift poisons the
+                        # WO-0140 D-R R-1.1: boundary drift invalidates the
                         # producer, write-free.
-                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
-                            producer_id=producer_id,
-                            offending_sequence=0,
-                            reason=str(exc),
-                            last_known_epoch_sequence=(
-                                producer_rail.quarantine_epoch_sequence
-                            ),
+                        self._invalid_projection_markers[producer_id] = (
+                            InvalidProjectionMarker(
+                                producer_id=producer_id,
+                                offending_sequence=0,
+                                reason=str(exc),
+                                last_known_epoch_sequence=(
+                                    producer_rail.quarantine_epoch_sequence
+                                ),
+                            )
                         )
                         return SignalIngestResult(
                             outcome=SIGNAL_PRODUCER_QUARANTINED, record=None
@@ -5981,10 +5983,10 @@ class InMemoryStateStore(StateStore):
             rate_refill_anchor=rate.refill_anchor if rate is not None else None,
         )
 
-    def poisoned_producers(self) -> dict[str, PoisonedProducerMarker]:
-        """Copy of the derived poisoned-producer markers (WO-0140 D-R R-1)."""
+    def invalid_projection_markers(self) -> dict[str, InvalidProjectionMarker]:
+        """Copy of the derived invalidated-producer markers (WO-0140 D-R R-1)."""
 
-        return dict(self._poisoned_producers)
+        return dict(self._invalid_projection_markers)
 
     async def get_producer_rail(self, producer_id: str) -> ProducerRailState:
         async with self._lock:
@@ -6017,7 +6019,7 @@ class InMemoryStateStore(StateStore):
         )
         async with self._lock:
             with self._atomic():
-                if producer_id in self._poisoned_producers:
+                if producer_id in self._invalid_projection_markers:
                     return ProducerRateVerdict(
                         "quarantined",
                         ProducerRailState(producer_id=producer_id),
@@ -6045,12 +6047,16 @@ class InMemoryStateStore(StateStore):
                             producer_id, rail
                         )
                     except (InvalidEventError, ProjectionError) as exc:
-                        # WO-0140 D-R R-1.1: drift poisons, write-free.
-                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
-                            producer_id=producer_id,
-                            offending_sequence=0,
-                            reason=str(exc),
-                            last_known_epoch_sequence=(rail.quarantine_epoch_sequence),
+                        # WO-0140 D-R R-1.1: drift invalidates, write-free.
+                        self._invalid_projection_markers[producer_id] = (
+                            InvalidProjectionMarker(
+                                producer_id=producer_id,
+                                offending_sequence=0,
+                                reason=str(exc),
+                                last_known_epoch_sequence=(
+                                    rail.quarantine_epoch_sequence
+                                ),
+                            )
                         )
                         return ProducerRateVerdict("quarantined", rail)
                     epoch_event = producer_quarantined_event(
@@ -6104,26 +6110,28 @@ class InMemoryStateStore(StateStore):
                     or producer_id in self._producer_epoch_sequences
                     or producer_id in self._producer_rate_buckets
                 )
-                if not known and producer_id not in self._poisoned_producers:
+                if not known and producer_id not in self._invalid_projection_markers:
                     raise UnknownEntityError(
                         f"signal producer {producer_id!r} does not exist"
                     )
-                poisoned = producer_id in self._poisoned_producers
+                invalidated = producer_id in self._invalid_projection_markers
                 rail: Optional[ProducerRailState] = None
-                if not poisoned:
+                if not invalidated:
                     try:
                         rail = self._producer_rail_unlocked(producer_id)
                         self._authoritative_epoch_sequence_unlocked(producer_id, rail)
                     except (InvalidEventError, ProjectionError) as exc:
-                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
-                            producer_id=producer_id,
-                            offending_sequence=0,
-                            reason=str(exc),
-                            last_known_epoch_sequence=0,
+                        self._invalid_projection_markers[producer_id] = (
+                            InvalidProjectionMarker(
+                                producer_id=producer_id,
+                                offending_sequence=0,
+                                reason=str(exc),
+                                last_known_epoch_sequence=0,
+                            )
                         )
-                        poisoned = True
+                        invalidated = True
                 repaired_rail = None
-                if poisoned:
+                if invalidated:
                     # Option A (Ameen 2026-07-27): classify by LOG truth so
                     # every release outcome is replay-consistent (sqlite
                     # mirror — R-3 parity).
@@ -6180,7 +6188,7 @@ class InMemoryStateStore(StateStore):
                         self._producer_epoch_sequences[producer_id] = (
                             repaired_rail.quarantine_epoch_sequence
                         )
-                        self._poisoned_producers.pop(producer_id, None)
+                        self._invalid_projection_markers.pop(producer_id, None)
                 elif rail is not None and rail.quarantine_epoch_open:
                     if rail.quarantine_epoch_started_at is None:
                         raise InvalidEventError(
@@ -6219,7 +6227,7 @@ class InMemoryStateStore(StateStore):
                     self._producer_rate_buckets.pop(producer_id, None)
                     self._producer_budget_rails[producer_id] = _ProducerBudgetRail()
                     self._producer_epoch_sequences[producer_id] = epoch_sequence
-                    self._poisoned_producers.pop(producer_id, None)
+                    self._invalid_projection_markers.pop(producer_id, None)
                     release_result = self._producer_rail_unlocked(producer_id)
             # Outside the atomic block: the repair survives this raise
             # (Option A — the refusal must heal, not roll back).

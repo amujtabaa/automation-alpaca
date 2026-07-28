@@ -54,26 +54,26 @@ async def test_memory_atomic_restores_all_signal_rail_collections() -> None:
 
     budget_before = object()
     bucket_before = object()
-    poisoned_before = object()
+    invalidated_before = object()
     store._producer_budget_rails["producer-a"] = budget_before  # type: ignore[assignment]
     store._producer_epoch_sequences["producer-a"] = 7
     store._producer_rate_buckets["producer-a"] = bucket_before  # type: ignore[assignment]
-    # WO-0140 D-R R-1: the poisoned-marker dict joined _atomic()'s enumeration
+    # WO-0140 D-R R-1: the invalidated-marker dict joined _atomic()'s enumeration
     # (release heals mutate it inside an atomic op).
-    store._poisoned_producers["producer-a"] = poisoned_before  # type: ignore[assignment]
+    store._invalid_projection_markers["producer-a"] = invalidated_before  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="forced rail rollback"):
         with store._atomic():
             store._producer_budget_rails["producer-a"] = object()  # type: ignore[assignment]
             store._producer_epoch_sequences["producer-a"] = 99
             store._producer_rate_buckets["producer-a"] = object()  # type: ignore[assignment]
-            store._poisoned_producers.pop("producer-a")
+            store._invalid_projection_markers.pop("producer-a")
             raise RuntimeError("forced rail rollback")
 
     assert store._producer_budget_rails == {"producer-a": budget_before}
     assert store._producer_epoch_sequences == {"producer-a": 7}
     assert store._producer_rate_buckets == {"producer-a": bucket_before}
-    assert store._poisoned_producers == {"producer-a": poisoned_before}
+    assert store._invalid_projection_markers == {"producer-a": invalidated_before}
 
 
 async def test_missing_producer_rail_reads_as_zero_state(any_store) -> None:
@@ -483,7 +483,7 @@ async def test_epoch_sequence_is_taken_from_log_not_stale_cache(any_store) -> No
     # WO-0140 re-pin (authorized edit 1): under cache authority a regressed
     # carrier is refused LOUDLY at the boundary cross-check — the release
     # boundary proves epoch 1 existed, so a closed row at sequence 0 is
-    # impossible. The producer is poisoned write-free; no colliding opener is
+    # impossible. The producer is invalidated write-free; no colliding opener is
     # ever minted. (The pre-WO-0140 pin asserted silent out-derivation.)
     before = await any_store.get_execution_events()
     await any_store.check_and_debit_producer_rate(
@@ -492,15 +492,15 @@ async def test_epoch_sequence_is_taken_from_log_not_stale_cache(any_store) -> No
         limit_per_hour=60,
         burst=1,
     )
-    poisoned_verdict = await any_store.check_and_debit_producer_rate(
+    invalidated_verdict = await any_store.check_and_debit_producer_rate(
         "producer-sequence",
         now=NOW + timedelta(seconds=1),
         limit_per_hour=60,
         burst=1,
     )
 
-    assert poisoned_verdict.outcome == "quarantined"
-    assert "producer-sequence" in any_store.poisoned_producers()
+    assert invalidated_verdict.outcome == "quarantined"
+    assert "producer-sequence" in any_store.invalid_projection_markers()
     assert await any_store.get_execution_events() == before
     openers = [
         event
@@ -542,11 +542,11 @@ async def test_high_stale_epoch_sequence_cannot_block_log_derived_opener(
     # WO-0140 re-pin (authorized edit 1): a staled-high carrier has no log
     # anchor (no producer_release/producer_quarantine dedupe key at that
     # sequence), so the O(1) anchor refuses it at the cross-check and the
-    # producer is poisoned write-free — no opener is minted from a lying row.
+    # producer is invalidated write-free — no opener is minted from a lying row.
     # (The pre-WO-0140 pin asserted silent out-derivation.)
     assert result.outcome == "producer_quarantined"
     assert result.record is None
-    assert "producer-high-stale" in any_store.poisoned_producers()
+    assert "producer-high-stale" in any_store.invalid_projection_markers()
     opener = [
         event
         for event in await any_store.get_execution_events()

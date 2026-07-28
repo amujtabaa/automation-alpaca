@@ -1339,7 +1339,7 @@ def contributed_epoch_sequence(
 
     REV-0045 addendum-02 P0-3/P0-4. This is the single source of derived
     sequence truth: every consumer — the tolerant fold's high-water
-    bookkeeping, both stores' release floors, and the poisoned-heal
+    bookkeeping, both stores' release floors, and the invalid-marker heal
     next-sequence check — must agree on what a logged event proves, or the
     same append-only history yields different results across live, replay,
     restart, memory and SQLite.
@@ -1388,9 +1388,9 @@ def _validated_release_event_shape(
     closed payload, actor hygiene, bounded rejected_count, aware timestamps
     ordered correctly — independent of any prior folded producer state.
 
-    REV-0045 P0-4: shared by the strict applier AND the poisoned-heal fast
+    REV-0045 P0-4: shared by the strict applier AND the invalid-marker heal fast
     path in :func:`project_producer_rails_tolerant`, so a release event
-    cannot clear a poison marker by any lesser standard than a normal
+    cannot clear a invalid-projection marker by any lesser standard than a normal
     release must meet. Returns ``(epoch_start, released_at)``.
     """
 
@@ -1433,7 +1433,7 @@ def _apply_producer_released(
 
     if current.quarantine_epoch_open:
         # The open-epoch drift net: the release must name the exact epoch it
-        # closes. A zero-width forgery while an epoch is open fails here
+        # closes. A zero-width false claim while an epoch is open fails here
         # (epoch_start == released_at != true start). REV-0045 expanded
         # P1-1: a normal close does not MINT a new sequence, it closes the
         # currently open one — so the dedupe key must be parsed and bound
@@ -1464,7 +1464,7 @@ def _apply_producer_released(
     # WO-0140 D-R R-3: the no-epoch (zero-width) release. Accepted ONLY as a
     # zero-width window, and ONLY from the zero state or the legacy wedge
     # (consumed >= pinned limit with no opener — a pre-R6a shape). The
-    # interior shape (0 < consumed < limit) would be an UNAUTHORIZED CYCLE
+    # interior shape (0 < consumed < limit) would be an UNRATIFIED CYCLE
     # RESET of a partially consumed budget in replay and is refused
     # (pass-2 F-H). The consumed
     # sequence lives in the dedupe key — the ratified payload carries none.
@@ -1483,13 +1483,13 @@ def _apply_producer_released(
     if not (is_zero_state or is_wedge):
         raise ProjectionError(
             f"PRODUCER_RELEASED event sequence={event.sequence} is a zero-width "
-            "heal of a mid-cycle rail (unauthorized cycle reset refused)"
+            "heal of a mid-cycle rail (unratified cycle reset refused)"
         )
     consumed_sequence = sequence_from_release_dedupe_key(
         event.dedupe_key, producer_id=current.producer_id
     )
     # REV-0045 expanded P1-1: the ratified rule mints the NEXT sequence, not
-    # merely a higher one — accepting any upward jump would let a forged or
+    # merely a higher one — accepting any upward jump would let a mismatched or
     # gapped key skip sequences no opener or prior release ever claimed.
     if consumed_sequence != current.quarantine_epoch_sequence + 1:
         raise ProjectionError(
@@ -1583,7 +1583,7 @@ def fold_producer_rail(
 
 
 @dataclass(frozen=True)
-class PoisonedProducerMarker:
+class InvalidProjectionMarker:
     """Derived record of one producer whose rail history cannot be folded.
 
     WO-0140 D-R R-1: the marker is DERIVED, in-memory state — recomputed
@@ -1602,22 +1602,22 @@ class PoisonedProducerMarker:
 
 def project_producer_rails_tolerant(
     events: Iterable[ExecutionEvent],
-) -> tuple[dict[str, ProducerRailProjection], dict[str, PoisonedProducerMarker]]:
+) -> tuple[dict[str, ProducerRailProjection], dict[str, InvalidProjectionMarker]]:
     """Per-producer tolerant fold (WO-0140 D-R R-1).
 
     Mirrors :func:`project_producer_rails` event-for-event, but a
-    ``ProjectionError`` poisons ONLY the producer it arose on: that producer
+    ``ProjectionError`` invalidates ONLY the producer it arose on: that producer
     leaves the projection and gains a marker; every other producer folds
     exactly as the strict fold would. An event whose producer identity is
     itself unreadable still raises store-wide — there is no producer to
-    poison (the one disclosed exception; not producible by pre-R6a writers).
+    invalidation (the one disclosed exception; not producible by pre-R6a writers).
 
     ``project_producer_rails`` itself stays strict on purpose: the replay
     conformance pins and the payload-exactness ratchet rely on it raising.
     """
 
     projected: dict[str, ProducerRailProjection] = {}
-    poisoned_at: dict[str, tuple[int, str]] = {}
+    invalid_at: dict[str, tuple[int, str]] = {}
     last_known: dict[str, int] = {}
     for event in events:
         if (
@@ -1641,14 +1641,14 @@ def project_producer_rails_tolerant(
         if contributed is not None:
             last_known[producer_id] = max(prior_high_water, contributed)
 
-        if producer_id in poisoned_at:
+        if producer_id in invalid_at:
             if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
                 # REV-0045 P0-4: the heal is a release like any other one —
                 # it must pass the SAME structural validator (closed
                 # payload, actor hygiene, bounded counters, aware
                 # timestamps) before its zero-width shape or sequence are
                 # even inspected. A malformed recovery event must never
-                # clear a poison marker just because it happens to look
+                # clear a invalid-projection marker just because it happens to look
                 # zero-width.
                 try:
                     epoch_start, released_at = _validated_release_event_shape(event)
@@ -1656,12 +1656,12 @@ def project_producer_rails_tolerant(
                     continue
                 if epoch_start == released_at:
                     # WO-0140 D-R R-3 state 3: the zero-width release IS the
-                    # heal — the fold boundary. The producer un-poisons and
+                    # heal — the fold boundary. The producer clears its marker and
                     # folding restarts from the zero state at the consumed
                     # sequence, which must be EXACTLY the next sequence the
                     # log has ever proven for this producer (not merely
                     # higher) — an unparseable key or a non-next sequence
-                    # leaves it poisoned.
+                    # leaves it invalidated.
                     try:
                         healed_sequence = sequence_from_release_dedupe_key(
                             event.dedupe_key, producer_id=producer_id
@@ -1670,7 +1670,7 @@ def project_producer_rails_tolerant(
                         continue
                     if healed_sequence != prior_high_water + 1:
                         continue
-                    del poisoned_at[producer_id]
+                    del invalid_at[producer_id]
                     projected[producer_id] = ProducerRailProjection(
                         producer_id=producer_id,
                         quarantine_epoch_sequence=healed_sequence,
@@ -1692,15 +1692,15 @@ def project_producer_rails_tolerant(
                 )
         except ProjectionError as exc:
             projected.pop(producer_id, None)
-            poisoned_at[producer_id] = (event.sequence, str(exc))
+            invalid_at[producer_id] = (event.sequence, str(exc))
 
-    poisoned = {
-        producer_id: PoisonedProducerMarker(
+    invalidated = {
+        producer_id: InvalidProjectionMarker(
             producer_id=producer_id,
             offending_sequence=sequence,
             reason=reason,
             last_known_epoch_sequence=last_known.get(producer_id, 0),
         )
-        for producer_id, (sequence, reason) in poisoned_at.items()
+        for producer_id, (sequence, reason) in invalid_at.items()
     }
-    return projected, poisoned
+    return projected, invalidated

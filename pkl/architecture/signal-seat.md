@@ -110,7 +110,7 @@ ADR and review).
   F-6/F-8 carry to R6. D-2a stays OFF pending R6 + R7 and the joint gate.
 - 2026-07-27: R6a truth-model remediation implemented (WO-0140, REV-0044 R-1..R-13; implementer
   Claude by operator seat swap, gate-clearing review Codex-owned REV-0045): per-producer tolerant
-  startup with derived poisoned markers (a pre-R6a log OPENS; exactly the offender is refused);
+  startup with derived invalid-projection markers (a pre-R6a log OPENS; exactly the offender is refused; vocabulary per ADR-014 — formerly "poisoned");
   cache-authoritative live gating with the incremental debit (the attributable path folds nothing);
   bounded release-exclusive verification folds with a state-conditional seed, an O(1) dedupe-key
   anchor, and the release-boundary regression rule; the three-state log-classified release (open →

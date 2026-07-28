@@ -80,7 +80,7 @@ from app.models import (
 )
 from app.events.projectors import (
     ORDER_STATUS_EVENT_TYPES,
-    PoisonedProducerMarker,
+    InvalidProjectionMarker,
     ProjectionError,
     ProducerRailProjection,
     active_emergency_reduce_overrides,
@@ -575,7 +575,7 @@ class SqliteStateStore(StateStore):
         self._recovery_truth_lock = asyncio.Lock()
         self._conn: Optional[sqlite3.Connection] = None
         # WO-0140 D-R R-1: derived, never persisted; rebuilt at every initialize().
-        self._poisoned_producers: dict[str, PoisonedProducerMarker] = {}
+        self._invalid_projection_markers: dict[str, InvalidProjectionMarker] = {}
         self._accepted_submit_uncertainty_events: list[ExecutionEvent] = []
         self._accepted_submit_uncertainty_event_ids: set[str] = set()
         self._accepted_submit_uncertainty_events_by_broker: dict[
@@ -1594,7 +1594,7 @@ class SqliteStateStore(StateStore):
         seed is tautological; the O(1) dedupe-key anchor validates it against
         the log instead (exact-key lookups, no index, no scan). Raises
         ``InvalidEventError`` on any disagreement — callers on write paths
-        poison the producer rather than propagate (D-R R-1.1).
+        invalidation the producer rather than propagate (D-R R-1.1).
         """
 
         boundary_row = cur.execute(
@@ -1791,18 +1791,18 @@ class SqliteStateStore(StateStore):
     def _rebuild_producer_rails_locked(self, cur: sqlite3.Cursor) -> None:
         """Rebuild class-(A) columns tolerantly (WO-0140 D-R R-1).
 
-        A producer whose history cannot be folded is POISONED — marked in
+        A producer whose history cannot be folded is MARKED INVALID — recorded in
         derived, never-persisted state — instead of refusing the store. Its
         row keeps only the never-regressed epoch-sequence carrier
         (``max(prior row value, max readable PRODUCER_* payload sequence)``);
         bucket columns are class-(B) and untouched, as ever. A persisted row
-        the validator refuses likewise poisons only that producer
-        (startup drift-poisoning, D-R R-1.1) — note replay cannot see
-        row-level drift, so store-side poisons may be a superset of
-        replay-side ones; log-derived poisons agree exactly.
+        the validator refuses likewise invalidates only that producer
+        (startup drift-invalidation, D-R R-1.1) — note replay cannot see
+        row-level drift, so store-side invalidates may be a superset of
+        replay-side ones; log-derived invalidates agree exactly.
         """
 
-        projected, poisoned = self._projected_producer_rails_tolerant_locked(cur)
+        projected, invalidated = self._projected_producer_rails_tolerant_locked(cur)
         prior_sequences: dict[str, int] = {}
         for row in cur.execute(
             "SELECT producer_id, quarantine_epoch_sequence FROM signal_producer_rails"
@@ -1821,7 +1821,7 @@ class SqliteStateStore(StateStore):
         )
         for rail in projected.values():
             self._upsert_producer_log_rail(cur, rail)
-        for producer_id, marker in poisoned.items():
+        for producer_id, marker in invalidated.items():
             self._upsert_producer_log_rail(
                 cur,
                 ProducerRailProjection(
@@ -1832,7 +1832,7 @@ class SqliteStateStore(StateStore):
                     ),
                 ),
             )
-        markers = dict(poisoned)
+        markers = dict(invalidated)
         for row in cur.execute(
             "SELECT * FROM signal_producer_rails ORDER BY producer_id"
         ).fetchall():
@@ -1840,13 +1840,13 @@ class SqliteStateStore(StateStore):
                 self._producer_rail(row)
             except InvalidEventError as exc:
                 producer_id = row["producer_id"]
-                markers[producer_id] = PoisonedProducerMarker(
+                markers[producer_id] = InvalidProjectionMarker(
                     producer_id=producer_id,
                     offending_sequence=0,
                     reason=str(exc),
                     last_known_epoch_sequence=prior_sequences.get(producer_id, 0),
                 )
-        self._poisoned_producers = markers
+        self._invalid_projection_markers = markers
 
     @staticmethod
     def _session(row: sqlite3.Row) -> SessionRecord:
@@ -8145,7 +8145,7 @@ class SqliteStateStore(StateStore):
         payload_hash = signal_canonical_hash(canonical)
         async with self._lock:
             with self._tx() as cur:
-                if producer_id in self._poisoned_producers:
+                if producer_id in self._invalid_projection_markers:
                     # WO-0140 D-R R-1: write-free record-free rejection; no new
                     # outcome vocabulary — the existing 7th outcome is reused.
                     return SignalIngestResult(
@@ -8185,15 +8185,17 @@ class SqliteStateStore(StateStore):
                             cur, producer_id, producer_rail
                         )
                     except (InvalidEventError, ProjectionError) as exc:
-                        # WO-0140 D-R R-1.1: boundary drift poisons the
+                        # WO-0140 D-R R-1.1: boundary drift invalidates the
                         # producer, write-free, instead of bricking the path.
-                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
-                            producer_id=producer_id,
-                            offending_sequence=0,
-                            reason=str(exc),
-                            last_known_epoch_sequence=(
-                                producer_rail.quarantine_epoch_sequence
-                            ),
+                        self._invalid_projection_markers[producer_id] = (
+                            InvalidProjectionMarker(
+                                producer_id=producer_id,
+                                offending_sequence=0,
+                                reason=str(exc),
+                                last_known_epoch_sequence=(
+                                    producer_rail.quarantine_epoch_sequence
+                                ),
+                            )
                         )
                         return SignalIngestResult(
                             outcome=SIGNAL_PRODUCER_QUARANTINED, record=None
@@ -8297,10 +8299,10 @@ class SqliteStateStore(StateStore):
             )
             return [self._signal_record(row) for row in rows]
 
-    def poisoned_producers(self) -> dict[str, PoisonedProducerMarker]:
-        """Copy of the derived poisoned-producer markers (WO-0140 D-R R-1)."""
+    def invalid_projection_markers(self) -> dict[str, InvalidProjectionMarker]:
+        """Copy of the derived invalidated-producer markers (WO-0140 D-R R-1)."""
 
-        return dict(self._poisoned_producers)
+        return dict(self._invalid_projection_markers)
 
     async def get_producer_rail(self, producer_id: str) -> ProducerRailState:
         async with self._lock:
@@ -8336,9 +8338,9 @@ class SqliteStateStore(StateStore):
         )
         async with self._lock:
             with self._tx() as cur:
-                if producer_id in self._poisoned_producers:
+                if producer_id in self._invalid_projection_markers:
                     # WO-0140 refutation finding 4: the marker check precedes
-                    # the row read — a poisoned producer with a validator-
+                    # the row read — a invalid-projection producer with a validator-
                     # refused row must get the verdict, not a raise.
                     return ProducerRateVerdict(
                         "quarantined",
@@ -8366,12 +8368,16 @@ class SqliteStateStore(StateStore):
                             cur, producer_id, rail
                         )
                     except (InvalidEventError, ProjectionError) as exc:
-                        # WO-0140 D-R R-1.1: drift poisons, write-free.
-                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
-                            producer_id=producer_id,
-                            offending_sequence=0,
-                            reason=str(exc),
-                            last_known_epoch_sequence=(rail.quarantine_epoch_sequence),
+                        # WO-0140 D-R R-1.1: drift invalidates, write-free.
+                        self._invalid_projection_markers[producer_id] = (
+                            InvalidProjectionMarker(
+                                producer_id=producer_id,
+                                offending_sequence=0,
+                                reason=str(exc),
+                                last_known_epoch_sequence=(
+                                    rail.quarantine_epoch_sequence
+                                ),
+                            )
                         )
                         return ProducerRateVerdict("quarantined", rail)
                     epoch_event = producer_quarantined_event(
@@ -8423,37 +8429,39 @@ class SqliteStateStore(StateStore):
         async with self._lock:
             with self._tx() as cur:
                 # WO-0140 D-R R-3: release is the ONE human recovery — three
-                # states: an open epoch, the legacy wedge, and a poisoned
+                # states: an open epoch, the legacy wedge, and a invalidated
                 # producer (the heal). Gate on the cache, cross-checked by the
                 # bounded fold; drift found here funnels into the heal.
                 row = cur.execute(
                     "SELECT 1 FROM signal_producer_rails WHERE producer_id = ?",
                     (producer_id,),
                 ).fetchone()
-                if row is None and producer_id not in self._poisoned_producers:
+                if row is None and producer_id not in self._invalid_projection_markers:
                     raise UnknownEntityError(
                         f"signal producer {producer_id!r} does not exist"
                     )
-                poisoned = producer_id in self._poisoned_producers
+                invalidated = producer_id in self._invalid_projection_markers
                 rail: Optional[ProducerRailState] = None
-                if not poisoned:
+                if not invalidated:
                     try:
                         rail = self._producer_rail_locked(cur, producer_id)
                         self._authoritative_epoch_sequence_locked(
                             cur, producer_id, rail
                         )
                     except (InvalidEventError, ProjectionError) as exc:
-                        self._poisoned_producers[producer_id] = PoisonedProducerMarker(
-                            producer_id=producer_id,
-                            offending_sequence=0,
-                            reason=str(exc),
-                            last_known_epoch_sequence=0,
+                        self._invalid_projection_markers[producer_id] = (
+                            InvalidProjectionMarker(
+                                producer_id=producer_id,
+                                offending_sequence=0,
+                                reason=str(exc),
+                                last_known_epoch_sequence=0,
+                            )
                         )
-                        poisoned = True
+                        invalidated = True
                 repaired_rail: Optional[ProducerRailProjection] = None
-                if poisoned:
+                if invalidated:
                     # Option A (Ameen 2026-07-27, refutation finding 2): a
-                    # poisoned producer is CLASSIFIED BY LOG TRUTH so every
+                    # invalid-projection producer is CLASSIFIED BY LOG TRUTH so every
                     # release outcome is replay-consistent by construction.
                     rows = cur.execute(
                         "SELECT * FROM execution_events WHERE "
@@ -8485,8 +8493,8 @@ class SqliteStateStore(StateStore):
                     ):
                         # Zero or INTERIOR log: per log truth nothing is
                         # releasable — releasing mid-cycle is the budget
-                        # unauthorized cycle reset F-H forbids. Repair from the
-                        # log, clear the poison, and refuse AFTER committing.
+                        # unratified cycle reset F-H forbids. Repair from the
+                        # log, clear the invalidation, and refuse AFTER committing.
                         repaired_rail = folded
                     else:
                         # Wedge log, or unfoldable: the zero-width heal.
@@ -8496,7 +8504,7 @@ class SqliteStateStore(StateStore):
                         )
                     if repaired_rail is not None:
                         self._upsert_producer_log_rail(cur, repaired_rail)
-                        self._poisoned_producers.pop(producer_id, None)
+                        self._invalid_projection_markers.pop(producer_id, None)
                 elif rail is not None and rail.quarantine_epoch_open:
                     if rail.quarantine_epoch_started_at is None:
                         raise InvalidEventError(
@@ -8549,7 +8557,7 @@ class SqliteStateStore(StateStore):
                         tokens=None,
                         refill_anchor=None,
                     )
-                    self._poisoned_producers.pop(producer_id, None)
+                    self._invalid_projection_markers.pop(producer_id, None)
                     release_result = self._producer_rail_locked(cur, producer_id)
             # Outside the transaction: the repair COMMITTED before this raise
             # (Option A — the refusal must heal, not roll back).
