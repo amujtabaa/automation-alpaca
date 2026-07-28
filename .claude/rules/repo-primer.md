@@ -64,7 +64,7 @@ ruff format --check .
 mypy app/
 lint-imports
 pytest -q --basetemp (Join-Path ([System.IO.Path]::GetTempPath()) 'pytest-<unique-id>')
-python tests/r2_conformance_oracle.py
+python -m pytest -q tests/r2_conformance_oracle.py
 pytest -q tests/test_wo0113_repair_scaling.py
 ```
 

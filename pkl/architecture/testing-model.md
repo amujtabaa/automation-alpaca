@@ -102,3 +102,18 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
 - 2026-07-21: WO-0118 froze the explicit beta target/stress cardinalities and unchanged scaling
   limits, added a failure-capable shared budget contract to both R2 gates, and recorded fresh
   three-run target/stress headroom. Phase 2 was measurement-skipped because scaling was near-linear.
+- 2026-07-28: three standing rules adopted from the REV-0045 round-2 retrospective (operator
+  ratification; ADR-014/ADR-015). **(1) Derived truth is single-sourced or it is a defect:** any
+  quantity more than one component reads has exactly one deriving function, and a structural gate
+  (`tests/test_derived_truth_single_source.py`, AST-level) refuses parallel derivations at commit
+  time — behavioral tests cannot see this class, which is exactly how "what epoch sequence does
+  this history prove?" accumulated seven implementations and four P0s. **(2) Every mint/parse pair
+  ships a total round-trip pin** (`parse(mint(x)) == x`) over the full admitted input domain with
+  an adversarial alphabet (separators, length-prefix look-alikes, Unicode) — example:
+  `test_release_key_parser_is_a_total_inverse_of_the_ratified_mint`. A pin over friendly inputs
+  only is how the REV-0045 P0-5 decoder shipped. **(3) A mutation proof expires the moment its
+  guarded path changes** and must be re-run, not trusted; pins over fallback-shadowed paths must
+  assert the PATH (first-try success, spy on the fallback), never only the final state, because
+  redundant recovery re-derives the correct answer and blinds outcome assertions. Generated
+  mutation testing (ADR-015, nightly mutmut ratchet over the derived-truth kernel) backstops the
+  mutants nobody hand-picked. last_verified refreshed.

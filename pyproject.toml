@@ -75,3 +75,16 @@ follow_imports_for_stubs = true
 # factories, dev route, and both alpaca-py SDK adapters — is now typechecked with no
 # `ignore_errors` override. The whole `app/` package is under the gate. (Third-party
 # stub handling stays above via the numpy/pandas/pyarrow follow_imports override.)
+
+[tool.mutmut]
+# ADR-015: nightly mutation ratchet, scoped to the derived-truth kernel — the
+# surface where hand-picked mutation checks have twice recorded proofs that a
+# generated mutant later refuted (REV-0045 P0-2; REV-0038 F4). Widen the scope
+# as baselines are established; never narrow it to make a red run pass.
+source_paths = ["app/events/projectors.py"]
+pytest_add_cli_args_test_selection = [
+    "tests/test_signal_rails_remediation.py",
+    "tests/test_signal_rails_projector.py",
+    "tests/test_signal_rails_core.py",
+    "tests/test_signal_rails_store.py",
+]

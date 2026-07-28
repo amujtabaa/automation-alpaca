@@ -1,0 +1,49 @@
+name: Mutation ratchet (nightly)
+
+# ADR-015: generated mutation testing over the derived-truth kernel. Hand-picked
+# mutation checks have twice recorded proofs that a generated mutant refuted
+# (REV-0045 P0-2's epoch-1-only seed survivor; REV-0038 F4) — a hand-picked
+# mutant only ever proves the author thought of that mutant. This job generates
+# the ones nobody thought of. Nightly, not per-push: a full mutmut pass over the
+# projector is minutes-to-hours, not seconds.
+#
+# Ratchet discipline mirrors the coverage floor: the surviving-mutant count may
+# only shrink. The first green run establishes the baseline; record it in
+# pkl/architecture/testing-model.md and lower MAX_SURVIVORS to match.
+
+on:
+  schedule:
+    - cron: "17 9 * * *" # daily, off the top-of-hour thundering herd
+  workflow_dispatch: {}
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Baseline sentinel: intentionally permissive until the first recorded
+      # run; tighten to the observed survivor count in the same PR that
+      # records it. Never raise without an ADR amendment.
+      MAX_SURVIVORS: "999"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -c constraints.txt
+          pip install -r requirements-mutation.txt
+      - name: Run mutation testing
+        run: |
+          mutmut run || true # survivors are counted, not fatal mid-run
+      - name: Enforce the ratchet
+        run: |
+          mutmut results
+          survivors=$(mutmut results | grep -c "survived" || true)
+          echo "surviving mutants: $survivors (max: $MAX_SURVIVORS)"
+          if [ "$survivors" -gt "$MAX_SURVIVORS" ]; then
+            echo "::error::mutation ratchet regressed: $survivors survivors > $MAX_SURVIVORS"
+            exit 1
+          fi
