@@ -133,6 +133,24 @@ def analyze(root: Path) -> tuple[list[str], list[str]]:
             warnings.append(
                 f"{record['id']}: completed ({record['status']}) still in work/{record['folder']}/ ({rel})"
             )
+    # P-6 packet-completeness gate (operator-ratified 2026-07-28; AUDIT-0003
+    # S-5): a review packet may not carry a disposition without the result it
+    # dispositions — REV-0022's acceptance had to be rescinded because the
+    # disposition landed while the formal result was still unpushed. The
+    # inverse (result without disposition) is legitimate open-gate state and
+    # is NOT flagged.
+    review_dir = root / "work" / "review"
+    if review_dir.exists():
+        for packet in sorted(review_dir.glob("REV-*")):
+            if not packet.is_dir():
+                continue
+            has_disposition = any(packet.glob("disposition*.md"))
+            has_result = any(packet.glob("result*.md"))
+            if has_disposition and not has_result:
+                failures.append(
+                    f"{packet.name}: disposition present without any result*.md "
+                    "(P-6 ordering gate — the verdict artifact must land first)"
+                )
     return failures, warnings
 
 

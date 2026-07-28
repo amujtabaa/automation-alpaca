@@ -129,12 +129,12 @@ four analysts. None of these self-execute; each needs an operator yes.
 
 | # | Change | Kills | Evidence anchor |
 |---|---|---|---|
-| P-1 | **Treadmill tripwire:** after 2 consecutive BLOCK/P0 rounds on one surface, the next artifact must be an AUDIT-0001-style root audit (symptom-vs-root grading + same-class sweep), not another remediation WO | S-6 | AUDIT-0001 worked; REV-0029 and REV-0045 chains show its absence |
-| P-2 | **Twin-lane enumeration, mandatory in every FIX block and WO template:** list every lane reaching the same state/venue effect (fresh/redrive/reconcile/restart/supersede/manual; memory+sqlite; stage/protection/flatten) with "covered / N-A because…" per lane | S-2 | WO-0110..0112 (8/8 twins); REV-0029 P0-3; REV-0045 P0-3 |
+| P-1 | **LANDED 2026-07-28** — **Treadmill tripwire:** after 2 consecutive BLOCK/P0 rounds on one surface, the next artifact must be an AUDIT-0001-style root audit (symptom-vs-root grading + same-class sweep), not another remediation WO | S-6 | AUDIT-0001 worked; REV-0029 and REV-0045 chains show its absence |
+| P-2 | **LANDED 2026-07-28** — **Twin-lane enumeration, mandatory in every FIX block and WO template:** list every lane reaching the same state/venue effect (fresh/redrive/reconcile/restart/supersede/manual; memory+sqlite; stage/protection/flatten) with "covered / N-A because…" per lane | S-2 | WO-0110..0112 (8/8 twins); REV-0029 P0-3; REV-0045 P0-3 |
 | P-3 | **WO size cap:** >1 gated surface or >~400 lines ⇒ split before ratification | S-6 | WO-0113/WO-0104a vs the clean-close profile |
-| P-4 | **Review-round budget:** 2 rounds on one delivery ⇒ re-cut or seat change (formalizes what WO-0113 and the R6aR swap did late) | S-6 | PR #9 chain |
+| P-4 | **LANDED 2026-07-28** — **Review-round budget:** 2 rounds on one delivery ⇒ re-cut or seat change (formalizes what WO-0113 and the R6aR swap did late) | S-6 | PR #9 chain |
 | P-5 | **Mutation-currency registry:** map each decisive pin to its guarded span; CI flags span changes without recorded re-verification | S-3 | REV-0045 P0-2; REV-0038 F4; REV-0041 C-3 |
-| P-6 | **Ledger/provenance hardening:** reject `"commit": "HEAD"`; CI resolver for cited SHAs; REV completeness gate (result before disposition; disposition before WO close) | S-5 | 51/119 rows; REV-0030/0034/0036/0044 |
+| P-6 | **LANDED 2026-07-28** — **Ledger/provenance hardening:** reject `"commit": "HEAD"`; CI resolver for cited SHAs; REV completeness gate (result before disposition; disposition before WO close) | S-5 | 51/119 rows; REV-0030/0034/0036/0044 |
 | P-7 | **Cross-cutting-concern registry + contract test:** every mutating facade command enumerated once; parametrized test asserts actor/clock threading per command | S-2 | dropped-actor ×3; dropped-clock REV-0032 |
 | P-8 | **Parity-verifier completeness meta-test:** `ReadModelProjection` field set must cover every projector output | S-3 | REV-0007 F001 |
 | P-9 | **Autospec rule:** broker-SDK mocks require `create_autospec`/`spec_set` (lint or fixture) | S-3 | X-002 ×2 |
@@ -145,6 +145,14 @@ four analysts. None of these self-execute; each needs an operator yes.
 | P-14 | **INV↔probe linkage checker:** every INV names ≥1 enforcing test; INV text amendments must touch their named enforcement in the same commit | S-4 | INV-050/074/085 overclaims; ADR-008 ×3 rounds |
 
 ## Shipped with this audit (operator ratification 2026-07-28)
+
+Second ratification round (same day): P-1 + P-4 landed in
+`.ai-os/core/15_CROSS_MODEL_REVIEW.md` (+ a CLAUDE.md pointer); P-2 landed in the
+work-order template and review checklist; P-6 landed as two hygiene gates —
+`check_ledger.py` rejects non-SHA commits on rows dated after 2026-07-28 (existing
+rows grandfathered; the ledger is append-only), and `check_work_order_disposition.py`
+fails any packet carrying a disposition without a result artifact. Both gates verified
+RED on planted violations, GREEN on restore.
 
 ADR-014 (vocabulary rename, zero behavior change, battery-gated); ADR-015 + nightly
 mutmut workflow + `requirements-mutation.txt`; `tests/test_derived_truth_single_source.py`

@@ -70,3 +70,26 @@ clean). Before any beta-relevant milestone, the gate check is: every defined INV
 in `work/review/` with probe evidence; uncovered ids block the gate for those ids
 specifically. First application: INV-078/079/080/085 are due in the REV-0023 Phase B
 reconciliation packet.
+
+## Round budgets and the treadmill tripwire (P-1/P-4, operator-ratified 2026-07-28)
+
+Adopted from AUDIT-0003 (evidence: the PR #9 chain consumed six remediation work orders and
+five packets; the R6a saga took three BLOCK verdicts on one surface; both times the
+intervention that worked — a root-cause audit, a seat change — was applied late).
+
+- **Review-round budget (P-4):** after TWO review rounds on one delivery that each produced
+  findings, the response to the next round may not be another in-place remediation of the
+  same work order. The delivery is re-cut (split per the clean-close profile: one primary
+  rail, explicit paths, bounded surface) and/or the implementing seat changes. The packet
+  chain records which was chosen and why.
+- **Treadmill tripwire (P-1):** after TWO consecutive BLOCK or P0-bearing rounds on one
+  SURFACE (even across different work orders), the next artifact on that surface must be a
+  root-cause audit in the AUDIT-0001 mold — grade the prior rounds' own fixes symptom-vs-root,
+  map which truths on the surface are multiply derived and which lanes bypass the choke
+  points, then sweep for the class — before any further remediation work order is drafted.
+  Remediating a third time without the audit requires an explicit operator override recorded
+  in the packet.
+
+Counting is per-surface and survives file turnover: the count lives in the packet frontmatter
+(`round:` in results; a `surface:` tag naming the subsystem), so a fresh work order on the
+same surface does not reset it.

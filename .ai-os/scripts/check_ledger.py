@@ -20,6 +20,9 @@ from ai_os_paths import find_root, load_yaml_list
 
 REQUIRED = ("id", "title", "status", "disposition", "commit", "date", "reason")
 
+# P-6: rows dated on or before the cutoff are grandfathered (append-only ledger).
+_COMMIT_SHA_CUTOFF = "2026-07-28"
+
 
 def validate_ledger(root: Path) -> list[str]:
     ledger = root / "work" / "ledger.jsonl"
@@ -56,6 +59,21 @@ def validate_ledger(root: Path) -> list[str]:
         date = entry.get("date")
         if date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(date)):
             problems.append(f"line {i}: date {date!r} must be YYYY-MM-DD")
+        # P-6 provenance ratchet (operator-ratified 2026-07-28; AUDIT-0003 S-5):
+        # 51 of the first 119 rows recorded "commit": "HEAD", which is
+        # unverifiable the moment the branch moves — WO-0116 had to re-prove
+        # ancestry from outside the ledger. Rows are append-only, so existing
+        # debt is grandfathered by date; every row AFTER the cutoff must carry
+        # a real abbreviated-or-full hex SHA. Resolution against history is a
+        # review-time step (CI checkouts are shallow); format is enforced here.
+        if date and str(date) > _COMMIT_SHA_CUTOFF:
+            commit = str(entry.get("commit", ""))
+            if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+                problems.append(
+                    f"line {i}: commit {commit!r} is not a hex SHA — rows dated "
+                    f"after {_COMMIT_SHA_CUTOFF} may not use 'HEAD' or blanks "
+                    "(P-6, AUDIT-0003)"
+                )
     return problems
 
 

@@ -43,6 +43,23 @@ forbidden_paths:
   - .github/workflows/**
 ```
 
+## Twin-lane enumeration (P-2, operator-ratified 2026-07-28)
+
+Mandatory for any change touching stores, rails, order/fill/position truth, or a guard.
+The dominant defect class in this repo's review history is the rail enforced on one path
+and absent on a sibling (AUDIT-0003 S-2: all eight findings of one three-round review
+chain were symmetric twins of already-fixed sites). Enumerate EVERY lane that reaches the
+same state or venue effect, one line each, marked `covered` or `N/A because <reason>`:
+
+- [ ] memory store / sqlite store (both, in the same change — never one)
+- [ ] fresh path / redrive / reconcile-inferred / restart-recovery
+- [ ] stage / protection / flatten (exit-effect surfaces)
+- [ ] dispatch / claim; declared scope / referenced-order scope
+- [ ] any OTHER lane this surface adds: <enumerate or state "none — checked">
+
+A FIX block that closes a finding on one lane without this table is incomplete by
+definition; "the review only showed lane X" is not an N/A reason.
+
 ## Required behavior
 
 - [ ] <behavior 1>

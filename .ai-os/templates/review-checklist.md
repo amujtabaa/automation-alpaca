@@ -42,3 +42,10 @@
 ## Verdict
 
 `APPROVE | REQUEST-CHANGES | BLOCK`
+
+## Twin-lane check (P-2, 2026-07-28)
+
+For every finding you verify as fixed: name at least one sibling lane (other store, other
+ingress, other exit-effect path) and state whether the same defect exists there. A fix
+verified only on the lane the finding named is `PARTIAL`, not `RESOLVED` — diff-scoped
+review structurally misses the un-diffed twin (AUDIT-0003 S-2).
