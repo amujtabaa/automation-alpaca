@@ -1,7 +1,13 @@
 # R6a consolidation program — decision block, WO-A draft, WO-B/C outlines
 
-- **Status:** PROPOSAL — nothing here self-executes. §1 needs operator ratification **before**
-  §2's work order is finalized; §5 and §6 need rulings of their own.
+- **Status:** **RATIFIED 2026-07-28 (Ameen).** Ruled: **D-1-c**, **D-2-b**, **D-3-c**; one
+  **ADR-016** for the reconciled model; **WO-A includes** the D-3-c write cap in `app/store/core.py`
+  (P-3 score **4**, *coupled*); **WO-0140 and WO-0104a both stay OPEN in `REVIEW`** — neither is
+  superseded; **§6 two-part gate accepted** — merge gate on the five acceptance criteria, enable
+  gate holding `signal_seat_enabled=false` in every environment until R6b ships the release route
+  and cockpit control. D-1-d and D-3-b are rejected. The §2.6 RESERVE ruling is **withdrawn**, not
+  merely suspended (`docs/spec/signal-seat/02-lifecycle.md`).
+- **Execution:** WO-A is `work/active/WO-0141-r6a-c1-rail-kernel.md`.
 - **Trigger:** REV-0045 addendum-03 (`48cae49`) BLOCK, fourth consecutive on this surface. The
   P-1 tripwire and the operator pre-commitment in `CLOSEOUT-R6a-CHECKLIST.md` §0 route the open
   rail P0s to consolidation rather than a fourth patch round.
@@ -78,10 +84,30 @@ mismatches *unrepresentable* rather than merely handled, which is the difference
 S-1 and preventing it. **D-1-d is rejected**: a schema migration to prevent a state no ratified
 writer can mint (F-1) is disproportionate, and it would invalidate every key already written.
 
-**Uncertainty, flagged.** I am confident no production ingress can mint a mismatch, but I have not
-exhaustively enumerated every `append_execution_event` caller. WO-A carries that enumeration as an
-explicit obligation. **If a real path can mint one, D-1-b stops being defense-in-depth and becomes
-urgent** — that finding would justify re-sequencing B ahead of A.
+**Uncertainty — DISCHARGED 2026-07-28, before WO-A was authored.** The enumeration is complete and
+**F-1 is confirmed**, so D-1-b stays defense-in-depth and the A→B→C sequence stands.
+
+The public `append_execution_event` seam has exactly **six** production callers, and the event type
+each can construct is closed:
+
+| Caller | `event_type` | Domain | PRODUCER_*? |
+|---|---|---|---|
+| `monitoring.py:931` | `checkpoint_type` (parameter) | bound at exactly two sites, both `*_REPAIR_CHECKPOINT` (`monitoring.py:979,3373`) | no |
+| `monitoring.py:1259` | `ENVELOPE_ACTION` | literal | no |
+| `monitoring.py:1341` | `ENVELOPE_ACTION` | literal | no |
+| `monitoring.py:3484` | `expected_type` (local) | `{CANCELED, REJECTED}` (`monitoring.py:3479-3483`) | no |
+| `reconciliation.py:515` | `VENUE_ORDER_SCOPE` | literal | no |
+| `reconciliation.py:1348` | `UNKNOWN_RECONCILE_REQUIRED` | literal | no |
+
+Every production `PRODUCER_*` event is minted by `producer_quarantined_event()` or
+`producer_released_event()` (`app/store/core.py:6033,6123`), which derive the dedupe key from the
+same `producer_id` they place in the payload. The store-internal sinks that append them
+(`memory.py:5886,6071,6224`; `sqlite.py:8207,8385,8534`) take those minted events and no others.
+
+**But an enumeration is a snapshot, and a snapshot is exactly the inert evidence AUDIT-0003 S-3
+names.** True today, silently false the first time someone adds a seventh caller. WO-A therefore
+converts this table into a committed structural gate rather than leaving it as prose — the
+enumeration is only durable once it is machine-consumed and failure-capable.
 
 ### D-2 — what a refused event may reserve (reverses the suspended §2.6 ruling)
 

@@ -32,9 +32,38 @@
 | 11 | Round-2 remediation: the four open P0s | **CORRECTED — the class-level claim is WITHDRAWN; see slice 13.** Round-3 (`48cae49`) found P0-2, P0-3 and P0-4 still open; only P0-5 (and earlier P0-1) are fixed. The measured figures stand and the reviewer reproduced them. This is the SECOND withdrawal of a root-cause claim by this seat (slice 9 was the first): pins on named instances were twice mistaken for closure of the class. Original text: **VERIFIED** — P0-2/P0-3/P0-4/P0-5 fixed at class level (`807d38b`); 9 new pins, every one mutation-verified RED→GREEN; all 6 previously recorded decisive mutants re-verified against the changed code and still red; full battery **4,736 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.13%** (floor 93.0, read from the coverage line); oracle 61/61, scaling 13/13, ruff/mypy(77)/lint-imports(6 kept) green. **Gate NOT cleared** — awaiting a further Codex-owned artifact. |
 | 12 | Ratified hardening: vocabulary rename + process gates + assurance retrospective | **VERIFIED** — ADR-014 rename landed (zero behavior change, full battery green post-rename); ADR-015 nightly generated-mutation ratchet configured; single-source AST gate live and mutation-verified (`tests/test_derived_truth_single_source.py`); conformance oracle wired into CI (closes AUDIT-0002 AUD2-C002); repo-primer oracle invocation corrected; `pkl/` standing rules ×3; AUDIT-0003 retrospective across the full review corpus with a 14-item ratification queue. Gate state unchanged: REV-0045 Codex-owned, R-1/R-2 open, D-2a OFF, R6b blocked. |
 | 13 | Round-3 independent gate + assurance-control defects | **BLOCK** — REV-0045 addendum-03 (`48cae49`, Codex/GPT-5, reviewed head `14ff12f`): delta 1 P0 + 3 P1; cumulative **6 P0 / 6 P1**. Rail surface: P0-2/P0-3/P0-4 remain open at class level, new **P0-6** (a reservation at `2**63-1` has no in-domain successor — the human release path cannot recover either store). **The operator's §2.6 RESERVE ruling is judged UNSAFE** and is hereby suspended pending re-ratification: faithful only for same-owner, below-maximum releases. **Three of the four new findings are defects in THIS SEAT'S OWN assurance controls** — P1-4 (the single-source AST gate is defeated by a split string literal; 3/3 tests green with a parallel derivation planted), P1-5 (the mutation workflow's grep cannot match mutmut 3.6.0's indented output, so the job is permanently NO_MUTANTS and the ratchet is unreachable), P1-6 (blank/null `date` bypasses the ledger commit-SHA ratchet entirely). All three independently reproduced by this seat. P0-5 FIXED (61,068 generated round trips clean). Battery 4,743/11/1/0, coverage 93.12%. **P-1 tripwire fires.** |
+| 14 | Consolidation program: decision block ratified, F-1 enumeration discharged | **VERIFIED (planning artifact only — no product code)** — `R6A-CONSOLIDATION-PROGRAM.md` ratified 2026-07-28: D-1-c, D-2-b, D-3-c, one ADR-016, write cap inside WO-A (P-3 score 4), WO-0140/WO-0104a both stay OPEN, §6 two-part merge/enable gate accepted. The §2.6 RESERVE ruling moves from SUSPENDED to **WITHDRAWN** in `02-lifecycle.md`, with the replacement rule deliberately NOT written until the code that makes it true lands. The `append_execution_event` enumeration is **complete and F-1 is confirmed** — six production callers, every one's `event_type` domain closed and none `PRODUCER_*`; so D-1-b stays defense-in-depth and the A→B→C sequence stands. Execution moves to WO-0141. |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-28 (slice 14 — the program is ratified; the enumeration is discharged before, not after):
+  The operator ratified the full §1 decision block plus the three subordinate rulings. Two things
+  are worth recording as process facts rather than as outcomes.
+
+  **The one uncertainty I flagged was resolved before authoring the work order that depended on it,
+  because it could have re-sequenced the program.** If any production path could mint a release
+  whose dedupe-key producer disagrees with its payload producer, D-1-b stops being defense-in-depth
+  and WO-B has to precede WO-A. It cannot: the public `append_execution_event` seam has exactly six
+  production callers (`monitoring.py:931,1259,1341,3484`; `reconciliation.py:515,1348`) and each
+  one's `event_type` domain is closed — two literals per module, one parameter bound at exactly two
+  `*_REPAIR_CHECKPOINT` sites, one local over `{CANCELED, REJECTED}`. Every production `PRODUCER_*`
+  event comes from the two `core.py` builders, which derive the key from the same `producer_id` they
+  put in the payload. **F-1 confirmed; A→B→C stands.**
+
+  **That enumeration is inert evidence in its current form, and I am recording that rather than
+  banking the result.** It is true at `fd9cc61` and silently false the first time a seventh caller
+  appears. By the corrected meta-law, a control is durable only when machine-consumed and
+  failure-capable — so WO-0141 carries the obligation to convert this table into a committed
+  structural gate with an adversarial fixture. A table in a document is exactly the S-3 class.
+
+  **The withdrawn ruling is withdrawn, not replaced.** `02-lifecycle.md` now records the §2.6
+  reservation rule as withdrawn with the reasoning and the original text retained for audit, and
+  states explicitly that the delivered code still carries the withdrawn behavior, so neither rule
+  may be cited as current. The replacement lands in the same commit as the code that makes it true.
+  This is the close-out-ships-with-the-work rule applied to a *removal*: the temptation was to write
+  the new rule now while it was fresh, which would have made the spec claim a behavior the code does
+  not have — the same drift class the conflict rule exists to prevent.
 
 - 2026-07-28 (round-3 gate — BLOCK; the tripwire fires): REV-0045 addendum-03 (`48cae49`)
   returns **BLOCK**, cumulative 6 P0 / 6 P1. Every finding independently reproduced by this seat

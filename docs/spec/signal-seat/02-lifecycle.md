@@ -148,11 +148,20 @@ the tolerant fold's high-water, BOTH stores' release floors, and the heal check 
 (enforced by `tests/test_derived_truth_single_source.py`). Store-side row validation can refuse
 states replay cannot see (drift-invalidation is a live-store superset); replay parity is asserted
 on the event-derived read models, and SQLite's durable rail sink refuses an out-of-domain epoch
-sequence with a typed store error rather than an unopenable database. **Sequence reservation — RULING SUSPENDED AS UNSAFE (REV-0045 addendum-03, 2026-07-28;
-awaiting re-ratification).** The rule below is faithful ONLY for same-owner releases below the
-maximum sequence: at `2**63-1` no in-domain successor exists, so recovery becomes impossible, and
-cross-owner key consumption makes the stores disagree. Do not rely on it as a total recovery rule.
-Original ruling text: **Sequence
-reservation (operator ruling 2026-07-28):** a refused release whose dedupe key is canonical and
-producer-bound still reserves its sequence in the high-water mark — the append layer's UNIQUE
-dedupe-key constraint has already consumed that key, so a heal at that sequence could never mint.
+sequence with a typed store error rather than an unopenable database. **Sequence reservation — RULING WITHDRAWN (operator, 2026-07-28, ratifying
+`work/queue/R6A-CONSOLIDATION-PROGRAM.md` D-2-b).** First suspended as unsafe by REV-0045
+addendum-03, now withdrawn outright rather than repaired: the premise was that a consumed UNIQUE
+key makes a later heal unmintable, which is true, but the correct response to a *possible*
+collision is to detect it and advance — not to let an event the fold refused move the high-water
+mark. Reservation grants an unaccepted fact authority over future truth, which is the same class
+this review flagged as P0-4 and then again as P0-6.
+
+**Nothing in this spec currently states the replacement rule, deliberately.** The ratified
+replacement — only structurally valid events contribute, with collision-aware minting and a
+write-capped sequence domain — is specified in `R6A-CONSOLIDATION-PROGRAM.md` §1 and lands in this
+file in the same commit as the WO-0141 code that makes it true. Until then, treat the reservation
+question as OPEN: the delivered code still carries the withdrawn behavior, so do not cite either
+rule as current. Original ruling text, retained for audit: *a refused release whose dedupe key is
+canonical and producer-bound still reserves its sequence in the high-water mark — the append
+layer's UNIQUE dedupe-key constraint has already consumed that key, so a heal at that sequence
+could never mint.*
