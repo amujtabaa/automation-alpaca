@@ -25,7 +25,8 @@ they change its *urgency*, and they change what "ready to merge" can honestly me
 
 **F-1 — no production ingress can create a key/payload mismatch.** `producer_released_event()`
 and `producer_quarantined_event()` mint the dedupe key from the *same* `producer_id` they place in
-the payload (`app/store/core.py:6147-6165`), so a mismatch is **unmintable by any ratified
+the payload (`producer_released_event` / `producer_quarantined_event` in `app/store/core.py`),
+so a mismatch is **unmintable by any ratified
 writer**. No route or facade path appends a raw `ExecutionEvent` (`grep app/api app/facade` for
 `append_execution_event`: no hits). The P0-3 cross-owner composition and the P0-6 terminal
 reservation are therefore reachable only through (a) a direct store-API call — tests and probes —
@@ -100,7 +101,7 @@ each can construct is closed:
 | `reconciliation.py:1348` | `UNKNOWN_RECONCILE_REQUIRED` | literal | no |
 
 Every production `PRODUCER_*` event is minted by `producer_quarantined_event()` or
-`producer_released_event()` (`app/store/core.py:6033,6123`), which derive the dedupe key from the
+`producer_released_event()` (both in `app/store/core.py`), which derive the dedupe key from the
 same `producer_id` they place in the payload. The store-internal sinks that append them
 (`memory.py:5886,6071,6224`; `sqlite.py:8207,8385,8534`) take those minted events and no others.
 

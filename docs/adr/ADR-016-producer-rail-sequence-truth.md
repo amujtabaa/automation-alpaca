@@ -5,7 +5,38 @@
 - **Date:** 2026-07-28
 - **Deciders:** Operator (human gate); Claude seat (proposal, after REV-0045 round 3)
 - **Supersedes:** the §2.6 sequence-reservation ruling of 2026-07-28 (withdrawn, not repaired)
-- **Amends:** ADR-009 release semantics; `docs/spec/signal-seat/02-lifecycle.md` §2/§4
+- **Amends (INTENDED, not yet done):** ADR-009 release semantics — **ADR-009 has NOT been
+  amended.** The claim was written before the amendment and is corrected here rather than left
+  standing; it lands with the re-cut delivery.
+
+> ## ⚠ DELIVERY STATUS: PARTIAL AND DEFECTIVE — DO NOT READ THIS ADR AS DESCRIBING THE CODE
+>
+> The decision below is operator-ratified and stands. **The implementation at `c20ca47` does
+> not correctly realise it**, and an adversarial self-audit found four independent P0 defects
+> in that commit before any cross-model review:
+>
+> 1. **The fold and the stores disagree about where recovery may land.** The fold demands
+>    `next_mintable`; both stores still mint at `_release_sequence_floor_unlocked() + 1`.
+>    The store's own recovery event is refused by the fold that gates recovery, live diverges
+>    from replay, and the human release never survives a restart.
+>    Reproduced: `tests/test_wo0141_known_defect_fold_store_disagreement.py`.
+> 2. **`occupied(p)` is bucketed by the PAYLOAD producer**, so a key/payload-conflicted release
+>    consumes `p`'s key without ever entering `p`'s occupied set. `next_mintable` can therefore
+>    name an already-consumed sequence — the exact collision the separation exists to prevent.
+> 3. **Occupancy is dropped on the shape-refusal path**, making the occupied set order-dependent.
+> 4. **The D-3-c cap binds the mint but not the minter's input.** Both stores compute
+>    `floor + 1` unclamped, so the human release path now raises an uncaught `ValueError` across
+>    a band that previously succeeded, and `next_mintable_epoch_sequence` is not total at
+>    `high_water == SIGNAL_EPOCH_SEQUENCE_MINT_MAX` — its `None` is silently absorbed by an
+>    `int != None` comparison at its only call site.
+>
+> **The root cause is a scoping error, not three coding slips.** WO-0141 was cut along a FILE
+> boundary ("kernel now, stores later"). `contributed_epoch_sequence` is read by both stores, so
+> changing what it MEANS is a store change whether or not a store file is edited. The kernel and
+> the store floors are one semantic limb and must land together.
+>
+> Every "delivered" statement in the Consequences section below is therefore **aspirational**
+> until the re-cut lands. Nothing here may be cited as current behavior.
 
 ## Context
 

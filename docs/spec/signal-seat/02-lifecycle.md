@@ -156,7 +156,15 @@ collision is to detect it and advance — not to let an event the fold refused m
 mark. Reservation grants an unaccepted fact authority over future truth, which is the same class
 this review flagged as P0-4 and then again as P0-6.
 
-**Replacement rule (ADR-016, delivered by WO-0141): proof and occupancy are different facts.**
+**Replacement rule (ADR-016) — RATIFIED BUT NOT CORRECTLY DELIVERED. Do not cite as current
+behavior.** The rules below are the ratified target. The `c20ca47` implementation carries four
+P0 defects found in self-audit (see ADR-016's delivery-status block and
+`tests/test_wo0141_known_defect_fold_store_disagreement.py`): most importantly the fold and both
+stores disagree about where recovery may land, so the human release does not survive a restart.
+Treat the reservation question as OPEN and this section as a specification of intent until the
+re-cut delivery lands.
+
+**Proof and occupancy are different facts.**
 
 * **Proof is semantic.** The high-water mark advances ONLY when the fold has ACCEPTED the event.
   A refused event proves nothing, for anybody. `contributed_epoch_sequence()` still decides *what*

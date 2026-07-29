@@ -61,7 +61,8 @@ next_mintable(producer)`, which is still exact-next in spirit — no gap-skippin
 a successor always exists below the cap.
 
 Openers and releases do **not** share a key namespace (`producer_quarantine:` vs
-`producer_release:`, `core.py:6114,6158`), so `consumed` is release-keys-only. Verified, not assumed.
+`producer_release:`, minted by the two `app/store/core.py` builders), so `consumed` is
+release-keys-only. Verified, not assumed.
 
 **D-3-c makes `next_mintable` total.** With `SIGNAL_EPOCH_SEQUENCE_MINT_MAX` strictly below the
 readable `2**63-1`, headroom above any mintable high-water is guaranteed. The probe is bounded by

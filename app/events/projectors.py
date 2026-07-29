@@ -1413,7 +1413,9 @@ def occupied_release_sequence(event: ExecutionEvent, *, producer_id: str) -> int
     without coordinating, because both facts are pure functions of the log.
 
     Openers do not appear here: they mint into ``producer_quarantine:``, a
-    different key namespace (``app/store/core.py:6114`` vs ``:6158``), so an
+    different key namespace (``producer_quarantine:`` minted in
+    ``producer_quarantined_event`` vs ``producer_release:`` in
+    ``producer_released_event``, both in ``app/store/core.py``), so an
     opener at sequence N never blocks a release at N.
     """
 
