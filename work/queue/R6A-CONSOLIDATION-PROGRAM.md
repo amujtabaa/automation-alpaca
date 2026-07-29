@@ -376,6 +376,28 @@ dormant; *enabling* without R6b would ship a human-gated recovery surface with n
 which contradicts invariant 11 (browser-first) and the ratified claim that release is the single
 human recovery.
 
+> **CORRECTION, 2026-07-29 — "the code is dormant" is FALSE.** Left in place above rather than
+> silently rewritten, because that sentence is what was told to the reviewer in round 3 and it
+> carried the merge-safety argument.
+>
+> `grep -rn "signal_seat_enabled" app/store/` returns **no matches**.
+> `SQLiteStore.initialize()` calls `_rebuild_producer_rails_locked` unconditionally
+> (`app/store/sqlite.py:705`); `MemoryStore.initialize()` calls
+> `project_producer_rails_tolerant` unconditionally (`app/store/memory.py:328`). The tolerant
+> fold, the occupancy computation, the marker derivation and the durable-row upsert run on
+> **every store open, in both stores, flag on or off.** The flag gates route mounting,
+> rails-provider construction and launch bind validation — nothing in the store layer.
+>
+> The correct argument is narrower: with the flag off **no writer can mint a `PRODUCER_*`
+> event**, so the fold runs over an empty projection. That is an *emptiness* argument, not a
+> dormancy one, and it is therefore only as strong as the **F-1 append-caller enumeration** —
+> which makes `tests/test_wo0141_append_caller_gate.py` load-bearing for merge safety, not
+> merely defence-in-depth for D-1-b as ADR-016 §1 describes it.
+>
+> It also does **not** insulate the merge from **P0-8**: a database already holding `PRODUCER_*`
+> rows gets the new fold applied on next open regardless of the flag. Put to the reviewer as §3
+> of `work/review/REV-0045/request-round-4.md`.
+
 **Therefore I propose a merge criterion in two parts, for ratification:**
 - **Merge gate (R6a):** the five acceptance criteria above.
 - **Enable gate (R6a+R6b):** `signal_seat_enabled` may not be turned on in any environment until

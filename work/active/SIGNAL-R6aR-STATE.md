@@ -38,9 +38,63 @@
 | 17 | WO-0141R — P0-7 and three occupancy defects fixed, scope extended | **VERIFIED (semantic layer complete; structural consolidation still owed).** Operator ratified extending the WO's allowed paths to both store release floors (P-3 score 4 → 6) plus the P-3 amendment as a standing rule. Both stores now mint via the ONE kernel rule `next_release_sequence`, derived from log truth only — the durable row is never consulted. Also fixed: occupancy bucketed by payload producer, the shape-refusal occupancy leak, and the uncaught `ValueError` at the mint cap. Battery **4,806 passed / 11 skipped / 1 xfailed / 0 failed, coverage 93.11%** (floor 93.0). ruff/format/mypy(77)/lint-imports(6)/oracle(61)/scaling(13)/AI-OS hygiene ×5 green. Four mutants RED→GREEN. **Gate state unchanged: REV-0045 Codex-owned, R6b blocked, seat OFF.** |
 | 18 | Append-caller gate hardened against its own evasion class | **VERIFIED** — I defeated the gate I had just written **five ways**, including the exact split-literal shape that defeated the derived-truth gate as P1-4. Rewritten to *refuse what cannot be audited*: folded names, resolved import/assignment aliases, seam-binding counts as a reference, unfoldable `getattr` refused outright. A sixth evasion (f-string with a nested literal) was found while re-attacking the hardened version and closed. The disclosure scan is no longer a fixed window — it walks the contiguous comment block, because the derived-truth gate's two-line window silently stopped counting when a disclosure wrapped. Battery **4,816 passed / 11 skipped / 1 xfailed / 0 failed, coverage 93.10%**. Scope disclosure: `app/monitoring.py` touched, comment-only (11 comment lines, zero code). |
 | 19 | Adversarial self-review completed and dispositioned | **VERIFIED** — 85 agents, six lenses + three-lens adversarial verification + a completeness critic. 26 raw findings → **23 survived**, 3 refuted, plus **6 critic gaps**. Nine survivors were already fixed in slices 17-18. Closed this slice: two **vacuous property tests** (both now mutation-verified), the reference model's **dead fold half** (shipped, never imported — inert evidence wearing a test's clothes), the §2 `PRODUCER_RELEASED` spec row still stating the withdrawn exact-next rule, the `InvalidProjectionMarker` docstring, ADR-016's **totality overclaim**, and the state file's owed-list (named 2 of 5). **New P0-8 recorded and routed to WO-0142** with a strict xfail. One P2 judged a **non-defect** with the reasoning recorded in code. Battery **4,819 passed / 11 skipped / 2 xfailed / 0 failed, coverage 93.10%**. |
+| 20 | Round-4 review request re-cut; mutation survivors triaged; two measured assessments | **VERIFIED (no production change — `app/` is final at `6e6c9ad`).** The staged round-4 request was stale against HEAD and posed a resolved question as open; re-cut with the range pinned (`14ff12f..HEAD`, 25 commits, production **8 files / +433 / −68 final at 6e6c9ad**). **A load-bearing claim made to the reviewer in round 3 is FALSE and is corrected in place with the original left standing:** `R6A-CONSOLIDATION-PROGRAM.md` argued R6a merges safely because "the seat defaults to False and the code is dormant". `grep -rn "signal_seat_enabled" app/store/` returns **nothing** — both stores run the tolerant fold, occupancy and the durable-row upsert on every `initialize()`. The real argument is *emptiness* (no writer can mint a `PRODUCER_*` event with the seat off), which makes the **F-1 append-caller enumeration load-bearing for merge safety**, not merely defence-in-depth for D-1-b — and does NOT insulate the merge from P0-8. Corrected in the program, ADR-016 §1 and the request §3. **MUTATION TRIAGE — 205 was recorded without triage; triaging the two functions this WO added or changed returned six survivors, all range/type rules the docstrings state as deliberate.** Closed by `tests/test_wo0141_mutation_triage_gaps.py` (21 pins), each of the six certified RED→GREEN individually. The two halves are NOT equal and the distinction is the finding: `release_key_claim` (3) is a **live** path — called unconditionally, first, outside the applier's `try` — and one mutant turns tolerant startup into an uncaught `TypeError` (measured both directions); `contributed_epoch_sequence` (3) is **redundant defence** behind `_required_int` in the applier, unreachable through the fold, which is *why* no integration test could kill it. **A survivor set is a reachability oracle; coverage is not.** Distribution recorded: **≈106 of 205 survivors sit in the ten producer-rail functions** — the surface under review. `MAX_SURVIVORS` stays 205, now disclosed as known-loose by ≥6 rather than lowered to an arithmetic 199. **ONE SELF-CORRECTION:** I first read the P0-3 adversarial-opener pin as a seventh non-discriminating pin. It is not — it asserts `answers == {1}` and carries a non-vacuity check; a domain mutant survives it because of the reachability result, not a weak pin. The wrong paragraph was one commit from being sent. **TWO MEASURED ASSESSMENTS.** (a) `_next_release_sequence_locked` reads the whole log unfiltered and folds it twice under `self._lock`: ≈3 µs/event kernel, **≈31 µs/event end-to-end — 3.1 s at 100k events, ≈31 s extrapolated at 1M**, serializing every other write. Not a correctness defect (human release path only; `initialize()` already folds the whole log), unpinned by any scaling gate, and the obvious `WHERE event_type IN (...)` fix is the same *shape* as the payload pre-filter whose removal WAS the P0-3 fix — routed to WO-0142 needing the F-1 treatment, not an inspection. (b) The coverage floor's own comment claims "a few points under the current ~95%"; measured margin is **0.10 points ≈ twenty statements-or-branches**. Mechanism works, description is false in a way that changes how a red build should be read. Neither surface touched — moving a gate inside the change it judges is the pattern this packet exists to catch; both raised for ratification. Battery **4,860 passed / 11 skipped / 2 xfailed / 0 failed, coverage 93.10%** (floor 93.0). ruff, format at exactly the ten disclosed files, mypy(77), lint-imports(6 kept), oracle(61), AI-OS hygiene ×5, `python3.11` AST parse of the new module — all green. |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-29 (slice 20 — a survivor set is a reachability oracle; coverage is not):
+
+  **The single most useful thing learned this slice.** Mutation survivors do not only say "this
+  behaviour is unpinned". Where the surviving mutant is in a guard that a *caller upstream already
+  enforces*, the survival says the branch is **unreachable through the integration path** — and no
+  coverage figure can tell you that, because coverage reports *executed*, not *load-bearing*. Three of
+  the six survivors I triaged were in `contributed_epoch_sequence`, whose type and domain guards sit
+  behind `_required_int(..., minimum=1, maximum=_SQLITE_MAX_SIGNED_INT)` in
+  `_apply_producer_quarantined`. Every value they reject was rejected first. They are redundant
+  defence, correctly so, and mutation is what proved it rather than my reading of the code.
+
+  The other three were the opposite: `release_key_claim` runs **unconditionally, first, for every
+  event, outside the applier's `try`** (`app/events/projectors.py:1855`), so its guards are live on
+  every store open. Measured both directions on the `sequence is None or …` → `and` mutant:
+
+  ```
+  unmutated:  ({}, {'p': InvalidProjectionMarker(..., reason="release dedupe key
+              'producer_release:1:p|3:abc' has a malformed sequence part", ...)})
+  mutant:     TypeError: '<' not supported between instances of 'NoneType' and 'int'
+  ```
+
+  A tolerant fold that raises is not tolerant. Nothing pinned it before this slice.
+
+  **What I got wrong, recorded because it nearly shipped.** I first concluded that
+  `test_release_floors_agree_across_stores_on_adversarial_openers` was a seventh non-discriminating
+  pin, on the reasoning that unifying the two store floors into one kernel rule made "both stores
+  agree" true by construction. That reasoning is sound and the conclusion is still wrong: the pin
+  *also* asserts `answers == {1}` and carries a non-vacuity check. The domain mutant survives it
+  because of the reachability result above, not because the pin is weak. I had drafted the wrong
+  paragraph into the reviewer's packet before checking the file below the loop.
+
+  **The claim I made to the reviewer that turned out false.** "The seat defaults to False and the code
+  is dormant" carried the entire merge-safety argument in round 3. `grep -rn "signal_seat_enabled"
+  app/store/` returns nothing; both stores fold, compute occupancy and upsert durable rows on every
+  `initialize()`. The argument that actually holds is *emptiness* — with the seat off no writer can
+  mint a `PRODUCER_*` event — which promotes the **F-1 append-caller enumeration from
+  defence-in-depth to load-bearing**, and does not insulate the merge from P0-8 at all. Left the
+  original sentence standing with a correction block beside it.
+
+  **Two assessments, measured rather than argued.** The release mint reads the whole log unfiltered
+  and folds it twice under the write lock — ≈31 µs/event end-to-end, 3.1 s at 100k events, ≈31 s
+  extrapolated at 1M, serializing order submission along with everything else. The obvious
+  `event_type` pre-filter is the same shape as the payload pre-filter whose removal WAS the P0-3 fix,
+  so it is routed to WO-0142 for the F-1 treatment rather than fixed by inspection. And the coverage
+  floor's comment claims "a few points" of slack where the measured margin is **0.10 points ≈ twenty
+  statements-or-branches** — the mechanism is fine, the description is false in a way that changes how
+  a red build should be read.
+
+  Battery **4,860 passed / 11 skipped / 2 xfailed / 0 failed, branch coverage 93.10%** (floor 93.0).
+  ruff, format at exactly the ten disclosed files, mypy(77), lint-imports(6 kept), oracle(61), AI-OS
+  hygiene ×5 green. `python3.11` AST-parsed the new test module before any green claim — the control
+  that was missing when CI ran red for seven commits.
 
 - 2026-07-29 (slice 19 — the review is dispositioned; the critic found what six lenses missed):
 

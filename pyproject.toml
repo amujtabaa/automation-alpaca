@@ -111,6 +111,7 @@ pytest_add_cli_args_test_selection = [
     "tests/test_wo0141_occupancy_leaks.py",
     "tests/test_wo0141_fold_store_recovery_agreement.py",
     "tests/test_wo0141_persisted_carrier_divergence.py",
+    "tests/test_wo0141_mutation_triage_gaps.py",
     "tests/test_signal_projector_forward_compat.py",
     # The gate found these 14: they exercise the mutated module and were
     # never selected, which is why 270 mutants reported "no tests" and the

@@ -99,6 +99,17 @@ they place in the payload). That enumeration is enforced by
 `tests/test_wo0141_append_caller_gate.py`, so it fails the build rather than silently
 expiring.
 
+**Correction, 2026-07-29 — the enumeration is load-bearing, not merely defensive.** "Defense
+in depth" understates what F-1 now holds up. `R6A-CONSOLIDATION-PROGRAM.md` argued R6a is safe
+to merge because with the seat off "the code is dormant". It is not: the store layer contains
+no reference to `signal_seat_enabled`, and both stores run the tolerant fold, the occupancy
+computation and the durable-row upsert on every `initialize()`. What makes the merge safe is
+that with the seat off **no writer can mint a `PRODUCER_*` event**, so the fold runs over an
+empty projection — an *emptiness* argument, whose entire weight rests on the F-1 enumeration
+and the gate that enforces it. D-1-b remains deferrable to WO-0142; the enumeration does not.
+See `work/review/REV-0045/request-round-4.md` §3, and the correction block at
+`R6A-CONSOLIDATION-PROGRAM.md`'s merge-criterion section.
+
 **Rejected — D-1-d, a per-producer key namespace.** A DDL migration to prevent a state no
 ratified writer can mint is disproportionate, and it would invalidate every dedupe key
 already written.
