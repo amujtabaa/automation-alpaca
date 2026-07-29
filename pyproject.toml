@@ -90,8 +90,45 @@ source_paths = ["app/events/projectors.py"]
 # see the ADR-015 delivery note.
 also_copy = ["app", "tests", "conftest.py", "pyproject.toml"]
 pytest_add_cli_args_test_selection = [
+    # ENUMERATED LISTS ROT. This one was written before WO-0141 and still named
+    # only these four files, so every pin added since — the ones that actually
+    # exercise contributed_epoch_sequence, attribution, occupancy and the
+    # release rule — was invisible to the ratchet. A mutant inverting the
+    # dispatch in contributed_epoch_sequence survived a full run because the
+    # test that pins it was not selected.
+    #
+    # tests/test_ratchet_selection_is_complete.py now fails the build when a
+    # test module imports app.events.projectors and is absent from this list,
+    # so the list cannot silently fall behind again. Same cure as the F-1
+    # caller enumeration: machine-consumed, failure-capable, and it forces a
+    # human to decide rather than letting the gap pass.
     "tests/test_signal_rails_remediation.py",
     "tests/test_signal_rails_projector.py",
     "tests/test_signal_rails_core.py",
     "tests/test_signal_rails_store.py",
+    "tests/test_wo0141_rail_kernel.py",
+    "tests/test_wo0141_rail_properties.py",
+    "tests/test_wo0141_occupancy_leaks.py",
+    "tests/test_wo0141_fold_store_recovery_agreement.py",
+    "tests/test_wo0141_persisted_carrier_divergence.py",
+    "tests/test_signal_projector_forward_compat.py",
+    # The gate found these 14: they exercise the mutated module and were
+    # never selected, which is why 270 mutants reported "no tests" and the
+    # survivor count measured the SELECTION rather than the tests. If the
+    # whole file is mutated, every suite that exercises the whole file must
+    # run against it.
+    "tests/test_signal_ingest_properties.py",
+    "tests/test_signal_ingest_store.py",
+    "tests/test_spine_phase2_event_log.py",
+    "tests/test_spine_phase3b_overfill_quarantine.py",
+    "tests/test_spine_phase3c_timeout_quarantine.py",
+    "tests/test_spine_phase3d_trading_state.py",
+    "tests/test_spine_phase3e_emergency_override.py",
+    "tests/test_spine_phase4f_fsm_composition.py",
+    "tests/test_wo0007b_stageb_projector.py",
+    "tests/test_wo0007b_stagec_readiness.py",
+    "tests/test_wo0007b_staged_readflip.py",
+    "tests/test_wo0013_event_truth_writepath.py",
+    "tests/test_wo0113_store_parity.py",
+    "tests/test_wo0125_envelope_replay_parity.py",
 ]
