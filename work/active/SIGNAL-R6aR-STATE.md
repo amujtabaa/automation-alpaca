@@ -33,9 +33,48 @@
 | 12 | Ratified hardening: vocabulary rename + process gates + assurance retrospective | **VERIFIED** — ADR-014 rename landed (zero behavior change, full battery green post-rename); ADR-015 nightly generated-mutation ratchet configured; single-source AST gate live and mutation-verified (`tests/test_derived_truth_single_source.py`); conformance oracle wired into CI (closes AUDIT-0002 AUD2-C002); repo-primer oracle invocation corrected; `pkl/` standing rules ×3; AUDIT-0003 retrospective across the full review corpus with a 14-item ratification queue. Gate state unchanged: REV-0045 Codex-owned, R-1/R-2 open, D-2a OFF, R6b blocked. |
 | 13 | Round-3 independent gate + assurance-control defects | **BLOCK** — REV-0045 addendum-03 (`48cae49`, Codex/GPT-5, reviewed head `14ff12f`): delta 1 P0 + 3 P1; cumulative **6 P0 / 6 P1**. Rail surface: P0-2/P0-3/P0-4 remain open at class level, new **P0-6** (a reservation at `2**63-1` has no in-domain successor — the human release path cannot recover either store). **The operator's §2.6 RESERVE ruling is judged UNSAFE** and is hereby suspended pending re-ratification: faithful only for same-owner, below-maximum releases. **Three of the four new findings are defects in THIS SEAT'S OWN assurance controls** — P1-4 (the single-source AST gate is defeated by a split string literal; 3/3 tests green with a parallel derivation planted), P1-5 (the mutation workflow's grep cannot match mutmut 3.6.0's indented output, so the job is permanently NO_MUTANTS and the ratchet is unreachable), P1-6 (blank/null `date` bypasses the ledger commit-SHA ratchet entirely). All three independently reproduced by this seat. P0-5 FIXED (61,068 generated round trips clean). Battery 4,743/11/1/0, coverage 93.12%. **P-1 tripwire fires.** |
 | 14 | Consolidation program: decision block ratified, F-1 enumeration discharged | **VERIFIED (planning artifact only — no product code)** — `R6A-CONSOLIDATION-PROGRAM.md` ratified 2026-07-28: D-1-c, D-2-b, D-3-c, one ADR-016, write cap inside WO-A (P-3 score 4), WO-0140/WO-0104a both stay OPEN, §6 two-part merge/enable gate accepted. The §2.6 RESERVE ruling moves from SUSPENDED to **WITHDRAWN** in `02-lifecycle.md`, with the replacement rule deliberately NOT written until the code that makes it true lands. The `append_execution_event` enumeration is **complete and F-1 is confirmed** — six production callers, every one's `event_type` domain closed and none `PRODUCER_*`; so D-1-b stays defense-in-depth and the A→B→C sequence stands. Execution moves to WO-0141. |
+| 15 | WO-0141 semantic half: proof/occupancy separation (ADR-016) | **VERIFIED (semantic half only — WO-0141 is NOT complete)** — D-1-a attribution, D-2-b valid-only contribution, `next_mintable` occupancy avoidance, D-3-c write cap, ADR-016, spec/pkl amendments, and the F-1 append-seam gate landed at `c20ca47`. Battery **4,796 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.14%** (floor 93.0, read from the coverage line). ruff/format/mypy(77)/lint-imports(6)/oracle(61) green. Four mutants RED→GREEN with no residue. **Still owed by this WO:** the structural consolidation (`ProducerRailMachine` / typed `ProducerRailFact` kernel — items 1 and 5 of §2), and the ADR-015 mutation baseline. **Gate state unchanged: REV-0045 Codex-owned, P0-2/3/4/6 not independently confirmed closed, R-1/R-2 open, D-2a OFF, R6b blocked.** |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-29 (slice 15 — the semantic half; two of my own pins failed their mutation check):
+
+  **The finding under all four open P0s is one conflation**, and stating it that way is what
+  made the fix small: the code treated *"this event proves sequence N"* and *"sequence N's
+  release key is taken"* as one fact. Proof is semantic and belongs only to accepted events;
+  occupancy is syntactic, because the UNIQUE index consumes a key the moment the row lands and
+  never reads the payload. Expressing occupancy through the high-water mark is what gave a
+  refused event authority over future truth (P0-4), and the §2.6 ruling then made that
+  deliberate, which is P0-6. `next_mintable` is a pure function of the log, so the fold and the
+  minters agree without coordinating, and in a valid history it equals `high_water + 1` exactly —
+  which is why every pre-existing heal pin held unchanged rather than needing edits.
+
+  **Two defects in my own pins, found by mutation before review rather than by it.** Both are
+  the class this campaign keeps producing, so both are recorded rather than quietly repaired:
+  - The metamorphic relation was **vacuous as first written.** It checked the tolerant fold,
+    which buckets by payload producer — so a foreign key can never reach the victim's fold state
+    no matter what the attribution rule says, and reverting D-1 left it green. P0-3 lives in the
+    **floors**, where memory scans every event asking the shared rule whether it contributes.
+    Moved there, it discriminates.
+  - `test_heal_lands_at_the_next_unoccupied_sequence` **did not pin occupancy avoidance.** With
+    the consumed key at 9 and proven truth at 1, the correct rule and a mutant that ignores
+    occupancy entirely both answer 2. Every case in that pin was reachable and none discriminated
+    — the same shape as P0-2's trigger-specific survivor. A new pin places the consumed key at
+    exactly `high_water + 1`, where the rules disagree.
+
+  **Process facts worth keeping.** A `ruff format app/ tests/` reformatted eight files outside
+  the WO's allowed paths; reverted before commit, because the acceptance criteria track format
+  debt at exactly ten disclosed files and silent reformatting would have made that count a lie.
+  And the first two full-battery runs produced logs with **no summary line** — I did not report
+  them; the third, run with `--cov` as CI does, produced the figures above. A truncated log is
+  not a green battery, and the temptation to treat exit code 0 as the result is precisely the
+  trap the "read the coverage line, never the exit code" rule exists for.
+
+  **WO-0141 is NOT complete and is not claimed as such.** The structural consolidation (one
+  `ProducerRailMachine` over a typed `ProducerRailFact` union, §2 items 1 and 5) and the ADR-015
+  mutation baseline remain. The semantic half landed first deliberately: a single big-bang
+  rewrite of a surface that has produced six P0s is how a fifth BLOCK would happen.
 
 - 2026-07-28 (slice 14 — the program is ratified; the enumeration is discharged before, not after):
   The operator ratified the full §1 decision block plus the three subordinate rulings. Two things
