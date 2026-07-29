@@ -7,7 +7,20 @@
   gate holding `signal_seat_enabled=false` in every environment until R6b ships the release route
   and cockpit control. D-1-d and D-3-b are rejected. The §2.6 RESERVE ruling is **withdrawn**, not
   merely suspended (`docs/spec/signal-seat/02-lifecycle.md`).
-- **Execution:** WO-A is `work/active/WO-0141-r6a-c1-rail-kernel.md`.
+- **Execution:** WO-A is `work/active/WO-0141R-r6a-c1-rail-sequence-rule.md`.
+- **D-4 — sequencing, RATIFIED 2026-07-29 (Ameen): "review first" (option b).** The structural
+  consolidation — WO-0141R §2 items 1 and 5 (the typed `ProducerRailFact` union and the single
+  `ProducerRailMachine`) and §5.2's Hypothesis `RuleBasedStateMachine` — is **DEFERRED** until an
+  independent verdict clears the semantic layer. Rationale as put to the operator: the semantic
+  layer is where all eight P0s lived and has never had a clean independent review; stacking a large
+  refactor on an unreviewed baseline is how a ninth appears. Options were (a) consolidate now, then
+  one review over everything, or (b) review first, then consolidate against a cleared baseline.
+  **Recorded here because it was not.** The ruling was given in session and cited in
+  `work/review/REV-0045/request-round-4.md` under the label "D-A", which appeared nowhere else in
+  the repository — so the largest scope reduction in the delivery rested on an identifier a reviewer
+  could not verify, in the very artifact asking them to approve it. Found by an independent
+  merge-readiness assessment, not by this seat. Relabelled **D-4** to join the ratified sequence;
+  "D-A" was a session-local name.
 - **Trigger:** REV-0045 addendum-03 (`48cae49`) BLOCK, fourth consecutive on this surface. The
   P-1 tripwire and the operator pre-commitment in `CLOSEOUT-R6a-CHECKLIST.md` §0 route the open
   rail P0s to consolidation rather than a fourth patch round.

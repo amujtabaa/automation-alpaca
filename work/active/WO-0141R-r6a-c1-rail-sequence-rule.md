@@ -12,6 +12,7 @@ model_tier: strong (LOCAL — event-log truth interpretation, human-gated recove
 review: "Codex-owned REV-0045 continuation. This seat implements; it does not clear its own gate. Reviewer-owned holdouts (§5) are authored outside this WO and may not be modified by it."
 scope_budget: "P-3 score 6 (coupled) after the 2026-07-29 scope extension: 1 state machine, 0 independent effect authorities, 1 human-gated surface, 1 truth owner, +1 core.py write cap, and **1 paired-store limb** — originally recorded as 0, which was the error behind P0-7. A limb is counted where a derived quantity is CONSUMED, not where files are edited (ratified P-3 amendment)."
 scope_extension: "2026-07-29 (Ameen) — allowed paths extended to app/store/memory.py and app/store/sqlite.py, release-floor functions and mint-input clamping ONLY, after self-audit found P0-7: the fold demanded next_mintable while both stores minted at release-floor + 1, so the human release never survived a restart. The kernel and the store floors are one semantic limb."
+deferred: "2026-07-29 (Ameen), program D-4 'review first': §2 items 1 and 5 (typed ProducerRailFact union, one ProducerRailMachine) and §5.2 (Hypothesis RuleBasedStateMachine) are deferred to WO-0143 until an independent verdict clears the semantic layer. Done-when #1 is scoped to the §1 rulings, which ARE delivered; the structural items are not part of this WO's completion."
 filter_risk: LOW-MED
 ---
 

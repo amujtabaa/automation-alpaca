@@ -1531,8 +1531,9 @@ async def test_durable_rail_sink_refuses_an_out_of_domain_carrier(tmp_path) -> N
 
 
 @pytest.mark.parametrize("store_kind", ["sqlite", "memory"])
+@pytest.mark.parametrize("trigger", ["rate_breach", "budget_exhausted"])
 async def test_bounded_check_never_falls_back_across_consecutive_epochs(
-    tmp_path, monkeypatch, store_kind
+    tmp_path, monkeypatch, store_kind, trigger
 ) -> None:
     """REV-0045 addendum-02 P0-2: the first-try/no-fallback property must hold
     across CONSECUTIVE epochs, not only the first one.
@@ -1548,6 +1549,15 @@ async def test_bounded_check_never_falls_back_across_consecutive_epochs(
     Driving three consecutive open/release cycles and asserting the bounded
     verifier succeeds on the FIRST try at every one of them is what makes the
     epoch-2+ path observable.
+
+    **addendum-03 P0-2, and the reason it stayed open:** this pin was
+    parameterized over the STORE only and opened every epoch through
+    ``check_and_debit_producer_rate`` — the ``rate_breach`` trigger alone. The
+    ``budget_exhausted`` opener is a different code path with its own counter
+    cross-check, and it was never driven, so a mutant confined to it survived.
+    The seat then adopted a standing rule — an obligation over a ratified
+    vocabulary must be parameterized over the WHOLE vocabulary — and did not
+    apply it to the pin the reviewer had named. Both triggers now run.
     """
 
     from datetime import datetime, timezone
@@ -1579,11 +1589,29 @@ async def test_bounded_check_never_falls_back_across_consecutive_epochs(
 
     monkeypatch.setattr(cls, attr, _spy)
 
-    for epoch in (1, 2, 3):
-        for _ in range(2):  # burst 1: the second call breaches
-            await store.check_and_debit_producer_rate(
-                producer_id, now=now, limit_per_hour=60, burst=1
+    async def _open_epoch(index: int) -> None:
+        """Open one quarantine epoch through the trigger under test."""
+
+        if trigger == "rate_breach":
+            for _ in range(2):  # burst 1: the second call breaches
+                await store.check_and_debit_producer_rate(
+                    producer_id, now=now, limit_per_hour=60, burst=1
+                )
+            return
+        # budget_exhausted: attributable rejections debit the non-refilling
+        # per-cycle budget; the final debit co-opens the epoch.
+        for slot in range(2):
+            await store.ingest_signal(
+                **_ingest_kwargs(
+                    producer_id,
+                    f"sig-{index}-{slot}",
+                    invalid=True,
+                    cycle_budget_limit=2,
+                )
             )
+
+    for epoch in (1, 2, 3):
+        await _open_epoch(epoch)
         rail = await store.get_producer_rail(producer_id)
         assert rail.quarantine_epoch_open is True
         assert rail.quarantine_epoch_sequence == epoch
@@ -1596,7 +1624,7 @@ async def test_bounded_check_never_falls_back_across_consecutive_epochs(
         assert store.invalid_projection_markers() == {}
         assert raised == [], (
             f"the bounded verifier fell back at epoch {epoch} on a HEALTHY "
-            f"segment ({store_kind}): {raised!r}"
+            f"segment ({store_kind}/{trigger}): {raised!r}"
         )
 
     projection = project_read_models(await store.get_execution_events())
