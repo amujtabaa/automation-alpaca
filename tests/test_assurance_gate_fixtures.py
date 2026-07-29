@@ -114,6 +114,11 @@ _MUTMUT_TIMEOUT = """
     app.events.projectors.fold_str__mutmut_2: killed
 """
 
+_MUTMUT_UNFINISHED = """
+    app.events.projectors.fold_str__mutmut_1: not checked
+    app.events.projectors.fold_str__mutmut_2: killed
+"""
+
 
 def test_classifier_reads_indented_mutmut_output() -> None:
     """The exact defect: four leading spaces must not hide a survivor."""
@@ -133,11 +138,44 @@ def test_classifier_distinguishes_all_killed_from_empty() -> None:
 
 
 def test_classifier_refuses_to_call_an_unfinished_run_clean() -> None:
-    """A timeout is not a kill — an incomplete run is never evidence."""
+    """An UNRESOLVED mutant makes the run indeterminate — that is the real rule.
 
-    report = classify(_MUTMUT_TIMEOUT)
+    This pin previously used a `timeout` fixture, on the reasoning that "a
+    timeout is not a kill". The reasoning conflated two different things: a RUN
+    that did not finish (unknown) and a MUTANT that hung (known — the suite
+    detected it by failing to terminate). The taxonomy was corrected on that
+    basis, so this pin now expresses its actual intent with `not checked`, and
+    the timeout semantics are pinned separately below. Re-derived, not edited to
+    match: the property "an unfinished run is never clean" is unchanged and
+    still asserted.
+    """
+
+    report = classify(_MUTMUT_UNFINISHED)
     assert report.state == "INDETERMINATE"
     assert report.indeterminate == 1
+
+
+def test_a_hung_mutant_counts_as_detected_not_as_unknown() -> None:
+    """A mutant that made the suite hang was DETECTED, and is reported as its
+    own category rather than silently folded into `killed`.
+
+    Found by the first real baseline: a mutant turning an inner scan's
+    `cursor += 1` into `cursor = 1` looped forever. Calling that "unknown" would
+    have blocked every baseline this ratchet can ever produce.
+    """
+
+    report = classify(_MUTMUT_TIMEOUT)
+    assert report.state == "COMPLETE_CLEAN"
+    assert (report.detected_by_timeout, report.killed) == (1, 1)
+    assert report.indeterminate == 0
+
+
+def test_segfault_and_suspicious_remain_unknown() -> None:
+    """The correction is narrow: only `timeout` moved. A segfault or a
+    suspicious result is still a mutant whose fate nobody established."""
+
+    for status in ("segfault", "suspicious"):
+        assert classify(f"    m: {status}\n").state == "INDETERMINATE"
 
 
 def test_classifier_counts_uncovered_mutants_as_survivors() -> None:

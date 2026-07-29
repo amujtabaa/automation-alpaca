@@ -161,3 +161,26 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
   All three were green against a mutant that deleted the rule entirely. This is the same shape as
   REV-0045 P0-2's trigger-specific survivor. When pinning a rule of the form "X, except where Y",
   the fixture must instantiate Y.
+- 2026-07-29: **ADR-015 first recorded mutation baseline — and the ratchet had never worked.**
+  Running it for the first time surfaced five independent defects, each of which alone prevented
+  it producing evidence: `mutmut run` could not import the package (only `source_paths` is copied
+  into the working tree; fixed with `also_copy`); `mutmut results --all` is an invalid invocation
+  in 3.6.0 (`--all` takes a boolean argument), so the CI step and the P1-5 classifier docstring
+  were both wrong; the test selection was a hard-coded four-file list written before WO-0141, so
+  every pin added since was invisible and 270 mutants reported `no tests`; the classifier's
+  taxonomy counted a hung mutant as unknown rather than detected; and `next_mintable_epoch_sequence`
+  contained a structurally unbounded scan that a generated mutant found by hanging.
+  **Baseline: generated 1223, killed 1017, detected-by-timeout 1, survived 205.** The 205 is a
+  measurement, not a target — untriaged, with an unknown share equivalent.
+  **The standing lesson:** REV-0045 P1-5 reported that this control could not parse its tool's
+  output. The repair fixed the PARSER against committed fixtures and never ran the tool. Fixtures
+  were faithful and the invocation above them was broken, so the control stayed dead in a new
+  costume. **A control verified only against its own fixtures has been verified against nothing —
+  every assurance control must be exercised end to end against the real tool at least once, and
+  that run is part of the control's delivery, not a follow-up.**
+- 2026-07-29: **enumerated lists rot; gate every one.** Three on this surface have now fallen
+  behind — the F-1 append-caller table, the derived-truth store list, and the mutation ratchet's
+  test selection. Each is now machine-consumed and failure-capable, and each states its own
+  limitation rather than leaving it to be found (the selection gate cannot see
+  `from app.events import projectors`, and pins that fact as a test). Where a list cannot be
+  replaced by discovery, it must be guarded by something that fails the build when it drifts.

@@ -304,3 +304,22 @@ def test_no_mintable_sequence_is_an_explicit_refusal() -> None:
         next_mintable_epoch_sequence(SIGNAL_EPOCH_SEQUENCE_MINT_MAX - 1, set())
         == SIGNAL_EPOCH_SEQUENCE_MINT_MAX
     )
+
+
+def test_next_mintable_scan_is_structurally_bounded() -> None:
+    """The scan must terminate by construction, not by the data being kind.
+
+    Generated mutation found this by hanging: inverting the loop predicate made
+    the scan run forever, because the cap was only consulted after the loop
+    exited. A bound that only holds when the predicate is correct is not a
+    bound. With the cap inside the condition, a fully-occupied domain returns
+    the typed refusal instead of spinning.
+    """
+
+    from app.events.projectors import next_mintable_epoch_sequence
+
+    top = SIGNAL_EPOCH_SEQUENCE_MINT_MAX
+    # Every remaining sequence occupied: must refuse, not loop.
+    assert next_mintable_epoch_sequence(top - 3, {top - 2, top - 1, top}) is None
+    # And the ordinary case still finds the first free slot.
+    assert next_mintable_epoch_sequence(top - 3, {top - 2}) == top - 1

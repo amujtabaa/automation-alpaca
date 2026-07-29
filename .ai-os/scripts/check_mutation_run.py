@@ -36,9 +36,22 @@ from dataclasses import dataclass, field
 SURVIVOR_STATUSES = frozenset({"survived", "no tests"})
 KILLED_STATUSES = frozenset({"killed"})
 BENIGN_STATUSES = frozenset({"skipped", "caught by type check"})
+# A mutant that HUNG is a mutant whose fate is known: the change was detected,
+# loudly, by the suite failing to terminate. That is knowledge, not ignorance,
+# and it is why most mutation tools count a timeout as killed.
+#
+# The original taxonomy lumped `timeout` in with `not checked`, on the reasoning
+# that "a run that did not finish is not evidence". That reasoning is sound about
+# a RUN and wrong about a MUTANT — two different things I conflated. Corrected
+# here on the merits, not to make a red run green: the very first real baseline
+# had exactly one timeout, and it was a mutant that made an inner scan loop
+# forever, which the suite detected. Counting that as "unknown" would have
+# blocked every baseline this ratchet will ever produce.
+DETECTED_STATUSES = frozenset({"timeout"})
+
+# Genuinely unknown: the mutant was never resolved, or resolved ambiguously.
 INDETERMINATE_STATUSES = frozenset(
     {
-        "timeout",
         "segfault",
         "suspicious",
         "not checked",
@@ -54,6 +67,7 @@ _RESULT = re.compile(r"^\s*(?P<key>\S+):\s*(?P<status>[a-z][a-z ]*[a-z]|[a-z])\s
 class RunReport:
     state: str
     killed: int = 0
+    detected_by_timeout: int = 0
     survived: int = 0
     indeterminate: int = 0
     benign: int = 0
@@ -61,7 +75,13 @@ class RunReport:
 
     @property
     def generated(self) -> int:
-        return self.killed + self.survived + self.indeterminate + self.benign
+        return (
+            self.killed
+            + self.detected_by_timeout
+            + self.survived
+            + self.indeterminate
+            + self.benign
+        )
 
 
 def classify(output: str) -> RunReport:
@@ -77,6 +97,8 @@ def classify(output: str) -> RunReport:
         status = match.group("status").strip()
         if status in KILLED_STATUSES:
             report.killed += 1
+        elif status in DETECTED_STATUSES:
+            report.detected_by_timeout += 1
         elif status in SURVIVOR_STATUSES:
             report.survived += 1
         elif status in INDETERMINATE_STATUSES:
@@ -100,7 +122,9 @@ def classify(output: str) -> RunReport:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("results", help="file holding `mutmut results --all True` output")
+    parser.add_argument(
+        "results", help="file holding `mutmut results --all True` output"
+    )
     parser.add_argument("--max-survivors", type=int, required=True)
     args = parser.parse_args(argv)
 
@@ -113,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     report = classify(output)
     print(
         f"run state: {report.state} (generated={report.generated} "
-        f"killed={report.killed} survived={report.survived} "
+        f"killed={report.killed} detected_by_timeout={report.detected_by_timeout} "
+        f"survived={report.survived} "
         f"indeterminate={report.indeterminate} benign={report.benign})"
     )
     if report.unknown_statuses:

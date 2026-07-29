@@ -1555,8 +1555,14 @@ def next_mintable_epoch_sequence(
     which is exactly the tolerant-startup case this rule exists for.
     """
 
+    # The cap bounds the LOOP, not just its result. Written the other way round
+    # the scan was structurally unbounded and only checked the cap after
+    # exiting, so it terminated by luck of the predicate rather than by
+    # construction — generated mutation found it by hanging, which is exactly
+    # the class a hand-picked mutant never covers. An unbounded scan over a
+    # caller-supplied set inside startup is not something to leave to luck.
     candidate = high_water + 1
-    while candidate in occupied:
+    while candidate <= SIGNAL_EPOCH_SEQUENCE_MINT_MAX and candidate in occupied:
         candidate += 1
     if candidate > SIGNAL_EPOCH_SEQUENCE_MINT_MAX:
         return None

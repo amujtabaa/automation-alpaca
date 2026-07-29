@@ -21,10 +21,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      # Baseline sentinel: intentionally permissive until the first recorded
-      # run; tighten to the observed survivor count in the same PR that
-      # records it. Never raise without an ADR amendment.
-      MAX_SURVIVORS: "999"
+      # FIRST RECORDED BASELINE (2026-07-29, WO-0141R). Measured on a
+      # completed run at the branch head:
+      #   generated 1223 | killed 1017 | detected_by_timeout 1 | survived 205
+      # The sentinel is retired. 205 is a MEASUREMENT, not a target: it has not
+      # been triaged, and an unknown share are equivalent mutants. Lowering it
+      # as survivors are dispositioned is the ratchet; raising it needs an ADR
+      # amendment.
+      #
+      # Read the two earlier numbers before trusting this one. With the
+      # pre-existing test selection the same code measured 593 non-killed, of
+      # which 270 were "no tests" — because the selection named four files and
+      # the ratchet mutates the whole module. That number measured the
+      # SELECTION, not the tests. tests/test_ratchet_selection_is_complete.py
+      # now fails the build if the selection falls behind again.
+      MAX_SURVIVORS: "205"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
