@@ -27,6 +27,7 @@ from tests._append_caller_gate import (
     RATIFIED_APPEND_CALLERS,
     find_append_callers,
     find_producer_event_constructions,
+    find_unauditable_dynamic_access,
     production_modules,
 )
 
@@ -88,17 +89,65 @@ def test_producer_events_are_constructed_only_by_the_ratified_builders() -> None
 @pytest.mark.parametrize(
     "source",
     [
+        # plain shapes
         "async def f(store, ev):\n    return await store.append_execution_event(ev)\n",
         "async def f(ev):\n    return await append_execution_event(ev)\n",
         "async def f(self, ev):\n    return await self._store.append_execution_event(ev)\n",
+        # the five evasions that defeated the FIRST version of this gate, plus
+        # the f-string shape found while re-attacking the second version
+        'async def f(s, e):\n    return await getattr(s, "append_" + "execution_event")(e)\n',
+        'async def f(s, e):\n    return await getattr(s, "_".join(["append", "execution", "event"]))(e)\n',
+        'async def f(s, e):\n    return await getattr(s, f"append_{"execution_event"}")(e)\n',
+        "async def f(s, e):\n    fn = s.append_execution_event\n    return await fn(e)\n",
     ],
 )
 def test_gate_finds_a_seventh_caller_in_every_call_shape(source: str) -> None:
-    """The planted caller — attribute call, bare call, and nested attribute
-    receiver. A gate that only matched one shape would pass while the seam grew.
+    """The planted caller, in every shape the author could construct against it.
+
+    The first version of this gate matched only the three plain shapes and was
+    defeated four ways in one sitting — by the same split-literal trick that
+    defeated the derived-truth gate as REV-0045 P1-4. Matching the four new
+    shapes would have repeated the mistake, so the analyzer folds names and
+    refuses what it cannot fold; these fixtures are the evidence, not the rule.
     """
 
     assert find_append_callers(source, label="app/newmodule.py")
+
+
+def test_an_unfoldable_dynamic_name_is_refused_rather_than_missed() -> None:
+    """The evasion CLASS, not the evasions: a name the gate cannot fold is a
+    name it cannot audit, so it is refused outright."""
+
+    source = 'async def f(s, e, n):\n    return await getattr(s, "append_" + n)(e)\n'
+    assert find_unauditable_dynamic_access(source, label="app/newmodule.py")
+
+
+def test_a_disclosed_dynamic_access_is_allowed() -> None:
+    """Non-vacuity: a gate that cannot be satisfied gets disabled (the P1-5
+    failure mode), so a legitimate dynamic access may disclose and pass."""
+
+    source = (
+        "def f(s, n):\n"
+        "    # append-caller-gate: dynamic-ok: reflective config probe\n"
+        "    return getattr(s, n)\n"
+    )
+    assert find_unauditable_dynamic_access(source, label="app/newmodule.py") == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'def f():\n    return ExecutionEvent(event_type=getattr(ExecutionEventType, "PRODUCER_" + "RELEASED"))\n',
+        "from app.models import ExecutionEventType as E\ndef f():\n    return ExecutionEvent(event_type=E.PRODUCER_QUARANTINED)\n",
+        "from app.models import ExecutionEvent as Ev\ndef f():\n    return Ev(event_type=ExecutionEventType.PRODUCER_RELEASED)\n",
+        "def f(t):\n    return ExecutionEvent(event_type=t)\n",
+    ],
+)
+def test_rule_b_survives_aliasing_and_computed_members(source: str) -> None:
+    """Renaming the class or the enum at import time, computing the member name,
+    or passing the type through a variable must all fail closed."""
+
+    assert find_producer_event_constructions(source, label="app/newmodule.py")
 
 
 def test_gate_ignores_the_private_per_store_sinks() -> None:

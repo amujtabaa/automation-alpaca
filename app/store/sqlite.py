@@ -1411,6 +1411,10 @@ class SqliteStateStore(StateStore):
 
     @staticmethod
     def _execution_event(row: sqlite3.Row) -> ExecutionEvent:
+        # append-caller-gate: dynamic-ok: this is the row DECODER — it
+        # reconstructs an ExecutionEvent from a persisted row, so its event_type
+        # comes from the log rather than from a writer. Decoding a stored
+        # PRODUCER_* event is not minting one.
         return ExecutionEvent(
             id=row["id"],
             sequence=row["sequence"],

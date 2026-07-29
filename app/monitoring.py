@@ -929,6 +929,11 @@ async def _advance_execution_repair_checkpoint(
 
     identity = _repair_checkpoint_identity(repair_name, up_to_sequence, audit_cursor)
     stored = await store.append_execution_event(
+        # append-caller-gate: dynamic-ok: `checkpoint_type` is a parameter bound
+        # at exactly two sites, both `*_REPAIR_CHECKPOINT`
+        # (monitoring.py `_run_envelope_attribution_repair` /
+        # `_run_submit_acceptance_repair`). Neither is a PRODUCER_* member, so
+        # this site cannot mint a producer event (F-1, program §0).
         ExecutionEvent(
             id=identity,
             event_type=checkpoint_type,
@@ -3482,6 +3487,8 @@ async def _record_recovery_terminal_fact(
         else ExecutionEventType.REJECTED
     )
     stored = await store.append_execution_event(
+        # append-caller-gate: dynamic-ok: `expected_type` is a local over the
+        # closed pair {CANCELED, REJECTED}; neither is a PRODUCER_* member (F-1).
         ExecutionEvent(
             event_type=(expected_type),
             source=EventSource.BROKER_REST,
