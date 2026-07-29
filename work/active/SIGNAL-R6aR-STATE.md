@@ -37,9 +37,49 @@
 | 16 | Self-audit of slice 15 — **P0-7 found in my own delivery** | **RESOLVED in slice 17.** Adversarial self-review of `c20ca47` found a live P0 **introduced by that commit**: the tolerant fold now demands a heal at `next_mintable`, while BOTH stores still mint at `_release_sequence_floor_unlocked() + 1`, whose floor still counts a refused-but-attributable release's key. The store's own recovery event is refused by the fold that gates recovery — live clears the marker, restart re-marks, every retry consumes another key and ratchets the floor. **The human release can never succeed.** Reproduced end-to-end through the real SQLite restart path; recorded as `tests/test_wo0141_known_defect_fold_store_disagreement.py` (xfail strict + a mechanism pin). Root cause: WO-0141 was scoped along a FILE boundary, not a semantic one. Fixing needs both store floors, which the WO's ratified allowed paths forbid. |
 | 17 | WO-0141R — P0-7 and three occupancy defects fixed, scope extended | **VERIFIED (semantic layer complete; structural consolidation still owed).** Operator ratified extending the WO's allowed paths to both store release floors (P-3 score 4 → 6) plus the P-3 amendment as a standing rule. Both stores now mint via the ONE kernel rule `next_release_sequence`, derived from log truth only — the durable row is never consulted. Also fixed: occupancy bucketed by payload producer, the shape-refusal occupancy leak, and the uncaught `ValueError` at the mint cap. Battery **4,806 passed / 11 skipped / 1 xfailed / 0 failed, coverage 93.11%** (floor 93.0). ruff/format/mypy(77)/lint-imports(6)/oracle(61)/scaling(13)/AI-OS hygiene ×5 green. Four mutants RED→GREEN. **Gate state unchanged: REV-0045 Codex-owned, R6b blocked, seat OFF.** |
 | 18 | Append-caller gate hardened against its own evasion class | **VERIFIED** — I defeated the gate I had just written **five ways**, including the exact split-literal shape that defeated the derived-truth gate as P1-4. Rewritten to *refuse what cannot be audited*: folded names, resolved import/assignment aliases, seam-binding counts as a reference, unfoldable `getattr` refused outright. A sixth evasion (f-string with a nested literal) was found while re-attacking the hardened version and closed. The disclosure scan is no longer a fixed window — it walks the contiguous comment block, because the derived-truth gate's two-line window silently stopped counting when a disclosure wrapped. Battery **4,816 passed / 11 skipped / 1 xfailed / 0 failed, coverage 93.10%**. Scope disclosure: `app/monitoring.py` touched, comment-only (11 comment lines, zero code). |
+| 19 | Adversarial self-review completed and dispositioned | **VERIFIED** — 85 agents, six lenses + three-lens adversarial verification + a completeness critic. 26 raw findings → **23 survived**, 3 refuted, plus **6 critic gaps**. Nine survivors were already fixed in slices 17-18. Closed this slice: two **vacuous property tests** (both now mutation-verified), the reference model's **dead fold half** (shipped, never imported — inert evidence wearing a test's clothes), the §2 `PRODUCER_RELEASED` spec row still stating the withdrawn exact-next rule, the `InvalidProjectionMarker` docstring, ADR-016's **totality overclaim**, and the state file's owed-list (named 2 of 5). **New P0-8 recorded and routed to WO-0142** with a strict xfail. One P2 judged a **non-defect** with the reasoning recorded in code. Battery **4,819 passed / 11 skipped / 2 xfailed / 0 failed, coverage 93.10%**. |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-29 (slice 19 — the review is dispositioned; the critic found what six lenses missed):
+
+  85 agents. 26 raw findings, **23 survived** three independent adversarial verification lenses
+  (most 3/3), 3 refuted. Nine of the survivors were defects I had already found and fixed in
+  slices 17-18, which is a useful calibration: my own audit and the fanned-out one converged on
+  the same core, and each found things the other did not.
+
+  **The most valuable single finding came from the completeness critic, not from any lens.** Its
+  question was not "were these findings right" but "what was not looked at". Answer: every one
+  of my six lenses examined the DERIVATION and none examined what the derivation is PERSISTED
+  into. The never-regress rule stores `max(prior_row, marker.last_known_epoch_sequence)` in the
+  durable rail row; D-2-b lowered `last_known`, so a pre-upgrade row higher than log truth wins
+  the `max` on every reopen, forever. The row is documented as log-derived and now holds a value
+  no fold of that log can produce. **P0-8**, recorded with a strict xfail and routed to WO-0142
+  — its repair reverses a ratified WO-0140 rule and edits the store rebuild path.
+
+  Severity stated with its bound, not maximised: WO-0141R already removed the MINT's dependency
+  on that row, so recovery is unaffected. It is a parity divergence on a reported field, not a
+  wedge, and it is reachable only from a database written by a build that was never merged.
+
+  **Two of my property tests were vacuous, both now mutation-verified.** The attribution test had
+  no unconditional assertion — a mutant refusing every release satisfied its implication trivially.
+  The `next_mintable` bounds test drew occupancy at random over 2**61, so it almost never contained
+  `high_water + 1`, the only place the rule bites; the occupancy-off mutant survived it on 5 of 12
+  seeds. **That is the fifth non-discriminating pin found on this surface**, all by mutation, none
+  by reading.
+
+  **The reference model's whole fold half was dead code** — `observed_facts`, `RailFacts`,
+  `proven_sequence`, `next_mintable`, shipped and never imported. Dead code in a holdout is worse
+  than no holdout because it reads as coverage: the S-3 inert-evidence class wearing a test's
+  clothes, in the very file written to guard against that class.
+
+  **One finding judged a NON-defect, with the reasoning recorded in the code rather than the
+  verdict alone.** `occupied_release_sequence` bounds the sequence while the UNIQUE index is
+  type-blind. True, and not exploitable: occupancy exists only to stop a mint colliding, every
+  mintable key is canonical and in-range by construction, and an out-of-domain key is a different
+  string from every key a mint could produce. Refuting a finding is only useful if the refutation
+  is auditable later.
 
 - 2026-07-29 (slice 18 — I defeated my own gate five ways before anyone else could):
 
