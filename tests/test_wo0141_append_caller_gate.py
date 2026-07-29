@@ -97,7 +97,12 @@ def test_producer_events_are_constructed_only_by_the_ratified_builders() -> None
         # the f-string shape found while re-attacking the second version
         'async def f(s, e):\n    return await getattr(s, "append_" + "execution_event")(e)\n',
         'async def f(s, e):\n    return await getattr(s, "_".join(["append", "execution", "event"]))(e)\n',
-        'async def f(s, e):\n    return await getattr(s, f"append_{"execution_event"}")(e)\n',
+        "async def f(s, e):\n    return await getattr(s, f\"append_{'execution_event'}\")(e)\n",
+        # NOTE: the inner quotes must DIFFER from the outer ones. Nested
+        # same-type quotes inside an f-string are PEP 701, which is 3.12+
+        # only, and CI runs a 3.11 matrix job — this fixture is parsed by
+        # ast.parse, so 3.11 raised SyntaxError and the suite went red in
+        # CI while passing locally on 3.12.
         "async def f(s, e):\n    fn = s.append_execution_event\n    return await fn(e)\n",
     ],
 )
