@@ -134,8 +134,9 @@ wrong and adds a bound to contain the damage.
 `SIGNAL_EPOCH_SEQUENCE_MINT_MAX = 2**62` (`app/models.py`) caps what may be **minted**.
 The fold, the release-key parser, and the durable row validator continue to read the full
 SQLite signed domain. This reuses the repo's existing read-structural/write-capped rule
-(ratified at WO-0140 slice 5) rather than inventing a mechanism, and it guarantees a
-successor always exists so `next_mintable` is total.
+(ratified at WO-0140 slice 5) rather than inventing a mechanism, and it guarantees that
+the domain can only be exhausted by legitimate consumption, never by one refused
+event reaching the ceiling.
 
 Capping the *reader* would retroactively invalidate an append-only log, which is why the
 durable row validator at `app/store/core.py` is deliberately left uncapped.

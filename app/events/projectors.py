@@ -1770,10 +1770,15 @@ class InvalidProjectionMarker:
 
     WO-0140 D-R R-1: the marker is DERIVED, in-memory state — recomputed
     identically by both stores and by replay from the same log, never
-    persisted. ``last_known_epoch_sequence`` is the max readable payload
-    ``epoch_sequence`` among the producer's ``PRODUCER_*`` events (0 if none);
-    the stores combine it with the durable rail row under the never-regress
-    rule before minting any later dedupe key.
+    persisted. ``last_known_epoch_sequence`` is the highest sequence the log
+    PROVES for this producer — contributed only by events the fold ACCEPTED
+    (D-2-b). It is deliberately NOT the maximum readable payload carrier: a
+    refused event proves nothing, and letting one raise this value is what gave
+    an unaccepted fact authority over future truth (REV-0045 P0-4, then P0-6).
+
+    Minting no longer combines this with the durable rail row. ``next_release_sequence``
+    derives both proof and occupancy from the log, so a drifted or stale row can
+    never place a key (WO-0141R).
     """
 
     producer_id: str

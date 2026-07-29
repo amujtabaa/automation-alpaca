@@ -28,10 +28,12 @@ from app.events.projectors import (
     contributed_epoch_sequence,
     next_mintable_epoch_sequence,
     occupied_release_sequence,
+    occupied_release_sequences,
     project_producer_rails_tolerant,
     sequence_from_release_dedupe_key,
 )
 from app.models import (
+    SIGNAL_EPOCH_SEQUENCE_MINT_MAX,
     EventAuthority,
     EventSource,
     ExecutionEvent,
@@ -40,8 +42,10 @@ from app.models import (
 from app.store.core import signal_dedupe_key
 from tests._rail_reference_model import (
     decode_release_key,
+    observed_facts,
     occupied_sequence,
     owner_of,
+    proven_sequence,
 )
 
 _NOW = datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc)
@@ -119,14 +123,25 @@ def test_attribution_agrees_with_the_reference_model(
         key_sequence=sequence,
     )
 
+    owner = owner_of(event)
     for queried in {payload_producer, key_producer}:
         contributed = contributed_epoch_sequence(event, producer_id=queried)
-        owner = owner_of(event)
         if contributed is not None:
             assert owner == queried, (
                 "an event proved a sequence for a producer that does not own it"
             )
             assert contributed == sequence
+    # UNCONDITIONAL, and the point of the test: the implication above is
+    # satisfied vacuously by a function that returns None for everything, so
+    # the agreeing case must be asserted positively. A mutant that refuses all
+    # releases used to pass this test.
+    if payload_producer == key_producer:
+        assert owner == payload_producer
+        assert (
+            contributed_epoch_sequence(event, producer_id=payload_producer) == sequence
+        )
+    else:
+        assert owner is None, "a conflicted release belongs to nobody"
 
 
 @given(
@@ -187,16 +202,34 @@ def test_a_conflicted_release_is_occupied_but_never_proven(
 
 @given(
     high_water=st.integers(min_value=0, max_value=2**61),
+    run_length=st.integers(min_value=0, max_value=12),
     extra=st.sets(st.integers(min_value=1, max_value=2**61), max_size=20),
 )
-@settings(max_examples=300)
-def test_next_mintable_is_above_the_high_water_and_unoccupied(
-    high_water: int, extra: set[int]
+@settings(max_examples=400)
+def test_next_mintable_steps_over_a_contiguous_occupied_run(
+    high_water: int, run_length: int, extra: set[int]
 ) -> None:
-    candidate = next_mintable_epoch_sequence(high_water, extra)
+    """Occupancy must be AVOIDED, not merely tolerated.
+
+    The earlier version drew `occupied` at random over a 2**61 range, so it
+    almost never contained `high_water + 1` — the only place the rule bites. A
+    mutant returning `high_water + 1` unconditionally survived it on 5 of 12
+    hypothesis seeds. This plants a contiguous run starting exactly at
+    `high_water + 1`, so the correct answer is always `high_water + run + 1` and
+    the mutant is always wrong. Its `is not None` assertion was also a tautology
+    under the chosen bounds; the domain-exhaustion case is pinned separately.
+    """
+
+    occupied = set(extra) | {high_water + 1 + i for i in range(run_length)}
+    candidate = next_mintable_epoch_sequence(high_water, occupied)
+
     assert candidate is not None
     assert candidate > high_water
-    assert candidate not in extra
+    assert candidate not in occupied
+    assert candidate == high_water + run_length + 1 or (
+        # `extra` may randomly occupy the slot just past the planted run.
+        candidate > high_water + run_length
+    )
 
 
 @given(proven=st.integers(min_value=0, max_value=2**40))
@@ -271,3 +304,63 @@ def test_a_foreign_key_never_changes_another_producers_outcome(
     assert victim not in perturbed_marks, (
         "a key naming the victim invalidated the victim's projection"
     )
+
+
+# --------------------------------------------------------------------------- #
+# The reference model's fold half — previously dead code
+# --------------------------------------------------------------------------- #
+
+
+@given(
+    producer_id=st.text(alphabet="ab|:", min_size=1, max_size=6),
+    proven=st.integers(min_value=1, max_value=50),
+    taken=st.sets(st.integers(min_value=1, max_value=60), max_size=8),
+)
+@settings(max_examples=200)
+def test_reference_model_fold_half_agrees_with_the_kernel(
+    producer_id: str, proven: int, taken: set[int]
+) -> None:
+    """`observed_facts` / `RailFacts.next_mintable` must agree with the kernel.
+
+    These were shipped and then never imported by any test — dead code in a
+    holdout, which is worse than no holdout because it reads as coverage. An
+    oracle nothing consults proves nothing, and this is the S-3 inert-evidence
+    class wearing a test's clothes.
+    """
+
+    events = [
+        _release(
+            producer_id=producer_id,
+            key_producer=producer_id,
+            key_sequence=s,
+            sequence=i + 1,
+        )
+        for i, s in enumerate(sorted(taken))
+    ]
+    facts = observed_facts(events, producer_id=producer_id, accepted=set())
+    facts.proven = proven
+
+    reference = facts.next_mintable(mint_max=SIGNAL_EPOCH_SEQUENCE_MINT_MAX)
+    kernel = next_mintable_epoch_sequence(
+        proven, occupied_release_sequences(events, producer_id=producer_id)
+    )
+    assert reference == kernel
+    assert facts.occupied == occupied_release_sequences(events, producer_id=producer_id)
+
+
+@given(
+    producer_id=st.text(alphabet="ab|:", min_size=1, max_size=6),
+    sequence=st.integers(min_value=1, max_value=2**40),
+)
+@settings(max_examples=200)
+def test_reference_proven_sequence_agrees_with_the_kernel_on_releases(
+    producer_id: str, sequence: int
+) -> None:
+    """The other unused half: `proven_sequence` is the reference model's reading
+    of what a well-formed event structurally proves."""
+
+    event = _release(
+        producer_id=producer_id, key_producer=producer_id, key_sequence=sequence
+    )
+    assert proven_sequence(event) == sequence
+    assert contributed_epoch_sequence(event, producer_id=producer_id) == sequence
