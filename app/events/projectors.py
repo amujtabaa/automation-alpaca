@@ -1429,6 +1429,43 @@ def occupied_release_sequence(event: ExecutionEvent, *, producer_id: str) -> int
         return None
 
 
+def release_key_claim(event: ExecutionEvent) -> tuple[str, int] | None:
+    """The ``(producer, sequence)`` a release's dedupe key CLAIMS, unbound.
+
+    WO-0141 self-audit. :func:`occupied_release_sequence` answers "did this event
+    consume sequence N *for the producer I am asking about*", which is the wrong
+    question when recording occupancy: the caller does not yet know whose key it
+    is. The tolerant fold asked it with the PAYLOAD producer, so a
+    key/payload-conflicted release — whose key names one producer and whose
+    payload names another — matched neither and entered NOBODY's occupied set.
+    Its key is nonetheless taken in the UNIQUE index, so the fold could hand
+    recovery a sequence the store can never mint.
+
+    Occupancy follows the KEY, unconditionally, because the index does not read
+    payloads. Returns ``None`` when the event consumes no release key at all.
+    """
+
+    if event.event_type is not ExecutionEventType.PRODUCER_RELEASED:
+        return None
+    dedupe_key = event.dedupe_key
+    if dedupe_key is None:
+        return None
+    prefix = "producer_release:"
+    if not dedupe_key.startswith(prefix):
+        return None
+    try:
+        parts = _decode_length_prefixed_parts(dedupe_key[len(prefix) :])
+    except ProjectionError:
+        return None
+    if len(parts) != 2:
+        return None
+    key_producer, sequence_text = parts
+    sequence = _canonical_ascii_int(sequence_text)
+    if sequence is None or sequence < 1 or sequence > _SQLITE_MAX_SIGNED_INT:
+        return None
+    return key_producer, sequence
+
+
 def next_mintable_epoch_sequence(
     high_water: int, occupied: AbstractSet[int]
 ) -> int | None:
@@ -1705,14 +1742,23 @@ def project_producer_rails_tolerant(
 
         producer_id = _producer_id_from_event(event)
         prior_high_water = last_known.get(producer_id, 0)
-        prior_occupied = occupied.setdefault(producer_id, set())
 
         # WO-0141 D-2-b + §1. Two distinct facts, judged separately.
         #
-        # OCCUPANCY is syntactic and unconditional: a well-formed, producer-bound
-        # release key is consumed by the UNIQUE index whether or not the event is
-        # valid. Recorded AFTER this event is judged, so the rule sees the key
-        # namespace exactly as the minter that wrote this event saw it.
+        # OCCUPANCY is syntactic and unconditional: a release's dedupe key is
+        # consumed by the UNIQUE index the moment its row lands, whether or not
+        # the event is valid, and REGARDLESS of which producer the payload names
+        # — the index does not read payloads. So it is recorded from the KEY's
+        # own claim, into the KEY's producer bucket.
+        #
+        # Two self-audit defects lived here. Occupancy was recorded via the
+        # PAYLOAD producer, so a key/payload-conflicted release entered nobody's
+        # set; and it was recorded after judging, behind several `continue`s, so
+        # whether a key counted depended on where the event was rejected. Both
+        # are fixed by the same shape: snapshot the PRIOR set, then record
+        # immediately and unconditionally. The heal below compares against the
+        # frozen snapshot, so it still sees the namespace exactly as the minter
+        # of this event saw it, and no exit path can skip the record.
         #
         # PROOF is semantic: the high-water advances only once the event has been
         # accepted. REV-0045 P0-4 advanced it HERE, before the applier ran, so a
@@ -1721,7 +1767,10 @@ def project_producer_rails_tolerant(
         # produced P0-6, because a refused event could drive the high-water to
         # 2**63-1 where no successor exists and the human recovery cannot mint.
         # The fix is not a smaller reservation; it is not reserving at all.
-        consumed_now = occupied_release_sequence(event, producer_id=producer_id)
+        prior_occupied = frozenset(occupied.get(producer_id, ()))
+        claim = release_key_claim(event)
+        if claim is not None:
+            occupied.setdefault(claim[0], set()).add(claim[1])
 
         if producer_id in invalid_at:
             if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
@@ -1755,11 +1804,14 @@ def project_producer_rails_tolerant(
                         )
                     except ProjectionError:
                         continue
-                    if healed_sequence != next_mintable_epoch_sequence(
+                    expected = next_mintable_epoch_sequence(
                         prior_high_water, prior_occupied
-                    ):
-                        if consumed_now is not None:
-                            prior_occupied.add(consumed_now)
+                    )
+                    # An exhausted domain is an explicit refusal. Comparing an
+                    # int against None happened to fail closed, but by accident
+                    # and untested — the kind of correctness that stops being
+                    # correct the moment the expression is refactored.
+                    if expected is None or healed_sequence != expected:
                         continue
                     del invalid_at[producer_id]
                     last_known[producer_id] = max(prior_high_water, healed_sequence)
@@ -1767,8 +1819,6 @@ def project_producer_rails_tolerant(
                         producer_id=producer_id,
                         quarantine_epoch_sequence=healed_sequence,
                     )
-            if consumed_now is not None:
-                prior_occupied.add(consumed_now)
             continue
 
         current = projected.setdefault(
@@ -1794,8 +1844,6 @@ def project_producer_rails_tolerant(
             contributed = contributed_epoch_sequence(event, producer_id=producer_id)
             if contributed is not None:
                 last_known[producer_id] = max(prior_high_water, contributed)
-        if consumed_now is not None:
-            prior_occupied.add(consumed_now)
 
     invalidated = {
         producer_id: InvalidProjectionMarker(
