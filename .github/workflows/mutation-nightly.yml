@@ -35,6 +35,22 @@ jobs:
       # the ratchet mutates the whole module. That number measured the
       # SELECTION, not the tests. tests/test_ratchet_selection_is_complete.py
       # now fails the build if the selection falls behind again.
+      #
+      # KNOWN-LOOSE BY AT LEAST SIX as of 6624a62.
+      # tests/test_wo0141_mutation_triage_gaps.py kills six survivors that this
+      # baseline counted: contributed_epoch_sequence 10/12/15 and
+      # release_key_claim 16/17/21, each certified RED->GREEN individually.
+      # The ceiling is deliberately NOT lowered to 199 here: 205 minus 6 is
+      # arithmetic, and adding a test module to the selection can move other
+      # cells too. The next completed run measures the real number; lower it to
+      # THAT. A ceiling that is known-loose and says so beats one that is
+      # precise and guessed.
+      #
+      # ALSO WORTH KNOWING, from triaging those six: three of them were in
+      # guards that _apply_producer_quarantined already enforces upstream, so
+      # their survival was reporting UNREACHABILITY, not a test gap. A survivor
+      # set is a reachability oracle; coverage is not. Read survivors that way
+      # before assuming each one is a missing assertion.
       MAX_SURVIVORS: "205"
     steps:
       - uses: actions/checkout@v4
