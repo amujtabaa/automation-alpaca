@@ -348,6 +348,21 @@ correctly showed is unbounded over indefinite hostility):
 - **WO-0140 amendment (Ameen 2026-07-27):** `PRODUCER_RELEASED` may also close a *degenerate*
   epoch — the no-epoch heal of a legacy wedge or an unfoldable rail history — carrying a zero-width
   window (`epoch_start == released_at`) and consuming the next epoch sequence via its dedupe key.
+- **WO-0141R amendment (Ameen 2026-07-28/29; ADR-016 supersedes the sequence rule above).** "The
+  next epoch sequence" is now defined precisely, because "next" was ambiguous in exactly the way
+  that produced P0-6 and P0-7. It is `next_release_sequence` — the lowest sequence both **above the
+  proven high-water** (contributed only by events the fold ACCEPTED, ADR-016 INV-097) and **not
+  already occupied** by a well-formed producer-bound release key, valid event or not. It is derived
+  from log truth alone; the durable rail row is never consulted, so a drifted row can never place a
+  key. One function serves the fold's heal check and both stores' minters (INV-098). Minting is
+  bounded by `SIGNAL_EPOCH_SEQUENCE_MINT_MAX` while readers keep the full signed domain, so the
+  domain can be exhausted only by legitimate consumption, never by one refused event reaching the
+  ceiling.
+- **WO-0141R amendment — enable gate (INV-100).** The browser path for release named above is
+  R6b and is **not built**. Until it ships, the server refuses to start with `signal_seat_enabled`
+  on (`app/server.py:enable_gate_refusal`). The ADR's claim that release "has a browser path, not
+  raw-API-only — invariant 11" is therefore an obligation R6b discharges, not a delivered fact, and
+  the gate is what keeps the gap from being crossed silently.
   Release remains the single human recovery for every stuck rail state; a drift-invalidated producer (ADR-014 vocabulary)
   whose log folds healthy is repaired from log truth instead (mid-cycle: repair-and-refuse, so no
   release event can launder a partially consumed budget).

@@ -1268,6 +1268,41 @@ structural.
 `tests/test_wo0114_cockpit_release.py`, and the enum/producer/consumer matrix in
 `tests/test_review_hardening_gates.py` (both stores plus SQLite reopen).
 
+## Derived truth and its caches (ADR-016 / WO-0141R)
+
+**INV-097 — Proof and occupancy are separate facts.** An epoch sequence is PROVEN only by an
+event the fold ACCEPTED; a `producer_release:` dedupe key is OCCUPIED the moment its row lands,
+valid or not, because the UNIQUE index does not read payloads. A refused event may occupy a key
+and must never move proven truth. Conflating the two is what let an unaccepted fact acquire
+authority over future truth (REV-0045 P0-4, then P0-6).
+*Pinned by:* `tests/test_wo0141_rail_kernel.py`, `tests/test_wo0141_rail_properties.py`,
+`tests/test_wo0141_occupancy_leaks.py` (both ratified opener triggers).
+
+**INV-098 — One rule decides where recovery may land.** `next_release_sequence` is the single
+definition of the next mintable epoch sequence, derived from log truth alone and consumed by the
+tolerant fold's heal check AND both stores' minters. Two implementations of "where may recovery
+land" is the same defect class as three implementations of "whose event is this".
+*Pinned by:* `tests/test_wo0141_fold_store_recovery_agreement.py` (both stores),
+`tests/test_derived_truth_single_source.py`.
+
+**INV-099 — A persisted derived field may not exceed the log truth it caches.** A durable row is
+a cache; the log is truth. A cache holding a value no fold of its log can produce makes
+`replay == live` false for that field and lets two stores disagree on one append-only history.
+*Status:* **VIOLATED TODAY, knowingly.** `signal_producer_rails.quarantine_epoch_sequence` is
+persisted as `max(prior_row, marker.last_known_epoch_sequence)`, so a pre-D-2-b row higher than
+log truth survives every reopen (P0-8). Registered as an invariant precisely because it is not
+yet held — the registry is a target as well as a record, and an unregistered rule cannot be
+checked against.
+*Pinned by:* `tests/test_wo0141_persisted_carrier_divergence.py` (strict xfail: the suite goes
+red the moment the violation is repaired, forcing this entry to be updated in the same change).
+
+**INV-100 — The signal seat may not serve without an in-product human recovery.** While the
+producer rail's only recovery from an invalid-projection marker is the human release, the server
+refuses to start with `signal_seat_enabled` on until R6b ships the release route and its cockpit
+control. A marked producer with no operator interface contradicts safety invariant 11.
+*Pinned by:* `tests/test_signal_seat_launch_guard.py` (`enable_gate_refusal`, plus a wiring pin
+that fails if the predicate is removed from the launch path).
+
 ### Accepted Signal Seat cross-reference (non-normative; WO-0127)
 
 Accepted ADR-009 and `docs/spec/signal-seat/06-invariants.md` map Signal Seat conversion to the

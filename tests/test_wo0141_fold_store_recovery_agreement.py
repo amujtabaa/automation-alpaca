@@ -62,6 +62,7 @@ from app.models import (
     ExecutionEventType,
 )
 from app.store.core import signal_dedupe_key
+from app.store.memory import InMemoryStateStore
 from app.store.sqlite import SqliteStateStore
 
 pytestmark = pytest.mark.anyio
@@ -84,10 +85,41 @@ def _event(
     )
 
 
-async def _seed_wedged_log(path: str) -> None:
+class _Store:
+    """One store under test, with a store-agnostic 'restart'.
+
+    The dual-store rule is mandatory for order/fill/position/reconciliation and
+    kill-switch behavior, and recovery semantics sit squarely inside it. This
+    suite was SQLite-only when it landed — the divergence it pins is between the
+    FOLD and the STORES, so proving it on one store proves half of it. Caught by
+    an independent merge-readiness assessment, not by this seat.
+
+    "Restart" means: discard all derived state and rebuild it from the log.
+    SQLite does that by reopening the file; the in-memory store does it by
+    re-running `initialize()`, which calls the same rail rebuild. Different
+    mechanics, identical meaning.
+    """
+
+    def __init__(self, kind: str, tmp_path) -> None:
+        self.kind = kind
+        self._path = str(tmp_path / "recovery.db")
+        self.store = (
+            SqliteStateStore(self._path) if kind == "sqlite" else InMemoryStateStore()
+        )
+
+    async def restart(self):
+        if self.kind == "sqlite":
+            reopened = SqliteStateStore(self._path)
+            await reopened.initialize()
+            self.store = reopened
+        else:
+            await self.store.initialize()
+        return self.store
+
+
+async def _seed_wedged_log(store) -> None:
     """A valid opener proving epoch 1, then a malformed release occupying key 9."""
 
-    store = SqliteStateStore(path)
     await store.initialize()
     await store.append_execution_event(
         _event(
@@ -120,7 +152,8 @@ async def _seed_wedged_log(path: str) -> None:
     )
 
 
-async def test_human_release_survives_a_restart(tmp_path) -> None:
+@pytest.mark.parametrize("store_kind", ["sqlite", "memory"])
+async def test_human_release_survives_a_restart(tmp_path, store_kind) -> None:
     """The recovery a human performs must still be in effect after a restart.
 
     This is the property the whole invalid-projection design exists to provide: a marked
@@ -128,13 +161,12 @@ async def test_human_release_survives_a_restart(tmp_path) -> None:
     boundary. If the release does not survive a restart there is no recovery at all.
     """
 
-    path = str(tmp_path / "wedge.db")
-    await _seed_wedged_log(path)
+    harness = _Store(store_kind, tmp_path)
+    await _seed_wedged_log(harness.store)
 
-    restarted = SqliteStateStore(path)
-    await restarted.initialize()
+    restarted = await harness.restart()
     assert _PRODUCER in restarted.invalid_projection_markers(), (
-        "precondition: the malformed release must mark the producer"
+        f"precondition ({store_kind}): the malformed release must mark the producer"
     )
 
     await restarted.release_producer(
@@ -145,15 +177,17 @@ async def test_human_release_survives_a_restart(tmp_path) -> None:
     )
     assert _PRODUCER not in restarted.invalid_projection_markers()
 
-    after_restart = SqliteStateStore(path)
-    await after_restart.initialize()
+    after_restart = await harness.restart()
     assert _PRODUCER not in after_restart.invalid_projection_markers(), (
         "the human release did not survive the restart — the rail is wedged and every "
         "retry consumes another dedupe key while the fold keeps demanding a lower one"
     )
 
 
-async def test_the_divergence_itself_is_exactly_as_described(tmp_path) -> None:
+@pytest.mark.parametrize("store_kind", ["sqlite", "memory"])
+async def test_the_divergence_itself_is_exactly_as_described(
+    tmp_path, store_kind
+) -> None:
     """Pins the MECHANISM, so the fix cannot silently regress to the old rule.
 
     Proven truth is 1 (only the accepted opener proves anything), sequence 9 is consumed
@@ -161,11 +195,9 @@ async def test_the_divergence_itself_is_exactly_as_described(tmp_path) -> None:
     10 — the refused event's key plus one — which the fold then refused forever.
     """
 
-    path = str(tmp_path / "mechanism.db")
-    await _seed_wedged_log(path)
-
-    store = SqliteStateStore(path)
-    await store.initialize()
+    harness = _Store(store_kind, tmp_path)
+    await _seed_wedged_log(harness.store)
+    store = await harness.restart()
     events = await store.get_execution_events()
 
     _, markers = project_producer_rails_tolerant(events)
@@ -185,8 +217,9 @@ async def test_the_divergence_itself_is_exactly_as_described(tmp_path) -> None:
     )
 
 
+@pytest.mark.parametrize("store_kind", ["sqlite", "memory"])
 async def test_store_mint_steps_over_a_key_consumed_at_exactly_the_next_sequence(
-    tmp_path,
+    tmp_path, store_kind
 ) -> None:
     """The store's mint must AVOID a consumed key, not merely sit above proven truth.
 
@@ -201,8 +234,8 @@ async def test_store_mint_steps_over_a_key_consumed_at_exactly_the_next_sequence
     P0-2's trigger-specific survivor. Reachability is not discrimination.
     """
 
-    path = str(tmp_path / "stepover.db")
-    store = SqliteStateStore(path)
+    harness = _Store(store_kind, tmp_path)
+    store = harness.store
     await store.initialize()
     await store.append_execution_event(
         _event(
@@ -232,8 +265,7 @@ async def test_store_mint_steps_over_a_key_consumed_at_exactly_the_next_sequence
         )
     )
 
-    restarted = SqliteStateStore(path)
-    await restarted.initialize()
+    restarted = await harness.restart()
     assert _PRODUCER in restarted.invalid_projection_markers()
 
     released = await restarted.release_producer(
@@ -247,8 +279,7 @@ async def test_store_mint_steps_over_a_key_consumed_at_exactly_the_next_sequence
         "taken, so the only mintable sequence is 3"
     )
 
-    after_restart = SqliteStateStore(path)
-    await after_restart.initialize()
+    after_restart = await harness.restart()
     assert _PRODUCER not in after_restart.invalid_projection_markers(), (
-        "the fold must accept the sequence the store actually minted"
+        f"the fold must accept the sequence the store actually minted ({store_kind})"
     )

@@ -5,9 +5,11 @@
 - **Date:** 2026-07-28
 - **Deciders:** Operator (human gate); Claude seat (proposal, after REV-0045 round 3)
 - **Supersedes:** the §2.6 sequence-reservation ruling of 2026-07-28 (withdrawn, not repaired)
-- **Amends (INTENDED, not yet done):** ADR-009 release semantics — **ADR-009 has NOT been
-  amended.** The claim was written before the amendment and is corrected here rather than left
-  standing; it lands with the re-cut delivery.
+- **Amends:** ADR-009 release semantics (two amendment bullets added 2026-07-29 — the precise
+  `next_release_sequence` definition and the INV-100 enable gate) and
+  `docs/spec/signal-seat/02-lifecycle.md` §2/§4. This ADR previously declared an ADR-009 amendment
+  that had never been made, leaving two accepted ADRs in conflict on the merge path; found by an
+  independent merge-readiness assessment, not by this seat.
 
 > ## Delivery note — the first implementation was defective; read this before the diff
 >

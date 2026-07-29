@@ -320,3 +320,84 @@ def test_flag_on_injected_settings_bad_transport_policy_fails():
             ),
             signal_rails=PermissiveSignalRails(),
         )
+
+
+# --------------------------------------------------------------------------- #
+# R6a ENABLE GATE — §6, converted from prose to an executable refusal
+# --------------------------------------------------------------------------- #
+
+
+def _valid_flag_on_settings() -> Settings:
+    """A flag-on configuration satisfying every ADR-009 validity rule, so the
+    ONLY thing that can refuse it is the enable gate itself."""
+
+    return Settings(
+        signal_seat_enabled=True,
+        operator_api_key="op-key",
+        signal_producer_keys={"prod-key": "vibe"},
+    )
+
+
+def test_enable_gate_refuses_to_serve_while_human_recovery_has_no_route():
+    """Serving with the seat on must be REFUSED until R6b ships the release
+    route and its cockpit control.
+
+    Without R6b a marked producer is refused write-free with no in-product way
+    to release it — safety invariant 11 (browser-first) broken. This was prose
+    in R6A-CONSOLIDATION-PROGRAM.md §6 until an independent merge-readiness
+    assessment observed that the whole merge-safety argument rested on a
+    document, and that the only thing preventing enablement was a file that
+    happened to be absent.
+    """
+
+    from app.server import enable_gate_refusal
+
+    reason = enable_gate_refusal(_valid_flag_on_settings())
+    assert reason is not None, "an otherwise-valid flag-on config must be refused"
+    assert "R6b" in reason, "the refusal must name what unblocks it"
+    assert "invariant 11" in reason, "and why it exists"
+
+
+def test_enable_gate_is_wired_into_the_launch_path():
+    """The predicate must actually gate `run()`.
+
+    A pure predicate nothing calls is the inert-evidence class; this pins the
+    call site without starting a server.
+    """
+
+    import inspect
+
+    from app import server
+
+    source = inspect.getsource(server.run)
+    assert "enable_gate_refusal(settings)" in source
+    assert "SystemExit(2)" in source
+
+
+def test_enable_gate_is_closed_today_and_opening_it_is_a_deliberate_act():
+    """Tripwire on the constant. If this fails, R6b flipped it — confirm the
+    route and the cockpit control shipped in the SAME change, then delete this
+    test with that evidence. It must never be flipped to make a suite pass."""
+
+    from app.config import SIGNAL_SEAT_HUMAN_RECOVERY_AVAILABLE
+
+    assert SIGNAL_SEAT_HUMAN_RECOVERY_AVAILABLE is False
+
+
+def test_enable_gate_does_not_fire_while_the_seat_is_off():
+    """A guard that blocks the ordinary path gets disabled — the P1-5 failure
+    mode. The default configuration must pass straight through."""
+
+    from app.server import enable_gate_refusal
+
+    assert enable_gate_refusal(Settings(signal_seat_enabled=False)) is None
+
+
+def test_enable_gate_releases_when_r6b_marks_recovery_available(monkeypatch):
+    """The gate must OPEN when its precondition is met, or it is a permanent
+    block rather than a gate."""
+
+    from app import server
+
+    monkeypatch.setattr(server, "SIGNAL_SEAT_HUMAN_RECOVERY_AVAILABLE", True)
+    assert server.enable_gate_refusal(_valid_flag_on_settings()) is None

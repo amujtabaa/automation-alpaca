@@ -1,7 +1,20 @@
 # CLOSE-OUT CHECKLIST — R6a gate (WO-0104a + WO-0140 + REV-0045)
 
-- **Status:** QUEUED — pre-staged 2026-07-28 while Codex round-3 is in flight, on operator
-  direction. **Executes only on an ACCEPT-class REV-0045 verdict.** Nothing here self-executes.
+- **Status:** QUEUED — **re-cut 2026-07-29 for round 4.** Executes only on an ACCEPT-class
+  REV-0045 **round-4** verdict. Nothing here self-executes.
+- **⚠ WHY THIS WAS RE-CUT.** As pre-staged, this checklist could not execute. An independent
+  merge-readiness assessment found three defects in it, each of which alone would have stalled the
+  close-out it exists to make routine:
+  1. §0 grepped `^verdict:` from `result-addendum-03.md` and required ACCEPT — that file's verdict
+     is **BLOCK**, and round 4's result is a different filename. The precondition could never pass.
+  2. §1b scoped the REV-0045 disposition to "P0-1..P0-5, P1-1..P1-3". The register is now
+     **P0-1..P0-8 and P1-1..P1-6** (addendum-03 added P0-6 and P1-4/5/6; the WO-0141R self-review
+     added P0-7 and P0-8).
+  3. There was **no step for WO-0141R at all** — the work order that did this entire delivery,
+     sitting `status: ACTIVE` in `work/active/`. CI fails a completed work order parked in a live
+     folder, so executing the old checklist would have produced a red build at the finish line.
+  A close-out artifact that cannot close is the same inert-evidence class as a gate that cannot
+  fail. Recorded rather than quietly rewritten.
 - **Why pre-staged:** the close-out has eleven moving parts across two work orders, one review
   packet, two state files, and the ledger. "Done but not dispositioned" is this repository's most
   repeated bookkeeping failure (AUDIT-0002 F001/F008/F009; WO-0116's whole sweep). A multi-part
@@ -19,16 +32,24 @@ git fetch origin codex/signal-r6a-rails-store master
 git checkout codex/signal-r6a-rails-store && git pull
 git status --short                      # must be empty
 git rev-list --left-right --count origin/master...HEAD   # expect "0  <n>" — fast-forward
-grep -m1 "^verdict:" work/review/REV-0045/result-addendum-03.md
+ls work/review/REV-0045/result-addendum-04.md          # round-4 result must exist
+grep -m1 "^verdict:" work/review/REV-0045/result-addendum-04.md
+gh run list --branch codex/signal-r6a-rails-store --limit 1   # CI green at the reviewed SHA
 ```
 
 - [ ] Working tree clean.
 - [ ] Behind-count is **0** (a nonzero behind-count means re-merge master first; still expected
       conflict-free — zero file overlap was verified at `4fdf51b`).
-- [ ] REV-0045 round-3 verdict is `ACCEPT` or `ACCEPT-WITH-CHANGES`.
-- [ ] The round-3 result states a **pinned head SHA**, and that SHA covers the post-remediation
-      gated-surface commits (ADR-014, ADR-015, CI gates, spec amendments). If it pins an older
-      head, those merge on self-review only — **STOP and request an addendum covering them.**
+- [ ] REV-0045 **round-4** verdict is `ACCEPT` or `ACCEPT-WITH-CHANGES`.
+- [ ] The round-4 result states a **pinned head SHA**, and that SHA covers every commit in the
+      range — including the WO-0141R semantic work, the assurance-control repairs, the ADR-015
+      baseline, and the ADR-009/INVARIANTS amendments. If it pins an older head, the uncovered
+      commits merge on self-review only — **STOP and request an addendum covering them.**
+- [ ] **CI observed green on BOTH matrix legs (3.11 and 3.12) at the reviewed SHA.** Not "locally
+      green" — CI was red for five commits during this delivery while local runs passed, because a
+      3.12-only fixture broke the 3.11 job. Local green on one interpreter is not green.
+- [ ] `SIGNAL_SEAT_HUMAN_RECOVERY_AVAILABLE` is still `False` and its tripwire test still passes
+      (INV-100). R6a merges DISABLED; only WO-0104b may flip it.
 
 **If the verdict is BLOCK:** do not execute this checklist and do not open a fourth remediation
 round. Per the P-1 tripwire (`.ai-os/core/15`) and the operator pre-commitment of 2026-07-28, a
@@ -52,7 +73,8 @@ deferred chore.
 ### 1b. REV-0045 disposition
 
 - [ ] Create `work/review/REV-0045/disposition.md` — verdict received, per-finding resolution
-      (P0-1..P0-5, P1-1..P1-3), the reviewed head SHA, and the evidence range
+      (**P0-1..P0-8, P1-1..P1-6** — the full register including P0-6/P1-4/5/6 from addendum-03
+      and P0-7/P0-8 from the WO-0141R self-review), the reviewed head SHA, and the evidence range
       `b48235e..<head>`. Cite the two external process audits as in-loop, non-gating.
 
 ### 1c. WO-0140 close-out
@@ -82,7 +104,23 @@ its R-1/R-2 items are what this whole chain resolved. It is the item most likely
       trap*, severity unchanged, still gating. State in the disposition whether the latent trap is
       now closed by the remediation, or carries forward as a named item. Do not let it pass silently.
 
-### 1e. Ledger — **two** rows, real SHAs
+### 1d-bis. WO-0141R close-out — **added 2026-07-29; it was missing entirely**
+
+WO-0141R did this delivery and sits `status: ACTIVE` in `work/active/`. CI fails a completed work
+order parked in a live folder, so omitting it makes the close-out commit itself a red build.
+
+- [ ] Flip `status: ACTIVE` → `CLOSED` with a disposition. Note that its §2 items 1 and 5 and
+      §5.2 are **deferred** by ratified **D-4**, not undelivered — the frontmatter `deferred:`
+      line carries that, and the disposition must say so explicitly rather than claiming
+      completion of the structural half.
+- [ ] Move `work/active/WO-0141R-r6a-c1-rail-sequence-rule.md` → `work/completed/`.
+- [ ] Confirm the two strict-xfail defect records are still accurate: P0-8 open
+      (`tests/test_wo0141_persisted_carrier_divergence.py`) and routed to WO-0142, which now
+      EXISTS as a file. If either xfail has flipped to a pass, the defect was fixed and the file
+      must be removed in that same change.
+- [ ] Confirm INV-097..INV-100 are registered in `docs/INVARIANTS.md` and their pins named.
+
+### 1e. Ledger — **three** rows, real SHAs
 
 ```bash
 git log --oneline --format='%h %s' b48235e..HEAD -- app/ | tail -20   # find implementation SHAs
@@ -90,7 +128,8 @@ git log --oneline --format='%h %s' b48235e..HEAD -- app/ | tail -20   # find imp
 
 - [ ] Append a row for **WO-0104a** and a row for **WO-0140**.
 - [ ] `commit` field carries a **real hex SHA of the implementation commit** — for WO-0140 that is
-      `807d38b` (the four-P0 remediation). **`"HEAD"` is now rejected** by `check_ledger.py` for
+      `807d38b` (the four-P0 remediation), and a THIRD row for **WO-0141R** at its own
+      implementation SHA — not `807d38b`, which predates it. **`"HEAD"` is now rejected** by `check_ledger.py` for
       rows dated after 2026-07-28 (P-6). Cite the work's commit, not the close-out commit — that
       avoids the chicken-and-egg and is what makes the row verifiable later.
 - [ ] `status: CLOSED`; `disposition` from the valid vocabulary only; `date` ISO; `reason` states

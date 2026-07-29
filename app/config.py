@@ -432,6 +432,24 @@ def operator_producer_key_overlap(
     return overlap
 
 
+# R6a ENABLE GATE (R6A-CONSOLIDATION-PROGRAM.md §6, operator-ratified 2026-07-28).
+#
+# The producer rail's ONLY recovery from an invalid-projection marker is the
+# human release. R6b — the `/api/producers` release route and its cockpit
+# control — is not built, so with the seat enabled a producer can become marked
+# with no in-product way to release it. That contradicts safety invariant 11
+# (browser-first) and the ratified claim that release is the single human
+# recovery.
+#
+# This constant IS the gate. It was prose in §6 until an independent
+# merge-readiness assessment pointed out that the entire merge-safety argument
+# rested on a document, and that the only thing actually preventing enablement
+# was a file that happened to be absent. R6b flips it to True in the same change
+# that ships the route and the control — a deliberate, reviewable act, not a
+# default someone drifts past.
+SIGNAL_SEAT_HUMAN_RECOVERY_AVAILABLE = False
+
+
 def validate_signal_seat_settings(settings: "Settings") -> None:
     """Validate flag-on ADR-009 construction invariants.
 
