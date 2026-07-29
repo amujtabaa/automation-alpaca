@@ -140,3 +140,24 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
   and a reviewer may adopt or replace them; until then agreement with them is weak evidence, never
   a gate. Recorded because WO-0141's §5.1 called for reviewer-owned holdouts and the implementing
   seat could only supply pre-registered ones.
+- 2026-07-29: **P-3 AMENDMENT (operator-ratified): a paired limb is counted where a derived
+  quantity is CONSUMED, not where files are edited.** WO-0141 was cut along a file boundary —
+  "kernel now, stores in WO-0142" — and its scope-budget table recorded "paired-store limb: 0"
+  because the diff touched no adapter. That was wrong: `contributed_epoch_sequence` is read by
+  both stores, so changing what it MEANS is a store change regardless of which files move. The
+  delivered kernel demanded recovery at `next_mintable` while both stores still minted at
+  `release-floor + 1`, so the store's own recovery event was refused by the fold that gates
+  recovery and the human release never survived a restart (P0-7, found in self-audit).
+  **Corollary: "change the shared derivation now, update its consumers later" is never a valid
+  cut.** A shared derivation and every consumer that reads it are one limb and land together.
+  Counting the limb correctly would have raised WO-0141's score from 4 to 6 at the planning gate
+  and forced exactly the delivery that eventually had to be made anyway.
+- 2026-07-29: **reachability is not discrimination — a pin must be exercised at values where the
+  correct and incorrect rules DISAGREE.** Three pins on the WO-0141 surface were found by
+  mutation to cover their rule only where both answers coincide: a metamorphic relation checked
+  the tolerant fold (which buckets by payload producer, so the attribution rule cannot affect it)
+  instead of the floors where the defect lived; and two occupancy pins placed the consumed key
+  far above the high-water, where `next_mintable` and `high_water + 1` return the same value.
+  All three were green against a mutant that deleted the rule entirely. This is the same shape as
+  REV-0045 P0-2's trigger-specific survivor. When pinning a rule of the form "X, except where Y",
+  the fixture must instantiate Y.

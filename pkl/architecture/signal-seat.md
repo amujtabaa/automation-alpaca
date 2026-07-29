@@ -49,11 +49,7 @@ governance state are not ported.
   (open-epoch close / no-epoch heal / mid-cycle repair-and-refuse). Derived sequence truth is
   single-sourced through `contributed_epoch_sequence()` and the release-key parser is a total
   inverse of the mint (REV-0045; enforced by `tests/test_derived_truth_single_source.py`).
-  **Proof and occupancy are separate facts (ADR-016) — RATIFIED TARGET, NOT DELIVERED BEHAVIOR.**
-  The `c20ca47` implementation carries four self-audit P0s, chief among them that the fold and both
-  stores disagree about where recovery may land, so the human release does not survive a restart
-  (`tests/test_wo0141_known_defect_fold_store_disagreement.py`). The rules below describe the
-  intended model, not current code. Intended: the high-water mark advances only
+  **Proof and occupancy are separate facts (ADR-016, WO-0141R):** the high-water mark advances only
   when the fold ACCEPTS an event, while a well-formed producer-bound `producer_release:` key is
   consumed by the UNIQUE index whether or not the event was valid. Recovery lands at
   `next_mintable` — lowest sequence above the proven high-water and unconsumed — which equals

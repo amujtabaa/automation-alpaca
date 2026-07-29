@@ -1439,6 +1439,7 @@ async def test_release_floors_agree_across_stores_on_adversarial_openers(
     from app.store.memory import InMemoryStateStore
 
     producer_id = "p-floor"
+    answers: set[int] = set()
     for adversarial in (True, "9", 3.5, 2**63, None):
         opener = _raw_opener(
             producer_id=producer_id, sequence=1, epoch_sequence=adversarial
@@ -1448,7 +1449,7 @@ async def test_release_floors_agree_across_stores_on_adversarial_openers(
         memory_store = InMemoryStateStore()
         await memory_store.initialize()
         memory_store._execution_events.extend([opener, valid])
-        memory_floor = memory_store._release_sequence_floor_unlocked(producer_id)
+        memory_floor = memory_store._next_release_sequence_unlocked(producer_id)
 
         path = str(tmp_path / f"floor-{adversarial!r}.db".replace("/", "_"))
         sqlite_store = SqliteStateStore(path)
@@ -1460,13 +1461,40 @@ async def test_release_floors_agree_across_stores_on_adversarial_openers(
                     insert_cur, event.model_copy(update={"sequence": 0})
                 )
         cur = sqlite_store._conn.cursor()
-        sqlite_floor = sqlite_store._release_sequence_floor_locked(cur, producer_id)
+        sqlite_floor = sqlite_store._next_release_sequence_locked(cur, producer_id)
 
-        assert memory_floor == sqlite_floor == 2, (
-            f"floors disagree for opener epoch_sequence={adversarial!r}: "
-            f"memory={memory_floor} sqlite={sqlite_floor} (both must ignore the "
-            "out-of-domain value and honour the valid opener at 2)"
+        assert memory_floor == sqlite_floor, (
+            f"stores disagree for opener epoch_sequence={adversarial!r}: "
+            f"memory={memory_floor} sqlite={sqlite_floor} — one append-only "
+            "history must yield one answer, or the two stores mint diverging keys"
         )
+        answers.add(memory_floor)
+
+    # The type-domain guard, stated as invariance rather than as a literal: NO
+    # adversarial value may move the answer. This is strictly stronger than the
+    # old `== 2` and does not need updating when the rule's arithmetic changes.
+    assert len(answers) == 1, (
+        f"an out-of-domain opener changed the answer: {sorted(answers)}"
+    )
+
+    # Semantic change disclosed rather than papered over (WO-0141R / D-2-b).
+    # This pin previously asserted 2, described as "honour the valid opener at 2".
+    # Under D-2-b that is no longer true and should not be: the adversarial opener
+    # marks the producer, so the *following* valid opener never folds and proves
+    # nothing. Proven truth is 0 and recovery therefore starts at 1. The property
+    # this pin exists for — one type domain, both stores, no influence from the
+    # out-of-domain value — is unchanged and is asserted above.
+    assert answers == {1}
+
+    # Non-vacuity: a log whose opener IS accepted answers differently, so the
+    # assertions above are not trivially satisfied by a function that returns a
+    # constant.
+    control = InMemoryStateStore()
+    await control.initialize()
+    control._execution_events.append(
+        _raw_opener(producer_id=producer_id, sequence=1, epoch_sequence=1)
+    )
+    assert control._next_release_sequence_unlocked(producer_id) == 2
 
 
 async def test_durable_rail_sink_refuses_an_out_of_domain_carrier(tmp_path) -> None:

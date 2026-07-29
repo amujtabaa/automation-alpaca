@@ -97,7 +97,9 @@ async def test_replay_reconstructs_byte_identical_snapshot_sequence(tmp_path):
         updated_at=_CLOCK,
     )
     store = TapeStore(tmp_path / "tape.ndjson", max_bytes=1_000_000, max_segments=2)
-    recorder = TapeRecorder(market_data=feed, store=store, enabled=True, clock=lambda: _CLOCK)
+    recorder = TapeRecorder(
+        market_data=feed, store=store, enabled=True, clock=lambda: _CLOCK
+    )
 
     captured = await recorder.capture_once()
     original_lines = (tmp_path / "tape.ndjson").read_text(encoding="utf-8").splitlines()
@@ -170,7 +172,11 @@ def test_store_rotates_and_replaces_oldest_when_two_segments_are_retained(tmp_pa
 
 
 def test_recorder_settings_are_off_by_default_and_parse_operational_values(monkeypatch):
-    for env in (ENABLE_TAPE_RECORDER_ENV, TAPE_RECORDER_PATH_ENV, TAPE_RECORDER_SYMBOLS_ENV):
+    for env in (
+        ENABLE_TAPE_RECORDER_ENV,
+        TAPE_RECORDER_PATH_ENV,
+        TAPE_RECORDER_SYMBOLS_ENV,
+    ):
         monkeypatch.delenv(env, raising=False)
 
     defaults = load_settings()

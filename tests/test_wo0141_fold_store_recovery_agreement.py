@@ -1,6 +1,12 @@
-"""KNOWN DEFECT introduced by c20ca47 (WO-0141 semantic half). Not yet fixed.
+"""P0-7 regression suite — the fold and the stores agree on where recovery lands.
 
-**What is wrong.** D-2-b changed the tolerant fold's high-water mark to count only
+This file began life as a KNOWN-DEFECT record with a strict xfail. The defect is
+now fixed (WO-0141R, operator-ratified scope extension to both store floors), the
+xfail fired as designed the moment the behavior changed, and the file has been
+rewritten to pin the fixed behavior instead. That forcing function is the point:
+a known defect must not be able to rot into a tolerated one.
+
+**What was wrong.** D-2-b changed the tolerant fold's high-water mark to count only
 ACCEPTED events, and the heal rule to `next_mintable(high_water, occupied)`. Both stores'
 release paths still choose the sequence to mint as
 `_release_sequence_floor_unlocked(producer_id) + 1`, and that floor is a `max` over
@@ -33,10 +39,13 @@ reproducible, so a green suite must not imply it is absent. Strict xfail means t
 goes RED the moment the behavior is fixed, forcing this file to be removed in the same
 change — a known defect cannot rot into a permanently-tolerated one.
 
-**Fixing it requires editing both stores' release floors**, which is outside WO-0141's
-ratified allowed paths (`app/store/memory.py` and `app/store/sqlite.py` are explicitly
-forbidden), and event-log-truth write paths are a human-gated surface. It is therefore
-recorded, not silently repaired.
+**The fix.** Both stores' release paths now call the same kernel rule the fold's heal
+check consumes — `next_release_sequence`, computed from log truth alone. The durable rail
+row is deliberately not consulted: the row is a cache, the log is truth, and WO-0140
+slice 4 already ratified minting from the log-derived value so a drifted row can never
+place a key. SQLite's payload pre-filter was also removed from the occupancy query,
+because occupancy follows the dedupe KEY and a conflicted release names different
+producers in key and payload — filtering occupancy by payload is P0-3 one layer down.
 """
 
 from __future__ import annotations
@@ -111,15 +120,6 @@ async def _seed_wedged_log(path: str) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN DEFECT (c20ca47): the fold demands a heal at next_mintable while both "
-        "stores mint at release-floor + 1. The human recovery path never sticks. Fixing "
-        "it requires the store floors, which are outside WO-0141's ratified allowed "
-        "paths. Remove this file in the change that fixes it."
-    ),
-)
 async def test_human_release_survives_a_restart(tmp_path) -> None:
     """The recovery a human performs must still be in effect after a restart.
 
@@ -154,10 +154,11 @@ async def test_human_release_survives_a_restart(tmp_path) -> None:
 
 
 async def test_the_divergence_itself_is_exactly_as_described(tmp_path) -> None:
-    """Pins the MECHANISM, so the diagnosis above cannot drift from the code.
+    """Pins the MECHANISM, so the fix cannot silently regress to the old rule.
 
-    Passes today: it asserts the disagreement exists. It must be deleted alongside the
-    xfail above when the floors and the fold are reconciled.
+    Proven truth is 1 (only the accepted opener proves anything), sequence 9 is consumed
+    by the refused release, so the next mintable sequence is 2. The old behavior minted
+    10 — the refused event's key plus one — which the fold then refused forever.
     """
 
     path = str(tmp_path / "mechanism.db")
@@ -178,7 +179,76 @@ async def test_the_divergence_itself_is_exactly_as_described(tmp_path) -> None:
     )
 
     assert proven == 1, "only the accepted opener proves anything (D-2-b)"
-    assert released.quarantine_epoch_sequence == 10, (
-        "the store mints at release-floor + 1, where the floor still counts the "
-        "refused release's key"
+    assert released.quarantine_epoch_sequence == 2, (
+        "the store must mint the fold's next_mintable — above proven truth (1) and "
+        "stepping over nothing, since 9 is consumed but not adjacent"
+    )
+
+
+async def test_store_mint_steps_over_a_key_consumed_at_exactly_the_next_sequence(
+    tmp_path,
+) -> None:
+    """The store's mint must AVOID a consumed key, not merely sit above proven truth.
+
+    Proven truth is 1 and sequence **2** — the very sequence `proven + 1` names — is
+    already consumed by a refused release. The store must mint 3.
+
+    This pin exists because a mutation check found the gap: the scenario above uses a
+    consumed key at 9, where `next_mintable` and `proven + 1` happen to agree on 2, so
+    a mutant that dropped occupancy from `next_release_sequence` entirely passed all 60
+    surrounding tests. That is the third time on this surface a pin has covered a rule
+    only at values where the correct and incorrect rules coincide — the same shape as
+    P0-2's trigger-specific survivor. Reachability is not discrimination.
+    """
+
+    path = str(tmp_path / "stepover.db")
+    store = SqliteStateStore(path)
+    await store.initialize()
+    await store.append_execution_event(
+        _event(
+            ExecutionEventType.PRODUCER_QUARANTINED,
+            {
+                "producer_id": _PRODUCER,
+                "breach_trigger": "rate_breach",
+                "bucket_capacity": 10,
+                "epoch_start": _NOW.isoformat(),
+                "epoch_sequence": 1,
+            },
+            signal_dedupe_key("producer_quarantine", _PRODUCER, "1"),
+        )
+    )
+    await store.append_execution_event(
+        _event(
+            ExecutionEventType.PRODUCER_RELEASED,
+            {
+                "producer_id": _PRODUCER,
+                "actor": "operator",
+                "rejected_count": 0,
+                "epoch_start": _NOW.isoformat(),
+                "released_at": _NOW.isoformat(),
+                "epoch_sequence": 2,  # forbidden field: refused, but key 2 is taken
+            },
+            signal_dedupe_key("producer_release", _PRODUCER, "2"),
+        )
+    )
+
+    restarted = SqliteStateStore(path)
+    await restarted.initialize()
+    assert _PRODUCER in restarted.invalid_projection_markers()
+
+    released = await restarted.release_producer(
+        _PRODUCER,
+        actor="operator",
+        rejected_count=0,
+        released_at=_NOW + timedelta(minutes=5),
+    )
+    assert released.quarantine_epoch_sequence == 3, (
+        "the store minted onto or below a consumed key; proven truth is 1 and 2 is "
+        "taken, so the only mintable sequence is 3"
+    )
+
+    after_restart = SqliteStateStore(path)
+    await after_restart.initialize()
+    assert _PRODUCER not in after_restart.invalid_projection_markers(), (
+        "the fold must accept the sequence the store actually minted"
     )

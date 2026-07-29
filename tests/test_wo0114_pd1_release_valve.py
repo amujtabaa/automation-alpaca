@@ -544,7 +544,9 @@ def _occurrence_less_lifecycle_event(
     )
 
 
-async def test_occurrence_less_release_cannot_clear_direct_sell_venue_interval(any_store):
+async def test_occurrence_less_release_cannot_clear_direct_sell_venue_interval(
+    any_store,
+):
     _, _, order, _ = await _needs_review_order(
         any_store,
         quantity=5,

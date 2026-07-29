@@ -85,7 +85,7 @@ from app.events.projectors import (
     ProducerRailProjection,
     active_emergency_reduce_overrides,
     fold_producer_rail,
-    contributed_epoch_sequence,
+    next_release_sequence,
     compose_trading_state,
     control_trading_state,
     current_trading_state,
@@ -1685,40 +1685,47 @@ class SqliteStateStore(StateStore):
                 )
         return folded.quarantine_epoch_sequence
 
-    def _release_sequence_floor_locked(
+    def _next_release_sequence_locked(
         self, cur: sqlite3.Cursor, producer_id: str
     ) -> int:
-        """Highest epoch sequence the LOG proves consumed (WO-0140 D-R R-3).
+        """Where this producer's next release may land (WO-0141R).
 
-        Openers carry it in their payload; releases carry it only in their
-        dedupe key (the ratified payload list is closed), so both are read —
-        a floor derived from the log alone can never re-mint a consumed key
-        and never trusts a drifted row. Runs only on the human release path.
+        Delegates to the ONE kernel rule the tolerant fold's heal check also
+        consumes. The previous form computed a store-local `max` over
+        `contributed_epoch_sequence` and added one, which disagreed with the
+        fold's `next_mintable` as soon as a refused event had taken a key: the
+        store minted a sequence the fold would refuse, so a human release
+        cleared the marker live and the next restart re-marked the producer,
+        forever (P0-7).
+
+        **The payload pre-filter is deliberately gone.** Occupancy follows the
+        dedupe KEY, and a key/payload-conflicted release names one producer in
+        its key and another in its payload — so filtering on
+        `json_extract(payload,'$.producer_id')` would hide exactly the events
+        whose keys are consumed but unattributed. Filtering occupancy by payload
+        is the same mistake as P0-3, one layer down. Every release row is read
+        and the kernel decides ownership from the key.
+
+        Runs only on the human release path, never on ingest.
         """
 
-        # REV-0045 addendum-02 P0-3: decode the rows and apply the SAME
-        # derived-sequence rule memory and the fold use. The previous
-        # JSON-aggregate form judged values in SQL's type domain, where a
-        # digit string wins a cross-type MAX and drops every valid opener,
-        # and JSON true counts as 1 — so identical histories minted
-        # different release keys on the two stores.
-        floor = 0
+        # The WHOLE log, unfiltered: `proven` is derived by the tolerant fold,
+        # which needs every rail event, and occupancy follows the dedupe KEY, so
+        # any payload pre-filter would hide exactly the conflicted releases whose
+        # keys are consumed but unattributed — P0-3 one layer down.
         rows = cur.execute(
-            "SELECT * FROM execution_events WHERE event_type IN (?, ?) "
-            "AND json_extract(payload, '$.producer_id') = ? ORDER BY sequence",
-            (
-                ExecutionEventType.PRODUCER_QUARANTINED.value,
-                ExecutionEventType.PRODUCER_RELEASED.value,
-                producer_id,
-            ),
+            "SELECT * FROM execution_events ORDER BY sequence"
         ).fetchall()
-        for row in rows:
-            contributed = contributed_epoch_sequence(
-                self._execution_event(row), producer_id=producer_id
+        nxt = next_release_sequence(
+            (self._execution_event(row) for row in rows),
+            producer_id=producer_id,
+        )
+        if nxt is None:
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has no mintable epoch sequence "
+                "remaining; recovery requires operator intervention"
             )
-            if contributed is not None:
-                floor = max(floor, contributed)
-        return floor
+        return nxt
 
     @staticmethod
     def _upsert_producer_log_rail(
@@ -8501,8 +8508,8 @@ class SqliteStateStore(StateStore):
                     else:
                         # Wedge log, or unfoldable: the zero-width heal.
                         epoch_start = released_at
-                        epoch_sequence = (
-                            self._release_sequence_floor_locked(cur, producer_id) + 1
+                        epoch_sequence = self._next_release_sequence_locked(
+                            cur, producer_id
                         )
                     if repaired_rail is not None:
                         self._upsert_producer_log_rail(cur, repaired_rail)
@@ -8522,8 +8529,8 @@ class SqliteStateStore(StateStore):
                     # The R-4 wedge: exhausted with no epoch — a legacy-only
                     # state with no other exit. Zero-width heal.
                     epoch_start = released_at
-                    epoch_sequence = (
-                        self._release_sequence_floor_locked(cur, producer_id) + 1
+                    epoch_sequence = self._next_release_sequence_locked(
+                        cur, producer_id
                     )
                 else:
                     raise ProducerNotQuarantinedError(

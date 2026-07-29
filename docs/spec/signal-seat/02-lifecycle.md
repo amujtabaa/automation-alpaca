@@ -156,15 +156,10 @@ collision is to detect it and advance — not to let an event the fold refused m
 mark. Reservation grants an unaccepted fact authority over future truth, which is the same class
 this review flagged as P0-4 and then again as P0-6.
 
-**Replacement rule (ADR-016) — RATIFIED BUT NOT CORRECTLY DELIVERED. Do not cite as current
-behavior.** The rules below are the ratified target. The `c20ca47` implementation carries four
-P0 defects found in self-audit (see ADR-016's delivery-status block and
-`tests/test_wo0141_known_defect_fold_store_disagreement.py`): most importantly the fold and both
-stores disagree about where recovery may land, so the human release does not survive a restart.
-Treat the reservation question as OPEN and this section as a specification of intent until the
-re-cut delivery lands.
-
-**Proof and occupancy are different facts.**
+**Replacement rule (ADR-016, delivered by WO-0141R): proof and occupancy are different facts.**
+The first implementation carried four self-audit P0s — see ADR-016's delivery note; all are
+fixed, and the fold and both stores now compute recovery from one kernel rule
+(`next_release_sequence`), pinned by `tests/test_wo0141_fold_store_recovery_agreement.py`.
 
 * **Proof is semantic.** The high-water mark advances ONLY when the fold has ACCEPTED the event.
   A refused event proves nothing, for anybody. `contributed_epoch_sequence()` still decides *what*
@@ -173,8 +168,10 @@ re-cut delivery lands.
   producer-bound `producer_release:` key is CONSUMED the moment its row lands — malformed payload
   or not. Openers never occupy release sequences; they mint into `producer_quarantine:`.
 * **Recovery lands at `next_mintable`** — the lowest sequence both above the proven high-water and
-  unconsumed. It is a pure function of the log, so the fold's heal rule and the stores' minters
-  agree without coordinating. In a fully valid history it equals `high_water + 1` exactly.
+  unconsumed. It is a pure function of the log, so the fold's heal rule and both stores' minters
+  compute it from ONE function and cannot disagree. In a fully valid history it equals
+  `high_water + 1` exactly. The durable rail row is never consulted: the row is a cache, the log
+  is truth.
 * **Attribution is one rule (ADR-016 §1).** A release is attributable only when the producer inside
   its dedupe key and the producer in its payload agree. A disagreement contributes nothing anywhere
   and marks the producer.

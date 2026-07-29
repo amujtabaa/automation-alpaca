@@ -1,6 +1,6 @@
 ---
 type: Work Order
-title: "R6a-C1 — typed v1 rail facts and one pure producer-rail kernel"
+title: "R6a-C1R — one rail sequence rule: kernel and stores together"
 status: ACTIVE
 ratified: "2026-07-28 (Ameen) — R6A-CONSOLIDATION-PROGRAM.md §1 decision block in full: D-1-c, D-2-b, D-3-c; one ADR-016; the D-3-c write cap included in this WO (P-3 score 4, coupled); WO-0140 and WO-0104a both stay OPEN in REVIEW; §6 two-part merge/enable gate accepted. D-1-d and D-3-b rejected."
 work_order_id: WO-0141
@@ -10,7 +10,8 @@ parent: WO-0104a (held in REVIEW); WO-0140 (held in REVIEW, not superseded)
 branch: codex/signal-r6a-rails-store
 model_tier: strong (LOCAL — event-log truth interpretation, human-gated recovery semantics)
 review: "Codex-owned REV-0045 continuation. This seat implements; it does not clear its own gate. Reviewer-owned holdouts (§5) are authored outside this WO and may not be modified by it."
-scope_budget: "P-3 score 4 (coupled): 1 state machine, 0 independent effect authorities, 1 human-gated surface (event-log-truth interpretation), 1 truth owner, 0 paired-store limbs, +1 for the core.py write cap."
+scope_budget: "P-3 score 6 (coupled) after the 2026-07-29 scope extension: 1 state machine, 0 independent effect authorities, 1 human-gated surface, 1 truth owner, +1 core.py write cap, and **1 paired-store limb** — originally recorded as 0, which was the error behind P0-7. A limb is counted where a derived quantity is CONSUMED, not where files are edited (ratified P-3 amendment)."
+scope_extension: "2026-07-29 (Ameen) — allowed paths extended to app/store/memory.py and app/store/sqlite.py, release-floor functions and mint-input clamping ONLY, after self-audit found P0-7: the fold demanded next_mintable while both stores minted at release-floor + 1, so the human release never survived a restart. The kernel and the store floors are one semantic limb."
 filter_risk: LOW-MED
 ---
 
@@ -31,8 +32,11 @@ filter_risk: LOW-MED
 | Can a production writer mint a key/payload mismatch? | **No** — six closed-domain callers, enumerated and discharged | F-1, program §0 |
 | Does this WO touch stores, schema, DDL, or payloads? | **No.** One exception: the D-3-c write cap in `app/store/core.py`, pure validation, no state mutation | ratified scope |
 
-**Anti-goal.** This WO does not make the stores call the kernel. That is WO-0142. Landing a kernel
-nobody calls is acceptable here and is *not* to be described as closing P0-3.
+**Anti-goal — WITHDRAWN 2026-07-29.** This WO originally declared "landing a kernel nobody calls
+is acceptable here". That was the defect: a kernel the stores do not call is a kernel the stores
+CONTRADICT, because they still read the same derived quantity under the old meaning. P0-7 was the
+direct consequence. Both stores now call the kernel rule; WO-0142 keeps only append-time binding
+validation (D-1-b) and the replay/restart assurance.
 
 ## 1. The design decision this WO turns on
 

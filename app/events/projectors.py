@@ -1466,6 +1466,79 @@ def release_key_claim(event: ExecutionEvent) -> tuple[str, int] | None:
     return key_producer, sequence
 
 
+def occupied_release_sequences(
+    events: Iterable[ExecutionEvent], *, producer_id: str
+) -> set[int]:
+    """Every release sequence this log has CONSUMED for ``producer_id``.
+
+    Syntactic and unconditional — see :func:`release_key_claim`. Exposed so the
+    stores' minters and the fold's heal rule read occupancy from one definition
+    instead of two implementations that must be kept in agreement by review.
+    """
+
+    taken: set[int] = set()
+    for event in events:
+        claim = release_key_claim(event)
+        if claim is not None and claim[0] == producer_id:
+            taken.add(claim[1])
+    return taken
+
+
+def proven_epoch_high_water(
+    events: Iterable[ExecutionEvent], *, producer_id: str
+) -> int:
+    """The highest epoch sequence this LOG proves for ``producer_id`` (D-2-b).
+
+    Derived by the tolerant fold, so "proven" here means exactly what it means
+    inside the fold's own heal rule: contributed by an event the fold ACCEPTED.
+
+    Taking this from the log rather than from a caller is deliberate. The first
+    attempt at the P0-7 repair let the stores pass their own value, and SQLite's
+    row-drift marker carries `last_known_epoch_sequence` copied from the DURABLE
+    ROW, not from the log — so a drifted row leaked straight back into the mint
+    and re-opened the never-trust-a-drifted-row property WO-0140 slice 4 was
+    written to establish. The row is a cache. Only the log proves anything.
+    """
+
+    events = list(events)
+    projected, markers = project_producer_rails_tolerant(events)
+    marker = markers.get(producer_id)
+    if marker is not None:
+        return marker.last_known_epoch_sequence
+    rail = projected.get(producer_id)
+    return rail.quarantine_epoch_sequence if rail is not None else 0
+
+
+def next_release_sequence(
+    events: Iterable[ExecutionEvent], *, producer_id: str
+) -> int | None:
+    """Where ``producer_id``'s next release may land, from LOG TRUTH ALONE.
+
+    WO-0141R. This is the single answer to that question, called by the tolerant
+    fold's heal rule and by both stores' release paths. Splitting it was P0-7:
+    the fold demanded ``next_mintable`` while the stores still minted at
+    ``release-floor + 1``, so the store's own recovery event was refused by the
+    fold that gates recovery — live cleared the marker, the next restart re-marked
+    the producer, and every retry consumed one more key and ratcheted the floor
+    higher. The human release could never succeed.
+
+    Both inputs are derived here, from the log, so a caller cannot supply a
+    wrong one — the first repair attempt let the stores pass `proven` and SQLite
+    handed in a value copied from a drifted durable row.
+
+    **The durable rail row is never consulted.** The row is a cache; the log is
+    truth. WO-0140 slice 4 ratified minting from the log-derived value precisely
+    so a drifted row can never place a key. Returns ``None`` when the mintable
+    domain is exhausted — a typed refusal, never a silent wrap.
+    """
+
+    events = list(events)
+    return next_mintable_epoch_sequence(
+        proven_epoch_high_water(events, producer_id=producer_id),
+        occupied_release_sequences(events, producer_id=producer_id),
+    )
+
+
 def next_mintable_epoch_sequence(
     high_water: int, occupied: AbstractSet[int]
 ) -> int | None:

@@ -74,7 +74,7 @@ from app.events.projectors import (
     project_order_status,
     project_producer_rails_tolerant,
     project_symbol_position,
-    contributed_epoch_sequence,
+    next_release_sequence,
     quarantined_symbols,
     reconcile_trading_state,
     timeout_quarantined_order_ids,
@@ -349,17 +349,29 @@ class InMemoryStateStore(StateStore):
             )
         self._invalid_projection_markers = dict(invalidated)
 
-    def _release_sequence_floor_unlocked(self, producer_id: str) -> int:
-        """Highest epoch sequence the LOG proves consumed (WO-0140 D-R R-3)."""
+    def _next_release_sequence_unlocked(self, producer_id: str) -> int:
+        """Where this producer's next release may land (WO-0141R).
 
-        floor = 0
-        for event in self._execution_events:
-            # REV-0045 addendum-02 P0-3: one shared derived-sequence rule for
-            # both stores and the fold — no store-local type domain.
-            contributed = contributed_epoch_sequence(event, producer_id=producer_id)
-            if contributed is not None:
-                floor = max(floor, contributed)
-        return floor
+        Delegates to the ONE kernel rule the tolerant fold's heal check also
+        consumes. It previously computed a store-local `max` over
+        `contributed_epoch_sequence` and added one, which disagreed with the
+        fold's `next_mintable` the moment a refused event had taken a key: the
+        store minted a sequence the fold would refuse, so the human release
+        cleared the marker live and the next restart re-marked the producer,
+        forever (P0-7). Two implementations of "where may recovery land" is the
+        same defect class as three implementations of "whose event is this".
+        """
+
+        nxt = next_release_sequence(
+            self._execution_events,
+            producer_id=producer_id,
+        )
+        if nxt is None:
+            raise InvalidEventError(
+                f"producer rail {producer_id!r} has no mintable epoch sequence "
+                "remaining; recovery requires operator intervention"
+            )
+        return nxt
 
     def _apply_incremental_budget_debit_unlocked(
         self,
@@ -6172,8 +6184,8 @@ class InMemoryStateStore(StateStore):
                         repaired_rail = folded
                     else:
                         epoch_start = released_at
-                        epoch_sequence = (
-                            self._release_sequence_floor_unlocked(producer_id) + 1
+                        epoch_sequence = self._next_release_sequence_unlocked(
+                            producer_id
                         )
                     if repaired_rail is not None:
                         self._producer_budget_rails[producer_id] = _ProducerBudgetRail(
@@ -6204,9 +6216,7 @@ class InMemoryStateStore(StateStore):
                     and rail.cycle_budget_consumed >= rail.cycle_budget_limit
                 ):
                     epoch_start = released_at
-                    epoch_sequence = (
-                        self._release_sequence_floor_unlocked(producer_id) + 1
-                    )
+                    epoch_sequence = self._next_release_sequence_unlocked(producer_id)
                 else:
                     raise ProducerNotQuarantinedError(
                         f"signal producer {producer_id!r} is not quarantined"

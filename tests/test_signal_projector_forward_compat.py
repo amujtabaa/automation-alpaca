@@ -312,4 +312,3 @@ def test_transition_non_string_identity_fails_fast():
     )
     with pytest.raises(ProjectionError, match="identity|producer_id"):
         project_signal_records([_received_event(), bad])
-

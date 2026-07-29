@@ -114,4 +114,3 @@ def test_signal_record_extra_forbidden():
             payload_hash="h",
             not_a_field=1,
         )
-

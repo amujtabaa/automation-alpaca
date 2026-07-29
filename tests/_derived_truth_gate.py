@@ -36,7 +36,17 @@ from pathlib import Path
 FORBIDDEN_CARRIER_KEYS = frozenset({"epoch_sequence"})
 FORBIDDEN_SQL_FRAGMENTS = ("$.epoch_sequence",)
 PARSER_PREFIX = "producer_release:"
-SHARED_HELPER = "contributed_epoch_sequence"
+# WO-0141R: the kernel's ratified derivation entry points. A store must call at
+# least one. This is a SET, not a widening of the rule: R1/R2 still refuse every
+# local derivation and every unauditable payload key, so the only thing a store
+# can do with these is delegate. Adding a name here is a claim that the function
+# is kernel-owned and single-sourced — check that before adding one.
+SHARED_HELPERS = frozenset(
+    {
+        "contributed_epoch_sequence",
+        "next_release_sequence",
+    }
+)
 PARSER_MODULE = "app/events/projectors.py"
 DYNAMIC_KEY_MARKER = "derived-truth-gate: dynamic-key-ok"
 
@@ -107,13 +117,13 @@ def analyze_store_module(source: str, *, label: str) -> list[str]:
                 violations.append(
                     f"{label}:{getattr(node, 'lineno', '?')}: derives the epoch-sequence "
                     f"carrier directly (folded literal {folded!r}) — route it through "
-                    f"{SHARED_HELPER}()"
+                    f"one of {sorted(SHARED_HELPERS)}"
                 )
             for fragment in FORBIDDEN_SQL_FRAGMENTS:
                 if fragment in folded:
                     violations.append(
                         f"{label}:{getattr(node, 'lineno', '?')}: SQL reads the carrier "
-                        f"({fragment!r}) — route it through {SHARED_HELPER}()"
+                        f"({fragment!r}) — route it through the kernel"
                     )
 
         # R2 — payload reads must use auditable constant keys.
@@ -134,15 +144,15 @@ def analyze_store_module(source: str, *, label: str) -> list[str]:
     called = any(
         isinstance(n, ast.Call)
         and (
-            (isinstance(n.func, ast.Name) and n.func.id == SHARED_HELPER)
-            or (isinstance(n.func, ast.Attribute) and n.func.attr == SHARED_HELPER)
+            (isinstance(n.func, ast.Name) and n.func.id in SHARED_HELPERS)
+            or (isinstance(n.func, ast.Attribute) and n.func.attr in SHARED_HELPERS)
         )
         for n in ast.walk(tree)
     )
     if not called:
         violations.append(
-            f"{label}: never CALLS {SHARED_HELPER}() — an import alone proves no "
-            "derivation goes through the shared source"
+            f"{label}: never CALLS any of {sorted(SHARED_HELPERS)} — an import "
+            "alone proves no derivation goes through the shared source"
         )
     return violations
 
