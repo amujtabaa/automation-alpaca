@@ -36,9 +36,37 @@
 | 15 | WO-0141 semantic half: proof/occupancy separation (ADR-016) | **VERIFIED (semantic half only — WO-0141 is NOT complete)** — D-1-a attribution, D-2-b valid-only contribution, `next_mintable` occupancy avoidance, D-3-c write cap, ADR-016, spec/pkl amendments, and the F-1 append-seam gate landed at `c20ca47`. Battery **4,796 passed / 11 skipped / 1 xfailed / 0 failed, branch coverage 93.14%** (floor 93.0, read from the coverage line). ruff/format/mypy(77)/lint-imports(6)/oracle(61) green. Four mutants RED→GREEN with no residue. **Still owed by this WO:** the structural consolidation (`ProducerRailMachine` / typed `ProducerRailFact` kernel — items 1 and 5 of §2), and the ADR-015 mutation baseline. **Gate state unchanged: REV-0045 Codex-owned, P0-2/3/4/6 not independently confirmed closed, R-1/R-2 open, D-2a OFF, R6b blocked.** |
 | 16 | Self-audit of slice 15 — **P0-7 found in my own delivery** | **RESOLVED in slice 17.** Adversarial self-review of `c20ca47` found a live P0 **introduced by that commit**: the tolerant fold now demands a heal at `next_mintable`, while BOTH stores still mint at `_release_sequence_floor_unlocked() + 1`, whose floor still counts a refused-but-attributable release's key. The store's own recovery event is refused by the fold that gates recovery — live clears the marker, restart re-marks, every retry consumes another key and ratchets the floor. **The human release can never succeed.** Reproduced end-to-end through the real SQLite restart path; recorded as `tests/test_wo0141_known_defect_fold_store_disagreement.py` (xfail strict + a mechanism pin). Root cause: WO-0141 was scoped along a FILE boundary, not a semantic one. Fixing needs both store floors, which the WO's ratified allowed paths forbid. |
 | 17 | WO-0141R — P0-7 and three occupancy defects fixed, scope extended | **VERIFIED (semantic layer complete; structural consolidation still owed).** Operator ratified extending the WO's allowed paths to both store release floors (P-3 score 4 → 6) plus the P-3 amendment as a standing rule. Both stores now mint via the ONE kernel rule `next_release_sequence`, derived from log truth only — the durable row is never consulted. Also fixed: occupancy bucketed by payload producer, the shape-refusal occupancy leak, and the uncaught `ValueError` at the mint cap. Battery **4,806 passed / 11 skipped / 1 xfailed / 0 failed, coverage 93.11%** (floor 93.0). ruff/format/mypy(77)/lint-imports(6)/oracle(61)/scaling(13)/AI-OS hygiene ×5 green. Four mutants RED→GREEN. **Gate state unchanged: REV-0045 Codex-owned, R6b blocked, seat OFF.** |
+| 18 | Append-caller gate hardened against its own evasion class | **VERIFIED** — I defeated the gate I had just written **five ways**, including the exact split-literal shape that defeated the derived-truth gate as P1-4. Rewritten to *refuse what cannot be audited*: folded names, resolved import/assignment aliases, seam-binding counts as a reference, unfoldable `getattr` refused outright. A sixth evasion (f-string with a nested literal) was found while re-attacking the hardened version and closed. The disclosure scan is no longer a fixed window — it walks the contiguous comment block, because the derived-truth gate's two-line window silently stopped counting when a disclosure wrapped. Battery **4,816 passed / 11 skipped / 1 xfailed / 0 failed, coverage 93.10%**. Scope disclosure: `app/monitoring.py` touched, comment-only (11 comment lines, zero code). |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-29 (slice 18 — I defeated my own gate five ways before anyone else could):
+
+  The append-caller gate landed in slice 15 attested SPELLING, exactly like the derived-truth
+  gate did before P1-4. Five evasions worked on the first attempt — `getattr` with a split
+  literal, a `"".join` of parts, binding the bound method to a name, aliasing `ExecutionEvent`
+  at import, and aliasing `ExecutionEventType`. **This is the third gate this seat has built
+  that failed its first adversarial contact.** The pattern is not carelessness about any one
+  shape; it is writing gates that match what the author imagined instead of refusing what the
+  gate cannot audit.
+
+  Rewritten on that principle: names constant-folded, aliases resolved, seam-binding counted as
+  a reference, and any `getattr` whose attribute name will not fold refused outright unless
+  disclosed. Re-attacking the hardened version found a sixth (an f-string with a nested literal)
+  — closed by folding `FormattedValue`, and the unfoldable-name rule already caught it anyway,
+  which is what "close the class" is supposed to buy.
+
+  Two details worth keeping. The disclosure scan is no longer a fixed-size window: it walks the
+  contiguous comment block, because the derived-truth gate used a two-line window and a
+  disclosure that wrapped onto a third line silently stopped counting — a control whose
+  correctness depends on how someone wrapped a comment is not a control. And the disclosure is
+  not a blanket bypass: a `PRODUCER_*` literal stays refused even on a disclosed line, verified.
+
+  Hardening rule B made the gate demand the F-1 argument AT THE SITE for the three production
+  constructions whose `event_type` is a variable — the legitimate ones I had enumerated by hand.
+  They now carry that argument as a comment, which is exactly the S-3 cure: the reachability
+  claim lives where a future editor will see it, not only in a document.
 
 - 2026-07-29 (slice 17 — P0-7 fixed, and the fix itself was wrong on the first attempt):
 
