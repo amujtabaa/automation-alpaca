@@ -1384,17 +1384,43 @@ async def test_release_high_water_ignores_a_forbidden_payload_sequence() -> None
 
     _, invalidated = project_producer_rails_tolerant([contaminated])
     assert producer_id in invalidated
-    # OPERATOR RULING (Ameen 2026-07-28, AUDIT-0003 round-2 §2.6): a malformed
-    # release whose dedupe key is canonical and producer-bound RESERVES its
-    # sequence in the high-water mark even though the event is refused. This
-    # matches append-layer reality — the UNIQUE dedupe-key constraint consumes
-    # that key regardless of event validity, so a later heal minting the same
-    # sequence would collide and be refused. Reservation is truthful; releasing
-    # it would advertise a key the store cannot mint.
-    assert invalidated[producer_id].last_known_epoch_sequence == 1, (
-        "high-water must come from the producer-bound key (1) — reserved even "
-        "for a refused event — never from the forbidden payload field (5)"
+    # This assertion is RE-DERIVED, not edited to match (WO-0141 §3).
+    #
+    # It previously asserted 1, under the operator's §2.6 RESERVE ruling: a
+    # refused release whose key was canonical and producer-bound still reserved
+    # its sequence in the high-water mark. That ruling is **WITHDRAWN** (Ameen
+    # 2026-07-28, ratifying D-2-b) because it produced P0-6 — a refused event
+    # could drive the high-water to the top of the domain, where the human
+    # release path has no successor to mint and the rail is unrecoverable.
+    #
+    # The reservation was answering a real question — the UNIQUE index HAS
+    # consumed that key, so a heal at 1 would collide — but answering it in the
+    # wrong currency. Occupancy is now tracked as the syntactic fact it is,
+    # which is asserted below; proven truth stays 0 because nothing valid was
+    # ever proven.
+    assert invalidated[producer_id].last_known_epoch_sequence == 0, (
+        "a refused event proves nothing (D-2-b) — and the forbidden payload "
+        "field (5) must contribute nothing under either ruling"
     )
+
+    # The protective half of this pin, unchanged in substance: the refused
+    # event's key is still CONSUMED, so recovery may not land on it. A heal at
+    # 1 must be refused and a heal at 2 must be accepted — which is what the
+    # withdrawn reservation was reaching for, now expressed where it belongs.
+    heal_onto_consumed = _raw_release(
+        producer_id=producer_id, sequence=2, key_sequence=1
+    )
+    _, still_invalid = project_producer_rails_tolerant(
+        [contaminated, heal_onto_consumed]
+    )
+    assert producer_id in still_invalid, "a heal onto a consumed key must refuse"
+
+    heal_at_next = _raw_release(producer_id=producer_id, sequence=2, key_sequence=2)
+    healed, cleared = project_producer_rails_tolerant([contaminated, heal_at_next])
+    assert producer_id not in cleared, (
+        "the heal at the next mintable sequence must clear"
+    )
+    assert healed[producer_id].quarantine_epoch_sequence == 2
 
 
 async def test_release_floors_agree_across_stores_on_adversarial_openers(

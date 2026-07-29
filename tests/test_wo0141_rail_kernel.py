@@ -250,10 +250,16 @@ def test_heal_lands_at_the_next_unoccupied_sequence(trigger: str) -> None:
     validity). So the next mintable sequence is **2** — not 10.
 
     Today the fold demands ``prior_high_water + 1`` where the high-water was
-    itself moved by the refused event, so it demands 10 and refuses 6. That is
+    itself moved by the refused event, so it demands 10 and refuses 2. That is
     the conflation this WO exists to separate: it lets an event the fold
     rejected dictate where recovery may happen, which at the top of the domain
     becomes P0-6's unrecoverable rail.
+
+    **This case pins D-2-b but NOT occupancy-avoidance**, and the distinction is
+    recorded because a mutation check found it: with the consumed key at 9 and
+    proven truth at 1, ``next_mintable`` and ``high_water + 1`` both answer 2, so
+    a mutant that ignores occupancy entirely still passes here. The pin below
+    covers avoidance by placing the consumed key exactly at ``high_water + 1``.
     """
 
     valid = _valid_prefix(producer_id="producer-a", trigger=trigger)
@@ -272,6 +278,48 @@ def test_heal_lands_at_the_next_unoccupied_sequence(trigger: str) -> None:
 
     assert "producer-a" not in invalidated, "the heal at 2 must clear the marker"
     assert projected["producer-a"].quarantine_epoch_sequence == 2
+
+
+@pytest.mark.parametrize("trigger", OPENER_TRIGGERS)
+def test_heal_steps_over_a_key_consumed_at_exactly_the_next_sequence(
+    trigger: str,
+) -> None:
+    """Occupancy AVOIDANCE, isolated — the case where the two rules disagree.
+
+    Proven high-water is 1 and the refused release consumed sequence **2**, the
+    very sequence ``high_water + 1`` names. Recovery must therefore step over it
+    to 3: minting 2 would collide with the UNIQUE dedupe-key index and wedge the
+    rail on the one path that exists to unwedge it.
+
+    A mutation check is why this pin exists. The pin above places the consumed
+    key at 9, where ``next_mintable`` and ``high_water + 1`` happen to agree, so
+    a mutant that ignored occupancy entirely survived it. Every case in that pin
+    was reachable and none of them discriminated — which is the same shape as
+    P0-2's trigger-specific survivor, found this time before review rather than
+    by it.
+    """
+
+    valid = _valid_prefix(producer_id="producer-a", trigger=trigger)
+    prefix = [
+        *valid,
+        _release(
+            producer_id="producer-a",
+            sequence=len(valid) + 1,
+            key_sequence=2,
+            extra_payload={"epoch_sequence": 2},
+        ),
+    ]
+
+    refused = _release(
+        producer_id="producer-a", sequence=len(prefix) + 1, key_sequence=2
+    )
+    _, still_marked = project_producer_rails_tolerant([*prefix, refused])
+    assert "producer-a" in still_marked, "a heal onto the consumed key 2 must refuse"
+
+    heal = _release(producer_id="producer-a", sequence=len(prefix) + 1, key_sequence=3)
+    projected, cleared = project_producer_rails_tolerant([*prefix, heal])
+    assert "producer-a" not in cleared, "the heal must be allowed to step over to 3"
+    assert projected["producer-a"].quarantine_epoch_sequence == 3
 
 
 @pytest.mark.parametrize("trigger", OPENER_TRIGGERS)

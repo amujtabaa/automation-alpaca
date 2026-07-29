@@ -26,9 +26,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Iterable, Literal
+from typing import AbstractSet, Iterable, Literal
 
 from app.models import (
+    SIGNAL_EPOCH_SEQUENCE_MINT_MAX,
     SIGNAL_EXPIRY_DETECTORS,
     SIGNAL_QUARANTINE_REASONS,
     ExecutionEvent,
@@ -1372,6 +1373,17 @@ def contributed_epoch_sequence(
             return None
         return raw
     if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
+        # WO-0141 D-1-a: ONE attribution rule. The key is authoritative AND the
+        # payload must agree. Checking only the key is REV-0045 P0-3: the memory
+        # floor scans every event and attributes a key/payload-conflicted
+        # release to the producer its KEY names, while SQLite's floor pre-filters
+        # on the PAYLOAD producer and attributes it to nobody. One append-only
+        # history, two release floors, and live recovery stops agreeing with
+        # replay and restart. Requiring both to equal the queried producer makes
+        # every consumer answer identically, by construction rather than by
+        # three implementations staying in sync.
+        if event.payload.get("producer_id") != producer_id:
+            return None
         try:
             return sequence_from_release_dedupe_key(
                 event.dedupe_key, producer_id=producer_id
@@ -1379,6 +1391,64 @@ def contributed_epoch_sequence(
         except ProjectionError:
             return None
     return None
+
+
+def occupied_release_sequence(event: ExecutionEvent, *, producer_id: str) -> int | None:
+    """The epoch sequence this event has CONSUMED in ``producer_id``'s release
+    key namespace — regardless of whether the event is otherwise valid.
+
+    WO-0141 §1. Occupancy and proof are different facts, and conflating them is
+    the root cause behind REV-0045 P0-4 and P0-6:
+
+    * **Proof is semantic.** Only a structurally valid event proves a sequence,
+      so only a valid event may move the high-water mark (D-2-b).
+    * **Occupancy is syntactic.** ``dedupe_key`` is ``UNIQUE`` across the whole
+      event log (``app/store/sqlite.py:423``), so the moment a row lands its key
+      is taken — malformed payload or not. A later mint at that sequence would
+      collide and the rail would wedge permanently.
+
+    The previous design expressed occupancy THROUGH the high-water mark, which
+    is what granted an event the fold had refused authority over future truth.
+    Separated, the minter and the fold can both compute where recovery may land
+    without coordinating, because both facts are pure functions of the log.
+
+    Openers do not appear here: they mint into ``producer_quarantine:``, a
+    different key namespace (``app/store/core.py:6114`` vs ``:6158``), so an
+    opener at sequence N never blocks a release at N.
+    """
+
+    if event.event_type is not ExecutionEventType.PRODUCER_RELEASED:
+        return None
+    try:
+        return sequence_from_release_dedupe_key(
+            event.dedupe_key, producer_id=producer_id
+        )
+    except ProjectionError:
+        return None
+
+
+def next_mintable_epoch_sequence(
+    high_water: int, occupied: AbstractSet[int]
+) -> int | None:
+    """The lowest sequence that is both above proven truth and unconsumed.
+
+    This is the one definition of "where may the next release land", shared by
+    the fold's heal rule and (in WO-0142) the stores' minters. ``None`` means no
+    such sequence exists below the D-3-c write cap — a bounded, typed refusal
+    rather than an unbounded scan.
+
+    In a fully valid history this equals ``high_water + 1``, because every
+    consumed key was consumed by an event that also proved its sequence. The two
+    diverge only where an invalid event took a key without proving anything,
+    which is exactly the tolerant-startup case this rule exists for.
+    """
+
+    candidate = high_water + 1
+    while candidate in occupied:
+        candidate += 1
+    if candidate > SIGNAL_EPOCH_SEQUENCE_MINT_MAX:
+        return None
+    return candidate
 
 
 def _validated_release_event_shape(
@@ -1619,6 +1689,7 @@ def project_producer_rails_tolerant(
     projected: dict[str, ProducerRailProjection] = {}
     invalid_at: dict[str, tuple[int, str]] = {}
     last_known: dict[str, int] = {}
+    occupied: dict[str, set[int]] = {}
     for event in events:
         if (
             event.event_type not in _PRODUCER_RAIL_SIGNAL_EVENT_TYPES
@@ -1632,14 +1703,23 @@ def project_producer_rails_tolerant(
 
         producer_id = _producer_id_from_event(event)
         prior_high_water = last_known.get(producer_id, 0)
+        prior_occupied = occupied.setdefault(producer_id, set())
 
-        # REV-0045 addendum-02 P0-4: high-water advances ONLY from a source
-        # the event type structurally ratifies, judged before the event is
-        # otherwise trusted. An opener contributes its bounded payload
-        # carrier; a release contributes only its producer-bound key.
-        contributed = contributed_epoch_sequence(event, producer_id=producer_id)
-        if contributed is not None:
-            last_known[producer_id] = max(prior_high_water, contributed)
+        # WO-0141 D-2-b + §1. Two distinct facts, judged separately.
+        #
+        # OCCUPANCY is syntactic and unconditional: a well-formed, producer-bound
+        # release key is consumed by the UNIQUE index whether or not the event is
+        # valid. Recorded AFTER this event is judged, so the rule sees the key
+        # namespace exactly as the minter that wrote this event saw it.
+        #
+        # PROOF is semantic: the high-water advances only once the event has been
+        # accepted. REV-0045 P0-4 advanced it HERE, before the applier ran, so a
+        # release the fold went on to refuse still moved proven truth. The
+        # operator's §2.6 reservation ruling then made that deliberate — and
+        # produced P0-6, because a refused event could drive the high-water to
+        # 2**63-1 where no successor exists and the human recovery cannot mint.
+        # The fix is not a smaller reservation; it is not reserving at all.
+        consumed_now = occupied_release_sequence(event, producer_id=producer_id)
 
         if producer_id in invalid_at:
             if event.event_type is ExecutionEventType.PRODUCER_RELEASED:
@@ -1658,23 +1738,35 @@ def project_producer_rails_tolerant(
                     # WO-0140 D-R R-3 state 3: the zero-width release IS the
                     # heal — the fold boundary. The producer clears its marker and
                     # folding restarts from the zero state at the consumed
-                    # sequence, which must be EXACTLY the next sequence the
-                    # log has ever proven for this producer (not merely
-                    # higher) — an unparseable key or a non-next sequence
-                    # leaves it invalidated.
+                    # sequence.
+                    #
+                    # WO-0141: that sequence must be the next MINTABLE one, not
+                    # merely proven-plus-one. Where an invalid event has already
+                    # taken a key, proven-plus-one is unmintable — the UNIQUE
+                    # index would reject it — so demanding it left the only
+                    # ratified recovery unable to satisfy the fold that gates it.
+                    # In a valid history the two rules coincide exactly, which is
+                    # why every pre-existing heal pin still holds.
                     try:
                         healed_sequence = sequence_from_release_dedupe_key(
                             event.dedupe_key, producer_id=producer_id
                         )
                     except ProjectionError:
                         continue
-                    if healed_sequence != prior_high_water + 1:
+                    if healed_sequence != next_mintable_epoch_sequence(
+                        prior_high_water, prior_occupied
+                    ):
+                        if consumed_now is not None:
+                            prior_occupied.add(consumed_now)
                         continue
                     del invalid_at[producer_id]
+                    last_known[producer_id] = max(prior_high_water, healed_sequence)
                     projected[producer_id] = ProducerRailProjection(
                         producer_id=producer_id,
                         quarantine_epoch_sequence=healed_sequence,
                     )
+            if consumed_now is not None:
+                prior_occupied.add(consumed_now)
             continue
 
         current = projected.setdefault(
@@ -1693,6 +1785,15 @@ def project_producer_rails_tolerant(
         except ProjectionError as exc:
             projected.pop(producer_id, None)
             invalid_at[producer_id] = (event.sequence, str(exc))
+        else:
+            # D-2-b: proof is recorded only on ACCEPTANCE. The shared derivation
+            # rule still decides WHAT an accepted event proves; this decides
+            # WHETHER it proves anything at all.
+            contributed = contributed_epoch_sequence(event, producer_id=producer_id)
+            if contributed is not None:
+                last_known[producer_id] = max(prior_high_water, contributed)
+        if consumed_now is not None:
+            prior_occupied.add(consumed_now)
 
     invalidated = {
         producer_id: InvalidProjectionMarker(

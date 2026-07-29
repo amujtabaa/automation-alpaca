@@ -36,6 +36,7 @@ from app.models import (
     SIGNAL_INVALID_BUDGET_HARD_CAP,
     SIGNAL_RATE_BURST_MAX,
     SIGNAL_RATE_LIMIT_PER_HOUR_MAX,
+    SIGNAL_EPOCH_SEQUENCE_MINT_MAX,
     SIGNAL_REJECTED_COUNT_MAX,
     Candidate,
     CandidateStatus,
@@ -6043,11 +6044,14 @@ def producer_quarantined_event(
     """Build one epoch-scoped producer opener using the ratified payload."""
 
     _require_aware(epoch_start, field_name="epoch_start")
+    # WO-0141 D-3-c: WRITE-capped. The fold and the durable row validator keep
+    # reading the full signed domain (read-structural, slice 5) — only minting
+    # stops short, so a successor always exists for the recovery path.
     _require_bounded_int(
         epoch_sequence,
         field_name="epoch_sequence",
         minimum=1,
-        maximum=_SQLITE_MAX_SIGNED_INT,
+        maximum=SIGNAL_EPOCH_SEQUENCE_MINT_MAX,
     )
     payload: dict[str, Any] = {
         "producer_id": producer_id,
@@ -6144,11 +6148,14 @@ def producer_released_event(
         minimum=0,
         maximum=SIGNAL_REJECTED_COUNT_MAX,
     )
+    # WO-0141 D-3-c: WRITE-capped — see producer_quarantined_event. This is the
+    # site P0-6 was reported against: a release minted at the very top of the
+    # domain leaves no sequence for the next recovery.
     _require_bounded_int(
         epoch_sequence,
         field_name="epoch_sequence",
         minimum=1,
-        maximum=_SQLITE_MAX_SIGNED_INT,
+        maximum=SIGNAL_EPOCH_SEQUENCE_MINT_MAX,
     )
     return ExecutionEvent(
         event_type=ExecutionEventType.PRODUCER_RELEASED,

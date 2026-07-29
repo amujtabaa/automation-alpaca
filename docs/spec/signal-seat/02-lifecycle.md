@@ -156,12 +156,26 @@ collision is to detect it and advance — not to let an event the fold refused m
 mark. Reservation grants an unaccepted fact authority over future truth, which is the same class
 this review flagged as P0-4 and then again as P0-6.
 
-**Nothing in this spec currently states the replacement rule, deliberately.** The ratified
-replacement — only structurally valid events contribute, with collision-aware minting and a
-write-capped sequence domain — is specified in `R6A-CONSOLIDATION-PROGRAM.md` §1 and lands in this
-file in the same commit as the WO-0141 code that makes it true. Until then, treat the reservation
-question as OPEN: the delivered code still carries the withdrawn behavior, so do not cite either
-rule as current. Original ruling text, retained for audit: *a refused release whose dedupe key is
+**Replacement rule (ADR-016, delivered by WO-0141): proof and occupancy are different facts.**
+
+* **Proof is semantic.** The high-water mark advances ONLY when the fold has ACCEPTED the event.
+  A refused event proves nothing, for anybody. `contributed_epoch_sequence()` still decides *what*
+  an accepted event proves; acceptance decides *whether* it proves anything at all.
+* **Occupancy is syntactic.** `dedupe_key` is UNIQUE across the whole log, so a well-formed,
+  producer-bound `producer_release:` key is CONSUMED the moment its row lands — malformed payload
+  or not. Openers never occupy release sequences; they mint into `producer_quarantine:`.
+* **Recovery lands at `next_mintable`** — the lowest sequence both above the proven high-water and
+  unconsumed. It is a pure function of the log, so the fold's heal rule and the stores' minters
+  agree without coordinating. In a fully valid history it equals `high_water + 1` exactly.
+* **Attribution is one rule (ADR-016 §1).** A release is attributable only when the producer inside
+  its dedupe key and the producer in its payload agree. A disagreement contributes nothing anywhere
+  and marks the producer.
+* **The sequence domain is read-structural, write-capped.** Minting is bounded by
+  `SIGNAL_EPOCH_SEQUENCE_MINT_MAX`; the fold, the key parser, and the durable row validator keep
+  reading the full signed range, so no capping change can retroactively invalidate the log.
+
+Original withdrawn ruling text, retained for audit: *a refused release whose dedupe key is
 canonical and producer-bound still reserves its sequence in the high-water mark — the append
 layer's UNIQUE dedupe-key constraint has already consumed that key, so a heal at that sequence
-could never mint.*
+could never mint.* The premise was correct and the conclusion did not follow: the right answer to a
+possible collision is to detect it and advance, not to let a refused event move proven truth.

@@ -49,6 +49,14 @@ governance state are not ported.
   (open-epoch close / no-epoch heal / mid-cycle repair-and-refuse). Derived sequence truth is
   single-sourced through `contributed_epoch_sequence()` and the release-key parser is a total
   inverse of the mint (REV-0045; enforced by `tests/test_derived_truth_single_source.py`).
+  **Proof and occupancy are separate facts (ADR-016, WO-0141):** the high-water mark advances only
+  when the fold ACCEPTS an event, while a well-formed producer-bound `producer_release:` key is
+  consumed by the UNIQUE index whether or not the event was valid. Recovery lands at
+  `next_mintable` — lowest sequence above the proven high-water and unconsumed — which equals
+  `high_water + 1` in any fully valid history. Attribution is one rule: a release's key producer
+  and payload producer must agree or it contributes nothing anywhere. Minting is capped at
+  `SIGNAL_EPOCH_SEQUENCE_MINT_MAX` while readers keep the full signed domain, so a successor always
+  exists. This replaces the withdrawn §2.6 reservation ruling, which produced P0-6.
 - **Conversion:** producer suggestions are display-only. BUY mints the same Candidate and SELL the
   same SellIntent as cockpit/manual flow. Downstream candidate/sell-intent, envelope, claim,
   adapter, and reconciliation paths are unchanged; there is no signal execution lane.

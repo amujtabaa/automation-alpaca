@@ -117,3 +117,26 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
   redundant recovery re-derives the correct answer and blinds outcome assertions. Generated
   mutation testing (ADR-015, nightly mutmut ratchet over the derived-truth kernel) backstops the
   mutants nobody hand-picked. last_verified refreshed.
+- 2026-07-29: **standing rule (4), adopted from REV-0045 round 3 (WO-0141 §5.3): an obligation
+  touching a ratified vocabulary must be parameterized over the WHOLE vocabulary, and the
+  parameterization asserted non-vacuous.** A pin that drives one member proves nothing about the
+  others. REV-0045 P0-2's surviving mutant was opener-trigger-specific precisely because the pin
+  exercised only `rate_breach`; the `budget_exhausted` path is harder to set up honestly (the
+  opener is only ratifiable once the attributable fold has actually reached the limit), and a
+  fixture that skips that setup marks the producer for a counter mismatch while asserting nothing
+  about sequences. Applies to opener triggers, release states, store kinds, and every future
+  closed vocabulary in `app/models.py`.
+- 2026-07-29: **a control is durable only when machine-consumed, semantically complete,
+  failure-capable, exercised by a committed negative fixture, and current.** Corollary adopted with
+  WO-0141: a hand-verified reachability enumeration recorded in a document is inert evidence — true
+  at one SHA and silently false at the next. The F-1 append-seam enumeration is therefore enforced
+  by `tests/test_wo0141_append_caller_gate.py`, which does not judge whether a new caller is safe
+  but refuses to let one appear without a human re-deriving the argument. Mutation-verified: a
+  seventh caller planted in a real module fails both the caller-set rule and the non-vacuity count.
+- 2026-07-29: **pre-registration is not independence, and must not be reported as such.** A test
+  oracle written by the implementing seat before the implementation (`tests/_rail_reference_model.py`)
+  constrains one failure mode — shaping the oracle to fit the code — and constrains nothing about a
+  common-mode blind spot shared by both. Such artifacts carry the distinction in their own header,
+  and a reviewer may adopt or replace them; until then agreement with them is weak evidence, never
+  a gate. Recorded because WO-0141's §5.1 called for reviewer-owned holdouts and the implementing
+  seat could only supply pre-registered ones.

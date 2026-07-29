@@ -570,6 +570,18 @@ SIGNAL_INVALID_BUDGET_HARD_CAP = 1000
 SIGNAL_RATE_LIMIT_PER_HOUR_MAX = 3600
 SIGNAL_RATE_BURST_MAX = 100
 SIGNAL_REJECTED_COUNT_MAX = 10_000
+
+# WO-0141 D-3-c (operator-ratified 2026-07-28): the epoch sequence domain is
+# read-structural to the full SQLite signed range but WRITE-CAPPED strictly
+# below it, so a successor is ALWAYS representable.
+#
+# REV-0045 P0-6: at 2**63-1 no in-domain successor exists, so the human release
+# — the single ratified recovery for a stuck rail — cannot mint, and both stores
+# wedge permanently. A cap is the whole fix: recovery needs headroom, and
+# headroom only exists if minting stops short of the readable ceiling. 2**62
+# leaves 4.6 quintillion sequences above any mintable value, which is not a
+# number a real producer reaches; the point is totality, not capacity.
+SIGNAL_EPOCH_SEQUENCE_MINT_MAX = 2**62
 SIGNAL_QUARANTINE_REASONS = frozenset(
     {
         "validation",
