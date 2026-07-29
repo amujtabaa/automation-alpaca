@@ -70,3 +70,9 @@ CLAUDE.local.md
 # dropped 2026-07-18). These dirs mirror .claude/ but for other agent seats.
 .agents/
 .codex/
+
+# mutmut 3.x working tree (ADR-015). Generated per run; never committed, and
+# excluded from `ruff format --check` so it cannot inflate the format-debt
+# baseline the independent review re-checks.
+mutants/
+.mutmut-cache

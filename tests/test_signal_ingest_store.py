@@ -178,9 +178,7 @@ async def test_distinct_malformed_content_same_signal_id_is_conflict_not_replay(
     )
     assert second.outcome == SIGNAL_CONFLICT  # NOT SIGNAL_REPLAYED (the P1 #1 bug)
 
-    quarantine_events = await _events_of(
-        any_store, ExecutionEventType.SIGNAL_QUARANTINED
-    )
+    quarantine_events = await _events_of(any_store, ExecutionEventType.SIGNAL_QUARANTINED)
     assert len(quarantine_events) == 1  # only the first creation
 
     conflict_events = await _events_of(
@@ -221,12 +219,8 @@ async def test_dedupe_key_no_ambiguous_collision_across_signal_ids(any_store):
     # DISTINCT ExecutionEvent dedupe keys, so both creation events are appended
     # (not silently swallowed as a false duplicate) and BOTH rows persist.
     await any_store.initialize()
-    r1 = await any_store.ingest_signal(
-        **_valid_kwargs(producer_id="a:b", signal_id="c")
-    )
-    r2 = await any_store.ingest_signal(
-        **_valid_kwargs(producer_id="a", signal_id="b:c")
-    )
+    r1 = await any_store.ingest_signal(**_valid_kwargs(producer_id="a:b", signal_id="c"))
+    r2 = await any_store.ingest_signal(**_valid_kwargs(producer_id="a", signal_id="b:c"))
     assert r1.outcome == SIGNAL_RECEIVED_OK
     assert r2.outcome == SIGNAL_RECEIVED_OK  # NOT a false duplicate of r1
     assert r1.record.id != r2.record.id
@@ -289,13 +283,8 @@ async def test_replay_reconstructs_records(any_store):
     await any_store.ingest_signal(**_valid_kwargs(signal_id="s1"))
     await any_store.ingest_signal(**_valid_kwargs(signal_id="s2", symbol="MSFT"))
     await any_store.ingest_signal(
-        **_valid_kwargs(
-            signal_id="s3",
-            validation_failed=True,
-            issued_at=None,
-            ttl_seconds=None,
-            raw_fields={"x": "y"},
-        )
+        **_valid_kwargs(signal_id="s3", validation_failed=True,
+                        issued_at=None, ttl_seconds=None, raw_fields={"x": "y"})
     )
     # A duplicate-conflict must NOT disturb the original on replay.
     await any_store.ingest_signal(**_valid_kwargs(signal_id="s1", thesis="changed"))
@@ -317,11 +306,9 @@ async def test_dual_store_parity(tmp_path):
         await store.ingest_signal(**_valid_kwargs(signal_id="s2", symbol="MSFT"))
         await store.ingest_signal(**_valid_kwargs(signal_id="s1", thesis="changed"))
         await store.ingest_signal(
-            **_valid_kwargs(
-                signal_id="doa", issued_at=_NOW - timedelta(seconds=60), ttl_seconds=30
-            )
+            **_valid_kwargs(signal_id="doa",
+                            issued_at=_NOW - timedelta(seconds=60), ttl_seconds=30)
         )
-
     # Cross-store: content is identical modulo the random server ``id`` (both
     # stores independently mint a uuid — legitimately non-deterministic). Every
     # deterministic field, including the created/updated timestamps tied to the
@@ -358,3 +345,4 @@ async def test_sqlite_survives_reopen(tmp_path):
     # expires_at reconstructs identically after restart (persisted, never re-derived).
     assert got.expires_at == _NOW + timedelta(seconds=300)
     reopened._conn.close()
+

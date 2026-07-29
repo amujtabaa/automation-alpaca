@@ -44,7 +44,9 @@ fail_under = 93
 # and conftest.py remain fully linted. Pytest basetemps/cache are ignored runtime
 # artifacts; excluding their entire basename class also keeps the exact Ruff
 # gates reproducible when a Windows test subprocess leaves an unreadable ACL.
-extend-exclude = [".ai-os", ".claude", ".pytest*"]
+# "mutants" is mutmut 3.x's generated working tree (ADR-015): not source, and
+# excluded so it cannot inflate the format-debt baseline the review re-checks.
+extend-exclude = [".ai-os", ".claude", ".pytest*", "mutants"]
 
 [tool.mypy]
 # ADR-007: static typecheck gate over app/, introduced by baseline-and-ratchet.
@@ -82,6 +84,11 @@ follow_imports_for_stubs = true
 # generated mutant later refuted (REV-0045 P0-2; REV-0038 F4). Widen the scope
 # as baselines are established; never narrow it to make a red run pass.
 source_paths = ["app/events/projectors.py"]
+# mutmut copies ONLY source_paths into its mutants/ tree, so the rest of the
+# package is missing and every test errors at import. `also_copy` brings the
+# unmutated remainder along. Found the first time this job was actually run —
+# see the ADR-015 delivery note.
+also_copy = ["app", "tests", "conftest.py", "pyproject.toml"]
 pytest_add_cli_args_test_selection = [
     "tests/test_signal_rails_remediation.py",
     "tests/test_signal_rails_projector.py",

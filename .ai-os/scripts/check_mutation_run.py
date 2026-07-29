@@ -21,7 +21,7 @@ Run states (distinct, because they carry different evidentiary meaning):
   TOOL_ERROR          unparseable output
 
 Usage:
-  mutmut results --all > results.txt
+  mutmut results --all True > results.txt
   python .ai-os/scripts/check_mutation_run.py results.txt --max-survivors N
 """
 
@@ -100,7 +100,7 @@ def classify(output: str) -> RunReport:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("results", help="file holding `mutmut results --all` output")
+    parser.add_argument("results", help="file holding `mutmut results --all True` output")
     parser.add_argument("--max-survivors", type=int, required=True)
     args = parser.parse_args(argv)
 

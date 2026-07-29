@@ -46,9 +46,14 @@ jobs:
           mutmut run
           echo "mutmut run exit: $?"
           set -e
-          # --all is REQUIRED: without it mutmut suppresses killed results, so
-          # a fully-killed run looks identical to an empty population.
-          mutmut results --all > results.txt 2>&1 || true
+          # --all is REQUIRED (without it mutmut suppresses killed results, so a
+          # fully-killed run looks identical to an empty population) and in
+          # mutmut 3.6.0 it takes a BOOLEAN ARGUMENT: bare `--all` exits with
+          # "Option '--all' requires an argument" and writes nothing. The P1-5
+          # repair fixed the parser against fixtures and never ran the real
+          # command, so the job stayed broken in a new way. Verified against the
+          # installed tool, not against a docstring.
+          mutmut results --all True > results.txt 2>&1 || true
           head -20 results.txt
       - name: Classify the run and enforce the ratchet
         # Parsing lives in a committed, unit-tested script (P1-5): the previous
