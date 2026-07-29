@@ -10,8 +10,8 @@ branch: codex/signal-r6a-rails-store
 base_sha: 14ff12fbf4667a1a23969d28446818cc010292b9
 head_sha: "tip of codex/signal-r6a-rails-store — the commit that adds this file"
 production_head_sha: 6e6c9ad
-head_note: "6e6c9ad is the last commit that touches app/. The commit adding this file carries tests, docs and pyproject config only — no production change — so the app/ figures below are final at 6e6c9ad. Pin the exact tip SHA in your result."
-range_size: "25 commits; app/ 8 files +433/-68 (final at 6e6c9ad); tests/ 15 files; docs+work+pkl 14 files; build/CI 3 files"
+head_note: "6e6c9ad is the last commit that touches app/. Every commit after it carries tests, docs, pyproject selection and CI comments only — verify with `git diff --name-only 6e6c9ad..HEAD -- app/`, which is empty — so the app/ figures below are final at 6e6c9ad. Pin the exact tip SHA in your result."
+range_size: "26 commits; app/ 8 files +433/-68 (final at 6e6c9ad); tests/ 15 files; docs+work+pkl 14 files; build/CI 3 files"
 gate: "Unchanged. WO-0104a stays REVIEW; R6b and D-2a stay blocked; signal_seat_enabled stays false — now enforced in code, see §5."
 ---
 
