@@ -21,15 +21,17 @@ this project has already shipped three gates that attested spelling.
 from __future__ import annotations
 
 import ast
-import sys
 from pathlib import Path
 
 import pytest
 
-if sys.version_info >= (3, 11):
-    from tomllib import loads
-else:  # pragma: no cover - the pinned interpreter is 3.12
-    from toml import loads
+# `tomllib` is stdlib from 3.11, and D-7(a) (ratified 2026-07-29) sets the supported
+# floor at 3.11 — so the third-party `toml` fallback that used to sit here was
+# unreachable on every interpreter this repo runs on. Its comment also said "the
+# pinned interpreter is 3.12", which the same ratification made false. Removed rather
+# than re-worded: a dead branch guarded by a version check invites the reader to
+# believe some supported interpreter takes it.
+from tomllib import loads
 
 REPO = Path(__file__).resolve().parents[1]
 

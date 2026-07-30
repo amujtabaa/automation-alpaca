@@ -152,6 +152,19 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
      construct at runtime and to make the self-check mirror the collector's criterion — a stricter
      self-check failed on documentation, which pushes the next maintainer toward deleting the
      explanation instead of keeping the gate honest.
+  3. **PARSING A FILE IS NOT RUNNING ITS TESTS, and a test about interpreter differences must be
+     EXECUTED on every interpreter it reasons about.** The fourth draft shipped and took the 3.11 CI
+     leg red — inside the very gate built to prevent that. Its self-check asserted the tripwire
+     `compile()`s on "the current interpreter", with a comment asserting that interpreter is 3.12+.
+     True on one leg, a `SyntaxError` on the other. The verification claimed at commit time was
+     "the new module AST-parses under python3.11", which was accurate and worthless: the illegal form
+     is assembled at runtime, so the file always parses, and parsing never executes the assertion.
+     The repaired assertion is version-conditional and therefore *stronger* — on 3.11 it now actively
+     proves the construct is refused there. Standing consequence: **when a check reasons about a
+     version, platform, or store, it is not verified until it has RUN under each one.** This is the
+     same shape as the dual-store rule, one layer out; treat an interpreter matrix the way this repo
+     already treats memory-vs-SQLite. A local venv for the minimum supported interpreter is cheap and
+     removes the excuse — the failure recurred twice in one session for want of one.
 - 2026-07-29: **pre-registration is not independence, and must not be reported as such.** A test
   oracle written by the implementing seat before the implementation (`tests/_rail_reference_model.py`)
   constrains one failure mode — shaping the oracle to fit the code — and constrains nothing about a

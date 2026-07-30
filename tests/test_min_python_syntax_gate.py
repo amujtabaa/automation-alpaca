@@ -40,6 +40,24 @@ The gate is only as strong as ruff's version: version-aware syntax diagnostics a
 verified on the `constraints.txt` pin (`ruff==0.15.20`). `requirements.txt` allows
 `ruff>=0.6`, which does not guarantee them — so this suite also asserts that ruff
 still reports the planted defect, rather than trusting that it does.
+
+**Where this gate does its work, and where it deliberately does none.** The collector
+keeps only strings that parse as Python *on the running interpreter*. That makes the
+gate asymmetric across the matrix, and the asymmetry is the point rather than a flaw:
+
+* **On 3.12+ it is the whole control.** A 3.12-only fixture parses, so the collector
+  keeps it and ruff refuses it. This is the leg where the defect is otherwise
+  invisible — `ruff check .` passes, the suite passes, and the fixture only explodes
+  on someone else's machine.
+* **On 3.11 it is close to vacuous, by construction.** A 3.12-only fixture does not
+  parse here, so the collector drops it as prose and this gate stays quiet. It does
+  not need to speak: any test that actually feeds that fixture to `ast.parse` fails
+  natively on 3.11, which is precisely how the original defect was caught.
+
+So the class is covered on both legs by different mechanisms, and neither leg alone
+is the control. Stated explicitly because "the gate passed" on 3.11 means much less
+than it does on 3.12, and a reader who did not know that would over-trust a green
+3.11 run.
 """
 
 from __future__ import annotations
@@ -289,12 +307,25 @@ def test_the_planted_construct_is_assembled_not_stored() -> None:
     needle = "fQappend_{Qexecution_eventQ}Q".replace("Q", '"')
     assert needle in _PLANTED_312_ONLY_SOURCE
 
-    # It is real Python on the CURRENT interpreter — so the tripwire is a genuine
-    # version difference, not a typo that fails everywhere. (It must NOT raise here:
-    # this runtime is 3.12+, where PEP 701 is legal. Its illegality at 3.11 is what
-    # `test_the_gate_catches_the_construct_that_actually_broke_ci` asserts, via ruff,
-    # which is the only check that works without a second interpreter.)
-    compile(_PLANTED_312_ONLY_SOURCE, "<tripwire>", "exec", dont_inherit=True)
+    # The tripwire must be a genuine VERSION DIFFERENCE, not a typo that fails
+    # everywhere — so assert it in whichever direction the running interpreter
+    # implies. On 3.12+ PEP 701 makes it legal; on 3.11 it is a SyntaxError, and
+    # that is the entire property this module exists to defend.
+    #
+    # THE FOURTH DRAFT FAILED HERE, ON CI, AND IT IS WORTH THE SPACE. The first
+    # version of this assertion was a bare `compile(...)` with a comment saying
+    # "this runtime is 3.12+". That is exactly the assumption this gate was built
+    # to eliminate, made inside the gate itself: it passed on 3.12 and raised
+    # SyntaxError on the 3.11 matrix leg. Worse, I had "verified 3.11" by
+    # AST-parsing the MODULE — which passes, because the illegal form is assembled
+    # at runtime and never appears as a literal. Parsing the file is not running
+    # the test. A test ABOUT interpreter differences has to be EXECUTED on both
+    # interpreters, not merely parsed by one of them.
+    if sys.version_info >= (3, 12):
+        compile(_PLANTED_312_ONLY_SOURCE, "<tripwire>", "exec", dont_inherit=True)
+    else:
+        with pytest.raises(SyntaxError):
+            compile(_PLANTED_312_ONLY_SOURCE, "<tripwire>", "exec", dont_inherit=True)
 
     # ...while no literal in this module that the COLLECTOR would pick up carries it.
     #

@@ -480,11 +480,62 @@ of the gate going quiet.
 rule 5 and a `CLAUDE.md` line. It is deliberately not scoped to this defect — a matrix leg can fail for
 reasons no local gate models — and it is the rule whose absence let seven red builds be reported green.
 
+### 10a. The gate itself then took the 3.11 leg red. You will see the failed run; here it is.
+
+`1ecfdc0` is **red on `test (3.11)`, green on `test (3.12)`** (run 30502139527, 1 failed / 4,865
+passed). The failing test is in the file above, and the failing assertion was the gate's own
+self-check:
+
+```python
+# It is real Python on the CURRENT interpreter — ...
+# (It must NOT raise here: this runtime is 3.12+, where PEP 701 is legal.)
+compile(_PLANTED_312_ONLY_SOURCE, "<tripwire>", "exec", dont_inherit=True)
+```
+
+The comment states the defect out loud. **"This runtime is 3.12+" is the assumption the gate exists to
+eliminate, written into the gate.** Fixed in the following commit; the assertion is now
+version-conditional and therefore *stronger* — on 3.11 it actively proves the construct is refused
+there rather than merely not failing.
+
+**Why my verification missed it, which is the part I would rather you judged than the typo.** The
+commit message claimed "the new module AST-parses under `python3.11`". That was **true and worthless**:
+the illegal construct is assembled at runtime precisely so no literal in the file is illegal, so the
+file parses on every interpreter — and parsing it never executes the assertion. I checked the property
+that was easy to check and reported it as covering the property that mattered. **Parsing a file is not
+running its tests.** It is the second time in this delivery that "verified under 3.12 only" shipped a
+3.11 break, and this time no 3.11 environment was even needed as an excuse.
+
+Evidence for the repair, executed on both interpreters rather than parsed by one — a 3.11 venv built
+from `requirements.txt -c constraints.txt` (Python 3.11.15, ruff 0.15.20):
+
+```
+gate on 3.11: 6/6 passed        gate on 3.12: 6/6 passed
+RED/GREEN by reverting to the shipped form:
+  3.11: FAILED test_the_planted_construct_is_assembled_not_stored (SyntaxError)
+  3.12: 6/6 passed        <- exactly why it shipped
+restored: green on both
+```
+
+**One more thing the failure exposed, and it limits the gate's claim.** The collector keeps only
+strings that parse *on the running interpreter*, so on 3.11 a 3.12-only fixture is dropped as prose and
+this gate is close to vacuous on that leg. That is the correct division of labour — on 3.11 the defect
+is caught natively by whichever test parses the fixture — but it means a green 3.11 run of this gate
+carries much less than a green 3.12 run, and **neither leg alone is the control.** Now stated in the
+module docstring. If you think that asymmetry makes the gate weaker than I am presenting it, say so.
+
+Standing rule added to `pkl/architecture/testing-model.md`: **when a check reasons about a version,
+platform, or store, it is not verified until it has RUN under each one** — the dual-store rule, one
+layer out.
+
 ## 11. Evidence at the reviewed head
 
 Read every figure from output, not from this file.
 
-- Battery: **4860 passed / 11 skipped / 2 xfailed / 0 failed**, branch coverage **93.11%** (floor 93.0) — re-run after the min-Python gate landed; see the final figure in the commit message if it moved
+- Battery on **3.12**: **4866 passed / 11 skipped / 2 xfailed / 0 failed**, branch coverage **93.11%**
+  (floor 93.0)
+- Battery on **3.11**, in a venv built from `requirements.txt -c constraints.txt` — see §10a for why
+  this now exists and why its absence let a 3.12-only assumption ship. Figure in the commit message;
+  **CI on both legs is the arbiter for the reviewed SHA, not either of these local runs**
 - `ruff check .` clean; `ruff format --check .` — **exactly the ten disclosed debt files**
 - `mypy app/` — 77 source files, no issues; `lint-imports` — **6 contracts kept, 0 broken**
 - conformance oracle **61 passed**; AI-OS hygiene **×5 green** (install, version, ledger, pkl,
