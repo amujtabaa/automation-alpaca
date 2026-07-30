@@ -55,7 +55,19 @@ def _find_python_312() -> str:
         if _is_python_312(candidate):
             return candidate
 
-    msg = "Python 3.12 is required but was not found. Install it, then rerun this command."
+    # D-7(a), ratified 2026-07-29: 3.11 and 3.12 are BOTH supported (CI matrix,
+    # mypy targets 3.11 per ADR-007, constraints pinned for both). 3.12 is the
+    # DEVELOPMENT default, and this bootstrap builds that default deliberately —
+    # one interpreter for the dev venv keeps the local gate reproducible. The
+    # message says which of the two things it is, because "Python 3.12 is
+    # required" read as the supported floor and that reading is what let a
+    # 3.12-only construct into the tree.
+    msg = (
+        "Python 3.12 is the development default for this repo's .venv and was not "
+        "found. Install it, then rerun this command. (3.11 is also a SUPPORTED "
+        "runtime — CI exercises both — but the bootstrap venv is 3.12 so the local "
+        "gate matches the nightly. 3.12-only syntax is not legal: see CLAUDE.md.)"
+    )
     raise RuntimeError(msg)
 
 

@@ -46,8 +46,20 @@ gh run list --branch codex/signal-r6a-rails-store --limit 1   # CI green at the 
       baseline, and the ADR-009/INVARIANTS amendments. If it pins an older head, the uncovered
       commits merge on self-review only — **STOP and request an addendum covering them.**
 - [ ] **CI observed green on BOTH matrix legs (3.11 and 3.12) at the reviewed SHA.** Not "locally
-      green" — CI was red for five commits during this delivery while local runs passed, because a
-      3.12-only fixture broke the 3.11 job. Local green on one interpreter is not green.
+      green" — CI was red for **seven** commits during this delivery (`8fa7122`..`2bdae6d`; the
+      original text here said five) while local runs passed, because a 3.12-only fixture broke the
+      3.11 job. Local green on one interpreter is not green — now `CLAUDE.md` "Testing and CI" and
+      repo-primer working-protocol rule 5.
+- [ ] **The round-4 result records an ADOPTION verdict on `tests/_rail_reference_model.py`** —
+      ratified **D-6(b)**, and now acceptance criterion 1 of the program. An ACCEPT that is silent on
+      adoption leaves criterion 1 **unmet**: `STOP` and request an addendum stating adopt or decline.
+      Check also that the result does **not** describe the model as *independent* — it is
+      pre-registered by the implementing seat, adoption discharges ownership only, and criterion 1
+      was amended precisely because demanding "independent" made this gate unsatisfiable.
+- [ ] **WO-0142's `seat:` line is resolved against the verdict** — ratified **D-9(b)**: a different
+      seat takes WO-0142 on any finding-bearing verdict; the WO-0141R seat continues only on a clean
+      `ACCEPT`. An `ACCEPT-WITH-CHANGES` is finding-bearing. Resolve the line in this close-out commit
+      rather than leaving a conditional for whoever opens the file next.
 - [ ] `SIGNAL_SEAT_HUMAN_RECOVERY_AVAILABLE` is still `False` and its tripwire test still passes
       (INV-100). R6a merges DISABLED; only WO-0104b may flip it.
 
@@ -119,6 +131,29 @@ order parked in a live folder, so omitting it makes the close-out commit itself 
       EXISTS as a file. If either xfail has flipped to a pass, the defect was fixed and the file
       must be removed in that same change.
 - [ ] Confirm INV-097..INV-100 are registered in `docs/INVARIANTS.md` and their pins named.
+
+### 1d-ter. P0-8 merges OPEN — record it as an accepted risk, not as a leftover
+
+**Ratified D-5(a), 2026-07-29.** R6a merges with **P0-8 open**, disclosed and strict-xfailed, rather
+than waiting for WO-0142. This step exists so that decision is an *explicit accepted risk in the
+close-out record* and not something a later reader discovers as an unexplained open defect.
+
+- [ ] `work/review/REV-0045/disposition.md` states P0-8 as **OPEN — MERGED BY RATIFIED EXCEPTION
+      D-5(a)**, with: the bound (the mint no longer consults the durable row, so the human release
+      path is unaffected), the reason for the exception (the repair reverses WO-0140's ratified
+      never-regress rule and needs its own ratification), and the residual (a pre-upgrade database
+      can hold a rail row above log truth until WO-0142 lands).
+- [ ] The disposition **must not** claim the seat flag contains it. It does not — `app/store/`
+      contains no reference to `signal_seat_enabled`, and both stores fold and upsert on every
+      `initialize()`. That claim was made to the reviewer in round 3 and is corrected in
+      `R6A-CONSOLIDATION-PROGRAM.md` §6, ADR-016 §1 and `request-round-4.md` §3. Do not let it
+      reappear here.
+- [ ] **INV-099 stays recorded as VIOLATED** in `docs/INVARIANTS.md` until WO-0142 closes it.
+      Merging under an exception does not discharge the invariant, and an invariant quietly marked
+      satisfied at a merge is the exact failure this registry exists to prevent.
+- [ ] `work/queue/WO-0142-r6a-c2-store-truth.md` remains QUEUED with P0-8 as its first inherited
+      obligation. If WO-0142 has been closed or dropped, **STOP** — the exception was granted
+      against a destination that no longer exists.
 
 ### 1e. Ledger — **three** rows, real SHAs
 

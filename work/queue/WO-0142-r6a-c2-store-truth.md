@@ -7,6 +7,7 @@ program: work/queue/R6A-CONSOLIDATION-PROGRAM.md (WO-B of A/B/C)
 parent: WO-0104a (REVIEW); WO-0141R (ACTIVE)
 branch: TBD — not started
 model_tier: strong (LOCAL — event-log truth, store rebuild path, human-gated write refusal)
+seat: "CONDITIONAL on the REV-0045 round-4 verdict — ratified D-9(b), 2026-07-29. A DIFFERENT seat takes this WO if round 4 returns any finding-bearing verdict; the Claude seat that authored WO-0141R continues only on a clean ACCEPT. Rationale as put to the operator: this WO's central question is reversing WO-0140's ratified never-regress rule, and that seat's last two unilateral semantics rulings produced P0-6 and P0-7. Resolve this line before starting — an unresolved seat assignment is not a licence for whoever reads the file first."
 review: "Codex-owned REV packet. Not this seat's gate to clear."
 filter_risk: MED
 ---

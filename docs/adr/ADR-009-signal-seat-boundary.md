@@ -30,7 +30,14 @@ External agentic research systems (exemplar: HKUDS Vibe-Trading — an LLM-drive
 Forces at play:
 
 - Safety core invariants 1–11 and INV-1..9 are non-negotiable; order submission is a human-gated surface.
-- Stack is pinned (Python 3.12, FastAPI, Streamlit, SQLite); new dependencies require an ADR; `alpaca-py` lives only in the Broker Adapter.
+- Stack is pinned (Python — see the amendment note below, FastAPI, Streamlit, SQLite); new dependencies require an ADR; `alpaca-py` lives only in the Broker Adapter.
+
+  > **Amendment, 2026-07-29 (D-7(a), operator-ratified).** This line read "Python 3.12". The
+  > supported range is **3.11 and 3.12** — CI runs both, `mypy` targets 3.11 under ADR-007, and
+  > `constraints.txt` is pinned for both — with 3.12 as the development default and **3.12-only
+  > syntax illegal**, refused by `ruff target-version = "py311"`. Amended rather than rewritten
+  > because the restatement here is context, not this ADR's decision; the contract itself lives in
+  > `CLAUDE.md`. The contradiction cost seven consecutive red CI builds before it was ruled on.
 - Vibe-Trading and similar systems are fast-moving, LLM-dependent, and nondeterministic — architecturally the opposite of the spine. Coupling their internals into the spine imports their surface area and their failure modes.
 - The spine already has exactly one correct entry point for external influence: **intent submitted through the API, subject to session control, risk checks, kill switch, and the single-writer engine.**
 

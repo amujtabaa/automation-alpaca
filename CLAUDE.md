@@ -51,7 +51,8 @@ Plus spine invariants **INV-1…INV-9** (`docs/SPINE_EXECUTION_ARCHITECTURE_v2.m
 
 - Layers: `ui → api → facade → engine → adapter/store`. Imports flow only through approved seams; `alpaca-py` only inside the adapter; Streamlit imports only the typed API client.
 - Single writer: only the Execution Engine mutates order/fill/position state; positions derive only from deduped fill events; `SUBMITTED`/`ACCEPTED` structurally cannot change quantity.
-- Stack pinned: Python 3.12, FastAPI, Streamlit, SQLite + in-memory. No React/Dash/other brokers. New dependency ⇒ ADR first.
+- Stack pinned: **Python 3.11 and 3.12 both supported**, 3.12 the development default, FastAPI, Streamlit, SQLite + in-memory. No React/Dash/other brokers. New dependency ⇒ ADR first.
+- **3.12-only syntax is illegal** — code must parse and run on 3.11 (D-7(a), 2026-07-29; replaced a "pinned: Python 3.12" line that contradicted the CI matrix, ADR-007's `mypy python_version = "3.11"` and `constraints.txt`, and cost seven consecutive red builds). Two gates, both interpreter-independent: `ruff target-version = "py311"` for repo source, and `tests/test_min_python_syntax_gate.py` for source strings **embedded in test fixtures**, which ruff structurally cannot see and which was the shape that broke CI. Detail: `.claude/rules/repo-primer.md`, `pyproject.toml`.
 - Details, rationale, and current facts: `pkl/architecture/` and `docs/adr/`.
 
 ## Testing and CI
@@ -59,6 +60,8 @@ Plus spine invariants **INV-1…INV-9** (`docs/SPINE_EXECUTION_ARCHITECTURE_v2.m
 - Engine logic: injected clock (no bare `datetime.now()`/`time.time()`), no unseeded randomness, deterministic IDs/queues.
 - State/order/fill/position/reconciliation/kill-switch changes: test **both** in-memory and SQLite paths, expand tests in the same change.
 - Gate: `ruff` + `mypy` + `pytest` (+ import-linter, replay/parity verifier where configured). Formatting authority is **ruff** — never Prettier/Biome on Python. (`mypy` is a baseline-and-ratchet gate over `app/` per ADR-007 — grandfather punch-list only shrinks; see `pkl/architecture/testing-model.md`.)
+- **A gate is green when CI says so on both matrix legs, not when a local run passes.** Local green on one interpreter is not green: CI ran red for seven consecutive commits on 2026-07-29, three of them under an explicit "0 failed / gates green" claim. Report the CI conclusion, or say the run is still pending — never substitute the local result for it.
+- Coverage `fail_under` and the mutation `MAX_SURVIVORS` are **ratchets**: tighten as evidence improves, never loosen to make a red build pass. Do not move either inside the change that gate would judge — sequence it to a close-out.
 
 ## Review
 

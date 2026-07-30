@@ -9,7 +9,7 @@ remediates: "REV-0045 P0-2, P0-3, P0-4, P0-6 — kernel halves. Store halves are
 parent: WO-0104a (held in REVIEW); WO-0140 (held in REVIEW, not superseded)
 branch: codex/signal-r6a-rails-store
 model_tier: strong (LOCAL — event-log truth interpretation, human-gated recovery semantics)
-review: "Codex-owned REV-0045 continuation. This seat implements; it does not clear its own gate. Reviewer-owned holdouts (§5) are authored outside this WO and may not be modified by it."
+review: "Codex-owned REV-0045 continuation. This seat implements; it does not clear its own gate. The §5 holdout obligation is discharged under ratified D-6(b) (2026-07-29) by a RECORDED REVIEWER ADOPTION of the pre-registered tests/_rail_reference_model.py — not by authorship in this WO, which cannot satisfy it, and not by silence. The file is unmodifiable by this WO either way; until adoption is recorded the item is OPEN and model/kernel agreement may not be reported as a gate."
 scope_budget: "P-3 score 6 (coupled) after the 2026-07-29 scope extension: 1 state machine, 0 independent effect authorities, 1 human-gated surface, 1 truth owner, +1 core.py write cap, and **1 paired-store limb** — originally recorded as 0, which was the error behind P0-7. A limb is counted where a derived quantity is CONSUMED, not where files are edited (ratified P-3 amendment)."
 scope_extension: "2026-07-29 (Ameen) — allowed paths extended to app/store/memory.py and app/store/sqlite.py, release-floor functions and mint-input clamping ONLY, after self-audit found P0-7: the fold demanded next_mintable while both stores minted at release-floor + 1, so the human release never survived a restart. The kernel and the store floors are one semantic limb."
 deferred: "2026-07-29 (Ameen), program D-4 'review first': §2 items 1 and 5 (typed ProducerRailFact union, one ProducerRailMachine) and §5.2 (Hypothesis RuleBasedStateMachine) are deferred to WO-0143 until an independent verdict clears the semantic layer. Done-when #1 is scoped to the §1 rulings, which ARE delivered; the structural items are not part of this WO's completion."
@@ -136,6 +136,23 @@ therefore specified first, and part of it is not this seat's to write.
    - a metamorphic relation — *adding a malformed event to a valid prefix may mark a producer, but
      may never change another producer's outcome, nor convert a refusal into an authorization*;
    - attribution agreement — every consumer answers "whose event is this?" identically.
+
+   > **How this is satisfied — ratified D-6(b), 2026-07-29.** As written this obligation is not
+   > satisfiable by this seat: holdouts owned by the reviewer cannot be authored by the reviewed.
+   > What exists is `tests/_rail_reference_model.py`, **pre-registered** — written by this seat from
+   > the ratified decision block *before* the implementation, and labelled as pre-registered in its
+   > own header. That is a real but weaker property: it constrains shaping an oracle to fit the code,
+   > and constrains nothing about a blind spot the seat and the model share.
+   >
+   > Four routes were put to the operator. **(b) is ratified: the reviewer ADOPTS the pre-registered
+   > model after reading it, recorded as adoption in `result-addendum-04.md`.** Adoption is what
+   > converts it from *this seat's model* into *a model an independent seat has accepted*, and it is
+   > what discharges this item — not authorship by this seat, and not silence. Codex authoring its own
+   > holdouts (option (a)) remains welcome and strictly stronger; (b) was chosen as the floor that
+   > does not stall the round.
+   >
+   > **Until an adoption verdict is recorded this item is OPEN**, and agreement between the model and
+   > the kernel may not be reported as a gate. See `work/review/REV-0045/request-round-4.md` §9.
 2. **Hypothesis stateful testing** where the escapes actually happened: a `RuleBasedStateMachine`
    over open / close / heal / restart / append-malformed, compared against the reference model,
    covering epoch 2+, both opener triggers, cross-producer interleavings, and restart mid-sequence.
@@ -175,7 +192,10 @@ No cell is unclassified.
 
 1. Every §1 ruling implemented and pinned, each with a RED-first proof and a mutation certificate.
 2. Both opener triggers exercised on every sequence obligation; parameterization asserted non-vacuous.
-3. Reviewer-owned holdouts present, authored outside this WO, and **unmodified** by it.
+3. Holdouts present and **unmodified** by this WO, with their independence status recorded truthfully.
+   Discharged under ratified **D-6(b)** by a recorded reviewer **adoption** of the pre-registered
+   `tests/_rail_reference_model.py` — see §5 item 1. A decline is a finding, not a discharge; silence
+   is neither, and leaves this item open.
 4. The legacy v1 corpora fold to byte-identical read models before and after, **except** the three
    §3 changes, each of which is separately pinned as an intended change with its old value recorded.
 5. The F-1 gate committed with its adversarial fixture.

@@ -133,6 +133,25 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
   by `tests/test_wo0141_append_caller_gate.py`, which does not judge whether a new caller is safe
   but refuses to let one appear without a human re-deriving the argument. Mutation-verified: a
   seventh caller planted in a real module fails both the caller-set rule and the non-vacuity count.
+- 2026-07-30: **a gate must not need an exemption to pass, and "documented residual" is usually a
+  measurement away from "closed".** Two lessons from `tests/test_min_python_syntax_gate.py`, built to
+  cover the class `ruff target-version` structurally cannot see — 3.12-only syntax inside a fixture
+  string handed to `ast.parse`, the shape that took CI red for seven commits.
+  1. **Measure the residual before writing it down.** The gap had already been written up as a
+     permanent limitation ("the 3.11 CI leg is the only control") when one measurement — that ruff
+     accepts `--target-version` on arbitrary paths, so no second interpreter is needed — turned it into
+     a closed gate: every string literal in `tests/` that parses as Python, linted at the floor, ~11.7k
+     candidates in one batched run under 0.3 s. Three alternatives were rejected on measurement, not
+     taste: a "looks like code" heuristic (71 docstrings flagged, nothing real found),
+     `ast.parse(feature_version=(3, 11))` (does **not** reject PEP 701 — verified), and shelling to a
+     real `python3.11` (skips where absent, so inert on the other leg).
+  2. **If a gate flags its own fixtures, restructure the fixtures — never add an allowlist.** This one
+     failed on itself three times: its tripwire stored as a literal, then its self-check's assertion
+     needle, then its own docstring example. The allowlist that would have silenced all three is
+     exactly how the append-caller gate was defeated five times. The fixes were to assemble the
+     construct at runtime and to make the self-check mirror the collector's criterion — a stricter
+     self-check failed on documentation, which pushes the next maintainer toward deleting the
+     explanation instead of keeping the gate honest.
 - 2026-07-29: **pre-registration is not independence, and must not be reported as such.** A test
   oracle written by the implementing seat before the implementation (`tests/_rail_reference_model.py`)
   constrains one failure mode — shaping the oracle to fit the code — and constrains nothing about a
@@ -140,6 +159,15 @@ Determinism is what makes broker-edge-case behavior (timeouts, overfills, interl
   and a reviewer may adopt or replace them; until then agreement with them is weak evidence, never
   a gate. Recorded because WO-0141's §5.1 called for reviewer-owned holdouts and the implementing
   seat could only supply pre-registered ones.
+  **Ratified route (D-6(b), operator, 2026-07-29): the reviewer ADOPTS, in writing, in the result
+  artifact.** Adoption is the standing mechanism for this class — an obligation whose *content* the
+  implementing seat can meet but whose *ownership* it structurally cannot. Adoption discharges the
+  ownership half and nothing more, and the record must keep saying so: **an adopted pre-registered
+  oracle is not an independent one.** Two related unsatisfiable-precondition defects were found while
+  applying this and are worth remembering as a class — the R6a merge criterion demanded the holdouts
+  be certified "independent", and the close-out checklist gated on a verdict value that could never
+  occur. **When an obligation can only be discharged by a party who is not the author, check that the
+  artifact stating it does not also require the author to satisfy it.**
 - 2026-07-29: **P-3 AMENDMENT (operator-ratified): a paired limb is counted where a derived
   quantity is CONSUMED, not where files are edited.** WO-0141 was cut along a file boundary —
   "kernel now, stores in WO-0142" — and its scope-budget table recorded "paired-store limb: 0"

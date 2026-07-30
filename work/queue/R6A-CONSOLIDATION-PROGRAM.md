@@ -21,6 +21,19 @@
   could not verify, in the very artifact asking them to approve it. Found by an independent
   merge-readiness assessment, not by this seat. Relabelled **D-4** to join the ratified sequence;
   "D-A" was a session-local name.
+- **D-5 … D-9 — RATIFIED 2026-07-29 (Ameen).** Put to the operator after the round-4 request was
+  re-cut and two measured assessments landed; each carried options and a recommendation, and every
+  recommendation was accepted. Recorded here in full because D-4 above is the standing lesson: a
+  ruling that exists only in a session transcript cannot be cited to a reviewer.
+
+  | # | Question | Options put | Ruled | Rationale as put |
+  |---|---|---|---|---|
+  | **D-5** | Does R6a merge with **P0-8** open? | (a) merge on an ACCEPT-class verdict with P0-8 open, disclosed, strict-xfailed; (b) hold the merge until WO-0142 repairs it | **(a)** | P0-8 is bounded — the mint no longer consults the durable row, so recovery is unaffected — and its repair reverses WO-0140's ratified never-regress rule, needing its own ratification. **Accepted with eyes open:** the seat-off flag does *not* insulate the merge from it (see the correction block at §6), so (a) means accepting that a pre-upgrade database can hold a rail row above log truth until WO-0142 lands. |
+  | **D-6** | Who supplies **reviewer-owned holdouts**? | (a) Codex authors them in the round-4 packet; (b) Codex adopts the pre-registered model after reading it, recorded as adoption; (c) a third seat; (d) accept pre-registered-only and stop calling it independence | **(b)** | Open across all four rounds. `tests/_rail_reference_model.py` is pre-registered by the implementing seat and constrains specification-reading errors only. Adoption by the reviewer converts it from *this seat's model* into *a model the reviewer has independently accepted* — weaker than (a), materially stronger than the status quo, and it does not stall the round. |
+  | **D-7** | The **Python contract**: 3.12-pinned, or a 3.11+ matrix? | (a) amend the docs to 3.11+ and keep the matrix; (b) drop 3.11 from CI and keep the 3.12 pin | **(a)** | The matrix has already caught a real portability defect, and the repo's *tooling* already behaves this way — `[tool.mypy] python_version = "3.11"` (ADR-007, ratified) and `constraints.txt` explicitly pinned "safe across the 3.11 / 3.12 CI matrix". Only four prose statements said otherwise. (a) makes the repo self-consistent rather than adopting a new position. Carries the obligation flagged when it was put: 3.12-only syntax must be **refused by a gate**, not by convention. |
+  | **D-8** | The **coverage floor** | (a) fix only the comment, leave `fail_under = 93`; (b) raise to 93.1 and ratchet; (c) lower to 92.5 to restore slack | **(a)** | Measured margin is 0.10 points ≈ twenty statements-or-branches against a comment promising "a few points". The mechanism works; the description is false in a way that changes how a red build should be read. Moving a gate inside the change it would judge is the pattern the review packet exists to catch — so the comment now, the floor at the R6a close-out under (b). |
+  | **D-9** | **Seat continuity** for WO-0142 | (a) this seat continues; (b) a different seat takes it | **(b)**, conditional | (b) if round 4 returns any finding-bearing verdict; (a) if it is a clean ACCEPT. WO-0142's central question is reversing the never-regress rule, and this seat's last two unilateral semantics rulings produced P0-6 and P0-7. Recorded in `WO-0142`'s frontmatter as a condition on the verdict, not as a pre-assignment. |
+
 - **Trigger:** REV-0045 addendum-03 (`48cae49`) BLOCK, fourth consecutive on this surface. The
   P-1 tripwire and the operator pre-commitment in `CLOSEOUT-R6a-CHECKLIST.md` §0 route the open
   rail P0s to consolidation rather than a fourth patch round.
@@ -243,7 +256,10 @@ trigger-specific and the round-2 pin drove only the rate path.
 
 1. Every §1 ruling implemented and pinned, each with a RED-first proof and a mutation certificate.
 2. Both opener triggers exercised on every sequence obligation.
-3. Reviewer-owned holdouts (§4) present, authored outside this WO, and **unmodified** by it.
+3. Holdouts (§4) present and **unmodified** by this WO, with independence status recorded truthfully —
+   discharged under ratified **D-6(b)** by a recorded reviewer adoption, not by authorship here. (This
+   §2 block is the WO-A *draft*; the executing artifact is
+   `work/active/WO-0141R-r6a-c1-rail-sequence-rule.md`, whose §5/§7 carry the same amendment.)
 4. The legacy v1 corpora fold identically before and after (byte-identical read models).
 5. `append_execution_event` caller enumeration complete, with the F-1 conclusion confirmed or
    overturned in writing.
@@ -300,6 +316,13 @@ seat that does not implement.
    (c) attribution agreement — all consumers answer "whose event is this?" identically.
    The implementer may not amend these in the same work order; a needed change is a separate
    reviewed artifact.
+
+   > **How this is actually satisfied — ratified D-6(b), 2026-07-29.** The *content* (a)-(c) landed as
+   > `tests/_rail_reference_model.py`; the *ownership* did not, and could not, because the implementing
+   > seat wrote it. It is **pre-registered** — authored from the ratified decision block before the
+   > implementation, and labelled as such in its own header. D-6(b) discharges the ownership half by a
+   > recorded reviewer **adoption**, not by authorship in this WO. The "unmodifiable by the implementing
+   > WO" half stands unchanged and was honoured. See the amendment to acceptance criterion 1 above.
 2. **Hypothesis stateful testing replaces example fixtures** exactly where the escapes happened:
    epoch 2+ sequences, both opener triggers, cross-side interleavings, restart mid-sequence, and
    malformed events interleaved with valid ones. A `RuleBasedStateMachine` over
@@ -351,9 +374,25 @@ it is a legitimate choice and it is yours.
 ### Acceptance criteria for the R6a phase
 
 1. An **ACCEPT-class REV verdict** on the consolidation program covering, by name: the §1 rulings
-   as implemented; all four open P0s with per-item verdicts; the reviewer-owned holdouts as
-   *independent* (not common-mode with the implementation); dual-store and live/replay/restart
+   as implemented; all four open P0s with per-item verdicts; **a recorded reviewer ADOPTION verdict on
+   the pre-registered holdout model** (see the amendment below); dual-store and live/replay/restart
    agreement; and the reviewed head SHA covering every commit in the range.
+
+   > **Amendment, 2026-07-29 — this criterion was UNSATISFIABLE as written.** It required the holdouts
+   > to be judged *"independent (not common-mode with the implementation)"*. No such artifact exists or
+   > can: `tests/_rail_reference_model.py` is **pre-registered** by the implementing seat, and nothing
+   > the reviewed seat writes can be independent of itself. So the merge gate demanded a property that
+   > only the reviewer could create, in a criterion the reviewer was being asked to certify — the same
+   > cannot-pass shape found in `CLOSEOUT-R6a-CHECKLIST.md` §0 (which gated on a BLOCK verdict) and in
+   > WO-0141R's §5.1. Found while implementing D-6, not by review.
+   >
+   > **Ratified D-6(b) replaces it:** the criterion is met by a recorded reviewer **adoption** of the
+   > pre-registered model — the reviewer reads it against the ratified decision block and the spec and
+   > accepts it as expressing the intended semantics, in `result-addendum-04.md`. A decline is a
+   > finding; silence leaves the criterion unmet. **Adoption is deliberately weaker than independence
+   > and must not be recorded as independence:** it constrains specification-reading errors and
+   > reviewer-side disagreement about intent, and constrains nothing about a blind spot the seat and
+   > the model share. Reviewer-authored holdouts (option (a)) remain strictly stronger and welcome.
 2. **All gates green**, read from output: full battery counts and coverage line; ruff; mypy;
    lint-imports; conformance oracle; scaling gate; AI-OS hygiene; format debt at exactly the ten
    disclosed files.

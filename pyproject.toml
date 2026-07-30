@@ -32,9 +32,32 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# Floor set a few points under the current ~95% branch coverage so it catches a
-# real regression without flaking on normal churn. It is a RATCHET: raise it as
-# coverage improves; never lower it silently to make a red build pass.
+# FLOOR 93.0 — and the margin is THIN, not comfortable. Read this before
+# interpreting a red coverage build.
+#
+# This comment used to say "set a few points under the current ~95% branch
+# coverage so it catches a real regression without flaking on normal churn."
+# Both halves were false by 2026-07-29: measured branch coverage is 93.11%, so
+# the margin is 0.11 points — on the order of TWENTY statements-or-branches out
+# of 14,404 statements + 5,332 branch outcomes. Corrected under D-8(a).
+#
+# Why that matters operationally: a two-point margin and a twenty-branch margin
+# call for different reactions to the same red build. With two points, red means
+# "you deleted tests or regressed behaviour." With twenty branches, red usually
+# means "you ADDED code and did not cover all of it" — a different diagnosis and
+# a different fix. Anyone reading the old comment would have reached for the
+# wrong one.
+#
+# Recent trajectory, from commit evidence lines: 93.14 (c20ca47) -> 93.11
+# (87d03c4) -> 93.10 (8fa7122..59414f1) -> 93.08 (6e6c9ad) -> 93.11 (current;
+# the mutation-triage pins and the min-Python gate recovered it).
+#
+# It is a RATCHET: raise it as coverage improves; never lower it silently to make
+# a red build pass. D-8(a) deliberately corrected only this COMMENT and left the
+# number alone — moving a gate inside the change that gate would judge is the
+# pattern the review packet exists to catch. Raising the floor to 93.1 is
+# sequenced to the R6a close-out, where an independent verdict has cleared the
+# work the number would be measuring.
 fail_under = 93
 
 [tool.ruff]
@@ -47,6 +70,42 @@ fail_under = 93
 # "mutants" is mutmut 3.x's generated working tree (ADR-015): not source, and
 # excluded so it cannot inflate the format-debt baseline the review re-checks.
 extend-exclude = [".ai-os", ".claude", ".pytest*", "mutants"]
+# D-7(a), ratified 2026-07-29: 3.11 and 3.12 are both supported, so 3.12-only
+# syntax is illegal and must fail a gate rather than a reviewer's memory.
+# Unset, ruff assumes its newest supported target and silently accepted a PEP 701
+# nested-quote f-string that the 3.11 CI leg rejected — seven consecutive red
+# builds, three of them under a "gates green" claim.
+#
+# WHAT THIS CATCHES, exactly, measured before adoption:
+#   f"append_{"execution_event"}" in a source FILE
+#     -> invalid-syntax: Cannot reuse outer quote character in f-strings on
+#        Python 3.11 (syntax was added in Python 3.12)
+#   the same text inside a STRING LITERAL that a test feeds to ast.parse
+#     -> NOT caught by THIS setting. Ruff lints a file's own syntax; a fixture
+#        stored as a string is opaque to it, and that is exactly the shape the
+#        seven red builds took. Verified: `ruff check .` reports "All checks
+#        passed!" on a file whose only content is such a fixture.
+#        That gap is now closed by tests/test_min_python_syntax_gate.py, which
+#        lints every embedded source string in tests/ at this same target in one
+#        batched ruff run (~11.7k candidates, <0.3 s) and reports the originating
+#        file and line. It needs no second interpreter, so it has identical force
+#        on both matrix legs — unlike `ast.parse(src, feature_version=(3, 11))`,
+#        which does NOT reject the construct (measured on 3.12; that parameter is
+#        best-effort and does not gate PEP 701), and unlike shelling to a real
+#        python3.11, which would skip wherever 3.11 is absent.
+#
+# Adopted with zero new findings on the tree at 3154e6c (`ruff check .` clean).
+#
+# THIS GATE DEPENDS ON THE RUFF VERSION, and only constraints.txt guarantees it.
+# Verified on ruff 0.15.20 — the `constraints.txt` pin, which CI installs via
+# `pip install -r requirements.txt -c constraints.txt`, so CI does fire it on
+# both matrix legs (target-version is config, not interpreter-derived).
+# `requirements.txt` declares `ruff>=0.6`, and that floor does NOT guarantee
+# version-aware syntax diagnostics: an environment built without the constraints
+# file can satisfy the requirement with a ruff that accepts the construct
+# silently. Noted rather than left implicit — a control whose firing depends on
+# an unstated version is the shape of defect this repo keeps finding.
+target-version = "py311"
 
 [tool.mypy]
 # ADR-007: static typecheck gate over app/, introduced by baseline-and-ratchet.

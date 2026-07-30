@@ -18,8 +18,17 @@ trading belongs in beta: credentials, when deliberately configured, are Alpaca *
 
 ## Tech Stack and Boundaries
 
-- Python 3.12, FastAPI, Streamlit, SQLite, and an in-memory store for tests; dependencies are
-  pinned by `constraints.txt`. A new dependency needs an ADR first.
+- **Python 3.11 and 3.12 are both supported**; 3.12 is the development default. FastAPI, Streamlit,
+  SQLite, and an in-memory store for tests; dependencies are pinned by `constraints.txt`. A new
+  dependency needs an ADR first.
+- **3.12-only syntax is illegal** (D-7(a), ratified 2026-07-29). CI runs a 3.11 + 3.12 matrix,
+  `mypy` targets 3.11 (ADR-007), and `constraints.txt` is pinned for both. Two gates cover it, and
+  both work on any interpreter:
+  - `ruff target-version = "py311"` — repo source files.
+  - `tests/test_min_python_syntax_gate.py` — source strings **embedded in fixtures** and handed to
+    `ast.parse`. Ruff cannot see inside a string literal, and that was the exact shape that took CI
+    red for seven commits. The gate lints every embedded source in `tests/` at the same target in one
+    batched ruff run and names the originating file and line.
 - Required flow: `ui → api → facade → engine → adapter/store`. Imports cross only approved seams;
   `alpaca-py` stays in the adapter and Streamlit imports only the typed API client.
 - The execution engine is the single writer. Submitted is not filled; only deduplicated fills
@@ -103,6 +112,15 @@ execution truth. Never commit `.env`, credentials, or a live-key variable.
 4. A reviewer owns `work/review/REV-*/result.md`: the reviewed party never edits it in place.
    Corrections are separate disclosed addenda. Every gated-surface change receives a tracked
    `REV-*` packet even if review discussion occurs in PR threads; record that PR verdict there.
+5. **Never claim "gates green" from a local run alone — read CI, on both matrix legs.** Local green
+   on one interpreter is not green. CI was red for **seven consecutive commits** (`8fa7122`..`2bdae6d`,
+   2026-07-29) while this rule was absent, three of them under an explicit "0 failed / gates green"
+   evidence line, because a 3.12-only construct in a test fixture broke the 3.11 job and the local
+   loop only ever used the 3.12 `.venv`. That specific class now has a local gate
+   (`tests/test_min_python_syntax_gate.py`, plus `ruff target-version = "py311"` for source files), so
+   it should not recur — but **the rule is not about that one defect.** A matrix leg can fail for
+   reasons no local gate models: platform, interpreter behaviour, dependency resolution, timing. A
+   matrix that exists is only a control if something reads it before the claim is made.
 
 ## Execution Preference
 

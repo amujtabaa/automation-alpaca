@@ -28,7 +28,7 @@ Layered system with strict import seams and a single-writer execution engine. Ev
   - `store` → event log, snapshots, projections, parity verifier, legacy read models.
 - Single writer: only the Execution Engine mutates order/fill/position state. Position Service derives positions only from deduped fill events. `SUBMITTED`/`ACCEPTED` events are structurally unable to change position quantity.
 - Boundary enforcement: import-linter contracts in CI; a PR crossing a protected seam fails.
-- Stack pins: Python 3.12, FastAPI, Streamlit, alpaca-py (adapter only), SQLite + in-memory store. New dependencies require an ADR and a current-status check against official docs/PyPI.
+- Stack pins: **Python 3.11 and 3.12 both supported** (CI matrix; `mypy` targets 3.11 per ADR-007; `constraints.txt` pinned for both), 3.12 the development default, **3.12-only syntax illegal** and refused by `ruff target-version = "py311"` — ratified D-7(a) 2026-07-29, replacing a "Python 3.12" pin that contradicted the matrix. Plus FastAPI, Streamlit, alpaca-py (adapter only), SQLite + in-memory store. New dependencies require an ADR and a current-status check against official docs/PyPI.
 
 ## Rationale
 

@@ -11,7 +11,7 @@ base_sha: 14ff12fbf4667a1a23969d28446818cc010292b9
 head_sha: "tip of codex/signal-r6a-rails-store — the commit that adds this file"
 production_head_sha: 6e6c9ad
 head_note: "6e6c9ad is the last commit that touches app/. Every commit after it carries tests, docs, pyproject selection and CI comments only — verify with `git diff --name-only 6e6c9ad..HEAD -- app/`, which is empty — so the app/ figures below are final at 6e6c9ad. Pin the exact tip SHA in your result."
-range_size: "26 commits; app/ 8 files +433/-68 (final at 6e6c9ad); tests/ 15 files; docs+work+pkl 14 files; build/CI 3 files"
+range_size: "app/ 8 files +433/-68 — FINAL at 6e6c9ad. Everything after 6e6c9ad is tests, living docs, work artifacts and build/CI config; a commit count is deliberately not stated here because it goes stale on every push, and the head_note command settles the production boundary instead."
 gate: "Unchanged. WO-0104a stays REVIEW; R6b and D-2a stay blocked; signal_seat_enabled stays false — now enforced in code, see §5."
 ---
 
@@ -20,21 +20,23 @@ gate: "Unchanged. WO-0104a stays REVIEW; R6b and D-2a stay blocked; signal_seat_
 ## 0. The range, pinned
 
 **Base `14ff12fbf4667a1a23969d28446818cc010292b9`** — your own addendum-03 head — **to the tip of
-`codex/signal-r6a-rails-store`**, 25 commits. Everything below is inside that range; nothing outside
-it is being asked for.
+`codex/signal-r6a-rails-store`**. Everything below is inside that range; nothing outside it is being
+asked for.
 
 ```
-git log --oneline 14ff12f..HEAD             # 25
 git diff --stat 14ff12f..6e6c9ad -- app/    # 8 files, +433 / -68   <- production, FINAL
-git diff --stat 6e6c9ad..HEAD -- app/       # empty
+git diff --stat 6e6c9ad..HEAD   -- app/     # EMPTY — verify this, do not take my word
+git log --oneline 14ff12f..HEAD
 ```
 
-**The production surface is 8 files / +433 / −68 lines, and it is final at `6e6c9ad`.** The 25th
-commit — the one carrying this file — adds tests, docs and one `pyproject.toml` selection entry, and
-touches no `app/` file, so you can bound the production review at `6e6c9ad` and read the last commit
-as evidence and disclosure. The rest of the range is tests (15 files, ≈3.3k lines), living docs and
-work artifacts (14 files, ≈2k), and build/CI config (3 files). If your round-3 criterion 1 was "state
-a range I can bound", those are the numbers to bound.
+**The production surface is 8 files / +433 / −68 lines, and it is final at `6e6c9ad`.** Every commit
+above `6e6c9ad` carries tests, living docs, work artifacts, `pyproject.toml` config and CI comments —
+no `app/` file — so you can bound the production review at `6e6c9ad` and read the tail as evidence,
+disclosure and ratified-decision records. The rest of the range is tests (15 files, ≈3.3k lines),
+living docs and work artifacts (14 files, ≈2k), and build/CI config (3 files). A commit count is
+deliberately not quoted: this file has already been re-cut once for being stale against HEAD, and the
+`--` `app/` command above settles the production boundary without going stale. If your round-3
+criterion 1 was "state a range I can bound", that command is the bound.
 
 ## 1. What changed since addendum-03, in one paragraph
 
@@ -107,8 +109,10 @@ The correct merge-safety argument is narrower and I want it on the record in you
 - It does **not** insulate the merge from **P0-8**: a database that already contains `PRODUCER_*`
   rows gets the new fold applied on next open regardless of the flag.
 
-I have not edited §375 in place — it is the sentence I told you, and rewriting it silently is the
-class of thing this packet exists to prevent. It is corrected here and in `SIGNAL-R6aR-STATE.md`.
+**I have not edited that sentence out of the program.** It is what I told you in round 3, and
+rewriting it silently is the class of thing this packet exists to prevent. It stands where it was,
+with a dated correction block immediately beneath it; the same correction is in ADR-016 §1 (which had
+described the F-1 enumeration as "defense in depth, not urgent") and in `SIGNAL-R6aR-STATE.md`.
 
 ## 4. Open defects — declared, not hidden
 
@@ -119,6 +123,20 @@ class of thing this packet exists to prevent. It is corrected here and in `SIGNA
   longer consults the row, so recovery is unaffected. **Not bounded by the flag** — see §3.
   Routed to **`work/queue/WO-0142-r6a-c2-store-truth.md`** because the repair reverses WO-0140's
   ratified never-regress rule and therefore needs its own ratification.
+
+  **The operator has ruled that R6a merges with this open — D-5(a), ratified 2026-07-29**, disclosed
+  and strict-xfailed, rather than holding the merge for WO-0142. Two options were put; (a) was taken on
+  the bound above plus the fact that the repair needs its own ratification. **You are not being asked
+  to endorse that ruling** — it is the operator's — but you *are* being asked whether the bound is
+  real, because the whole exception rests on it. If the mint does consult the durable row on any path I
+  have missed, or if the two stores' disagreement is reachable on a surface that matters more than I
+  think, the exception was granted on a false premise and should be revoked.
+
+  Close-out step **1d-ter** now forces the exception to survive the merge as an *accepted risk*: the
+  disposition must state the bound, the exception and the residual; it may not re-assert that the seat
+  flag contains it (§3); **INV-099 stays recorded as VIOLATED** until WO-0142 closes it; and the
+  close-out stops if WO-0142 has been dropped, since the exception was granted against that
+  destination.
   Registered as **INV-099**, which `docs/INVARIANTS.md` records as **VIOLATED TODAY** — deliberately:
   an unregistered rule cannot be checked against.
 - The pre-existing xfail from before this range, unchanged.
@@ -323,21 +341,27 @@ a scaling pin. Same class, on a path many orders of magnitude less frequent.
 few points under the current ~95% branch coverage so it catches a real regression without flaking on
 normal churn."*
 
-Measured at this working tree: **93.10%**. The margin is **0.10 points**, not "a few points", and
-~95% is not the current figure. Against 14,404 statements + 5,332 branch outcomes, 0.10 points is on
+Measured at this working tree: **93.11%**. The margin is **0.11 points**, not "a few points", and
+~95% is not the current figure. Against 14,404 statements + 5,332 branch outcomes, 0.11 points is on
 the order of **twenty uncovered statements-or-branches** between green and red.
 
 The trajectory across this delivery, read from the commit evidence lines: 93.14 (`c20ca47`) → 93.11
-(`87d03c4`) → 93.10 (`8fa7122`, `f9f332c`, `2bdae6d`, `59414f1`) → 93.08 (`6e6c9ad`) → **93.10** (this
-commit; the §7a triage pins recovered the 0.02).
+(`87d03c4`) → 93.10 (`8fa7122`, `f9f332c`, `2bdae6d`, `59414f1`) → 93.08 (`6e6c9ad`) → **93.11** (this
+commit; the §7a triage pins and the new min-Python gate recovered it).
 
 So the mechanism works and the number is currently fine. The finding is that the *description* is
 false in a way that matters: anyone reading that comment believes there is slack for "normal churn"
 and there is not. A ratchet with a two-point margin and a ratchet with a twenty-branch margin call
 for different behaviour when a build goes red — the first says "you regressed", the second says "you
-added code". I have not changed the floor or the comment: `fail_under` is a gate, and moving a gate
-inside the change it would judge is the pattern this packet exists to catch. Raised for ratification
-with the two options in the decision block.
+added code". Anyone trusting the old comment reaches for the wrong diagnosis.
+
+**Ruled D-8(a), 2026-07-29:** correct the comment, leave `fail_under = 93` untouched, and sequence
+raising the floor to 93.1 to the R6a close-out — after an independent verdict has cleared the work the
+number would be measuring. Three options were put (comment-only / raise to 93.1 now / lower to 92.5 to
+restore real slack). The comment is corrected in this commit and carries the measured figures and the
+trajectory; **the gate value is unchanged**, because moving a gate inside the change it would judge is
+the pattern this packet exists to catch. Flagging the sequencing so you can object to it if you think
+93.1 should land before the merge rather than at it.
 
 ## 9. Independence — the limitation that has been open all four rounds
 
@@ -348,11 +372,30 @@ reviewer-*owned* holdouts, which I cannot supply.
 
 Round 4 is the fourth consecutive round in which the only independent judgement on this surface is
 yours, and the failure mode the record now shows is **common-mode**: the eight defects in §2 include
-two found only by a process audit and one found only by running a tool. **I am asking for a ruling,
-not just a review:** either adopt the reference model after reading it, or replace it with your own,
-or state that reviewer-owned holdouts are out of scope for this seat so the operator can decide who
-supplies them. Until one of those, agreement between the model and the kernel is weak evidence and
-must not be reported as a gate.
+two found only by a process audit and one found only by running a tool.
+
+**The operator has now ruled on this — D-6(b), ratified 2026-07-29 — so it is a concrete ask rather
+than an open question.** Four options were put: (a) you author holdouts inside this packet, (b) you
+**adopt** the pre-registered model after reading it, recorded as adoption, (c) a third seat supplies
+them, (d) accept pre-registered-only and stop calling it independence. **(b) is ratified.**
+
+So what round 4 needs from you is a **recorded adoption decision** on
+`tests/_rail_reference_model.py`:
+
+- **Adopt** — you have read it against the ratified decision block and the spec, you accept it as
+  expressing the intended semantics, and you say so in `result-addendum-04.md`. From that point it is
+  a model the reviewer has independently accepted, and agreement between it and the kernel becomes
+  meaningful evidence rather than a self-check. Name anything you had to change to adopt it.
+- **Decline** — say what is wrong with it, and it goes back as a finding.
+
+Adoption is deliberately weaker than (a): it constrains specification-reading errors and reviewer-side
+disagreement about intent, and it still does **not** constrain a blind spot we both share. Please say
+so explicitly in your result if you adopt, so the record does not later over-read it. If you would
+rather author your own holdouts — option (a) — the operator's ruling does not prevent that; (b) was
+chosen as the floor that does not stall the round, not as a ceiling.
+
+Until adoption is recorded, agreement between the model and the kernel is weak evidence and must not
+be reported as a gate. That sentence stays true and I am not asking you to soften it.
 
 ## 10. Process disclosure — CI was red for seven commits while I reported green
 
@@ -373,17 +416,75 @@ Two corrections to my own account of it:
   my verification loop only ever used the 3.12 `.venv`. **A matrix that exists is only a control if
   something exercises it before the claim is made.**
 
-**A repo contract conflict I am not resolving unilaterally, raised for ratification:** `CLAUDE.md`
-and the repo primer both state the stack is "pinned: Python 3.12", while CI exercises 3.11 **and**
-3.12. Those cannot both be the contract, and which one holds decides whether 3.12-only syntax is
-legal here — the exact question that cost seven red builds. Your view is welcome; the ruling is the
-operator's.
+**The repo contract conflict behind it is now RESOLVED — D-7(a), ratified 2026-07-29.** `CLAUDE.md`,
+the repo primer, `pkl/architecture/architecture-map.md` and ADR-009's context paragraph all said
+"Python 3.12" while CI exercised 3.11 **and** 3.12. Two options were put — amend the docs to 3.11+ and
+keep the matrix, or drop 3.11 and keep the pin. **(a) is ratified**, and it turned out to be the
+option that makes the repo *self-consistent* rather than a new position: `[tool.mypy] python_version
+= "3.11"` (ADR-007, ratified) and `constraints.txt` ("safe across the 3.11 / 3.12 CI matrix") already
+behaved that way. Only four prose statements disagreed. All four are amended; ADR-009 carries an
+amendment note rather than a silent rewrite, because the line there is context, not its decision.
+
+**And the convention is now a gate, which is the part worth your scrutiny.** `[tool.ruff]
+target-version = "py311"` was unset, so ruff assumed its newest target and accepted the offending
+construct. Set, it refuses it — measured before adoption:
+
+```
+f"append_{"execution_event"}"  in a source FILE
+  -> invalid-syntax: Cannot reuse outer quote character in f-strings on Python 3.11
+     (syntax was added in Python 3.12)
+```
+
+Adopted with **zero** new findings on the tree. But that setting alone does **not** catch the shape
+that actually caused the seven red builds — the same text inside a *string literal* fed to
+`ast.parse`. Ruff lints a file's own syntax; a fixture stored as a string is opaque to it. Measured:
+
+```
+# a file whose only content is that fixture, as a string
+$ ruff check tests/_probe_planted_fixture.py
+All checks passed!
+```
+
+**So the residual is closed by a second gate rather than documented as a known hole:**
+`tests/test_min_python_syntax_gate.py` collects every string literal in `tests/` that parses as
+Python and lints all of them at `py311` in one batched ruff invocation — ~11.7k candidates in under
+0.3 s — reporting the originating file and line. Planted in a real test module, it fires:
+
+```
+invalid-syntax: Cannot reuse outer quote character in f-strings on Python 3.11
+  _probe_planted_fixture.py:4 — 'async def f(s, e):\n    return await getattr(...)'
+```
+
+Three design points I would rather you checked than took on trust:
+
+- **No heuristic.** An earlier draft filtered to "strings that look like code" and was worthless — it
+  flagged 71 docstrings and found nothing real. Linting *everything* that parses is cheap, and
+  docstrings that happen to parse produce no syntax error at `py311`, so the filter that could hide a
+  real fixture is gone.
+- **No second interpreter, deliberately.** `ast.parse(src, feature_version=(3, 11))` does **not**
+  reject the construct (measured on 3.12 — that parameter is best-effort and does not gate PEP 701),
+  and shelling to a real `python3.11` would `skip` wherever 3.11 is absent, which is the inert-control
+  class. Ruff's target is config, not runtime, so the gate has identical force on both legs.
+- **No self-exemption.** The gate's own tripwire fixture is *assembled at runtime* from a substituted
+  quote character, because stored as a literal it made the gate fail on itself — and the tempting fix,
+  an allowlist, is precisely how the append-caller gate was defeated five times. Its own test asserts
+  no parsing literal in that module carries the construct. Two drafts got this wrong before it held;
+  both mistakes are recorded in the file.
+
+The gate also pins the mechanism rather than assuming it: one test plants the real defect and requires
+ruff to refuse it, so if ruff ever stops reporting version-aware syntax errors — `requirements.txt`
+allows `ruff>=0.6`, only `constraints.txt` pins the verified `0.15.20` — the suite fails loudly instead
+of the gate going quiet.
+
+**What remains a process rule, not a gate:** reading CI before claiming green. That is now repo-primer
+rule 5 and a `CLAUDE.md` line. It is deliberately not scoped to this defect — a matrix leg can fail for
+reasons no local gate models — and it is the rule whose absence let seven red builds be reported green.
 
 ## 11. Evidence at the reviewed head
 
 Read every figure from output, not from this file.
 
-- Battery: **4860 passed / 11 skipped / 2 xfailed / 0 failed**, branch coverage **93.10%** (floor 93.0)
+- Battery: **4860 passed / 11 skipped / 2 xfailed / 0 failed**, branch coverage **93.11%** (floor 93.0) — re-run after the min-Python gate landed; see the final figure in the commit message if it moved
 - `ruff check .` clean; `ruff format --check .` — **exactly the ten disclosed debt files**
 - `mypy app/` — 77 source files, no issues; `lint-imports` — **6 contracts kept, 0 broken**
 - conformance oracle **61 passed**; AI-OS hygiene **×5 green** (install, version, ledger, pkl,
@@ -391,9 +492,12 @@ Read every figure from output, not from this file.
 - The six §7a mutants certified RED→GREEN individually; `python3.11 -m ast.parse` run on the new test
   module before claiming green, which is the control that was missing when CI went red for seven
   commits (§10)
-- **CI green on both matrix legs (3.11 and 3.12)** at `59414f1`; the runs for `6e6c9ad` and the tip
-  are the ones to confirm before any close-out step executes
+- **CI green on both matrix legs (3.11 and 3.12)**, confirmed from the Actions API — not inferred from
+  a local run — at `6e6c9ad`, `6624a62`, `9662b54` and `3154e6c`. Confirm the tip's run before any
+  close-out step executes; that is now a repo rule, not a courtesy (`CLAUDE.md`, "Testing and CI")
 - Mutation certificates for every decisive pin, recorded per commit
+- `ruff target-version = "py311"` verified to fire on a real repo file and adopted with zero new
+  findings; the `ast.parse(feature_version=...)` alternative measured and rejected (§10)
 
 **Format-debt disclosure.** During this range a repo-wide `ruff format` reformatted five of the ten
 files in your addendum-03 baseline as a side effect of an unrelated commit. I had caught and

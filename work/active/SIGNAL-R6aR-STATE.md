@@ -39,9 +39,99 @@
 | 18 | Append-caller gate hardened against its own evasion class | **VERIFIED** — I defeated the gate I had just written **five ways**, including the exact split-literal shape that defeated the derived-truth gate as P1-4. Rewritten to *refuse what cannot be audited*: folded names, resolved import/assignment aliases, seam-binding counts as a reference, unfoldable `getattr` refused outright. A sixth evasion (f-string with a nested literal) was found while re-attacking the hardened version and closed. The disclosure scan is no longer a fixed window — it walks the contiguous comment block, because the derived-truth gate's two-line window silently stopped counting when a disclosure wrapped. Battery **4,816 passed / 11 skipped / 1 xfailed / 0 failed, coverage 93.10%**. Scope disclosure: `app/monitoring.py` touched, comment-only (11 comment lines, zero code). |
 | 19 | Adversarial self-review completed and dispositioned | **VERIFIED** — 85 agents, six lenses + three-lens adversarial verification + a completeness critic. 26 raw findings → **23 survived**, 3 refuted, plus **6 critic gaps**. Nine survivors were already fixed in slices 17-18. Closed this slice: two **vacuous property tests** (both now mutation-verified), the reference model's **dead fold half** (shipped, never imported — inert evidence wearing a test's clothes), the §2 `PRODUCER_RELEASED` spec row still stating the withdrawn exact-next rule, the `InvalidProjectionMarker` docstring, ADR-016's **totality overclaim**, and the state file's owed-list (named 2 of 5). **New P0-8 recorded and routed to WO-0142** with a strict xfail. One P2 judged a **non-defect** with the reasoning recorded in code. Battery **4,819 passed / 11 skipped / 2 xfailed / 0 failed, coverage 93.10%**. |
 | 20 | Round-4 review request re-cut; mutation survivors triaged; two measured assessments | **VERIFIED (no production change — `app/` is final at `6e6c9ad`).** The staged round-4 request was stale against HEAD and posed a resolved question as open; re-cut with the range pinned (`14ff12f..HEAD`, 25 commits, production **8 files / +433 / −68 final at 6e6c9ad**). **A load-bearing claim made to the reviewer in round 3 is FALSE and is corrected in place with the original left standing:** `R6A-CONSOLIDATION-PROGRAM.md` argued R6a merges safely because "the seat defaults to False and the code is dormant". `grep -rn "signal_seat_enabled" app/store/` returns **nothing** — both stores run the tolerant fold, occupancy and the durable-row upsert on every `initialize()`. The real argument is *emptiness* (no writer can mint a `PRODUCER_*` event with the seat off), which makes the **F-1 append-caller enumeration load-bearing for merge safety**, not merely defence-in-depth for D-1-b — and does NOT insulate the merge from P0-8. Corrected in the program, ADR-016 §1 and the request §3. **MUTATION TRIAGE — 205 was recorded without triage; triaging the two functions this WO added or changed returned six survivors, all range/type rules the docstrings state as deliberate.** Closed by `tests/test_wo0141_mutation_triage_gaps.py` (21 pins), each of the six certified RED→GREEN individually. The two halves are NOT equal and the distinction is the finding: `release_key_claim` (3) is a **live** path — called unconditionally, first, outside the applier's `try` — and one mutant turns tolerant startup into an uncaught `TypeError` (measured both directions); `contributed_epoch_sequence` (3) is **redundant defence** behind `_required_int` in the applier, unreachable through the fold, which is *why* no integration test could kill it. **A survivor set is a reachability oracle; coverage is not.** Distribution recorded: **≈106 of 205 survivors sit in the ten producer-rail functions** — the surface under review. `MAX_SURVIVORS` stays 205, now disclosed as known-loose by ≥6 rather than lowered to an arithmetic 199. **ONE SELF-CORRECTION:** I first read the P0-3 adversarial-opener pin as a seventh non-discriminating pin. It is not — it asserts `answers == {1}` and carries a non-vacuity check; a domain mutant survives it because of the reachability result, not a weak pin. The wrong paragraph was one commit from being sent. **TWO MEASURED ASSESSMENTS.** (a) `_next_release_sequence_locked` reads the whole log unfiltered and folds it twice under `self._lock`: ≈3 µs/event kernel, **≈31 µs/event end-to-end — 3.1 s at 100k events, ≈31 s extrapolated at 1M**, serializing every other write. Not a correctness defect (human release path only; `initialize()` already folds the whole log), unpinned by any scaling gate, and the obvious `WHERE event_type IN (...)` fix is the same *shape* as the payload pre-filter whose removal WAS the P0-3 fix — routed to WO-0142 needing the F-1 treatment, not an inspection. (b) The coverage floor's own comment claims "a few points under the current ~95%"; measured margin is **0.10 points ≈ twenty statements-or-branches**. Mechanism works, description is false in a way that changes how a red build should be read. Neither surface touched — moving a gate inside the change it judges is the pattern this packet exists to catch; both raised for ratification. Battery **4,860 passed / 11 skipped / 2 xfailed / 0 failed, coverage 93.10%** (floor 93.0). ruff, format at exactly the ten disclosed files, mypy(77), lint-imports(6 kept), oracle(61), AI-OS hygiene ×5, `python3.11` AST parse of the new module — all green. |
+| 21 | D-5..D-9 ratified and implemented; the Python contract becomes a gate | **VERIFIED (no production change — `app/` still final at `6e6c9ad`).** Five decisions put with options and recommendations; all five recommendations accepted (Ameen, 2026-07-29) and recorded in `R6A-CONSOLIDATION-PROGRAM.md` §1 **with options, ruling and rationale** — the D-4 lesson applied before it could bite again. **D-5(a)** R6a merges with P0-8 open, disclosed and strict-xfailed. New close-out step **1d-ter** makes that an explicit accepted risk: the disposition must state the bound, the exception and the residual, must NOT claim the seat flag contains it (it does not), and **INV-099 stays recorded as VIOLATED** until WO-0142 closes it — merging under an exception does not discharge an invariant. **D-6(b)** Codex adopts the pre-registered reference model after reading it, recorded as adoption. Request §9 rewritten from a three-way open question into a concrete adopt-or-decline ask, with the limitation kept explicit: adoption constrains specification-reading and reviewer-side disagreement about intent, and still constrains **nothing** about a shared blind spot. **D-7(a)** supported range is 3.11 AND 3.12, 3.12 the development default, 3.12-only syntax illegal. Turned out to make the repo *self-consistent* rather than adopt a new position: `[tool.mypy] python_version = "3.11"` (ADR-007) and `constraints.txt` already behaved that way; only four prose statements disagreed. Amended `CLAUDE.md`, the repo primer, `architecture-map.md`, an ADR-009 amendment note (not a rewrite — the line there is context, not its decision), and `harness/bootstrap.py`'s message, which had read as the supported floor rather than the dev default. **AND THE CONVENTION IS NOW A GATE:** `[tool.ruff] target-version = "py311"` was unset, so ruff assumed its newest target and silently accepted the construct that cost seven red builds. Set, it refuses it — verified on a real repo file — and adopted with **zero** new findings. **Its limit was found and then CLOSED rather than documented as a hole:** `target-version` does not see 3.12-only syntax inside a string literal fed to `ast.parse` — exactly that defect's shape — and `ruff check .` reports "All checks passed!" on a file whose only content is such a fixture. New gate **`tests/test_min_python_syntax_gate.py`** collects every string literal in `tests/` that parses as Python and lints all of them at `py311` in ONE batched ruff run (~11.7k candidates, **<0.3 s**), reporting the originating file and line. Verified by planting the real construct in a second test module: the gate fires, `ruff check .` does not. Three rejected designs recorded in the file — a "looks like code" heuristic (flagged 71 docstrings, found nothing), `ast.parse(feature_version=(3,11))` (does **not** reject PEP 701; measured on 3.12), and shelling to a real `python3.11` (skips where absent = inert control). **No self-exemption:** the gate's own tripwire is assembled at runtime from a substituted quote character, because stored as a literal it made the gate fail on itself — and an allowlist is how the append-caller gate was defeated five times. Two drafts got that wrong before it held. Reading CI stays a process rule (primer 5), deliberately NOT scoped to this defect: a matrix leg can fail for reasons no local gate models. **D-8(a)** coverage comment corrected, `fail_under = 93` untouched: the old text promised "a few points under ~95%" where the measured margin is **0.10 points ≈ twenty statements-or-branches**, which changes whether a red build means "you regressed" or "you added code". Raising to 93.1 is sequenced to the close-out — moving a gate inside the change it would judge is the pattern the packet exists to catch. **D-9(b)** WO-0142's seat is now a `seat:` frontmatter **condition on the round-4 verdict**, not a pre-assignment: a different seat takes it on any finding-bearing verdict, this seat only on a clean ACCEPT, because that WO's central question is reversing the never-regress rule and this seat's last two unilateral semantics rulings produced P0-6 and P0-7. Also removed three traps found while implementing: the request's §10 was still asking the reviewer to weigh in on a contract conflict that had just been ratified; §0 quoted a commit count that goes stale on every push (replaced with the `git diff -- app/` command, which cannot rot); and **the program's merge criterion 1 required the reviewer to certify the holdouts as *independent* — a property no artifact in the repo has or can have, making the merge gate unsatisfiable.** Amended to require a recorded ADOPTION verdict, with the weaker meaning stated so it cannot be read as independence later. **Third unsatisfiable precondition of the day** (close-out §0's impossible verdict value, WO-0141R §5.1's un-authorable artifacts, now this) — generalised into `pkl/architecture/testing-model.md`: when an obligation can only be discharged by a party who is not the author, check that the artifact stating it does not also require the author to satisfy it. |
 | 10 | Round-2 independent review + provenance correction | **BLOCK** — REV-0045 addendum-02 (`e990269`, Codex-owned): cumulative 5 P0 / 3 P1. Four P0s open: P0-2 (seed pins cover epoch 1 only), P0-3 (unbounded sibling carrier reaches SQLite's durable bind; floors disagree on type domain; NULL key raises on SQLite), P0-4 (high-water updated before validation), P0-5 (decoder is not an inverse of the ratified mint). Fable 5 pre-review disclosed below; implementer prompt error disclosed below. Fix round assigned to the Claude seat (Opus 5) by operator ratification 2026-07-28. R-1/R-2 stay open, D-2a OFF, R6b blocked. |
 
 ## Evidence log
+
+- 2026-07-29 (slice 21 — the contract already agreed with itself; only the prose disagreed):
+
+  **The most instructive thing about D-7.** I put it as a genuine two-sided choice: pin 3.12 and drop
+  the matrix, or support 3.11+ and amend the docs. Surveying before editing showed it was not really
+  two-sided. `[tool.mypy] python_version = "3.11"` has been ratified since ADR-007. `constraints.txt`
+  says in its own comments that the pins are "safe across the 3.11 / 3.12 CI matrix". CI has run both
+  legs for as long as the matrix has existed. **Four prose statements** — `CLAUDE.md`, the repo
+  primer, `pkl/architecture/architecture-map.md`, ADR-009's context paragraph — said "Python 3.12",
+  and nothing else in the repo agreed with them. So (a) was not adopting a new position; it was making
+  the documentation catch up with tooling that had already been ratified. Worth recording because I
+  presented it as a trade-off and it was closer to a correction.
+
+  **The gate, and exactly what it does not do.** `[tool.ruff] target-version` was **unset**, so ruff
+  assumed its newest supported target and accepted the PEP 701 construct without comment. Set to
+  `py311` it refuses it, verified against a real file placed in `tests/`:
+
+  ```
+  invalid-syntax: Cannot reuse outer quote character in f-strings on Python 3.11
+  (syntax was added in Python 3.12)
+   --> tests/_probe_pep701_delete_me.py:1:15
+  ```
+
+  Adopted with **zero** new findings on the tree. But it does **not** catch the shape that actually
+  cost the seven red builds: the same text inside a *string literal* that a test hands to `ast.parse`.
+  Ruff lints the file's syntax; the fixture's syntax is opaque to it — measured, `ruff check .` reports
+  "All checks passed!" on a file whose only content is that fixture.
+
+  **I first wrote that up as a documented residual, then closed it instead.** The deciding measurement
+  was that `ruff` accepts `--target-version` on *stdin/arbitrary paths*, so the check needs no second
+  interpreter. `tests/test_min_python_syntax_gate.py` collects every string literal under `tests/`
+  that parses as Python and lints all of them at `py311` in one batched ruff invocation: ~11.7k
+  candidates in **under 0.3 s**, reporting the originating file and line. Proven by planting the real
+  construct in a separate test module — the gate fires with a findable location, and `ruff check .` on
+  that same file says "All checks passed!".
+
+  Three designs rejected on measurement, recorded so they are not re-derived:
+
+  * **A "looks like code" heuristic** (strings containing `def `, `return `, …). Useless: 71 flagged
+    docstrings, zero real findings. Linting *everything* that parses is cheaper and has no filter that
+    can hide a fixture.
+  * **`ast.parse(src, feature_version=(3, 11))`.** Does **not** reject PEP 701 — verified on 3.12, it
+    parses the 3.12-only form regardless. The parameter is best-effort and does not gate this syntax.
+  * **Shelling to a real `python3.11`.** Works, but `skip`s wherever 3.11 is absent, which makes the
+    control inert on the 3.12 leg — the class this repo keeps finding.
+
+  **The interesting failure while building it: the gate failed on itself, twice.** Its tripwire fixture,
+  stored as a plain string constant, IS a string literal in `tests/` that parses on 3.12 and not on
+  3.11 — so the collector correctly flagged it. The tempting repair is an allowlist exempting the
+  gate's own file; that is precisely how the append-caller gate was defeated five times. Instead there
+  is no illegal literal in the file at all: the construct is assembled at runtime by substituting the
+  quote character. Then the *self-check test* failed too, because its assertion needle was written as a
+  literal and became an offender in its own right. And a third draft failed on the module's own
+  docstring, which quotes the construct as an example — fixed by mirroring the collector's criterion
+  (only literals that *parse* can offend) rather than applying a stricter rule that would have pushed
+  the next maintainer toward deleting the documentation.
+
+  Reading CI stays a process rule (primer 5), and is deliberately **not** scoped to this defect: a
+  matrix leg can fail for reasons no local gate models — platform, dependency resolution, timing.
+
+  **Two bookkeeping traps removed from the request while implementing.** §10 was still asking the
+  reviewer to weigh in on the Python contract *as an open question* after it had been ratified — the
+  same staleness class the whole document was re-cut to fix, reappearing within hours. And §0 quoted a
+  commit count, which goes stale on every push; replaced with `git diff --stat 6e6c9ad..HEAD -- app/`,
+  which settles the production boundary and cannot rot. A count is a fact about a moment; a command is
+  a fact about the repository.
+
+  **What D-5(a) required beyond a note.** Merging with P0-8 open is only safe if the *reason* survives
+  the merge, so close-out step **1d-ter** requires the disposition to state the bound, the exception
+  and the residual, forbids re-asserting that the seat flag contains it, and holds **INV-099 recorded
+  as VIOLATED** until WO-0142 closes it. An exception that lets an invariant be quietly marked
+  satisfied is worse than no exception.
+
+  **A THIRD unsatisfiable precondition, found while implementing D-6 — this one on the merge gate.**
+  `R6A-CONSOLIDATION-PROGRAM.md` acceptance criterion 1 required the reviewer to certify the holdouts
+  *"as independent (not common-mode with the implementation)"*. No such artifact exists or can:
+  `tests/_rail_reference_model.py` was written by the implementing seat, and nothing the reviewed seat
+  writes is independent of itself. So the **merge gate demanded a property only the reviewer could
+  create, inside a criterion the reviewer was being asked to certify.** Amended to require a recorded
+  *adoption* verdict instead, with the weaker meaning stated so it cannot later be read as
+  independence. WO-0141R §5/§7 and the program's §2 draft done-when carry the same amendment.
+
+  That is the third instance of one shape in a single day: §0 of the close-out checklist gated on a
+  verdict value that could never occur; WO-0141R §5.1 asked this seat for artifacts it structurally
+  could not author; and now the merge criterion. Generalised into `pkl/architecture/testing-model.md`
+  as a standing check — **when an obligation can only be discharged by a party who is not the author,
+  verify the artifact stating it does not also require the author to satisfy it.** All three were found
+  by reading the preconditions against who can actually satisfy them, which is now a cheap habit and
+  was not one.
 
 - 2026-07-29 (slice 20 — a survivor set is a reachability oracle; coverage is not):
 
