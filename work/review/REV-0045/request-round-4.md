@@ -533,9 +533,14 @@ Read every figure from output, not from this file.
 
 - Battery on **3.12**: **4866 passed / 11 skipped / 2 xfailed / 0 failed**, branch coverage **93.11%**
   (floor 93.0)
-- Battery on **3.11**, in a venv built from `requirements.txt -c constraints.txt` — see §10a for why
-  this now exists and why its absence let a 3.12-only assumption ship. Figure in the commit message;
-  **CI on both legs is the arbiter for the reviewed SHA, not either of these local runs**
+- Battery on **3.11**, in a venv built from `requirements.txt -c constraints.txt` (Python 3.11.15):
+  **4866 passed / 11 skipped / 2 xfailed / 0 failed**, branch coverage **93.10%**. See §10a for why
+  this environment now exists and why its absence let a 3.12-only assumption ship
+- **CI green on BOTH matrix legs at `586b675`** — run 30503366455, `test (3.11)` **success** and
+  `test (3.12)` **success**, every step including ruff, mypy, import boundaries, the contamination
+  guard, AI-OS hygiene and the R2 oracle. Read from the Actions API, not inferred from a local run.
+  The preceding commit `1ecfdc0` is **red** on `test (3.11)` and that is deliberate history, not a
+  loose end — §10a explains what failed and why the fix is stronger than what it replaced
 - `ruff check .` clean; `ruff format --check .` — **exactly the ten disclosed debt files**
 - `mypy app/` — 77 source files, no issues; `lint-imports` — **6 contracts kept, 0 broken**
 - conformance oracle **61 passed**; AI-OS hygiene **×5 green** (install, version, ledger, pkl,
