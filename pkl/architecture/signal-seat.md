@@ -4,9 +4,9 @@ title: Signal Seat — external signal producers (contract summary)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-25
+last_verified: 2026-07-31
 tags: [signal-seat, architecture, boundaries, safety]
-source_refs: [docs/adr/ADR-009-signal-seat-boundary.md, docs/spec/signal-seat/00-overview.md]
+source_refs: [docs/adr/ADR-009-signal-seat-boundary.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/spec/signal-seat/00-overview.md]
 supersedes: []
 superseded_by: null
 ---
@@ -14,6 +14,11 @@ superseded_by: null
 # Signal Seat — external signal producers (contract summary)
 
 ## Gate state
+
+**Reset target:** disabled and unmounted for beta under ADR-022. The implementation and R6 branch
+below are frozen evidence and a possible future source corpus, not a reset dependency or an active
+work sequence. Any reintroduction requires a separately approved threat/auth/finite-audit ADR and
+work order.
 
 ADR-009 is **Accepted**. REV-0034 returned ACCEPT-WITH-CHANGES, WO-0133 resolved C-1/C-2, and
 Ameen approved the final text at `385cc7d` on 2026-07-21. G1 is clear. WO-0102..0104 remain draft
@@ -67,9 +72,9 @@ second executor.
 
 ## Applies to
 
-Future WO-0102/0103/0104/R4-R7 implementation now that G1 is clear, subject to each work order's
-remaining gates; any future producer integration; any L1/L2 proposal (which requires a superseding
-ADR and review).
+Frozen legacy/R6 evidence only. Any future producer integration or L1/L2 proposal requires a new
+reset-compatible ADR, independent review, and explicit activation; WO-0102/0103/0104/R4-R7 are not
+active reset work.
 
 ## Related pages
 
@@ -108,3 +113,5 @@ ADR and review).
   delivered. REV-0043 returned ACCEPT-WITH-CHANGES, then final ACCEPT after F-1/F-2 remediation and
   the operator's F-4 acknowledgement retaining `detected_by:"conversion"`; disposition RESOLVED.
   F-6/F-8 carry to R6. D-2a stays OFF pending R6 + R7 and the joint gate.
+- 2026-07-31: M0 recorded ADR-022's reset-beta disable/unmount decision. Prior implementation and
+  review history remains evidence; no Signal Seat runtime or schema action was performed.

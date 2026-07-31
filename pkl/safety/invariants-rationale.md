@@ -4,9 +4,9 @@ title: Safety Invariants — Rationale
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-20
+last_verified: 2026-07-31
 tags: [safety, invariants, trading]
-source_refs: [docs/SPINE_EXECUTION_ARCHITECTURE_v2.md, docs/adr/ADR-001-overfill-quarantine.md, docs/adr/ADR-002-timeout-quarantine.md, docs/adr/ADR-003-manual-flatten-halted-reducing.md, docs/adr/ADR-008-order-status-event-provenance.md, docs/adr/ADR-010-execution-envelope.md, docs/adr/ADR-012-submit-recovery-operator-release.md]
+source_refs: [CLAUDE.md, docs/adr/ADR-001-overfill-quarantine.md, docs/adr/ADR-002-timeout-quarantine.md, docs/adr/ADR-003-manual-flatten-halted-reducing.md, docs/adr/ADR-008-order-status-event-provenance.md, docs/adr/ADR-012-submit-recovery-operator-release.md, docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md]
 supersedes: []
 superseded_by: null
 ---
@@ -15,7 +15,9 @@ superseded_by: null
 
 ## Summary
 
-The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are always in agent context — deliberately not one indirection away. This page holds the *why*, so the shim stays short.
+The always-on safety core lives in `CLAUDE.md` so it is always in agent context. ADR-020 through
+ADR-022 translate that core into reset vocabulary without weakening it. This page holds the *why*
+and distinguishes preserved legacy evidence from reset target semantics.
 
 ## Rules / facts
 
@@ -23,7 +25,10 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
 - Why each cluster exists:
   - **Paper-only / live-disabled (inv 1–2):** the beta's blast radius must be zero real dollars. Live paths aren't "unused"; they're absent-by-config so an agent cannot accidentally enable them.
   - **Backend as truth, thin UI (inv 3–7):** a browser client that owns state or talks to the broker is an unauditable second writer. All mutation flows through one reviewable engine.
-  - **Submitted ≠ filled; only fills move positions (inv 8–9):** the classic execution bug is counting intent as reality. Structural inability of `SUBMITTED`/`ACCEPTED` to change quantity makes the bug unrepresentable.
+  - **Submitted ≠ filled; only canonical execution facts move positions (inv 8–9):** the classic
+    execution bug is counting intent as reality. `SUBMITTED`/`ACCEPTED` cannot change quantity.
+    The reset's first-occurrence fact family is `FILL` plus broker-authoritative predecessor-linked
+    `TRADE_CORRECT`/`TRADE_BUST` revisions of fill economics; acknowledgements remain non-economic.
   - **Kill switch gates intent (inv 10):** halting must cut new risk at the front door, not race the pipeline.
   - **Quarantine over rejection (rails; ADR-001/002):** broker reality (overfills, ambiguous timeouts) must be recorded even when unwelcome — hiding it corrupts positions. Deterministic `client_order_id` makes reconciliation possible; blind resubmit makes duplicates possible.
   - **Broker-overfill truth (ADR-001):** broker order/envelope excess retains raw fill/position
@@ -87,13 +92,17 @@ The 11 invariants and safety rails live **verbatim in `CLAUDE.md`** so they are 
     current claim occurrence's persisted scope cannot authenticate any venue type or price and
     remains on the uncertainty/recovery path. The injected decision clock selects
     new session scope, and broker overfill remains ADR-001 truth rather than a correlation reject.
-  - **Append-only envelope attribution repair:** a canonical FILL is immutable and remains the sole
-    position-quantity fact. If its envelope bridge was missed, a globally deduped
+  - **Frozen legacy append-only envelope attribution repair:** in Spine v2, a canonical FILL is
+    immutable and remains the sole position-quantity fact. If its envelope bridge was missed, a
+    globally deduped
     `ENVELOPE_FILL_ATTRIBUTED` marker may apply that exact pre-existing fill to one uniquely bounded
     envelope. The marker validates fill/order/owner identity and the entire contiguous
     remaining-quantity chain, never folds position again, and conflicts rather than guessing when
     existing truth is malformed or foreign. Cadence validates direct-attributed facts too; its
-    durable tail checkpoint advances only after a clean batch and never on error.
+    durable tail checkpoint advances only after a clean batch and never on error. This paragraph is
+    regression evidence, not reset position authority. Under ADR-020/ADR-021, reset quantity follows
+    the first-occurrence canonical fact chain: `FILL` plus broker-authoritative predecessor-linked
+    `TRADE_CORRECT`/`TRADE_BUST` revisions of fill economics.
   - **Human-attested recovery release (ADR-012, proposed):** a `needs_review` recovery can leave
     quarantine only through a full-identity, evidence-bearing, terminal-state attestation whose
     cumulative quantity exactly matches canonical event truth for that broker leg. Missing fills

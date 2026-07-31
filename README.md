@@ -1,5 +1,13 @@
 # Alpaca Clean-Sheet CAPI Option 2.5
 
+> **Architecture reset M0 (2026-07-31):** the checked-in application described below is frozen
+> read-only evidence. Accepted reset target authority is
+> [`ADR-020`](docs/adr/ADR-020-current-state-execution-kernel.md),
+> [`ADR-021`](docs/adr/ADR-021-position-protection-liquidity-execution.md), and
+> [`ADR-022`](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md), with acceptance recorded in
+> the [ratification index](docs/adr/ARCH-RESET-2026-07-RATIFICATION.md). M0 changes no runtime
+> behavior; `RESET-WO-01` remains staged and inactive.
+
 A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit
 (a disposable UI client) + local SQLite persistence.
@@ -116,7 +124,8 @@ docs/                    canonical planning + architecture docs
 
 ## Prerequisites
 
-- Python 3.12+ (developed on 3.14).
+- Python 3.11 and 3.12 are supported; Python 3.12 is the development default. Production code may
+  not require 3.12-only syntax.
 - Install dependencies:
 
   ```bash

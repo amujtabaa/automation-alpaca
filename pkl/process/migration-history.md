@@ -4,9 +4,9 @@ title: Spine v2 Migration — History and Retired Process
 status: active
 authority: medium
 owner: Ameen
-last_verified: 2026-07-19
+last_verified: 2026-07-31
 tags: [migration, history, retired-process]
-source_refs: [docs/MIGRATION_MATRIX.md, docs/REARCHITECTURE_ROADMAP.md, docs/adr/ADR-004-event-log-truth-migration.md]
+source_refs: [docs/MIGRATION_MATRIX.md, docs/REARCHITECTURE_ROADMAP.md, docs/adr/ADR-004-event-log-truth-migration.md, docs/adr/ADR-020-current-state-execution-kernel.md]
 supersedes: []
 superseded_by: null
 ---
@@ -15,7 +15,9 @@ superseded_by: null
 
 ## Summary
 
-The salvage → re-architect → phased-migration program that produced Spine v2 is complete and integrated (per project owner, 2026-07). This page records what the migration-era process was and what its completion means, so the always-on contract no longer carries it.
+The salvage → re-architect → phased-migration program produced the current Spine v2 application.
+That generation is now frozen read-only evidence for the accepted architecture reset. This page
+records what the migration-era process and implementation proved; it is not reset target authority.
 
 ## Rules / facts
 
@@ -26,7 +28,10 @@ The salvage → re-architect → phased-migration program that produced Spine v2
   - The mandated 7-document read order for spine work; work orders now name their own context packets.
 - **Independently verified (WO-0001, 2026-07-08 — verdict NOT-TERMINAL, narrow):** all 16 `docs/MIGRATION_MATRIX.md` flows were checked against code with the full suite GREEN (1809 collected / 1804 passed / 5 skipped / 0 failed). Every safety-critical truth-routing flow (fills, dedup, overfill, timeout, manual flatten, emergency reduce, kill/TradingState, reconciliation) was `event_truth` with dual-store parity except the then-deferred order-status / primary-spawn read flip. **WO-0007b closed that status deferral**, ADR-008 was Accepted, and REV-0003 was RESOLVED. **WO-0113 closes the remaining fill-progress deferral:** both stores surface `max(co-written filled_quantity, capped canonical FILL projection)`, preserving crash/backfill compatibility while raw FILL events remain durable truth and the order scalar cannot exceed order quantity. No residual truth-routing deferral remains. See the change log below.
 - Migration docs (`MIGRATION_MATRIX.md`, `REARCHITECTURE_ROADMAP.md`, phase prompts) remain in `docs/` as historical evidence; stale `IMPLEMENTATION_PROMPT_*` files go to `docs/archive/legacy_implementation_prompts/` per the stale-artifact guide. Never delete decision logs, ADRs, tests, or source without explicit human confirmation.
-- What the migration permanently left behind: event-log-as-truth (ADR-004), the layer seams and single-writer rule, dual-store parity testing, and the quarantine decisions (ADR-001/002/003).
+- What the reset preserves: layer seams, one writer, deterministic evidence, and the quarantine
+  decisions in ADR-001/002/003. ADR-020 partially supersedes universal event-log operational truth,
+  live full-history folding, and dual-store business parity; replay and the existing dual-store
+  corpus remain forensic/regression evidence.
 
 ## Rationale
 
@@ -53,3 +58,5 @@ Carrying dead process in the always-on file is how important rules get skimmed p
   known deferral; WO-0113 later closed it. `last_verified` was refreshed against those documents.
 - 2026-07-08: **WO-0007b — the status read-flip is DONE (human sign-off given).** The order-status graph was completed in the log (`SUBMIT_RELEASED` release edge + `CANCEL_PENDING` entry — Stage A) so a latest-event-wins projector (`app/events/projectors.py::project_order_status`) can reconstruct every live state; `get_order`/`list_orders` in both stores now derive **status** from that projection (proven: a hand-corrupted `orders.status` column does not surface), with an init backfill reconstructing pre-eventing orders. At that commit, `filled_quantity` remained column-sourced and the ADR/review gates remained open; both caveats were later superseded as recorded above and below. Evidence: `work/completed/keep/WO-0007b-*/`, full suite green, adversarial-verify pass.
 - 2026-07-19: **WO-0113 — the remaining fill-progress deferral is closed.** In-memory and SQLite order reads now surface the maximum of the co-written compatibility column and the canonical FILL-event projection capped at order quantity. Raw FILL events preserve exact venue economics, including overfill, while the order scalar remains bounded; the max policy preserves crash-window and pre-backfill progress. Priced fills inferred from broker reconciliation are `BROKER_AUTHORITATIVE` with `RECONCILIATION` ingress. Dual-store, restart, mutation, conformance, and full-suite evidence is retained with WO-0113. `last_verified` refreshed.
+- 2026-07-31: M0 marked the entire Spine v2 generation as frozen evidence and recorded ADR-020's
+  current-state/audit separation. Historical completion evidence was preserved, not rerun.

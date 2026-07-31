@@ -7,6 +7,12 @@
 **Prerequisites:** accepted D-HOST-1 deployment/auth ADR and independent acceptance review of this
 ADR's final text.
 
+> **Architecture-reset disposition (2026-07-31): deferred.**
+> [ADR-022](ADR-022-reset-beta-scope-cutover-governance.md) excludes public ingress and disables
+> Signal Seat for the reset beta. This proposal remains non-authoritative and grants no endpoint,
+> deployment, credential, schema, or broker authority. See the
+> [reset ratification index](ARCH-RESET-2026-07-RATIFICATION.md).
+
 > This seed records D-SIG-9 and the operator's intent to pursue TradingView/webhook producers
 > relatively soon. It does not authorize a public endpoint, deployment, dependency, credential
 > store, schema, or order path.

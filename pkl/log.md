@@ -31,3 +31,9 @@
   F5(a)/(b) remain optional notes. The full local gate is green (3873 collected; 3861 passed,
   11 skipped, 1 xfailed; 93.46% branch coverage; static/oracle/hardening/scaling/AI-OS green).
   PR #9 remains unmerged pending exact-head CI.
+
+- 2026-07-31: WO-0144 M0 landed the exact hash-ratified architecture-reset packet and byte-identical
+  ADR-020 through ADR-022 bodies, recorded acceptance in a separate index, and refreshed legacy/
+  reset authority boundaries in ADR, PKL, safety-core, and navigation documentation. No code, test,
+  schema, database, broker, or trading execution occurred. The local documentation commit remains
+  pending fresh independent review; `RESET-WO-01` is staged and inactive.

@@ -12,6 +12,12 @@ fresh master-side decision after amendments A-1..A-4, D-SIG-1..9 reconciliation,
 activated only in their required sequence; the fresh `signal_records` schema approval remains
 deferred until R4 presents current DDL.
 
+> **Architecture-reset disposition (2026-07-31).** The untrusted-advisor principle is preserved,
+> but [ADR-022](ADR-022-reset-beta-scope-cutover-governance.md) disables and unmounts Signal Seat
+> for the reset beta. Existing Signal Seat/R6 implementation is read-only evidence, not a reset
+> dependency or activation path. Any reintroduction remains separately gated. See the
+> [reset ratification index](ARCH-RESET-2026-07-RATIFICATION.md).
+
 > **Archive provenance only.** The amendment basis is
 > `origin/archive/claude-wo-0001-install-checks-2x5ys8`. References below to archive
 > archive REV-0024/0025 describe evidence at that ref; those packet ids are not ported, do not occupy a

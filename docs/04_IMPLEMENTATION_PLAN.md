@@ -1,5 +1,10 @@
 # Implementation Plan — Alpaca Clean-Sheet CAPI Option 2.5
 
+> **Historical plan — not current authorization.** The accepted reset sequence is
+> [`work/queue/ARCH-RESET-2026-07/06-roadmap.md`](../work/queue/ARCH-RESET-2026-07/06-roadmap.md).
+> `RESET-WO-01` remains staged, unnumbered, and inactive pending accepted M0 review and Ameen's
+> later explicit activation.
+
 The build sequence, with persistence promoted into the foundation rather than
 deferred. Each phase ends with passing tests and preserved safety invariants
 (see `05_REVIEW_CHECKLIST.md`).

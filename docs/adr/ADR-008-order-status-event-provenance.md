@@ -4,6 +4,15 @@
 
 **Accepted** (2026-07-09, by Ameen).
 
+**Architecture-reset disposition (2026-07-31): partially superseded.** Provenance, legal transition
+rules, terminal non-regression, immutable execution-fact identity, and tripwire obligations remain
+binding. Projector/event-log-as-live-authority mechanics are superseded by
+[ADR-020](ADR-020-current-state-execution-kernel.md); immutable fill/correction/bust and
+acceptance/closure semantics are governed by
+[ADR-021](ADR-021-position-protection-liquidity-execution.md). See the
+[reset ratification index](ARCH-RESET-2026-07-RATIFICATION.md). The current implementation remains
+read-only evidence until separately authorized reset work replaces it.
+
 History: drafted 2026-07-08 by WO-0006 from the WO-0007a audit + WO-0009 implementation; amended
 2026-07-09 by WO-0013 to cover the `SUBMIT_RELEASED` / `CANCEL_PENDING` edges (per the REV-0001
 independent review F-003); re-clarified 2026-07-09 per the **REV-0003** independent review F-001 to

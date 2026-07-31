@@ -1,8 +1,11 @@
-# CLAUDE.md — Alpaca Spine v2 (post-migration)
+# CLAUDE.md — Automation Alpaca architecture reset lane
 
 Repo-level contract for any AI coding agent. **Safety and correctness outrank velocity.**
 
-> Project: browser-operated, paper-first Alpaca trading platform on the Spine v2 execution architecture. Migration to Spine v2 is complete; current posture is **cleanup → full-repo audit → beta roadmap**.
+> Project: browser-operated, paper-first Alpaca trading platform. On the reset branch, the existing
+> Spine v2 implementation is frozen read-only evidence; the accepted target is ADR-020 through
+> ADR-022 and `work/queue/ARCH-RESET-2026-07/`. M0 changes documentation only and activates no
+> implementation, schema, database, broker, or trading behavior.
 
 <!-- AI-PROJECT-OS:BEGIN -->
 ## Operating system
@@ -32,7 +35,9 @@ No work order? Ask for one or draft one for approval (`.ai-os/templates/work-ord
 6. The UI owns no strategy/risk/order/fill/position state.
 7. All important logic lives in the backend.
 8. Submitted does **not** equal filled.
-9. Only fill events change position quantity.
+9. Only first-occurrence canonical execution facts change position quantity: `FILL`, plus
+   broker-authoritative predecessor-linked `TRADE_CORRECT` / `TRADE_BUST` revisions of fill
+   economics. Acknowledgements and status never change quantity.
 10. Kill switch blocks new order intent.
 11. Browser-first workflow.
 
@@ -50,14 +55,24 @@ Plus spine invariants **INV-1…INV-9** (`docs/SPINE_EXECUTION_ARCHITECTURE_v2.m
 ## Boundaries and stack
 
 - Layers: `ui → api → facade → engine → adapter/store`. Imports flow only through approved seams; `alpaca-py` only inside the adapter; Streamlit imports only the typed API client.
-- Single writer: only the Execution Engine mutates order/fill/position state; positions derive only from deduped fill events; `SUBMITTED`/`ACCEPTED` structurally cannot change quantity.
-- Stack pinned: Python 3.12, FastAPI, Streamlit, SQLite + in-memory. No React/Dash/other brokers. New dependency ⇒ ADR first.
+- Single writer: only the sequenced engine mutates order/fill/position state; positions derive only
+  from deduped canonical execution facts (`FILL` plus valid predecessor-linked
+  `TRADE_CORRECT`/`TRADE_BUST` revisions); `SUBMITTED`/`ACCEPTED` structurally cannot change
+  quantity.
+- Reset runtime contract: Python 3.11 and 3.12 are supported; Python 3.12 is the development
+  default; 3.12-only production syntax is prohibited. FastAPI remains backend truth, Streamlit
+  remains thin, `alpaca-py` remains adapter-only, and SQLite is the sole reset-beta production
+  persistence implementation. The legacy in-memory store is evidence/test infrastructure, not a
+  second reset trading engine. No React/Dash/other brokers. New dependency ⇒ ADR first.
 - Details, rationale, and current facts: `pkl/architecture/` and `docs/adr/`.
 
 ## Testing and CI
 
 - Engine logic: injected clock (no bare `datetime.now()`/`time.time()`), no unseeded randomness, deterministic IDs/queues.
-- State/order/fill/position/reconciliation/kill-switch changes: test **both** in-memory and SQLite paths, expand tests in the same change.
+- Legacy-state fixes remain subject to their existing in-memory/SQLite parity gates while that code
+  is preserved as evidence. Reset work follows ADR-020: one pure reference model plus a thin SQLite
+  repository harness, never a second hand-coded in-memory trading engine. Every separately
+  activated work order must define its exact test boundary.
 - Gate: `ruff` + `mypy` + `pytest` (+ import-linter, replay/parity verifier where configured). Formatting authority is **ruff** — never Prettier/Biome on Python. (`mypy` is a baseline-and-ratchet gate over `app/` per ADR-007 — grandfather punch-list only shrinks; see `pkl/architecture/testing-model.md`.)
 
 ## Review
@@ -75,4 +90,9 @@ The kit in `.claude/` provides skill activation, session backups, session types,
 
 ## Conflict rule
 
-Docs/code/ADRs disagree → don't silently pick one. Code is evidence of behavior; accepted ADRs + Spine v2 spec are the target. If the conflict touches a safety surface, **stop and record the decision gap** before coding. Older `IMPLEMENTATION_PROMPT_*` files are historical unless a human reactivates them.
+Docs/code/ADRs disagree → don't silently pick one. Code and Spine v2 documents are evidence of the
+legacy behavior. On the reset branch, accepted ADR-020 through ADR-022 plus the exact canonical
+packet are target authority; preserved clauses from older accepted ADRs remain binding through the
+clause migration matrix. If a conflict touches a safety surface, **stop and record the decision
+gap** before coding. Older `IMPLEMENTATION_PROMPT_*` files are historical unless a human
+reactivates them.

@@ -1,5 +1,11 @@
 # Start Here — Alpaca Clean-Sheet CAPI Option 2.5
 
+> **Architecture reset M0:** this document describes the frozen legacy generation unless a section
+> explicitly says otherwise. Start current reset work at
+> [`ARCH-RESET-2026-07-RATIFICATION.md`](adr/ARCH-RESET-2026-07-RATIFICATION.md) and the canonical
+> packet at [`work/queue/ARCH-RESET-2026-07/`](../work/queue/ARCH-RESET-2026-07/). No reset
+> implementation is active.
+
 This folder is the Claude Project knowledge base for a clean-sheet, paper-first
 automated trading system. It is a **planning, architecture, and review**
 workspace — not the implementation environment. Code is written later in Codex
@@ -42,7 +48,8 @@ A browser-operated, paper-first automated trading system using:
 ### Environment setup
 
 For a fresh clone, run `python harness/bootstrap.py`. It creates or refreshes the ignored
-`.venv` with Python 3.12, installs the dependency set pinned by `constraints.txt`, and runs
+`.venv` with the Python 3.12 development default (3.11 is also supported), installs the dependency
+set pinned by `constraints.txt`, and runs
 `ruff check .`, `mypy app/`, and `pytest -q --collect-only`. The supplied devcontainer runs the
 same command after creation. The bootstrap does not read credentials, state files, or databases;
 with the default `BROKER_ADAPTER=auto`, the application remains on its mock adapter until an

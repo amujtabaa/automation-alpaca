@@ -1,5 +1,12 @@
 # Invariants Registry — Alpaca Clean-Sheet CAPI Option 2.5
 
+> **Architecture reset M0:** existing invariant IDs and their pins remain regression evidence and
+> are not deleted or weakened. The accepted clause translation is
+> [`12-proposed-adr-set.md`](../work/queue/ARCH-RESET-2026-07/12-proposed-adr-set.md). For reset
+> vocabulary, quantity changes only through first-occurrence canonical `FILL` facts and
+> predecessor-linked broker-authoritative `TRADE_CORRECT`/`TRADE_BUST` revisions; acknowledgements
+> and status remain non-economic. New reset invariants arrive only with separately activated work.
+
 This is the **independent oracle** for review: what the system must always be
 true, stated separately from any implementer's tests. `REVIEW_LOOP_REFINEMENT.md`
 (the Phase-7 X-001..X-005 remediation retro) named the root cause of three
