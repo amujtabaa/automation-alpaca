@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
 import app.execution_core.venue as venue_module
 from app.execution_core.fills import (
+    BrokerFillFact,
     ExecutionFactKey,
     ExecutionScope,
     ExecutionSide,
@@ -36,7 +38,11 @@ from app.execution_core.identity import (
     VenueObservationId,
 )
 from app.execution_core.position import ExecutionSnapshot
-from app.execution_core.recovery import IngestHumanAttestedFill, ReleaseVenueLeg
+from app.execution_core.recovery import (
+    IngestHumanAttestedFill,
+    RecordBrokerFillEvidence,
+    ReleaseVenueLeg,
+)
 from app.execution_core.values import (
     PriceScale,
     PriceUnits,
@@ -245,6 +251,48 @@ def _ingest(
             fact=fact,
         ),
     )
+
+
+def _broker_successor(
+    *,
+    input_suffix: str,
+    closure_id: ClosureId,
+) -> RecordBrokerFillEvidence:
+    return RecordBrokerFillEvidence(
+        input_id=VenueInputId(f"broker-successor-{input_suffix}"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_cumulative_quantity=Quantity(4),
+        resulting_cumulative_quantity=Quantity(6),
+        fact=BrokerFillFact(
+            key=ExecutionFactKey(
+                broker=BROKER,
+                environment=ENVIRONMENT,
+                account=ACCOUNT,
+                source_event_id=SourceEventId(
+                    f"broker-successor-source-{input_suffix}"
+                ),
+            ),
+            scope=_execution_scope(LEG_A),
+            root_fill_id=RootFillId(f"broker-successor-root-{input_suffix}"),
+            quantity=Quantity(2),
+            price=_price(),
+        ),
+        evidence_digest=b"\x72" * 32,
+        closure_id=closure_id,
+        evidence_reference=EvidenceReference(
+            f"broker-successor-evidence-{input_suffix}"
+        ),
+    )
+
+
+def _audit_history_trap(name: str) -> property:
+    """Mutation tripwire: live reducers must use indexes, not slow audit views."""
+
+    def fail(_book: VenueRecoveryBook) -> tuple[object, ...]:
+        raise AssertionError(f"{name} audit history touched on a live transition")
+
+    return property(fail)
 
 
 def _released_state(
@@ -475,3 +523,85 @@ def test_exact_semantic_human_replay_after_release_remains_zero_economic() -> No
     assert replayed.quantity_delta == 0
     assert replayed.execution == execution
     assert replayed.book.coverage_for_leg(LEG_A) == book.coverage_for_leg(LEG_A)
+
+
+@pytest.mark.parametrize("audit_name", ["closure_history", "input_records"])
+def test_ordinary_transition_does_not_touch_audit_history(audit_name: str) -> None:
+    book, execution, fact, _ = _released_state()
+
+    with patch.object(
+        VenueRecoveryBook,
+        audit_name,
+        _audit_history_trap(audit_name),
+    ):
+        replayed = _ingest(
+            book,
+            execution,
+            fact,
+            f"bounded-ordinary-replay-{audit_name}",
+        )
+
+    assert replayed.disposition is VenueRecoveryDisposition.APPLIED
+    assert replayed.quantity_delta == 0
+    assert replayed.execution == execution
+
+
+def test_terminal_successor_append_uses_indexed_head_without_audit_history() -> None:
+    book, execution, _, release = _released_state()
+    successor_id = ClosureId("indexed-terminal-successor")
+
+    with patch.object(
+        VenueRecoveryBook,
+        "closure_history",
+        _audit_history_trap("closure_history"),
+    ):
+        successor = apply_venue_recovery_input(
+            book,
+            execution,
+            _broker_successor(
+                input_suffix="indexed-append",
+                closure_id=successor_id,
+            ),
+        )
+
+    assert successor.disposition is VenueRecoveryDisposition.APPLIED
+    head = successor.book.closure_head(LEG_A)
+    assert head is not None
+    assert head.closure_id == successor_id
+    assert head.ordinal == 2
+    assert head.predecessor_closure_id == release.closure_id
+
+
+def test_terminal_successor_duplicate_uses_index_without_audit_history() -> None:
+    book, execution, _, release = _released_state()
+
+    with (
+        patch.object(
+            VenueRecoveryBook,
+            "closure_history",
+            _audit_history_trap("closure_history"),
+        ),
+        pytest.raises(ValueError, match="closure identity already exists"),
+    ):
+        apply_venue_recovery_input(
+            book,
+            execution,
+            _broker_successor(
+                input_suffix="indexed-duplicate",
+                closure_id=release.closure_id,
+            ),
+        )
+
+
+def test_explicit_slow_audit_views_materialize_terminal_and_input_history() -> None:
+    book, _, _, release = _released_state()
+
+    closure_audit = tuple(book.closure_history)
+    input_audit = tuple(book.input_records)
+
+    assert [closure.closure_id for closure in closure_audit] == [release.closure_id]
+    assert any(
+        isinstance(record.item, ReleaseVenueLeg)
+        and record.input_id == release.input_id
+        for record in input_audit
+    )
