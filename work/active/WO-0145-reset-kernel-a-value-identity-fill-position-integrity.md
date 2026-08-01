@@ -413,10 +413,35 @@ fable_fix:
   symptom: "Incoherent transitions could lose integrity evidence; rejected observations did not reserve root identity; review also exposed tail-proof and proof-quality gaps."
   root_cause: "The fail-closed path neither committed all recoverable flags nor detected changed replay; SeenFactIndex lacked a committed observed-root map; inactive tail proof was not fully cleared or rejected."
   evidence: "Independent review reproduced both P0s and the third-round selected RED gate failed at all 12 intended seams."
-  fix: "Pending production remediation after the committed RED checkpoint."
+  fix: "Added a persistent commitment-bound observed-root index and hydration closure; made incoherent integrity durable and changed-replay-aware; and cleared or rejected inactive current-tail proof."
   regression_test: "The 22-case third-round selection documented above."
-  red_green_verified: false
+  red_green_verified: true
   attempt: 3
+```
+
+The minimum third remediation made the unchanged selected gate pass all 22 cases with fresh
+basetemp `.pytest_tmp_wo0145_third_green_1`. The complete focused suite then passed all 153 tests
+with fresh basetemp `.pytest_tmp_wo0145_third_focused_1`. Focused Ruff check, Ruff format check, and
+mypy over all five isolated source files also passed. The observed-root lookup and update remain
+history-independent persistent-map operations; exact account scope is part of the key. Hydration
+replays and commitment-compares the reservation map, and fail-closed transitions commit recovered
+and newly raised flags into the immutable position floor. Pending outputs now carry no active
+current-tail proof, while historical non-tail head metadata remains untouched.
+
+```yaml
+evidence:
+  phase: GREEN
+  command: "The exact 22-case third-round node selection above with --basetemp .pytest_tmp_wo0145_third_green_1"
+  result: PASS
+  decisive_output: "22 passed."
+```
+
+```yaml
+evidence:
+  phase: GREEN
+  command: ".\\.venv\\Scripts\\python.exe -m pytest -q -p no:cacheprovider tests/execution_core/test_values.py tests/execution_core/test_fill_position.py tests/execution_core/test_fill_position_stateful.py tests/execution_core/test_import_boundary.py --basetemp .pytest_tmp_wo0145_third_focused_1"
+  result: PASS
+  decisive_output: "153 passed."
 ```
 
 ## Review, stop, and close-out
@@ -435,8 +460,8 @@ fable_done:
   task: "WO-0145 reset kernel A: value identity and fill-position integrity"
   done_when_results:
     - item: "All focused kernel behavior passes on the exact current tree."
-      status: NOT_MET
-      evidence: "The third-review RED gate intentionally exposes unresolved production defects."
+      status: MET
+      evidence: "The unchanged third-round selection passed 22 tests and the full focused suite passed 153 tests."
     - item: "Every required mutation pin is demonstrated failure-capable and restored green with durable evidence."
       status: NOT_MET
       evidence: "The new pins remain to run live, and the earlier a-l record must be made exactly reproducible."

@@ -750,19 +750,27 @@ def _incoherent_snapshot_transition(
                 classification=FirstObservationClassification.RECONCILIATION_REQUIRED,
             )
         )
-    trusted_integrity = integrity
-    binding = position.binding
-    if (
-        binding is not None
-        and root_heads.binding is binding
-        and seen_facts.binding is binding
+    trusted_integrity = integrity | position.integrity_floor
+    for binding in (
+        position.binding,
+        root_heads.binding,
+        seen_facts.binding,
     ):
-        trusted_integrity |= PositionIntegrity(binding.integrity_bits)
+        if binding is not None:
+            trusted_integrity |= PositionIntegrity(binding.integrity_bits)
+    if observation is not None and observation.fact != fact:
+        trusted_integrity |= PositionIntegrity.EXECUTION_FACT_CONFLICT
+    next_integrity = (
+        trusted_integrity | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    )
+    next_position = replace(
+        position,
+        integrity_floor=position.integrity_floor | next_integrity,
+        _binding=None,
+    )
     return ExecutionTransition(
-        position=position,
-        integrity=(
-            trusted_integrity | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
-        ),
+        position=next_position,
+        integrity=next_integrity,
         root_heads=root_heads,
         seen_facts=next_seen,
         quantity_delta=0,
@@ -791,6 +799,7 @@ def _apply_root_fill(
     if (
         fact.scope.position_scope != position.scope
         or root_heads.get(fact.root_key) is not None
+        or seen_facts.contains_root(fact.root_key)
     ):
         return _reconciliation_transition(
             position, integrity, root_heads, seen_facts, fact
@@ -851,7 +860,9 @@ def _apply_root_fill(
         kind=fact.kind,
         quantity=fact.quantity,
         price=fact.price,
-        prefix_heads_commitment=prefix_heads_commitment,
+        prefix_heads_commitment=(
+            prefix_heads_commitment if next_tail_input is not None else b""
+        ),
         prefix_proof_commitment=(
             next_tail_input.commitment if next_tail_input is not None else b""
         ),
@@ -1015,10 +1026,27 @@ def _apply_revision(
         kind=fact.kind,
         quantity=revised_quantity,
         price=revised_price,
-        prefix_heads_commitment=head.prefix_heads_commitment,
-        prefix_proof_commitment=head.prefix_proof_commitment,
+        prefix_heads_commitment=(
+            head.prefix_heads_commitment if next_tail_input is not None else b""
+        ),
+        prefix_proof_commitment=(
+            head.prefix_proof_commitment if next_tail_input is not None else b""
+        ),
     )
     next_roots = root_heads.replace(next_head)
+    if pending and position.root_count:
+        tail_root_key = position._root_fill_sequence.get(position.root_count - 1)
+        tail_head = next_roots.get(tail_root_key)
+        if tail_head is None:
+            raise RuntimeError("position tail root is missing from root index")
+        if tail_head.prefix_heads_commitment or tail_head.prefix_proof_commitment:
+            next_roots = next_roots.replace(
+                replace(
+                    tail_head,
+                    prefix_heads_commitment=b"",
+                    prefix_proof_commitment=b"",
+                )
+            )
     next_position = PositionState(
         _scope=position.scope,
         raw_quantity=next_raw_quantity,
@@ -1148,7 +1176,10 @@ def _replay_hydration_snapshot(
             root_heads=transition.root_heads,
             seen_facts=transition.seen_facts,
         )
-    if replayed.seen_facts.entries != seen_facts.entries:
+    if (
+        replayed.seen_facts.entries != seen_facts.entries
+        or replayed.seen_facts.commitment != seen_facts.commitment
+    ):
         raise ValueError("seen-fact replay did not close exactly")
     return replayed
 
@@ -1197,6 +1228,13 @@ def _require_hydration_match(
 
     tail_input = position.tail_fold_input
     if tail_input is None:
+        if supplied_heads:
+            supplied_tail = supplied_heads[-1]
+            if (
+                supplied_tail.prefix_heads_commitment
+                or supplied_tail.prefix_proof_commitment
+            ):
+                raise ValueError("tail proof must be fully absent")
         return
     expected_tail_input = replayed_position.tail_fold_input
     if (

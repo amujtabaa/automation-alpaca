@@ -1021,6 +1021,7 @@ class SeenFactIndex:
 
     _by_key: _PersistentKeyMap[SeenFact]
     _order: _PersistentSequence[ExecutionFactKey]
+    _observed_roots: _PersistentKeyMap[RootFillKey]
     _binding: _SnapshotBinding | None
 
     def __init__(self, entries: tuple[SeenFact, ...] = ()) -> None:
@@ -1031,6 +1032,7 @@ class SeenFactIndex:
             current = current.add(observation)
         object.__setattr__(self, "_by_key", current._by_key)
         object.__setattr__(self, "_order", current._order)
+        object.__setattr__(self, "_observed_roots", current._observed_roots)
         object.__setattr__(self, "_binding", None)
 
     @classmethod
@@ -1039,11 +1041,13 @@ class SeenFactIndex:
         *,
         by_key: _PersistentKeyMap[SeenFact],
         order: _PersistentSequence[ExecutionFactKey],
+        observed_roots: _PersistentKeyMap[RootFillKey],
         binding: _SnapshotBinding | None = None,
     ) -> SeenFactIndex:
         result = object.__new__(cls)
         object.__setattr__(result, "_by_key", by_key)
         object.__setattr__(result, "_order", order)
+        object.__setattr__(result, "_observed_roots", observed_roots)
         object.__setattr__(result, "_binding", binding)
         return result
 
@@ -1052,6 +1056,7 @@ class SeenFactIndex:
         return cls._from_parts(
             by_key=_PersistentKeyMap.empty(),
             order=_PersistentSequence.empty(),
+            observed_roots=_PersistentKeyMap.empty(),
         )
 
     @property
@@ -1061,9 +1066,10 @@ class SeenFactIndex:
     @property
     def commitment(self) -> bytes:
         return _commit_parts(
-            b"execution-core/seen-fact-index/v1",
+            b"execution-core/seen-fact-index/v2",
             self._by_key.commitment,
             self._order.commitment,
+            self._observed_roots.commitment,
         )
 
     @property
@@ -1087,10 +1093,25 @@ class SeenFactIndex:
         _require_type("key", key, ExecutionFactKey)
         return self._by_key.get(_encode_execution_fact_key(key))
 
+    def contains_root(self, root_key: RootFillKey) -> bool:
+        """Return whether any first observation reserved this exact root key."""
+
+        _require_type("root_key", root_key, RootFillKey)
+        return self._observed_roots.get(_encode_root_fill_key(root_key)) is not None
+
     def add(self, observation: SeenFact) -> SeenFactIndex:
         _require_type("observation", observation, SeenFact)
         if self.get(observation.fact.key) is not None:
             raise ValueError("a first observation for this event key already exists")
+        root_key = observation.fact.root_key
+        encoded_root = _encode_root_fill_key(root_key)
+        observed_roots = self._observed_roots
+        if observed_roots.get(encoded_root) is None:
+            observed_roots = observed_roots.insert_new(
+                encoded_root,
+                root_key,
+                _commit_root_fill_key(root_key),
+            )
         return type(self)._from_parts(
             by_key=self._by_key.insert_new(
                 _encode_execution_fact_key(observation.fact.key),
@@ -1104,6 +1125,7 @@ class SeenFactIndex:
                     _encode_execution_fact_key(observation.fact.key),
                 ),
             ),
+            observed_roots=observed_roots,
         )
 
     def _with_binding(self, binding: _SnapshotBinding) -> SeenFactIndex:
@@ -1111,10 +1133,14 @@ class SeenFactIndex:
         return type(self)._from_parts(
             by_key=self._by_key,
             order=self._order,
+            observed_roots=self._observed_roots,
             binding=binding,
         )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SeenFactIndex):
             return NotImplemented
-        return self.entries == other.entries
+        return (
+            self.entries == other.entries
+            and self._observed_roots == other._observed_roots
+        )
