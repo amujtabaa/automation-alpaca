@@ -365,6 +365,35 @@ def test_execution_fact_key_is_the_exact_four_part_dedupe_identity() -> None:
     assert len({first, *changed_parts}) == 5
 
 
+def test_execution_fact_key_rejects_cross_typed_identity_components() -> None:
+    valid: dict[str, object] = {
+        "broker": BrokerId("alpaca"),
+        "environment": EnvironmentId("paper"),
+        "account": AccountId("account-1"),
+        "source_event_id": SourceEventId("event-1"),
+    }
+    invalid_components = (
+        ("broker", EnvironmentId("paper"), "broker must be BrokerId"),
+        (
+            "environment",
+            BrokerId("alpaca"),
+            "environment must be EnvironmentId",
+        ),
+        ("account", SymbolId("AAPL"), "account must be AccountId"),
+        (
+            "source_event_id",
+            RootFillId("root-1"),
+            "source event must be SourceEventId",
+        ),
+    )
+
+    for field_name, invalid_value, message in invalid_components:
+        candidate = dict(valid)
+        candidate[field_name] = invalid_value
+        with pytest.raises(TypeError, match=message):
+            ExecutionFactKey(**candidate)  # type: ignore[arg-type]
+
+
 def test_root_fill_key_is_exact_broker_environment_account_and_root() -> None:
     first = RootFillKey(
         BrokerId("alpaca"),
@@ -409,6 +438,35 @@ def test_root_fill_key_is_exact_broker_environment_account_and_root() -> None:
     assert hash(first) == hash(exact_retry)
     assert all(candidate != first for candidate in changed_parts)
     assert len({first, exact_retry, *changed_parts}) == 5
+
+
+def test_root_fill_key_rejects_cross_typed_identity_components() -> None:
+    valid: dict[str, object] = {
+        "broker": BrokerId("alpaca"),
+        "environment": EnvironmentId("paper"),
+        "account": AccountId("account-1"),
+        "root_fill_id": RootFillId("root-1"),
+    }
+    invalid_components = (
+        ("broker", EnvironmentId("paper"), "broker must be BrokerId"),
+        (
+            "environment",
+            BrokerId("alpaca"),
+            "environment must be EnvironmentId",
+        ),
+        ("account", SymbolId("AAPL"), "account must be AccountId"),
+        (
+            "root_fill_id",
+            SourceEventId("event-1"),
+            "root fill must be RootFillId",
+        ),
+    )
+
+    for field_name, invalid_value, message in invalid_components:
+        candidate = dict(valid)
+        candidate[field_name] = invalid_value
+        with pytest.raises(TypeError, match=message):
+            RootFillKey(**candidate)  # type: ignore[arg-type]
 
 
 def test_execution_scope_is_exact_typed_and_complete() -> None:

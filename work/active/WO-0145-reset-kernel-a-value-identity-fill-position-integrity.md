@@ -29,10 +29,13 @@ tests, in-scope fixes,
 branch CI/review preparation, and eventual close-out. It does not activate RESET-WO-02 or later work.
 
 Credentials are unavailable. Verification must force `BROKER_ADAPTER=mock`. No credential discovery
-or use, Alpaca Paper call, account activity, broker I/O, persistence/schema/SQL/DDL/database work,
+or use, Alpaca Paper call, account activity, broker I/O, persistent application-database change,
 runtime wiring, legacy deletion/cleanup, or merge is authorized. Future Paper use requires explicit
-credential, account, and activity authorization. The prohibited R1 DDL execution remains inadmissible
-and supplies no design, validity, or test evidence here.
+credential, account, and activity authorization. A later explicit re-gate authorizes only the existing
+R2 and full-coverage suites, including SQL/DDL performed by existing fixtures against disposable
+test-only SQLite databases, plus branch push for unchanged Python 3.11/3.12 CI and WO-0145
+evidence/close-out. The prohibited R1 DDL execution remains inadmissible and supplies no design,
+validity, test, or acceptance evidence here.
 
 ## Fable gate
 
@@ -50,8 +53,8 @@ fable_gate:
       status: VERIFIED
       evidence: "The isolated execution_core and import-boundary tests exercise the pure kernel; authorized pytest filesystem, source-read, basetemp, and subprocess activity is disclosed separately."
     - claim: "The exact final change will pass the database-bearing R2 and full-coverage gates."
-      status: UNVERIFIED
-      evidence: "Static inspection established that those commands instantiate SQLite, which remains excluded."
+      status: VERIFIED
+      evidence: "After explicit test-database authorization, R2 passed 61/61 and the full suite passed 4,767 tests at 93.184302% branch coverage with BROKER_ADAPTER=mock."
     - claim: "The exact final change will pass Python 3.11 and Python 3.12 branch CI."
       status: UNVERIFIED
       evidence: "Python 3.11 is unavailable locally and the exact final head has not been pushed."
@@ -62,7 +65,7 @@ fable_gate:
     - "Run SQLite-bearing tests or branch CI now — rejected pending separate explicit authorization."
   out_of_scope:
     - "Broker calls, credentials, account activity, or Alpaca Paper activity"
-    - "Persistence, schema, SQL, DDL, database engines, migrations, or fixtures that instantiate a database"
+    - "Persistent application databases, schema/migration changes, or database execution outside the explicitly authorized existing disposable test fixtures"
     - "Runtime wiring, adapters, serving, UI, status, retry, release, or protection behavior"
     - "Legacy deletion or cleanup"
     - "Merge or activation of RESET-WO-02 or later work"
@@ -791,6 +794,68 @@ unresolved P0/P1. That pass did not execute the 69 mutations independently and d
 database-bearing, Python 3.11/dual-version CI, broker, runtime, or network gates; those limits remain
 explicit rather than being treated as acceptance evidence.
 
+### Authorized database-test and coverage re-gate - 2026-08-01
+
+Ameen explicitly authorized WO-0145 to run the existing R2 conformance and full branch-coverage
+suites with `BROKER_ADAPTER=mock`, including SQL/DDL executed by existing fixtures only against
+disposable test SQLite databases. The same re-gate authorizes in-scope remediation and branch push
+only for unchanged Python 3.11/3.12 CI and WO-0145 evidence/close-out. It does not authorize broker
+credentials, Alpaca activity, persistent application-database changes, runtime wiring, PR, merge,
+deletion, cleanup, or activation of a later work order.
+
+The first full-coverage attempt timed out at 99% and is environment evidence only. The completed
+baseline then passed all 4,758 executable tests but failed the unchanged 93% floor at exactly
+92.568306% (`18,634 / 20,130` covered line/branch elements). Static coverage analysis found that the
+deficit was concentrated in real malformed-input and immutable-boundary guards in the allowed
+execution-core modules. Nine test-only cases were added for exact composite identity types,
+root-head economics/proofs, immutable index operations, account-registry ownership, hydration state,
+and public operation types. No production code, exclusion, skip, threshold, or denominator changed.
+
+```yaml
+fix:
+  symptom: "The full behavior suite passed, but the unchanged 93% branch-coverage gate failed at 92.568306%."
+  root_cause: "Real defensive execution-core branches lacked direct failure-capable public-surface tests."
+  evidence: "The completed pre-fix full run reported 4,758 passed, 11 skipped, 1 xfailed, and 92.57% coverage."
+  fix: "Added nine in-scope test cases covering 124 previously unexecuted line/branch elements without modifying production or coverage configuration."
+  regression_test: "The 191-case focused gate and the complete 4,767-test branch-coverage gate."
+```
+
+The exact changed source/test tree passed 191/191 focused cases at
+`.pytest_tmp_wo0145_coverage_focused_1`. Repository Ruff and format checks passed; mypy passed all 82
+`app` files; Import Linter kept all six contracts; every install/version/ledger/PKL/disposition/Fable
+and exact-scope checker passed; and the contamination guard remained clean. Independent findings-only
+review reproduced all nine new tests plus the affected 180-test subset and returned `ACCEPT` with no
+P0/P1, while correctly deferring the full suite and dual-version CI to their own gates.
+
+The exact post-fix R2 oracle passed 61/61 at `.pytest_tmp_wo0145_r2_authorized_2`. The authoritative
+full suite at `.pytest_tmp_wo0145_full_coverage_authorized_3` passed 4,767 tests with 11 skips, one
+expected failure, 18 warnings, and 93.184302% coverage in 1,034.26 seconds. Exact totals were 13,978
+covered lines of 14,748 statements and 4,780 covered branches of 5,382. The preserved coverage-data
+artifact `.coverage_wo0145_full_authorized_3` has SHA-256
+`82803610fbc66665a7aaf1966a348e8584c57df30925fe6140a72b3b356c951c`.
+
+```yaml
+evidence:
+  phase: GREEN
+  command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/r2_conformance_oracle.py -p no:cacheprovider --basetemp .pytest_tmp_wo0145_r2_authorized_2 --tb=line"
+  result: PASS
+  decisive_output: "61/61 R2 conformance cases passed with BROKER_ADAPTER=mock."
+```
+
+```yaml
+evidence:
+  phase: GREEN
+  command: ".\\.venv\\Scripts\\python.exe -m pytest --cov=app --cov-branch --cov-report=term-missing -p no:cacheprovider --basetemp .pytest_tmp_wo0145_full_coverage_authorized_3 --tb=line"
+  result: PASS
+  decisive_output: "4,767 passed, 11 skipped, 1 xfailed; required 93% reached at 93.184302%."
+```
+
+Authorized existing fixtures executed test-only SQL/DDL against their disposable SQLite databases.
+No broker credential, Alpaca account, Paper activity, network broker path, persistent application
+database, schema/migration change, or runtime wiring was used. The prohibited R1 DDL incident and its
+result were not cited, reused, or relied upon for any WO-0145 conclusion. Coverage and basetemp
+artifacts are preserved and remain uncommitted because cleanup and deletion remain excluded.
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
@@ -808,31 +873,30 @@ fable_done:
   done_when_results:
     - item: "All focused kernel behavior passes on the exact current tree."
       status: MET
-      evidence: "The final allowed source/test tree passed all 182 focused tests at .pytest_tmp_wo0145_final_focused_2."
+      evidence: "The authorized post-coverage source/test tree passed all 191 focused tests at .pytest_tmp_wo0145_coverage_focused_1."
     - item: "Every required mutation pin is demonstrated failure-capable and restored green with durable evidence."
       status: MET
       evidence: "The historical 33 and extended 36 rows record 69 live edits with nodes/basetemps, decisive failures, inverse restoration, and restored green; historical baseline limits and redundant/invalid survivors are disclosed rather than miscounted."
     - item: "Repository-wide static gates pass on the exact current tree."
       status: MET
-      evidence: "Repository Ruff, 9-file format check, mypy over 82 app files, six import contracts, all applicable AI-OS checks, exact WO scope, and contamination guard passed after the extended matrix."
+      evidence: "Repository Ruff, 9-file format check, mypy over 82 app files, six import contracts, all applicable AI-OS checks, exact WO scope, and contamination guard passed after the coverage remediation."
     - item: "R2 and full branch-coverage suites pass."
-      status: BLOCKED
-      evidence: "Those gates instantiate SQLite and database execution remains excluded."
+      status: MET
+      evidence: "Under the explicit disposable-test-database re-gate, R2 passed 61/61 and the full suite passed 4,767 tests at 93.184302% with BROKER_ADAPTER=mock."
     - item: "Python 3.11 and Python 3.12 CI pass on the exact head."
       status: BLOCKED
-      evidence: "Local Python 3.11 is unavailable and pushing would start excluded database-bearing CI."
+      evidence: "Push and unchanged dual-version CI are now authorized; the exact checkpoint has not yet been pushed."
     - item: "Independent exact-head review has no unresolved P0 or P1."
       status: MET
-      evidence: "The independent blind reviewer reran the 182-case focused gate and static checks on e73d4ec, re-derived the repaired seams and evidence record, and returned ACCEPT with no unresolved P0/P1."
+      evidence: "The prior exact-source reviewer accepted e73d4ec; the coverage-delta reviewer independently reproduced all nine new cases and the affected 180-test subset, then returned ACCEPT with no unresolved P0/P1."
     - item: "Allowed paths and all broker, credential, database, runtime, merge, deletion, and cleanup exclusions remain respected."
       status: MET
-      evidence: "The inspected diff remains within allowed paths. No production runtime, broker, credential, account activity, database, SQL/DDL, network, application-I/O, runtime-wiring, merge, deletion, or cleanup activity occurred; authorized test-harness filesystem, source-read, basetemp, mutation-patch, and subprocess activity did occur."
+      evidence: "The tracked diff remains within allowed paths. Only explicitly authorized existing fixtures used disposable test SQLite/SQL/DDL; no persistent application database, broker, credential, account activity, network, runtime wiring, merge, deletion, or cleanup occurred."
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
   debt_check: "Open in-scope defects and unexecuted proof obligations are listed explicitly; none is waived."
   deferred:
-    - "Database-bearing R2 and full-coverage validation pending separate explicit database-test authorization."
-    - "Exact-head Python 3.11 and Python 3.12 branch CI pending separate push and CI authorization."
+    - "Authorized exact-head Python 3.11 and Python 3.12 branch CI pending checkpoint push and run inspection."
   status: BLOCKED
 ```

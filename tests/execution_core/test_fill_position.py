@@ -3713,3 +3713,328 @@ def test_fast_index_updates_do_not_materialize_entry_history(
     assert not materializers, (
         f"{owner.__name__}.{method_name} copies or slices complete entry history"
     )
+
+
+def test_root_head_rejects_malformed_economics_and_proof_fields() -> None:
+    kernel, _ = _apply_all(
+        _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    )
+    head = kernel.root_heads.entries[0]
+    invalid_changes: tuple[tuple[dict[str, object], type[Exception], str], ...] = (
+        ({"original_sequence": True}, TypeError, "must be an integer"),
+        ({"original_sequence": -1}, ValueError, "must be non-negative"),
+        (
+            {
+                "scope": replace(
+                    head.scope,
+                    account=AccountId("different-account"),
+                )
+            },
+            ValueError,
+            "identical venue scope",
+        ),
+        ({"price": _price(0)}, ValueError, "price must be positive"),
+        (
+            {"kind": FactKind.TRADE_BUST},
+            ValueError,
+            "bust root head must have structural zero quantity",
+        ),
+        (
+            {"quantity": Quantity(0)},
+            ValueError,
+            "fill/correction root heads require positive economics",
+        ),
+        (
+            {"prefix_heads_commitment": "not-bytes"},
+            TypeError,
+            "prefix_heads_commitment must be bytes",
+        ),
+        (
+            {"prefix_proof_commitment": "not-bytes"},
+            TypeError,
+            "prefix_proof_commitment must be bytes",
+        ),
+    )
+
+    for changes, expected_error, message in invalid_changes:
+        with pytest.raises(expected_error, match=message):
+            replace(head, **changes)
+
+
+def test_root_head_index_rejects_invalid_append_and_replace_operations() -> None:
+    kernel, _ = _apply_all(
+        _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    )
+    head = kernel.root_heads.entries[0]
+
+    with pytest.raises(TypeError, match="entries must be a tuple"):
+        RootHeadIndex([head])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="key already exists"):
+        kernel.root_heads.append(head)
+    with pytest.raises(ValueError, match="current root count"):
+        RootHeadIndex.empty(POSITION_SCOPE).append(replace(head, original_sequence=1))
+    with pytest.raises(ValueError, match="share exact position scope"):
+        RootHeadIndex.empty(POSITION_SCOPE).append(
+            replace(
+                head,
+                scope=replace(head.scope, symbol_id=OTHER_SYMBOL),
+            )
+        )
+    with pytest.raises(KeyError):
+        kernel.root_heads.replace(
+            replace(head, root_key=_root_key("unregistered-root"))
+        )
+    with pytest.raises(ValueError, match="original root sequence"):
+        kernel.root_heads.replace(replace(head, original_sequence=1))
+    with pytest.raises(ValueError, match="complete root scope"):
+        kernel.root_heads.replace(
+            replace(head, scope=replace(head.scope, order_id=OrderId("other-order")))
+        )
+    with pytest.raises(ValueError, match="root authority"):
+        kernel.root_heads.replace(
+            replace(head, authority=ExecutionAuthority.HUMAN_ATTESTED)
+        )
+
+
+def test_seen_registry_rejects_invalid_entries_and_claims_an_unowned_account() -> None:
+    kernel, _ = _apply_all(
+        _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    )
+    observation = kernel.seen_facts.entries[0]
+
+    with pytest.raises(TypeError, match="canonical broker execution fact"):
+        SeenFact(  # type: ignore[arg-type]
+            object(),
+            FirstObservationClassification.APPLIED_AVAILABLE,
+        )
+    with pytest.raises(TypeError, match="entries must be a tuple"):
+        SeenFactIndex([observation])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="event key already exists"):
+        kernel.seen_facts.add(observation)
+
+    claimed = ExecutionSnapshot.bind_verified(
+        PositionState.flat(POSITION_SCOPE),
+        PositionIntegrity.CONSISTENT,
+        RootHeadIndex.empty(POSITION_SCOPE),
+        SeenFactIndex(),
+    )
+    assert claimed.seen_facts.belongs_to(POSITION_SCOPE)
+
+    foreign_scope = replace(
+        POSITION_SCOPE,
+        account=AccountId("different-account"),
+    )
+    with pytest.raises(ValueError, match="different account"):
+        ExecutionSnapshot.bind_verified(
+            PositionState.flat(POSITION_SCOPE),
+            PositionIntegrity.CONSISTENT,
+            RootHeadIndex.empty(POSITION_SCOPE),
+            SeenFactIndex.empty(foreign_scope),
+        )
+
+
+def test_revision_facts_expose_broker_authority() -> None:
+    correction = _correct(
+        "correct",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=101,
+    )
+    bust = _bust(
+        "bust",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+    )
+
+    assert correction.authority is ExecutionAuthority.BROKER_AUTHORITATIVE
+    assert bust.authority is ExecutionAuthority.BROKER_AUTHORITATIVE
+
+
+def test_fold_input_rejects_malformed_state_and_partial_tail_proof() -> None:
+    valid = FoldInput(
+        raw_quantity=1,
+        cost_basis=_basis(100),
+        price_metadata=_price(100),
+    )
+    invalid_changes: tuple[tuple[dict[str, object], type[Exception], str], ...] = (
+        ({"raw_quantity": True}, TypeError, "must be an exact integer"),
+        ({"cost_basis": Fraction(100)}, TypeError, "must be ExactBasis"),
+        (
+            {"price_metadata": object()},
+            TypeError,
+            "must be ReportedPrice or None",
+        ),
+        (
+            {"raw_quantity": 0},
+            ValueError,
+            "non-positive fold quantity cannot carry long basis",
+        ),
+        (
+            {"position_scope": object()},
+            TypeError,
+            "must be PositionScope or None",
+        ),
+        (
+            {"tail_root_key": object()},
+            TypeError,
+            "must be RootFillKey or None",
+        ),
+        (
+            {"prefix_heads_commitment": "not-bytes"},
+            TypeError,
+            "prefix_heads_commitment must be bytes",
+        ),
+        (
+            {"position_scope": POSITION_SCOPE},
+            ValueError,
+            "proof fields must be present together",
+        ),
+    )
+
+    for changes, expected_error, message in invalid_changes:
+        with pytest.raises(expected_error, match=message):
+            replace(valid, **changes)
+
+
+def test_materialized_position_rejects_malformed_hydration_state() -> None:
+    root_key = _root_key("root")
+    base: dict[str, object] = {
+        "scope": POSITION_SCOPE,
+        "raw_quantity": 0,
+        "basis_authority": BasisAuthority.AVAILABLE,
+        "cost_basis": _basis(0),
+        "root_fill_sequence": (),
+        "effective_head_ids": (),
+        "basis_price_metadata": None,
+        "tail_fold_input": None,
+        "integrity_floor": PositionIntegrity.CONSISTENT,
+    }
+    invalid_changes: tuple[tuple[dict[str, object], type[Exception], str], ...] = (
+        ({"root_fill_sequence": []}, TypeError, "must be a tuple"),
+        ({"effective_head_ids": []}, TypeError, "must be a tuple"),
+        (
+            {"root_fill_sequence": (object(),)},
+            TypeError,
+            "entries must be RootFillKey",
+        ),
+        (
+            {"effective_head_ids": (object(),)},
+            TypeError,
+            "entries must be SourceEventId",
+        ),
+        (
+            {"root_fill_sequence": (root_key, root_key)},
+            ValueError,
+            "cannot contain duplicate roots",
+        ),
+        ({"scope": object()}, TypeError, "_scope must be PositionScope"),
+        ({"raw_quantity": True}, TypeError, "must be an exact integer"),
+        (
+            {"basis_authority": object()},
+            TypeError,
+            "basis_authority must be BasisAuthority",
+        ),
+        (
+            {"root_fill_sequence": (root_key,)},
+            ValueError,
+            "root sequence and effective heads must remain aligned",
+        ),
+        (
+            {"basis_price_metadata": object()},
+            TypeError,
+            "basis_price_metadata must be ReportedPrice or None",
+        ),
+        (
+            {"tail_fold_input": object()},
+            TypeError,
+            "tail_fold_input must be FoldInput or None",
+        ),
+        (
+            {"integrity_floor": object()},
+            TypeError,
+            "integrity_floor must be PositionIntegrity",
+        ),
+        (
+            {"cost_basis": None},
+            ValueError,
+            "available basis requires an exact cost basis",
+        ),
+        (
+            {"cost_basis": _basis(1)},
+            ValueError,
+            "non-positive position cannot carry long basis",
+        ),
+        (
+            {
+                "basis_authority": BasisAuthority.BASIS_RECONCILIATION_PENDING,
+            },
+            ValueError,
+            "pending basis cannot retain any basis-derived cache",
+        ),
+    )
+
+    for changes, expected_error, message in invalid_changes:
+        candidate = dict(base)
+        candidate.update(changes)
+        with pytest.raises(expected_error, match=message):
+            PositionState.from_materialized(**candidate)  # type: ignore[arg-type]
+
+
+def test_execution_kernel_public_entrypoints_reject_untyped_components() -> None:
+    snapshot = ExecutionSnapshot.flat(POSITION_SCOPE)
+    fact = _fill(
+        "fill",
+        "root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=100,
+    )
+
+    with pytest.raises(TypeError, match="scope must be PositionScope"):
+        PositionState.flat(object())  # type: ignore[arg-type]
+
+    bind_arguments: dict[str, object] = {
+        "position": snapshot.position,
+        "integrity": snapshot.integrity,
+        "root_heads": snapshot.root_heads,
+        "seen_facts": snapshot.seen_facts,
+    }
+    for field_name, message in (
+        ("position", "position must be PositionState"),
+        ("integrity", "integrity must be PositionIntegrity"),
+        ("root_heads", "root_heads must be RootHeadIndex"),
+        ("seen_facts", "seen_facts must be SeenFactIndex"),
+    ):
+        invalid = dict(bind_arguments)
+        invalid[field_name] = object()
+        with pytest.raises(TypeError, match=message):
+            ExecutionSnapshot.bind_verified(**invalid)  # type: ignore[arg-type]
+
+    apply_arguments: dict[str, object] = {
+        **bind_arguments,
+        "fact": fact,
+    }
+    for field_name, message in (
+        ("position", "position must be PositionState"),
+        ("integrity", "integrity must be PositionIntegrity"),
+        ("root_heads", "root_heads must be RootHeadIndex"),
+        ("seen_facts", "seen_facts must be SeenFactIndex"),
+    ):
+        invalid = dict(apply_arguments)
+        invalid[field_name] = object()
+        with pytest.raises(TypeError, match=message):
+            apply_broker_execution_fact(**invalid)  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="position_snapshot must be PositionState"):
+        derive_ordered_basis_candidate(  # type: ignore[arg-type]
+            object(),
+            snapshot.root_heads,
+        )
+    with pytest.raises(TypeError, match="root_heads must be RootHeadIndex"):
+        derive_ordered_basis_candidate(  # type: ignore[arg-type]
+            snapshot.position,
+            object(),
+        )
