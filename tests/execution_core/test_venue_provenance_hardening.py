@@ -11,6 +11,7 @@ from dataclasses import replace
 
 import pytest
 
+import app.execution_core.venue as venue_module
 from app.execution_core.fills import BrokerTradeCorrectFact
 from app.execution_core.identity import (
     ClosureId,
@@ -32,7 +33,9 @@ from app.execution_core.venue import (
     CatchUpExecutionRegistry,
     CloseAcceptanceSet,
     VenueAttemptState,
+    VenueRecoveryBook,
     VenueRecoveryDisposition,
+    VenueRecoveryTransition,
     _rebuild_book,
     apply_venue_recovery_input,
 )
@@ -266,6 +269,108 @@ def _force_operator_reconciled(book):
         forced if entry.effect_id == forced.effect_id else entry
         for entry in book.effects
     )
+
+
+def test_public_checkpoint_has_no_importable_construction_capability() -> None:
+    """Ordinary imports and the generated initializer must not mint checkpoints."""
+
+    assert "_BOOK_CONSTRUCTION_TOKEN" not in vars(venue_module)
+    with pytest.raises(TypeError, match="opaque|empty|reducer"):
+        VenueRecoveryBook(scope=recovery_fixtures.VENUE_SCOPE)
+
+
+def test_dataclasses_replace_cannot_mint_checkpoint_authority() -> None:
+    """A valid output must not donate authority to a pre-fill checkpoint."""
+
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    attested = recovery_fixtures._ingest(
+        book,
+        execution,
+        recovery_fixtures._human_fill(input_suffix="provenance-replace-forgery"),
+        input_id="provenance-replace-forgery-input",
+    )
+    assert attested.disposition is VenueRecoveryDisposition.APPLIED
+
+    replace_kwargs = {
+        "active_attempts": attested.book.active_attempts,
+        "input_records": attested.book.input_records,
+        "execution_registry_commitment": (
+            attested.book.execution_registry_commitment
+        ),
+        "execution_bindings": attested.book.execution_bindings,
+        "human_coverages": attested.book.human_coverages,
+    }
+    legacy_capability = vars(venue_module).get("_BOOK_CONSTRUCTION_TOKEN")
+    if legacy_capability is not None:
+        replace_kwargs["_construction_token"] = legacy_capability
+
+    with pytest.raises(TypeError, match="opaque|replace|reducer"):
+        replace(book, **replace_kwargs)
+
+
+def test_public_transition_rejects_human_book_paired_with_pre_fill_execution() -> (
+    None
+):
+    """A human-authority book is usable only with its exact resulting snapshot."""
+
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    attested = recovery_fixtures._ingest(
+        book,
+        execution,
+        recovery_fixtures._human_fill(input_suffix="provenance-human-pair"),
+        input_id="provenance-human-pair-input",
+    )
+    assert attested.disposition is VenueRecoveryDisposition.APPLIED
+
+    with pytest.raises(ValueError, match="execution|root|human|pair"):
+        VenueRecoveryTransition(
+            book=attested.book,
+            execution=execution,
+            disposition=VenueRecoveryDisposition.APPLIED,
+            quantity_delta=4,
+        )
+
+
+def test_public_transition_rejects_corroborated_book_paired_with_prior_registry() -> (
+    None
+):
+    """Zero-economic corroboration must bind the resulting registry high-water."""
+
+    book, execution = recovery_fixtures._seed_needs_review(capacity=4)
+    attested = recovery_fixtures._ingest(
+        book,
+        execution,
+        recovery_fixtures._human_fill(input_suffix="provenance-corroboration-pair"),
+        input_id="provenance-corroboration-pair-human-input",
+    )
+    assert attested.disposition is VenueRecoveryDisposition.APPLIED
+    corroborated = apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId("provenance-corroboration-pair-broker-input"),
+            effect_id=recovery_fixtures.EFFECT,
+            leg_key=recovery_fixtures.LEG_A,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(4),
+            fact=recovery_fixtures._broker_fill(
+                "provenance-corroboration-pair-source",
+                "provenance-corroboration-pair-root",
+                quantity=4,
+            ),
+            evidence_digest=b"\xe1" * 32,
+        ),
+    )
+    assert corroborated.disposition is VenueRecoveryDisposition.APPLIED
+    assert corroborated.quantity_delta == 0
+
+    with pytest.raises(ValueError, match="registry|corroboration|execution|pair"):
+        VenueRecoveryTransition(
+            book=corroborated.book,
+            execution=attested.execution,
+            disposition=VenueRecoveryDisposition.APPLIED,
+            quantity_delta=0,
+        )
 
 
 def test_checkpoint_rejects_human_input_after_coverage_is_stripped() -> None:
