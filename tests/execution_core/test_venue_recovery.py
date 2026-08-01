@@ -67,8 +67,10 @@ from app.execution_core.values import (
     TickMetadata,
 )
 from app.execution_core.venue import (
+    AcceptanceProofKind,
     AcceptanceSetState,
     BrokerEffectState,
+    CloseAcceptanceSet,
     DiscoverVenueLeg,
     EffectKind,
     ObserveVenueStatus,
@@ -327,7 +329,7 @@ def _released_state(
         leg_key=LEG_A,
         claim_occurrence_id=CLAIM,
         venue_cumulative_quantity=Quantity(4),
-        broker_terminal_state=VenueAttemptState.FILLED,
+        broker_terminal_state=VenueAttemptState.CANCELED,
         actor=ACTOR,
         reason="paper terminal report and exact fill parity",
         evidence_reference=EVIDENCE,
@@ -383,6 +385,68 @@ def test_attested_fill_uses_the_canonical_root_fold_and_exact_replay_is_a_noop()
     assert replay.quantity_delta == 0
     assert replay.book == applied.book
     assert replay.execution == applied.execution
+
+
+def test_attested_fill_advances_the_exact_active_leg_cumulative_checkpoint() -> None:
+    book, execution = _seed_needs_review()
+
+    applied = _ingest(book, execution, _human_fill())
+
+    assert applied.disposition is VenueRecoveryDisposition.APPLIED
+    attempt = applied.book.active_attempt(LEG_A)
+    assert attempt is not None
+    assert attempt.status is VenueAttemptState.NEEDS_REVIEW
+    assert attempt.cumulative_quantity == Quantity(4)
+
+
+def test_identical_human_fact_under_a_new_command_is_a_recorded_zero_delta() -> None:
+    book, execution = _seed_needs_review()
+    fact = _human_fill()
+    first = _ingest(book, execution, fact)
+    duplicate_command = IngestHumanAttestedFill(
+        input_id=VenueInputId("same-human-fact-new-command"),
+        effect_id=EFFECT,
+        fact=fact,
+    )
+
+    duplicate = apply_venue_recovery_input(
+        first.book,
+        first.execution,
+        duplicate_command,
+    )
+
+    assert duplicate.disposition is VenueRecoveryDisposition.APPLIED
+    assert duplicate.quantity_delta == 0
+    assert duplicate.execution == first.execution
+    assert duplicate.book.coverage_for_leg(LEG_A) == first.book.coverage_for_leg(LEG_A)
+    replay = apply_venue_recovery_input(
+        duplicate.book,
+        duplicate.execution,
+        duplicate_command,
+    )
+    assert replay.disposition is VenueRecoveryDisposition.EXACT_REPLAY
+    assert replay.book == duplicate.book
+
+
+def test_changed_human_payload_for_a_seen_fact_latches_conflict() -> None:
+    book, execution = _seed_needs_review()
+    first = _ingest(book, execution, _human_fill())
+    changed = replace(
+        _human_fill(), reason="changed payload under seen source identity"
+    )
+
+    conflict = _ingest(
+        first.book,
+        first.execution,
+        changed,
+        input_id="changed-seen-human-fact",
+    )
+
+    assert conflict.disposition is VenueRecoveryDisposition.CONFLICT
+    assert conflict.quantity_delta == 0
+    assert conflict.execution.position.raw_quantity == 4
+    assert conflict.execution.integrity & PositionIntegrity.EXECUTION_FACT_CONFLICT
+    assert conflict.book == first.book
 
 
 @pytest.mark.parametrize(
@@ -511,6 +575,13 @@ def test_attestation_refuses_wrong_effect_or_account_identity() -> None:
         assert refused.execution == execution
 
 
+def test_checkpoint_construction_cannot_drop_the_immutable_claim_edge() -> None:
+    book, _ = _seed_needs_review()
+
+    with pytest.raises(ValueError, match="claim"):
+        replace(book, claims=())
+
+
 def test_attestation_requires_typed_nonblank_actor_reason_and_evidence() -> None:
     with pytest.raises(ValueError):
         ActorId(" ")
@@ -601,6 +672,26 @@ def test_human_attested_sell_cannot_cross_long_quantity_below_zero() -> None:
     assert refused.execution.integrity is PositionIntegrity.CONSISTENT
 
 
+def test_known_matching_broker_economics_prevent_a_second_human_delta() -> None:
+    broker_execution = _apply_broker(
+        ExecutionSnapshot.flat(POSITION_SCOPE),
+        _broker_fill(
+            "known-broker-source",
+            "known-broker-root",
+            quantity=4,
+            units=100,
+        ),
+    )
+    book, execution = _seed_needs_review(execution=broker_execution)
+
+    refused = _ingest(book, execution, _human_fill())
+
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert refused.quantity_delta == 0
+    assert refused.book == book
+    assert refused.execution == execution
+
+
 def test_release_is_non_economic_leg_local_and_exactly_replayable() -> None:
     book, execution, command = _released_state(leg_keys=(LEG_A, LEG_B))
 
@@ -642,7 +733,7 @@ def test_changed_release_retry_conflicts_without_global_or_economic_mutation(
     elif change == "cumulative":
         changed = replace(command, venue_cumulative_quantity=Quantity(3))
     elif change == "terminal":
-        changed = replace(command, broker_terminal_state=VenueAttemptState.CANCELED)
+        changed = replace(command, broker_terminal_state=VenueAttemptState.REJECTED)
     elif change == "actor":
         changed = replace(command, actor=ActorId("operator-b"))
     elif change == "reason":
@@ -678,7 +769,7 @@ def test_release_requires_exact_owner_terminal_evidence_and_fill_parity(
         leg_key=LEG_A,
         claim_occurrence_id=CLAIM,
         venue_cumulative_quantity=Quantity(4),
-        broker_terminal_state=VenueAttemptState.FILLED,
+        broker_terminal_state=VenueAttemptState.CANCELED,
         actor=ACTOR,
         reason="terminal report",
         evidence_reference=EVIDENCE,
@@ -730,6 +821,273 @@ def test_release_preserves_a_preexisting_overfill_quarantine_latch() -> None:
     assert book.effect(EFFECT).acceptance_set_state is AcceptanceSetState.OPEN
 
 
+def test_human_fill_cannot_be_appended_after_the_leg_was_released() -> None:
+    book, execution, _ = _released_state(leg_keys=(LEG_A, LEG_B))
+
+    refused = _ingest(
+        book,
+        execution,
+        _human_fill(input_suffix="after-release", quantity=1, prior=4, resulting=5),
+        input_id="human-after-release",
+    )
+
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert refused.quantity_delta == 0
+    assert refused.book == book
+    assert refused.execution == execution
+
+
+def test_release_requires_exact_active_attempt_and_coverage_cumulative_parity() -> None:
+    book, execution = _seed_needs_review()
+    attested = _ingest(book, execution, _human_fill())
+    assert attested.disposition is VenueRecoveryDisposition.APPLIED
+    observed = apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId("later-cumulative-observation"),
+            leg_key=LEG_A,
+            status=VenueAttemptState.NEEDS_REVIEW,
+            observation_id=VenueObservationId("later-cumulative-five"),
+            cumulative_quantity=Quantity(5),
+        ),
+    )
+    assert observed.disposition is VenueRecoveryDisposition.APPLIED
+    release = ReleaseVenueLeg(
+        input_id=VenueInputId("release-stale-cumulative"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        claim_occurrence_id=CLAIM,
+        venue_cumulative_quantity=Quantity(4),
+        broker_terminal_state=VenueAttemptState.CANCELED,
+        actor=ACTOR,
+        reason="stale cumulative must not release",
+        evidence_reference=EVIDENCE,
+        closure_id=ClosureId("release-stale-cumulative"),
+        evidence_digest=b"\x77" * 32,
+    )
+
+    refused = apply_venue_recovery_input(
+        observed.book,
+        observed.execution,
+        release,
+    )
+
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert refused.book == observed.book
+    assert refused.execution == observed.execution
+
+
+def test_partial_cumulative_cannot_be_described_as_filled_for_release() -> None:
+    book, execution = _seed_needs_review(capacity=10)
+    attested = _ingest(book, execution, _human_fill())
+    release = ReleaseVenueLeg(
+        input_id=VenueInputId("release-partial-as-filled"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        claim_occurrence_id=CLAIM,
+        venue_cumulative_quantity=Quantity(4),
+        broker_terminal_state=VenueAttemptState.FILLED,
+        actor=ACTOR,
+        reason="incomplete filled report",
+        evidence_reference=EVIDENCE,
+        closure_id=ClosureId("release-partial-as-filled"),
+        evidence_digest=b"\x78" * 32,
+    )
+
+    refused = apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        release,
+    )
+
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert refused.book == attested.book
+    assert refused.execution == attested.execution
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [
+        VenueAttemptState.FILLED,
+        VenueAttemptState.CANCELED,
+        VenueAttemptState.REJECTED,
+        VenueAttemptState.EXPIRED,
+        VenueAttemptState.REPLACED,
+    ],
+)
+def test_release_accepts_every_exact_broker_terminal_state(
+    terminal: VenueAttemptState,
+) -> None:
+    book, execution = _seed_needs_review(capacity=4)
+    attested = _ingest(book, execution, _human_fill())
+    release = ReleaseVenueLeg(
+        input_id=VenueInputId(f"release-terminal-{terminal.value.lower()}"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        claim_occurrence_id=CLAIM,
+        venue_cumulative_quantity=Quantity(4),
+        broker_terminal_state=terminal,
+        actor=ACTOR,
+        reason="exact terminal report",
+        evidence_reference=EVIDENCE,
+        closure_id=ClosureId(f"release-terminal-{terminal.value.lower()}"),
+        evidence_digest=b"\x79" * 32,
+    )
+
+    released = apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        release,
+    )
+
+    assert released.disposition is VenueRecoveryDisposition.APPLIED
+    closure = released.book.closure_head(LEG_A)
+    assert closure is not None
+    assert closure.broker_terminal_state is terminal
+
+
+def test_effect_finalizes_only_after_acceptance_and_all_owned_legs_close() -> None:
+    book, execution = _seed_needs_review(capacity=4)
+    attested = _ingest(book, execution, _human_fill())
+    release = ReleaseVenueLeg(
+        input_id=VenueInputId("release-before-parent-close"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        claim_occurrence_id=CLAIM,
+        venue_cumulative_quantity=Quantity(4),
+        broker_terminal_state=VenueAttemptState.CANCELED,
+        actor=ACTOR,
+        reason="exact terminal report",
+        evidence_reference=EVIDENCE,
+        closure_id=ClosureId("release-before-parent-close"),
+        evidence_digest=b"\x7a" * 32,
+    )
+    released = apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        release,
+    )
+    assert released.disposition is VenueRecoveryDisposition.APPLIED
+    assert released.book.effect(EFFECT).state is BrokerEffectState.NEEDS_REVIEW
+
+    closed = apply_venue_recovery_input(
+        released.book,
+        released.execution,
+        CloseAcceptanceSet(
+            input_id=VenueInputId("close-parent-after-release"),
+            effect_id=EFFECT,
+            proof_kind=AcceptanceProofKind.COVERED_RECONCILIATION,
+            evidence_reference=EvidenceReference("covered-parent-proof"),
+        ),
+    )
+
+    assert closed.disposition is VenueRecoveryDisposition.APPLIED
+    assert closed.book.effect(EFFECT).acceptance_set_state is AcceptanceSetState.CLOSED
+    assert closed.book.effect(EFFECT).state is BrokerEffectState.OPERATOR_RECONCILED
+
+
+def test_invalidated_acceptance_set_permanently_refuses_operator_release() -> None:
+    execution = ExecutionSnapshot.flat(POSITION_SCOPE)
+    book = VenueRecoveryBook.empty(VENUE_SCOPE)
+    setup = (
+        RequestedEffect(
+            input_id=VenueInputId("invalidated-request"),
+            effect_id=EFFECT,
+            request_occurrence_id=REQUEST,
+            mandate_id=MANDATE,
+            kind=EffectKind.SUBMIT,
+            client_order_id=CLIENT,
+            symbol_id=SYMBOL,
+            side=ExecutionSide.BUY,
+            quantity=Quantity(4),
+            economic_scope=b"invalidated-release-scope",
+        ),
+        RecordDispatchClaim(
+            input_id=VenueInputId("invalidated-claim"),
+            effect_id=EFFECT,
+            claim_occurrence_id=CLAIM,
+        ),
+        RecordTransportOutcome(
+            input_id=VenueInputId("invalidated-unknown"),
+            effect_id=EFFECT,
+            state=BrokerEffectState.OUTCOME_UNKNOWN,
+        ),
+        CloseAcceptanceSet(
+            input_id=VenueInputId("invalidated-close"),
+            effect_id=EFFECT,
+            proof_kind=AcceptanceProofKind.COVERED_RECONCILIATION,
+            evidence_reference=EvidenceReference("invalidated-close-proof"),
+        ),
+    )
+    for item in setup:
+        transition = apply_venue_recovery_input(book, execution, item)
+        assert transition.disposition is VenueRecoveryDisposition.APPLIED
+        book = transition.book
+
+    late = apply_venue_recovery_input(
+        book,
+        execution,
+        DiscoverVenueLeg(
+            input_id=VenueInputId("invalidated-late-leg"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            observation_id=VenueObservationId("invalidated-late-observation"),
+        ),
+    )
+    assert late.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    needs_review_leg = apply_venue_recovery_input(
+        late.book,
+        execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId("invalidated-leg-needs-review"),
+            leg_key=LEG_A,
+            status=VenueAttemptState.NEEDS_REVIEW,
+            observation_id=VenueObservationId("invalidated-review-observation"),
+            cumulative_quantity=Quantity(0),
+        ),
+    )
+    needs_review_effect = apply_venue_recovery_input(
+        needs_review_leg.book,
+        execution,
+        RecordTransportOutcome(
+            input_id=VenueInputId("invalidated-effect-needs-review"),
+            effect_id=EFFECT,
+            state=BrokerEffectState.NEEDS_REVIEW,
+        ),
+    )
+    attested = _ingest(
+        needs_review_effect.book,
+        execution,
+        _human_fill(quantity=4, prior=0, resulting=4),
+        input_id="invalidated-attestation",
+    )
+    assert attested.disposition is VenueRecoveryDisposition.APPLIED
+    release = ReleaseVenueLeg(
+        input_id=VenueInputId("invalidated-release"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        claim_occurrence_id=CLAIM,
+        venue_cumulative_quantity=Quantity(4),
+        broker_terminal_state=VenueAttemptState.CANCELED,
+        actor=ACTOR,
+        reason="must remain blocked after proof invalidation",
+        evidence_reference=EVIDENCE,
+        closure_id=ClosureId("invalidated-release"),
+        evidence_digest=b"\x7b" * 32,
+    )
+
+    refused = apply_venue_recovery_input(
+        attested.book,
+        attested.execution,
+        release,
+    )
+
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert refused.book == attested.book
+    assert refused.execution == attested.execution
+
+
 def test_matching_later_broker_interval_corroborates_with_zero_second_delta() -> None:
     book, execution = _seed_needs_review()
     attested = _ingest(book, execution, _human_fill())
@@ -758,11 +1116,27 @@ def test_matching_later_broker_interval_corroborates_with_zero_second_delta() ->
 
     assert matched.disposition is VenueRecoveryDisposition.APPLIED
     assert matched.quantity_delta == 0
-    assert matched.execution == attested.execution
+    assert matched.execution.position == attested.execution.position
+    assert matched.execution.integrity == attested.execution.integrity
+    assert matched.execution.root_heads == attested.execution.root_heads
+    reserved = matched.execution.seen_facts.get(broker_fact.key)
+    assert reserved is not None
+    assert reserved.fact == broker_fact
     coverage = matched.book.coverage_for_leg(LEG_A)
     assert len(coverage) == 1
     assert coverage[0].broker_corroborated is True
     assert matched.book.reconciliations == ()
+
+    public_retry = apply_broker_execution_fact(
+        matched.execution.position,
+        matched.execution.integrity,
+        matched.execution.root_heads,
+        matched.execution.seen_facts,
+        broker_fact,
+    )
+    assert public_retry.disposition is TransitionDisposition.EXACT_REPLAY
+    assert public_retry.quantity_delta == 0
+    assert public_retry.position.raw_quantity == 4
 
 
 def test_disjoint_later_broker_interval_enters_the_broker_fact_reducer() -> None:
@@ -798,6 +1172,38 @@ def test_disjoint_later_broker_interval_enters_the_broker_fact_reducer() -> None
     assert broker_head is not None
     assert broker_head.authority is ExecutionAuthority.BROKER_AUTHORITATIVE
     assert applied.book.reconciliations == ()
+
+
+def test_disjoint_broker_interval_after_terminal_release_is_reconciliation_only() -> (
+    None
+):
+    book, execution, _ = _released_state()
+    before_quantity = execution.position.raw_quantity
+    command = RecordBrokerFillEvidence(
+        input_id=VenueInputId("broker-disjoint-after-release"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_cumulative_quantity=Quantity(4),
+        resulting_cumulative_quantity=Quantity(6),
+        fact=_broker_fill(
+            "broker-disjoint-after-release-source",
+            "broker-disjoint-after-release-root",
+            quantity=2,
+            units=105,
+        ),
+        evidence_digest=b"\x7c" * 32,
+    )
+
+    reconciled = apply_venue_recovery_input(book, execution, command)
+
+    assert reconciled.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert reconciled.quantity_delta == 0
+    assert reconciled.execution.position.raw_quantity == before_quantity
+    assert reconciled.execution.root_heads == execution.root_heads
+    assert (
+        reconciled.execution.integrity
+        & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    )
 
 
 @pytest.mark.parametrize(

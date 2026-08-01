@@ -470,6 +470,145 @@ def test_pending_cancel_or_replace_is_orthogonal_to_order_status(
     assert filled_during_ambiguity.quantity_delta == 0
 
 
+def test_operator_reconciled_cannot_enter_through_broker_status_ingestion() -> None:
+    book, request = _acknowledged("operator-bypass")
+    discovered = _discover(book, request, "operator-bypass")
+    forged = ObserveVenueStatus(
+        input_id=VenueInputId("forged-operator-terminal"),
+        leg_key=_leg("operator-bypass"),
+        status=VenueAttemptState.OPERATOR_RECONCILED,
+        observation_id=VenueObservationId("forged-operator-observation"),
+        cumulative_quantity=Quantity(0),
+        closure_id=ClosureId("forged-operator-closure"),
+        evidence_reference=EvidenceReference("forged-operator-evidence"),
+    )
+
+    refused = _apply(discovered.book, forged)
+
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert refused.book == discovered.book
+    assert refused.execution == EXECUTION
+
+
+def test_new_semantic_owner_replay_still_consumes_its_input_identity() -> None:
+    book, request = _acknowledged("owner-alias")
+    discovered = _discover(book, request, "owner-alias")
+    alias = DiscoverVenueLeg(
+        input_id=VenueInputId("owner-alias-input"),
+        effect_id=request.effect_id,
+        leg_key=_leg("owner-alias"),
+        observation_id=VenueObservationId("acceptance-owner-alias"),
+    )
+
+    accepted_alias = _apply(discovered.book, alias)
+
+    assert accepted_alias.disposition is VenueRecoveryDisposition.APPLIED
+    assert accepted_alias.book.owner(_leg("owner-alias")) == discovered.book.owner(
+        _leg("owner-alias")
+    )
+    exact = _apply(accepted_alias.book, alias)
+    assert exact.disposition is VenueRecoveryDisposition.EXACT_REPLAY
+    assert exact.book == accepted_alias.book
+
+    changed_same_input = replace(
+        alias,
+        leg_key=_leg("different-leg"),
+        observation_id=VenueObservationId("different-observation"),
+    )
+    conflict = _apply(accepted_alias.book, changed_same_input)
+    assert conflict.disposition is VenueRecoveryDisposition.CONFLICT
+    assert conflict.book == accepted_alias.book
+
+
+def test_request_occurrence_identity_is_generation_account_unique() -> None:
+    first = _request("unique-first")
+    first_book = _apply(VenueRecoveryBook.empty(VENUE_SCOPE), first).book
+    duplicated_request = replace(
+        _request("unique-second"),
+        request_occurrence_id=first.request_occurrence_id,
+    )
+
+    request_conflict = _apply(first_book, duplicated_request)
+
+    assert request_conflict.disposition is VenueRecoveryDisposition.CONFLICT
+    assert request_conflict.book == first_book
+
+
+def test_claim_occurrence_identity_is_generation_account_unique() -> None:
+    first = _request("unique-first")
+    first_book = _apply(VenueRecoveryBook.empty(VENUE_SCOPE), first).book
+    second = _request("unique-second")
+    two_effects = _apply(first_book, second)
+    claim_id = ClaimOccurrenceId("globally-unique-claim")
+    first_claim = _apply(
+        two_effects.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId("first-unique-claim"),
+            effect_id=first.effect_id,
+            claim_occurrence_id=claim_id,
+        ),
+    )
+    duplicate_claim = _apply(
+        first_claim.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId("duplicate-claim"),
+            effect_id=second.effect_id,
+            claim_occurrence_id=claim_id,
+        ),
+    )
+
+    assert duplicate_claim.disposition is VenueRecoveryDisposition.CONFLICT
+    assert duplicate_claim.book == first_claim.book
+
+
+def test_later_terminal_economics_can_advance_a_closure_status() -> None:
+    book, request = _acknowledged("terminal-advance")
+    discovered = _discover(book, request, "terminal-advance")
+    canceled = _apply(
+        discovered.book,
+        _terminal_observation(
+            "terminal-advance",
+            status=VenueAttemptState.CANCELED,
+            quantity=3,
+            suffix="canceled",
+        ),
+    )
+    later_fill = _apply(
+        canceled.book,
+        _terminal_observation(
+            "terminal-advance",
+            status=VenueAttemptState.FILLED,
+            quantity=4,
+            suffix="filled",
+        ),
+    )
+
+    assert later_fill.disposition is VenueRecoveryDisposition.APPLIED
+    closure = later_fill.book.closure_head(_leg("terminal-advance"))
+    assert closure is not None
+    assert closure.ordinal == 2
+    assert closure.predecessor_closure_id == ClosureId(
+        "closure-terminal-advance-canceled"
+    )
+    assert closure.status is VenueAttemptState.FILLED
+    assert closure.cumulative_quantity == Quantity(4)
+
+
+def test_pending_operation_has_one_canonical_absence_representation() -> None:
+    book, request = _acknowledged("pending-none")
+    discovered = _discover(book, request, "pending-none")
+    clear_with_enum = RecordPendingVenueOperation(
+        input_id=VenueInputId("pending-none-input"),
+        leg_key=_leg("pending-none"),
+        operation=PendingVenueOperation.NONE,
+    )
+
+    refused = _apply(discovered.book, clear_with_enum)
+
+    assert refused.disposition is VenueRecoveryDisposition.REFUSED
+    assert refused.book == discovered.book
+
+
 def test_terminal_leg_compacts_to_single_ordinal_one_closure_root() -> None:
     book, request = _acknowledged()
     discovered = _discover(book, request, "compact")
