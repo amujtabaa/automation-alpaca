@@ -603,6 +603,13 @@ def test_checkpoint_construction_cannot_drop_the_immutable_claim_edge() -> None:
         replace(book, claims=())
 
 
+def test_checkpoint_cannot_be_rebuilt_outside_verified_provenance_path() -> None:
+    book, _ = _seed_needs_review()
+
+    with pytest.raises(ValueError, match="claim|provenance"):
+        replace(book, input_records=())
+
+
 def test_attestation_requires_typed_nonblank_actor_reason_and_evidence() -> None:
     with pytest.raises(ValueError):
         ActorId(" ")
