@@ -156,6 +156,7 @@ _PUBLIC_SURFACE = {
     "TransitionDisposition",
     "VenueAttempt",
     "VenueAttemptState",
+    "VenueClosureKind",
     "VenueIdentityOwner",
     "VenueInputId",
     "VenueIntegrity",
