@@ -1048,6 +1048,34 @@ def test_seen_registry_value_identity_carries_account_owner() -> None:
     assert owned.commitment != unowned.commitment
 
 
+def test_seen_registry_rejects_mixed_or_forged_evaluation_scope() -> None:
+    fact = _fill(
+        "scope-fact",
+        "scope-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=100,
+    )
+    with pytest.raises(ValueError, match="applied first observation"):
+        SeenFact(
+            fact=fact,
+            classification=FirstObservationClassification.APPLIED_AVAILABLE,
+            position_scope=OTHER_POSITION_SCOPE,
+        )
+    foreign_evaluation_scope = replace(
+        POSITION_SCOPE,
+        account=AccountId("foreign-evaluation-account"),
+    )
+    rejected_foreign_evaluation = SeenFact(
+        fact=fact,
+        classification=FirstObservationClassification.RECONCILIATION_REQUIRED,
+        position_scope=foreign_evaluation_scope,
+    )
+
+    with pytest.raises(ValueError, match="cannot mix evaluation accounts"):
+        SeenFactIndex.empty(POSITION_SCOPE).add(rejected_foreign_evaluation)
+
+
 def test_seen_registry_commitment_carries_overfill_summary() -> None:
     overfill = _fill(
         "overfill",
