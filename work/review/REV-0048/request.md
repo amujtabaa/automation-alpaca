@@ -5,9 +5,10 @@ title: "Reset M1B pure venue ownership and recovery kernel"
 status: AWAITING_REVIEW
 targets: [WO-0146, RESET-M1B, ADR-020, ADR-021, ADR-012]
 human_gated_surfaces: [execution-fact authority, venue ownership, ambiguity quarantine, operator recovery, position quantity]
-commit_range: dfb8ed30ebed788f1158d7f8be49b44d505c355b..7f4f428059427dad17df6d01110d5e9d08e835a1
-implementation_head: 7f4f428059427dad17df6d01110d5e9d08e835a1
+commit_range: dfb8ed30ebed788f1158d7f8be49b44d505c355b..ba9e1268e4645ec36f620f14d361f709916aa690
+implementation_head: ba9e1268e4645ec36f620f14d361f709916aa690
 created: 2026-08-01
+amended: 2026-08-01
 ---
 
 ## Your Role
@@ -31,8 +32,8 @@ Review the exact implementation object and its complete reset-slice history:
 
 ```text
 base:   dfb8ed30ebed788f1158d7f8be49b44d505c355b
-target: 7f4f428059427dad17df6d01110d5e9d08e835a1
-diff:   git diff dfb8ed30ebed788f1158d7f8be49b44d505c355b..7f4f428059427dad17df6d01110d5e9d08e835a1
+target: ba9e1268e4645ec36f620f14d361f709916aa690
+diff:   git diff dfb8ed30ebed788f1158d7f8be49b44d505c355b..ba9e1268e4645ec36f620f14d361f709916aa690
 ```
 
 WO-0146 introduces a pure, deterministic venue-effect/attempt ownership and recovery semantic
@@ -40,6 +41,10 @@ center under `app/execution_core/`. It is intentionally not wired into applicati
 persistence, adapters, broker access, or UI/API flows. Review both the diff and the whole affected
 semantic boundary; a defect outside the changed lines still counts if it bypasses a claimed safety
 property.
+
+The target advanced from `7f4f428059427dad17df6d01110d5e9d08e835a1` only through Ruff's canonical
+formatter after the initial pre-registration draft. The reviewer-owned draft remains preserved and
+the verdict must cover the exact amended target above.
 
 No credential discovery/use, Alpaca or other broker activity, network access, SQL/DDL, database
 engine/client/fixture, ORM/schema/migration tool, runtime wiring, PR, merge, push, deletion, or
@@ -122,7 +127,7 @@ At minimum, independently reproduce:
 .\.venv\Scripts\python.exe -m pytest -q tests/execution_core/test_venue_stateful.py --maxfail=1
 .\.venv\Scripts\python.exe -m ruff check app/execution_core tests/execution_core
 .\.venv\Scripts\python.exe -m mypy app/execution_core
-git diff --check dfb8ed30ebed788f1158d7f8be49b44d505c355b..7f4f428059427dad17df6d01110d5e9d08e835a1
+git diff --check dfb8ed30ebed788f1158d7f8be49b44d505c355b..ba9e1268e4645ec36f620f14d361f709916aa690
 ```
 
 Attempt to disprove the following rather than accepting their recorded PASS lines:
