@@ -2141,6 +2141,56 @@ def test_incoherent_other_symbol_seen_binding_does_not_leak_overfill() -> None:
     )
 
 
+@pytest.mark.parametrize("binding_source", ["position", "root_heads"])
+def test_incoherent_component_binding_scope_mismatch_does_not_leak_overfill(
+    binding_source: str,
+) -> None:
+    other_overfill = _fill(
+        "other-binding-overfill",
+        "other-binding-overfill-root",
+        side=ExecutionSide.SELL,
+        quantity=2,
+        units=100,
+        scope=_scope(
+            order_id=OrderId("other-binding-sell"),
+            side=ExecutionSide.SELL,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+    other, _ = _Kernel.flat(OTHER_POSITION_SCOPE).apply(other_overfill)
+    foreign_binding = other.position.binding
+    assert foreign_binding is not None
+    assert foreign_binding.position_scope == OTHER_POSITION_SCOPE
+    position = PositionState.flat(POSITION_SCOPE)
+    root_heads = RootHeadIndex.empty(POSITION_SCOPE)
+    if binding_source == "position":
+        position = position._with_binding(foreign_binding)
+    else:
+        root_heads = root_heads._with_binding(foreign_binding)
+    incoming = _fill(
+        f"local-after-{binding_source}-binding",
+        f"local-after-{binding_source}-binding-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+
+    transition = apply_broker_execution_fact(
+        position,
+        PositionIntegrity.CONSISTENT,
+        root_heads,
+        SeenFactIndex.empty(POSITION_SCOPE),
+        incoming,
+    )
+
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.quantity_delta == 0
+    assert not transition.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert not transition.position.integrity_floor & (
+        PositionIntegrity.OVERFILL_QUARANTINE
+    )
+
+
 def test_incoherent_foreign_account_registry_reconciles_without_exception() -> None:
     foreign_scope = replace(
         POSITION_SCOPE,
