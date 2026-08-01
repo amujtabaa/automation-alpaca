@@ -34,8 +34,10 @@
 
 - 2026-07-31: WO-0144 M0 landed the exact hash-ratified architecture-reset packet and byte-identical
   ADR-020 through ADR-022 bodies, recorded acceptance in a separate index, and refreshed legacy/
-  reset authority boundaries in ADR, PKL, safety-core, and navigation documentation. REV-0047
-  returned `BLOCK` because the complete R1 archive bytes are not retained in the checkout and the
-  original evidence overstated their reproducibility; the quoted archive digest remains external
-  human-approval provenance. Remediation and independent re-review are pending, so M0 remains
-  unaccepted and `RESET-WO-01` remains staged and inactive.
+  reset authority boundaries in ADR, PKL, safety-core, and navigation documentation. REV-0047 first
+  returned `BLOCK`; remediation target `116822d` disclosed the complete R1 archive as external
+  approval provenance, exact-allowlisted the 21 packet template markers, and guarded adjacent legacy
+  startup instructions. Reviewer-owned addendum 01 returned `ACCEPT`, closing M0. Supplemental
+  Python 3.12 gates passed (4,576 passed, 11 skipped, 1 xfailed; 93.12% branch coverage) with the
+  broker forced to mock. Python 3.11 is unavailable locally, so both-version CI remains mandatory
+  before the staged, inactive `RESET-WO-01` can receive a canonical ID or activation.

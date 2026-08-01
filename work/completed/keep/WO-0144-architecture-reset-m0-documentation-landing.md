@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Architecture reset M0: ratified documentation landing"
-status: REVIEW
+status: CLOSED
 work_order_id: WO-0144
 wave: ARCH-RESET-M0
 model_tier: strong
 risk: high
-disposition: []
+disposition: [ADR_CREATED, PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-07-31
 branch: codex/arch-reset-2026-07-r1
@@ -211,10 +211,10 @@ fable_done:
     drive_by_edits: false
   evidence:
     - "Static file/hash/link/scope checks above"
-    - "The initial M0 landing executed no application, test, SQL, DDL, database, broker, credential, or network tooling"
-    - "Later separately authorized local verification forced the broker adapter to mock and is not evidence of packet/archive validity"
-  status: REVIEW
+    - "REV-0047 addendum 01 independently returned ACCEPT for remediation target 116822d"
+    - "Supplemental Python 3.12 verification forced the broker adapter to mock and is not packet/archive evidence"
+  status: CLOSED
 ```
 
-Repository-retained-byte verification passed; complete-R1-archive rehashing is `UNVERIFIED_IN_CHECKOUT`.
-REV-0047 returned `BLOCK`; M0 and `RESET-WO-01` remain inactive pending remediation and re-review.
+Repository-retained-byte verification passed; complete-R1-archive rehashing stays `UNVERIFIED_IN_CHECKOUT`.
+REV-0047 addendum 01 returned `ACCEPT`; M0 is closed and `RESET-WO-01` remains inactive.

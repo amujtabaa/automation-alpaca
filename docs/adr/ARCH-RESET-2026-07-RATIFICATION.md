@@ -2,8 +2,8 @@
 
 ## Status
 
-**Accepted as architecture authority; M0 documentation landing only.** This index records Ameen's
-2026-07-31 approval of the unchanged R1 authority unit. It does not activate implementation,
+**Accepted as architecture authority; M0 documentation landing independently accepted.** This
+index records Ameen's 2026-07-31 approval of the unchanged R1 authority unit. It does not activate implementation,
 `RESET-WO-01`, DDL/schema execution, a database, broker access, credentials, Paper activity,
 live-shadow, live trading, deletion, cleanup, push, pull request, or merge.
 
@@ -70,10 +70,10 @@ schema execution remains a separately authorized future M2 gate.
 
 ## Retained gates
 
-1. This M0 documentation commit requires a fresh review seat's disposition before M0 acceptance.
-   REV-0047 returned `BLOCK`; its findings must be remediated and independently re-reviewed.
+1. REV-0047 initially returned `BLOCK`; remediation target `116822d` corrected all three findings,
+   and reviewer-owned addendum 01 returned `ACCEPT`. The M0 independent-review gate is satisfied.
 2. `RESET-WO-01` remains the unchanged staged packet document. It receives no canonical `WO-NNNN`
-   identity and no activation until M0 review is accepted and Ameen explicitly authorizes it.
+   identity and no activation until the dual-version CI gate passes and Ameen explicitly authorizes it.
 3. No outbound Alpaca Paper call or credential use is authorized.
 4. No broker-native replace/RTH handoff, legacy deletion, cleanup, or promotion beyond
    Paper/live-shadow is authorized.
