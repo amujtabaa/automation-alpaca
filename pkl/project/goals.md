@@ -19,8 +19,8 @@ Build a narrow, reliable, browser-operated protection/acquisition engine for Alp
 accepted reset target is a modular monolith with one sequenced writer, one pure transition kernel,
 one SQLite production store, transactional current state/outbox, and broker-neutral protection and
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
-evidence, not the reset foundation. Current phase: M0 documentation landing and independent review;
-implementation is not activated.
+evidence, not the reset foundation. M0 and its independent review are closed; current phase is the
+separately activated pure, I/O-free `WO-0145` execution-fact kernel.
 
 ## Rules / facts
 
@@ -32,8 +32,8 @@ implementation is not activated.
 - Legacy migration/event-log/dual-store behavior remains read-only evidence; reset live decisions
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
-- No reset implementation work begins until the M0 landing is independently reviewed and Ameen
-  explicitly activates the next work order.
+- Reset implementation advances only through independently reviewed work orders explicitly activated
+  after their predecessor gates. `WO-0145` is active; later reset slices remain inactive.
 
 ## Rationale
 
@@ -54,3 +54,5 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
 - 2026-07-07: Created from CLAUDE.md decomposition.
 - 2026-07-31: M0 replaced the completed-Spine-v2 posture with the ratified reset target and retained
   the existing application as frozen evidence. No implementation was activated.
+- 2026-07-31: After M0 acceptance and exact-head Python 3.11/3.12 CI, Ameen's explicit implementation
+  authority activated only the pure, credential-free first reset slice as `WO-0145`.

@@ -72,8 +72,9 @@ schema execution remains a separately authorized future M2 gate.
 
 1. REV-0047 initially returned `BLOCK`; remediation target `116822d` corrected all three findings,
    and reviewer-owned addendum 01 returned `ACCEPT`. The M0 independent-review gate is satisfied.
-2. `RESET-WO-01` remains the unchanged staged packet document. It receives no canonical `WO-NNNN`
-   identity and no activation until the dual-version CI gate passes and Ameen explicitly authorizes it.
+2. `RESET-WO-01` remains an unchanged staged packet document. After the dual-version CI gate passed
+   at `74799d322476117c8403c9ab39a72dffd61a0716` and Ameen explicitly authorized implementation,
+   its first pure, I/O-free slice was canonicalized and activated separately as `WO-0145`.
 3. No outbound Alpaca Paper call or credential use is authorized.
 4. No broker-native replace/RTH handoff, legacy deletion, cleanup, or promotion beyond
    Paper/live-shadow is authorized.

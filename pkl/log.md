@@ -41,3 +41,9 @@
   Python 3.12 gates passed (4,576 passed, 11 skipped, 1 xfailed; 93.12% branch coverage) with the
   broker forced to mock. Python 3.11 is unavailable locally, so both-version CI remains mandatory
   before the staged, inactive `RESET-WO-01` can receive a canonical ID or activation.
+
+- 2026-07-31: The retained WO-0144 gates subsequently passed at exact head `74799d3`: GitHub Actions
+  run 30678810342 succeeded on Python 3.11 and 3.12. Ameen's explicit implementation consent and
+  instruction to carry on activated the immutable staged first slice as canonical `WO-0145`, limited
+  to a pure I/O-free execution-fact kernel. Credentials are unavailable; broker/Paper activity,
+  schema/database work, runtime wiring, later reset slices, cleanup, and merge remain inactive.

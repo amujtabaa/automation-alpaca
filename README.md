@@ -6,7 +6,8 @@
 > [`ADR-021`](docs/adr/ADR-021-position-protection-liquidity-execution.md), and
 > [`ADR-022`](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md), with acceptance recorded in
 > the [ratification index](docs/adr/ARCH-RESET-2026-07-RATIFICATION.md). M0 changes no runtime
-> behavior; `RESET-WO-01` remains staged and inactive.
+> behavior. After the separately gated M0 review and dual-version CI passed, the first pure reset
+> slice was canonicalized and activated as `WO-0145`; it does not wire or run the frozen application.
 
 A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit
