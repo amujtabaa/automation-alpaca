@@ -27,6 +27,7 @@ from app.execution_core.fills import (
     ExecutionAuthority,
     ExecutionScope,
     ExecutionSide,
+    FactKind,
     PositionScope,
     RootHead,
     SeenFact,
@@ -677,6 +678,8 @@ def test_fast_non_tail_revision_never_calls_slow_derivation(
         "derive_ordered_basis_candidate",
         fail_if_called,
     )
+    monkeypatch.setattr(position_module, "_fold_ordered_heads", fail_if_called)
+    monkeypatch.setattr(RootHeadIndex, "entries", property(fail_if_called))
     after, transition = before.apply(correction)
 
     assert transition.quantity_delta == -3
@@ -905,6 +908,144 @@ def test_fresh_source_event_reusing_root_fill_key_is_rejected() -> None:
     after = _assert_reconciliation_no_economics(kernel, collision)
     assert after.position.root_fill_sequence == (_root_key("root"),)
     assert after.position.effective_head_ids == (SourceEventId("first"),)
+
+
+def test_rejected_first_observation_still_reserves_root_fill_key() -> None:
+    rejected_scope = _scope(
+        order_id=BUY_ORDER,
+        side=ExecutionSide.BUY,
+        symbol_id=OTHER_SYMBOL,
+    )
+    rejected = _fill(
+        "rejected",
+        "reserved-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=100,
+        scope=rejected_scope,
+    )
+    first = _assert_reconciliation_no_economics(_Kernel.flat(), rejected)
+    assert first.seen_facts.contains_root(rejected.root_key)
+    assert SeenFactIndex(entries=first.seen_facts.entries).contains_root(
+        rejected.root_key
+    )
+    reuse = _fill(
+        "reuse",
+        "reserved-root",
+        side=ExecutionSide.BUY,
+        quantity=4,
+        units=101,
+    )
+
+    after = _assert_reconciliation_no_economics(first, reuse)
+
+    assert after.position.root_count == 0
+    assert after.root_heads.count == 0
+    assert after.seen_facts.count == 2
+    assert after.seen_facts.contains_root(rejected.root_key)
+
+
+@pytest.mark.parametrize("revision_kind", ["correction", "bust"])
+def test_rejected_revision_reserves_root_against_later_fill(
+    revision_kind: str,
+) -> None:
+    if revision_kind == "correction":
+        rejected: BrokerFact = _correct(
+            "rejected-revision",
+            "reserved-root",
+            "missing-predecessor",
+            side=ExecutionSide.BUY,
+            quantity=3,
+            units=100,
+        )
+    else:
+        rejected = _bust(
+            "rejected-revision",
+            "reserved-root",
+            "missing-predecessor",
+            side=ExecutionSide.BUY,
+        )
+    first = _assert_reconciliation_no_economics(_Kernel.flat(), rejected)
+    reuse = _fill(
+        "reuse",
+        "reserved-root",
+        side=ExecutionSide.BUY,
+        quantity=4,
+        units=101,
+    )
+
+    after = _assert_reconciliation_no_economics(first, reuse)
+
+    assert after.position.raw_quantity == 0
+    assert after.root_heads.count == 0
+    assert after.seen_facts.count == 2
+
+
+def test_seen_fact_commitment_covers_observed_root_reservations() -> None:
+    rejected = _fill(
+        "rejected",
+        "reserved-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=100,
+        scope=_scope(
+            order_id=BUY_ORDER,
+            side=ExecutionSide.BUY,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+    reserved = SeenFactIndex.empty().add(
+        SeenFact(
+            fact=rejected,
+            classification=FirstObservationClassification.RECONCILIATION_REQUIRED,
+        )
+    )
+    unreserved = SeenFactIndex._from_parts(
+        by_key=reserved._by_key,
+        order=reserved._order,
+        observed_roots=type(reserved._observed_roots).empty(),
+    )
+
+    assert unreserved.entries == reserved.entries
+    assert not unreserved.contains_root(rejected.root_key)
+    assert unreserved != reserved
+    assert unreserved.commitment != reserved.commitment
+    assert not reserved.contains_root(
+        _root_key(
+            "reserved-root",
+            account=AccountId("different-account"),
+        )
+    )
+
+
+def test_bind_verified_rejects_unclosed_observed_root_reservations() -> None:
+    rejected = _fill(
+        "rejected",
+        "reserved-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=100,
+        scope=_scope(
+            order_id=BUY_ORDER,
+            side=ExecutionSide.BUY,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+    expected = _assert_reconciliation_no_economics(_Kernel.flat(), rejected)
+    position, roots, seen = _unbound_hydration_parts(expected)
+    unreserved = SeenFactIndex._from_parts(
+        by_key=seen._by_key,
+        order=seen._order,
+        observed_roots=type(seen._observed_roots).empty(),
+    )
+
+    with pytest.raises(ValueError, match="seen-fact replay did not close exactly"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            expected.integrity,
+            roots,
+            unreserved,
+        )
 
 
 def test_revision_substitutes_head_at_original_sequence_without_append() -> None:
@@ -1513,6 +1654,134 @@ def test_fast_apply_rejects_exact_snapshot_component_mismatch(mismatch: str) -> 
     _assert_reconciliation_no_economics(corrupt, incoming)
 
 
+def test_incoherent_snapshot_preserves_position_integrity_floor() -> None:
+    overfill = _fill(
+        "overfill",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    quarantined, _ = _apply_all(overfill)
+    assert quarantined.position.integrity_floor & (
+        PositionIntegrity.OVERFILL_QUARANTINE
+    )
+    mixed = replace(
+        quarantined,
+        integrity=PositionIntegrity.CONSISTENT,
+        root_heads=RootHeadIndex.empty(POSITION_SCOPE),
+        seen_facts=SeenFactIndex.empty(),
+    )
+    incoming = _fill(
+        "incoming",
+        "incoming-root",
+        side=ExecutionSide.BUY,
+        quantity=5,
+        units=101,
+    )
+
+    after, transition = mixed.apply(incoming)
+
+    _assert_zero_economic_delta(mixed, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert after.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    assert after.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert after.position.integrity_floor & (
+        PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    )
+    assert after.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
+
+
+def test_incoherent_snapshot_recovers_integrity_from_shared_binding() -> None:
+    overfill = _fill(
+        "overfill",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    quarantined, _ = _apply_all(overfill)
+    corrupted_position = replace(
+        quarantined.position,
+        integrity_floor=PositionIntegrity.CONSISTENT,
+    )
+    mixed = replace(
+        quarantined,
+        position=corrupted_position,
+        integrity=PositionIntegrity.CONSISTENT,
+    )
+    incoming = _fill(
+        "incoming",
+        "incoming-root",
+        side=ExecutionSide.BUY,
+        quantity=5,
+        units=101,
+    )
+
+    after, transition = mixed.apply(incoming)
+
+    _assert_zero_economic_delta(mixed, transition)
+    assert after.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert after.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
+
+
+def test_incoherent_changed_replay_latches_fact_conflict() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    corrupt = replace(
+        applied,
+        root_heads=RootHeadIndex.empty(POSITION_SCOPE),
+    )
+    changed_replay = replace(fill, price=_price(101))
+
+    after, transition = corrupt.apply(changed_replay)
+
+    _assert_zero_economic_delta(corrupt, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.original_classification is (
+        FirstObservationClassification.APPLIED_AVAILABLE
+    )
+    assert after.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    assert after.integrity & PositionIntegrity.EXECUTION_FACT_CONFLICT
+    assert after.position.integrity_floor & (
+        PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    )
+    assert after.position.integrity_floor & PositionIntegrity.EXECUTION_FACT_CONFLICT
+
+    deliberately_cleared = replace(
+        after,
+        integrity=PositionIntegrity.CONSISTENT,
+    )
+    next_fact = _fill(
+        "next",
+        "next-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=102,
+    )
+    recovered, next_transition = deliberately_cleared.apply(next_fact)
+
+    _assert_zero_economic_delta(deliberately_cleared, next_transition)
+    assert recovered.integrity & PositionIntegrity.EXECUTION_FACT_CONFLICT
+    assert recovered.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+
+
+def test_incoherent_exact_replay_does_not_invent_fact_conflict() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    corrupt = replace(
+        applied,
+        root_heads=RootHeadIndex.empty(POSITION_SCOPE),
+    )
+
+    after, transition = corrupt.apply(fill)
+
+    _assert_zero_economic_delta(corrupt, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert after.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    assert not after.integrity & PositionIntegrity.EXECUTION_FACT_CONFLICT
+
+
 def test_exact_replay_rejects_flat_snapshot_with_applied_seen_fact() -> None:
     fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
     applied, _ = _apply_all(fill)
@@ -1841,6 +2110,76 @@ def test_bind_verified_rejects_forged_tail_prefix_sequence_commitment() -> None:
         )
 
 
+def test_bind_verified_rejects_root_head_semantics_not_in_seen_replay() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    position, _, seen = _unbound_hydration_parts(applied)
+    head = applied.root_heads.get(fill.root_key)
+    assert head is not None
+    forged_head = replace(head, price=_price(101))
+
+    with pytest.raises(ValueError, match="root heads do not match"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            applied.integrity,
+            RootHeadIndex(entries=(forged_head,), position_scope=POSITION_SCOPE),
+            seen,
+        )
+
+
+@pytest.mark.parametrize(
+    "proof_field",
+    ["prefix_heads_commitment", "prefix_proof_commitment"],
+)
+def test_bind_verified_rejects_tail_head_proof_not_in_seen_replay(
+    proof_field: str,
+) -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    position, _, seen = _unbound_hydration_parts(applied)
+    head = applied.root_heads.get(fill.root_key)
+    assert head is not None
+    forged_head = replace(head, **{proof_field: b"forged-tail-proof"})
+
+    with pytest.raises(ValueError, match="exact replayed proof"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            applied.integrity,
+            RootHeadIndex(entries=(forged_head,), position_scope=POSITION_SCOPE),
+            seen,
+        )
+
+
+def test_bind_verified_rejects_retained_head_proof_without_position_proof() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    authentic_head = applied.root_heads.get(fill.root_key)
+    assert authentic_head is not None
+    assert authentic_head.prefix_heads_commitment
+    assert authentic_head.prefix_proof_commitment
+    proofless_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=applied.position.raw_quantity,
+        basis_authority=applied.position.basis_authority,
+        cost_basis=applied.position.cost_basis,
+        root_fill_sequence=applied.position.root_fill_sequence,
+        effective_head_ids=applied.position.effective_head_ids,
+        basis_price_metadata=applied.position.basis_price_metadata,
+        tail_fold_input=None,
+    )
+
+    with pytest.raises(ValueError, match="tail proof must be fully absent"):
+        ExecutionSnapshot.bind_verified(
+            proofless_position,
+            applied.integrity,
+            RootHeadIndex(
+                entries=applied.root_heads.entries,
+                position_scope=POSITION_SCOPE,
+            ),
+            SeenFactIndex(entries=applied.seen_facts.entries),
+        )
+
+
 def test_bind_verified_rejects_inexact_basis_price_metadata() -> None:
     fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
     applied, _ = _apply_all(fill)
@@ -1896,6 +2235,54 @@ def test_bind_verified_rejects_erased_priced_bust_metadata() -> None:
             ),
             SeenFactIndex(entries=busted.seen_facts.entries),
         )
+
+
+def test_bind_verified_accepts_priced_bust_and_preserves_compatibility() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    bust = _bust(
+        "bust",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        reported_price=_price(100),
+    )
+    busted, _ = _apply_all(fill, bust)
+    position, roots, seen = _unbound_hydration_parts(busted)
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        position,
+        busted.integrity,
+        roots,
+        seen,
+    )
+    priced_bust_head = hydrated.root_heads.get(fill.root_key)
+    assert priced_bust_head is not None
+    assert priced_bust_head.kind is FactKind.TRADE_BUST
+    assert priced_bust_head.price == _price(100)
+    assert hydrated.position.basis_price_metadata == _price(100)
+    followup = _fill(
+        "followup",
+        "followup-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+
+    transition = apply_broker_execution_fact(
+        hydrated.position,
+        hydrated.integrity,
+        hydrated.root_heads,
+        hydrated.seen_facts,
+        followup,
+    )
+
+    assert transition.disposition is TransitionDisposition.APPLIED
+    assert transition.original_classification is (
+        FirstObservationClassification.APPLIED_AVAILABLE
+    )
+    assert transition.position.basis_authority is BasisAuthority.AVAILABLE
+    assert transition.position.cost_basis == _basis(101)
+    assert transition.position.basis_price_metadata == _price(100)
 
 
 def test_position_commitment_covers_exact_tail_fold_input() -> None:
@@ -1979,6 +2366,67 @@ def test_bind_verified_allows_missing_tail_proof_then_revision_becomes_pending()
         BasisAuthority.BASIS_RECONCILIATION_PENDING
     )
     assert transition.position.cost_basis is None
+
+
+def test_pending_root_clears_tail_proof_and_hydrates() -> None:
+    incompatible = _fill(
+        "incompatible",
+        "root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=203,
+        price=_price(203, tick=TickMetadata(tick_units=PriceUnits(2), scale=SCALE)),
+    )
+    pending, _ = _apply_all(incompatible)
+    head = pending.root_heads.get(incompatible.root_key)
+    assert head is not None
+    assert pending.position.tail_fold_input is None
+    assert head.prefix_heads_commitment == b""
+    assert head.prefix_proof_commitment == b""
+    position, roots, seen = _unbound_hydration_parts(pending)
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        position,
+        pending.integrity,
+        roots,
+        seen,
+    )
+
+    assert hydrated.position.basis_authority is (
+        BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
+
+
+def test_non_tail_revision_clears_current_tail_proof_and_hydrates() -> None:
+    buy = _fill("buy", "buy-root", side=ExecutionSide.BUY, quantity=10, units=100)
+    sell = _fill("sell", "sell-root", side=ExecutionSide.SELL, quantity=5, units=120)
+    correction = _correct(
+        "correction",
+        "buy-root",
+        "buy",
+        side=ExecutionSide.BUY,
+        quantity=7,
+        units=101,
+    )
+    pending, _ = _apply_all(buy, sell, correction)
+    current_tail = pending.root_heads.get(sell.root_key)
+    assert current_tail is not None
+    assert pending.position.tail_fold_input is None
+    assert current_tail.prefix_heads_commitment == b""
+    assert current_tail.prefix_proof_commitment == b""
+    position, roots, seen = _unbound_hydration_parts(pending)
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        position,
+        pending.integrity,
+        roots,
+        seen,
+    )
+
+    assert hydrated.position.raw_quantity == 2
+    assert hydrated.position.basis_authority is (
+        BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
 
 
 def test_bind_verified_accepts_complete_revision_chain() -> None:
@@ -2206,7 +2654,7 @@ def _history_kernel(root_count: int) -> tuple[_Kernel, BrokerFillFact]:
     return kernel, incoming
 
 
-def _fast_apply_line_events(kernel: _Kernel, fact: BrokerFillFact) -> int:
+def _fast_apply_line_events(kernel: _Kernel, fact: BrokerFact) -> int:
     traced_files = {
         inspect.getsourcefile(apply_broker_execution_fact),
         inspect.getsourcefile(RootHeadIndex),
@@ -2242,6 +2690,31 @@ def test_fast_apply_line_events_are_independent_of_history_length() -> None:
     # former tuple scans/copies, whose 2,048-root path exceeded 53,000 events.
     assert large_events <= small_events + 500, (
         "one fast application scaled with historical roots/facts: "
+        f"16 roots={small_events} line events, 2048 roots={large_events}"
+    )
+
+
+def test_fast_non_tail_revision_line_events_are_independent_of_history_length() -> None:
+    small, _ = _history_kernel(16)
+    large, _ = _history_kernel(2_048)
+    revision = _correct(
+        "history-correction",
+        "history-root-0",
+        "history-event-0",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=101,
+        order_id=OrderId("history-order-0"),
+    )
+
+    small_events = _fast_apply_line_events(small, revision)
+    large_events = _fast_apply_line_events(large, revision)
+
+    # Sparse radix fan-out adds bounded binary-search work as the fixed byte
+    # alphabet fills. This constant headroom still kills any ordered fold or
+    # full-history materialization in the non-tail fast path.
+    assert large_events <= small_events + 2_000, (
+        "one non-tail revision scaled with ordered history: "
         f"16 roots={small_events} line events, 2048 roots={large_events}"
     )
 

@@ -17,7 +17,7 @@ activation_ci: "GitHub Actions run 30678810342 (#673): Python 3.11 job 913114516
 
 # WO-0145 — Reset kernel A: value identity and fill-position integrity
 
-`[FABLE • FULL • verification: DIRECT + independent review • task: pure execution-fact kernel]`
+`[FABLE • FULL • verification: DIRECT • task: pure execution-fact kernel]`
 
 ## Activation and authority
 
@@ -39,13 +39,53 @@ and supplies no design, validity, or test evidence here.
 fable_gate:
   goal: "Build the exact, immutable, deterministic fill-family semantic center without wiring it into the incumbent runtime."
   assumptions:
-    - "Accepted ADR-020/021 and the staged RESET-WO-01 uniquely require first-occurrence fill-family quantity truth, linked root replacement, pending non-tail basis, and exact negative overfill quarantine."
-    - "Python 3.11 compatibility is enforced by mypy's 3.11 target and real 3.11 CI; local development is Python 3.12."
-    - "The incumbent application and SQLite/event paths remain frozen evidence, not dependencies."
-  approach: "Red-first immutable value/fact tests, named mutation pins, a test-owned exact arithmetic oracle, then the minimum pure implementation and stateful verification."
-  out_of_scope: ["I/O or persistence", "broker/venue behavior", "human-attested ingestion", "status/retry/release/protection/serving", "runtime integration"]
-  done_when: "Focused and full gates pass on Python 3.11/3.12, scope is exact, and an independent reviewer leaves no P0/P1."
-  blast_radius: "New app.execution_core package and its isolated tests; no incumbent runtime consumer or schema."
+    - claim: "ADR-020, ADR-021, ADR-022, and staged RESET-WO-01 define the controlling M1A semantics."
+      status: VERIFIED
+      evidence: "Accepted authority is recorded in the reset ratification and immutable staged work order."
+    - claim: "Standing human authority covers WO-0145 implementation and in-scope remediation without widening any exclusion."
+      status: VERIFIED
+      evidence: "The activation section records the original authority and both explicit in-flight re-gates."
+    - claim: "The kernel can be verified without incumbent runtime, broker, persistence, UI, clock, network, or nondeterministic dependencies."
+      status: VERIFIED
+      evidence: "The isolated execution_core and import-boundary tests exercise only the pure kernel."
+    - claim: "The exact final change will pass the database-bearing R2 and full-coverage gates."
+      status: UNVERIFIED
+      evidence: "Static inspection established that those commands instantiate SQLite, which remains excluded."
+    - claim: "The exact final change will pass Python 3.11 and Python 3.12 branch CI."
+      status: UNVERIFIED
+      evidence: "Python 3.11 is unavailable locally and the exact final head has not been pushed."
+  approach: "Use RED-first immutable transition tests, independent arithmetic oracles, live mutation pins, minimum pure implementation, repository static gates, and independent exact-head review."
+  alternatives_considered:
+    - "Reuse Spine v2 or R6 implementation — rejected because those implementations remain read-only evidence until separately replaced."
+    - "Wire the kernel into the incumbent runtime — rejected because integration belongs to a later reset work order."
+    - "Run SQLite-bearing tests or branch CI now — rejected pending separate explicit authorization."
+  out_of_scope:
+    - "Broker calls, credentials, account activity, or Alpaca Paper activity"
+    - "Persistence, schema, SQL, DDL, database engines, migrations, or fixtures that instantiate a database"
+    - "Runtime wiring, adapters, serving, UI, status, retry, release, or protection behavior"
+    - "Legacy deletion or cleanup"
+    - "Merge or activation of RESET-WO-02 or later work"
+  done_when:
+    - behavior: "All required fill-family, lineage, quantity, basis, integrity, hydration, and import-boundary behaviors pass."
+      test: "Focused execution_core test suite"
+      command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/execution_core/test_values.py tests/execution_core/test_fill_position.py tests/execution_core/test_fill_position_stateful.py tests/execution_core/test_import_boundary.py -p no:cacheprovider --basetemp <fresh-path>"
+    - behavior: "Every named production mutant fails while live, passes after restoration, and leaves no production diff."
+      test: "Named deterministic and stateful mutation pins"
+      command: "Apply each documented mutant, run its named node with a fresh cache-disabled basetemp, inverse-patch it, and rerun the same node."
+    - behavior: "Repository static, import-contract, AI-OS, ledger, disposition, and contamination checks pass on the exact tree."
+      test: "Repository static gates"
+      command: "Run Ruff, mypy app, six import contracts, and all applicable AI-OS checkers."
+    - behavior: "R2 and full branch-coverage pytest pass with BROKER_ADAPTER=mock."
+      test: "Database-bearing gates after separate authorization"
+      command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/r2_conformance_oracle.py; .\\.venv\\Scripts\\python.exe -m pytest --cov=app --cov-branch --cov-report=term-missing"
+    - behavior: "The exact head passes unchanged Python 3.11 and Python 3.12 CI."
+      test: "GitHub Actions after separate push authorization"
+      command: "Push the exact head and inspect both unchanged CI jobs."
+    - behavior: "Independent exact-head review reports no unresolved P0 or P1."
+      test: "Independent review seat"
+      command: "Review the final exact diff and fresh evidence without relying on implementation-seat conclusions."
+  blast_radius: "Only app/execution_core, its isolated tests, and WO-0145 close-out records; no incumbent runtime consumer or schema."
+  rollback: "Revert only the bounded WO-0145 commits while leaving incumbent runtime, repositories, worktrees, and preserved artifacts untouched."
 ```
 
 ## Context packet
@@ -181,7 +221,16 @@ The four required test modules were authored before `app/execution_core` existed
 format check passed. The combined focused command above, using fresh basetemp
 `.pytest_tmp_wo0145_red_root` and disabled cache, failed during collection on exactly three expected
 `ModuleNotFoundError: No module named 'app.execution_core'` errors (`test_values`, deterministic
-fill/position, and stateful fill/position). No application, database, or broker code executed.
+fill/position, and stateful fill/position). No production runtime, broker, database, or I/O path
+executed; collection stopped before `app.execution_core` could import.
+
+```yaml
+evidence:
+  phase: RED
+  command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/execution_core/test_values.py tests/execution_core/test_fill_position.py tests/execution_core/test_fill_position_stateful.py tests/execution_core/test_import_boundary.py -p no:cacheprovider --basetemp .pytest_tmp_wo0145_red_root"
+  result: FAIL
+  decisive_output: "Collection stopped with exactly three expected ModuleNotFoundError failures because app.execution_core did not yet exist."
+```
 
 ### P0 stop and explicit re-gate — 2026-07-31
 
@@ -211,6 +260,25 @@ The slope pin measured 664 traced line events at 16 roots and 53,496 at 2,048 ro
 attempt with `--cache-clear` never reached collection because a pre-existing `.pytest_cache` Windows
 ACL denied pytest's cache hook; it is environment evidence only and was not counted as RED evidence.
 
+```yaml
+evidence:
+  phase: RED
+  command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/execution_core/test_values.py tests/execution_core/test_fill_position.py tests/execution_core/test_fill_position_stateful.py tests/execution_core/test_import_boundary.py -p no:cacheprovider --basetemp .pytest_tmp_wo0145_remediation_red_root_2"
+  result: FAIL
+  decisive_output: "115 tests collected: 99 passed and 16 intended remediation pins failed."
+```
+
+```yaml
+fable_fix:
+  symptom: "The first implementation did not bind complete position scope, snapshot components, or authoritative pre-tail basis proof."
+  root_cause: "Independently supplied components and fold input lacked one verifiable scope and commitment boundary."
+  evidence: "Independent review found three P0 defects; the first remediation RED gate produced 16 intended failures."
+  fix: "Added PositionScope binding, component commitments, coherent snapshot construction, provenance checks, exact tail-proof binding, and history-independent index updates."
+  regression_test: "The 16 first-remediation deterministic and stateful pins documented above."
+  red_green_verified: true
+  attempt: 1
+```
+
 ### Second P0 stop and standing in-flight re-gate — 2026-07-31
 
 After the first remediation reached 115 focused passes, fresh review triggered the stop threshold
@@ -237,8 +305,8 @@ prefix commitments, inexact and erased priced-bust metadata, tail/floor commitme
 human-root hydration, and stale-bound tail-cache tampering. Positive controls retained valid
 revision-chain hydration, rejected-observation hydration with its required latch, conservative
 integrity supersets, fully absent tail proof degrading the next valid revision to typed pending, and
-the now-coherent human-authority mutation fixtures. No production, broker, database, or runtime code
-executed in this RED gate.
+the now-coherent human-authority mutation fixtures. No production runtime, broker, database, or I/O
+path executed; the selected tests exercised only the pure `app.execution_core` kernel in-process.
 
 The minimum remediation then made all 22 selected second-round tests green. The full focused gate
 collected and passed 134 tests with `BROKER_ADAPTER=mock`, cache disabled, and fresh basetemp
@@ -248,6 +316,17 @@ first observations; it compares exact current root/economic/metadata state, reco
 tail proof, permits a fully absent proof to degrade future revision basis to pending, and requires
 supplied integrity to contain both replay-derived restrictions and the state-carried committed
 monotonic floor. The replay is audit-only and does not enter the normal fact-application fast path.
+
+```yaml
+fable_fix:
+  symptom: "Hydration admitted unmatched applied observations, cleared required integrity, accepted forged tail proof, and the human-authority mutation survived its original fixture."
+  root_cause: "Commitment comparison did not reconstruct chronological semantics, integrity lacked a committed monotonic floor, and the human fixture was not coherently bound."
+  evidence: "The second-remediation selection produced 16 intended failures and six positive controls; the repaired focused suite subsequently passed."
+  fix: "Added chronological replay, exact classification/economic/metadata comparison, committed integrity floor, reconstructed tail proof, absent-proof degradation, and coherent human fixtures."
+  regression_test: "Second-remediation hydration tests, deterministic revision-integrity pin, human-authority pins, and live hydration mutants."
+  red_green_verified: true
+  attempt: 2
+```
 
 ### Actual mutation evidence — 2026-07-31
 
@@ -276,6 +355,70 @@ materialized with a clean committed floor so their pins independently require ch
 rather than passing through the already-carried runtime floor. The post-mutation focused run passed
 all 135 tests with fresh basetemp `.pytest_tmp_wo0145_post_mutation_focused_1`; no mutant remained.
 
+### Third review stop and standing-authority RED gate — 2026-07-31
+
+Fresh independent semantic, scope, and test reviews then reproduced two further P0 defects. An
+incoherent snapshot transition could drop committed overfill and changed-replay conflict evidence,
+and a rejected first observation did not reserve its account-scoped root key against a later fresh
+fill. Review also found P1 proof gaps in exact public-surface coverage, direct slow-fold sentinels,
+stateful human-authority coherence, hydration branch controls, fully absent tail proof, priced-bust
+positive hydration, non-tail history scaling, canonical Fable records, and reproducible mutation
+evidence. The standing in-flight authorization covers RED-first remediation of all of these findings
+without changing any scope exclusion.
+
+All third-round tests and evidence refinements were authored before production remediation. With
+`BROKER_ADAPTER=mock`, cache disabled, and fresh basetemp
+`.pytest_tmp_wo0145_third_red_complete_3`, the exact selected gate expanded to 22 cases through two
+parameterizations and produced exactly 12 intended failures plus 10 positive-control passes. The
+failures pin rejected fill/correction/bust root reservation; observed-root behavior, equality,
+commitment, and hydration closure; monotonic floor recovery and persistence; changed-replay
+conflict; fully absent tail proof; proof clearing for pending root and non-tail revision outputs; and
+the stateful rejected-root property. Positive controls passed exact incoherent replay without false
+conflict, exact head semantics/proof rejection, priced-bust hydration/compatibility, direct slow-fold
+sentinels, bounded non-tail history work, coherent human-authority guards, and exact public exports.
+Only the pure kernel ran in-process; no runtime, broker, database, or I/O path executed.
+
+```yaml
+evidence:
+  phase: RED
+  command: >-
+    .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+    tests/execution_core/test_fill_position.py::test_rejected_first_observation_still_reserves_root_fill_key
+    tests/execution_core/test_fill_position.py::test_rejected_revision_reserves_root_against_later_fill
+    tests/execution_core/test_fill_position.py::test_seen_fact_commitment_covers_observed_root_reservations
+    tests/execution_core/test_fill_position.py::test_bind_verified_rejects_unclosed_observed_root_reservations
+    tests/execution_core/test_fill_position.py::test_incoherent_snapshot_preserves_position_integrity_floor
+    tests/execution_core/test_fill_position.py::test_incoherent_snapshot_recovers_integrity_from_shared_binding
+    tests/execution_core/test_fill_position.py::test_incoherent_changed_replay_latches_fact_conflict
+    tests/execution_core/test_fill_position.py::test_incoherent_exact_replay_does_not_invent_fact_conflict
+    tests/execution_core/test_fill_position.py::test_bind_verified_rejects_root_head_semantics_not_in_seen_replay
+    tests/execution_core/test_fill_position.py::test_bind_verified_rejects_tail_head_proof_not_in_seen_replay
+    tests/execution_core/test_fill_position.py::test_bind_verified_rejects_retained_head_proof_without_position_proof
+    tests/execution_core/test_fill_position.py::test_bind_verified_accepts_priced_bust_and_preserves_compatibility
+    tests/execution_core/test_fill_position.py::test_pending_root_clears_tail_proof_and_hydrates
+    tests/execution_core/test_fill_position.py::test_non_tail_revision_clears_current_tail_proof_and_hydrates
+    tests/execution_core/test_fill_position.py::test_fast_non_tail_revision_never_calls_slow_derivation
+    tests/execution_core/test_fill_position.py::test_fast_non_tail_revision_line_events_are_independent_of_history_length
+    tests/execution_core/test_fill_position_stateful.py::test_property_rejected_root_key_remains_reserved
+    tests/execution_core/test_fill_position_stateful.py::test_property_fast_non_tail_revision_never_invokes_or_exposes_slow_candidate
+    tests/execution_core/test_fill_position_stateful.py::test_property_human_attested_root_cannot_be_corrected_or_busted
+    tests/execution_core/test_import_boundary.py::test_public_import_is_side_effect_free_and_complete
+    --basetemp .pytest_tmp_wo0145_third_red_complete_3
+  result: FAIL
+  decisive_output: "22 selected cases: 12 intended failures and 10 positive-control passes."
+```
+
+```yaml
+fable_fix:
+  symptom: "Incoherent transitions could lose integrity evidence; rejected observations did not reserve root identity; review also exposed tail-proof and proof-quality gaps."
+  root_cause: "The fail-closed path neither committed all recoverable flags nor detected changed replay; SeenFactIndex lacked a committed observed-root map; inactive tail proof was not fully cleared or rejected."
+  evidence: "Independent review reproduced both P0s and the third-round selected RED gate failed at all 12 intended seams."
+  fix: "Pending production remediation after the committed RED checkpoint."
+  regression_test: "The 22-case third-round selection documented above."
+  red_green_verified: false
+  attempt: 3
+```
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
@@ -286,3 +429,39 @@ Completion requires exact scope, every mutation pin demonstrated failure-capable
 dual-version green evidence, no incumbent runtime/schema change, and independent blind review with
 no unresolved P0/P1. Then move this WO to `work/completed/keep/`, append exactly one ledger row, and
 record PKL impact in the same commit. No self-acceptance and no merge.
+
+```yaml
+fable_done:
+  task: "WO-0145 reset kernel A: value identity and fill-position integrity"
+  done_when_results:
+    - item: "All focused kernel behavior passes on the exact current tree."
+      status: NOT_MET
+      evidence: "The third-review RED gate intentionally exposes unresolved production defects."
+    - item: "Every required mutation pin is demonstrated failure-capable and restored green with durable evidence."
+      status: NOT_MET
+      evidence: "The new pins remain to run live, and the earlier a-l record must be made exactly reproducible."
+    - item: "Repository-wide static gates pass on the exact current tree."
+      status: NOT_MET
+      evidence: "They passed at checkpoint 00c3394 but must be rerun after third remediation."
+    - item: "R2 and full branch-coverage suites pass."
+      status: BLOCKED
+      evidence: "Those gates instantiate SQLite and database execution remains excluded."
+    - item: "Python 3.11 and Python 3.12 CI pass on the exact head."
+      status: BLOCKED
+      evidence: "Local Python 3.11 is unavailable and pushing would start excluded database-bearing CI."
+    - item: "Independent exact-head review has no unresolved P0 or P1."
+      status: NOT_MET
+      evidence: "The latest review returned blocking P0 and P1 findings; re-review is pending."
+    - item: "Allowed paths and all broker, credential, database, runtime, merge, deletion, and cleanup exclusions remain respected."
+      status: MET
+      evidence: "Scope review found the implementation diff exact and no excluded activity occurred."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "Open in-scope defects and unexecuted proof obligations are listed explicitly; none is waived."
+  deferred:
+    - "Database-bearing R2 and full-coverage validation pending separate explicit database-test authorization."
+    - "Exact-head Python 3.11 and Python 3.12 branch CI pending separate push and CI authorization."
+    - "Independent re-review pending third remediation and fresh verification."
+  status: BLOCKED
+```

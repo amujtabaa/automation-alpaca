@@ -100,12 +100,14 @@ _PUBLIC_SURFACE = {
     "ExecutionFactKey",
     "ExecutionScope",
     "ExecutionSide",
+    "ExecutionSnapshot",
     "ExecutionTransition",
     "FactKind",
     "FirstObservationClassification",
     "FoldInput",
     "OrderId",
     "PositionIntegrity",
+    "PositionScope",
     "PositionState",
     "PriceScale",
     "PriceUnits",
@@ -288,7 +290,8 @@ after = set(sys.modules) - before
 forbidden = {sorted(_FORBIDDEN_IMPORT_ROOTS)!r}
 loaded = sorted(name for name in after if name.split('.', 1)[0] in forbidden)
 missing = sorted(name for name in {_PUBLIC_SURFACE!r} if not hasattr(kernel, name))
-print(json.dumps({{'loaded': loaded, 'missing': missing}}))
+declared = sorted(kernel.__all__)
+print(json.dumps({{'loaded': loaded, 'missing': missing, 'declared': declared}}))
 """
     completed = subprocess.run(
         [sys.executable, "-I", "-S", "-c", script],
@@ -302,3 +305,4 @@ print(json.dumps({{'loaded': loaded, 'missing': missing}}))
     result = json.loads(completed.stdout)
     assert result["loaded"] == []
     assert result["missing"] == []
+    assert result["declared"] == sorted(_PUBLIC_SURFACE)

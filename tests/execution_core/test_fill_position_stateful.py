@@ -14,6 +14,7 @@ from fractions import Fraction
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 
+import app.execution_core.position as position_module
 from app.execution_core.fills import (
     BrokerFillFact,
     BrokerTradeBustFact,
@@ -649,6 +650,7 @@ class FillPositionMachine(RuleBasedStateMachine):
             assert observed is not None
             assert observed.fact == fact
             assert observed.classification is classification
+            assert self.seen_facts.contains_root(fact.root_key)
 
 
 TestFillPositionStateful = FillPositionMachine.TestCase
@@ -690,6 +692,50 @@ def test_property_duplicate_does_not_count_clamp_reject_or_clear_integrity() -> 
     assert replay.root_heads == first.root_heads
     assert replay.integrity == first.integrity
     assert len(replay.position.root_fill_sequence) == 1
+
+
+def test_property_rejected_root_key_remains_reserved() -> None:
+    snapshot = _flat_snapshot()
+    rejected = BrokerFillFact(
+        key=_fact_key(1),
+        scope=replace(
+            _scope(ExecutionSide.BUY, 1),
+            symbol_id=SymbolId("MSFT"),
+        ),
+        root_fill_id=RootFillId("reserved-root"),
+        quantity=Quantity(3),
+        price=_price(100),
+    )
+    first = _apply(
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+        rejected,
+    )
+    assert first.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert first.seen_facts.contains_root(rejected.root_key)
+    reuse = BrokerFillFact(
+        key=_fact_key(2),
+        scope=_scope(ExecutionSide.BUY, 2),
+        root_fill_id=rejected.root_fill_id,
+        quantity=Quantity(5),
+        price=_price(101),
+    )
+
+    second = _apply(
+        first.position,
+        first.integrity,
+        first.root_heads,
+        first.seen_facts,
+        reuse,
+    )
+
+    assert second.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert second.quantity_delta == 0
+    assert second.position.raw_quantity == 0
+    assert second.root_heads.count == 0
+    assert second.seen_facts.count == 2
 
 
 def test_property_incompatible_authoritative_fact_applies_and_withholds_basis() -> None:
@@ -832,6 +878,10 @@ def test_property_fast_non_tail_revision_never_invokes_or_exposes_slow_candidate
             "app.execution_core.position.derive_ordered_basis_candidate",
             fail_if_called,
         )
+        patcher.setattr(
+            "app.execution_core.position._fold_ordered_heads",
+            fail_if_called,
+        )
         revised = _apply(
             second.position,
             second.integrity,
@@ -873,7 +923,14 @@ def test_property_human_attested_root_cannot_be_corrected_or_busted() -> None:
     broker_head = broker_state.root_heads.get(key)
     assert broker_head is not None
     human_heads = RootHeadIndex(
-        entries=(replace(broker_head, authority=ExecutionAuthority.HUMAN_ATTESTED),)
+        entries=(replace(broker_head, authority=ExecutionAuthority.HUMAN_ATTESTED),),
+        position_scope=_POSITION_SCOPE,
+    )
+    human_snapshot = position_module._bind_components(
+        replace(broker_state.position, _binding=None),
+        broker_state.integrity,
+        human_heads,
+        SeenFactIndex(entries=broker_state.seen_facts.entries),
     )
     correction = BrokerTradeCorrectFact(
         key=_fact_key(2),
@@ -883,14 +940,23 @@ def test_property_human_attested_root_cannot_be_corrected_or_busted() -> None:
         revised_quantity=Quantity(7),
         revised_price=_price(101),
     )
-    transition = _apply(
-        broker_state.position,
-        broker_state.integrity,
-        human_heads,
-        broker_state.seen_facts,
-        correction,
+    bust = BrokerTradeBustFact(
+        key=_fact_key(3),
+        scope=fill.scope,
+        root_fill_id=fill.root_fill_id,
+        predecessor_source_event_id=fill.key.source_event_id,
     )
-    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
-    assert transition.quantity_delta == 0
-    assert transition.position == broker_state.position
-    assert transition.integrity & (PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED)
+    for revision in (correction, bust):
+        transition = _apply(
+            human_snapshot.position,
+            human_snapshot.integrity,
+            human_snapshot.root_heads,
+            human_snapshot.seen_facts,
+            revision,
+        )
+        assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+        assert transition.quantity_delta == 0
+        assert transition.position == human_snapshot.position
+        assert transition.integrity & (
+            PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+        )
