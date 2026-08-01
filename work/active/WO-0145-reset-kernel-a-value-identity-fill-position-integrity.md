@@ -24,7 +24,8 @@ activation_ci: "GitHub Actions run 30678810342 (#673): Python 3.11 job 913114516
 Ameen gave standing explicit consent for implementation and in-flight remediation, then instructed,
 “Carry on; be ambitious.” That authority is applied only after WO-0144 closed, REV-0047 addendum 01
 returned `ACCEPT`, and exact-head CI at `74799d322476117c8403c9ab39a72dffd61a0716`
-passed Python 3.11 and 3.12. It activates only this bounded I/O-free WO, its tests, in-scope fixes,
+passed Python 3.11 and 3.12. It activates only this bounded WO, its I/O-free production kernel, its
+tests, in-scope fixes,
 branch CI/review preparation, and eventual close-out. It does not activate RESET-WO-02 or later work.
 
 Credentials are unavailable. Verification must force `BROKER_ADAPTER=mock`. No credential discovery
@@ -47,7 +48,7 @@ fable_gate:
       evidence: "The activation section records the original authority and both explicit in-flight re-gates."
     - claim: "The kernel can be verified without incumbent runtime, broker, persistence, UI, clock, network, or nondeterministic dependencies."
       status: VERIFIED
-      evidence: "The isolated execution_core and import-boundary tests exercise only the pure kernel."
+      evidence: "The isolated execution_core and import-boundary tests exercise the pure kernel; authorized pytest filesystem, source-read, basetemp, and subprocess activity is disclosed separately."
     - claim: "The exact final change will pass the database-bearing R2 and full-coverage gates."
       status: UNVERIFIED
       evidence: "Static inspection established that those commands instantiate SQLite, which remains excluded."
@@ -158,6 +159,16 @@ implementation diff. The manifest-covered staged work order is never edited.
 - Every first observation, including rejected lineage, enters the immutable seen-fact index with its
   original classification. Exact replay reports that classification and zero delta; changed replay
   preserves the first fact, adds conflict, and applies zero economics.
+- `SeenFactIndex` is one immutable registry per `(broker, environment, account)`, shared across that
+  account's position symbols. Its exact account owner, first observations, root reservations, and
+  per-position overfill summaries participate in commitment and value identity. Mixed-account
+  insertion is rejected.
+- `SeenFact` commits the exact position on which an observation was evaluated. Applied
+  classifications require evaluation scope to equal fact position scope; reconciliation
+  observations may record a misroute. Same-position identical retries are exact no-ops;
+  cross-position identical retries reconcile, and changed cross-position retries conflict and
+  reconcile. A fact rejected on another position never later applies merely because it is routed to
+  its fact symbol.
 - A fresh source event reusing a root-fill key is reconciliation-required. A revision applies only
   to a broker-authoritative root's current head under exact complete scope.
 - `PositionState` stores ordered root keys and aligned current-head IDs; the immutable root-head
@@ -170,6 +181,13 @@ implementation diff. The manifest-covered staged work order is never edited.
 - The separate slow helper binds root order and head IDs, uses exact rational arithmetic and the
   accepted long-only fold, and returns derived, incompatible-metadata, or inconsistent-snapshot.
   Its candidate never has current authority.
+- Hydration replays the complete account observation order through isolated per-position snapshots,
+  then returns the selected position bound to the account-registry high-water. Historical non-tail
+  proof is exact-compared whenever any proof cache is supplied. A wholly absent proof cache is an
+  allowed representation, but a later affected revision remains basis-pending.
+- `PositionState.integrity_floor`, exact `RootHeadIndex` scope and signed economics, and
+  `SeenFactIndex` owner/reservation/summary state participate in value equality as well as
+  commitments. Extrinsic snapshot bindings remain intentionally outside value equality.
 
 ## Required behavior and tests
 
@@ -186,14 +204,14 @@ implementation diff. The manifest-covered staged work order is never edited.
 - A synchronous Hypothesis `RuleBasedStateMachine` covers roots, revision chains, duplicates,
   conflicts, lineage failures, incompatible metadata, and overfill. Independent ordered-fold
   quantity/basis/head invariants run after every step; rare paths also have deterministic examples.
-- Named RED-capable pins kill all staged mutants: duplicate count; overfill clamp/reject; integrity
-  clear; positive revision append; non-head acceptance; human revision; pending candidate exposure;
-  missing exact-basis-or-pending result; incompatible-price rejection; slow-helper fast call; and
-  revision-induced negative without quarantine.
+- Named RED-capable pins cover the historical and extended mutation matrices below: quantity,
+  basis, lineage, integrity, account-wide source/root identity, exact evaluation scope, hydration,
+  proof, authority, fail-closed recovery, per-position overfill summary, commitment, and equality.
 - A failing sentinel proves the fast non-tail path never invokes slow derivation. Complete
   transitions repeat deterministically, inputs/predecessors remain immutable, and import/AST tests
-  exclude incumbent `app.*`, SQLite, web/UI/SDK/network, dynamic import, I/O, clock, UUID, random,
-  logging, and sleep dependencies.
+  exclude incumbent `app.*`, SQLite, web/UI/SDK/network, dynamic import, production I/O, clock,
+  UUID, random, logging, and sleep dependencies from the production execution-core modules. The
+  pytest harness still performs authorized filesystem, source-read, basetemp, and subprocess I/O.
 
 ## Commands and gates
 
@@ -207,13 +225,14 @@ $env:BROKER_ADAPTER = 'mock'
 .\.venv\Scripts\python.exe -m mypy app/execution_core
 ```
 
-Before close-out, run repository-wide Ruff, mypy, six import contracts, all AI-OS checks, the R2
-oracle, and full branch-coverage pytest with broker forced to mock and fresh basetemps. Push the
-exact head; unchanged GitHub Actions must pass both 3.11 and 3.12 jobs. Those jobs run `ruff check
-.`, `mypy app/`, `lint-imports`, AI-OS checks, `python -m pytest -q tests/r2_conformance_oracle.py`,
-and `pytest --cov=app --cov-branch --cov-report=term-missing`. Do not claim R6's absent Ruff
-`target-version=py311` or syntax-string test; the enforceable gate is mypy target 3.11 plus real
-Python 3.11 CI.
+Before close-out, run repository-wide Ruff, mypy, six import contracts, and all AI-OS checks. Run
+the database-bearing R2 oracle and full branch-coverage pytest only after separate database-test
+authorization, with broker forced to mock and fresh basetemps. Push only after separate push/CI
+authorization; unchanged GitHub Actions must then pass both 3.11 and 3.12 jobs. Those jobs run
+`ruff check .`, `mypy app/`, `lint-imports`, AI-OS checks, `python -m pytest -q
+tests/r2_conformance_oracle.py`, and `pytest --cov=app --cov-branch --cov-report=term-missing`. Do not
+claim R6's absent Ruff `target-version=py311` or syntax-string test; the enforceable gate is mypy
+target 3.11 plus real Python 3.11 CI.
 
 ### RED evidence — 2026-07-31
 
@@ -221,8 +240,9 @@ The four required test modules were authored before `app/execution_core` existed
 format check passed. The combined focused command above, using fresh basetemp
 `.pytest_tmp_wo0145_red_root` and disabled cache, failed during collection on exactly three expected
 `ModuleNotFoundError: No module named 'app.execution_core'` errors (`test_values`, deterministic
-fill/position, and stateful fill/position). No production runtime, broker, database, or I/O path
-executed; collection stopped before `app.execution_core` could import.
+fill/position, and stateful fill/position). No production runtime, broker, database, network, or
+application-I/O path ran. Authorized pytest collection and filesystem activity occurred; collection
+stopped before `app.execution_core` could import.
 
 ```yaml
 evidence:
@@ -305,8 +325,9 @@ prefix commitments, inexact and erased priced-bust metadata, tail/floor commitme
 human-root hydration, and stale-bound tail-cache tampering. Positive controls retained valid
 revision-chain hydration, rejected-observation hydration with its required latch, conservative
 integrity supersets, fully absent tail proof degrading the next valid revision to typed pending, and
-the now-coherent human-authority mutation fixtures. No production runtime, broker, database, or I/O
-path executed; the selected tests exercised only the pure `app.execution_core` kernel in-process.
+the now-coherent human-authority mutation fixtures. No production runtime, broker, database,
+network, or application-I/O path ran. Authorized pytest filesystem, source-read, basetemp, and
+subprocess activity occurred while the selected tests exercised only the pure kernel.
 
 The minimum remediation then made all 22 selected second-round tests green. The full focused gate
 collected and passed 134 tests with `BROKER_ADAPTER=mock`, cache disabled, and fresh basetemp
@@ -353,14 +374,21 @@ the stateful oracle. While that mutant remained live, a named deterministic
 production it passed green. Historical-overfill and reconciliation hydration fixtures were also
 materialized with a clean committed floor so their pins independently require chronological replay,
 rather than passing through the already-carried runtime floor. The post-mutation focused run passed
-all 135 tests with fresh basetemp `.pytest_tmp_wo0145_post_mutation_focused_1`; no mutant remained.
+all 135 tests with fresh basetemp `.pytest_tmp_wo0145_post_mutation_focused_1`; no counted mutant
+from that historical wave remained live. This makes no claim about production changes added later.
 
 #### Reproducible required mutation matrix
 
-The earlier summary is superseded for reproducibility by the exact matrix below. Every row used
-`BROKER_ADAPTER=mock`, `-q --tb=line -p no:cacheprovider`, the exact node shown, and the exact fresh
-basetemp shown. After the recorded exit-1 failure, the literal edit was inverse-patched and the same
-node was rerun at the `_restored` basetemp with exit 0. No database, broker, runtime, or I/O path ran.
+The historical summary is superseded for reproducibility at its recorded checkpoints by the exact
+matrix below. Every row used `BROKER_ADAPTER=mock`, `-q --tb=line -p no:cacheprovider`, the exact node
+shown, and the exact fresh basetemp shown. After the recorded exit-1 failure, the literal edit was
+inverse-patched and the same node was rerun at the `_restored` basetemp with exit 0. Its GREEN
+production baseline was `949d861fd3c54f744e14a31f97ebdb7fc42deb26`. R01-R20 were run during the
+working tree that culminated at `05960e14840ec0d40692201d506e4db21c3e5b68`; the preserved record
+does not identify one immutable pre-mutation SHA for every R-row, so those rows are retained as
+historical node/basetemp evidence rather than one-SHA reproduction evidence. No production runtime,
+broker, database, network, or application-I/O path ran. Authorized test-harness filesystem,
+source-read, basetemp, mutation-patch, and subprocess activity occurred.
 
 | ID | Exact live production edit | Exact killing node / basetemp | Decisive exit-1 output | Exact inverse / restored result |
 |---|---|---|---|---|
@@ -437,7 +465,8 @@ conflict; fully absent tail proof; proof clearing for pending root and non-tail 
 the stateful rejected-root property. Positive controls passed exact incoherent replay without false
 conflict, exact head semantics/proof rejection, priced-bust hydration/compatibility, direct slow-fold
 sentinels, bounded non-tail history work, coherent human-authority guards, and exact public exports.
-Only the pure kernel ran in-process; no runtime, broker, database, or I/O path executed.
+No production runtime, broker, database, network, or application-I/O path ran. Authorized pytest
+filesystem, source-read, basetemp, and subprocess activity occurred while the pure kernel ran.
 
 ```yaml
 evidence:
@@ -551,16 +580,216 @@ evidence:
   phase: REFACTOR
   command: "ruff check .; ruff format --check app/execution_core tests/execution_core; mypy app; lint-imports; AI-OS install/version/ledger/PKL/disposition/Fable/scope checks; contamination guard"
   result: PASS
-  decisive_output: "Ruff clean; 9 files formatted; mypy clean over 82 files; 6 contracts kept and 0 broken; all AI-OS checks and contamination guard passed."
+  decisive_output: "Ruff clean; Ruff format check passed for 9 files; mypy clean over 82 files; 6 contracts kept and 0 broken; all AI-OS checks and contamination guard passed."
 ```
 
 ```yaml
 evidence:
   phase: FULL_SUITE
-  command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/r2_conformance_oracle.py; .\\.venv\\Scripts\\python.exe -m pytest --cov=app --cov-branch --cov-report=term-missing"
+  planned_command_not_executed: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/r2_conformance_oracle.py; .\\.venv\\Scripts\\python.exe -m pytest --cov=app --cov-branch --cov-report=term-missing"
+  execution: NOT_RUN
   result: BLOCKED
   decisive_output: "Static inspection established that both gates instantiate SQLite; current authority still excludes database execution."
 ```
+
+### Account-identity and integrity review rounds - 2026-07-31
+
+Fresh review after `05960e14840ec0d40692201d506e4db21c3e5b68` found one further P0 and
+related P1 defects. The first-observation registry was position-local even though source-event and
+root identity are account-scoped. Evaluation position was not committed separately from fact
+position, so exact and changed cross-symbol retries could lose reconciliation semantics. Fail-closed
+recovery could lose overfill evidence held only by a negative visible component or unbound history,
+and account-global overfill history needed an exact-position summary to avoid cross-symbol leakage.
+A foreign-account registry could raise instead of returning typed zero-economics reconciliation.
+Historical non-tail proof comparison and value equality were also narrower than committed state.
+
+Standing in-flight authority covered RED-first remediation without widening any exclusion. Round 4
+selected seven cases: four intended failures and three controls, then 7/7 green. Round 5 selected
+nine cases: five intended failures and four controls, then 9/9 green. Round 6 recorded four focused
+repair checks green; because the preserved record lacks its exact pre-fix failing run, it is not
+claimed as a RED/GREEN proof. Round 7 produced 3/3 intended failures, then 3/3 green. The later full
+focused candidate passed 173 cases before the final construction-boundary and mutation-gap pins were
+added. Final exact-tree evidence is recorded separately below.
+
+```yaml
+fable_fix:
+  symptom: "Cross-symbol source/root reuse and evaluation-scope misroutes were not closed account-wide."
+  root_cause: "SeenFactIndex lacked an immutable account owner, and SeenFact did not commit the position on which the fact was evaluated."
+  evidence: "Rounds 4, 5, and 7 produced the recorded intended failures; the extended live-mutation matrix independently killed every account/evaluation omission."
+  fix: "Made the registry account-owned; reserved source/root identity across symbols; committed evaluation scope; replayed account order through isolated per-position snapshots; and made cross-position retries reconciliation or conflict-plus-reconciliation."
+  regression_test: "Cross-symbol source/root collision, exact/rejected misroute, evaluation-scope commitment, mixed-account construction, and hydration-routing pins."
+  red_green_verified: true
+  attempt: 5
+```
+
+```yaml
+fable_fix:
+  symptom: "Incoherent recovery, historical proof, and value identity could omit safety-relevant evidence."
+  root_cause: "Recovery and equality/proof comparisons were narrower than committed state."
+  evidence: "The focused rounds and extended mutants failed at component bindings, negative evidence, overfill history, foreign-account containment, proof comparison, and value identity."
+  fix: "Recovered all trusted same-account bindings, visible negatives, and per-position overfill history; returned typed reconciliation for foreign registries; exact-compared historical proof unless wholly absent; and aligned value equality with commitments."
+  regression_test: "Binding, negative-component, overfill-history/non-leak, foreign-account, historical-proof/all-absent-proof, and value-identity pins."
+  red_green_verified: true
+  attempt: 6
+```
+
+A final proof audit found four test-evidence P1s rather than new production defects: the original
+classification fixture did not isolate the early diagnostic, foreign-registry binding contamination
+was not failure-capable, pending-overfill summary construction lacked its own branch pin, and root
+signed-quantity equality lacked an independent corruption fixture. Test checkpoints
+`b78a652698e039652e7ca6dc3994ca9b10077551` and
+`c2b881a62b4ef2a34899dbcb2f0aa8906421f17c` added the missing failure-capable pins. E01 and
+E30-E32 failed live and passed after exact restoration; no production source changed for this proof
+gap.
+
+```yaml
+fable_fix:
+  symptom: "Four safety claims lacked isolated failure-capable mutation evidence."
+  root_cause: "Earlier fixtures either exercised a redundant downstream barrier or omitted one classification, cross-scope binding, or equality branch."
+  evidence: "The added test-only checkpoints made E01 and E30-E32 fail at their intended assertions and pass after restoration."
+  fix: "Added non-overfill classification, foreign-bound overfill, pending-overfill summary, and signed-quantity corruption fixtures."
+  regression_test: "E01 and E30-E32 in the extended matrix."
+  red_green_verified: true
+  attempt: 7
+```
+
+Targeted independent account-identity and value-identity reviews both returned `ACCEPT` on production
+checkpoint `5ce26480ad260b8483f79999143d6e1f084ae37e`; no P0/P1 remained in those reviewed seams.
+A final exact-tree blind review still follows the complete extended matrix and refreshed gates.
+
+#### Extended post-account-scope mutation matrix
+
+E01-E29 used immutable test/production baseline
+`b78a652698e039652e7ca6dc3994ca9b10077551`; E30-E32 used baseline
+`c2b881a62b4ef2a34899dbcb2f0aa8906421f17c`. Every live edit was applied alone except the explicitly
+compound redundant-authority E04, run with `-q --tb=line -p no:cacheprovider` at the named fresh
+basetemp, inverse-patched, and rerun green at the same stem plus `_restored`. Production diff was
+empty after every restoration. No production runtime, broker, database, network, or application-I/O
+path ran; authorized filesystem, source-read, basetemp, mutation-patch, and subprocess activity did.
+In the table, a selector beginning `::` is exact shorthand for
+`tests/execution_core/test_fill_position.py::`.
+
+| ID | Exact live production edit | Exact killing node / basetemp | Decisive failure |
+|---|---|---|---|
+| E01 | Remove hydration `original_classification` comparison | `tests/execution_core/test_fill_position.py::test_bind_verified_rejects_available_fact_reclassified_basis_pending`; `.pytest_tmp_wo0145_m36_exact_classification_v2` | expected early classification error; late seen-closure error occurred |
+| E02 | Omit exact `basis_price_metadata` replay comparison | `::test_bind_verified_rejects_inexact_basis_price_metadata` and `::test_bind_verified_rejects_erased_priced_bust_metadata`; `.pytest_tmp_wo0145_m37_basis_metadata` | both forged hydrations did not raise |
+| E03 | Use only `position.integrity_floor` as required hydration integrity | `::test_bind_verified_rejects_historical_overfill_integrity_reset` and `::test_bind_verified_rejects_reconciliation_integrity_reset`; `.pytest_tmp_wo0145_m38_replay_integrity` | both cleared histories did not raise |
+| E04 | Remove public human-head guard and omit authority from replay semantics | `::test_bind_verified_rejects_human_attested_root`; `.pytest_tmp_wo0145_m39_combined_human_authority` | human root did not raise |
+| E05 | Omit fallback `position.binding` | `::test_incoherent_snapshot_recovers_integrity_from_each_component_binding[position]`; `.pytest_tmp_wo0145_m40_position_binding` | conflict flag disappeared |
+| E06 | Omit fallback `root_heads.binding` | `::test_incoherent_snapshot_recovers_integrity_from_each_component_binding[root_heads]`; `.pytest_tmp_wo0145_m41_root_binding` | conflict flag disappeared |
+| E07 | Omit fallback `seen_facts.binding` | `::test_incoherent_snapshot_recovers_integrity_from_each_component_binding[seen_facts]`; `.pytest_tmp_wo0145_m42_seen_binding` | conflict flag disappeared |
+| E08 | Remove negative visible position/root overfill guard | `::test_incoherent_negative_component_conservatively_latches_overfill`; `.pytest_tmp_wo0145_m43_negative_components` | both parameterizations lost quarantine |
+| E09 | Disable historical non-tail proof mismatch rejection | `::test_bind_verified_rejects_changed_historical_non_tail_proof`; `.pytest_tmp_wo0145_m44_historical_proof` | forged and erased proof did not raise |
+| E10 | Reject all historical proof mismatch, including wholly absent cache | `::test_bind_verified_accepts_fully_absent_multi_head_proof_cache`; `.pytest_tmp_wo0145_m45_all_absent_proof` | valid proofless hydration raised |
+| E11 | Omit seen-history overfill consumption | `::test_incoherent_snapshot_recovers_overfill_from_unbound_seen_history`; `.pytest_tmp_wo0145_m46_seen_overfill_consumption` | quarantine disappeared |
+| E12 | Make overfill query account-global instead of position-scoped | `::test_incoherent_account_history_does_not_leak_overfill_between_symbols`; `.pytest_tmp_wo0145_m47_overfill_nonleak` | AAPL history contaminated MSFT |
+| E13 | Add a new observation to a foreign-account registry | `::test_incoherent_foreign_account_registry_reconciles_without_exception`; `.pytest_tmp_wo0145_m48_foreign_registry_add` | mixed-account `ValueError` escaped |
+| E14 | Omit registry owner from commitment | `::test_seen_registry_value_identity_carries_account_owner`; `.pytest_tmp_wo0145_m49_owner_commitment` | different owners committed equally |
+| E15 | Omit registry owner from equality | `::test_seen_registry_value_identity_carries_account_owner`; `.pytest_tmp_wo0145_m50_owner_equality` | different owners compared equal |
+| E16 | Omit evaluation position from `SeenFact` commitment | `::test_seen_fact_commits_reconciliation_evaluation_scope`; `.pytest_tmp_wo0145_m51_evaluation_commitment` | different evaluation positions committed equally |
+| E17 | Remove APPLIED fact/evaluation-scope construction guard | `::test_seen_registry_rejects_mixed_or_forged_evaluation_scope`; `.pytest_tmp_wo0145_m52_applied_scope_validation` | forged APPLIED scope did not raise |
+| E18 | Remove mixed evaluation-account insertion guard | `::test_seen_registry_rejects_mixed_or_forged_evaluation_scope`; `.pytest_tmp_wo0145_m53_mixed_account_validation` | mixed account did not raise |
+| E19 | Remove foreign-position first-observation retry branch | `::test_account_registry_rejects_cross_symbol_source_event_collision`, `::test_account_registry_rejects_cross_symbol_exact_replay_misroute`, and `::test_rejected_misroute_cannot_apply_when_later_routed_to_fact_symbol`; `.pytest_tmp_wo0145_m54_duplicate_scope_guard` | all three returned incomplete retry semantics |
+| E20 | Bypass account-wide first-observation lookup | `::test_account_registry_rejects_cross_symbol_source_event_collision`; `.pytest_tmp_wo0145_m55_account_source_reservation` | duplicate insertion escaped as `ValueError` instead of typed transition |
+| E21 | Omit account-wide root-reservation apply guard | `::test_account_registry_rejects_cross_symbol_root_fill_collision`; `.pytest_tmp_wo0145_m56_account_root_guard` | second capital mutation became `APPLIED` |
+| E22 | Bypass observed-root reservation construction | `::test_account_registry_rejects_cross_symbol_root_fill_collision`, `::test_rejected_first_observation_still_reserves_root_fill_key`, and both parameters of `::test_rejected_revision_reserves_root_against_later_fill`; `.pytest_tmp_wo0145_m57_root_reservation_construction` | four cases lost reservation behavior |
+| E23 | Hydrate by fact position instead of evaluation position | `::test_rejected_misroute_cannot_apply_when_later_routed_to_fact_symbol`; `.pytest_tmp_wo0145_m58_hydration_evaluation_scope` | classification was not reproducible |
+| E24 | Omit per-position overfill summary from commitment | `::test_seen_registry_commitment_carries_overfill_summary`; `.pytest_tmp_wo0145_m59_overfill_summary_commitment` | forged/authentic commitments matched |
+| E25 | Omit per-position overfill summary from equality | `::test_seen_registry_commitment_carries_overfill_summary`; `.pytest_tmp_wo0145_m60_overfill_summary_equality` | forged/authentic indexes compared equal |
+| E26 | Exclude `PositionState.integrity_floor` from equality | `::test_position_value_identity_carries_integrity_floor`; `.pytest_tmp_wo0145_m61_position_floor_equality` | clean/quarantined positions compared equal |
+| E27 | Compare `RootHeadIndex.entries` only | `::test_empty_root_index_value_identity_carries_exact_scope`; `.pytest_tmp_wo0145_m62_root_scope_equality` | different scopes compared equal |
+| E28 | Disable per-position overfill-summary construction | `::test_seen_registry_commitment_carries_overfill_summary` and `::test_incoherent_snapshot_recovers_overfill_from_unbound_seen_history`; `.pytest_tmp_wo0145_m63_overfill_summary_construction` | both lost the summary/latch |
+| E29 | Default reconciliation evaluation scope to fact scope | `::test_seen_fact_commits_reconciliation_evaluation_scope` and `::test_rejected_misroute_cannot_apply_when_later_routed_to_fact_symbol`; `.pytest_tmp_wo0145_m64_reconciliation_evaluation_record` | both recorded MSFT instead of evaluated AAPL |
+| E30 | Trust a foreign registry's snapshot binding | `::test_incoherent_foreign_account_registry_reconciles_without_exception`; `.pytest_tmp_wo0145_m65_foreign_binding_contamination` | foreign overfill contaminated local integrity |
+| E31 | Omit `APPLIED_PENDING_OVERFILL` summary construction | `::test_incoherent_snapshot_recovers_pending_overfill_from_seen_history`; `.pytest_tmp_wo0145_m66_pending_overfill_summary` | pending overfill summary disappeared |
+| E32 | Omit signed quantity from `RootHeadIndex` equality | `::test_root_index_value_identity_carries_signed_quantity`; `.pytest_tmp_wo0145_m67_root_signed_quantity_equality` | different signed economics compared equal |
+
+All E01-E32 selections passed immediately after their exact inverse restoration. E01's older
+overfill-classification fixture initially survived because summary/closure checks independently
+rejected the forgery; the added non-overfill fixture pins the earlier diagnostic seam while the late
+closure remains defense in depth. For E04, either human-authority guard alone survived because the
+other guard still rejected; the disclosed compound edit proved the complete bypass. Invalid or
+non-counted historical attempts remain excluded from totals: wrong-arity fold, `NameError`
+priced-bust, wrong basis occurrence, the equivalent proof survivor, and a single redundant human
+guard. The historical 33 plus this first extended 32 give 65 counted live edits, all
+inverse-restored before the eighth review below.
+
+### Eighth review P1 and scope-isolation fix - 2026-07-31
+
+The final blind review found one new P1: incoherent recovery trusted a foreign-position root
+binding and negative root quantity, and a same-account other-symbol seen-registry binding, without
+requiring the binding/root position to equal the local position. Economics still failed closed at
+zero, but foreign `OVERFILL_QUARANTINE` could be imported and permanently committed into the local
+position floor. The RED gate at `.pytest_tmp_wo0145_eighth_red_cross_scope_integrity` produced 3/3
+intended failures: same-account other-symbol root, foreign-account root, and other-symbol bound seen
+registry. The minimum fix admitted component binding and visible root evidence only for exact local
+position scope. The repaired gate plus seven same-scope/foreign-account controls passed 10/10 at
+`.pytest_tmp_wo0145_eighth_green_cross_scope_integrity`.
+
+```yaml
+fable_fix:
+  symptom: "Fail-closed recovery could import and permanently latch integrity from a foreign position."
+  root_cause: "Component bindings and visible root negativity were treated as trusted evidence without exact binding/root position-scope equality."
+  evidence: "Three cross-scope RED cases imported OVERFILL_QUARANTINE; the repaired 10-case selection preserved local reconciliation without leakage and retained all same-scope recovery."
+  fix: "Gate position/root/seen binding integrity on exact binding position scope, gate root bindings and signed quantity on exact root-index position scope, and retain account/position-scoped seen-history recovery."
+  regression_test: "Foreign-account and other-symbol root non-leak, other-symbol seen-binding non-leak, and per-component binding-scope mismatch pins."
+  red_green_verified: true
+  attempt: 8
+```
+
+The fix was committed at `d12dec0`; the exact component-binding proof pins were committed at
+`e73d4ec31efdacfdd1b367f292b0d54ebfdf288e`, which is the baseline for E33-E36. Each live edit was
+applied alone, run with the same cache-disabled mutation protocol, inverse-patched, and rerun green.
+
+| ID | Exact live production edit | Exact killing node / basetemp | Decisive failure |
+|---|---|---|---|
+| E33 | Trust `position.binding` without exact binding position scope | `::test_incoherent_component_binding_scope_mismatch_does_not_leak_overfill[position]`; `.pytest_tmp_wo0145_m68_position_binding_scope` | foreign quarantine entered local integrity |
+| E34 | Trust `root_heads.binding` without exact binding position scope | `::test_incoherent_component_binding_scope_mismatch_does_not_leak_overfill[root_heads]`; `.pytest_tmp_wo0145_m69_root_binding_scope` | foreign quarantine entered local integrity |
+| E35 | Trust same-account `seen_facts.binding` without exact binding position scope | `::test_incoherent_other_symbol_seen_binding_does_not_leak_overfill`; `.pytest_tmp_wo0145_m70_seen_binding_scope` | other-symbol quarantine entered local integrity |
+| E36 | Trust negative root quantity without exact root-index position scope | both parameters of `::test_incoherent_foreign_root_index_does_not_leak_overfill`; `.pytest_tmp_wo0145_m71_foreign_root_negative` | both foreign roots contaminated local integrity |
+
+All four selections passed after restoration. Removing only the additional root-component-scope
+predicate from binding recovery remains behaviorally redundant while the exact binding-scope guard
+is present; it is disclosed and not counted. The complete campaign therefore contains 69 counted
+live edits (33 historical plus 36 extended), all restored before final verification.
+
+### Final allowed exact-tree verification - 2026-07-31
+
+The exact source/test tree at immutable checkpoint
+`e73d4ec31efdacfdd1b367f292b0d54ebfdf288e`, together with this documentation-only evidence
+reconciliation, passed the complete focused gate: 182/182 cases at fresh cache-disabled basetemp
+`.pytest_tmp_wo0145_final_focused_2`. Repository-wide Ruff passed; Ruff format check reported all
+nine execution-core source/test files already formatted; mypy passed all 82 `app` source files;
+Import Linter kept all six contracts with zero broken; install, version, ledger, PKL, disposition,
+Fable, and exact WO scope checks passed; and the tracked-tooling contamination guard was clean.
+
+```yaml
+evidence:
+  phase: GREEN
+  command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/execution_core/test_values.py tests/execution_core/test_fill_position.py tests/execution_core/test_fill_position_stateful.py tests/execution_core/test_import_boundary.py -p no:cacheprovider --basetemp .pytest_tmp_wo0145_final_focused_2 --tb=line"
+  result: PASS
+  decisive_output: "182 passed (72 + 72 + 38 progress cases)."
+```
+
+```yaml
+evidence:
+  phase: REFACTOR
+  command: "ruff check .; ruff format --check app/execution_core tests/execution_core; mypy app; lint-imports --no-cache; AI-OS install/version/ledger/PKL/disposition/Fable/scope checks; contamination guard"
+  result: PASS
+  decisive_output: "Ruff clean; 9 files already formatted; mypy clean over 82 files; 6 contracts kept and 0 broken; all AI-OS checks, exact WO scope, and contamination guard passed."
+```
+
+No production runtime, broker, credential, account activity, database, SQL/DDL, network, application-I/O,
+runtime-wiring, merge, deletion, or cleanup activity occurred. Authorized test-harness filesystem,
+source-read, basetemp, mutation-patch, and subprocess activity occurred. R2/full branch coverage,
+local Python 3.11, push, and dual-version CI remain deferred to separately authorized future gates.
+
+The independent final reviewer re-derived the repaired source/test checkpoint
+`e73d4ec31efdacfdd1b367f292b0d54ebfdf288e`, reran 182/182 focused tests plus repository
+Ruff/format/mypy, reviewed the current evidence reconciliation, and returned `ACCEPT` with no
+unresolved P0/P1. That pass did not execute the 69 mutations independently and did not run the
+database-bearing, Python 3.11/dual-version CI, broker, runtime, or network gates; those limits remain
+explicit rather than being treated as acceptance evidence.
 
 ## Review, stop, and close-out
 
@@ -579,13 +808,13 @@ fable_done:
   done_when_results:
     - item: "All focused kernel behavior passes on the exact current tree."
       status: MET
-      evidence: "The post-matrix exact tree passed all 154 focused tests."
+      evidence: "The final allowed source/test tree passed all 182 focused tests at .pytest_tmp_wo0145_final_focused_2."
     - item: "Every required mutation pin is demonstrated failure-capable and restored green with durable evidence."
       status: MET
-      evidence: "The exact 33-row matrix records every live edit, node, exit-1 assertion, inverse edit, and restored exit-0 result; one equivalent survivor was disclosed and simplified."
+      evidence: "The historical 33 and extended 36 rows record 69 live edits with nodes/basetemps, decisive failures, inverse restoration, and restored green; historical baseline limits and redundant/invalid survivors are disclosed rather than miscounted."
     - item: "Repository-wide static gates pass on the exact current tree."
       status: MET
-      evidence: "Repository Ruff, mypy, six import contracts, all applicable AI-OS checks, scope, and contamination guard passed after the matrix."
+      evidence: "Repository Ruff, 9-file format check, mypy over 82 app files, six import contracts, all applicable AI-OS checks, exact WO scope, and contamination guard passed after the extended matrix."
     - item: "R2 and full branch-coverage suites pass."
       status: BLOCKED
       evidence: "Those gates instantiate SQLite and database execution remains excluded."
@@ -593,11 +822,11 @@ fable_done:
       status: BLOCKED
       evidence: "Local Python 3.11 is unavailable and pushing would start excluded database-bearing CI."
     - item: "Independent exact-head review has no unresolved P0 or P1."
-      status: NOT_MET
-      evidence: "The latest review returned blocking P0 and P1 findings; re-review is pending."
+      status: MET
+      evidence: "The independent blind reviewer reran the 182-case focused gate and static checks on e73d4ec, re-derived the repaired seams and evidence record, and returned ACCEPT with no unresolved P0/P1."
     - item: "Allowed paths and all broker, credential, database, runtime, merge, deletion, and cleanup exclusions remain respected."
       status: MET
-      evidence: "Scope review found the implementation diff exact and no excluded activity occurred."
+      evidence: "The inspected diff remains within allowed paths. No production runtime, broker, credential, account activity, database, SQL/DDL, network, application-I/O, runtime-wiring, merge, deletion, or cleanup activity occurred; authorized test-harness filesystem, source-read, basetemp, mutation-patch, and subprocess activity did occur."
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
@@ -605,6 +834,5 @@ fable_done:
   deferred:
     - "Database-bearing R2 and full-coverage validation pending separate explicit database-test authorization."
     - "Exact-head Python 3.11 and Python 3.12 branch CI pending separate push and CI authorization."
-    - "Independent re-review pending third remediation and fresh verification."
   status: BLOCKED
 ```
