@@ -2264,6 +2264,35 @@ def test_bind_verified_rejects_overfill_fact_reclassified_available() -> None:
         )
 
 
+def test_bind_verified_rejects_available_fact_reclassified_basis_pending() -> None:
+    fill = _fill(
+        "available",
+        "available-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=100,
+    )
+    applied, _ = _apply_all(fill)
+    position, roots, seen = _unbound_hydration_parts(applied)
+    observation = seen.entries[0]
+    forged_seen = SeenFactIndex(
+        entries=(
+            replace(
+                observation,
+                classification=FirstObservationClassification.APPLIED_BASIS_PENDING,
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="classification is not reproducible"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            applied.integrity,
+            roots,
+            forged_seen,
+        )
+
+
 def test_bind_verified_rejects_historical_overfill_integrity_reset() -> None:
     sell = _fill(
         "sell",
