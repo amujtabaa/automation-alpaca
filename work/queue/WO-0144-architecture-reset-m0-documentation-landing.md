@@ -29,13 +29,16 @@ The user subsequently assigned this task to the implementation seat, permitting 
 commit for review. It does not permit a push, pull request, merge, production/test implementation or execution,
 SQL/DDL/database tooling, broker/credential access, Paper/live-shadow/live activity, deletion, or cleanup.
 
+On 2026-07-31 the user later authorized broader local implementation, verification, and in-flight remediation;
+credentials remain unavailable. Mock-only local gates do not widen M0, accept it, or activate `RESET-WO-01`.
+
 ## Fable gate
 
 ```yaml
 fable_gate:
   goal: "Land the exact ratified reset authority and reconcile repository documentation without changing production behavior."
   assumptions:
-    - "The approved manifest and archive bytes still reproduce their quoted SHA-256 values."
+    - "The repository-retained manifest and covered files reproduce their quoted SHA-256 values; the human-approved complete-archive digest is provenance and is not independently rehashable from this checkout."
     - "master and origin/master remain at the frozen base SHA and all registered worktrees are clean."
     - "ADR-020 through ADR-022, WO-0144, and branch codex/arch-reset-2026-07-r1 are conflict-free across all recorded refs."
   approach: "Preserve packet and ADR bytes exactly; put acceptance and hashes in a separate index; make only bounded status, backlink, and generation-qualification edits."
@@ -154,13 +157,19 @@ forbidden_paths:
 
 ## Static verification
 
-- Rehash the approved manifest/archive and every manifest record.
+- Rehash the repository-retained authority manifest, all 15 manifest-covered files, and all
+  canonical ADR copies. Record the human-approved complete-archive digest as provenance, but mark
+  its rehash `UNVERIFIED_IN_CHECKOUT` unless the exact archive bytes are in the immutable review
+  context.
 - Rehash all canonical packet and ADR copies; comparison must be exact.
 - Verify every new relative Markdown link resolves and no packet-internal link was rewritten.
 - Verify branch parent/base, R6 separation, allowed paths, `git diff --check`, and documentation-only
   file types.
-- Search changed files for unresolved template tokens, accidental activation language, database or
-  implementation completion claims, and live/broker authorization.
+- Compare uppercase bracketed template markers in the frozen M0 Markdown scope against an exact
+  path/line/token/multiplicity allowlist. Fail on any unexpected, missing, moved, duplicated, or
+  out-of-file marker, packet hash drift, or activation of the staged work order. Separately search
+  for accidental activation language, database or implementation completion claims, and
+  live/broker authorization.
 - Record exact commands and decisive output below. Do not use prohibited executables.
 
 ## Stop conditions
@@ -180,24 +189,13 @@ receives a canonical ID or activation.
 
 ```yaml
 evidence:
-  - command: "SHA-256 recheck of approved manifest/archive, 15 manifest records, and ADR-020..022 copies"
-    result: PASS
-    decisive_output: "approved hashes matched; 15 records / 0 mismatches; 3 ADRs / 0 mismatches"
-  - command: "Git branch/ref and registered-worktree inspection"
-    result: PASS
-    decisive_output: "base/R6 exact; ADR-020..022 and WO-0144 first conflict-free identities across refs; current tree M0-only; nine linked worktrees clean"
-  - command: "Allowed-path and document-type scan"
-    result: PASS
-    decisive_output: "47 paths; 0 outside scope; 0 non-document files; 0 delete/rename/copy records"
-  - command: "Fail-fast relative Markdown-link and fence checks"
-    result: PASS
-    decisive_output: "46 Markdown files; 70 relative links / 0 broken; 0 unbalanced-fence files"
-  - command: "Static PKL frontmatter/source-ref check"
-    result: PASS
-    decisive_output: "6 changed PKL pages / 0 errors"
-  - command: "Mutable template-token scan and git diff --check"
-    result: PASS
-    decisive_output: "0 unresolved mutable tokens; no whitespace errors"
+  - {command: "SHA-256 recheck of authority manifest, 15 records, and ADR-020..022", result: PASS, decisive_output: "manifest matched; 15 records / 0 mismatches; 3 ADRs / 0 mismatches"}
+  - {command: "SHA-256 recheck of complete R1 archive", result: UNVERIFIED_IN_CHECKOUT, decisive_output: "bytes absent from committed review context; approved 51e4bb1a...a053f was not recomputed from checkout"}
+  - {command: "Git branch/ref and registered-worktree inspection", result: PASS, decisive_output: "base/R6 exact; identities conflict-free; current tree M0-only; nine linked worktrees clean"}
+  - {command: "Allowed-path and document-type scan", result: PASS, decisive_output: "47 paths; 0 outside scope; 0 non-document; 0 delete/rename/copy records"}
+  - {command: "Fail-fast relative-link and fence checks", result: PASS, decisive_output: "46 Markdown files; 70 links / 0 broken; 0 unbalanced fences"}
+  - {command: "Static PKL frontmatter/source-ref check", result: PASS, decisive_output: "6 changed PKL pages / 0 errors"}
+  - {command: "Exact allowlisted uppercase bracket-token scan and git diff --check", result: PASS, decisive_output: "46 files; 21 occurrences / 14 unique; prompt 16, staged WO 5; unexpected/missing/multiplicity/outside/hash errors 0"}
 ```
 
 ```yaml
@@ -213,8 +211,10 @@ fable_done:
     drive_by_edits: false
   evidence:
     - "Static file/hash/link/scope checks above"
-    - "No application, test, SQL, DDL, database, broker, credential, or network execution"
-  status: VERIFIED
+    - "The initial M0 landing executed no application, test, SQL, DDL, database, broker, credential, or network tooling"
+    - "Later separately authorized local verification forced the broker adapter to mock and is not evidence of packet/archive validity"
+  status: REVIEW
 ```
 
-Implementation-seat verification is complete. Independent review remains pending; the implementation seat does not accept its own M0 landing.
+Repository-retained-byte verification passed; complete-R1-archive rehashing is `UNVERIFIED_IN_CHECKOUT`.
+REV-0047 returned `BLOCK`; M0 and `RESET-WO-01` remain inactive pending remediation and re-review.

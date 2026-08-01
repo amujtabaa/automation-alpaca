@@ -15,8 +15,10 @@ accepted status without changing a ratified byte.
 
 - Authority manifest SHA-256:
   `c81e49ac3b36d7d99f0974cf34f2f89330e3336eea5877341f3b170aec1a2258`
-- Complete R1 archive SHA-256:
-  `51e4bb1a7ce0c00f16cce57c0fa6f15aad33773f0c62ea57d637b55e8eba053f`
+- Human-approved complete R1 archive SHA-256:
+  `51e4bb1a7ce0c00f16cce57c0fa6f15aad33773f0c62ea57d637b55e8eba053f`.
+  This digest is approval provenance. The archive bytes are not retained in this repository and
+  cannot be independently rehashed from a clean checkout.
 - Frozen reset base: `master@6d5937492788aa0ab1cf8348321fa01ee57df920`
 - Frozen R6 evidence only: `codex/signal-r6a-rails-store@39a6ed8b9a7562f61afc9ec5c0f9fad2c3918c80`
 - Canonical packet copy: `work/queue/ARCH-RESET-2026-07/`
@@ -69,6 +71,7 @@ schema execution remains a separately authorized future M2 gate.
 ## Retained gates
 
 1. This M0 documentation commit requires a fresh review seat's disposition before M0 acceptance.
+   REV-0047 returned `BLOCK`; its findings must be remediated and independently re-reviewed.
 2. `RESET-WO-01` remains the unchanged staged packet document. It receives no canonical `WO-NNNN`
    identity and no activation until M0 review is accepted and Ameen explicitly authorizes it.
 3. No outbound Alpaca Paper call or credential use is authorized.

@@ -135,7 +135,14 @@ docs/                    canonical planning + architecture docs
   pip install -r requirements.txt
   ```
 
-## Run the backend
+## Frozen legacy backend instructions — not authorized for reset use
+
+> **Do not run these commands under M0.** They operate the frozen Spine v2 evidence generation and
+> may initialize its SQLite database. M0 does not authorize starting that generation, setting
+> `SIGNAL_SEAT_ENABLED=true`, using credentials, or contacting Alpaca Paper. Signal Seat is disabled
+> and unmounted in the reset target under
+> [ADR-022](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md). Runtime activity requires a
+> separately activated work order.
 
 ```bash
 uvicorn app.main:app --reload
