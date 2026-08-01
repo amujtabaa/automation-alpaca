@@ -2048,6 +2048,99 @@ def test_incoherent_account_history_does_not_leak_overfill_between_symbols() -> 
     assert not after.position.integrity_floor & (PositionIntegrity.OVERFILL_QUARANTINE)
 
 
+@pytest.mark.parametrize(
+    "foreign_scope",
+    [
+        OTHER_POSITION_SCOPE,
+        replace(POSITION_SCOPE, account=AccountId("foreign-root-account")),
+    ],
+    ids=["other-symbol", "foreign-account"],
+)
+def test_incoherent_foreign_root_index_does_not_leak_overfill(
+    foreign_scope: PositionScope,
+) -> None:
+    foreign_fact = _fill(
+        "foreign-root-overfill",
+        "foreign-root-overfill",
+        side=ExecutionSide.SELL,
+        quantity=2,
+        units=100,
+        scope=_scope(
+            order_id=OrderId("foreign-root-order"),
+            side=ExecutionSide.SELL,
+            account=foreign_scope.account,
+            symbol_id=foreign_scope.symbol_id,
+        ),
+        key=_key("foreign-root-overfill", account=foreign_scope.account),
+    )
+    foreign, _ = _Kernel.flat(foreign_scope).apply(foreign_fact)
+    assert foreign.root_heads.signed_quantity == -2
+    assert foreign.root_heads.binding is not None
+    incoming = _fill(
+        "local-after-foreign-root",
+        "local-after-foreign-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+
+    transition = apply_broker_execution_fact(
+        PositionState.flat(POSITION_SCOPE),
+        PositionIntegrity.CONSISTENT,
+        foreign.root_heads,
+        SeenFactIndex.empty(POSITION_SCOPE),
+        incoming,
+    )
+
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.quantity_delta == 0
+    assert not transition.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert not transition.position.integrity_floor & (
+        PositionIntegrity.OVERFILL_QUARANTINE
+    )
+
+
+def test_incoherent_other_symbol_seen_binding_does_not_leak_overfill() -> None:
+    other_overfill = _fill(
+        "other-symbol-overfill",
+        "other-symbol-overfill-root",
+        side=ExecutionSide.SELL,
+        quantity=2,
+        units=100,
+        scope=_scope(
+            order_id=OrderId("other-symbol-sell"),
+            side=ExecutionSide.SELL,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+    other, _ = _Kernel.flat(OTHER_POSITION_SCOPE).apply(other_overfill)
+    assert other.seen_facts.binding is not None
+    assert other.seen_facts.binding.position_scope == OTHER_POSITION_SCOPE
+    assert not other.seen_facts.has_overfill_observation(POSITION_SCOPE)
+    incoming = _fill(
+        "local-after-other-seen",
+        "local-after-other-seen-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+
+    transition = apply_broker_execution_fact(
+        PositionState.flat(POSITION_SCOPE),
+        PositionIntegrity.CONSISTENT,
+        RootHeadIndex.empty(POSITION_SCOPE),
+        other.seen_facts,
+        incoming,
+    )
+
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.quantity_delta == 0
+    assert not transition.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert not transition.position.integrity_floor & (
+        PositionIntegrity.OVERFILL_QUARANTINE
+    )
+
+
 def test_incoherent_foreign_account_registry_reconciles_without_exception() -> None:
     foreign_scope = replace(
         POSITION_SCOPE,

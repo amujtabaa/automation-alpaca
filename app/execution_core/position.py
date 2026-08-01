@@ -761,16 +761,30 @@ def _incoherent_snapshot_transition(
             )
         )
     trusted_integrity = integrity | position.integrity_floor
-    trusted_bindings = [
-        position.binding,
-        root_heads.binding,
-    ]
+    root_matches_position = root_heads.position_scope == position.scope
+    trusted_bindings = []
+    position_binding = position.binding
+    if (
+        position_binding is not None
+        and position_binding.position_scope == position.scope
+    ):
+        trusted_bindings.append(position_binding)
+    root_binding = root_heads.binding
+    if (
+        root_matches_position
+        and root_binding is not None
+        and root_binding.position_scope == position.scope
+    ):
+        trusted_bindings.append(root_binding)
     if registry_matches_position:
-        trusted_bindings.append(seen_facts.binding)
+        seen_binding = seen_facts.binding
+        if seen_binding is not None and seen_binding.position_scope == position.scope:
+            trusted_bindings.append(seen_binding)
     for binding in trusted_bindings:
-        if binding is not None:
-            trusted_integrity |= PositionIntegrity(binding.integrity_bits)
-    if position.raw_quantity < 0 or root_heads.signed_quantity < 0:
+        trusted_integrity |= PositionIntegrity(binding.integrity_bits)
+    if position.raw_quantity < 0 or (
+        root_matches_position and root_heads.signed_quantity < 0
+    ):
         trusted_integrity |= PositionIntegrity.OVERFILL_QUARANTINE
     if seen_facts.has_overfill_observation(position.scope):
         trusted_integrity |= PositionIntegrity.OVERFILL_QUARANTINE
