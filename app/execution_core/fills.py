@@ -15,7 +15,10 @@ from typing import Callable, Generic, TypeAlias, TypeVar, cast
 
 from .identity import (
     AccountId,
+    ActorId,
     BrokerId,
+    ClaimOccurrenceId,
+    EvidenceReference,
     EnvironmentId,
     ExecutionFactKey,
     OrderId,
@@ -23,6 +26,8 @@ from .identity import (
     RootFillKey,
     SourceEventId,
     SymbolId,
+    RequestOccurrenceId,
+    VenueLegKey,
 )
 from .values import Quantity, ReportedPrice
 
@@ -114,6 +119,7 @@ class FirstObservationClassification(Enum):
     APPLIED_BASIS_PENDING = "APPLIED_BASIS_PENDING"
     APPLIED_OVERFILL_QUARANTINE = "APPLIED_OVERFILL_QUARANTINE"
     APPLIED_PENDING_OVERFILL = "APPLIED_PENDING_OVERFILL"
+    CORROBORATED_ZERO_ECONOMIC = "CORROBORATED_ZERO_ECONOMIC"
     RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 
 
@@ -623,6 +629,84 @@ class BrokerFillFact:
 
 
 @dataclass(frozen=True, slots=True)
+class HumanAttestedFillFact:
+    """Capacity-gated operator evidence for one exact venue-leg interval.
+
+    Construction proves payload shape only.  Venue ownership, immutable order
+    capacity, current cumulative coverage, and long-only position authority are
+    revalidated by the venue-recovery reducer before this fact may reach the
+    canonical root-fill primitive.
+    """
+
+    key: ExecutionFactKey
+    scope: ExecutionScope
+    root_fill_id: RootFillId
+    leg_key: VenueLegKey
+    request_occurrence_id: RequestOccurrenceId
+    claim_occurrence_id: ClaimOccurrenceId
+    quantity: Quantity
+    prior_cumulative_quantity: Quantity
+    resulting_cumulative_quantity: Quantity
+    price: ReportedPrice
+    actor: ActorId
+    reason: str
+    evidence_reference: EvidenceReference
+
+    def __post_init__(self) -> None:
+        _validate_fact_identity(self.key, self.scope, self.root_fill_id)
+        _require_type("leg_key", self.leg_key, VenueLegKey)
+        _require_type(
+            "request_occurrence_id",
+            self.request_occurrence_id,
+            RequestOccurrenceId,
+        )
+        _require_type(
+            "claim_occurrence_id",
+            self.claim_occurrence_id,
+            ClaimOccurrenceId,
+        )
+        _validate_positive_economics(
+            self.quantity,
+            self.price,
+            quantity_name="quantity",
+            price_name="price",
+        )
+        _require_type(
+            "prior_cumulative_quantity",
+            self.prior_cumulative_quantity,
+            Quantity,
+        )
+        _require_type(
+            "resulting_cumulative_quantity",
+            self.resulting_cumulative_quantity,
+            Quantity,
+        )
+        _require_type("actor", self.actor, ActorId)
+        _require_type("evidence_reference", self.evidence_reference, EvidenceReference)
+        if type(self.reason) is not str:
+            raise TypeError("reason must be a string")
+        if not self.reason.strip():
+            raise ValueError("reason must be nonblank")
+
+    @property
+    def kind(self) -> FactKind:
+        return FactKind.FILL
+
+    @property
+    def authority(self) -> ExecutionAuthority:
+        return ExecutionAuthority.HUMAN_ATTESTED
+
+    @property
+    def root_key(self) -> RootFillKey:
+        return RootFillKey(
+            broker=self.key.broker,
+            environment=self.key.environment,
+            account=self.key.account,
+            root_fill_id=self.root_fill_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BrokerTradeCorrectFact:
     """A broker-authoritative replacement of one root's current head."""
 
@@ -700,9 +784,11 @@ class BrokerTradeBustFact:
 BrokerExecutionFact: TypeAlias = (
     BrokerFillFact | BrokerTradeCorrectFact | BrokerTradeBustFact
 )
+CanonicalExecutionFact: TypeAlias = BrokerExecutionFact | HumanAttestedFillFact
+CanonicalRootFillFact: TypeAlias = BrokerFillFact | HumanAttestedFillFact
 
 
-def _encode_broker_fact(fact: BrokerExecutionFact) -> bytes:
+def _encode_execution_fact(fact: CanonicalExecutionFact) -> bytes:
     if isinstance(fact, BrokerFillFact):
         return _commit_parts(
             b"execution-core/broker-fill-fact/v1",
@@ -711,6 +797,26 @@ def _encode_broker_fact(fact: BrokerExecutionFact) -> bytes:
             _encode_root_fill_key(fact.root_key),
             _encode_int(fact.quantity.value),
             _encode_reported_price(fact.price),
+        )
+    if isinstance(fact, HumanAttestedFillFact):
+        return _commit_parts(
+            b"execution-core/human-attested-fill-fact/v1",
+            _encode_execution_fact_key(fact.key),
+            _encode_execution_scope(fact.scope),
+            _encode_root_fill_key(fact.root_key),
+            _encode_text(fact.leg_key.broker.value),
+            _encode_text(fact.leg_key.environment.value),
+            _encode_text(fact.leg_key.account.value),
+            _encode_text(fact.leg_key.order_id.value),
+            _encode_text(fact.request_occurrence_id.value),
+            _encode_text(fact.claim_occurrence_id.value),
+            _encode_int(fact.quantity.value),
+            _encode_int(fact.prior_cumulative_quantity.value),
+            _encode_int(fact.resulting_cumulative_quantity.value),
+            _encode_reported_price(fact.price),
+            _encode_text(fact.actor.value),
+            _encode_text(fact.reason),
+            _encode_text(fact.evidence_reference.value),
         )
     if isinstance(fact, BrokerTradeCorrectFact):
         return _commit_parts(
@@ -731,7 +837,9 @@ def _encode_broker_fact(fact: BrokerExecutionFact) -> bytes:
             _encode_source_event_id(fact.predecessor_source_event_id),
             _encode_reported_price(fact.reported_price),
         )
-    raise TypeError("fact must be a canonical broker execution fact")
+    raise TypeError(
+        "fact must be a canonical broker execution fact or HumanAttestedFillFact"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,6 +929,7 @@ class RootHeadIndex:
     _by_root: _PersistentKeyMap[RootHead]
     _root_sequence: _PersistentSequence[RootFillKey]
     _head_sequence: _PersistentSequence[SourceEventId]
+    _broker_scope_counts: _PersistentKeyMap[int]
     position_scope: PositionScope | None
     signed_quantity: int
     _binding: _SnapshotBinding | None
@@ -839,6 +948,11 @@ class RootHeadIndex:
         object.__setattr__(self, "_by_root", current._by_root)
         object.__setattr__(self, "_root_sequence", current._root_sequence)
         object.__setattr__(self, "_head_sequence", current._head_sequence)
+        object.__setattr__(
+            self,
+            "_broker_scope_counts",
+            current._broker_scope_counts,
+        )
         object.__setattr__(self, "position_scope", current.position_scope)
         object.__setattr__(self, "signed_quantity", current.signed_quantity)
         object.__setattr__(self, "_binding", None)
@@ -850,6 +964,7 @@ class RootHeadIndex:
         by_root: _PersistentKeyMap[RootHead],
         root_sequence: _PersistentSequence[RootFillKey],
         head_sequence: _PersistentSequence[SourceEventId],
+        broker_scope_counts: _PersistentKeyMap[int] | None = None,
         position_scope: PositionScope | None,
         signed_quantity: int,
         binding: _SnapshotBinding | None = None,
@@ -858,6 +973,15 @@ class RootHeadIndex:
         object.__setattr__(result, "_by_root", by_root)
         object.__setattr__(result, "_root_sequence", root_sequence)
         object.__setattr__(result, "_head_sequence", head_sequence)
+        object.__setattr__(
+            result,
+            "_broker_scope_counts",
+            (
+                broker_scope_counts
+                if broker_scope_counts is not None
+                else _PersistentKeyMap.empty()
+            ),
+        )
         object.__setattr__(result, "position_scope", position_scope)
         object.__setattr__(result, "signed_quantity", signed_quantity)
         object.__setattr__(result, "_binding", binding)
@@ -874,6 +998,7 @@ class RootHeadIndex:
             by_root=_PersistentKeyMap.empty(),
             root_sequence=_PersistentSequence.empty(),
             head_sequence=_PersistentSequence.empty(),
+            broker_scope_counts=_PersistentKeyMap.empty(),
             position_scope=position_scope,
             signed_quantity=0,
         )
@@ -898,12 +1023,13 @@ class RootHeadIndex:
             else b""
         )
         return _commit_parts(
-            b"execution-core/root-head-index/v1",
+            b"execution-core/root-head-index/v2",
             scope,
             _encode_int(self.signed_quantity),
             self._by_root.commitment,
             self._root_sequence.commitment,
             self._head_sequence.commitment,
+            self._broker_scope_counts.commitment,
         )
 
     @property
@@ -927,6 +1053,13 @@ class RootHeadIndex:
         _require_type("root_key", root_key, RootFillKey)
         return self._by_root.get(_encode_root_fill_key(root_key))
 
+    def broker_root_count(self, scope: ExecutionScope) -> int:
+        """Return the indexed broker-authoritative root count for exact scope."""
+
+        _require_type("scope", scope, ExecutionScope)
+        count = self._broker_scope_counts.get(_encode_execution_scope(scope))
+        return 0 if count is None else count
+
     def append(self, head: RootHead) -> RootHeadIndex:
         _require_type("head", head, RootHead)
         if self.get(head.root_key) is not None:
@@ -936,6 +1069,29 @@ class RootHeadIndex:
         head_scope = head.scope.position_scope
         if self.position_scope is not None and head_scope != self.position_scope:
             raise ValueError("all root heads must share exact position scope")
+        broker_scope_counts = self._broker_scope_counts
+        if head.authority is ExecutionAuthority.BROKER_AUTHORITATIVE:
+            encoded_scope = _encode_execution_scope(head.scope)
+            current_count = broker_scope_counts.get(encoded_scope)
+            next_count = 1 if current_count is None else current_count + 1
+            count_commitment = _commit_parts(
+                b"execution-core/broker-scope-root-count/v1",
+                encoded_scope,
+                _encode_int(next_count),
+            )
+            broker_scope_counts = (
+                broker_scope_counts.insert_new(
+                    encoded_scope,
+                    next_count,
+                    count_commitment,
+                )
+                if current_count is None
+                else broker_scope_counts.replace_existing(
+                    encoded_scope,
+                    next_count,
+                    count_commitment,
+                )
+            )
         return type(self)._from_parts(
             by_root=self._by_root.insert_new(
                 _encode_root_fill_key(head.root_key),
@@ -950,6 +1106,7 @@ class RootHeadIndex:
                 head.current_source_event_id,
                 _commit_source_event_id(head.current_source_event_id),
             ),
+            broker_scope_counts=broker_scope_counts,
             position_scope=self.position_scope or head_scope,
             signed_quantity=self.signed_quantity + head.signed_quantity,
         )
@@ -977,6 +1134,7 @@ class RootHeadIndex:
                 head.current_source_event_id,
                 _commit_source_event_id(head.current_source_event_id),
             ),
+            broker_scope_counts=self._broker_scope_counts,
             position_scope=self.position_scope,
             signed_quantity=(
                 self.signed_quantity - current.signed_quantity + head.signed_quantity
@@ -989,6 +1147,7 @@ class RootHeadIndex:
             by_root=self._by_root,
             root_sequence=self._root_sequence,
             head_sequence=self._head_sequence,
+            broker_scope_counts=self._broker_scope_counts,
             position_scope=self.position_scope,
             signed_quantity=self.signed_quantity,
             binding=binding,
@@ -1008,16 +1167,24 @@ class RootHeadIndex:
 class SeenFact:
     """First immutable payload and its stable exact-replay classification."""
 
-    fact: BrokerExecutionFact
+    fact: CanonicalExecutionFact
     classification: FirstObservationClassification
     position_scope: PositionScope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(
             self.fact,
-            (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
+            (
+                BrokerFillFact,
+                HumanAttestedFillFact,
+                BrokerTradeCorrectFact,
+                BrokerTradeBustFact,
+            ),
         ):
-            raise TypeError("fact must be a canonical broker execution fact")
+            raise TypeError(
+                "fact must be a canonical broker execution fact "
+                "or HumanAttestedFillFact"
+            )
         _require_type(
             "classification",
             self.classification,
@@ -1035,6 +1202,12 @@ class SeenFact:
             raise ValueError(
                 "an applied first observation must use the fact's position scope"
             )
+        if (
+            self.classification
+            is FirstObservationClassification.CORROBORATED_ZERO_ECONOMIC
+            and not isinstance(self.fact, BrokerFillFact)
+        ):
+            raise ValueError("zero-economic corroboration requires a BrokerFillFact")
 
     @property
     def commitment(self) -> bytes:
@@ -1045,7 +1218,7 @@ def _commit_seen_fact(observation: SeenFact) -> bytes:
     _require_type("observation", observation, SeenFact)
     return _commit_parts(
         b"execution-core/seen-fact/v2",
-        _encode_broker_fact(observation.fact),
+        _encode_execution_fact(observation.fact),
         _encode_text(observation.classification.value),
         _encode_position_scope(cast(PositionScope, observation.position_scope)),
     )
@@ -1059,6 +1232,7 @@ class SeenFactIndex:
     _order: _PersistentSequence[ExecutionFactKey]
     _observed_roots: _PersistentKeyMap[RootFillKey]
     _overfill_scopes: _PersistentKeyMap[PositionScope]
+    _prefix_commitments: _PersistentKeyMap[bytes]
     _account_scope: _AccountScope | None
     _binding: _SnapshotBinding | None
 
@@ -1077,6 +1251,11 @@ class SeenFactIndex:
         object.__setattr__(self, "_order", current._order)
         object.__setattr__(self, "_observed_roots", current._observed_roots)
         object.__setattr__(self, "_overfill_scopes", current._overfill_scopes)
+        object.__setattr__(
+            self,
+            "_prefix_commitments",
+            current._prefix_commitments,
+        )
         object.__setattr__(self, "_account_scope", current._account_scope)
         object.__setattr__(self, "_binding", None)
 
@@ -1088,6 +1267,7 @@ class SeenFactIndex:
         order: _PersistentSequence[ExecutionFactKey],
         observed_roots: _PersistentKeyMap[RootFillKey],
         overfill_scopes: _PersistentKeyMap[PositionScope],
+        prefix_commitments: _PersistentKeyMap[bytes] | None = None,
         account_scope: _AccountScope | None,
         binding: _SnapshotBinding | None = None,
     ) -> SeenFactIndex:
@@ -1096,6 +1276,15 @@ class SeenFactIndex:
         object.__setattr__(result, "_order", order)
         object.__setattr__(result, "_observed_roots", observed_roots)
         object.__setattr__(result, "_overfill_scopes", overfill_scopes)
+        object.__setattr__(
+            result,
+            "_prefix_commitments",
+            (
+                prefix_commitments
+                if prefix_commitments is not None
+                else _PersistentKeyMap.empty()
+            ),
+        )
         object.__setattr__(result, "_account_scope", account_scope)
         object.__setattr__(result, "_binding", binding)
         return result
@@ -1109,6 +1298,7 @@ class SeenFactIndex:
             order=_PersistentSequence.empty(),
             observed_roots=_PersistentKeyMap.empty(),
             overfill_scopes=_PersistentKeyMap.empty(),
+            prefix_commitments=_PersistentKeyMap.empty(),
             account_scope=(
                 _account_scope_from_position(position_scope)
                 if position_scope is not None
@@ -1123,12 +1313,13 @@ class SeenFactIndex:
     @property
     def commitment(self) -> bytes:
         return _commit_parts(
-            b"execution-core/seen-fact-index/v3",
+            b"execution-core/seen-fact-index/v4",
             _encode_account_scope(self._account_scope),
             self._by_key.commitment,
             self._order.commitment,
             self._observed_roots.commitment,
             self._overfill_scopes.commitment,
+            self._prefix_commitments.commitment,
         )
 
     @property
@@ -1146,6 +1337,20 @@ class SeenFactIndex:
         _require_type("position_scope", position_scope, PositionScope)
         return self._account_scope == _account_scope_from_position(position_scope)
 
+    def has_prefix(self, count: int, commitment: bytes) -> bool:
+        """Verify an exact prior registry commitment without history materialization."""
+
+        if type(count) is not int or count < 0:
+            raise ValueError("count must be a non-negative exact integer")
+        if type(commitment) is not bytes or len(commitment) != 32:
+            raise ValueError("commitment must contain exactly 32 bytes")
+        if count > self.count:
+            return False
+        if count == self.count:
+            return self.commitment == commitment
+        retained = self._prefix_commitments.get(count.to_bytes(8, "big"))
+        return retained == commitment
+
     def _for_position_scope(self, position_scope: PositionScope) -> SeenFactIndex:
         _require_type("position_scope", position_scope, PositionScope)
         account_scope = _account_scope_from_position(position_scope)
@@ -1158,6 +1363,7 @@ class SeenFactIndex:
             order=self._order,
             observed_roots=self._observed_roots,
             overfill_scopes=self._overfill_scopes,
+            prefix_commitments=self._prefix_commitments,
             account_scope=account_scope,
         )
 
@@ -1182,6 +1388,19 @@ class SeenFactIndex:
         _require_type("key", key, ExecutionFactKey)
         return self._by_key.get(_encode_execution_fact_key(key))
 
+    def observation_at(self, index: int) -> SeenFact:
+        """Return one ordered observation without materializing registry history."""
+
+        if type(index) is not int:
+            raise TypeError("index must be an exact integer")
+        if index < 0 or index >= self.count:
+            raise IndexError(index)
+        key = self._order.get(index)
+        observation = self.get(key)
+        if observation is None:
+            raise RuntimeError("seen-fact order references a missing observation")
+        return observation
+
     def contains_root(self, root_key: RootFillKey) -> bool:
         """Return whether any first observation reserved this exact root key."""
 
@@ -1200,16 +1419,19 @@ class SeenFactIndex:
             and self._account_scope != observation_account_scope
         ):
             raise ValueError("seen-fact registry cannot mix evaluation accounts")
+        current = self._for_position_scope(
+            cast(PositionScope, observation.position_scope)
+        )
         root_key = observation.fact.root_key
         encoded_root = _encode_root_fill_key(root_key)
-        observed_roots = self._observed_roots
+        observed_roots = current._observed_roots
         if observed_roots.get(encoded_root) is None:
             observed_roots = observed_roots.insert_new(
                 encoded_root,
                 root_key,
                 _commit_root_fill_key(root_key),
             )
-        overfill_scopes = self._overfill_scopes
+        overfill_scopes = current._overfill_scopes
         if observation.classification in {
             FirstObservationClassification.APPLIED_OVERFILL_QUARANTINE,
             FirstObservationClassification.APPLIED_PENDING_OVERFILL,
@@ -1225,13 +1447,25 @@ class SeenFactIndex:
                         encoded_position_scope,
                     ),
                 )
+        prefix_key = current.count.to_bytes(8, "big")
+        prefix_commitments = current._prefix_commitments
+        if prefix_commitments.get(prefix_key) is None:
+            prefix_commitments = prefix_commitments.insert_new(
+                prefix_key,
+                current.commitment,
+                _commit_parts(
+                    b"execution-core/seen-fact-prefix/v1",
+                    prefix_key,
+                    current.commitment,
+                ),
+            )
         return type(self)._from_parts(
-            by_key=self._by_key.insert_new(
+            by_key=current._by_key.insert_new(
                 _encode_execution_fact_key(observation.fact.key),
                 observation,
                 observation.commitment,
             ),
-            order=self._order.append(
+            order=current._order.append(
                 observation.fact.key,
                 _commit_parts(
                     b"execution-core/execution-fact-key-commitment/v1",
@@ -1240,7 +1474,8 @@ class SeenFactIndex:
             ),
             observed_roots=observed_roots,
             overfill_scopes=overfill_scopes,
-            account_scope=self._account_scope or observation_account_scope,
+            prefix_commitments=prefix_commitments,
+            account_scope=current._account_scope or observation_account_scope,
         )
 
     def _with_binding(self, binding: _SnapshotBinding) -> SeenFactIndex:
@@ -1250,6 +1485,7 @@ class SeenFactIndex:
             order=self._order,
             observed_roots=self._observed_roots,
             overfill_scopes=self._overfill_scopes,
+            prefix_commitments=self._prefix_commitments,
             account_scope=self._account_scope,
             binding=binding,
         )

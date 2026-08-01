@@ -105,6 +105,62 @@ occurrence, claim, and immutable evidence. Adapter certification remains a later
 No prior green output is admissible. Fresh focused/static/mutation evidence and a new independent
 exact-head `REV-0048` result are mandatory.
 
+## Independent checkpoint re-review and second bounded re-gate (2026-08-01)
+
+The remediation green following the split review is also superseded. Three fresh independent
+reviewers attacked checkpoint construction, execution binding/restart, and revision/closure
+semantics. They reproduced additional P0/P1 failures: late acceptance after closed rejected or
+never-dispatched outcomes was refused instead of invalidating; retained operator authority could be
+rewritten; checkpoint evolution helpers allowed reconciliation/history stripping; human authority
+could survive removal or reordering of its review gates; cross-symbol account-registry advancement
+stranded otherwise valid snapshots; human/corroborated truth could not be safely hydrated; sibling
+fills bypassed effect-wide capacity; and revision replay, post-closure conflict, bust/status, and
+non-tail mapping cases could wedge or falsely preserve finality. The reviewers added failure-first
+contracts in the three dedicated hardening suites listed below. No reviewer changed production.
+
+Ameen's standing authorization for all in-flight findings re-gates these directly necessary
+WO-0146 corrections only. It does not activate WO-0147, authorize runtime/schema/database/broker
+work, or authorize merge, deletion, or cleanup. The accepted remediation boundary is:
+
+- keep public broker hydration strict while adding venue-provenance hydration for exact retained
+  human roots and zero-economic corroborations;
+- admit only cryptographically monotonic account-registry projection, record every catch-up outcome,
+  and quarantine independently advanced owned-symbol truth until attribution is resolved;
+- commit indexed prefix and broker-root-count proofs without materializing retained history;
+- make the checkpoint object read-only by moving all construction capability to module-private
+  verified functions;
+- replay control-plane input order so first human authority exists only after the exact effect and
+  leg both reached `NEEDS_REVIEW` and before release;
+- bind every coverage, corroboration, revision head/history, reconciliation, closure, and registry
+  outcome to its exact source input; semantic aliases must point backward to a retained direct
+  source and can never replace it;
+- require effect-wide capacity, exact revision lineage/mapping, current closure parity, clean
+  execution bindings, and no unresolved evidence for `OPERATOR_RECONCILED`; later contradictions
+  demote the effect to `NEEDS_REVIEW` rather than leaving a falsely serving final state.
+
+All earlier green claims remain inadmissible. Fresh focused/stateful/static/mutation/full-suite and
+exact-head independent evidence are required after the final production freeze.
+
+## Fresh implementation checkpoint evidence (2026-08-01, pre-review)
+
+The production source was restored after every mutation and then frozen for this checkpoint.
+Current-source evidence:
+
+- deterministic execution-core contract: 318 passed across fill, import-boundary, ownership,
+  recovery, binding/restart, checkpoint, and provenance suites;
+- fill/position state machine: 7 passed; venue state machine: 2 passed;
+- Ruff: all execution-core source/tests passed; mypy: 7 source files passed; `git diff --check`:
+  passed;
+- five live safety mutants were killed by their focused pins: removing unresolved registry release
+  blocking; removing the ordered effect review gate; allowing an alias to replace its direct
+  provenance source; removing effect-wide sibling overfill latching; and allowing unresolved
+  execution-integrity bits in an operator-final checkpoint. The restored source passed all six
+  parametrized/targeted mutation pins.
+
+These are implementation-seat results, not acceptance. No SQL/DDL, database engine or fixture,
+broker adapter, Alpaca activity, credential, network, runtime wiring, merge, deletion, or cleanup
+was used. Full repository/R2 evidence and independent exact-head `REV-0048` remain mandatory.
+
 ## Frozen semantic contract
 
 - Add exact generation/effect/occurrence/client/claim/closure/evidence identities and immutable full
@@ -164,6 +220,9 @@ allowed_paths:
   - tests/execution_core/test_venue_ownership.py
   - tests/execution_core/test_venue_recovery.py
   - tests/execution_core/test_venue_stateful.py
+  - tests/execution_core/test_venue_binding_recovery.py
+  - tests/execution_core/test_venue_checkpoint_hardening.py
+  - tests/execution_core/test_venue_provenance_hardening.py
   - work/active/WO-0146-reset-kernel-b-venue-ownership-recovery.md
   - work/completed/keep/WO-0146-reset-kernel-b-venue-ownership-recovery.md
   - work/review/REV-0048/**

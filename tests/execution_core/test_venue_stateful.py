@@ -661,7 +661,8 @@ class VenueRecoveryMachine(RuleBasedStateMachine):
             assert closure.ordinal == model.ordinal
             assert closure.predecessor_closure_id == model.predecessor
             assert _enum_value(closure.status) == model.status
-            assert closure.cumulative_quantity == Quantity(model.cumulative)
+            assert closure.cumulative_quantity == Quantity(0)
+            assert closure.observed_cumulative_quantity == Quantity(model.cumulative)
 
     @invariant()
     def venue_history_is_quantity_neutral_and_checkpoint_bounded(self) -> None:

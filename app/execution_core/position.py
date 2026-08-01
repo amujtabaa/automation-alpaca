@@ -16,9 +16,12 @@ from .fills import (
     BrokerFillFact,
     BrokerTradeBustFact,
     BrokerTradeCorrectFact,
+    CanonicalExecutionFact,
+    CanonicalRootFillFact,
     ExecutionAuthority,
     ExecutionSide,
     FirstObservationClassification,
+    HumanAttestedFillFact,
     PositionScope,
     RootHead,
     RootHeadIndex,
@@ -356,6 +359,15 @@ class ExecutionSnapshot:
         ):
             raise ValueError("execution snapshot components are not coherently bound")
 
+    @property
+    def commitment(self) -> bytes:
+        """Return the immutable aggregate high-water commitment."""
+
+        binding = self.position.binding
+        if binding is None:
+            raise RuntimeError("coherent execution snapshot has no binding")
+        return binding.snapshot_commitment
+
     @classmethod
     def flat(cls, scope: PositionScope) -> ExecutionSnapshot:
         """Create the only admitted empty snapshot for exact position scope."""
@@ -614,6 +626,55 @@ def _bind_components(
     )
 
 
+def _project_execution_registry(
+    target: ExecutionSnapshot,
+    source: ExecutionSnapshot,
+) -> ExecutionSnapshot:
+    """Project a proven account-registry extension onto unchanged symbol state."""
+
+    if not isinstance(target, ExecutionSnapshot):
+        raise TypeError("target must be ExecutionSnapshot")
+    if not isinstance(source, ExecutionSnapshot):
+        raise TypeError("source must be ExecutionSnapshot")
+    target_scope = target.position.scope
+    source_scope = source.position.scope
+    if (
+        target_scope.broker != source_scope.broker
+        or target_scope.environment != source_scope.environment
+        or target_scope.account != source_scope.account
+    ):
+        raise ValueError("execution registries belong to different accounts")
+    if not source.seen_facts.has_prefix(
+        target.seen_facts.count,
+        target.seen_facts.commitment,
+    ):
+        raise ValueError("source registry is not a monotonic target extension")
+    return _bind_components(
+        target.position,
+        target.integrity,
+        target.root_heads,
+        source.seen_facts,
+    )
+
+
+def _latch_execution_integrity(
+    execution: ExecutionSnapshot,
+    evidence: PositionIntegrity,
+) -> ExecutionSnapshot:
+    """Return the same exact economics with additional sticky integrity evidence."""
+
+    if not isinstance(execution, ExecutionSnapshot):
+        raise TypeError("execution must be ExecutionSnapshot")
+    if not isinstance(evidence, PositionIntegrity):
+        raise TypeError("evidence must be PositionIntegrity")
+    return _bind_components(
+        execution.position,
+        execution.integrity | evidence,
+        execution.root_heads,
+        execution.seen_facts,
+    )
+
+
 def _observation_matches_head(observation: SeenFact, head: RootHead) -> bool:
     fact = observation.fact
     if (
@@ -623,7 +684,7 @@ def _observation_matches_head(observation: SeenFact, head: RootHead) -> bool:
         or fact.kind is not head.kind
     ):
         return False
-    if isinstance(fact, BrokerFillFact):
+    if isinstance(fact, (BrokerFillFact, HumanAttestedFillFact)):
         return fact.quantity == head.quantity and fact.price == head.price
     if isinstance(fact, BrokerTradeCorrectFact):
         return (
@@ -711,7 +772,7 @@ def _reconciliation_transition(
     integrity: PositionIntegrity,
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
-    fact: BrokerExecutionFact,
+    fact: CanonicalExecutionFact,
 ) -> ExecutionTransition:
     classification = FirstObservationClassification.RECONCILIATION_REQUIRED
     next_integrity = integrity | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
@@ -740,7 +801,7 @@ def _incoherent_snapshot_transition(
     integrity: PositionIntegrity,
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
-    fact: BrokerExecutionFact,
+    fact: CanonicalExecutionFact,
 ) -> ExecutionTransition:
     observation = seen_facts.get(fact.key)
     original_classification = (
@@ -824,7 +885,7 @@ def _apply_root_fill(
     integrity: PositionIntegrity,
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
-    fact: BrokerFillFact,
+    fact: CanonicalRootFillFact,
 ) -> ExecutionTransition:
     if (
         fact.scope.position_scope != position.scope
@@ -1125,15 +1186,12 @@ def _apply_revision(
     )
 
 
-def apply_broker_execution_fact(
+def _require_execution_components(
     position: PositionState,
     integrity: PositionIntegrity,
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
-    fact: BrokerExecutionFact,
-) -> ExecutionTransition:
-    """Apply one canonical broker fact without I/O or an ordered history fold."""
-
+) -> None:
     if not isinstance(position, PositionState):
         raise TypeError("position must be PositionState")
     if not isinstance(integrity, PositionIntegrity):
@@ -1142,12 +1200,15 @@ def apply_broker_execution_fact(
         raise TypeError("root_heads must be RootHeadIndex")
     if not isinstance(seen_facts, SeenFactIndex):
         raise TypeError("seen_facts must be SeenFactIndex")
-    if not isinstance(
-        fact,
-        (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
-    ):
-        raise TypeError("fact must be a canonical broker execution fact")
 
+
+def _apply_canonical_execution_fact(
+    position: PositionState,
+    integrity: PositionIntegrity,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+    fact: CanonicalExecutionFact,
+) -> ExecutionTransition:
     if not _snapshot_is_coherent(position, integrity, root_heads, seen_facts):
         return _incoherent_snapshot_transition(
             position,
@@ -1193,9 +1254,181 @@ def apply_broker_execution_fact(
             original_classification=first_observation.classification,
         )
 
-    if isinstance(fact, BrokerFillFact):
+    if isinstance(fact, (BrokerFillFact, HumanAttestedFillFact)):
         return _apply_root_fill(position, integrity, root_heads, seen_facts, fact)
     return _apply_revision(position, integrity, root_heads, seen_facts, fact)
+
+
+def apply_broker_execution_fact(
+    position: PositionState,
+    integrity: PositionIntegrity,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+    fact: BrokerExecutionFact,
+) -> ExecutionTransition:
+    """Apply one canonical broker fact without I/O or an ordered history fold."""
+
+    _require_execution_components(position, integrity, root_heads, seen_facts)
+    if not isinstance(
+        fact,
+        (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
+    ):
+        raise TypeError("fact must be a canonical broker execution fact")
+    return _apply_canonical_execution_fact(
+        position,
+        integrity,
+        root_heads,
+        seen_facts,
+        fact,
+    )
+
+
+def _apply_human_attested_fill_fact(
+    position: PositionState,
+    integrity: PositionIntegrity,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+    fact: HumanAttestedFillFact,
+) -> ExecutionTransition:
+    """Apply one already venue-authorized human root through the canonical fold."""
+
+    _require_execution_components(position, integrity, root_heads, seen_facts)
+    if not isinstance(fact, HumanAttestedFillFact):
+        raise TypeError("fact must be HumanAttestedFillFact")
+    return _apply_canonical_execution_fact(
+        position,
+        integrity,
+        root_heads,
+        seen_facts,
+        fact,
+    )
+
+
+def _record_execution_reconciliation(
+    position: PositionState,
+    integrity: PositionIntegrity,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+    fact: BrokerFillFact,
+) -> ExecutionTransition:
+    """Record broker evidence that recovery proved unsafe to apply economically."""
+
+    _require_execution_components(position, integrity, root_heads, seen_facts)
+    if not isinstance(fact, BrokerFillFact):
+        raise TypeError("fact must be BrokerFillFact")
+    if not _snapshot_is_coherent(position, integrity, root_heads, seen_facts):
+        return _incoherent_snapshot_transition(
+            position,
+            integrity,
+            root_heads,
+            seen_facts,
+            fact,
+        )
+
+    first_observation = seen_facts.get(fact.key)
+    if first_observation is None:
+        return _reconciliation_transition(
+            position,
+            integrity,
+            root_heads,
+            seen_facts,
+            fact,
+        )
+    if first_observation.fact != fact:
+        return _unchanged_transition(
+            position,
+            integrity
+            | PositionIntegrity.EXECUTION_FACT_CONFLICT
+            | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED,
+            root_heads,
+            seen_facts,
+            disposition=TransitionDisposition.FACT_CONFLICT,
+            original_classification=first_observation.classification,
+        )
+    return _unchanged_transition(
+        position,
+        integrity | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED,
+        root_heads,
+        seen_facts,
+        disposition=TransitionDisposition.RECONCILIATION_REQUIRED,
+        original_classification=first_observation.classification,
+    )
+
+
+def _record_broker_corroboration(
+    position: PositionState,
+    integrity: PositionIntegrity,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+    fact: BrokerFillFact,
+) -> ExecutionTransition:
+    """Reserve exact broker evidence already covered by another economic root.
+
+    The reservation makes a later public broker application of the same fact an
+    exact replay without manufacturing a second position delta or a
+    reconciliation latch.
+    """
+
+    _require_execution_components(position, integrity, root_heads, seen_facts)
+    if not isinstance(fact, BrokerFillFact):
+        raise TypeError("fact must be BrokerFillFact")
+    if not _snapshot_is_coherent(position, integrity, root_heads, seen_facts):
+        return _incoherent_snapshot_transition(
+            position,
+            integrity,
+            root_heads,
+            seen_facts,
+            fact,
+        )
+
+    first_observation = seen_facts.get(fact.key)
+    if first_observation is not None:
+        if first_observation.fact == fact:
+            return _unchanged_transition(
+                position,
+                integrity,
+                root_heads,
+                seen_facts,
+                disposition=TransitionDisposition.EXACT_REPLAY,
+                original_classification=first_observation.classification,
+            )
+        return _unchanged_transition(
+            position,
+            integrity | PositionIntegrity.EXECUTION_FACT_CONFLICT,
+            root_heads,
+            seen_facts,
+            disposition=TransitionDisposition.FACT_CONFLICT,
+            original_classification=first_observation.classification,
+        )
+
+    if seen_facts.contains_root(fact.root_key):
+        return _record_execution_reconciliation(
+            position,
+            integrity,
+            root_heads,
+            seen_facts,
+            fact,
+        )
+
+    classification = FirstObservationClassification.CORROBORATED_ZERO_ECONOMIC
+    next_seen = seen_facts.add(
+        SeenFact(
+            fact=fact,
+            classification=classification,
+            position_scope=position.scope,
+        )
+    )
+    snapshot = _bind_components(position, integrity, root_heads, next_seen)
+    return ExecutionTransition(
+        position=snapshot.position,
+        integrity=snapshot.integrity,
+        root_heads=snapshot.root_heads,
+        seen_facts=snapshot.seen_facts,
+        quantity_delta=0,
+        basis_delta=Fraction(0),
+        disposition=TransitionDisposition.APPLIED,
+        original_classification=classification,
+    )
 
 
 def _replay_hydration_snapshot(
@@ -1219,6 +1452,18 @@ def _replay_hydration_snapshot(
             replayed.root_heads,
             account_seen,
         )
+        if not isinstance(
+            observation.fact,
+            (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
+        ):
+            raise ValueError("public hydration admits broker-authoritative facts only")
+        if (
+            observation.classification
+            is FirstObservationClassification.CORROBORATED_ZERO_ECONOMIC
+        ):
+            raise ValueError(
+                "public hydration does not admit zero-economic corroboration"
+            )
         transition = apply_broker_execution_fact(
             replayed.position,
             replayed.integrity,

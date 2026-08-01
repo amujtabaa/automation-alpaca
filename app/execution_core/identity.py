@@ -52,6 +52,61 @@ class SourceEventId(_ExactIdentity):
 
 
 @dataclass(frozen=True, slots=True)
+class ApplicationGenerationId(_ExactIdentity):
+    """Exact reset-application generation identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class EffectId(_ExactIdentity):
+    """Exact broker-effect identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class RequestOccurrenceId(_ExactIdentity):
+    """Exact mutating-request occurrence identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class ClientOrderId(_ExactIdentity):
+    """Exact broker-visible creating-client identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimOccurrenceId(_ExactIdentity):
+    """Exact immutable dispatch-claim occurrence identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class ClosureId(_ExactIdentity):
+    """Exact immutable terminal-closure identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class VenueInputId(_ExactIdentity):
+    """Exact technical-deduplication identity for a venue input."""
+
+
+@dataclass(frozen=True, slots=True)
+class VenueObservationId(_ExactIdentity):
+    """Exact correlated venue-observation identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class ActorId(_ExactIdentity):
+    """Exact human actor identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceReference(_ExactIdentity):
+    """Exact external evidence reference supplied as command data."""
+
+
+@dataclass(frozen=True, slots=True)
+class MandateId(_ExactIdentity):
+    """Exact immutable mandate identity."""
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionFactKey:
     """The complete four-part deduplication key for one execution fact."""
 
@@ -89,3 +144,23 @@ class RootFillKey:
             raise TypeError("account must be AccountId")
         if not isinstance(self.root_fill_id, RootFillId):
             raise TypeError("root fill must be RootFillId")
+
+
+@dataclass(frozen=True, slots=True)
+class VenueLegKey:
+    """Composite immutable identity of one concrete broker order leg."""
+
+    broker: BrokerId
+    environment: EnvironmentId
+    account: AccountId
+    order_id: OrderId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.broker, BrokerId):
+            raise TypeError("broker must be BrokerId")
+        if not isinstance(self.environment, EnvironmentId):
+            raise TypeError("environment must be EnvironmentId")
+        if not isinstance(self.account, AccountId):
+            raise TypeError("account must be AccountId")
+        if not isinstance(self.order_id, OrderId):
+            raise TypeError("order_id must be OrderId")

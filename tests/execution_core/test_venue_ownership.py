@@ -52,6 +52,7 @@ from app.execution_core.venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
+    _rebuild_book,
     apply_venue_recovery_input,
 )
 
@@ -324,6 +325,43 @@ def test_never_dispatched_requires_local_cancel_and_absent_claim() -> None:
     )
 
 
+def test_late_acceptance_invalidates_closed_never_dispatched_proof() -> None:
+    requested, request = _requested("late-never-dispatched")
+    canceled = _apply(
+        requested,
+        CancelBeforeDispatch(
+            input_id=VenueInputId("cancel-late-never-dispatched"),
+            effect_id=request.effect_id,
+        ),
+    )
+    close_input = CloseAcceptanceSet(
+        input_id=VenueInputId("close-late-never-dispatched"),
+        effect_id=request.effect_id,
+        proof=_acceptance_proof(
+            canceled.book,
+            request.effect_id,
+            AcceptanceProofKind.NEVER_DISPATCHED,
+            "locally-proven-absence-before-late-acceptance",
+        ),
+    )
+    closed = _apply(canceled.book, close_input)
+    original_proof = closed.book.effect(request.effect_id).acceptance_proof
+
+    late = _discover(closed.book, request, "late-never-dispatched")
+    effect = late.book.effect(request.effect_id)
+
+    assert late.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert effect.acceptance_set_state is AcceptanceSetState.INVALIDATED
+    assert effect.acceptance_proof == original_proof
+    assert effect.contradiction_evidence[-1].leg_key == _leg(
+        "late-never-dispatched"
+    )
+    assert effect.contradiction_evidence[-1].observation_id == VenueObservationId(
+        "acceptance-late-never-dispatched"
+    )
+    assert late.book.owner(_leg("late-never-dispatched")).effect_id == request.effect_id
+
+
 def test_committed_claim_makes_never_dispatched_permanently_impossible() -> None:
     claimed, request = _claimed()
     close = CloseAcceptanceSet(
@@ -386,7 +424,7 @@ def test_checkpoint_construction_rejects_closed_effect_without_proof() -> None:
     forged = replace(effect, acceptance_set_state=AcceptanceSetState.CLOSED)
 
     with pytest.raises(ValueError, match="proof"):
-        replace(requested, effects=(forged,))
+        _rebuild_book(requested, effects=(forged,))
 
 
 def test_restart_converts_stranded_claim_to_unknown_without_resend() -> None:
@@ -638,7 +676,7 @@ def test_claim_occurrence_identity_is_generation_account_unique() -> None:
     assert duplicate_claim.book == first_claim.book
 
 
-def test_later_terminal_economics_can_advance_a_closure_status() -> None:
+def test_later_terminal_status_advances_observation_without_economics() -> None:
     book, request = _acknowledged("terminal-advance")
     discovered = _discover(book, request, "terminal-advance")
     canceled = _apply(
@@ -668,7 +706,8 @@ def test_later_terminal_economics_can_advance_a_closure_status() -> None:
         "closure-terminal-advance-canceled"
     )
     assert closure.status is VenueAttemptState.FILLED
-    assert closure.cumulative_quantity == Quantity(4)
+    assert closure.cumulative_quantity == Quantity(0)
+    assert closure.observed_cumulative_quantity == Quantity(4)
 
 
 def test_pending_operation_has_one_canonical_absence_representation() -> None:
@@ -699,14 +738,15 @@ def test_terminal_leg_compacts_to_single_ordinal_one_closure_root() -> None:
     assert head.predecessor_closure_id is None
     assert head.closure_id == ClosureId("closure-compact-root")
     assert head.status is VenueAttemptState.FILLED
-    assert head.cumulative_quantity == Quantity(10)
+    assert head.cumulative_quantity == Quantity(0)
+    assert head.observed_cumulative_quantity == Quantity(10)
     assert (
         terminal.book.effect(request.effect_id).acceptance_set_state
         is AcceptanceSetState.OPEN
     )
 
 
-def test_later_terminal_economics_append_immediate_same_owner_closure_successor() -> (
+def test_later_terminal_status_appends_immediate_same_owner_closure_successor() -> (
     None
 ):
     book, request = _acknowledged()
@@ -724,7 +764,8 @@ def test_later_terminal_economics_append_immediate_same_owner_closure_successor(
     assert head.ordinal == 2
     assert head.predecessor_closure_id == ClosureId("closure-chain-root")
     assert head.closure_id == ClosureId("closure-chain-successor")
-    assert head.cumulative_quantity == Quantity(11)
+    assert head.cumulative_quantity == Quantity(0)
+    assert head.observed_cumulative_quantity == Quantity(11)
     assert len(successor.book.closure_heads) == 1
     assert successor.book.active_attempt(_leg("chain")) is None
 
@@ -851,6 +892,43 @@ def test_ar02_late_second_acceptance_invalidates_and_preserves_closure_proof() -
         impossible_reclose.book.effect(request.effect_id).acceptance_set_state
         is AcceptanceSetState.INVALIDATED
     )
+
+
+def test_late_acceptance_invalidates_closed_rejected_effect_proof() -> None:
+    claimed, request = _claimed("late-rejected")
+    rejected = _apply(
+        claimed,
+        RecordTransportOutcome(
+            input_id=VenueInputId("reject-before-late-acceptance"),
+            effect_id=request.effect_id,
+            state=BrokerEffectState.REJECTED,
+        ),
+    )
+    close_input = CloseAcceptanceSet(
+        input_id=VenueInputId("close-rejected-contract-complete"),
+        effect_id=request.effect_id,
+        proof=_acceptance_proof(
+            rejected.book,
+            request.effect_id,
+            AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+            "contract-complete-before-late-rejected-acceptance",
+        ),
+    )
+    closed = _apply(rejected.book, close_input)
+    original_proof = closed.book.effect(request.effect_id).acceptance_proof
+
+    late = _discover(closed.book, request, "late-rejected")
+    effect = late.book.effect(request.effect_id)
+
+    assert late.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert effect.state is BrokerEffectState.REJECTED
+    assert effect.acceptance_set_state is AcceptanceSetState.INVALIDATED
+    assert effect.acceptance_proof == original_proof
+    assert effect.contradiction_evidence[-1].leg_key == _leg("late-rejected")
+    assert effect.contradiction_evidence[-1].observation_id == VenueObservationId(
+        "acceptance-late-rejected"
+    )
+    assert late.book.owner(_leg("late-rejected")).effect_id == request.effect_id
 
 
 def test_closure_proof_refuses_while_a_known_leg_is_active() -> None:
