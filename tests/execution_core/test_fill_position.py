@@ -28,6 +28,7 @@ from app.execution_core.fills import (
     ExecutionScope,
     ExecutionSide,
     FactKind,
+    PositionScope,
     RootHead,
     SeenFact,
 )
@@ -45,6 +46,7 @@ from app.execution_core.identity import (
 from app.execution_core.position import (
     BasisAuthority,
     BasisCandidateStatus,
+    ExecutionSnapshot,
     ExecutionTransition,
     FirstObservationClassification,
     FoldInput,
@@ -73,6 +75,12 @@ ENVIRONMENT = EnvironmentId("paper")
 ACCOUNT = AccountId("account-001")
 SYMBOL = SymbolId("AAPL")
 OTHER_SYMBOL = SymbolId("MSFT")
+POSITION_SCOPE = PositionScope(
+    broker=BROKER,
+    environment=ENVIRONMENT,
+    account=ACCOUNT,
+    symbol_id=SYMBOL,
+)
 BUY_ORDER = OrderId("buy-order")
 SELL_ORDER = OrderId("sell-order")
 SCALE = PriceScale(Decimal("1"))
@@ -219,11 +227,12 @@ class _Kernel:
 
     @classmethod
     def flat(cls) -> _Kernel:
+        snapshot = ExecutionSnapshot.flat(POSITION_SCOPE)
         return cls(
-            position=PositionState.flat(SYMBOL),
-            integrity=PositionIntegrity.CONSISTENT,
-            root_heads=RootHeadIndex.empty(),
-            seen_facts=SeenFactIndex.empty(),
+            position=snapshot.position,
+            integrity=snapshot.integrity,
+            root_heads=snapshot.root_heads,
+            seen_facts=snapshot.seen_facts,
         )
 
     def apply(self, fact: BrokerFact) -> tuple[_Kernel, ExecutionTransition]:
@@ -996,8 +1005,8 @@ def test_human_attested_root_cannot_be_corrected_or_busted() -> None:
         quantity=Quantity(2),
         price=price,
     )
-    position = PositionState(
-        symbol_id=SYMBOL,
+    position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
         raw_quantity=2,
         basis_authority=BasisAuthority.AVAILABLE,
         cost_basis=_basis(200),
@@ -1013,7 +1022,7 @@ def test_human_attested_root_cannot_be_corrected_or_busted() -> None:
     kernel = _Kernel(
         position=position,
         integrity=PositionIntegrity.CONSISTENT,
-        root_heads=RootHeadIndex.empty().append(human_head),
+        root_heads=RootHeadIndex.empty(POSITION_SCOPE).append(human_head),
         seen_facts=SeenFactIndex.empty(),
     )
 
@@ -1123,9 +1132,9 @@ def test_transition_is_deterministic_and_does_not_mutate_any_input() -> None:
         setattr(fact, "quantity", Quantity(999))
     with pytest.raises(FrozenInstanceError):
         setattr(first.position, "raw_quantity", 999)
-    with pytest.raises(FrozenInstanceError):
+    with pytest.raises((FrozenInstanceError, TypeError)):
         setattr(first.root_heads, "entries", ())
-    with pytest.raises(FrozenInstanceError):
+    with pytest.raises((FrozenInstanceError, TypeError)):
         setattr(first.seen_facts, "entries", ())
 
 
@@ -1197,9 +1206,15 @@ def test_fraction_oracle_agrees_with_separate_ordered_candidate(
 def test_candidate_rejects_inconsistent_snapshot_instead_of_guessing() -> None:
     fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=3, units=100)
     kernel, _ = _apply_all(fill)
-    inconsistent = replace(
-        kernel.position,
+    inconsistent = PositionState.from_materialized(
+        scope=kernel.position.scope,
+        raw_quantity=kernel.position.raw_quantity,
+        basis_authority=kernel.position.basis_authority,
+        cost_basis=kernel.position.cost_basis,
+        root_fill_sequence=kernel.position.root_fill_sequence,
         effective_head_ids=(SourceEventId("not-the-head"),),
+        basis_price_metadata=kernel.position.basis_price_metadata,
+        tail_fold_input=kernel.position.tail_fold_input,
     )
 
     candidate = derive_ordered_basis_candidate(inconsistent, kernel.root_heads)
@@ -1295,8 +1310,8 @@ def test_each_revision_kind_rejects_human_authority(
         price=price,
     )
     kernel = _Kernel(
-        position=PositionState(
-            symbol_id=SYMBOL,
+        position=PositionState.from_materialized(
+            scope=POSITION_SCOPE,
             raw_quantity=2,
             basis_authority=BasisAuthority.AVAILABLE,
             cost_basis=_basis(200),
@@ -1310,7 +1325,7 @@ def test_each_revision_kind_rejects_human_authority(
             ),
         ),
         integrity=PositionIntegrity.CONSISTENT,
-        root_heads=RootHeadIndex.empty().append(root_head),
+        root_heads=RootHeadIndex.empty(POSITION_SCOPE).append(root_head),
         seen_facts=SeenFactIndex.empty(),
     )
 
@@ -1434,19 +1449,25 @@ def test_fast_apply_rejects_exact_snapshot_component_mismatch(mismatch: str) -> 
     if mismatch == "missing-root-head":
         corrupt = replace(applied, root_heads=RootHeadIndex.empty())
     elif mismatch == "missing-position-root":
-        corrupt = replace(applied, position=PositionState.flat(SYMBOL))
+        corrupt = replace(applied, position=PositionState.flat(POSITION_SCOPE))
     elif mismatch == "mismatched-head-id":
         corrupt = replace(
             applied,
-            position=replace(
-                applied.position,
+            position=PositionState.from_materialized(
+                scope=applied.position.scope,
+                raw_quantity=applied.position.raw_quantity,
+                basis_authority=applied.position.basis_authority,
+                cost_basis=applied.position.cost_basis,
+                root_fill_sequence=applied.position.root_fill_sequence,
                 effective_head_ids=(SourceEventId("stale-head"),),
+                basis_price_metadata=applied.position.basis_price_metadata,
+                tail_fold_input=applied.position.tail_fold_input,
             ),
         )
     else:
         corrupt = replace(
             applied,
-            position=PositionState.flat(SYMBOL),
+            position=PositionState.flat(POSITION_SCOPE),
             root_heads=RootHeadIndex.empty(),
         )
     incoming = _fill(
@@ -1465,7 +1486,7 @@ def test_exact_replay_rejects_flat_snapshot_with_applied_seen_fact() -> None:
     applied, _ = _apply_all(fill)
     corrupt = replace(
         applied,
-        position=PositionState.flat(SYMBOL),
+        position=PositionState.flat(POSITION_SCOPE),
         root_heads=RootHeadIndex.empty(),
     )
 
@@ -1619,32 +1640,39 @@ def _history_kernel(root_count: int) -> tuple[_Kernel, BrokerFillFact]:
                 classification=FirstObservationClassification.APPLIED_AVAILABLE,
             )
         )
-    kernel = _Kernel(
-        position=PositionState(
-            symbol_id=SYMBOL,
-            raw_quantity=root_count,
-            basis_authority=BasisAuthority.AVAILABLE,
-            cost_basis=_basis(root_count * 100),
-            root_fill_sequence=tuple(root_keys),
-            effective_head_ids=tuple(head_ids),
-            basis_price_metadata=price,
-            tail_fold_input=FoldInput(
-                raw_quantity=root_count - 1,
-                cost_basis=_basis((root_count - 1) * 100),
-                price_metadata=price,
-            ),
+    unbound_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=root_count,
+        basis_authority=BasisAuthority.AVAILABLE,
+        cost_basis=_basis(root_count * 100),
+        root_fill_sequence=tuple(root_keys),
+        effective_head_ids=tuple(head_ids),
+        basis_price_metadata=price,
+        tail_fold_input=FoldInput(
+            raw_quantity=root_count - 1,
+            cost_basis=_basis((root_count - 1) * 100),
+            price_metadata=price,
         ),
-        integrity=PositionIntegrity.CONSISTENT,
-        root_heads=RootHeadIndex(entries=tuple(heads)),
-        seen_facts=SeenFactIndex(entries=tuple(seen)),
+    )
+    snapshot = ExecutionSnapshot.bind_verified(
+        unbound_position,
+        PositionIntegrity.CONSISTENT,
+        RootHeadIndex(entries=tuple(heads), position_scope=POSITION_SCOPE),
+        SeenFactIndex(entries=tuple(seen)),
+    )
+    kernel = _Kernel(
+        position=snapshot.position,
+        integrity=snapshot.integrity,
+        root_heads=snapshot.root_heads,
+        seen_facts=snapshot.seen_facts,
     )
     incoming = _fill(
-        f"incoming-{root_count}",
-        f"incoming-root-{root_count}",
+        "incoming-event",
+        "incoming-root",
         side=ExecutionSide.BUY,
         quantity=1,
         units=100,
-        order_id=OrderId(f"incoming-order-{root_count}"),
+        order_id=OrderId("incoming-order"),
     )
     return kernel, incoming
 
@@ -1679,7 +1707,11 @@ def test_fast_apply_line_events_are_independent_of_history_length() -> None:
     small_events = _fast_apply_line_events(small, small_fact)
     large_events = _fast_apply_line_events(large, large_fact)
 
-    assert large_events <= small_events + 200, (
+    # Sparse radix nodes may require a few more bounded label comparisons as
+    # their fan-out approaches the fixed byte alphabet. The 500-event headroom
+    # is constant (not proportional to history) and still decisively kills the
+    # former tuple scans/copies, whose 2,048-root path exceeded 53,000 events.
+    assert large_events <= small_events + 500, (
         "one fast application scaled with historical roots/facts: "
         f"16 roots={small_events} line events, 2048 roots={large_events}"
     )

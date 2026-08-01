@@ -21,6 +21,7 @@ from app.execution_core.fills import (
     ExecutionAuthority,
     ExecutionScope,
     ExecutionSide,
+    PositionScope,
 )
 from app.execution_core.identity import (
     AccountId,
@@ -36,6 +37,7 @@ from app.execution_core.identity import (
 from app.execution_core.position import (
     BasisAuthority,
     BasisCandidateStatus,
+    ExecutionSnapshot,
     FirstObservationClassification,
     PositionIntegrity,
     PositionState,
@@ -59,6 +61,12 @@ _BROKER = BrokerId("alpaca")
 _ENVIRONMENT = EnvironmentId("paper")
 _ACCOUNT = AccountId("paper-account")
 _SYMBOL = SymbolId("AAPL")
+_POSITION_SCOPE = PositionScope(
+    broker=_BROKER,
+    environment=_ENVIRONMENT,
+    account=_ACCOUNT,
+    symbol_id=_SYMBOL,
+)
 
 
 ExecutionFact = BrokerFillFact | BrokerTradeCorrectFact | BrokerTradeBustFact
@@ -118,6 +126,10 @@ def _root_key(root_fill_id: RootFillId) -> RootFillKey:
 
 def _signed(side: ExecutionSide, quantity: int) -> int:
     return quantity if side is ExecutionSide.BUY else -quantity
+
+
+def _flat_snapshot() -> ExecutionSnapshot:
+    return ExecutionSnapshot.flat(_POSITION_SCOPE)
 
 
 def _fractional_price(price: ReportedPrice) -> Fraction:
@@ -244,10 +256,11 @@ class FillPositionMachine(RuleBasedStateMachine):
 
     def __init__(self) -> None:
         super().__init__()
-        self.position = PositionState.flat(_SYMBOL)
-        self.integrity = PositionIntegrity.CONSISTENT
-        self.root_heads = RootHeadIndex.empty()
-        self.seen_facts = SeenFactIndex.empty()
+        snapshot = ExecutionSnapshot.flat(_POSITION_SCOPE)
+        self.position = snapshot.position
+        self.integrity = snapshot.integrity
+        self.root_heads = snapshot.root_heads
+        self.seen_facts = snapshot.seen_facts
         self.roots: list[_ModelRoot] = []
         self.seen: dict[
             ExecutionFactKey,
@@ -489,7 +502,10 @@ class FillPositionMachine(RuleBasedStateMachine):
         assert transition.integrity == (
             self.integrity | PositionIntegrity.EXECUTION_FACT_CONFLICT
         )
+        self.position = transition.position
         self.integrity = transition.integrity
+        self.root_heads = transition.root_heads
+        self.seen_facts = transition.seen_facts
 
     @precondition(lambda self: bool(self.roots))
     @rule(data=st.data(), mode=st.sampled_from(("missing", "out_of_order", "scope")))
@@ -644,10 +660,11 @@ TestFillPositionStateful.settings = settings(
 
 
 def test_property_duplicate_does_not_count_clamp_reject_or_clear_integrity() -> None:
-    position = PositionState.flat(_SYMBOL)
-    integrity = PositionIntegrity.CONSISTENT
-    roots = RootHeadIndex.empty()
-    seen = SeenFactIndex.empty()
+    snapshot = _flat_snapshot()
+    position = snapshot.position
+    integrity = snapshot.integrity
+    roots = snapshot.root_heads
+    seen = snapshot.seen_facts
     sell = BrokerFillFact(
         key=_fact_key(1),
         scope=_scope(ExecutionSide.SELL, 1),
@@ -683,11 +700,12 @@ def test_property_incompatible_authoritative_fact_applies_and_withholds_basis() 
         quantity=Quantity(4),
         price=_price(203, tick_units=2),
     )
+    snapshot = _flat_snapshot()
     transition = _apply(
-        PositionState.flat(_SYMBOL),
-        PositionIntegrity.CONSISTENT,
-        RootHeadIndex.empty(),
-        SeenFactIndex.empty(),
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
         fill,
     )
     assert transition.disposition is TransitionDisposition.APPLIED
@@ -702,10 +720,11 @@ def test_property_incompatible_authoritative_fact_applies_and_withholds_basis() 
 def test_property_revision_induced_negative_is_exact_and_permanently_quarantined() -> (
     None
 ):
-    state = PositionState.flat(_SYMBOL)
-    integrity = PositionIntegrity.CONSISTENT
-    heads = RootHeadIndex.empty()
-    seen = SeenFactIndex.empty()
+    snapshot = _flat_snapshot()
+    state = snapshot.position
+    integrity = snapshot.integrity
+    heads = snapshot.root_heads
+    seen = snapshot.seen_facts
     buy = BrokerFillFact(
         key=_fact_key(1),
         scope=_scope(ExecutionSide.BUY, 1),
@@ -767,11 +786,12 @@ def test_property_revision_induced_negative_is_exact_and_permanently_quarantined
 def test_property_fast_non_tail_revision_never_invokes_or_exposes_slow_candidate(
     monkeypatch,
 ) -> None:
+    snapshot = _flat_snapshot()
     first = _apply(
-        PositionState.flat(_SYMBOL),
-        PositionIntegrity.CONSISTENT,
-        RootHeadIndex.empty(),
-        SeenFactIndex.empty(),
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
         BrokerFillFact(
             key=_fact_key(1),
             scope=_scope(ExecutionSide.BUY, 1),
@@ -841,11 +861,12 @@ def test_property_human_attested_root_cannot_be_corrected_or_busted() -> None:
         quantity=Quantity(5),
         price=_price(100),
     )
+    snapshot = _flat_snapshot()
     broker_state = _apply(
-        PositionState.flat(_SYMBOL),
-        PositionIntegrity.CONSISTENT,
-        RootHeadIndex.empty(),
-        SeenFactIndex.empty(),
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
         fill,
     )
     key = _root_key(fill.root_fill_id)
