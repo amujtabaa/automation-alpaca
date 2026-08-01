@@ -254,6 +254,75 @@ class _Kernel:
         )
 
 
+def _coherently_bound_human_kernel() -> _Kernel:
+    """Build a test-only human root that reaches authority-specific guards."""
+
+    scope = _scope(order_id=BUY_ORDER, side=ExecutionSide.BUY)
+    fill = _fill(
+        "human-fill",
+        "human-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=100,
+        scope=scope,
+    )
+    head = RootHead(
+        root_key=fill.root_key,
+        original_sequence=0,
+        scope=scope,
+        authority=ExecutionAuthority.HUMAN_ATTESTED,
+        current_source_event_id=fill.key.source_event_id,
+        kind=FactKind.FILL,
+        quantity=Quantity(2),
+        price=_price(100),
+    )
+    roots = RootHeadIndex(entries=(head,), position_scope=POSITION_SCOPE)
+    position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=2,
+        basis_authority=BasisAuthority.BASIS_RECONCILIATION_PENDING,
+        cost_basis=None,
+        root_fill_sequence=(fill.root_key,),
+        effective_head_ids=(fill.key.source_event_id,),
+        basis_price_metadata=None,
+        tail_fold_input=None,
+    )
+    snapshot = position_module._bind_components(
+        position,
+        PositionIntegrity.CONSISTENT,
+        roots,
+        SeenFactIndex(
+            entries=(
+                SeenFact(
+                    fact=fill,
+                    classification=FirstObservationClassification.APPLIED_AVAILABLE,
+                ),
+            )
+        ),
+    )
+    return _Kernel(
+        position=snapshot.position,
+        integrity=snapshot.integrity,
+        root_heads=snapshot.root_heads,
+        seen_facts=snapshot.seen_facts,
+    )
+
+
+def _unbound_hydration_parts(
+    kernel: _Kernel,
+) -> tuple[PositionState, RootHeadIndex, SeenFactIndex]:
+    """Materialize persisted-style parts without trusting a prior binding."""
+
+    return (
+        replace(kernel.position, _binding=None),
+        RootHeadIndex(
+            entries=kernel.root_heads.entries,
+            position_scope=kernel.position.scope,
+        ),
+        SeenFactIndex(entries=kernel.seen_facts.entries),
+    )
+
+
 def _apply_all(*facts: BrokerFact) -> tuple[_Kernel, list[ExecutionTransition]]:
     kernel = _Kernel.flat()
     transitions: list[ExecutionTransition] = []
@@ -992,39 +1061,7 @@ def test_incompatible_tail_correction_advances_head_and_quantity_pending() -> No
 
 
 def test_human_attested_root_cannot_be_corrected_or_busted() -> None:
-    root_key = _root_key("human-root")
-    event_id = SourceEventId("human-fill")
-    price = _price(100)
-    human_head = RootHead(
-        root_key=root_key,
-        original_sequence=0,
-        scope=_scope(order_id=BUY_ORDER, side=ExecutionSide.BUY),
-        authority=ExecutionAuthority.HUMAN_ATTESTED,
-        current_source_event_id=event_id,
-        kind=FactKind.FILL,
-        quantity=Quantity(2),
-        price=price,
-    )
-    position = PositionState.from_materialized(
-        scope=POSITION_SCOPE,
-        raw_quantity=2,
-        basis_authority=BasisAuthority.AVAILABLE,
-        cost_basis=_basis(200),
-        root_fill_sequence=(root_key,),
-        effective_head_ids=(event_id,),
-        basis_price_metadata=price,
-        tail_fold_input=FoldInput(
-            raw_quantity=0,
-            cost_basis=_basis(0),
-            price_metadata=None,
-        ),
-    )
-    kernel = _Kernel(
-        position=position,
-        integrity=PositionIntegrity.CONSISTENT,
-        root_heads=RootHeadIndex.empty(POSITION_SCOPE).append(human_head),
-        seen_facts=SeenFactIndex.empty(),
-    )
+    kernel = _coherently_bound_human_kernel()
 
     correction = _correct(
         "broker-correction",
@@ -1283,53 +1320,28 @@ def test_revision_rejection_preserves_prior_combined_integrity() -> None:
     [
         lambda: _correct(
             "revision",
-            "root",
+            "human-root",
             "human-fill",
             side=ExecutionSide.BUY,
             quantity=1,
             units=101,
         ),
-        lambda: _bust("revision", "root", "human-fill", side=ExecutionSide.BUY),
+        lambda: _bust(
+            "revision",
+            "human-root",
+            "human-fill",
+            side=ExecutionSide.BUY,
+        ),
     ],
     ids=["correct", "bust"],
 )
 def test_each_revision_kind_rejects_human_authority(
     revision_factory: Callable[[], BrokerFact],
 ) -> None:
-    root_key = _root_key("root")
-    head_id = SourceEventId("human-fill")
-    price = _price(100)
-    root_head = RootHead(
-        root_key=root_key,
-        original_sequence=0,
-        scope=_scope(order_id=BUY_ORDER, side=ExecutionSide.BUY),
-        authority=ExecutionAuthority.HUMAN_ATTESTED,
-        current_source_event_id=head_id,
-        kind=FactKind.FILL,
-        quantity=Quantity(2),
-        price=price,
+    _assert_reconciliation_no_economics(
+        _coherently_bound_human_kernel(),
+        revision_factory(),
     )
-    kernel = _Kernel(
-        position=PositionState.from_materialized(
-            scope=POSITION_SCOPE,
-            raw_quantity=2,
-            basis_authority=BasisAuthority.AVAILABLE,
-            cost_basis=_basis(200),
-            root_fill_sequence=(root_key,),
-            effective_head_ids=(head_id,),
-            basis_price_metadata=price,
-            tail_fold_input=FoldInput(
-                raw_quantity=0,
-                cost_basis=_basis(0),
-                price_metadata=None,
-            ),
-        ),
-        integrity=PositionIntegrity.CONSISTENT,
-        root_heads=RootHeadIndex.empty(POSITION_SCOPE).append(root_head),
-        seen_facts=SeenFactIndex.empty(),
-    )
-
-    _assert_reconciliation_no_economics(kernel, revision_factory())
 
 
 def test_aligned_priced_bust_then_different_scale_fill_stays_pending() -> None:
@@ -1524,6 +1536,509 @@ def test_integrity_reset_mismatch_reconciles_without_economics() -> None:
     assert after.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
 
 
+def test_bind_verified_rejects_applied_seen_fact_without_root_economics() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    orphan_seen = SeenFactIndex(
+        entries=(
+            SeenFact(
+                fact=fill,
+                classification=FirstObservationClassification.APPLIED_AVAILABLE,
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            PositionState.flat(POSITION_SCOPE),
+            PositionIntegrity.CONSISTENT,
+            RootHeadIndex.empty(POSITION_SCOPE),
+            orphan_seen,
+        )
+
+
+def test_bind_verified_rejects_extra_applied_seen_fact_outside_current_roots() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    orphan = _fill(
+        "orphan",
+        "orphan-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+    position, roots, seen = _unbound_hydration_parts(applied)
+    forged_seen = SeenFactIndex(
+        entries=seen.entries
+        + (
+            SeenFact(
+                fact=orphan,
+                classification=FirstObservationClassification.APPLIED_AVAILABLE,
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            position,
+            applied.integrity,
+            roots,
+            forged_seen,
+        )
+
+
+@pytest.mark.parametrize("ancestor_state", ["missing", "reconciliation"])
+def test_bind_verified_rejects_current_revision_without_applied_ancestor_chain(
+    ancestor_state: str,
+) -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=3, units=100)
+    correction = _correct(
+        "correction",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=101,
+    )
+    applied, _ = _apply_all(fill, correction)
+    position, roots, seen = _unbound_hydration_parts(applied)
+    fill_observation, correction_observation = seen.entries
+    observations = (correction_observation,)
+    if ancestor_state == "reconciliation":
+        observations = (
+            replace(
+                fill_observation,
+                classification=FirstObservationClassification.RECONCILIATION_REQUIRED,
+            ),
+            correction_observation,
+        )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            position,
+            applied.integrity,
+            roots,
+            SeenFactIndex(entries=observations),
+        )
+
+
+def test_bind_verified_rejects_overfill_fact_reclassified_available() -> None:
+    overfill = _fill(
+        "overfill",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    applied, _ = _apply_all(overfill)
+    position, roots, seen = _unbound_hydration_parts(applied)
+    observation = seen.entries[0]
+    forged_seen = SeenFactIndex(
+        entries=(
+            replace(
+                observation,
+                classification=FirstObservationClassification.APPLIED_AVAILABLE,
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            position,
+            applied.integrity,
+            roots,
+            forged_seen,
+        )
+
+
+def test_bind_verified_rejects_historical_overfill_integrity_reset() -> None:
+    sell = _fill(
+        "sell",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    cover = _fill(
+        "cover",
+        "cover-root",
+        side=ExecutionSide.BUY,
+        quantity=5,
+        units=101,
+    )
+    recovered, _ = _apply_all(sell, cover)
+    assert recovered.position.raw_quantity == 2
+    assert recovered.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    position, roots, seen = _unbound_hydration_parts(recovered)
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            position,
+            PositionIntegrity.CONSISTENT,
+            roots,
+            seen,
+        )
+
+
+def test_bind_verified_rejects_committed_conflict_integrity_reset() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    changed_replay = replace(fill, price=_price(101))
+    conflicted, transition = applied.apply(changed_replay)
+    assert transition.disposition is TransitionDisposition.FACT_CONFLICT
+    assert conflicted.integrity & PositionIntegrity.EXECUTION_FACT_CONFLICT
+    position, roots, seen = _unbound_hydration_parts(conflicted)
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            position,
+            PositionIntegrity.CONSISTENT,
+            roots,
+            seen,
+        )
+
+
+def test_position_commitment_carries_unreconstructable_integrity_floor() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    changed_replay = replace(fill, price=_price(101))
+    conflicted, transition = applied.apply(changed_replay)
+    assert transition.disposition is TransitionDisposition.FACT_CONFLICT
+
+    assert conflicted.position.commitment != applied.position.commitment
+
+
+def test_bind_verified_rejects_reconciliation_integrity_reset() -> None:
+    invalid = _correct(
+        "orphan-correction",
+        "missing-root",
+        "missing-predecessor",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+    reconciled, transition = _Kernel.flat().apply(invalid)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    position, roots, seen = _unbound_hydration_parts(reconciled)
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            position,
+            PositionIntegrity.CONSISTENT,
+            roots,
+            seen,
+        )
+
+
+def test_bind_verified_rejects_forged_tail_prefix_economics() -> None:
+    first = _fill("first", "first-root", side=ExecutionSide.BUY, quantity=10, units=100)
+    tail = _fill("tail", "tail-root", side=ExecutionSide.BUY, quantity=10, units=100)
+    applied, _ = _apply_all(first, tail)
+    authentic_tail_input = applied.position.tail_fold_input
+    authentic_tail_head = applied.root_heads.get(tail.root_key)
+    first_head = applied.root_heads.get(first.root_key)
+    assert authentic_tail_input is not None
+    assert authentic_tail_head is not None
+    assert first_head is not None
+    forged_tail_input = replace(authentic_tail_input, cost_basis=_basis(5_000))
+    forged_tail_head = replace(
+        authentic_tail_head,
+        prefix_proof_commitment=forged_tail_input.commitment,
+    )
+    forged_roots = RootHeadIndex(
+        entries=(first_head, forged_tail_head),
+        position_scope=POSITION_SCOPE,
+    )
+    forged_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=applied.position.raw_quantity,
+        basis_authority=applied.position.basis_authority,
+        cost_basis=applied.position.cost_basis,
+        root_fill_sequence=applied.position.root_fill_sequence,
+        effective_head_ids=applied.position.effective_head_ids,
+        basis_price_metadata=applied.position.basis_price_metadata,
+        tail_fold_input=forged_tail_input,
+    )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            forged_position,
+            applied.integrity,
+            forged_roots,
+            applied.seen_facts,
+        )
+
+
+def test_bind_verified_rejects_forged_tail_prefix_sequence_commitment() -> None:
+    first = _fill("first", "first-root", side=ExecutionSide.BUY, quantity=10, units=100)
+    tail = _fill("tail", "tail-root", side=ExecutionSide.BUY, quantity=10, units=100)
+    applied, _ = _apply_all(first, tail)
+    authentic_tail_input = applied.position.tail_fold_input
+    authentic_tail_head = applied.root_heads.get(tail.root_key)
+    first_head = applied.root_heads.get(first.root_key)
+    assert authentic_tail_input is not None
+    assert authentic_tail_head is not None
+    assert first_head is not None
+    forged_tail_input = replace(
+        authentic_tail_input,
+        prefix_heads_commitment=b"forged-prefix-commitment",
+    )
+    forged_tail_head = replace(
+        authentic_tail_head,
+        prefix_heads_commitment=forged_tail_input.prefix_heads_commitment,
+        prefix_proof_commitment=forged_tail_input.commitment,
+    )
+    forged_roots = RootHeadIndex(
+        entries=(first_head, forged_tail_head),
+        position_scope=POSITION_SCOPE,
+    )
+    forged_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=applied.position.raw_quantity,
+        basis_authority=applied.position.basis_authority,
+        cost_basis=applied.position.cost_basis,
+        root_fill_sequence=applied.position.root_fill_sequence,
+        effective_head_ids=applied.position.effective_head_ids,
+        basis_price_metadata=applied.position.basis_price_metadata,
+        tail_fold_input=forged_tail_input,
+    )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            forged_position,
+            applied.integrity,
+            forged_roots,
+            SeenFactIndex(entries=applied.seen_facts.entries),
+        )
+
+
+def test_bind_verified_rejects_inexact_basis_price_metadata() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    compatible_but_inexact_metadata = _price(101)
+    forged_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=applied.position.raw_quantity,
+        basis_authority=applied.position.basis_authority,
+        cost_basis=applied.position.cost_basis,
+        root_fill_sequence=applied.position.root_fill_sequence,
+        effective_head_ids=applied.position.effective_head_ids,
+        basis_price_metadata=compatible_but_inexact_metadata,
+        tail_fold_input=applied.position.tail_fold_input,
+    )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            forged_position,
+            applied.integrity,
+            applied.root_heads,
+            applied.seen_facts,
+        )
+
+
+def test_bind_verified_rejects_erased_priced_bust_metadata() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    bust = _bust(
+        "bust",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        reported_price=_price(100),
+    )
+    busted, _ = _apply_all(fill, bust)
+    forged_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=busted.position.raw_quantity,
+        basis_authority=busted.position.basis_authority,
+        cost_basis=busted.position.cost_basis,
+        root_fill_sequence=busted.position.root_fill_sequence,
+        effective_head_ids=busted.position.effective_head_ids,
+        basis_price_metadata=None,
+        tail_fold_input=busted.position.tail_fold_input,
+    )
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            forged_position,
+            busted.integrity,
+            RootHeadIndex(
+                entries=busted.root_heads.entries,
+                position_scope=POSITION_SCOPE,
+            ),
+            SeenFactIndex(entries=busted.seen_facts.entries),
+        )
+
+
+def test_position_commitment_covers_exact_tail_fold_input() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    authentic = applied.position.tail_fold_input
+    assert authentic is not None
+    forged = replace(authentic, price_metadata=_price(99))
+
+    assert replace(applied.position, tail_fold_input=forged).commitment != (
+        applied.position.commitment
+    )
+    assert replace(applied.position, tail_fold_input=None).commitment != (
+        applied.position.commitment
+    )
+
+
+def test_bind_verified_rejects_human_attested_root() -> None:
+    human = _coherently_bound_human_kernel()
+    position, roots, seen = _unbound_hydration_parts(human)
+
+    with pytest.raises(ValueError):
+        ExecutionSnapshot.bind_verified(
+            position,
+            human.integrity,
+            roots,
+            seen,
+        )
+
+
+def test_bind_verified_allows_missing_tail_proof_then_revision_becomes_pending() -> (
+    None
+):
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=10, units=100)
+    applied, _ = _apply_all(fill)
+    head = applied.root_heads.get(fill.root_key)
+    assert head is not None
+    proofless_head = replace(
+        head,
+        prefix_heads_commitment=b"",
+        prefix_proof_commitment=b"",
+    )
+    proofless_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=applied.position.raw_quantity,
+        basis_authority=applied.position.basis_authority,
+        cost_basis=applied.position.cost_basis,
+        root_fill_sequence=applied.position.root_fill_sequence,
+        effective_head_ids=applied.position.effective_head_ids,
+        basis_price_metadata=applied.position.basis_price_metadata,
+        tail_fold_input=None,
+    )
+    snapshot = ExecutionSnapshot.bind_verified(
+        proofless_position,
+        applied.integrity,
+        RootHeadIndex(entries=(proofless_head,), position_scope=POSITION_SCOPE),
+        SeenFactIndex(entries=applied.seen_facts.entries),
+    )
+    correction = _correct(
+        "correction",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=7,
+        units=101,
+    )
+
+    transition = apply_broker_execution_fact(
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+        correction,
+    )
+
+    assert transition.disposition is TransitionDisposition.APPLIED
+    assert transition.quantity_delta == -3
+    assert transition.position.raw_quantity == 7
+    assert transition.position.effective_head_ids == (SourceEventId("correction"),)
+    assert transition.position.basis_authority is (
+        BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
+    assert transition.position.cost_basis is None
+
+
+def test_bind_verified_accepts_complete_revision_chain() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=3, units=100)
+    correction = _correct(
+        "correction",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=101,
+    )
+    bust = _bust(
+        "bust",
+        "root",
+        "correction",
+        side=ExecutionSide.BUY,
+    )
+    expected, _ = _apply_all(fill, correction, bust)
+    position, roots, seen = _unbound_hydration_parts(expected)
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        position,
+        expected.integrity,
+        roots,
+        seen,
+    )
+
+    assert hydrated.position.raw_quantity == 0
+    assert hydrated.position.cost_basis == _basis(0)
+    assert hydrated.root_heads == expected.root_heads
+    assert hydrated.seen_facts == expected.seen_facts
+
+
+def test_bind_verified_accepts_rejected_observation_with_required_integrity() -> None:
+    invalid = _correct(
+        "orphan-correction",
+        "missing-root",
+        "missing-predecessor",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+    expected, _ = _Kernel.flat().apply(invalid)
+    position, roots, seen = _unbound_hydration_parts(expected)
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        position,
+        expected.integrity,
+        roots,
+        seen,
+    )
+
+    assert hydrated.position.raw_quantity == 0
+    assert hydrated.root_heads.count == 0
+    assert hydrated.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+
+
+def test_bind_verified_accepts_conservative_integrity_superset() -> None:
+    sell = _fill(
+        "sell",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    cover = _fill(
+        "cover",
+        "cover-root",
+        side=ExecutionSide.BUY,
+        quantity=5,
+        units=101,
+    )
+    recovered, _ = _apply_all(sell, cover)
+    position, roots, seen = _unbound_hydration_parts(recovered)
+    conservative = (
+        PositionIntegrity.OVERFILL_QUARANTINE
+        | PositionIntegrity.EXECUTION_FACT_CONFLICT
+    )
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        position,
+        conservative,
+        roots,
+        seen,
+    )
+
+    assert hydrated.integrity == conservative
+
+
 def test_forged_tail_fold_input_cannot_authorize_revision_basis() -> None:
     fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=10, units=100)
     applied, _ = _apply_all(fill)
@@ -1547,15 +2062,9 @@ def test_forged_tail_fold_input_cannot_authorize_revision_basis() -> None:
 
     after, transition = forged.apply(correction)
 
-    assert transition.disposition is TransitionDisposition.APPLIED
-    assert transition.quantity_delta == -3
-    assert transition.basis_delta is None
-    assert after.position.raw_quantity == 7
-    assert after.position.effective_head_ids == (SourceEventId("correct"),)
-    assert after.position.basis_authority is (
-        BasisAuthority.BASIS_RECONCILIATION_PENDING
-    )
-    assert after.position.cost_basis is None
+    _assert_zero_economic_delta(forged, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert after.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
 
 
 @pytest.mark.parametrize("retained_cache", ["metadata", "tail-fold-input"])
@@ -1584,15 +2093,9 @@ def test_pending_position_rejects_retained_basis_cache(retained_cache: str) -> N
 
 
 def test_slow_candidate_rejects_human_attested_root() -> None:
-    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
-    applied, _ = _apply_all(fill)
-    head = applied.root_heads.get(fill.root_key)
-    assert head is not None
-    human_heads = RootHeadIndex(
-        entries=(replace(head, authority=ExecutionAuthority.HUMAN_ATTESTED),)
-    )
+    kernel = _coherently_bound_human_kernel()
 
-    candidate = derive_ordered_basis_candidate(applied.position, human_heads)
+    candidate = derive_ordered_basis_candidate(kernel.position, kernel.root_heads)
 
     assert candidate.status is BasisCandidateStatus.SNAPSHOT_INCONSISTENT
     assert candidate.cost_basis is None
@@ -1648,11 +2151,7 @@ def _history_kernel(root_count: int) -> tuple[_Kernel, BrokerFillFact]:
         root_fill_sequence=tuple(root_keys),
         effective_head_ids=tuple(head_ids),
         basis_price_metadata=price,
-        tail_fold_input=FoldInput(
-            raw_quantity=root_count - 1,
-            cost_basis=_basis((root_count - 1) * 100),
-            price_metadata=price,
-        ),
+        tail_fold_input=None,
     )
     snapshot = ExecutionSnapshot.bind_verified(
         unbound_position,

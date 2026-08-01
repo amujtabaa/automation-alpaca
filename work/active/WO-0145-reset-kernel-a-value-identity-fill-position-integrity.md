@@ -211,6 +211,35 @@ The slope pin measured 664 traced line events at 16 roots and 53,496 at 2,048 ro
 attempt with `--cache-clear` never reached collection because a pre-existing `.pytest_cache` Windows
 ACL denied pytest's cache hook; it is environment evidence only and was not counted as RED evidence.
 
+### Second P0 stop and standing in-flight re-gate — 2026-07-31
+
+After the first remediation reached 115 focused passes, fresh review triggered the stop threshold
+again. `ExecutionSnapshot.bind_verified` could bind an applied seen fact without matching root
+economics, bind an overfill snapshot with a cleared integrity latch, and bind an unverified forged
+tail-prefix basis proof. Removing the human-authority protections also survived all then-named human
+tests, proving that mutation pin ineffective. Work stopped with a clean tree at checkpoint
+`eee6c68` after required mutants (a) duplicate count and (b) overfill clamp were killed and restored.
+
+Ameen then explicitly authorized the second re-gate and "any other issues or refinements found in
+flight," while preserving every existing scope exclusion. This is standing authority for further
+RED-first remediation within this work order's existing allowed paths. A new authorization remains
+required for scope expansion or any excluded broker, credential, database, runtime-wiring, merge,
+deletion, or cleanup activity.
+
+The second remediation tests were then completed before further production edits. Ruff formatted
+the focused deterministic test file and its check passed. A root-seat run with
+`BROKER_ADAPTER=mock`, cache provider disabled, and fresh basetemp
+`.pytest_tmp_wo0145_second_red_2` produced 16 named expected failures and six selected positive
+controls. The failures independently pin orphan and unclosed applied observations, missing or
+reconciliation-classified revision ancestry, replay-classification forgery, historical overfill and
+reconciliation latch clearing, the non-reconstructable conflict floor, forged tail economics and
+prefix commitments, inexact and erased priced-bust metadata, tail/floor commitment coverage, public
+human-root hydration, and stale-bound tail-cache tampering. Positive controls retained valid
+revision-chain hydration, rejected-observation hydration with its required latch, conservative
+integrity supersets, fully absent tail proof degrading the next valid revision to typed pending, and
+the now-coherent human-authority mutation fixtures. No production, broker, database, or runtime code
+executed in this RED gate.
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
