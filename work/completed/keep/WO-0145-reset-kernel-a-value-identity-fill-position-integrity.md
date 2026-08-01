@@ -1,18 +1,19 @@
 ---
 type: Work Order
 title: "Reset kernel A: value identity and fill-position integrity"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0145
 wave: RESET-M1A
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-07-31
 branch: codex/arch-reset-2026-07-r1
 base_sha: 74799d322476117c8403c9ab39a72dffd61a0716
 staged_source: work/queue/ARCH-RESET-2026-07/11-first-work-order.md
 activation_ci: "GitHub Actions run 30678810342 (#673): Python 3.11 job 91311451600 SUCCESS; Python 3.12 job 91311451583 SUCCESS"
+completion_ci: "GitHub Actions run 30699586482 (#675): Python 3.11 job 91368104104 SUCCESS; Python 3.12 job 91368104120 SUCCESS"
 ---
 
 # WO-0145 — Reset kernel A: value identity and fill-position integrity
@@ -56,8 +57,8 @@ fable_gate:
       status: VERIFIED
       evidence: "After explicit test-database authorization, R2 passed 61/61 and the full suite passed 4,767 tests at 93.184302% branch coverage with BROKER_ADAPTER=mock."
     - claim: "The exact final change will pass Python 3.11 and Python 3.12 branch CI."
-      status: UNVERIFIED
-      evidence: "Python 3.11 is unavailable locally and the exact final head has not been pushed."
+      status: VERIFIED
+      evidence: "Exact checkpoint 978b0e46 passed GitHub Actions run 30699586482 (#675): Python 3.11 job 91368104104 and Python 3.12 job 91368104120 both succeeded."
   approach: "Use RED-first immutable transition tests, independent arithmetic oracles, live mutation pins, minimum pure implementation, repository static gates, and independent exact-head review."
   alternatives_considered:
     - "Reuse Spine v2 or R6 implementation — rejected because those implementations remain read-only evidence until separately replaced."
@@ -856,6 +857,23 @@ database, schema/migration change, or runtime wiring was used. The prohibited R1
 result were not cited, reused, or relied upon for any WO-0145 conclusion. Coverage and basetemp
 artifacts are preserved and remain uncommitted because cleanup and deletion remain excluded.
 
+### Exact checkpoint dual-version CI - 2026-08-01
+
+Checkpoint `978b0e46ca50e681f5454ab901b6c3b3b8ceba07` was pushed only to the existing
+`codex/arch-reset-2026-07-r1` branch under the limited CI authorization. GitHub Actions run
+`30699586482` (#675) completed `success`. Python 3.11 job `91368104104` and Python 3.12 job
+`91368104120` each passed dependency installation, Ruff, mypy, all six import contracts, the
+contamination guard, AI-OS hygiene, R2 conformance, and the complete coverage gate. No PR or merge was
+created, and no later work order was activated.
+
+```yaml
+evidence:
+  phase: GREEN
+  command: "Push exact checkpoint 978b0e46 and inspect GitHub Actions run 30699586482 jobs 91368104104 and 91368104120"
+  result: PASS
+  decisive_output: "Run #675 completed success; Python 3.11 and Python 3.12 jobs completed success with every step green."
+```
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
@@ -884,8 +902,8 @@ fable_done:
       status: MET
       evidence: "Under the explicit disposable-test-database re-gate, R2 passed 61/61 and the full suite passed 4,767 tests at 93.184302% with BROKER_ADAPTER=mock."
     - item: "Python 3.11 and Python 3.12 CI pass on the exact head."
-      status: BLOCKED
-      evidence: "Push and unchanged dual-version CI are now authorized; the exact checkpoint has not yet been pushed."
+      status: MET
+      evidence: "Exact checkpoint 978b0e46 passed GitHub Actions run 30699586482 (#675): Python 3.11 job 91368104104 and Python 3.12 job 91368104120 both completed success."
     - item: "Independent exact-head review has no unresolved P0 or P1."
       status: MET
       evidence: "The prior exact-source reviewer accepted e73d4ec; the coverage-delta reviewer independently reproduced all nine new cases and the affected 180-test subset, then returned ACCEPT with no unresolved P0/P1."
@@ -896,7 +914,10 @@ fable_done:
     allowed_paths_respected: true
     drive_by_edits: false
   debt_check: "Open in-scope defects and unexecuted proof obligations are listed explicitly; none is waived."
-  deferred:
-    - "Authorized exact-head Python 3.11 and Python 3.12 branch CI pending checkpoint push and run inspection."
-  status: BLOCKED
+  deferred: []
+  status: VERIFIED
 ```
+
+WO-0145 is closed with no unresolved P0/P1, no production-runtime or schema integration, and no
+reliance on the prohibited R1 DDL result. The next reset slice remains inactive and requires its own
+human authorization.

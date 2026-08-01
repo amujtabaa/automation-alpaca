@@ -47,3 +47,15 @@
   instruction to carry on activated the immutable staged first slice as canonical `WO-0145`, limited
   to a pure I/O-free execution-fact kernel. Credentials are unavailable; broker/Paper activity,
   schema/database work, runtime wiring, later reset slices, cleanup, and merge remain inactive.
+
+- 2026-08-01: WO-0145 closed the reset kernel A slice as a pure, unwired `app/execution_core`
+  semantic center: exact typed identity; account-scoped source-event and root-fill reservation;
+  immutable fill/correct/bust lineage; exact signed position and long-only basis; monotonic overfill,
+  reconciliation, and conflict integrity; coherent snapshot commitments; and account-order hydration
+  replay. Sixty-nine live mutation pins were restored green, independent review returned `ACCEPT`
+  with no P0/P1, the focused gate passed 191/191, R2 passed 61/61, and the full suite passed 4,767
+  tests at 93.184302% branch coverage. Exact checkpoint `978b0e46` passed GitHub Actions run
+  30699586482 (#675) on Python 3.11 and 3.12. Existing fixtures used disposable test SQLite/SQL/DDL
+  only under the explicit re-gate; the prohibited R1 DDL result was not relied upon. Broker/Paper,
+  credentials, persistent application databases, runtime wiring, PR/merge, cleanup, and later reset
+  work remain inactive.
