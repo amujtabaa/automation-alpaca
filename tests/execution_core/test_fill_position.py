@@ -1668,6 +1668,7 @@ def test_incoherent_snapshot_preserves_position_integrity_floor() -> None:
     )
     mixed = replace(
         quarantined,
+        position=replace(quarantined.position, _binding=None),
         integrity=PositionIntegrity.CONSISTENT,
         root_heads=RootHeadIndex.empty(POSITION_SCOPE),
         seen_facts=SeenFactIndex.empty(),
@@ -2408,7 +2409,21 @@ def test_non_tail_revision_clears_current_tail_proof_and_hydrates() -> None:
         quantity=7,
         units=101,
     )
-    pending, _ = _apply_all(buy, sell, correction)
+    before, _ = _apply_all(buy, sell)
+    original_non_tail = before.root_heads.get(buy.root_key)
+    assert original_non_tail is not None
+    pending, transition = before.apply(correction)
+    assert transition.disposition is TransitionDisposition.APPLIED
+    revised_non_tail = pending.root_heads.get(buy.root_key)
+    assert revised_non_tail is not None
+    assert (
+        revised_non_tail.prefix_heads_commitment
+        == original_non_tail.prefix_heads_commitment
+    )
+    assert (
+        revised_non_tail.prefix_proof_commitment
+        == original_non_tail.prefix_proof_commitment
+    )
     current_tail = pending.root_heads.get(sell.root_key)
     assert current_tail is not None
     assert pending.position.tail_fold_input is None

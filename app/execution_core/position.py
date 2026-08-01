@@ -1027,10 +1027,14 @@ def _apply_revision(
         quantity=revised_quantity,
         price=revised_price,
         prefix_heads_commitment=(
-            head.prefix_heads_commitment if next_tail_input is not None else b""
+            head.prefix_heads_commitment
+            if not is_tail or next_tail_input is not None
+            else b""
         ),
         prefix_proof_commitment=(
-            head.prefix_proof_commitment if next_tail_input is not None else b""
+            head.prefix_proof_commitment
+            if not is_tail or next_tail_input is not None
+            else b""
         ),
     )
     next_roots = root_heads.replace(next_head)

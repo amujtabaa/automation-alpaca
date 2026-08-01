@@ -444,6 +444,27 @@ evidence:
   decisive_output: "153 passed."
 ```
 
+### Tail-proof refinement RED/GREEN — 2026-07-31
+
+Mutation planning separated active-tail invalidation from historical head provenance. The active
+tail must lose both proof fields whenever basis becomes pending, but a revised non-tail head may
+retain its immutable original-prefix proof because it is no longer the active authority seam. The
+strengthened two-node gate first produced one intended failure and one positive pass at
+`.pytest_tmp_wo0145_proof_refinement_red_1`; the minimum conditional preservation then passed both
+nodes at `.pytest_tmp_wo0145_proof_refinement_green_1`. The integrity-floor fixture was also unbound
+so it now pins the committed floor independently of binding fallback.
+
+```yaml
+fable_fix:
+  symptom: "Pending-proof clearing also erased historical non-tail prefix provenance."
+  root_cause: "Revision proof clearing was conditioned only on basis availability, not on whether the revised head remained the active tail."
+  evidence: "The strengthened non-tail hydration test failed on erased historical proof while the isolated floor control passed."
+  fix: "Preserve the revised head's proof when it is non-tail; independently clear the current active tail proof while pending."
+  regression_test: "test_non_tail_revision_clears_current_tail_proof_and_hydrates"
+  red_green_verified: true
+  attempt: 4
+```
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
@@ -460,8 +481,8 @@ fable_done:
   task: "WO-0145 reset kernel A: value identity and fill-position integrity"
   done_when_results:
     - item: "All focused kernel behavior passes on the exact current tree."
-      status: MET
-      evidence: "The unchanged third-round selection passed 22 tests and the full focused suite passed 153 tests."
+      status: NOT_MET
+      evidence: "The 153-test gate passed before the tail-proof refinement; its two decisive nodes pass, but the complete focused gate must be rerun."
     - item: "Every required mutation pin is demonstrated failure-capable and restored green with durable evidence."
       status: NOT_MET
       evidence: "The new pins remain to run live, and the earlier a-l record must be made exactly reproducible."
