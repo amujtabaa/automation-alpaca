@@ -36,6 +36,7 @@ from app.execution_core.identity import (
 from app.execution_core.position import ExecutionSnapshot
 from app.execution_core.values import Quantity
 from app.execution_core.venue import (
+    AcceptanceProof,
     AcceptanceProofKind,
     BrokerEffectState,
     CancelBeforeDispatch,
@@ -183,6 +184,26 @@ class VenueRecoveryMachine(RuleBasedStateMachine):
         return any(
             owner == effect_id and leg_key in self.active
             for leg_key, owner in self.owners.items()
+        )
+
+    def _acceptance_proof(
+        self,
+        effect_id: EffectId,
+        kind: AcceptanceProofKind,
+        evidence: EvidenceReference,
+    ) -> AcceptanceProof:
+        effect = self.book.effect(effect_id)
+        assert effect is not None
+        return AcceptanceProof(
+            kind=kind,
+            effect_scope=effect.scope,
+            claim_occurrence_id=(
+                None
+                if kind is AcceptanceProofKind.NEVER_DISPATCHED
+                else effect.claim_occurrence_id
+            ),
+            evidence_reference=evidence,
+            evidence_digest=b"\xa6" * 32,
         )
 
     @rule()
@@ -483,8 +504,11 @@ class VenueRecoveryMachine(RuleBasedStateMachine):
             CloseAcceptanceSet(
                 input_id=self._input_id("close-never-dispatched"),
                 effect_id=effect_id,
-                proof_kind=AcceptanceProofKind.NEVER_DISPATCHED,
-                evidence_reference=evidence,
+                proof=self._acceptance_proof(
+                    effect_id,
+                    AcceptanceProofKind.NEVER_DISPATCHED,
+                    evidence,
+                ),
             )
         )
         model = self.effects[effect_id]
@@ -518,8 +542,11 @@ class VenueRecoveryMachine(RuleBasedStateMachine):
             CloseAcceptanceSet(
                 input_id=self._input_id("close-covered"),
                 effect_id=effect_id,
-                proof_kind=getattr(AcceptanceProofKind, proof_kind),
-                evidence_reference=evidence,
+                proof=self._acceptance_proof(
+                    effect_id,
+                    getattr(AcceptanceProofKind, proof_kind),
+                    evidence,
+                ),
             )
         )
         model = self.effects[effect_id]
@@ -545,8 +572,11 @@ class VenueRecoveryMachine(RuleBasedStateMachine):
             CloseAcceptanceSet(
                 input_id=self._input_id("false-never-dispatched"),
                 effect_id=effect_id,
-                proof_kind=AcceptanceProofKind.NEVER_DISPATCHED,
-                evidence_reference=EvidenceReference("invalid-absence-proof"),
+                proof=self._acceptance_proof(
+                    effect_id,
+                    AcceptanceProofKind.NEVER_DISPATCHED,
+                    EvidenceReference("invalid-absence-proof"),
+                ),
             ),
             VenueRecoveryDisposition.REFUSED,
         )

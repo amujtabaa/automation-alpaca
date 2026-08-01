@@ -67,6 +67,7 @@ from app.execution_core.values import (
     TickMetadata,
 )
 from app.execution_core.venue import (
+    AcceptanceProof,
     AcceptanceProofKind,
     AcceptanceSetState,
     BrokerEffectState,
@@ -351,6 +352,26 @@ def _root_key(root: str) -> RootFillKey:
         environment=ENVIRONMENT,
         account=ACCOUNT,
         root_fill_id=RootFillId(root),
+    )
+
+
+def _acceptance_proof(
+    book: VenueRecoveryBook,
+    kind: AcceptanceProofKind,
+    evidence: str,
+) -> AcceptanceProof:
+    effect = book.effect(EFFECT)
+    assert effect is not None
+    return AcceptanceProof(
+        kind=kind,
+        effect_scope=effect.scope,
+        claim_occurrence_id=(
+            None
+            if kind is AcceptanceProofKind.NEVER_DISPATCHED
+            else effect.claim_occurrence_id
+        ),
+        evidence_reference=EvidenceReference(evidence),
+        evidence_digest=b"\xa7" * 32,
     )
 
 
@@ -977,8 +998,11 @@ def test_effect_finalizes_only_after_acceptance_and_all_owned_legs_close() -> No
         CloseAcceptanceSet(
             input_id=VenueInputId("close-parent-after-release"),
             effect_id=EFFECT,
-            proof_kind=AcceptanceProofKind.COVERED_RECONCILIATION,
-            evidence_reference=EvidenceReference("covered-parent-proof"),
+            proof=_acceptance_proof(
+                released.book,
+                AcceptanceProofKind.COVERED_RECONCILIATION,
+                "covered-parent-proof",
+            ),
         ),
     )
 
@@ -1013,17 +1037,26 @@ def test_invalidated_acceptance_set_permanently_refuses_operator_release() -> No
             effect_id=EFFECT,
             state=BrokerEffectState.OUTCOME_UNKNOWN,
         ),
-        CloseAcceptanceSet(
-            input_id=VenueInputId("invalidated-close"),
-            effect_id=EFFECT,
-            proof_kind=AcceptanceProofKind.COVERED_RECONCILIATION,
-            evidence_reference=EvidenceReference("invalidated-close-proof"),
-        ),
     )
     for item in setup:
         transition = apply_venue_recovery_input(book, execution, item)
         assert transition.disposition is VenueRecoveryDisposition.APPLIED
         book = transition.book
+    closed = apply_venue_recovery_input(
+        book,
+        execution,
+        CloseAcceptanceSet(
+            input_id=VenueInputId("invalidated-close"),
+            effect_id=EFFECT,
+            proof=_acceptance_proof(
+                book,
+                AcceptanceProofKind.COVERED_RECONCILIATION,
+                "invalidated-close-proof",
+            ),
+        ),
+    )
+    assert closed.disposition is VenueRecoveryDisposition.APPLIED
+    book = closed.book
 
     late = apply_venue_recovery_input(
         book,

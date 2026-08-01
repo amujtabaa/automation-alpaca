@@ -33,6 +33,7 @@ from app.execution_core.identity import (
 from app.execution_core.position import ExecutionSnapshot
 from app.execution_core.values import Quantity
 from app.execution_core.venue import (
+    AcceptanceProof,
     AcceptanceProofKind,
     AcceptanceSetState,
     BrokerEffectState,
@@ -181,6 +182,27 @@ def _terminal_observation(
     )
 
 
+def _acceptance_proof(
+    book: VenueRecoveryBook,
+    effect_id: EffectId,
+    kind: AcceptanceProofKind,
+    evidence: str,
+) -> AcceptanceProof:
+    effect = book.effect(effect_id)
+    assert effect is not None
+    return AcceptanceProof(
+        kind=kind,
+        effect_scope=effect.scope,
+        claim_occurrence_id=(
+            None
+            if kind is AcceptanceProofKind.NEVER_DISPATCHED
+            else effect.claim_occurrence_id
+        ),
+        evidence_reference=EvidenceReference(evidence),
+        evidence_digest=b"\xa5" * 32,
+    )
+
+
 def test_requested_effect_starts_open_and_is_quantity_neutral() -> None:
     request = _request()
     original = VenueRecoveryBook.empty(VENUE_SCOPE)
@@ -258,8 +280,12 @@ def test_never_dispatched_requires_local_cancel_and_absent_claim() -> None:
         CloseAcceptanceSet(
             input_id=VenueInputId("premature-never-dispatched"),
             effect_id=request.effect_id,
-            proof_kind=AcceptanceProofKind.NEVER_DISPATCHED,
-            evidence_reference=EvidenceReference("local-decision-only"),
+            proof=_acceptance_proof(
+                requested,
+                request.effect_id,
+                AcceptanceProofKind.NEVER_DISPATCHED,
+                "local-decision-only",
+            ),
         ),
     )
     assert premature.disposition is VenueRecoveryDisposition.REFUSED
@@ -280,8 +306,12 @@ def test_never_dispatched_requires_local_cancel_and_absent_claim() -> None:
         CloseAcceptanceSet(
             input_id=VenueInputId("close-never-dispatched"),
             effect_id=request.effect_id,
-            proof_kind=AcceptanceProofKind.NEVER_DISPATCHED,
-            evidence_reference=EvidenceReference("no-immutable-claim-row"),
+            proof=_acceptance_proof(
+                canceled.book,
+                request.effect_id,
+                AcceptanceProofKind.NEVER_DISPATCHED,
+                "no-immutable-claim-row",
+            ),
         ),
     )
 
@@ -299,8 +329,12 @@ def test_committed_claim_makes_never_dispatched_permanently_impossible() -> None
     close = CloseAcceptanceSet(
         input_id=VenueInputId("false-never-dispatched"),
         effect_id=request.effect_id,
-        proof_kind=AcceptanceProofKind.NEVER_DISPATCHED,
-        evidence_reference=EvidenceReference("corrupt-effect-row-says-canceled"),
+        proof=_acceptance_proof(
+            claimed,
+            request.effect_id,
+            AcceptanceProofKind.NEVER_DISPATCHED,
+            "corrupt-effect-row-says-canceled",
+        ),
     )
 
     refused = _apply(claimed, close)
@@ -310,6 +344,49 @@ def test_committed_claim_makes_never_dispatched_permanently_impossible() -> None
     assert effect.state is BrokerEffectState.DISPATCH_CLAIMED
     assert effect.claim_occurrence_id is not None
     assert effect.acceptance_set_state is AcceptanceSetState.OPEN
+
+
+def test_acceptance_proof_must_bind_exact_effect_scope_and_claim() -> None:
+    claimed, request = _claimed("proof-binding")
+    exact = _acceptance_proof(
+        claimed,
+        request.effect_id,
+        AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+        "scope-bound-complete-response",
+    )
+    wrong_scope = replace(
+        exact,
+        effect_scope=replace(
+            exact.effect_scope,
+            request_occurrence_id=RequestOccurrenceId("wrong-proof-occurrence"),
+        ),
+    )
+    wrong_claim = replace(
+        exact,
+        claim_occurrence_id=ClaimOccurrenceId("wrong-proof-claim"),
+    )
+
+    for suffix, proof in (("scope", wrong_scope), ("claim", wrong_claim)):
+        refused = _apply(
+            claimed,
+            CloseAcceptanceSet(
+                input_id=VenueInputId(f"wrong-{suffix}-proof"),
+                effect_id=request.effect_id,
+                proof=proof,
+            ),
+        )
+        assert refused.disposition is VenueRecoveryDisposition.REFUSED
+        assert refused.book == claimed
+
+
+def test_checkpoint_construction_rejects_closed_effect_without_proof() -> None:
+    requested, request = _requested("forged-closure")
+    effect = requested.effect(request.effect_id)
+    assert effect is not None
+    forged = replace(effect, acceptance_set_state=AcceptanceSetState.CLOSED)
+
+    with pytest.raises(ValueError, match="proof"):
+        replace(requested, effects=(forged,))
 
 
 def test_restart_converts_stranded_claim_to_unknown_without_resend() -> None:
@@ -714,8 +791,12 @@ def test_ar02_terminal_known_leg_does_not_close_open_acceptance_set() -> None:
         CloseAcceptanceSet(
             input_id=VenueInputId("covered-occurrence-close"),
             effect_id=request.effect_id,
-            proof_kind=AcceptanceProofKind.COVERED_RECONCILIATION,
-            evidence_reference=EvidenceReference("exact-query-plus-complete-coverage"),
+            proof=_acceptance_proof(
+                terminal.book,
+                request.effect_id,
+                AcceptanceProofKind.COVERED_RECONCILIATION,
+                "exact-query-plus-complete-coverage",
+            ),
         ),
     )
     assert (
@@ -733,8 +814,12 @@ def test_ar02_late_second_acceptance_invalidates_and_preserves_closure_proof() -
     close_input = CloseAcceptanceSet(
         input_id=VenueInputId("certified-complete-response"),
         effect_id=request.effect_id,
-        proof_kind=AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
-        evidence_reference=EvidenceReference("adapter-certified-response"),
+        proof=_acceptance_proof(
+            first_terminal.book,
+            request.effect_id,
+            AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+            "adapter-certified-response",
+        ),
     )
     closed = _apply(first_terminal.book, close_input)
     original_proof = closed.book.effect(request.effect_id).acceptance_proof
@@ -777,8 +862,12 @@ def test_closure_proof_refuses_while_a_known_leg_is_active() -> None:
         CloseAcceptanceSet(
             input_id=VenueInputId("close-with-working-leg"),
             effect_id=request.effect_id,
-            proof_kind=AcceptanceProofKind.COVERED_RECONCILIATION,
-            evidence_reference=EvidenceReference("coverage-cannot-erase-active-leg"),
+            proof=_acceptance_proof(
+                discovered.book,
+                request.effect_id,
+                AcceptanceProofKind.COVERED_RECONCILIATION,
+                "coverage-cannot-erase-active-leg",
+            ),
         ),
     )
 
