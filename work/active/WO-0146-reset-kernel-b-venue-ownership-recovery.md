@@ -161,6 +161,51 @@ These are implementation-seat results, not acceptance. No SQL/DDL, database engi
 broker adapter, Alpaca activity, credential, network, runtime wiring, merge, deletion, or cleanup
 was used. Full repository/R2 evidence and independent exact-head `REV-0048` remain mandatory.
 
+## REV-0048 blocking verdict and third bounded re-gate (2026-08-01)
+
+The canonical-Ruff implementation target `ba9e1268e4645ec36f620f14d361f709916aa690`
+reproduced all 327 pure cases and focused static gates, but reviewer-owned `REV-0048/result.md`
+returned `BLOCK`. That result is preserved unchanged at commit `007c757`. Its fresh probes found:
+
+- **P0:** every rebuilt serving checkpoint rescanned and recopied retained terminal-closure history;
+  broker-economic predecessor validation could make the path worse than linear. Direct inspection
+  also found the same-root append-only `input_records` ledger reconstructed, partitioned, deduped,
+  and copied on ordinary transitions. This violates ADR-020's rule that no live transition performs
+  work proportional to audit-history length.
+- **P1:** `_BOOK_CONSTRUCTION_TOKEN` was an importable module global. An ordinary importer could use
+  it with the dataclass initializer or `dataclasses.replace` to mint a standalone checkpoint carrying
+  false human coverage while the paired execution snapshot still held zero quantity. A later bound
+  reducer failed closed, but checkpoint-only consumers had already received false authority.
+
+A separately authorized full repository baseline on that blocked object forced
+`BROKER_ADAPTER=mock`. R2 passed all 61 cases. The full behavior suite passed 4,944 tests with 11
+skips and one expected failure, but the unchanged 93% branch-coverage gate failed at 92.13%. Its
+coverage artifact is preserved as `.coverage_wo0146_full_authorized_1`, SHA-256
+`a2dd3f14eadcc24af643d503acb214076cafe1e88cf8bd569d5e9a4313310256`. Existing fixtures used only
+authorized disposable test SQLite; no persistent database, broker, credential, Alpaca activity,
+network, runtime wiring, merge, deletion, or cleanup occurred. The behavior pass is diagnostic and
+does not accept the blocked object or satisfy the coverage gate.
+
+Ameen's standing authorization for all in-flight findings and refinements re-gates only this bounded
+WO-0146 remediation. It does not activate WO-0147 or authorize runtime, schema, broker, credential,
+merge, deletion, or cleanup work. The accepted correction boundary is:
+
+- replace serving-checkpoint closure and input audit tuples with persistent indexed proof whose
+  append, identity lookup, current-head/predecessor check, and direct-source lookup are independent
+  of retained audit-history length; materialization remains an explicit slow audit operation;
+- validate only the newly appended immutable audit fact plus bounded current state on live
+  transitions, while a separate verified hydration/audit seam may perform a full fold;
+- remove importable construction authority, direct dataclass initialization, and `replace` minting;
+  every externally usable reconstruction must authenticate exact human/corroborated roots against
+  its paired `ExecutionSnapshot` before yielding a checkpoint;
+- add RED public-boundary, scaling/tripwire, and mutation pins for both findings; and
+- close the unchanged 93% repository coverage floor only with real failure-capable tests of current
+  behavior. Do not lower the floor, add exclusions/skips, or change behavior solely for coverage.
+
+All earlier green and the blocked full-suite baseline remain inadmissible as final acceptance.
+Fresh focused/stateful/static/mutation/R2/full-coverage evidence plus a new reviewer-owned exact-head
+remediation result with no unresolved P0/P1 are mandatory after the next production freeze.
+
 ## Frozen semantic contract
 
 - Add exact generation/effect/occurrence/client/claim/closure/evidence identities and immutable full
