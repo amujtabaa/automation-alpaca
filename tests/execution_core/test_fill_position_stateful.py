@@ -497,7 +497,13 @@ class FillPositionMachine(RuleBasedStateMachine):
         assert transition.disposition is TransitionDisposition.FACT_CONFLICT
         assert transition.original_classification is classification
         assert transition.quantity_delta == 0
-        assert transition.position == before_position
+        assert (
+            replace(
+                transition.position,
+                integrity_floor=before_position.integrity_floor,
+            )
+            == before_position
+        )
         assert transition.root_heads == before_heads
         assert transition.seen_facts == before_seen
         assert transition.integrity == (
@@ -956,7 +962,13 @@ def test_property_human_attested_root_cannot_be_corrected_or_busted() -> None:
         )
         assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
         assert transition.quantity_delta == 0
-        assert transition.position == human_snapshot.position
+        assert (
+            replace(
+                transition.position,
+                integrity_floor=human_snapshot.position.integrity_floor,
+            )
+            == human_snapshot.position
+        )
         assert transition.integrity & (
             PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
         )

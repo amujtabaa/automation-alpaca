@@ -157,10 +157,7 @@ class PositionState:
     _effective_head_ids: _PersistentSequence[SourceEventId]
     basis_price_metadata: ReportedPrice | None
     tail_fold_input: FoldInput | None
-    integrity_floor: PositionIntegrity = field(
-        default=PositionIntegrity.CONSISTENT,
-        compare=False,
-    )
+    integrity_floor: PositionIntegrity = PositionIntegrity.CONSISTENT
     _binding: _SnapshotBinding | None = field(
         default=None,
         repr=False,
@@ -367,7 +364,7 @@ class ExecutionSnapshot:
             PositionState.flat(scope),
             PositionIntegrity.CONSISTENT,
             RootHeadIndex.empty(scope),
-            SeenFactIndex.empty(),
+            SeenFactIndex.empty(scope),
         )
 
     @classmethod
@@ -388,6 +385,7 @@ class ExecutionSnapshot:
             raise TypeError("root_heads must be RootHeadIndex")
         if not isinstance(seen_facts, SeenFactIndex):
             raise TypeError("seen_facts must be SeenFactIndex")
+        seen_facts = seen_facts._for_position_scope(position.scope)
         if root_heads.position_scope != position.scope:
             raise ValueError("root index and position must share exact scope")
         if root_heads.signed_quantity != position.raw_quantity:
@@ -526,6 +524,7 @@ def _snapshot_parts_share_binding(
         or binding.root_heads_commitment != root_heads.commitment
         or binding.seen_facts_commitment != seen_facts.commitment
         or root_heads.position_scope != position.scope
+        or not seen_facts.belongs_to(position.scope)
         or position.raw_quantity != root_heads.signed_quantity
         or position.root_count != root_heads.count
         or position._root_fill_sequence is not root_heads._root_sequence
@@ -558,6 +557,7 @@ def _bind_components(
 ) -> ExecutionSnapshot:
     if not isinstance(integrity, PositionIntegrity):
         raise TypeError("integrity must be PositionIntegrity")
+    seen_facts = seen_facts._for_position_scope(position.scope)
     if position.integrity_floor & integrity != position.integrity_floor:
         raise ValueError("integrity cannot clear the committed position floor")
     if root_heads.position_scope != position.scope:
@@ -715,7 +715,13 @@ def _reconciliation_transition(
 ) -> ExecutionTransition:
     classification = FirstObservationClassification.RECONCILIATION_REQUIRED
     next_integrity = integrity | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
-    next_seen = seen_facts.add(SeenFact(fact=fact, classification=classification))
+    next_seen = seen_facts.add(
+        SeenFact(
+            fact=fact,
+            classification=classification,
+            position_scope=position.scope,
+        )
+    )
     snapshot = _bind_components(position, next_integrity, root_heads, next_seen)
     return ExecutionTransition(
         position=snapshot.position,
@@ -743,21 +749,31 @@ def _incoherent_snapshot_transition(
         else FirstObservationClassification.RECONCILIATION_REQUIRED
     )
     next_seen = seen_facts
-    if observation is None:
+    registry_matches_position = (
+        seen_facts.account_scope is None or seen_facts.belongs_to(position.scope)
+    )
+    if observation is None and registry_matches_position:
         next_seen = seen_facts.add(
             SeenFact(
                 fact=fact,
                 classification=FirstObservationClassification.RECONCILIATION_REQUIRED,
+                position_scope=position.scope,
             )
         )
     trusted_integrity = integrity | position.integrity_floor
-    for binding in (
+    trusted_bindings = [
         position.binding,
         root_heads.binding,
-        seen_facts.binding,
-    ):
+    ]
+    if registry_matches_position:
+        trusted_bindings.append(seen_facts.binding)
+    for binding in trusted_bindings:
         if binding is not None:
             trusted_integrity |= PositionIntegrity(binding.integrity_bits)
+    if position.raw_quantity < 0 or root_heads.signed_quantity < 0:
+        trusted_integrity |= PositionIntegrity.OVERFILL_QUARANTINE
+    if seen_facts.has_overfill_observation(position.scope):
+        trusted_integrity |= PositionIntegrity.OVERFILL_QUARANTINE
     if observation is not None and observation.fact != fact:
         trusted_integrity |= PositionIntegrity.EXECUTION_FACT_CONFLICT
     next_integrity = (
@@ -889,7 +905,13 @@ def _apply_root_fill(
     next_integrity = integrity
     if next_raw_quantity < 0:
         next_integrity |= PositionIntegrity.OVERFILL_QUARANTINE
-    next_seen = seen_facts.add(SeenFact(fact=fact, classification=classification))
+    next_seen = seen_facts.add(
+        SeenFact(
+            fact=fact,
+            classification=classification,
+            position_scope=position.scope,
+        )
+    )
     snapshot = _bind_components(
         next_position,
         next_integrity,
@@ -1064,7 +1086,13 @@ def _apply_revision(
     next_integrity = integrity
     if next_raw_quantity < 0:
         next_integrity |= PositionIntegrity.OVERFILL_QUARANTINE
-    next_seen = seen_facts.add(SeenFact(fact=fact, classification=classification))
+    next_seen = seen_facts.add(
+        SeenFact(
+            fact=fact,
+            classification=classification,
+            position_scope=position.scope,
+        )
+    )
     snapshot = _bind_components(
         next_position,
         next_integrity,
@@ -1117,6 +1145,22 @@ def apply_broker_execution_fact(
 
     first_observation = seen_facts.get(fact.key)
     if first_observation is not None:
+        if first_observation.position_scope != position.scope:
+            next_integrity = (
+                integrity | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+            )
+            disposition = TransitionDisposition.RECONCILIATION_REQUIRED
+            if first_observation.fact != fact:
+                next_integrity |= PositionIntegrity.EXECUTION_FACT_CONFLICT
+                disposition = TransitionDisposition.FACT_CONFLICT
+            return _unchanged_transition(
+                position,
+                next_integrity,
+                root_heads,
+                seen_facts,
+                disposition=disposition,
+                original_classification=first_observation.classification,
+            )
         if first_observation.fact == fact:
             return _unchanged_transition(
                 position,
@@ -1144,10 +1188,23 @@ def _replay_hydration_snapshot(
     scope: PositionScope,
     seen_facts: SeenFactIndex,
 ) -> ExecutionSnapshot:
-    """Re-derive one materialized high-water from first observations only."""
+    """Re-derive one symbol from the account-wide observation high-water."""
 
-    replayed = ExecutionSnapshot.flat(scope)
+    account_seen = SeenFactIndex.empty(scope)
+    symbol_snapshots: dict[PositionScope, ExecutionSnapshot] = {}
     for observation in seen_facts.entries:
+        observation_scope = observation.position_scope
+        if observation_scope is None:
+            raise ValueError("seen fact has no evaluation position scope")
+        replayed = symbol_snapshots.get(observation_scope)
+        if replayed is None:
+            replayed = ExecutionSnapshot.flat(observation_scope)
+        replayed = _bind_components(
+            replayed.position,
+            replayed.integrity,
+            replayed.root_heads,
+            account_seen,
+        )
         transition = apply_broker_execution_fact(
             replayed.position,
             replayed.integrity,
@@ -1166,12 +1223,22 @@ def _replay_hydration_snapshot(
             or transition.original_classification is not observation.classification
         ):
             raise ValueError("seen-fact classification is not reproducible")
-        replayed = ExecutionSnapshot(
+        account_seen = transition.seen_facts
+        symbol_snapshots[observation_scope] = ExecutionSnapshot(
             position=transition.position,
             integrity=transition.integrity,
             root_heads=transition.root_heads,
             seen_facts=transition.seen_facts,
         )
+    replayed = symbol_snapshots.get(scope)
+    if replayed is None:
+        replayed = ExecutionSnapshot.flat(scope)
+    replayed = _bind_components(
+        replayed.position,
+        replayed.integrity,
+        replayed.root_heads,
+        account_seen,
+    )
     if (
         replayed.seen_facts.entries != seen_facts.entries
         or replayed.seen_facts.commitment != seen_facts.commitment
@@ -1221,6 +1288,23 @@ def _require_hydration_match(
         for supplied, expected in zip(supplied_heads, replayed_heads)
     ):
         raise ValueError("root heads do not match chronological replay")
+    historical_proof_mismatch = any(
+        (
+            supplied.prefix_heads_commitment,
+            supplied.prefix_proof_commitment,
+        )
+        != (
+            expected.prefix_heads_commitment,
+            expected.prefix_proof_commitment,
+        )
+        for supplied, expected in zip(supplied_heads[:-1], replayed_heads[:-1])
+    )
+    supplied_proofs_fully_absent = all(
+        not head.prefix_heads_commitment and not head.prefix_proof_commitment
+        for head in supplied_heads
+    )
+    if historical_proof_mismatch and not supplied_proofs_fully_absent:
+        raise ValueError("historical root proof does not match chronological replay")
 
     tail_input = position.tail_fold_input
     if tail_input is None:

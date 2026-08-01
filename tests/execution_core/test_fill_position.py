@@ -81,6 +81,12 @@ POSITION_SCOPE = PositionScope(
     account=ACCOUNT,
     symbol_id=SYMBOL,
 )
+OTHER_POSITION_SCOPE = PositionScope(
+    broker=BROKER,
+    environment=ENVIRONMENT,
+    account=ACCOUNT,
+    symbol_id=OTHER_SYMBOL,
+)
 BUY_ORDER = OrderId("buy-order")
 SELL_ORDER = OrderId("sell-order")
 SCALE = PriceScale(Decimal("1"))
@@ -226,8 +232,8 @@ class _Kernel:
     seen_facts: SeenFactIndex
 
     @classmethod
-    def flat(cls) -> _Kernel:
-        snapshot = ExecutionSnapshot.flat(POSITION_SCOPE)
+    def flat(cls, scope: PositionScope = POSITION_SCOPE) -> _Kernel:
+        snapshot = ExecutionSnapshot.flat(scope)
         return cls(
             position=snapshot.position,
             integrity=snapshot.integrity,
@@ -382,7 +388,13 @@ def _assert_zero_economic_delta(
     before: _Kernel,
     transition: ExecutionTransition,
 ) -> None:
-    assert transition.position == before.position
+    assert (
+        replace(
+            transition.position,
+            integrity_floor=before.position.integrity_floor,
+        )
+        == before.position
+    )
     assert transition.root_heads == before.root_heads
     assert transition.quantity_delta == 0
     assert transition.basis_delta == Fraction(0)
@@ -1004,6 +1016,8 @@ def test_seen_fact_commitment_covers_observed_root_reservations() -> None:
         by_key=reserved._by_key,
         order=reserved._order,
         observed_roots=type(reserved._observed_roots).empty(),
+        overfill_scopes=reserved._overfill_scopes,
+        account_scope=reserved.account_scope,
     )
 
     assert unreserved.entries == reserved.entries
@@ -1016,6 +1030,91 @@ def test_seen_fact_commitment_covers_observed_root_reservations() -> None:
             account=AccountId("different-account"),
         )
     )
+
+
+def test_seen_registry_value_identity_carries_account_owner() -> None:
+    owned = SeenFactIndex.empty(POSITION_SCOPE)
+    same_account_other_symbol = SeenFactIndex.empty(OTHER_POSITION_SCOPE)
+    other_account = SeenFactIndex.empty(
+        replace(POSITION_SCOPE, account=AccountId("other-account"))
+    )
+    unowned = SeenFactIndex.empty()
+
+    assert owned == same_account_other_symbol
+    assert owned.commitment == same_account_other_symbol.commitment
+    assert owned != other_account
+    assert owned != unowned
+    assert owned.commitment != other_account.commitment
+    assert owned.commitment != unowned.commitment
+
+
+def test_seen_registry_commitment_carries_overfill_summary() -> None:
+    overfill = _fill(
+        "overfill",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    quarantined, _ = _apply_all(overfill)
+    authentic = quarantined.seen_facts
+    assert authentic.has_overfill_observation(POSITION_SCOPE)
+    forged = SeenFactIndex._from_parts(
+        by_key=authentic._by_key,
+        order=authentic._order,
+        observed_roots=authentic._observed_roots,
+        overfill_scopes=type(authentic._overfill_scopes).empty(),
+        account_scope=authentic.account_scope,
+    )
+    position, roots, _ = _unbound_hydration_parts(quarantined)
+
+    assert forged.entries == authentic.entries
+    assert forged != authentic
+    assert forged.commitment != authentic.commitment
+    with pytest.raises(ValueError, match="seen-fact replay did not close exactly"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            quarantined.integrity,
+            roots,
+            forged,
+        )
+
+
+def test_seen_fact_commits_reconciliation_evaluation_scope() -> None:
+    misrouted = _fill(
+        "misrouted",
+        "misrouted-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=100,
+        scope=_scope(
+            order_id=OrderId("other-order"),
+            side=ExecutionSide.BUY,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+    rejected = _assert_reconciliation_no_economics(_Kernel.flat(), misrouted)
+    observation = rejected.seen_facts.get(misrouted.key)
+    assert observation is not None
+    assert observation.position_scope == POSITION_SCOPE
+    forged_observation = replace(
+        observation,
+        position_scope=OTHER_POSITION_SCOPE,
+    )
+    forged_seen = SeenFactIndex(
+        entries=(forged_observation,),
+        position_scope=POSITION_SCOPE,
+    )
+    position, roots, _ = _unbound_hydration_parts(rejected)
+
+    assert forged_observation.commitment != observation.commitment
+    with pytest.raises(ValueError, match="classification is not reproducible"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            rejected.integrity,
+            roots,
+            forged_seen,
+        )
 
 
 def test_bind_verified_rejects_unclosed_observed_root_reservations() -> None:
@@ -1037,6 +1136,8 @@ def test_bind_verified_rejects_unclosed_observed_root_reservations() -> None:
         by_key=seen._by_key,
         order=seen._order,
         observed_roots=type(seen._observed_roots).empty(),
+        overfill_scopes=seen._overfill_scopes,
+        account_scope=seen.account_scope,
     )
 
     with pytest.raises(ValueError, match="seen-fact replay did not close exactly"):
@@ -1693,23 +1794,36 @@ def test_incoherent_snapshot_preserves_position_integrity_floor() -> None:
     assert after.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
 
 
-def test_incoherent_snapshot_recovers_integrity_from_shared_binding() -> None:
-    overfill = _fill(
-        "overfill",
-        "sell-root",
-        side=ExecutionSide.SELL,
-        quantity=3,
-        units=100,
-    )
-    quarantined, _ = _apply_all(overfill)
-    corrupted_position = replace(
-        quarantined.position,
-        integrity_floor=PositionIntegrity.CONSISTENT,
-    )
-    mixed = replace(
-        quarantined,
-        position=corrupted_position,
+@pytest.mark.parametrize("binding_source", ["position", "root_heads", "seen_facts"])
+def test_incoherent_snapshot_recovers_integrity_from_each_component_binding(
+    binding_source: str,
+) -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=3, units=100)
+    applied, _ = _apply_all(fill)
+    conflicted, conflict = applied.apply(replace(fill, price=_price(101)))
+    assert conflict.disposition is TransitionDisposition.FACT_CONFLICT
+    mixed = _Kernel(
+        position=replace(
+            conflicted.position,
+            integrity_floor=PositionIntegrity.CONSISTENT,
+            _binding=(
+                conflicted.position.binding if binding_source == "position" else None
+            ),
+        ),
         integrity=PositionIntegrity.CONSISTENT,
+        root_heads=(
+            conflicted.root_heads
+            if binding_source == "root_heads"
+            else RootHeadIndex(
+                entries=conflicted.root_heads.entries,
+                position_scope=POSITION_SCOPE,
+            )
+        ),
+        seen_facts=(
+            conflicted.seen_facts
+            if binding_source == "seen_facts"
+            else SeenFactIndex(entries=conflicted.seen_facts.entries)
+        ),
     )
     incoming = _fill(
         "incoming",
@@ -1722,8 +1836,190 @@ def test_incoherent_snapshot_recovers_integrity_from_shared_binding() -> None:
     after, transition = mixed.apply(incoming)
 
     _assert_zero_economic_delta(mixed, transition)
+    assert after.integrity & PositionIntegrity.EXECUTION_FACT_CONFLICT
+    assert after.position.integrity_floor & PositionIntegrity.EXECUTION_FACT_CONFLICT
+
+
+@pytest.mark.parametrize("negative_component", ["position", "root_heads"])
+def test_incoherent_negative_component_conservatively_latches_overfill(
+    negative_component: str,
+) -> None:
+    overfill = _fill(
+        "overfill",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    quarantined, _ = _apply_all(overfill)
+    position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=-3 if negative_component == "position" else 0,
+        basis_authority=BasisAuthority.AVAILABLE,
+        cost_basis=_basis(0),
+        root_fill_sequence=(),
+        effective_head_ids=(),
+        basis_price_metadata=None,
+        tail_fold_input=None,
+        integrity_floor=PositionIntegrity.CONSISTENT,
+    )
+    root_heads = (
+        RootHeadIndex.empty(POSITION_SCOPE)
+        if negative_component == "position"
+        else RootHeadIndex(
+            entries=quarantined.root_heads.entries,
+            position_scope=POSITION_SCOPE,
+        )
+    )
+    incoming = _fill(
+        f"incoming-{negative_component}",
+        f"incoming-root-{negative_component}",
+        side=ExecutionSide.BUY,
+        quantity=5,
+        units=101,
+    )
+
+    transition = apply_broker_execution_fact(
+        position,
+        PositionIntegrity.CONSISTENT,
+        root_heads,
+        SeenFactIndex.empty(),
+        incoming,
+    )
+
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.position.raw_quantity == position.raw_quantity
+    assert transition.quantity_delta == 0
+    assert transition.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert transition.position.integrity_floor & (PositionIntegrity.OVERFILL_QUARANTINE)
+
+
+def test_incoherent_snapshot_recovers_overfill_from_unbound_seen_history() -> None:
+    overfill = _fill(
+        "overfill",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    cover = _fill(
+        "cover",
+        "buy-root",
+        side=ExecutionSide.BUY,
+        quantity=5,
+        units=101,
+    )
+    recovered, _ = _apply_all(overfill, cover)
+    assert recovered.position.raw_quantity == 2
+    mixed = _Kernel(
+        position=replace(
+            recovered.position,
+            integrity_floor=PositionIntegrity.CONSISTENT,
+            _binding=None,
+        ),
+        integrity=PositionIntegrity.CONSISTENT,
+        root_heads=RootHeadIndex(
+            entries=recovered.root_heads.entries,
+            position_scope=POSITION_SCOPE,
+        ),
+        seen_facts=SeenFactIndex(entries=recovered.seen_facts.entries),
+    )
+    incoming = _fill(
+        "incoming-seen-history",
+        "incoming-seen-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=102,
+    )
+
+    after, transition = mixed.apply(incoming)
+
+    _assert_zero_economic_delta(mixed, transition)
     assert after.integrity & PositionIntegrity.OVERFILL_QUARANTINE
     assert after.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
+
+
+def test_incoherent_account_history_does_not_leak_overfill_between_symbols() -> None:
+    overfill = _fill(
+        "aapl-overfill",
+        "aapl-sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    quarantined, _ = _apply_all(overfill)
+    account_seen = SeenFactIndex(
+        entries=quarantined.seen_facts.entries,
+        position_scope=OTHER_POSITION_SCOPE,
+    )
+    assert account_seen.has_overfill_observation(POSITION_SCOPE)
+    assert not account_seen.has_overfill_observation(OTHER_POSITION_SCOPE)
+    mixed = _Kernel(
+        position=PositionState.flat(OTHER_POSITION_SCOPE),
+        integrity=PositionIntegrity.CONSISTENT,
+        root_heads=RootHeadIndex.empty(OTHER_POSITION_SCOPE),
+        seen_facts=account_seen,
+    )
+    incoming = _fill(
+        "msft-incoming",
+        "msft-incoming-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+        scope=_scope(
+            order_id=OrderId("msft-buy-order"),
+            side=ExecutionSide.BUY,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+
+    after, transition = mixed.apply(incoming)
+
+    _assert_zero_economic_delta(mixed, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert not after.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert not after.position.integrity_floor & (PositionIntegrity.OVERFILL_QUARANTINE)
+
+
+def test_incoherent_foreign_account_registry_reconciles_without_exception() -> None:
+    foreign_scope = replace(
+        POSITION_SCOPE,
+        account=AccountId("foreign-account"),
+    )
+    foreign_fact = _fill(
+        "foreign-fill",
+        "foreign-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=100,
+        scope=_scope(
+            order_id=OrderId("foreign-order"),
+            side=ExecutionSide.BUY,
+            account=foreign_scope.account,
+        ),
+        key=_key("foreign-fill", account=foreign_scope.account),
+    )
+    foreign, _ = _Kernel.flat(foreign_scope).apply(foreign_fact)
+    mixed = _Kernel(
+        position=PositionState.flat(POSITION_SCOPE),
+        integrity=PositionIntegrity.CONSISTENT,
+        root_heads=RootHeadIndex.empty(POSITION_SCOPE),
+        seen_facts=foreign.seen_facts,
+    )
+    incoming = _fill(
+        "local-incoming",
+        "local-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+
+    after, transition = mixed.apply(incoming)
+
+    _assert_zero_economic_delta(mixed, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert after.seen_facts is foreign.seen_facts
+    assert after.integrity == PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
 
 
 def test_incoherent_changed_replay_latches_fact_conflict() -> None:
@@ -2005,6 +2301,28 @@ def test_position_commitment_carries_unreconstructable_integrity_floor() -> None
     assert transition.disposition is TransitionDisposition.FACT_CONFLICT
 
     assert conflicted.position.commitment != applied.position.commitment
+
+
+def test_position_value_identity_carries_integrity_floor() -> None:
+    clean = PositionState.flat(POSITION_SCOPE)
+    quarantined = replace(
+        clean,
+        integrity_floor=PositionIntegrity.OVERFILL_QUARANTINE,
+    )
+
+    assert clean != quarantined
+    assert clean.commitment != quarantined.commitment
+
+
+def test_empty_root_index_value_identity_carries_exact_scope() -> None:
+    scoped = RootHeadIndex.empty(POSITION_SCOPE)
+    other_scoped = RootHeadIndex.empty(OTHER_POSITION_SCOPE)
+    unscoped = RootHeadIndex.empty()
+
+    assert scoped != other_scoped
+    assert scoped != unscoped
+    assert scoped.commitment != other_scoped.commitment
+    assert scoped.commitment != unscoped.commitment
 
 
 def test_bind_verified_rejects_reconciliation_integrity_reset() -> None:
@@ -2474,6 +2792,325 @@ def test_non_tail_revision_clears_current_tail_proof_and_hydrates() -> None:
     assert hydrated.position.basis_authority is (
         BasisAuthority.BASIS_RECONCILIATION_PENDING
     )
+
+
+@pytest.mark.parametrize("replacement", [b"forged-proof", b""])
+def test_bind_verified_rejects_changed_historical_non_tail_proof(
+    replacement: bytes,
+) -> None:
+    buy = _fill("buy", "buy-root", side=ExecutionSide.BUY, quantity=10, units=100)
+    second_buy = _fill(
+        "second-buy",
+        "second-buy-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=110,
+    )
+    sell = _fill("sell", "sell-root", side=ExecutionSide.SELL, quantity=5, units=120)
+    correction = _correct(
+        "correction",
+        "buy-root",
+        "buy",
+        side=ExecutionSide.BUY,
+        quantity=7,
+        units=101,
+    )
+    pending, _ = _apply_all(buy, second_buy, sell, correction)
+    position, roots, seen = _unbound_hydration_parts(pending)
+    historical, retained_historical, current_tail = roots.entries
+    assert historical.prefix_heads_commitment
+    assert historical.prefix_proof_commitment
+    assert retained_historical.prefix_heads_commitment
+    assert retained_historical.prefix_proof_commitment
+    assert current_tail.prefix_heads_commitment == b""
+    assert current_tail.prefix_proof_commitment == b""
+    changed_historical = replace(
+        historical,
+        prefix_heads_commitment=replacement,
+        prefix_proof_commitment=replacement,
+    )
+
+    with pytest.raises(ValueError, match="historical root proof"):
+        ExecutionSnapshot.bind_verified(
+            position,
+            pending.integrity,
+            RootHeadIndex(
+                entries=(changed_historical, retained_historical, current_tail),
+                position_scope=POSITION_SCOPE,
+            ),
+            seen,
+        )
+
+
+def test_bind_verified_accepts_fully_absent_multi_head_proof_cache() -> None:
+    first = _fill("first", "first-root", side=ExecutionSide.BUY, quantity=3, units=100)
+    middle = _fill(
+        "middle",
+        "middle-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=110,
+    )
+    tail = _fill("tail", "tail-root", side=ExecutionSide.SELL, quantity=1, units=120)
+    applied, _ = _apply_all(first, middle, tail)
+    proofless_position = PositionState.from_materialized(
+        scope=POSITION_SCOPE,
+        raw_quantity=applied.position.raw_quantity,
+        basis_authority=applied.position.basis_authority,
+        cost_basis=applied.position.cost_basis,
+        root_fill_sequence=applied.position.root_fill_sequence,
+        effective_head_ids=applied.position.effective_head_ids,
+        basis_price_metadata=applied.position.basis_price_metadata,
+        tail_fold_input=None,
+        integrity_floor=applied.position.integrity_floor,
+    )
+    proofless_roots = RootHeadIndex(
+        entries=tuple(
+            replace(
+                head,
+                prefix_heads_commitment=b"",
+                prefix_proof_commitment=b"",
+            )
+            for head in applied.root_heads.entries
+        ),
+        position_scope=POSITION_SCOPE,
+    )
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        proofless_position,
+        applied.integrity,
+        proofless_roots,
+        SeenFactIndex(entries=applied.seen_facts.entries),
+    )
+
+    assert hydrated.position.basis_authority is BasisAuthority.AVAILABLE
+    assert hydrated.position.tail_fold_input is None
+    assert all(
+        not head.prefix_heads_commitment and not head.prefix_proof_commitment
+        for head in hydrated.root_heads.entries
+    )
+    correction = _correct(
+        "correction",
+        "first-root",
+        "first",
+        side=ExecutionSide.BUY,
+        quantity=4,
+        units=101,
+    )
+    pending, transition = _Kernel(
+        position=hydrated.position,
+        integrity=hydrated.integrity,
+        root_heads=hydrated.root_heads,
+        seen_facts=hydrated.seen_facts,
+    ).apply(correction)
+    assert transition.disposition is TransitionDisposition.APPLIED
+    assert pending.position.basis_authority is (
+        BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
+
+
+def test_account_registry_rejects_cross_symbol_source_event_collision() -> None:
+    shared_key = _key("shared-event")
+    first_fill = _fill(
+        "shared-event",
+        "first-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=100,
+        key=shared_key,
+    )
+    first, _ = _Kernel.flat().apply(first_fill)
+    other_snapshot = ExecutionSnapshot.bind_verified(
+        PositionState.flat(OTHER_POSITION_SCOPE),
+        PositionIntegrity.CONSISTENT,
+        RootHeadIndex.empty(OTHER_POSITION_SCOPE),
+        first.seen_facts,
+    )
+    changed_fill = _fill(
+        "shared-event",
+        "other-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=101,
+        scope=_scope(
+            order_id=OrderId("other-buy-order"),
+            side=ExecutionSide.BUY,
+            symbol_id=OTHER_SYMBOL,
+        ),
+        key=shared_key,
+    )
+
+    other, transition = _Kernel(
+        position=other_snapshot.position,
+        integrity=other_snapshot.integrity,
+        root_heads=other_snapshot.root_heads,
+        seen_facts=other_snapshot.seen_facts,
+    ).apply(changed_fill)
+
+    assert transition.disposition is TransitionDisposition.FACT_CONFLICT
+    assert transition.quantity_delta == 0
+    assert other.position.raw_quantity == 0
+    assert other.root_heads.count == 0
+    assert other.integrity & PositionIntegrity.EXECUTION_FACT_CONFLICT
+    assert other.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    assert other.seen_facts.count == 1
+    observation = other.seen_facts.get(first_fill.key)
+    assert observation is not None
+    assert observation.fact == first_fill
+    assert first.position.raw_quantity == 2
+    rebound_first = ExecutionSnapshot.bind_verified(
+        replace(first.position, _binding=None),
+        first.integrity,
+        RootHeadIndex(
+            entries=first.root_heads.entries,
+            position_scope=POSITION_SCOPE,
+        ),
+        other.seen_facts,
+    )
+    assert rebound_first.position.raw_quantity == 2
+    assert rebound_first.seen_facts.count == 1
+
+
+def test_account_registry_rejects_cross_symbol_exact_replay_misroute() -> None:
+    first_fill = _fill(
+        "aapl-event",
+        "aapl-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=100,
+    )
+    first, _ = _Kernel.flat().apply(first_fill)
+    other_snapshot = ExecutionSnapshot.bind_verified(
+        PositionState.flat(OTHER_POSITION_SCOPE),
+        PositionIntegrity.CONSISTENT,
+        RootHeadIndex.empty(OTHER_POSITION_SCOPE),
+        first.seen_facts,
+    )
+    other_before = _Kernel(
+        position=other_snapshot.position,
+        integrity=other_snapshot.integrity,
+        root_heads=other_snapshot.root_heads,
+        seen_facts=other_snapshot.seen_facts,
+    )
+
+    other, transition = other_before.apply(first_fill)
+
+    _assert_zero_economic_delta(other_before, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.original_classification is (
+        FirstObservationClassification.APPLIED_AVAILABLE
+    )
+    assert other.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    assert other.position.raw_quantity == 0
+    assert other.root_heads.count == 0
+    assert other.seen_facts.count == 1
+
+
+def test_rejected_misroute_cannot_apply_when_later_routed_to_fact_symbol() -> None:
+    other_fill = _fill(
+        "msft-event",
+        "msft-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=100,
+        scope=_scope(
+            order_id=OrderId("msft-order"),
+            side=ExecutionSide.BUY,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+    rejected, first_transition = _Kernel.flat().apply(other_fill)
+    assert first_transition.disposition is (
+        TransitionDisposition.RECONCILIATION_REQUIRED
+    )
+    observation = rejected.seen_facts.get(other_fill.key)
+    assert observation is not None
+    assert observation.position_scope == POSITION_SCOPE
+    other_snapshot = ExecutionSnapshot.bind_verified(
+        PositionState.flat(OTHER_POSITION_SCOPE),
+        PositionIntegrity.CONSISTENT,
+        RootHeadIndex.empty(OTHER_POSITION_SCOPE),
+        rejected.seen_facts,
+    )
+    other_before = _Kernel(
+        position=other_snapshot.position,
+        integrity=other_snapshot.integrity,
+        root_heads=other_snapshot.root_heads,
+        seen_facts=other_snapshot.seen_facts,
+    )
+
+    other, transition = other_before.apply(other_fill)
+
+    _assert_zero_economic_delta(other_before, transition)
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.original_classification is (
+        FirstObservationClassification.RECONCILIATION_REQUIRED
+    )
+    assert other.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    assert other.position.raw_quantity == 0
+    assert other.root_heads.count == 0
+    assert other.seen_facts.count == 1
+
+
+def test_account_registry_rejects_cross_symbol_root_fill_collision() -> None:
+    first_fill = _fill(
+        "first-event",
+        "shared-root",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=100,
+    )
+    first, _ = _Kernel.flat().apply(first_fill)
+    other_snapshot = ExecutionSnapshot.bind_verified(
+        PositionState.flat(OTHER_POSITION_SCOPE),
+        PositionIntegrity.CONSISTENT,
+        RootHeadIndex.empty(OTHER_POSITION_SCOPE),
+        first.seen_facts,
+    )
+    reused_root = _fill(
+        "other-event",
+        "shared-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=101,
+        scope=_scope(
+            order_id=OrderId("other-buy-order"),
+            side=ExecutionSide.BUY,
+            symbol_id=OTHER_SYMBOL,
+        ),
+    )
+
+    other, transition = _Kernel(
+        position=other_snapshot.position,
+        integrity=other_snapshot.integrity,
+        root_heads=other_snapshot.root_heads,
+        seen_facts=other_snapshot.seen_facts,
+    ).apply(reused_root)
+
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.quantity_delta == 0
+    assert other.position.raw_quantity == 0
+    assert other.root_heads.count == 0
+    assert other.integrity & (PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED)
+    assert other.seen_facts.count == 2
+    observation = other.seen_facts.get(reused_root.key)
+    assert observation is not None
+    assert observation.classification is (
+        FirstObservationClassification.RECONCILIATION_REQUIRED
+    )
+    assert other.seen_facts.contains_root(first_fill.root_key)
+    assert first.position.raw_quantity == 2
+    rebound_first = ExecutionSnapshot.bind_verified(
+        replace(first.position, _binding=None),
+        first.integrity,
+        RootHeadIndex(
+            entries=first.root_heads.entries,
+            position_scope=POSITION_SCOPE,
+        ),
+        other.seen_facts,
+    )
+    assert rebound_first.position.raw_quantity == 2
+    assert rebound_first.seen_facts.count == 2
 
 
 def test_bind_verified_accepts_complete_revision_chain() -> None:

@@ -28,6 +28,7 @@ from .values import Quantity, ReportedPrice
 
 
 _ValueT = TypeVar("_ValueT")
+_AccountScope: TypeAlias = tuple[BrokerId, EnvironmentId, AccountId]
 
 
 def _pack_parts(domain: bytes, *parts: bytes) -> bytes:
@@ -184,6 +185,23 @@ def _encode_execution_scope(scope: ExecutionScope) -> bytes:
         _encode_position_scope(scope.position_scope),
         _encode_text(scope.order_id.value),
         _encode_text(scope.side.value),
+    )
+
+
+def _account_scope_from_position(scope: PositionScope) -> _AccountScope:
+    _require_type("scope", scope, PositionScope)
+    return (scope.broker, scope.environment, scope.account)
+
+
+def _encode_account_scope(scope: _AccountScope | None) -> bytes:
+    if scope is None:
+        return _commit_parts(b"execution-core/account-scope/none/v1")
+    broker, environment, account = scope
+    return _pack_parts(
+        b"execution-core/account-scope/v1",
+        _encode_text(broker.value),
+        _encode_text(environment.value),
+        _encode_text(account.value),
     )
 
 
@@ -979,7 +997,11 @@ class RootHeadIndex:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, RootHeadIndex):
             return NotImplemented
-        return self.entries == other.entries
+        return (
+            self.position_scope == other.position_scope
+            and self.signed_quantity == other.signed_quantity
+            and self.entries == other.entries
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -988,6 +1010,7 @@ class SeenFact:
 
     fact: BrokerExecutionFact
     classification: FirstObservationClassification
+    position_scope: PositionScope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(
@@ -1000,6 +1023,18 @@ class SeenFact:
             self.classification,
             FirstObservationClassification,
         )
+        if self.position_scope is None:
+            object.__setattr__(self, "position_scope", self.fact.scope.position_scope)
+        else:
+            _require_type("position_scope", self.position_scope, PositionScope)
+        if (
+            self.classification
+            is not FirstObservationClassification.RECONCILIATION_REQUIRED
+            and self.position_scope != self.fact.scope.position_scope
+        ):
+            raise ValueError(
+                "an applied first observation must use the fact's position scope"
+            )
 
     @property
     def commitment(self) -> bytes:
@@ -1009,30 +1044,40 @@ class SeenFact:
 def _commit_seen_fact(observation: SeenFact) -> bytes:
     _require_type("observation", observation, SeenFact)
     return _commit_parts(
-        b"execution-core/seen-fact/v1",
+        b"execution-core/seen-fact/v2",
         _encode_broker_fact(observation.fact),
         _encode_text(observation.classification.value),
+        _encode_position_scope(cast(PositionScope, observation.position_scope)),
     )
 
 
 @dataclass(frozen=True, slots=True, init=False, eq=False)
 class SeenFactIndex:
-    """Persistent exact first-observation index with a slow ordered view."""
+    """Persistent account registry of exact first observations and root claims."""
 
     _by_key: _PersistentKeyMap[SeenFact]
     _order: _PersistentSequence[ExecutionFactKey]
     _observed_roots: _PersistentKeyMap[RootFillKey]
+    _overfill_scopes: _PersistentKeyMap[PositionScope]
+    _account_scope: _AccountScope | None
     _binding: _SnapshotBinding | None
 
-    def __init__(self, entries: tuple[SeenFact, ...] = ()) -> None:
+    def __init__(
+        self,
+        entries: tuple[SeenFact, ...] = (),
+        *,
+        position_scope: PositionScope | None = None,
+    ) -> None:
         if not isinstance(entries, tuple):
             raise TypeError("entries must be a tuple")
-        current = type(self).empty()
+        current = type(self).empty(position_scope)
         for observation in entries:
             current = current.add(observation)
         object.__setattr__(self, "_by_key", current._by_key)
         object.__setattr__(self, "_order", current._order)
         object.__setattr__(self, "_observed_roots", current._observed_roots)
+        object.__setattr__(self, "_overfill_scopes", current._overfill_scopes)
+        object.__setattr__(self, "_account_scope", current._account_scope)
         object.__setattr__(self, "_binding", None)
 
     @classmethod
@@ -1042,21 +1087,33 @@ class SeenFactIndex:
         by_key: _PersistentKeyMap[SeenFact],
         order: _PersistentSequence[ExecutionFactKey],
         observed_roots: _PersistentKeyMap[RootFillKey],
+        overfill_scopes: _PersistentKeyMap[PositionScope],
+        account_scope: _AccountScope | None,
         binding: _SnapshotBinding | None = None,
     ) -> SeenFactIndex:
         result = object.__new__(cls)
         object.__setattr__(result, "_by_key", by_key)
         object.__setattr__(result, "_order", order)
         object.__setattr__(result, "_observed_roots", observed_roots)
+        object.__setattr__(result, "_overfill_scopes", overfill_scopes)
+        object.__setattr__(result, "_account_scope", account_scope)
         object.__setattr__(result, "_binding", binding)
         return result
 
     @classmethod
-    def empty(cls) -> SeenFactIndex:
+    def empty(cls, position_scope: PositionScope | None = None) -> SeenFactIndex:
+        if position_scope is not None:
+            _require_type("position_scope", position_scope, PositionScope)
         return cls._from_parts(
             by_key=_PersistentKeyMap.empty(),
             order=_PersistentSequence.empty(),
             observed_roots=_PersistentKeyMap.empty(),
+            overfill_scopes=_PersistentKeyMap.empty(),
+            account_scope=(
+                _account_scope_from_position(position_scope)
+                if position_scope is not None
+                else None
+            ),
         )
 
     @property
@@ -1066,10 +1123,42 @@ class SeenFactIndex:
     @property
     def commitment(self) -> bytes:
         return _commit_parts(
-            b"execution-core/seen-fact-index/v2",
+            b"execution-core/seen-fact-index/v3",
+            _encode_account_scope(self._account_scope),
             self._by_key.commitment,
             self._order.commitment,
             self._observed_roots.commitment,
+            self._overfill_scopes.commitment,
+        )
+
+    @property
+    def account_scope(self) -> _AccountScope | None:
+        return self._account_scope
+
+    def has_overfill_observation(self, position_scope: PositionScope) -> bool:
+        _require_type("position_scope", position_scope, PositionScope)
+        return (
+            self._overfill_scopes.get(_encode_position_scope(position_scope))
+            is not None
+        )
+
+    def belongs_to(self, position_scope: PositionScope) -> bool:
+        _require_type("position_scope", position_scope, PositionScope)
+        return self._account_scope == _account_scope_from_position(position_scope)
+
+    def _for_position_scope(self, position_scope: PositionScope) -> SeenFactIndex:
+        _require_type("position_scope", position_scope, PositionScope)
+        account_scope = _account_scope_from_position(position_scope)
+        if self._account_scope is not None and self._account_scope != account_scope:
+            raise ValueError("seen-fact registry belongs to a different account")
+        if self._account_scope == account_scope:
+            return self
+        return type(self)._from_parts(
+            by_key=self._by_key,
+            order=self._order,
+            observed_roots=self._observed_roots,
+            overfill_scopes=self._overfill_scopes,
+            account_scope=account_scope,
         )
 
     @property
@@ -1103,6 +1192,14 @@ class SeenFactIndex:
         _require_type("observation", observation, SeenFact)
         if self.get(observation.fact.key) is not None:
             raise ValueError("a first observation for this event key already exists")
+        observation_account_scope = _account_scope_from_position(
+            cast(PositionScope, observation.position_scope)
+        )
+        if (
+            self._account_scope is not None
+            and self._account_scope != observation_account_scope
+        ):
+            raise ValueError("seen-fact registry cannot mix evaluation accounts")
         root_key = observation.fact.root_key
         encoded_root = _encode_root_fill_key(root_key)
         observed_roots = self._observed_roots
@@ -1112,6 +1209,22 @@ class SeenFactIndex:
                 root_key,
                 _commit_root_fill_key(root_key),
             )
+        overfill_scopes = self._overfill_scopes
+        if observation.classification in {
+            FirstObservationClassification.APPLIED_OVERFILL_QUARANTINE,
+            FirstObservationClassification.APPLIED_PENDING_OVERFILL,
+        }:
+            position_scope = cast(PositionScope, observation.position_scope)
+            encoded_position_scope = _encode_position_scope(position_scope)
+            if overfill_scopes.get(encoded_position_scope) is None:
+                overfill_scopes = overfill_scopes.insert_new(
+                    encoded_position_scope,
+                    position_scope,
+                    _commit_parts(
+                        b"execution-core/overfill-position-scope/v1",
+                        encoded_position_scope,
+                    ),
+                )
         return type(self)._from_parts(
             by_key=self._by_key.insert_new(
                 _encode_execution_fact_key(observation.fact.key),
@@ -1126,6 +1239,8 @@ class SeenFactIndex:
                 ),
             ),
             observed_roots=observed_roots,
+            overfill_scopes=overfill_scopes,
+            account_scope=self._account_scope or observation_account_scope,
         )
 
     def _with_binding(self, binding: _SnapshotBinding) -> SeenFactIndex:
@@ -1134,6 +1249,8 @@ class SeenFactIndex:
             by_key=self._by_key,
             order=self._order,
             observed_roots=self._observed_roots,
+            overfill_scopes=self._overfill_scopes,
+            account_scope=self._account_scope,
             binding=binding,
         )
 
@@ -1143,4 +1260,6 @@ class SeenFactIndex:
         return (
             self.entries == other.entries
             and self._observed_roots == other._observed_roots
+            and self._overfill_scopes == other._overfill_scopes
+            and self._account_scope == other._account_scope
         )
