@@ -2353,6 +2353,28 @@ def test_bind_verified_rejects_applied_seen_fact_without_root_economics() -> Non
         )
 
 
+def test_bind_verified_rejects_unproved_zero_economic_corroboration() -> None:
+    fill = _fill("corroborated", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    forged_seen = SeenFactIndex(
+        entries=(
+            SeenFact(
+                fact=fill,
+                classification=(
+                    FirstObservationClassification.CORROBORATED_ZERO_ECONOMIC
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="corroboration"):
+        ExecutionSnapshot.bind_verified(
+            PositionState.flat(POSITION_SCOPE),
+            PositionIntegrity.CONSISTENT,
+            RootHeadIndex.empty(POSITION_SCOPE),
+            forged_seen,
+        )
+
+
 def test_bind_verified_rejects_extra_applied_seen_fact_outside_current_roots() -> None:
     fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
     applied, _ = _apply_all(fill)
