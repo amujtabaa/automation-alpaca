@@ -143,36 +143,51 @@ def _metadata_are_compatible(roots: list[_ModelRoot]) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class _LongLot:
+    """One test-owned average-cost lot after proportional retention."""
+
+    quantity: Fraction
+    notional: Fraction
+
+
 def _ordered_fold(roots: list[_ModelRoot]) -> tuple[int, Fraction]:
-    """Independent exact analogue of ``app.position.apply_fill(...allow_short)``."""
+    """Fold effective roots through a conceptual exact long-lot ledger."""
 
     raw_quantity = 0
-    cost_basis = Fraction(0)
+    long_lots: list[_LongLot] = []
     for root in roots:
         absolute_quantity = root.quantity
-        if absolute_quantity == 0:
-            continue
-        assert root.price is not None
-        price = _fractional_price(root.price)
         if root.scope.side is ExecutionSide.BUY:
-            old_quantity = raw_quantity
-            new_quantity = old_quantity + absolute_quantity
-            if old_quantity >= 0:
-                cost_basis += absolute_quantity * price
-            elif new_quantity > 0:
-                cost_basis = new_quantity * price
-            else:
-                cost_basis = Fraction(0)
-            raw_quantity = new_quantity
+            newly_long = max(raw_quantity + absolute_quantity, 0) - max(raw_quantity, 0)
+            if newly_long:
+                assert root.price is not None
+                long_lots.append(
+                    _LongLot(
+                        quantity=Fraction(newly_long),
+                        notional=(Fraction(newly_long) * _fractional_price(root.price)),
+                    )
+                )
         else:
-            old_quantity = raw_quantity
-            new_quantity = old_quantity - absolute_quantity
-            if new_quantity > 0 and old_quantity > 0:
-                cost_basis *= Fraction(new_quantity, old_quantity)
-            else:
-                cost_basis = Fraction(0)
-            raw_quantity = new_quantity
-    return raw_quantity, cost_basis
+            long_before = max(raw_quantity, 0)
+            long_after = max(raw_quantity - absolute_quantity, 0)
+            if long_before:
+                retained = Fraction(long_after, long_before)
+                long_lots = [
+                    _LongLot(
+                        quantity=lot.quantity * retained,
+                        notional=lot.notional * retained,
+                    )
+                    for lot in long_lots
+                ]
+        raw_quantity += _signed(root.scope.side, absolute_quantity)
+        assert sum((lot.quantity for lot in long_lots), Fraction(0)) == max(
+            raw_quantity, 0
+        )
+    return raw_quantity, sum(
+        (lot.notional for lot in long_lots),
+        Fraction(0),
+    )
 
 
 def _changed_payload(fact: ExecutionFact) -> ExecutionFact:
@@ -598,14 +613,14 @@ class FillPositionMachine(RuleBasedStateMachine):
             assert candidate.status is BasisCandidateStatus.INCOMPATIBLE_PRICE_METADATA
             assert candidate.cost_basis is None
 
-        if self.position.basis_authority is BasisAuthority.AVAILABLE:
-            assert not self.pending
-            assert self.position.cost_basis == ExactBasis(expected_basis)
-        else:
+        if self.pending:
             assert self.position.basis_authority is (
                 BasisAuthority.BASIS_RECONCILIATION_PENDING
             )
             assert self.position.cost_basis is None
+        else:
+            assert self.position.basis_authority is BasisAuthority.AVAILABLE
+            assert self.position.cost_basis == ExactBasis(expected_basis)
         assert not hasattr(self.position, "basis_candidate")
         assert not hasattr(self.position, "candidate_basis")
 

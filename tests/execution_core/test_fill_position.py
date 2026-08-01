@@ -7,9 +7,14 @@ does not import the incumbent projector or mirror the production reducer.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import sys
 from dataclasses import FrozenInstanceError, dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
+from textwrap import dedent
+from types import FrameType
 from typing import Callable, Union
 
 import pytest
@@ -24,6 +29,7 @@ from app.execution_core.fills import (
     ExecutionSide,
     FactKind,
     RootHead,
+    SeenFact,
 )
 from app.execution_core.identity import (
     AccountId,
@@ -252,30 +258,59 @@ def _basis(value: int | Fraction) -> ExactBasis:
     return ExactBasis(Fraction(value))
 
 
+@dataclass(frozen=True)
+class _LongLot:
+    """One test-owned average-cost lot after proportional retention."""
+
+    quantity: Fraction
+    notional: Fraction
+
+
 def _oracle_fold(
     effective_heads: tuple[tuple[ExecutionSide, int, Fraction], ...],
 ) -> tuple[int, Fraction]:
-    """Fold an independently supplied effective-head sequence with exact math."""
+    """Price a signed tape through a conceptual long-lot ledger.
 
-    quantity = 0
-    basis = Fraction(0)
+    BUY facts create only the portion newly carried as a long lot. SELL facts
+    retain the same fraction of every open lot as remains long. The oracle's
+    basis is therefore the sum of retained lot notionals, rather than a copy of
+    the reducer's scalar basis branches.
+    """
+
+    raw_quantity = 0
+    long_lots: list[_LongLot] = []
     for side, absolute_quantity, price in effective_heads:
         if side is ExecutionSide.BUY:
-            next_quantity = quantity + absolute_quantity
-            basis = (
-                basis + absolute_quantity * price
-                if quantity >= 0
-                else max(next_quantity, 0) * price
-            )
+            newly_long = max(raw_quantity + absolute_quantity, 0) - max(raw_quantity, 0)
+            if newly_long:
+                long_lots.append(
+                    _LongLot(
+                        quantity=Fraction(newly_long),
+                        notional=Fraction(newly_long) * price,
+                    )
+                )
         else:
-            next_quantity = quantity - absolute_quantity
-            basis = (
-                basis * Fraction(next_quantity, quantity)
-                if quantity > 0 and next_quantity > 0
-                else Fraction(0)
-            )
-        quantity = next_quantity
-    return quantity, basis
+            long_before = max(raw_quantity, 0)
+            long_after = max(raw_quantity - absolute_quantity, 0)
+            if long_before:
+                retained = Fraction(long_after, long_before)
+                long_lots = [
+                    _LongLot(
+                        quantity=lot.quantity * retained,
+                        notional=lot.notional * retained,
+                    )
+                    for lot in long_lots
+                ]
+        raw_quantity += (
+            absolute_quantity if side is ExecutionSide.BUY else -absolute_quantity
+        )
+        assert sum((lot.quantity for lot in long_lots), Fraction(0)) == max(
+            raw_quantity, 0
+        )
+    return raw_quantity, sum(
+        (lot.notional for lot in long_lots),
+        Fraction(0),
+    )
 
 
 def _assert_zero_economic_delta(
@@ -1280,3 +1315,420 @@ def test_each_revision_kind_rejects_human_authority(
     )
 
     _assert_reconciliation_no_economics(kernel, revision_factory())
+
+
+def test_aligned_priced_bust_then_different_scale_fill_stays_pending() -> None:
+    """Zero-quantity bust metadata still binds slow/fast compatibility."""
+
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    bust = _bust(
+        "bust",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        reported_price=_price(100),
+    )
+    cent_scale = PriceScale(Decimal("0.01"))
+    cent_price = _price(
+        10_000,
+        scale=cent_scale,
+        tick=TickMetadata(tick_units=PriceUnits(1), scale=cent_scale),
+    )
+    replacement_root = _fill(
+        "replacement-fill",
+        "replacement-root",
+        side=ExecutionSide.BUY,
+        quantity=3,
+        units=10_000,
+        price=cent_price,
+    )
+    before, _ = _apply_all(fill, bust)
+
+    after, transition = before.apply(replacement_root)
+    candidate = derive_ordered_basis_candidate(after.position, after.root_heads)
+
+    assert transition.disposition is TransitionDisposition.APPLIED
+    assert transition.quantity_delta == 3
+    assert transition.basis_delta is None
+    assert transition.original_classification is (
+        FirstObservationClassification.APPLIED_BASIS_PENDING
+    )
+    assert after.position.raw_quantity == 3
+    assert after.position.basis_authority is (
+        BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
+    assert after.position.cost_basis is None
+    assert candidate.raw_quantity == after.position.raw_quantity
+    assert candidate.status is BasisCandidateStatus.INCOMPATIBLE_PRICE_METADATA
+    assert candidate.cost_basis is None
+
+
+@pytest.mark.parametrize("scope_dimension", ["broker", "environment", "account"])
+def test_same_symbol_root_fill_from_different_position_scope_reconciles(
+    scope_dimension: str,
+) -> None:
+    first = _fill("first", "root-1", side=ExecutionSide.BUY, quantity=2, units=100)
+    before, _ = _apply_all(first)
+    broker = BROKER
+    environment = ENVIRONMENT
+    account = ACCOUNT
+    if scope_dimension == "broker":
+        broker = BrokerId("other-broker")
+    elif scope_dimension == "environment":
+        environment = EnvironmentId("other-environment")
+    else:
+        account = AccountId("other-account")
+    mixed_scope = _scope(
+        order_id=OrderId(f"mixed-{scope_dimension}-order"),
+        side=ExecutionSide.BUY,
+        broker=broker,
+        environment=environment,
+        account=account,
+    )
+    mixed = _fill(
+        f"mixed-{scope_dimension}",
+        "root-2",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+        scope=mixed_scope,
+        key=_key(
+            f"mixed-{scope_dimension}",
+            broker=broker,
+            environment=environment,
+            account=account,
+        ),
+    )
+
+    _assert_reconciliation_no_economics(before, mixed)
+
+
+def test_revision_requires_current_predecessor_in_seen_fact_index() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=5, units=100)
+    applied, _ = _apply_all(fill)
+    missing_predecessor = replace(applied, seen_facts=SeenFactIndex.empty())
+    correction = _correct(
+        "correct",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=4,
+        units=101,
+    )
+
+    _assert_reconciliation_no_economics(missing_predecessor, correction)
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        "missing-root-head",
+        "missing-position-root",
+        "mismatched-head-id",
+        "flat-with-applied-seen-fact",
+    ],
+)
+def test_fast_apply_rejects_exact_snapshot_component_mismatch(mismatch: str) -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    if mismatch == "missing-root-head":
+        corrupt = replace(applied, root_heads=RootHeadIndex.empty())
+    elif mismatch == "missing-position-root":
+        corrupt = replace(applied, position=PositionState.flat(SYMBOL))
+    elif mismatch == "mismatched-head-id":
+        corrupt = replace(
+            applied,
+            position=replace(
+                applied.position,
+                effective_head_ids=(SourceEventId("stale-head"),),
+            ),
+        )
+    else:
+        corrupt = replace(
+            applied,
+            position=PositionState.flat(SYMBOL),
+            root_heads=RootHeadIndex.empty(),
+        )
+    incoming = _fill(
+        f"incoming-{mismatch}",
+        f"incoming-root-{mismatch}",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+
+    _assert_reconciliation_no_economics(corrupt, incoming)
+
+
+def test_exact_replay_rejects_flat_snapshot_with_applied_seen_fact() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    corrupt = replace(
+        applied,
+        position=PositionState.flat(SYMBOL),
+        root_heads=RootHeadIndex.empty(),
+    )
+
+    after, transition = corrupt.apply(fill)
+
+    _assert_zero_economic_delta(corrupt, transition)
+    assert after.seen_facts == corrupt.seen_facts
+    assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
+    assert transition.original_classification is (
+        FirstObservationClassification.APPLIED_AVAILABLE
+    )
+    assert after.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+
+
+def test_integrity_reset_mismatch_reconciles_without_economics() -> None:
+    overfill = _fill(
+        "overfill",
+        "sell-root",
+        side=ExecutionSide.SELL,
+        quantity=3,
+        units=100,
+    )
+    quarantined, _ = _apply_all(overfill)
+    assert quarantined.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    reset = replace(quarantined, integrity=PositionIntegrity.CONSISTENT)
+    cover = _fill(
+        "cover",
+        "cover-root",
+        side=ExecutionSide.BUY,
+        quantity=5,
+        units=101,
+    )
+
+    after = _assert_reconciliation_no_economics(reset, cover)
+    assert after.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+
+
+def test_forged_tail_fold_input_cannot_authorize_revision_basis() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=10, units=100)
+    applied, _ = _apply_all(fill)
+    forged_position = replace(
+        applied.position,
+        tail_fold_input=FoldInput(
+            raw_quantity=50,
+            cost_basis=_basis(5_000),
+            price_metadata=_price(100),
+        ),
+    )
+    forged = replace(applied, position=forged_position)
+    correction = _correct(
+        "correct",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=7,
+        units=101,
+    )
+
+    after, transition = forged.apply(correction)
+
+    assert transition.disposition is TransitionDisposition.APPLIED
+    assert transition.quantity_delta == -3
+    assert transition.basis_delta is None
+    assert after.position.raw_quantity == 7
+    assert after.position.effective_head_ids == (SourceEventId("correct"),)
+    assert after.position.basis_authority is (
+        BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
+    assert after.position.cost_basis is None
+
+
+@pytest.mark.parametrize("retained_cache", ["metadata", "tail-fold-input"])
+def test_pending_position_rejects_retained_basis_cache(retained_cache: str) -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=1, units=100)
+    applied, _ = _apply_all(fill)
+    metadata = _price(100) if retained_cache == "metadata" else None
+    tail_input = (
+        FoldInput(
+            raw_quantity=0,
+            cost_basis=_basis(0),
+            price_metadata=None,
+        )
+        if retained_cache == "tail-fold-input"
+        else None
+    )
+
+    with pytest.raises(ValueError):
+        replace(
+            applied.position,
+            basis_authority=BasisAuthority.BASIS_RECONCILIATION_PENDING,
+            cost_basis=None,
+            basis_price_metadata=metadata,
+            tail_fold_input=tail_input,
+        )
+
+
+def test_slow_candidate_rejects_human_attested_root() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    applied, _ = _apply_all(fill)
+    head = applied.root_heads.get(fill.root_key)
+    assert head is not None
+    human_heads = RootHeadIndex(
+        entries=(replace(head, authority=ExecutionAuthority.HUMAN_ATTESTED),)
+    )
+
+    candidate = derive_ordered_basis_candidate(applied.position, human_heads)
+
+    assert candidate.status is BasisCandidateStatus.SNAPSHOT_INCONSISTENT
+    assert candidate.cost_basis is None
+
+
+def _history_kernel(root_count: int) -> tuple[_Kernel, BrokerFillFact]:
+    price = _price(100)
+    root_keys: list[RootFillKey] = []
+    head_ids: list[SourceEventId] = []
+    heads: list[RootHead] = []
+    seen: list[SeenFact] = []
+    for index in range(root_count):
+        event = f"history-event-{index}"
+        root = f"history-root-{index}"
+        scope = _scope(
+            order_id=OrderId(f"history-order-{index}"),
+            side=ExecutionSide.BUY,
+        )
+        fact = _fill(
+            event,
+            root,
+            side=ExecutionSide.BUY,
+            quantity=1,
+            units=100,
+            scope=scope,
+            key=_key(event),
+        )
+        root_keys.append(fact.root_key)
+        head_ids.append(fact.key.source_event_id)
+        heads.append(
+            RootHead(
+                root_key=fact.root_key,
+                original_sequence=index,
+                scope=fact.scope,
+                authority=fact.authority,
+                current_source_event_id=fact.key.source_event_id,
+                kind=fact.kind,
+                quantity=fact.quantity,
+                price=fact.price,
+            )
+        )
+        seen.append(
+            SeenFact(
+                fact=fact,
+                classification=FirstObservationClassification.APPLIED_AVAILABLE,
+            )
+        )
+    kernel = _Kernel(
+        position=PositionState(
+            symbol_id=SYMBOL,
+            raw_quantity=root_count,
+            basis_authority=BasisAuthority.AVAILABLE,
+            cost_basis=_basis(root_count * 100),
+            root_fill_sequence=tuple(root_keys),
+            effective_head_ids=tuple(head_ids),
+            basis_price_metadata=price,
+            tail_fold_input=FoldInput(
+                raw_quantity=root_count - 1,
+                cost_basis=_basis((root_count - 1) * 100),
+                price_metadata=price,
+            ),
+        ),
+        integrity=PositionIntegrity.CONSISTENT,
+        root_heads=RootHeadIndex(entries=tuple(heads)),
+        seen_facts=SeenFactIndex(entries=tuple(seen)),
+    )
+    incoming = _fill(
+        f"incoming-{root_count}",
+        f"incoming-root-{root_count}",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=100,
+        order_id=OrderId(f"incoming-order-{root_count}"),
+    )
+    return kernel, incoming
+
+
+def _fast_apply_line_events(kernel: _Kernel, fact: BrokerFillFact) -> int:
+    traced_files = {
+        inspect.getsourcefile(apply_broker_execution_fact),
+        inspect.getsourcefile(RootHeadIndex),
+    }
+    line_events = 0
+
+    def count_lines(frame: FrameType, event: str, _arg: object) -> object:
+        nonlocal line_events
+        if event == "line" and frame.f_code.co_filename in traced_files:
+            line_events += 1
+        return count_lines
+
+    previous_trace = sys.gettrace()
+    sys.settrace(count_lines)
+    try:
+        _, transition = kernel.apply(fact)
+    finally:
+        sys.settrace(previous_trace)
+    assert transition.disposition is TransitionDisposition.APPLIED
+    return line_events
+
+
+def test_fast_apply_line_events_are_independent_of_history_length() -> None:
+    small, small_fact = _history_kernel(16)
+    large, large_fact = _history_kernel(2_048)
+
+    small_events = _fast_apply_line_events(small, small_fact)
+    large_events = _fast_apply_line_events(large, large_fact)
+
+    assert large_events <= small_events + 200, (
+        "one fast application scaled with historical roots/facts: "
+        f"16 roots={small_events} line events, 2048 roots={large_events}"
+    )
+
+
+def _loads_entries(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Attribute)
+        and isinstance(child.ctx, ast.Load)
+        and child.attr == "entries"
+        for child in ast.walk(node)
+    )
+
+
+@pytest.mark.parametrize(
+    ("owner", "method_name"),
+    [
+        (RootHeadIndex, "append"),
+        (RootHeadIndex, "replace"),
+        (SeenFactIndex, "add"),
+    ],
+    ids=["root-append", "root-replace", "seen-add"],
+)
+def test_fast_index_updates_do_not_materialize_entry_history(
+    owner: type[RootHeadIndex] | type[SeenFactIndex],
+    method_name: str,
+) -> None:
+    tree = ast.parse(dedent(inspect.getsource(getattr(owner, method_name))))
+    materializers = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Add)
+            and _loads_entries(node)
+        )
+        or (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Slice)
+            and _loads_entries(node)
+        )
+        or (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"list", "tuple"}
+            and _loads_entries(node)
+        )
+    ]
+
+    assert not materializers, (
+        f"{owner.__name__}.{method_name} copies or slices complete entry history"
+    )

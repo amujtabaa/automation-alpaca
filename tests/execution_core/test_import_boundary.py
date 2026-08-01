@@ -234,7 +234,11 @@ def test_grimp_graph_has_no_incumbent_or_external_dependency() -> None:
     """Graph proof complements AST aliases and catches package-level imports."""
 
     grimp = pytest.importorskip("grimp")
-    graph = grimp.build_graph("app.execution_core", include_external_packages=True)
+    # Grimp requires a top-level package root. Build the complete ``app`` graph,
+    # then inspect only the execution-core modules below; asking it to build the
+    # nested package directly raises ``NotATopLevelModule`` before any boundary
+    # assertion can run.
+    graph = grimp.build_graph("app", include_external_packages=True)
     kernel_modules = {
         module
         for module in graph.modules
@@ -270,6 +274,14 @@ def test_public_import_is_side_effect_free_and_complete() -> None:
 import json
 import sys
 sys.path.insert(0, {str(_REPO_ROOT)!r})
+# Establish the transitive import baseline of the deterministic stdlib modules
+# the AST gate permits. For example, ``dataclasses`` itself loads ``inspect``,
+# which loads ``importlib`` and ``os``; those are not execution-core imports.
+import dataclasses
+import decimal
+import enum
+import fractions
+import typing
 before = set(sys.modules)
 import app.execution_core as kernel
 after = set(sys.modules) - before

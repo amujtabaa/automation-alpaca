@@ -183,6 +183,34 @@ format check passed. The combined focused command above, using fresh basetemp
 `ModuleNotFoundError: No module named 'app.execution_core'` errors (`test_values`, deterministic
 fill/position, and stateful fill/position). No application, database, or broker code executed.
 
+### P0 stop and explicit re-gate — 2026-07-31
+
+The first independent GREEN review triggered this work order's mandatory stop condition by finding
+three P0 snapshot/scope defects: position scope was not bound to broker/environment/account; the
+position, root-head, seen-fact, and integrity inputs were not one coherently bound snapshot; and an
+unbound pre-tail fold input could publish incorrect authoritative basis. It also found P1 gaps in
+priced-bust metadata consistency, historical-length-independent fast-path complexity, predecessor
+provenance, human-head exclusion, and failure-capable test evidence. All agents stopped and the
+uncommitted working copy was preserved at committed HEAD
+`49ec1f0863cebf5651b381662d9157312213cf00`.
+
+Ameen then explicitly authorized: "Authorize WO-0145 re-gating and in-scope remediation of the
+disclosed P0/P1 findings, preserving all existing broker, credential, database, runtime-wiring,
+merge, deletion, and cleanup exclusions." This re-opens only the existing allowed paths for RED-first
+remediation and verification. It does not widen this work order or authorize any excluded activity.
+
+The remediation tests were then completed before production remediation. Both deterministic and
+stateful arithmetic oracles were independently recast as proportional long-lot ledgers. A root-seat
+focused run with `BROKER_ADAPTER=mock`, cache provider disabled, and fresh basetemp
+`.pytest_tmp_wo0145_remediation_red_root_2` collected 115 tests and produced exactly 99 passes plus
+16 expected failures. Those failures pin priced-bust metadata parity; three complete position-scope
+dimensions; predecessor presence; mixed position/root/seen snapshots; exact replay against a stale
+snapshot; monotonic integrity binding; forged pre-tail input; two pending-cache invariants; human
+head exclusion; historical-length-independent fast work; and all three immutable index-update paths.
+The slope pin measured 664 traced line events at 16 roots and 53,496 at 2,048 roots. An earlier
+attempt with `--cache-clear` never reached collection because a pre-existing `.pytest_cache` Windows
+ACL denied pytest's cache hook; it is environment evidence only and was not counted as RED evidence.
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
