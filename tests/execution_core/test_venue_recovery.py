@@ -843,10 +843,32 @@ def test_overlapping_or_mismatching_broker_evidence_requires_reconciliation(
 
     assert reconciled.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert reconciled.quantity_delta == 0
-    assert reconciled.execution.position == attested.execution.position
+    assert (
+        reconciled.execution.position.scope,
+        reconciled.execution.position.raw_quantity,
+        reconciled.execution.position.basis_authority,
+        reconciled.execution.position.cost_basis,
+        reconciled.execution.position.root_fill_sequence,
+        reconciled.execution.position.effective_head_ids,
+        reconciled.execution.position.basis_price_metadata,
+        reconciled.execution.position.tail_fold_input,
+    ) == (
+        attested.execution.position.scope,
+        attested.execution.position.raw_quantity,
+        attested.execution.position.basis_authority,
+        attested.execution.position.cost_basis,
+        attested.execution.position.root_fill_sequence,
+        attested.execution.position.effective_head_ids,
+        attested.execution.position.basis_price_metadata,
+        attested.execution.position.tail_fold_input,
+    )
     assert reconciled.execution.root_heads == attested.execution.root_heads
     assert (
         reconciled.execution.integrity
+        & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    )
+    assert (
+        reconciled.execution.position.integrity_floor
         & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
     )
     assert len(reconciled.book.reconciliations) == len(before_reconciliations) + 1
