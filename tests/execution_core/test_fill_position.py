@@ -1967,6 +1967,45 @@ def test_incoherent_snapshot_recovers_overfill_from_unbound_seen_history() -> No
     assert after.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
 
 
+def test_incoherent_snapshot_recovers_pending_overfill_from_seen_history() -> None:
+    buy = _fill("buy", "buy-root", side=ExecutionSide.BUY, quantity=10, units=100)
+    sell = _fill("sell", "sell-root", side=ExecutionSide.SELL, quantity=8, units=90)
+    bust = _bust("bust", "buy-root", "buy", side=ExecutionSide.BUY)
+    cover = _fill("cover", "cover-root", side=ExecutionSide.BUY, quantity=10, units=125)
+    recovered, transitions = _apply_all(buy, sell, bust, cover)
+    assert transitions[-2].original_classification is (
+        FirstObservationClassification.APPLIED_PENDING_OVERFILL
+    )
+    unbound_seen = SeenFactIndex(entries=recovered.seen_facts.entries)
+    assert unbound_seen.has_overfill_observation(POSITION_SCOPE)
+    mixed = _Kernel(
+        position=replace(
+            recovered.position,
+            integrity_floor=PositionIntegrity.CONSISTENT,
+            _binding=None,
+        ),
+        integrity=PositionIntegrity.CONSISTENT,
+        root_heads=RootHeadIndex(
+            entries=recovered.root_heads.entries,
+            position_scope=POSITION_SCOPE,
+        ),
+        seen_facts=unbound_seen,
+    )
+    incoming = _fill(
+        "incoming-pending-overfill",
+        "incoming-pending-overfill-root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=126,
+    )
+
+    after, transition = mixed.apply(incoming)
+
+    _assert_zero_economic_delta(mixed, transition)
+    assert after.integrity & PositionIntegrity.OVERFILL_QUARANTINE
+    assert after.position.integrity_floor & PositionIntegrity.OVERFILL_QUARANTINE
+
+
 def test_incoherent_account_history_does_not_leak_overfill_between_symbols() -> None:
     overfill = _fill(
         "aapl-overfill",
@@ -2017,17 +2056,18 @@ def test_incoherent_foreign_account_registry_reconciles_without_exception() -> N
     foreign_fact = _fill(
         "foreign-fill",
         "foreign-root",
-        side=ExecutionSide.BUY,
+        side=ExecutionSide.SELL,
         quantity=2,
         units=100,
         scope=_scope(
             order_id=OrderId("foreign-order"),
-            side=ExecutionSide.BUY,
+            side=ExecutionSide.SELL,
             account=foreign_scope.account,
         ),
         key=_key("foreign-fill", account=foreign_scope.account),
     )
     foreign, _ = _Kernel.flat(foreign_scope).apply(foreign_fact)
+    assert foreign.integrity & PositionIntegrity.OVERFILL_QUARANTINE
     mixed = _Kernel(
         position=PositionState.flat(POSITION_SCOPE),
         integrity=PositionIntegrity.CONSISTENT,
@@ -2380,6 +2420,29 @@ def test_empty_root_index_value_identity_carries_exact_scope() -> None:
     assert scoped != unscoped
     assert scoped.commitment != other_scoped.commitment
     assert scoped.commitment != unscoped.commitment
+
+
+def test_root_index_value_identity_carries_signed_quantity() -> None:
+    fill = _fill(
+        "root-value",
+        "root-value",
+        side=ExecutionSide.BUY,
+        quantity=2,
+        units=100,
+    )
+    applied, _ = _apply_all(fill)
+    authentic = applied.root_heads
+    forged = RootHeadIndex._from_parts(
+        by_root=authentic._by_root,
+        root_sequence=authentic._root_sequence,
+        head_sequence=authentic._head_sequence,
+        position_scope=authentic.position_scope,
+        signed_quantity=authentic.signed_quantity + 1,
+    )
+
+    assert authentic.entries == forged.entries
+    assert authentic != forged
+    assert authentic.commitment != forged.commitment
 
 
 def test_bind_verified_rejects_reconciliation_integrity_reset() -> None:
