@@ -240,6 +240,15 @@ integrity supersets, fully absent tail proof degrading the next valid revision t
 the now-coherent human-authority mutation fixtures. No production, broker, database, or runtime code
 executed in this RED gate.
 
+The minimum remediation then made all 22 selected second-round tests green. The full focused gate
+collected and passed 134 tests with `BROKER_ADAPTER=mock`, cache disabled, and fresh basetemp
+`.pytest_tmp_wo0145_second_focused_1`. Focused Ruff check, Ruff format check, and mypy over
+`app/execution_core` also passed. Hydration is an explicit slow chronological replay of immutable
+first observations; it compares exact current root/economic/metadata state, reconstructs any active
+tail proof, permits a fully absent proof to degrade future revision basis to pending, and requires
+supplied integrity to contain both replay-derived restrictions and the state-carried committed
+monotonic floor. The replay is audit-only and does not enter the normal fact-application fast path.
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact

@@ -157,6 +157,10 @@ class PositionState:
     _effective_head_ids: _PersistentSequence[SourceEventId]
     basis_price_metadata: ReportedPrice | None
     tail_fold_input: FoldInput | None
+    integrity_floor: PositionIntegrity = field(
+        default=PositionIntegrity.CONSISTENT,
+        compare=False,
+    )
     _binding: _SnapshotBinding | None = field(
         default=None,
         repr=False,
@@ -183,6 +187,8 @@ class PositionState:
             self.tail_fold_input, FoldInput
         ):
             raise TypeError("tail_fold_input must be FoldInput or None")
+        if not isinstance(self.integrity_floor, PositionIntegrity):
+            raise TypeError("integrity_floor must be PositionIntegrity")
         if self.basis_authority is BasisAuthority.AVAILABLE:
             if not isinstance(self.cost_basis, ExactBasis):
                 raise ValueError("available basis requires an exact cost basis")
@@ -207,6 +213,7 @@ class PositionState:
         effective_head_ids: tuple[SourceEventId, ...],
         basis_price_metadata: ReportedPrice | None,
         tail_fold_input: FoldInput | None,
+        integrity_floor: PositionIntegrity = PositionIntegrity.CONSISTENT,
     ) -> PositionState:
         """Build an unbound snapshot for explicit validation/hydration only."""
 
@@ -237,6 +244,7 @@ class PositionState:
             ),
             basis_price_metadata=basis_price_metadata,
             tail_fold_input=tail_fold_input,
+            integrity_floor=integrity_floor,
         )
 
     @classmethod
@@ -284,8 +292,16 @@ class PositionState:
     @property
     def commitment(self) -> bytes:
         basis = self.cost_basis.value if self.cost_basis is not None else None
+        tail_commitment = (
+            _commit_parts(b"execution-core/position-tail/absent/v1")
+            if self.tail_fold_input is None
+            else _commit_parts(
+                b"execution-core/position-tail/present/v1",
+                self.tail_fold_input.commitment,
+            )
+        )
         return _commit_parts(
-            b"execution-core/position-state/v1",
+            b"execution-core/position-state/v2",
             _encode_position_scope(self.scope),
             _encode_int(self.raw_quantity),
             self.basis_authority.value.encode("ascii"),
@@ -293,6 +309,8 @@ class PositionState:
             self._root_fill_sequence.commitment,
             self._effective_head_ids.commitment,
             _encode_reported_price(self.basis_price_metadata),
+            tail_commitment,
+            _encode_int(self.integrity_floor.value),
         )
 
     @property
@@ -381,35 +399,16 @@ class ExecutionSnapshot:
         for head in root_heads.entries:
             if head.scope.position_scope != position.scope:
                 raise ValueError("root head is outside exact position scope")
-            if head.authority is ExecutionAuthority.BROKER_AUTHORITATIVE:
-                predecessor_key = ExecutionFactKey(
-                    broker=head.root_key.broker,
-                    environment=head.root_key.environment,
-                    account=head.root_key.account,
-                    source_event_id=head.current_source_event_id,
-                )
-                observation = seen_facts.get(predecessor_key)
-                if (
-                    observation is None
-                    or observation.classification
-                    is FirstObservationClassification.RECONCILIATION_REQUIRED
-                    or not _observation_matches_head(observation, head)
-                ):
-                    raise ValueError(
-                        "broker root head lacks exact seen-fact provenance"
-                    )
-        if position.basis_authority is BasisAuthority.AVAILABLE:
-            folded = _fold_ordered_heads(root_heads)
-            if folded is None:
-                raise ValueError("available basis cannot bind incompatible metadata")
-            raw_quantity, exact_basis = folded
-            if (
-                raw_quantity != position.raw_quantity
-                or position.cost_basis != exact_basis
-            ):
+            if head.authority is not ExecutionAuthority.BROKER_AUTHORITATIVE:
                 raise ValueError(
-                    "available position basis disagrees with ordered roots"
+                    "public hydration admits broker-authoritative roots only"
                 )
+
+        replayed = _replay_hydration_snapshot(position.scope, seen_facts)
+        _require_hydration_match(position, root_heads, replayed)
+        required_integrity = replayed.integrity | position.integrity_floor
+        if integrity & required_integrity != required_integrity:
+            raise ValueError("supplied integrity clears historical evidence")
         rebound_position = replace(
             position,
             _root_fill_sequence=root_heads._root_sequence,
@@ -557,6 +556,10 @@ def _bind_components(
     root_heads: RootHeadIndex,
     seen_facts: SeenFactIndex,
 ) -> ExecutionSnapshot:
+    if not isinstance(integrity, PositionIntegrity):
+        raise TypeError("integrity must be PositionIntegrity")
+    if position.integrity_floor & integrity != position.integrity_floor:
+        raise ValueError("integrity cannot clear the committed position floor")
     if root_heads.position_scope != position.scope:
         raise ValueError("cannot bind root index outside position scope")
     if (
@@ -579,6 +582,11 @@ def _bind_components(
         or position.root_count != root_heads.count
     ):
         raise ValueError("cannot bind structurally divergent position/root state")
+    position = replace(
+        position,
+        integrity_floor=position.integrity_floor | integrity,
+        _binding=None,
+    )
     snapshot_commitment = _commit_parts(
         b"execution-core/kernel-snapshot/v1",
         _encode_position_scope(position.scope),
@@ -1106,6 +1114,107 @@ def apply_broker_execution_fact(
     if isinstance(fact, BrokerFillFact):
         return _apply_root_fill(position, integrity, root_heads, seen_facts, fact)
     return _apply_revision(position, integrity, root_heads, seen_facts, fact)
+
+
+def _replay_hydration_snapshot(
+    scope: PositionScope,
+    seen_facts: SeenFactIndex,
+) -> ExecutionSnapshot:
+    """Re-derive one materialized high-water from first observations only."""
+
+    replayed = ExecutionSnapshot.flat(scope)
+    for observation in seen_facts.entries:
+        transition = apply_broker_execution_fact(
+            replayed.position,
+            replayed.integrity,
+            replayed.root_heads,
+            replayed.seen_facts,
+            observation.fact,
+        )
+        expected_disposition = (
+            TransitionDisposition.RECONCILIATION_REQUIRED
+            if observation.classification
+            is FirstObservationClassification.RECONCILIATION_REQUIRED
+            else TransitionDisposition.APPLIED
+        )
+        if (
+            transition.disposition is not expected_disposition
+            or transition.original_classification is not observation.classification
+        ):
+            raise ValueError("seen-fact classification is not reproducible")
+        replayed = ExecutionSnapshot(
+            position=transition.position,
+            integrity=transition.integrity,
+            root_heads=transition.root_heads,
+            seen_facts=transition.seen_facts,
+        )
+    if replayed.seen_facts.entries != seen_facts.entries:
+        raise ValueError("seen-fact replay did not close exactly")
+    return replayed
+
+
+def _root_head_semantics(head: RootHead) -> tuple[object, ...]:
+    """Return authoritative head values, excluding optional tail-cache proofs."""
+
+    return (
+        head.root_key,
+        head.original_sequence,
+        head.scope,
+        head.authority,
+        head.current_source_event_id,
+        head.kind,
+        head.quantity,
+        head.price,
+    )
+
+
+def _require_hydration_match(
+    position: PositionState,
+    root_heads: RootHeadIndex,
+    replayed: ExecutionSnapshot,
+) -> None:
+    """Require exact replay closure while allowing a fully absent tail cache."""
+
+    replayed_position = replayed.position
+    if (
+        position.scope != replayed_position.scope
+        or position.raw_quantity != replayed_position.raw_quantity
+        or position.basis_authority is not replayed_position.basis_authority
+        or position.cost_basis != replayed_position.cost_basis
+        or position.root_fill_sequence != replayed_position.root_fill_sequence
+        or position.effective_head_ids != replayed_position.effective_head_ids
+        or position.basis_price_metadata != replayed_position.basis_price_metadata
+    ):
+        raise ValueError("position economics do not match chronological replay")
+
+    supplied_heads = root_heads.entries
+    replayed_heads = replayed.root_heads.entries
+    if len(supplied_heads) != len(replayed_heads) or any(
+        _root_head_semantics(supplied) != _root_head_semantics(expected)
+        for supplied, expected in zip(supplied_heads, replayed_heads)
+    ):
+        raise ValueError("root heads do not match chronological replay")
+
+    tail_input = position.tail_fold_input
+    if tail_input is None:
+        return
+    expected_tail_input = replayed_position.tail_fold_input
+    if (
+        position.root_count == 0
+        or not tail_input.is_bound
+        or expected_tail_input is None
+        or tail_input != expected_tail_input
+    ):
+        raise ValueError("tail fold input is not the exact replayed prefix")
+    supplied_tail = supplied_heads[-1]
+    replayed_tail = replayed_heads[-1]
+    if (
+        supplied_tail.prefix_heads_commitment != replayed_tail.prefix_heads_commitment
+        or supplied_tail.prefix_proof_commitment
+        != replayed_tail.prefix_proof_commitment
+        or supplied_tail.prefix_proof_commitment != tail_input.commitment
+    ):
+        raise ValueError("tail root does not carry the exact replayed proof")
 
 
 def derive_ordered_basis_candidate(
