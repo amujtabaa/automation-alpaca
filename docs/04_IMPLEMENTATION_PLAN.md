@@ -3,8 +3,9 @@
 > **Historical plan — not current authorization.** The accepted reset sequence is
 > [`work/queue/ARCH-RESET-2026-07/06-roadmap.md`](../work/queue/ARCH-RESET-2026-07/06-roadmap.md).
 > The immutable staged `RESET-WO-01` was canonicalized and separately activated as pure-kernel
-> `WO-0145` after accepted M0 review, explicit human authority, and dual-version CI. Later reset
-> slices remain inactive.
+> `WO-0145` after accepted M0 review, explicit human authority, and dual-version CI. `WO-0145` is
+> closed; the separately authorized pure venue-ownership/recovery slice is active as `WO-0146`.
+> RESET-WO-03 and later slices remain inactive.
 
 The build sequence, with persistence promoted into the foundation rather than
 deferred. Each phase ends with passing tests and preserved safety invariants

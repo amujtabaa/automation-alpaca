@@ -1,0 +1,455 @@
+schema_version: 1
+manifest_id: ARCH-RESET-2026-07-M1-BRANCH-RETIREMENT
+status: READ_ONLY_INVENTORY
+authority: "Ameen authorized options 1-4 on 2026-08-01; deletion remains gated by this manifest."
+
+audit_snapshot:
+  audited_at_utc: "2026-08-01T19:45:53Z"
+  frozen_master_sha: 6d5937492788aa0ab1cf8348321fa01ee57df920
+  audited_reset_sha: dfb8ed30ebed788f1158d7f8be49b44d505c355b
+  live_remote_inventory_verified: true
+  live_remote_branch_count: 17
+  local_branch_count: 17
+  logical_branch_count: 27
+  registered_worktree_count: 10
+  auxiliary_worktrees_clean: true
+  worktree_prune_dry_run_empty: true
+  process_handle_check: PENDING_JUST_IN_TIME
+  process_handle_check_note: "Win32_Process access was denied during audit; repeat immediately before any worktree removal."
+  tracked_tree_clean_before_manifest: true
+
+preserved_untracked_artifacts:
+  - path: .coverage_wo0145_full_authorized_3
+    sha256: 82803610fbc66665a7aaf1966a348e8584c57df30925fe6140a72b3b356c951c
+    disposition: KEEP_UNCHANGED
+  - path: .coverage_wo0145_union_1
+    sha256: 1a413a66d99aa893d345a5db1aaea2a784f888514b2b11fa80f9cc99e9afcb32
+    disposition: KEEP_UNCHANGED
+
+required_gates:
+  all_m1_work_orders_closed: false
+  consolidated_m1_review_verdict: null
+  final_m1_sha: null
+  final_m1_ci_python_311: null
+  final_m1_ci_python_312: null
+  merge_authority: "Ameen authorized the non-squashed M1 master milestone on 2026-08-01."
+  master_merge_sha: null
+  master_merge_is_non_squashed: null
+  master_merge_ci_python_311: null
+  master_merge_ci_python_312: null
+  live_tip_rechecks_complete: false
+  pending_unique_refs_preserved_or_remapped: false
+  worktree_process_checks_complete: false
+
+refs:
+  - branch: master
+    audited_tip_sha: 6d5937492788aa0ab1cf8348321fa01ee57df920
+    locations: [local, remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: canonical merge target
+
+  - branch: archive/claude-sellintent-envelope-linking-h2z7i7
+    audited_tip_sha: a6ab844a23dfc68d36a7fd8ae6e2b73f7a454f66
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 6
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: R2 comparison lineage
+
+  - branch: archive/claude-wo-0001-install-checks-2x5ys8
+    audited_tip_sha: fc819517be64b10ecf831a9a6abd4fe6f9100e2f
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 47
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: stranded Signal Seat provenance cited by ADR and audit records
+
+  - branch: archive/collab-sol-0001
+    audited_tip_sha: 38180e1d594a961372b5854bfac9f097ac6910b1
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 1
+    patch_positive_count: 0
+    patch_equivalent_count: 1
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: exact original SOL import provenance is cited
+
+  - branch: archive/consolidate-r2-canonical-codex
+    audited_tip_sha: accfc2072b7d0997a4b497f5710c9fabd5d86d3e
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: archived R2 investigation identity
+
+  - branch: freeze/20260715-master-preconsolidation
+    audited_tip_sha: 80250e09be65115b8fc483b2444b297e2b86b2c9
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: explicit rollback anchor
+
+  - branch: freeze/20260715-pr8-head
+    audited_tip_sha: 22617f4ccf28970d553d5cc65cbffdf42ea4b7cd
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: shared R2 base
+
+  - branch: freeze/20260715-r2-claude
+    audited_tip_sha: ba1cea7547e98d03c4216546d5a9069171726698
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 5
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: frozen comparison attempt
+
+  - branch: freeze/20260715-r2-sol
+    audited_tip_sha: 353ef1cc23b901b10cd394ea63e0683de7eeb6e7
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 1
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: frozen comparison attempt
+
+  - branch: claude/wargame-roadmap-kickoff-2v2tan
+    audited_tip_sha: fb6e93e556e94c3c5904b9218d530865c0f3a84b
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 33
+    explicit_repository_references:
+      - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: ratification cites the exact branch and SHA for ADR identity reservation
+
+  - branch: codex/signal-r6a-rails-store
+    audited_tip_sha: 39a6ed8b9a7562f61afc9ec5c0f9fad2c3918c80
+    locations: [local, remote]
+    worktree_path: null
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 59
+    explicit_repository_references:
+      - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
+      - work/queue/ARCH-RESET-2026-07/04-persistence-and-cutover.md
+    classification: KEEP-EVIDENCE
+    preservation_action: retain_ref
+    reason: frozen R6 corpus retained through first reset Paper-beta soak
+
+  - branch: codex/signal-tests-staging
+    audited_tip_sha: 24d3746a35e30f736a6c5e3541720f0d47b0d751
+    locations: [local, remote]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-signal-tests-staging
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 2
+    absent_from_master_files:
+      - tests/test_signal_malformed_input_matrix.py
+      - tests/test_signal_quarantine_totality.py
+    classification: KEEP-UNIQUE-PENDING-EXTRACTION
+    preservation_action: retain_ref_and_worktree
+    deletion_prerequisites:
+      - classify both absent tests as extracted reset regression, superseded by ADR-022, or archive evidence
+      - preserve e16866f..24d3746 with an immutable tag or bundle if the branch ref is retired
+
+  - branch: codex/wo-0126
+    audited_tip_sha: 8c252692c94ee323780964dd157d2690d65a698d
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0126
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 6
+    patch_positive_count: 1
+    patch_equivalent_count: 5
+    integrated_replacement_range: 42071ba..04e55f3
+    graph_only_cited_objects: [27e82bc, 4bd0efa]
+    classification: KEEP-UNIQUE-PENDING-EXTRACTION
+    preservation_action: retain_ref_and_worktree
+    deletion_prerequisites:
+      - preserve the original graph sequence with an immutable archive tag or bundle
+      - or formally remap every citation to integrated evidence
+
+  - branch: codex/arch-reset-2026-07-r1
+    audited_tip_sha: dfb8ed30ebed788f1158d7f8be49b44d505c355b
+    locations: [local, remote]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 27
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: delete_remote_then_local_last
+    deletion_prerequisites:
+      - all required_gates are satisfied
+      - live tip is unchanged or manifest is re-audited
+      - complete reset history is an ancestor of the verified master merge
+      - main worktree is switched to verified master with preserved artifacts untouched
+
+  - branch: claude/signal-r4-kickoff-planning-354qc0
+    audited_tip_sha: 95c997f6a1e15375f1022f2d775b8c93ba32a2eb
+    locations: [remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: delete_remote
+    deletion_prerequisites: [all_required_gates, unchanged_live_tip]
+
+  - branch: codex/beta-prep-sweep
+    audited_tip_sha: e5b2dd997ec9ca86112eff8f91f289c06e6d493b
+    locations: [local]
+    remote_already_absent: true
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: delete_local
+    deletion_prerequisites: [all_required_gates]
+
+  - branch: codex/lane2-bootstrap
+    audited_tip_sha: ea3f75cec2e93a51ca100a8e83a5e658a2630300
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-lane2-bootstrap
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 9
+    patch_positive_count: 6
+    patch_equivalent_count: 3
+    integrated_replacement_ranges: [966b1a7..7387199, 635127b..e4d805b, 094f0df..6aa678f]
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: remove_worktree_then_delete_local
+    deletion_prerequisites: [all_required_gates, replacement_evidence_reverified, clean_and_no_open_process]
+
+  - branch: codex/lane2-core
+    audited_tip_sha: dcefeafd76924b1ae175d797f99786155c917efe
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-lane2-core
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 6
+    patch_positive_count: 0
+    patch_equivalent_count: 6
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: remove_worktree_then_delete_local
+    deletion_prerequisites: [all_required_gates, replacement_evidence_reverified, clean_and_no_open_process]
+
+  - branch: codex/lane2-docs
+    audited_tip_sha: 088d9b5a026a1a5d977d834e00c4e73ba5acc9aa
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-lane2-docs
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 7
+    patch_positive_count: 2
+    patch_equivalent_count: 5
+    integrated_replacement_ranges: [c90a7ae..8a76a29, b03c0e9..36538e8]
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: remove_worktree_then_delete_local
+    deletion_prerequisites: [all_required_gates, replacement_evidence_reverified, clean_and_no_open_process]
+
+  - branch: codex/signal-r4-store
+    audited_tip_sha: b9ebc9ba750633fded4bcc03e7583022e748ee86
+    locations: [local]
+    remote_already_absent: true
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: delete_local
+    deletion_prerequisites: [all_required_gates]
+
+  - branch: codex/signal-r5a-foundation
+    audited_tip_sha: b2a5667172a63c201ba7f3062a3a01a6a28018fb
+    locations: [local, remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: delete_remote_then_local
+    deletion_prerequisites: [all_required_gates, unchanged_live_tip]
+
+  - branch: codex/signal-r5b1-producer-ingest
+    audited_tip_sha: bbc7e96356b582d410105f5d86291b952acd6158
+    locations: [local, remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: delete_remote_then_local
+    deletion_prerequisites: [all_required_gates, unchanged_live_tip]
+
+  - branch: codex/signal-r5b2-operator-auth
+    audited_tip_sha: d28cabd0d661b9a71bcd50c7a473c7a1fabd67a7
+    locations: [local, remote]
+    worktree_path: null
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: delete_remote_then_local
+    deletion_prerequisites: [all_required_gates, unchanged_live_tip]
+
+  - branch: codex/wo-0114
+    audited_tip_sha: 0a97f51aee11721448dccbf4576c8308bf88f14e
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0114
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 3
+    patch_positive_count: 2
+    patch_equivalent_count: 1
+    integrated_replacement_objects: [f3be6e3, b6d4fb0, 759eff0]
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: remove_worktree_then_delete_local
+    deletion_prerequisites: [all_required_gates, replacement_evidence_reverified, clean_and_no_open_process]
+
+  - branch: codex/wo-0114-coverage-fix
+    audited_tip_sha: b4f88c3fe1eb1114965d3281136cf84763111b76
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0114-coverage-fix
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 2
+    patch_positive_count: 0
+    patch_equivalent_count: 2
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: remove_worktree_then_delete_local
+    deletion_prerequisites: [all_required_gates, replacement_evidence_reverified, clean_and_no_open_process]
+
+  - branch: codex/wo-0118
+    audited_tip_sha: 93ed305b563593473ae36ea5730013abb94d1b7b
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0118
+    ancestor_of_frozen_master: false
+    ancestor_of_audited_reset: false
+    graph_unique_commit_count: 3
+    patch_positive_count: 0
+    patch_equivalent_count: 3
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: remove_worktree_then_delete_local
+    deletion_prerequisites: [all_required_gates, replacement_evidence_reverified, clean_and_no_open_process]
+
+  - branch: codex/wo-0124
+    audited_tip_sha: 3d8015f2bf10fa26ea767d70cab586c9e1b324ca
+    locations: [local]
+    worktree_path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0124
+    ancestor_of_frozen_master: true
+    ancestor_of_audited_reset: true
+    graph_unique_commit_count: 0
+    classification: DELETE-AFTER-M1-MERGE
+    preservation_action: remove_worktree_then_delete_local
+    deletion_prerequisites: [all_required_gates, clean_and_no_open_process]
+
+worktrees:
+  - path: C:/Users/amujt/dev/automation-alpaca
+    branch: codex/arch-reset-2026-07-r1
+    audited_clean: tracked_clean_with_two_preserved_untracked_artifacts
+    process_handle_check: PENDING
+    removal_classification: SWITCH_TO_VERIFIED_MASTER
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-lane2-bootstrap
+    branch: codex/lane2-bootstrap
+    audited_clean: true
+    process_handle_check: PENDING
+    removal_classification: DELETE-AFTER-M1-MERGE
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-lane2-core
+    branch: codex/lane2-core
+    audited_clean: true
+    process_handle_check: PENDING
+    removal_classification: DELETE-AFTER-M1-MERGE
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-lane2-docs
+    branch: codex/lane2-docs
+    audited_clean: true
+    process_handle_check: PENDING
+    removal_classification: DELETE-AFTER-M1-MERGE
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-signal-tests-staging
+    branch: codex/signal-tests-staging
+    audited_clean: true
+    process_handle_check: NOT_REQUIRED_WHILE_KEPT
+    removal_classification: KEEP-UNIQUE-PENDING-EXTRACTION
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0114
+    branch: codex/wo-0114
+    audited_clean: true
+    process_handle_check: PENDING
+    removal_classification: DELETE-AFTER-M1-MERGE
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0114-coverage-fix
+    branch: codex/wo-0114-coverage-fix
+    audited_clean: true
+    process_handle_check: PENDING
+    removal_classification: DELETE-AFTER-M1-MERGE
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0118
+    branch: codex/wo-0118
+    audited_clean: true
+    process_handle_check: PENDING
+    removal_classification: DELETE-AFTER-M1-MERGE
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0124
+    branch: codex/wo-0124
+    audited_clean: true
+    process_handle_check: PENDING
+    removal_classification: DELETE-AFTER-M1-MERGE
+  - path: C:/Users/amujt/dev/automation-alpaca/.claude/worktrees/codex-wo-0126
+    branch: codex/wo-0126
+    audited_clean: true
+    process_handle_check: NOT_REQUIRED_WHILE_KEPT
+    removal_classification: KEEP-UNIQUE-PENDING-EXTRACTION
+
+execution_order:
+  - close all five M1 work orders and obtain consolidated independent acceptance
+  - pass exact-final-M1 Python 3.11 and 3.12 CI plus static/full-suite gates
+  - merge through a normal merge commit; never squash
+  - pass Python 3.11 and 3.12 CI on the exact master merge commit
+  - freeze this manifest and stop if any live branch tip differs
+  - preserve or formally remap both pending unique refs
+  - recheck worktree status and open processes or handles
+  - switch the main worktree to verified master without touching preserved artifacts
+  - remove only manifest-approved clean auxiliary worktrees without force
+  - delete eligible remote refs while local fallback refs remain
+  - delete eligible local refs last; graph-nonancestor refs require recorded replacement proof
+  - delete the architecture-reset ref last after its history is an ancestor of verified master
+  - verify final live remote, local-ref, worktree, and status inventories
+
+execution_record:
+  operator: null
+  started_at: null
+  completed_at: null
+  deviations: []
+  final_live_remote_inventory: null
+  final_local_inventory: null
+  final_worktree_inventory: null

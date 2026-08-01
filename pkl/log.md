@@ -63,3 +63,9 @@
   disposable test SQLite/SQL/DDL only under the explicit re-gate; the prohibited R1 DDL result was
   not relied upon. Broker/Paper, credentials, persistent application databases, runtime wiring,
   PR/merge, cleanup, and every later reset slice remain inactive.
+
+- 2026-08-01: Ameen authorized options 1–4 after WO-0145 exact-head CI/review. RESET-WO-02 is now
+  canonical `WO-0146`, limited to pure deterministic venue ownership, effect/attempt ambiguity,
+  immutable closure, and ADR-012 human recovery semantics. The companion branch/worktree manifest
+  is read-only; no ref, worktree, or artifact deletion is eligible until complete M1 independent
+  acceptance, a normal master merge, and exact merged-master Python 3.11/3.12 CI.

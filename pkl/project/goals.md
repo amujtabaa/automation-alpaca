@@ -20,8 +20,8 @@ accepted reset target is a modular monolith with one sequenced writer, one pure 
 one SQLite production store, transactional current state/outbox, and broker-neutral protection and
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
 evidence, not the reset foundation. M0 and the pure, I/O-free `WO-0145` execution-fact kernel are
-closed. No reset implementation work order is active; every later reset slice remains inactive
-until it receives its own explicit human authorization.
+closed. The separately authorized pure venue-ownership/recovery slice is active as `WO-0146`;
+RESET-WO-03 and later slices remain inactive.
 
 ## Rules / facts
 
@@ -34,8 +34,8 @@ until it receives its own explicit human authorization.
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly activated
-  after their predecessor gates. `WO-0145` is `CLOSED`; all later reset slices remain inactive and
-  inherit no authority from its completion.
+  after their predecessor gates. `WO-0145` is `CLOSED`; `WO-0146` alone is `ACTIVE`; later reset
+  slices inherit no authority until the preceding work order independently closes.
 
 ## Rationale
 
@@ -61,3 +61,7 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
 - 2026-08-01: Closed `WO-0145` after its focused, R2, full-coverage, implementation-checkpoint
   dual-version CI, and independent kernel/test review gates. No reset implementation work order is
   active; all later slices remain inactive pending separate explicit human authorization.
+- 2026-08-01: After exact closeout `dfb8ed3` passed independent review and unchanged Python
+  3.11/3.12 CI, Ameen authorized options 1–4. Activated only RESET-WO-02 as `WO-0146`, a pure
+  I/O-free venue-ownership/recovery kernel; produced a read-only retirement inventory whose
+  deletion actions remain gated by complete M1 review, non-squashed merge, and exact-master CI.
