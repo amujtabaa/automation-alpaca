@@ -355,6 +355,67 @@ materialized with a clean committed floor so their pins independently require ch
 rather than passing through the already-carried runtime floor. The post-mutation focused run passed
 all 135 tests with fresh basetemp `.pytest_tmp_wo0145_post_mutation_focused_1`; no mutant remained.
 
+#### Reproducible required mutation matrix
+
+The earlier summary is superseded for reproducibility by the exact matrix below. Every row used
+`BROKER_ADAPTER=mock`, `-q --tb=line -p no:cacheprovider`, the exact node shown, and the exact fresh
+basetemp shown. After the recorded exit-1 failure, the literal edit was inverse-patched and the same
+node was rerun at the `_restored` basetemp with exit 0. No database, broker, runtime, or I/O path ran.
+
+| ID | Exact live production edit | Exact killing node / basetemp | Decisive exit-1 output | Exact inverse / restored result |
+|---|---|---|---|---|
+| a | `position.py:_unchanged_transition quantity_delta=0 -> 1` | `tests/execution_core/test_fill_position.py::test_exact_duplicate_is_noop_and_reports_original_classification`; `.pytest_tmp_wo0145_mut_a_duplicate_count` | `assert 1 == 0` | `1 -> 0`; `_restored`; `1 passed` |
+| b | root `next_raw_quantity = q + delta -> max(q + delta, 0)` | `tests/execution_core/test_fill_position.py::test_direct_sell_overfill_is_exact_not_clamped_rejected_or_flattened`; `.pytest_tmp_wo0145_mut_b_overfill_clamp` | `ValueError: cannot bind structurally divergent position/root state` | restore exact signed sum; `_restored`; `1 passed` |
+| c | insert early reconciliation when root `next_raw_quantity < 0` | `tests/execution_core/test_fill_position.py::test_direct_sell_overfill_is_exact_not_clamped_rejected_or_flattened`; `.pytest_tmp_wo0145_mut_c_reject_negative_root` | expected `APPLIED`, got `RECONCILIATION_REQUIRED` | remove early return; `_restored`; `1 passed` |
+| d1 | root `next_integrity = integrity -> CONSISTENT` | `tests/execution_core/test_fill_position.py::test_covering_buy_establishes_only_long_remainder_basis_and_keeps_latch`; `.pytest_tmp_wo0145_mut_d1_root_integrity_clear` | overfill latch absent | restore `integrity`; `_restored`; `1 passed` |
+| d2 | revision `next_integrity = integrity -> CONSISTENT` | `tests/execution_core/test_fill_position.py::test_applied_revision_preserves_prior_combined_integrity`; `.pytest_tmp_wo0145_mut_d2_revision_integrity_clear` | expected combined integrity, got `CONSISTENT` | restore `integrity`; `_restored`; `1 passed` |
+| e | revision `q + signed_change -> q + revised_quantity.value` | `tests/execution_core/test_fill_position.py::test_revision_substitutes_head_at_original_sequence_without_append`; `.pytest_tmp_wo0145_mut_e_revision_append` | structural quantity/root divergence | restore signed replacement delta; `_restored`; `1 passed` |
+| f | remove both current-head-ID and proven-predecessor guards | `tests/execution_core/test_fill_position.py::test_stale_predecessor_after_deep_chain_is_rejected`; `.pytest_tmp_wo0145_mut_f_accept_stale_predecessor` | stale revision changed quantity/head instead of zero economics | restore both guards; `_restored`; `1 passed` |
+| g | remove `head.authority is not BROKER_AUTHORITATIVE` revision guard | `tests/execution_core/test_fill_position.py::test_human_attested_root_cannot_be_corrected_or_busted` and `tests/execution_core/test_fill_position_stateful.py::test_property_human_attested_root_cannot_be_corrected_or_busted`; `.pytest_tmp_wo0145_mut_m30_human_authority` | both fixtures applied human revisions | restore authority guard; `_restored`; `2 passed` |
+| h | for non-tail revision publish `derive_ordered_basis_candidate(...).cost_basis` | `tests/execution_core/test_fill_position.py::test_non_tail_correction_commits_two_pending_and_slow_candidate_202_not_207`; `.pytest_tmp_wo0145_mut_h_publish_slow_candidate` | expected `APPLIED_BASIS_PENDING`, got `APPLIED_AVAILABLE` | remove candidate publication; `_restored`; `1 passed` |
+| i | revision `next_basis = None -> position.cost_basis` | `tests/execution_core/test_fill_position.py::test_bind_verified_allows_missing_tail_proof_then_revision_becomes_pending`; `.pytest_tmp_wo0145_mut_i2_retain_basis_without_proof` | expected pending authority, got `AVAILABLE` | restore `None`; `_restored`; `1 passed` |
+| j | reject root when `_metadata_accepts(...)` is false | `tests/execution_core/test_fill_position.py::test_incompatible_first_fill_applies_quantity_truth_but_withholds_basis`; `.pytest_tmp_wo0145_mut_j_reject_incompatible_root` | both cases expected `APPLIED`, got reconciliation | remove rejection; `_restored`; `2 passed` |
+| k | call `_fold_ordered_heads(root_heads)` on every non-tail revision | `tests/execution_core/test_fill_position.py::test_fast_non_tail_revision_never_calls_slow_derivation`, `tests/execution_core/test_fill_position.py::test_fast_non_tail_revision_line_events_are_independent_of_history_length`, and `tests/execution_core/test_fill_position_stateful.py::test_property_fast_non_tail_revision_never_invokes_or_exposes_slow_candidate`; `.pytest_tmp_wo0145_mut_m29b_direct_slow_fold` | both sentinels fired; slope grew from `100888` to `4592439` line events | remove call; `_restored`; `3 passed` |
+| l | remove revision-negative overfill OR | `tests/execution_core/test_fill_position_stateful.py::test_property_revision_induced_negative_is_exact_and_permanently_quarantined`; `.pytest_tmp_wo0145_mut_l_revision_negative_quarantine` | negative revision lacked `OVERFILL_QUARANTINE` | restore OR; `_restored`; `1 passed` |
+
+#### Reproducible third-remediation mutation matrix
+
+| ID | Exact live production edit | Exact killing node / basetemp | Decisive exit-1 output | Exact inverse / restored result |
+|---|---|---|---|---|
+| R01 | remove `_apply_root_fill` `seen_facts.contains_root` guard | `tests/execution_core/test_fill_position.py::test_rejected_first_observation_still_reserves_root_fill_key` and `tests/execution_core/test_fill_position_stateful.py::test_property_rejected_root_key_remains_reserved`; `.pytest_tmp_wo0145_mut_m13b_root_guard_both` | both later fills became `APPLIED` | reinsert guard; `_restored`; `2 passed` |
+| R02 | reserve roots only for `BrokerFillFact`, not correction/bust | `tests/execution_core/test_fill_position.py::test_rejected_revision_reserves_root_against_later_fill`; `.pytest_tmp_wo0145_mut_m17_all_fact_roots` | correction and bust roots both admitted later fills | restore unconditional fact-family reservation; `_restored`; `2 passed` |
+| R03 | encode observed roots by `root_fill_id` only | `tests/execution_core/test_fill_position.py::test_seen_fact_commitment_covers_observed_root_reservations`; `.pytest_tmp_wo0145_mut_m18_account_scoping` | different-account key incorrectly returned `True` | restore full `RootFillKey` encoding; `_restored`; `1 passed` |
+| R04 | omit `_observed_roots.commitment` from seen-index v2 commitment | `tests/execution_core/test_fill_position.py::test_seen_fact_commitment_covers_observed_root_reservations`; `.pytest_tmp_wo0145_mut_m14_seen_commitment` | forged/unforged commitments became equal | restore map commitment; `_restored`; `1 passed` |
+| R05 | `SeenFactIndex.__eq__` compares entries only | `tests/execution_core/test_fill_position.py::test_seen_fact_commitment_covers_observed_root_reservations`; `.pytest_tmp_wo0145_mut_m15_seen_equality` | behaviorally different indexes compared equal | restore observed-map equality; `.pytest_tmp_wo0145_mut_m15_seen_equality_restored_2`; `1 passed` |
+| R06 | hydration closure compares entries but not seen-index commitment | `tests/execution_core/test_fill_position.py::test_bind_verified_rejects_unclosed_observed_root_reservations`; `.pytest_tmp_wo0145_mut_m16_hydration_closure` | forged empty reservation map did not raise | restore commitment comparison; `_restored`; `1 passed` |
+| R07 | omit `position.integrity_floor` from incoherent recovery | `tests/execution_core/test_fill_position.py::test_incoherent_snapshot_preserves_position_integrity_floor`; `.pytest_tmp_wo0145_mut_m19_incoherent_floor` | committed overfill disappeared | restore floor union; `_restored`; `1 passed` |
+| R08 | remove all component-binding fallback recovery | `tests/execution_core/test_fill_position.py::test_incoherent_snapshot_recovers_integrity_from_shared_binding`; `.pytest_tmp_wo0145_mut_m20_binding_fallback` | binding-carried overfill disappeared | restore three binding reads; `_restored`; `1 passed` |
+| R09 | remove changed-observation conflict OR | `tests/execution_core/test_fill_position.py::test_incoherent_changed_replay_latches_fact_conflict`; `.pytest_tmp_wo0145_mut_m21_changed_conflict` | `EXECUTION_FACT_CONFLICT` absent | restore exact inequality guard; `_restored`; `1 passed` |
+| R10 | raise conflict for every existing observation | `tests/execution_core/test_fill_position.py::test_incoherent_exact_replay_does_not_invent_fact_conflict`; `.pytest_tmp_wo0145_mut_m22_exact_no_conflict` | exact replay invented conflict | restore payload inequality predicate; `_restored`; `1 passed` |
+| R11 | return incoherent position without ORing `next_integrity` into its floor | `tests/execution_core/test_fill_position.py::test_incoherent_changed_replay_latches_fact_conflict`; `.pytest_tmp_wo0145_mut_m23_durable_floor` | returned floor remained `CONSISTENT` | restore floor promotion; `_restored`; `1 passed` |
+| R12 | skip rejection of retained current-tail proof when position proof is absent | `tests/execution_core/test_fill_position.py::test_bind_verified_rejects_retained_head_proof_without_position_proof`; `.pytest_tmp_wo0145_mut_m24_absent_tail_validation` | invalid hydration did not raise | restore fully-absent check; `_restored`; `1 passed` |
+| R13 | retain prefix-head commitment on a pending root fill | `tests/execution_core/test_fill_position.py::test_pending_root_clears_tail_proof_and_hydrates`; `.pytest_tmp_wo0145_mut_m25_pending_root_proof` | active head commitment remained nonempty | restore conditional empty proof; `_restored`; `1 passed` |
+| R14 | disable pending active-tail proof clearing | `tests/execution_core/test_fill_position.py::test_pending_tail_revision_clears_active_proof_and_hydrates` and `tests/execution_core/test_fill_position.py::test_non_tail_revision_clears_current_tail_proof_and_hydrates`; `.pytest_tmp_wo0145_mut_m26_final_active_tail_clear` | both active tails retained proof | restore active-tail clearing block; `_restored`; `2 passed` |
+| R15 | erase revised historical non-tail proof unconditionally | `tests/execution_core/test_fill_position.py::test_non_tail_revision_clears_current_tail_proof_and_hydrates`; `.pytest_tmp_wo0145_mut_m28_final_historical_proof` | historical prefix commitment became empty | restore head proof preservation; `_restored`; `1 passed` |
+| R16 | omit `head.price` from replayed root-head semantics | `tests/execution_core/test_fill_position.py::test_bind_verified_rejects_root_head_semantics_not_in_seen_replay`; `.pytest_tmp_wo0145_mut_m31_head_semantics` | forged price did not raise | restore price comparison; `_restored`; `1 passed` |
+| R17 | omit tail `prefix_heads_commitment` comparison | `tests/execution_core/test_fill_position.py::test_bind_verified_rejects_tail_head_proof_not_in_seen_replay`; `.pytest_tmp_wo0145_mut_m32_tail_heads_commitment` | forged heads commitment case did not raise | restore comparison; `_restored`; `2 passed` |
+| R18 | omit both tail `prefix_proof_commitment` comparisons | `tests/execution_core/test_fill_position.py::test_bind_verified_rejects_tail_head_proof_not_in_seen_replay`; `.pytest_tmp_wo0145_mut_m33_tail_proof_commitment` | forged proof commitment case did not raise | restore both comparisons; `_restored`; `2 passed` |
+| R19 | reject every priced bust during hydration | `tests/execution_core/test_fill_position.py::test_bind_verified_accepts_priced_bust_and_preserves_compatibility`; `.pytest_tmp_wo0145_mut_m34b_priced_bust_positive` | valid priced bust raised `ValueError` | remove blanket rejection; `_restored`; `1 passed` |
+| R20 | remove `PositionScope` from public `__all__` | `tests/execution_core/test_import_boundary.py::test_public_import_is_side_effect_free_and_complete`; `.pytest_tmp_wo0145_mut_m36_public_exports` | exact declared surface mismatch | reinsert export; `_restored`; `1 passed` |
+
+One exploratory tail-proof mutation—always preserving the revised head proof—remained green because
+the later active-tail clearing block was behaviorally equivalent. It was not counted as killed or
+as acceptance evidence. Instead, the redundant constructor branch was removed permanently and the
+four active/historical proof controls passed at `.pytest_tmp_wo0145_tail_refactor_green_1`.
+
+```yaml
+evidence:
+  phase: REFACTOR
+  command: "Apply each of the 33 exact live edits above, run its exact cache-disabled node selection and basetemp, inverse-patch it, and rerun at the recorded restored basetemp."
+  result: PASS
+  decisive_output: "All 33 counted mutants exited 1 at the named assertion and all exact inverse restorations exited 0; the one behaviorally equivalent survivor was disclosed and adopted as a simplifying refactor rather than counted."
+```
+
 ### Third review stop and standing-authority RED gate — 2026-07-31
 
 Fresh independent semantic, scope, and test reviews then reproduced two further P0 defects. An
@@ -451,18 +512,54 @@ tail must lose both proof fields whenever basis becomes pending, but a revised n
 retain its immutable original-prefix proof because it is no longer the active authority seam. The
 strengthened two-node gate first produced one intended failure and one positive pass at
 `.pytest_tmp_wo0145_proof_refinement_red_1`; the minimum conditional preservation then passed both
-nodes at `.pytest_tmp_wo0145_proof_refinement_green_1`. The integrity-floor fixture was also unbound
-so it now pins the committed floor independently of binding fallback.
+nodes at `.pytest_tmp_wo0145_proof_refinement_green_1`. Live mutation then proved the constructor
+condition duplicated the later active-tail clearing block, so the equivalent branch was removed;
+all four active/historical proof controls passed at `.pytest_tmp_wo0145_tail_refactor_green_1`. The
+integrity-floor fixture was also unbound so it now pins the committed floor independently of binding
+fallback.
 
 ```yaml
 fable_fix:
   symptom: "Pending-proof clearing also erased historical non-tail prefix provenance."
   root_cause: "Revision proof clearing was conditioned only on basis availability, not on whether the revised head remained the active tail."
   evidence: "The strengthened non-tail hydration test failed on erased historical proof while the isolated floor control passed."
-  fix: "Preserve the revised head's proof when it is non-tail; independently clear the current active tail proof while pending."
+  fix: "Preserve revised-head proof in the constructor and use the single later active-tail block to clear proof whenever basis is pending."
   regression_test: "test_non_tail_revision_clears_current_tail_proof_and_hydrates"
   red_green_verified: true
   attempt: 4
+```
+
+### Post-matrix exact-tree verification — 2026-07-31
+
+After all 33 counted mutants were inverse-restored and the equivalent tail-proof branch was
+simplified, the complete focused suite passed all 154 tests at fresh basetemp
+`.pytest_tmp_wo0145_post_matrix_focused_1`. Repository-wide Ruff, mypy over 82 source files, all six
+import contracts, install/version/ledger/PKL/disposition/Fable/scope checks, and the contamination
+guard all passed. Local execution used Python 3.12.13; `py -0p` exposed only a separate Python 3.14
+launcher entry and no local Python 3.11 interpreter.
+
+```yaml
+evidence:
+  phase: GREEN
+  command: ".\\.venv\\Scripts\\python.exe -m pytest -q -p no:cacheprovider tests/execution_core/test_values.py tests/execution_core/test_fill_position.py tests/execution_core/test_fill_position_stateful.py tests/execution_core/test_import_boundary.py --basetemp .pytest_tmp_wo0145_post_matrix_focused_1"
+  result: PASS
+  decisive_output: "154 passed."
+```
+
+```yaml
+evidence:
+  phase: REFACTOR
+  command: "ruff check .; ruff format --check app/execution_core tests/execution_core; mypy app; lint-imports; AI-OS install/version/ledger/PKL/disposition/Fable/scope checks; contamination guard"
+  result: PASS
+  decisive_output: "Ruff clean; 9 files formatted; mypy clean over 82 files; 6 contracts kept and 0 broken; all AI-OS checks and contamination guard passed."
+```
+
+```yaml
+evidence:
+  phase: FULL_SUITE
+  command: ".\\.venv\\Scripts\\python.exe -m pytest -q tests/r2_conformance_oracle.py; .\\.venv\\Scripts\\python.exe -m pytest --cov=app --cov-branch --cov-report=term-missing"
+  result: BLOCKED
+  decisive_output: "Static inspection established that both gates instantiate SQLite; current authority still excludes database execution."
 ```
 
 ## Review, stop, and close-out
@@ -481,14 +578,14 @@ fable_done:
   task: "WO-0145 reset kernel A: value identity and fill-position integrity"
   done_when_results:
     - item: "All focused kernel behavior passes on the exact current tree."
-      status: NOT_MET
-      evidence: "The 153-test gate passed before the tail-proof refinement; its two decisive nodes pass, but the complete focused gate must be rerun."
+      status: MET
+      evidence: "The post-matrix exact tree passed all 154 focused tests."
     - item: "Every required mutation pin is demonstrated failure-capable and restored green with durable evidence."
-      status: NOT_MET
-      evidence: "The new pins remain to run live, and the earlier a-l record must be made exactly reproducible."
+      status: MET
+      evidence: "The exact 33-row matrix records every live edit, node, exit-1 assertion, inverse edit, and restored exit-0 result; one equivalent survivor was disclosed and simplified."
     - item: "Repository-wide static gates pass on the exact current tree."
-      status: NOT_MET
-      evidence: "They passed at checkpoint 00c3394 but must be rerun after third remediation."
+      status: MET
+      evidence: "Repository Ruff, mypy, six import contracts, all applicable AI-OS checks, scope, and contamination guard passed after the matrix."
     - item: "R2 and full branch-coverage suites pass."
       status: BLOCKED
       evidence: "Those gates instantiate SQLite and database execution remains excluded."

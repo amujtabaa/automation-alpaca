@@ -2398,6 +2398,38 @@ def test_pending_root_clears_tail_proof_and_hydrates() -> None:
     )
 
 
+def test_pending_tail_revision_clears_active_proof_and_hydrates() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=10, units=100)
+    correction = _correct(
+        "correction",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=7,
+        units=203,
+        price=_price(203, tick=TickMetadata(tick_units=PriceUnits(2), scale=SCALE)),
+    )
+    pending, _ = _apply_all(fill, correction)
+    head = pending.root_heads.get(fill.root_key)
+    assert head is not None
+    assert pending.position.tail_fold_input is None
+    assert head.prefix_heads_commitment == b""
+    assert head.prefix_proof_commitment == b""
+    position, roots, seen = _unbound_hydration_parts(pending)
+
+    hydrated = ExecutionSnapshot.bind_verified(
+        position,
+        pending.integrity,
+        roots,
+        seen,
+    )
+
+    assert hydrated.position.raw_quantity == 7
+    assert hydrated.position.basis_authority is (
+        BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
+
+
 def test_non_tail_revision_clears_current_tail_proof_and_hydrates() -> None:
     buy = _fill("buy", "buy-root", side=ExecutionSide.BUY, quantity=10, units=100)
     sell = _fill("sell", "sell-root", side=ExecutionSide.SELL, quantity=5, units=120)

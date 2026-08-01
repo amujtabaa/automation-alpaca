@@ -1026,16 +1026,8 @@ def _apply_revision(
         kind=fact.kind,
         quantity=revised_quantity,
         price=revised_price,
-        prefix_heads_commitment=(
-            head.prefix_heads_commitment
-            if not is_tail or next_tail_input is not None
-            else b""
-        ),
-        prefix_proof_commitment=(
-            head.prefix_proof_commitment
-            if not is_tail or next_tail_input is not None
-            else b""
-        ),
+        prefix_heads_commitment=head.prefix_heads_commitment,
+        prefix_proof_commitment=head.prefix_proof_commitment,
     )
     next_roots = root_heads.replace(next_head)
     if pending and position.root_count:
