@@ -175,6 +175,14 @@ and `pytest --cov=app --cov-branch --cov-report=term-missing`. Do not claim R6's
 `target-version=py311` or syntax-string test; the enforceable gate is mypy target 3.11 plus real
 Python 3.11 CI.
 
+### RED evidence — 2026-07-31
+
+The four required test modules were authored before `app/execution_core` existed. Ruff check and
+format check passed. The combined focused command above, using fresh basetemp
+`.pytest_tmp_wo0145_red_root` and disabled cache, failed during collection on exactly three expected
+`ModuleNotFoundError: No module named 'app.execution_core'` errors (`test_values`, deterministic
+fill/position, and stateful fill/position). No application, database, or broker code executed.
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
