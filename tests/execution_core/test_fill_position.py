@@ -27,7 +27,6 @@ from app.execution_core.fills import (
     ExecutionAuthority,
     ExecutionScope,
     ExecutionSide,
-    FactKind,
     PositionScope,
     RootHead,
     SeenFact,
@@ -266,29 +265,16 @@ def _coherently_bound_human_kernel() -> _Kernel:
         units=100,
         scope=scope,
     )
-    head = RootHead(
-        root_key=fill.root_key,
-        original_sequence=0,
-        scope=scope,
+    broker_kernel, _ = _Kernel.flat().apply(fill)
+    broker_head = broker_kernel.root_heads.get(fill.root_key)
+    assert broker_head is not None
+    head = replace(
+        broker_head,
         authority=ExecutionAuthority.HUMAN_ATTESTED,
-        current_source_event_id=fill.key.source_event_id,
-        kind=FactKind.FILL,
-        quantity=Quantity(2),
-        price=_price(100),
     )
     roots = RootHeadIndex(entries=(head,), position_scope=POSITION_SCOPE)
-    position = PositionState.from_materialized(
-        scope=POSITION_SCOPE,
-        raw_quantity=2,
-        basis_authority=BasisAuthority.BASIS_RECONCILIATION_PENDING,
-        cost_basis=None,
-        root_fill_sequence=(fill.root_key,),
-        effective_head_ids=(fill.key.source_event_id,),
-        basis_price_metadata=None,
-        tail_fold_input=None,
-    )
     snapshot = position_module._bind_components(
-        position,
+        replace(broker_kernel.position, _binding=None),
         PositionIntegrity.CONSISTENT,
         roots,
         SeenFactIndex(
@@ -1315,6 +1301,40 @@ def test_revision_rejection_preserves_prior_combined_integrity() -> None:
     )
 
 
+def test_applied_revision_preserves_prior_combined_integrity() -> None:
+    fill = _fill("fill", "root", side=ExecutionSide.BUY, quantity=2, units=100)
+    kernel, _ = _apply_all(fill)
+    changed_replay = replace(fill, price=_price(101))
+    kernel, conflict = kernel.apply(changed_replay)
+    assert conflict.disposition is TransitionDisposition.FACT_CONFLICT
+    root_reuse = _fill(
+        "root-reuse",
+        "root",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=102,
+    )
+    kernel = _assert_reconciliation_no_economics(kernel, root_reuse)
+    expected = (
+        PositionIntegrity.EXECUTION_FACT_CONFLICT
+        | PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    )
+    assert kernel.integrity == expected
+    correction = _correct(
+        "correction",
+        "root",
+        "fill",
+        side=ExecutionSide.BUY,
+        quantity=1,
+        units=101,
+    )
+
+    after, transition = kernel.apply(correction)
+
+    assert transition.disposition is TransitionDisposition.APPLIED
+    assert after.integrity == expected
+
+
 @pytest.mark.parametrize(
     "revision_factory",
     [
@@ -1668,7 +1688,17 @@ def test_bind_verified_rejects_historical_overfill_integrity_reset() -> None:
     recovered, _ = _apply_all(sell, cover)
     assert recovered.position.raw_quantity == 2
     assert recovered.integrity & PositionIntegrity.OVERFILL_QUARANTINE
-    position, roots, seen = _unbound_hydration_parts(recovered)
+    _, roots, seen = _unbound_hydration_parts(recovered)
+    position = PositionState.from_materialized(
+        scope=recovered.position.scope,
+        raw_quantity=recovered.position.raw_quantity,
+        basis_authority=recovered.position.basis_authority,
+        cost_basis=recovered.position.cost_basis,
+        root_fill_sequence=recovered.position.root_fill_sequence,
+        effective_head_ids=recovered.position.effective_head_ids,
+        basis_price_metadata=recovered.position.basis_price_metadata,
+        tail_fold_input=recovered.position.tail_fold_input,
+    )
 
     with pytest.raises(ValueError):
         ExecutionSnapshot.bind_verified(
@@ -1718,11 +1748,11 @@ def test_bind_verified_rejects_reconciliation_integrity_reset() -> None:
     )
     reconciled, transition = _Kernel.flat().apply(invalid)
     assert transition.disposition is TransitionDisposition.RECONCILIATION_REQUIRED
-    position, roots, seen = _unbound_hydration_parts(reconciled)
+    _, roots, seen = _unbound_hydration_parts(reconciled)
 
     with pytest.raises(ValueError):
         ExecutionSnapshot.bind_verified(
-            position,
+            PositionState.flat(POSITION_SCOPE),
             PositionIntegrity.CONSISTENT,
             roots,
             seen,

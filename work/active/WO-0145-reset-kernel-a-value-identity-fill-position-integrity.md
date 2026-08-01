@@ -249,6 +249,33 @@ tail proof, permits a fully absent proof to degrade future revision basis to pen
 supplied integrity to contain both replay-derived restrictions and the state-carried committed
 monotonic floor. The replay is audit-only and does not enter the normal fact-application fast path.
 
+### Actual mutation evidence — 2026-07-31
+
+Every mutation below was applied to production source, run against a fresh cache-disabled basetemp,
+then immediately inverse-patched. The same killing node was rerun green after restoration, and the
+final production diff against GREEN checkpoint `949d861` was empty. Required mutants (a) duplicate
+count and (b) overfill clamp had already been killed and restored before the second stop. This pass
+killed:
+
+- (c) reject negative root truth; (d) clear prior integrity on both root and revision application;
+  (e) append rather than replace revision quantity; (f) accept a stale/non-head predecessor; (g)
+  remove the human-authority revision guard for both correction and bust; (h) publish a slow
+  non-tail candidate; (i) retain prior available basis when the exact tail proof is absent; (j)
+  reject incompatible authoritative root metadata; (k) call the slow fold from the fast non-tail
+  path; and (l) omit revision-induced negative quarantine.
+- Replay/hydration mutants omitting current-root closure, replay-derived overfill/reconciliation
+  restrictions, the committed conflict floor, exact first classification, exact basis metadata,
+  priced-bust metadata, static tail-prefix reconstruction, tail presence/value commitment,
+  integrity-floor commitment, and public human-root exclusion.
+
+Mutation (d) initially survived all deterministic examples at the revision seam but was killed by
+the stateful oracle. While that mutant remained live, a named deterministic
+`test_applied_revision_preserves_prior_combined_integrity` was added and failed red; after restoring
+production it passed green. Historical-overfill and reconciliation hydration fixtures were also
+materialized with a clean committed floor so their pins independently require chronological replay,
+rather than passing through the already-carried runtime floor. The post-mutation focused run passed
+all 135 tests with fresh basetemp `.pytest_tmp_wo0145_post_mutation_focused_1`; no mutant remained.
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
