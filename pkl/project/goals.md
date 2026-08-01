@@ -4,7 +4,7 @@ title: Project Goals and Current Posture
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-31
+last_verified: 2026-08-01
 tags: [goals, posture, roadmap]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md]
 supersedes: []
@@ -19,8 +19,9 @@ Build a narrow, reliable, browser-operated protection/acquisition engine for Alp
 accepted reset target is a modular monolith with one sequenced writer, one pure transition kernel,
 one SQLite production store, transactional current state/outbox, and broker-neutral protection and
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
-evidence, not the reset foundation. M0 and its independent review are closed; current phase is the
-separately activated pure, I/O-free `WO-0145` execution-fact kernel.
+evidence, not the reset foundation. M0 and the pure, I/O-free `WO-0145` execution-fact kernel are
+closed. No reset implementation work order is active; every later reset slice remains inactive
+until it receives its own explicit human authorization.
 
 ## Rules / facts
 
@@ -33,7 +34,8 @@ separately activated pure, I/O-free `WO-0145` execution-fact kernel.
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly activated
-  after their predecessor gates. `WO-0145` is active; later reset slices remain inactive.
+  after their predecessor gates. `WO-0145` is `CLOSED`; all later reset slices remain inactive and
+  inherit no authority from its completion.
 
 ## Rationale
 
@@ -56,3 +58,6 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   the existing application as frozen evidence. No implementation was activated.
 - 2026-07-31: After M0 acceptance and exact-head Python 3.11/3.12 CI, Ameen's explicit implementation
   authority activated only the pure, credential-free first reset slice as `WO-0145`.
+- 2026-08-01: Closed `WO-0145` after its focused, R2, full-coverage, implementation-checkpoint
+  dual-version CI, and independent kernel/test review gates. No reset implementation work order is
+  active; all later slices remain inactive pending separate explicit human authorization.

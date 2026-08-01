@@ -13,7 +13,8 @@ branch: codex/arch-reset-2026-07-r1
 base_sha: 74799d322476117c8403c9ab39a72dffd61a0716
 staged_source: work/queue/ARCH-RESET-2026-07/11-first-work-order.md
 activation_ci: "GitHub Actions run 30678810342 (#673): Python 3.11 job 91311451600 SUCCESS; Python 3.12 job 91311451583 SUCCESS"
-completion_ci: "GitHub Actions run 30699586482 (#675): Python 3.11 job 91368104104 SUCCESS; Python 3.12 job 91368104120 SUCCESS"
+implementation_checkpoint_ci: "GitHub Actions run 30699586482 (#675): Python 3.11 job 91368104104 SUCCESS; Python 3.12 job 91368104120 SUCCESS"
+final_closeout_ci_evidence: "External exact-SHA record only; intentionally not embedded because an evidence-only successor commit would invalidate exact-head proof."
 ---
 
 # WO-0145 — Reset kernel A: value identity and fill-position integrity
@@ -38,6 +39,12 @@ test-only SQLite databases, plus branch push for unchanged Python 3.11/3.12 CI a
 evidence/close-out. The prohibited R1 DDL execution remains inadmissible and supplies no design,
 validity, test, or acceptance evidence here.
 
+After independent closeout review found one unsupported exact-head claim and one stale current-posture
+statement, Ameen explicitly authorized reopening WO-0145 solely to amend its closeout scope, correct
+`pkl/project/goals.md` to record WO-0145 `CLOSED` with all later reset slices inactive, reconcile the
+matching WO/ledger/PKL log, and push the resulting final closeout SHA only for unchanged Python
+3.11/3.12 CI and external exact-head evidence. Nothing else is authorized by that re-gate.
+
 ## Fable gate
 
 ```yaml
@@ -53,10 +60,10 @@ fable_gate:
     - claim: "The kernel can be verified without incumbent runtime, broker, persistence, UI, clock, network, or nondeterministic dependencies."
       status: VERIFIED
       evidence: "The isolated execution_core and import-boundary tests exercise the pure kernel; authorized pytest filesystem, source-read, basetemp, and subprocess activity is disclosed separately."
-    - claim: "The exact final change will pass the database-bearing R2 and full-coverage gates."
+    - claim: "The immutable implementation source/test checkpoint passes the database-bearing R2 and full-coverage gates."
       status: VERIFIED
       evidence: "After explicit test-database authorization, R2 passed 61/61 and the full suite passed 4,767 tests at 93.184302% branch coverage with BROKER_ADAPTER=mock."
-    - claim: "The exact final change will pass Python 3.11 and Python 3.12 branch CI."
+    - claim: "The immutable implementation checkpoint passes Python 3.11 and Python 3.12 branch CI."
       status: VERIFIED
       evidence: "Exact checkpoint 978b0e46 passed GitHub Actions run 30699586482 (#675): Python 3.11 job 91368104104 and Python 3.12 job 91368104120 both succeeded."
   approach: "Use RED-first immutable transition tests, independent arithmetic oracles, live mutation pins, minimum pure implementation, repository static gates, and independent exact-head review."
@@ -124,11 +131,11 @@ allowed_paths:
   - work/completed/keep/WO-0145-reset-kernel-a-value-identity-fill-position-integrity.md
   - work/ledger.jsonl
   - pkl/log.md
+  - pkl/project/goals.md
 activation_only_paths:
   - README.md
   - docs/04_IMPLEMENTATION_PLAN.md
   - docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
-  - pkl/project/goals.md
 forbidden_paths:
   - app/store/**
   - app/events/**
@@ -144,7 +151,9 @@ forbidden_paths:
 
 The ratification index is the sole `docs/adr/**` activation-only exception. Reviewer-owned
 `work/review/REV-0048/**` artifacts follow the cross-model-review contract and are outside the
-implementation diff. The manifest-covered staged work order is never edited.
+implementation diff. The manifest-covered staged work order is never edited. The goals page was
+activation-only until the explicit final closeout re-gate; its sole newly allowed use is the
+current-posture correction described above, and no other activation-only path is widened.
 
 ## Frozen M1A design decisions
 
@@ -857,7 +866,7 @@ database, schema/migration change, or runtime wiring was used. The prohibited R1
 result were not cited, reused, or relied upon for any WO-0145 conclusion. Coverage and basetemp
 artifacts are preserved and remain uncommitted because cleanup and deletion remain excluded.
 
-### Exact checkpoint dual-version CI - 2026-08-01
+### Implementation checkpoint dual-version CI - 2026-08-01
 
 Checkpoint `978b0e46ca50e681f5454ab901b6c3b3b8ceba07` was pushed only to the existing
 `codex/arch-reset-2026-07-r1` branch under the limited CI authorization. GitHub Actions run
@@ -874,6 +883,36 @@ evidence:
   decisive_output: "Run #675 completed success; Python 3.11 and Python 3.12 jobs completed success with every step green."
 ```
 
+### Final closeout reconciliation re-gate - 2026-08-01
+
+Independent review of closeout commit `1f052f77bdd0f4b08f0bc16c1be4103a757c1aac` returned `BLOCK`
+on two governance defects. The P0 was an exact-head completion claim that cited run #675 even though
+that run covered implementation checkpoint `978b0e46`, not the later closeout commit. The P1 was the
+high-authority `pkl/project/goals.md` page still declaring WO-0145 active after the WO, ledger, and
+PKL log declared it closed. The reviewer found no additional kernel/test P0 or P1.
+
+Ameen then explicitly authorized: "Authorize reopening WO-0145 solely to amend its closeout scope
+and correct pkl/project/goals.md to record WO-0145 CLOSED and all later reset slices inactive;
+authorize matching WO/ledger/PKL-log reconciliation and pushing the resulting final closeout SHA
+solely for unchanged Python 3.11/3.12 CI and external exact-head evidence; authorize nothing else."
+This is a docs-only Fable exception; it changes no production or test behavior.
+
+```yaml
+fable_fix:
+  symptom: "The closeout cited implementation-checkpoint CI as exact-head closeout CI while the high-authority goals page still called WO-0145 active."
+  root_cause: "Closeout evidence and current-posture reconciliation were committed after the tested implementation checkpoint without separating immutable implementation evidence from successor closeout evidence, and goals.md remained outside the closeout allowlist."
+  evidence: "Independent review blocked closeout commit 1f052f7 with one P0 exact-head evidence defect and one P1 stale-authority defect; no additional kernel/test P0 or P1 was found."
+  fix: "Relabel run #675 as implementation-checkpoint evidence, allow and correct only goals.md, reconcile the WO/ledger/PKL log, and require external SHA-bound CI/review for the immutable final closeout commit."
+  regression_test: "Exact four-file scope diff plus AI-OS/Fable/ledger/PKL/disposition checks; final-SHA CI and review remain the separate external acceptance gate below."
+  red_green_verified: true
+  attempt: 1
+```
+
+The final closeout SHA cannot name its own Git hash or later workflow run inside itself. Therefore it
+is pushed once, left unchanged, and accepted only when an external record binds that exact SHA to
+successful unchanged Python 3.11/3.12 jobs and an independent closeout verdict with no unresolved
+P0/P1. No post-CI evidence commit is permitted; a red job or blocking review leaves closeout blocked.
+
 ## Review, stop, and close-out
 
 Stop if authority conflicts, representation needs adapter/persistence/query/recovery policy, exact
@@ -882,8 +921,10 @@ red/unavailable, incumbent store/event code is needed, or two P0/three same-root
 
 Completion requires exact scope, every mutation pin demonstrated failure-capable, focused/full
 dual-version green evidence, no incumbent runtime/schema change, and independent blind review with
-no unresolved P0/P1. Then move this WO to `work/completed/keep/`, append exactly one ledger row, and
-record PKL impact in the same commit. No self-acceptance and no merge.
+no unresolved P0/P1. The implementation checkpoint and the documentation-only final closeout SHA
+are separately evidenced: run #675 covers the former, while unchanged dual-version CI and review of
+the latter are bound externally to its immutable hash. Keep exactly one ledger row and record PKL
+impact in the same closeout chain. No self-acceptance, evidence-only successor commit, or merge.
 
 ```yaml
 fable_done:
@@ -901,15 +942,15 @@ fable_done:
     - item: "R2 and full branch-coverage suites pass."
       status: MET
       evidence: "Under the explicit disposable-test-database re-gate, R2 passed 61/61 and the full suite passed 4,767 tests at 93.184302% with BROKER_ADAPTER=mock."
-    - item: "Python 3.11 and Python 3.12 CI pass on the exact head."
+    - item: "Python 3.11 and Python 3.12 CI pass on the immutable implementation checkpoint."
       status: MET
       evidence: "Exact checkpoint 978b0e46 passed GitHub Actions run 30699586482 (#675): Python 3.11 job 91368104104 and Python 3.12 job 91368104120 both completed success."
-    - item: "Independent exact-head review has no unresolved P0 or P1."
+    - item: "Independent implementation and coverage-delta review has no unresolved kernel/test P0 or P1."
       status: MET
       evidence: "The prior exact-source reviewer accepted e73d4ec; the coverage-delta reviewer independently reproduced all nine new cases and the affected 180-test subset, then returned ACCEPT with no unresolved P0/P1."
     - item: "Allowed paths and all broker, credential, database, runtime, merge, deletion, and cleanup exclusions remain respected."
       status: MET
-      evidence: "The tracked diff remains within allowed paths. Only explicitly authorized existing fixtures used disposable test SQLite/SQL/DDL; no persistent application database, broker, credential, account activity, network, runtime wiring, merge, deletion, or cleanup occurred."
+      evidence: "The tracked diff remains within allowed paths, including the explicit one-file goals closeout amendment. Only explicitly authorized existing fixtures used disposable test SQLite/SQL/DDL; no persistent application database, broker, credential, account activity, network, runtime wiring, merge, deletion, or cleanup occurred."
   scope_check:
     allowed_paths_respected: true
     drive_by_edits: false
@@ -918,6 +959,7 @@ fable_done:
   status: VERIFIED
 ```
 
-WO-0145 is closed with no unresolved P0/P1, no production-runtime or schema integration, and no
-reliance on the prohibited R1 DDL result. The next reset slice remains inactive and requires its own
-human authorization.
+WO-0145 implementation and closeout records are `CLOSED`, with no production-runtime or schema
+integration and no reliance on the prohibited R1 DDL result. Final acceptance is conditional on the
+external exact-SHA CI/review record described above. No later reset slice is active; each requires
+its own explicit human authorization.

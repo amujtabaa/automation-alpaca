@@ -52,10 +52,14 @@
   semantic center: exact typed identity; account-scoped source-event and root-fill reservation;
   immutable fill/correct/bust lineage; exact signed position and long-only basis; monotonic overfill,
   reconciliation, and conflict integrity; coherent snapshot commitments; and account-order hydration
-  replay. Sixty-nine live mutation pins were restored green, independent review returned `ACCEPT`
-  with no P0/P1, the focused gate passed 191/191, R2 passed 61/61, and the full suite passed 4,767
-  tests at 93.184302% branch coverage. Exact checkpoint `978b0e46` passed GitHub Actions run
-  30699586482 (#675) on Python 3.11 and 3.12. Existing fixtures used disposable test SQLite/SQL/DDL
-  only under the explicit re-gate; the prohibited R1 DDL result was not relied upon. Broker/Paper,
-  credentials, persistent application databases, runtime wiring, PR/merge, cleanup, and later reset
-  work remain inactive.
+  replay. Sixty-nine live mutation pins were restored green; independent source/test and coverage-
+  delta reviews returned `ACCEPT` with no kernel/test P0/P1; the focused gate passed 191/191; R2
+  passed 61/61; and the full suite passed 4,767 tests at 93.184302% branch coverage. Immutable
+  implementation checkpoint `978b0e46` passed GitHub Actions run 30699586482 (#675) on Python 3.11
+  and 3.12. A final closeout review then found and triggered correction of an unsupported exact-head
+  closeout claim and the stale goals-page activation statement. The resulting immutable final
+  closeout SHA is accepted only through external SHA-bound unchanged CI and independent review;
+  identifiers stay outside the commit to avoid an evidence-only successor. Existing fixtures used
+  disposable test SQLite/SQL/DDL only under the explicit re-gate; the prohibited R1 DDL result was
+  not relied upon. Broker/Paper, credentials, persistent application databases, runtime wiring,
+  PR/merge, cleanup, and every later reset slice remain inactive.
