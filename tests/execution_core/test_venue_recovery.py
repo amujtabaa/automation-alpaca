@@ -895,7 +895,9 @@ def test_release_is_non_economic_leg_local_and_exactly_replayable() -> None:
     assert replay.execution == execution
 
 
-def test_release_refuses_a_mixed_execution_snapshot_without_committed_coverage() -> None:
+def test_release_refuses_a_mixed_execution_snapshot_without_committed_coverage() -> (
+    None
+):
     book, execution = _seed_needs_review()
     attested = _ingest(book, execution, _human_fill())
     mixed_execution = ExecutionSnapshot.flat(POSITION_SCOPE)
@@ -1663,7 +1665,9 @@ def test_status_high_water_does_not_block_the_missing_human_economic_interval() 
     assert attested.book.active_attempt(LEG_A).cumulative_quantity == Quantity(4)
 
 
-def test_status_high_water_does_not_block_the_missing_broker_economic_interval() -> None:
+def test_status_high_water_does_not_block_the_missing_broker_economic_interval() -> (
+    None
+):
     book, execution = _seed_needs_review(capacity=4)
     observed = apply_venue_recovery_input(
         book,
@@ -1805,7 +1809,9 @@ def test_one_broker_root_cannot_corroborate_two_human_intervals() -> None:
         ),
     )
 
-    assert second_mapping.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert (
+        second_mapping.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+    )
     assert second_mapping.quantity_delta == 0
     coverages = second_mapping.book.coverage_for_leg(LEG_A)
     assert coverages[0].broker_corroborated is True
@@ -1861,7 +1867,9 @@ def test_broker_authoritative_overfill_applies_exactly_and_latches_quarantine() 
             leg_key=LEG_A,
             prior_cumulative_quantity=Quantity(0),
             resulting_cumulative_quantity=Quantity(5),
-            fact=_broker_fill("broker-overfill-source", "broker-overfill-root", quantity=5),
+            fact=_broker_fill(
+                "broker-overfill-source", "broker-overfill-root", quantity=5
+            ),
             evidence_digest=b"\x87" * 32,
         ),
     )
@@ -1870,7 +1878,9 @@ def test_broker_authoritative_overfill_applies_exactly_and_latches_quarantine() 
     assert overfill.quantity_delta == 5
     assert overfill.execution.position.raw_quantity == 5
     assert overfill.execution.integrity & PositionIntegrity.OVERFILL_QUARANTINE
-    assert overfill.book.broker_coverage_for_leg(LEG_A)[0].resulting_cumulative_quantity == Quantity(5)
+    assert overfill.book.broker_coverage_for_leg(LEG_A)[
+        0
+    ].resulting_cumulative_quantity == Quantity(5)
 
 
 def test_disjoint_later_broker_interval_enters_the_broker_fact_reducer() -> None:
@@ -1908,7 +1918,9 @@ def test_disjoint_later_broker_interval_enters_the_broker_fact_reducer() -> None
     assert applied.book.reconciliations == ()
 
 
-def test_disjoint_broker_interval_after_terminal_release_applies_and_advances_closure() -> None:
+def test_disjoint_broker_interval_after_terminal_release_applies_and_advances_closure() -> (
+    None
+):
     book, execution, _ = _released_state()
     before_quantity = execution.position.raw_quantity
     command = RecordBrokerFillEvidence(
@@ -2015,7 +2027,9 @@ def test_overlapping_or_mismatching_broker_evidence_requires_reconciliation(
     assert len(reconciled.book.reconciliations) == len(before_reconciliations) + 1
 
 
-def test_unresolved_broker_contradiction_blocks_release_and_parent_finalization() -> None:
+def test_unresolved_broker_contradiction_blocks_release_and_parent_finalization() -> (
+    None
+):
     book, execution = _seed_needs_review(capacity=4)
     attested = _ingest(book, execution, _human_fill(quantity=4, prior=0, resulting=4))
     contradicted = apply_venue_recovery_input(
@@ -2214,7 +2228,9 @@ def test_broker_bust_after_release_applies_and_appends_a_closure_successor() -> 
             leg_key=LEG_A,
             prior_cumulative_quantity=Quantity(0),
             resulting_cumulative_quantity=Quantity(4),
-            fact=_broker_fill("broker-bust-root-source", "broker-bust-root", quantity=4),
+            fact=_broker_fill(
+                "broker-bust-root-source", "broker-bust-root", quantity=4
+            ),
             evidence_digest=b"\x93" * 32,
         ),
     )
@@ -2312,7 +2328,10 @@ def test_bound_revision_of_a_human_root_requires_reconciliation_without_delta() 
     assert refused.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert refused.quantity_delta == 0
     assert refused.execution.position.raw_quantity == 4
-    assert refused.execution.integrity & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    assert (
+        refused.execution.integrity
+        & PositionIntegrity.EXECUTION_RECONCILIATION_REQUIRED
+    )
     assert refused.book._execution_matches(refused.execution, POSITION_SCOPE)
 
 
@@ -2394,7 +2413,9 @@ def test_broker_correction_after_a_tail_bust_reexpands_the_tombstone() -> None:
             leg_key=LEG_A,
             prior_cumulative_quantity=Quantity(0),
             resulting_cumulative_quantity=Quantity(4),
-            fact=_broker_fill("active-bust-root-source", "active-bust-root", quantity=4),
+            fact=_broker_fill(
+                "active-bust-root-source", "active-bust-root", quantity=4
+            ),
             evidence_digest=b"\x9a" * 32,
         ),
     )
@@ -2472,7 +2493,9 @@ def test_exact_revision_replay_does_not_append_a_second_closure() -> None:
             leg_key=LEG_A,
             prior_cumulative_quantity=Quantity(0),
             resulting_cumulative_quantity=Quantity(4),
-            fact=_broker_fill("replayed-bust-root-source", "replayed-bust-root", quantity=4),
+            fact=_broker_fill(
+                "replayed-bust-root-source", "replayed-bust-root", quantity=4
+            ),
             evidence_digest=b"\x9d" * 32,
         ),
     )
@@ -2577,7 +2600,9 @@ def test_account_registry_and_per_symbol_bindings_advance_independently() -> Non
             leg_key=LEG_A,
             prior_cumulative_quantity=Quantity(0),
             resulting_cumulative_quantity=Quantity(2),
-            fact=_broker_fill("aapl-cross-symbol-source", "aapl-cross-symbol-root", quantity=2),
+            fact=_broker_fill(
+                "aapl-cross-symbol-source", "aapl-cross-symbol-root", quantity=2
+            ),
             evidence_digest=b"\xa0" * 32,
         ),
     )
@@ -2793,8 +2818,7 @@ def test_wo0146_red_tail_revision_after_non_tail_mapping_applies_canonical_truth
         ),
     )
     assert (
-        first_corrected.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+        first_corrected.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     )
     assert first_corrected.quantity_delta == -1
 
@@ -2827,8 +2851,7 @@ def test_wo0146_red_tail_revision_after_non_tail_mapping_applies_canonical_truth
     )
 
     assert (
-        tail_corrected.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
+        tail_corrected.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     )
     assert tail_corrected.quantity_delta == 1
     assert tail_corrected.execution.position.raw_quantity == 4
@@ -2838,9 +2861,7 @@ def test_wo0146_red_tail_revision_after_non_tail_mapping_applies_canonical_truth
     assert tail_corrected.book.reconciliations[-1].canonical_applied is True
 
 
-def test_wo0146_red_stale_terminal_after_bust_cannot_block_later_broker_fill() -> (
-    None
-):
+def test_wo0146_red_stale_terminal_after_bust_cannot_block_later_broker_fill() -> None:
     book, execution = _seed_needs_review(capacity=4)
     root_fill = _broker_fill(
         "stale-terminal-root-source",

@@ -217,14 +217,14 @@ def _seed_needs_review(
             input_id=VenueInputId(f"checkpoint-leg-needs-review-{index}"),
             leg_key=leg_key,
             status=VenueAttemptState.NEEDS_REVIEW,
-            observation_id=VenueObservationId(
-                f"checkpoint-review-observation-{index}"
-            ),
+            observation_id=VenueObservationId(f"checkpoint-review-observation-{index}"),
             cumulative_quantity=Quantity(0),
         )
         for index, leg_key in enumerate(leg_keys, start=1)
     )
-    ordered_gates = (effect_gate, *leg_gates) if effect_gate_first else (*leg_gates, effect_gate)
+    ordered_gates = (
+        (effect_gate, *leg_gates) if effect_gate_first else (*leg_gates, effect_gate)
+    )
     for item in ordered_gates:
         book, execution = _apply(book, execution, item)
     return book, execution
@@ -423,7 +423,9 @@ def test_rebuild_rejects_first_human_source_moved_after_release() -> None:
         if isinstance(record.item, IngestHumanAttestedFill)
     )
     release = next(
-        record for record in book.input_records if isinstance(record.item, ReleaseVenueLeg)
+        record
+        for record in book.input_records
+        if isinstance(record.item, ReleaseVenueLeg)
     )
     reordered = list(book.input_records)
     reordered.remove(human)

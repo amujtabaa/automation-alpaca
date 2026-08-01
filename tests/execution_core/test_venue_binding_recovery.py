@@ -186,13 +186,8 @@ def test_cross_symbol_catch_up_after_human_attestation_is_indexed() -> None:
     assert rebound.disposition is VenueRecoveryDisposition.APPLIED
     assert rebound.quantity_delta == 0
     assert rebound.execution.position.scope == msft_scope
-    assert (
-        rebound.execution.position.commitment == stale_msft.position.commitment
-    )
-    assert (
-        rebound.execution.root_heads.commitment
-        == stale_msft.root_heads.commitment
-    )
+    assert rebound.execution.position.commitment == stale_msft.position.commitment
+    assert rebound.execution.root_heads.commitment == stale_msft.root_heads.commitment
     assert (
         rebound.execution.seen_facts.commitment
         == attested.execution.seen_facts.commitment
@@ -272,10 +267,7 @@ def test_same_symbol_independent_truth_catches_up_and_blocks_release() -> None:
     with _forbid_history_materialization():
         caught_up = apply_venue_recovery_input(book, execution, item)
 
-    assert (
-        caught_up.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
-    )
+    assert caught_up.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert caught_up.quantity_delta == 0
     assert caught_up.execution.position.raw_quantity == 2
     assert caught_up.book._execution_matches(
@@ -295,26 +287,12 @@ def test_same_symbol_independent_truth_catches_up_and_blocks_release() -> None:
     assert record.position_scope == recovery_fixtures.POSITION_SCOPE
     assert record.canonical_applied is True
     assert record.reason.strip()
-    assert (
-        record.prior_registry_commitment
-        == execution.seen_facts.commitment
-    )
-    assert (
-        record.resulting_registry_commitment
-        == ahead.seen_facts.commitment
-    )
-    assert (
-        record.prior_position_commitment == execution.position.commitment
-    )
+    assert record.prior_registry_commitment == execution.seen_facts.commitment
+    assert record.resulting_registry_commitment == ahead.seen_facts.commitment
+    assert record.prior_position_commitment == execution.position.commitment
     assert record.resulting_position_commitment == ahead.position.commitment
-    assert (
-        record.prior_root_heads_commitment
-        == execution.root_heads.commitment
-    )
-    assert (
-        record.resulting_root_heads_commitment
-        == ahead.root_heads.commitment
-    )
+    assert record.prior_root_heads_commitment == execution.root_heads.commitment
+    assert record.resulting_root_heads_commitment == ahead.root_heads.commitment
 
     blocked = apply_venue_recovery_input(
         caught_up.book,
@@ -331,16 +309,11 @@ def test_same_symbol_independent_truth_catches_up_and_blocks_release() -> None:
             evidence_reference=EvidenceReference(
                 "unattributed-canonical-truth-release"
             ),
-            closure_id=execution_core.ClosureId(
-                "unattributed-canonical-truth-closure"
-            ),
+            closure_id=execution_core.ClosureId("unattributed-canonical-truth-closure"),
             evidence_digest=b"\xc2" * 32,
         ),
     )
-    assert (
-        blocked.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
-    )
+    assert blocked.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert blocked.book.closure_head(recovery_fixtures.LEG_A) is None
 
 
@@ -382,10 +355,7 @@ def test_catch_up_refuses_non_prefix_and_cross_account_sources() -> None:
             advanced.execution,
             non_prefix_item,
         )
-    assert (
-        non_prefix.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
-    )
+    assert non_prefix.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert non_prefix.book == advanced.book
     assert non_prefix.execution == advanced.execution
 
@@ -431,14 +401,8 @@ def test_recovery_hydration_restores_a_human_root_but_strict_bind_stays_strict()
 
     hydrated = _bind_recovery_snapshot(attested.book, attested.execution)
     assert hydrated.position.commitment == attested.execution.position.commitment
-    assert (
-        hydrated.root_heads.commitment
-        == attested.execution.root_heads.commitment
-    )
-    assert (
-        hydrated.seen_facts.commitment
-        == attested.execution.seen_facts.commitment
-    )
+    assert hydrated.root_heads.commitment == attested.execution.root_heads.commitment
+    assert hydrated.seen_facts.commitment == attested.execution.seen_facts.commitment
     assert hydrated.integrity is attested.execution.integrity
     assert attested.book._execution_matches(
         hydrated,
@@ -475,8 +439,7 @@ def test_recovery_hydration_restores_zero_economic_corroboration() -> None:
         corroborated.execution,
     )
     assert (
-        hydrated.seen_facts.commitment
-        == corroborated.execution.seen_facts.commitment
+        hydrated.seen_facts.commitment == corroborated.execution.seen_facts.commitment
     )
     assert corroborated.book._execution_matches(
         hydrated,
@@ -495,9 +458,7 @@ def test_recovery_hydration_rejects_missing_or_forged_book_provenance() -> None:
 
     missing_human_provenance = _rebuild_book(
         book,
-        execution_registry_commitment=(
-            attested.execution.seen_facts.commitment
-        ),
+        execution_registry_commitment=(attested.execution.seen_facts.commitment),
         execution_bindings=attested.book.execution_bindings,
     )
     with pytest.raises(ValueError, match="provenance|coverage|human"):
@@ -506,9 +467,7 @@ def test_recovery_hydration_rejects_missing_or_forged_book_provenance() -> None:
             attested.execution,
         )
 
-    other_book, other_execution = recovery_fixtures._seed_needs_review(
-        capacity=4
-    )
+    other_book, other_execution = recovery_fixtures._seed_needs_review(capacity=4)
     other_attested = recovery_fixtures._ingest(
         other_book,
         other_execution,
@@ -517,9 +476,7 @@ def test_recovery_hydration_rejects_missing_or_forged_book_provenance() -> None:
     )
     forged_coverage = _rebuild_book(
         other_attested.book,
-        execution_registry_commitment=(
-            attested.execution.seen_facts.commitment
-        ),
+        execution_registry_commitment=(attested.execution.seen_facts.commitment),
         execution_bindings=attested.book.execution_bindings,
     )
     with pytest.raises(ValueError, match="provenance|coverage|root"):
@@ -536,9 +493,7 @@ def test_recovery_hydration_rejects_missing_or_forged_book_provenance() -> None:
     )
     missing_corroboration = _rebuild_book(
         attested.book,
-        execution_registry_commitment=(
-            corroborated.execution.seen_facts.commitment
-        ),
+        execution_registry_commitment=(corroborated.execution.seen_facts.commitment),
         execution_bindings=corroborated.book.execution_bindings,
     )
     with pytest.raises(ValueError, match="provenance|corroboration|broker"):

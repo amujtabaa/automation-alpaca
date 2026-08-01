@@ -114,8 +114,7 @@ def _execution_head_matches_fact(head: object, fact: object) -> bool:
         return head.quantity == fact.quantity and head.price == fact.price
     if isinstance(fact, BrokerTradeCorrectFact):
         return (
-            head.quantity == fact.revised_quantity
-            and head.price == fact.revised_price
+            head.quantity == fact.revised_quantity and head.price == fact.revised_price
         )
     return head.quantity.value == 0 and head.price == fact.reported_price
 
@@ -562,7 +561,9 @@ class ExecutionRegistryReconciliationRecord:
         _require("input_id", self.input_id, VenueInputId)
         _require("position_scope", self.position_scope, PositionScope)
         if type(self.prior_registry_count) is not int or self.prior_registry_count < 0:
-            raise ValueError("prior_registry_count must be a non-negative exact integer")
+            raise ValueError(
+                "prior_registry_count must be a non-negative exact integer"
+            )
         if (
             type(self.resulting_registry_count) is not int
             or self.resulting_registry_count <= self.prior_registry_count
@@ -580,7 +581,9 @@ class ExecutionRegistryReconciliationRecord:
         ):
             _require_digest(name, getattr(self, name))
         if type(self.prior_integrity_bits) is not int or self.prior_integrity_bits < 0:
-            raise ValueError("prior_integrity_bits must be a non-negative exact integer")
+            raise ValueError(
+                "prior_integrity_bits must be a non-negative exact integer"
+            )
         if (
             type(self.resulting_integrity_bits) is not int
             or self.resulting_integrity_bits < 0
@@ -620,9 +623,7 @@ class VenueRecoveryBook:
     input_records: tuple[VenueInputRecord, ...] = ()
     execution_registry_commitment: bytes | None = None
     execution_bindings: tuple[VenueExecutionBinding, ...] = ()
-    execution_reconciliations: tuple[
-        ExecutionRegistryReconciliationRecord, ...
-    ] = ()
+    execution_reconciliations: tuple[ExecutionRegistryReconciliationRecord, ...] = ()
     human_coverages: tuple[HumanCoverage, ...] = ()
     broker_coverages: tuple[_BrokerCoverage, ...] = ()
     reconciliations: tuple[
@@ -707,7 +708,9 @@ class VenueRecoveryBook:
             )
             for entry in self.reconciliations
         ):
-            raise TypeError("reconciliation entries must be typed reconciliation records")
+            raise TypeError(
+                "reconciliation entries must be typed reconciliation records"
+            )
 
     @staticmethod
     def _require_entries(
@@ -997,9 +1000,7 @@ class VenueRecoveryBook:
                 "closure.observation_id", closure.observation_id, VenueObservationId
             )
         if closure.source_event_id is not None:
-            _require(
-                "closure.source_event_id", closure.source_event_id, SourceEventId
-            )
+            _require("closure.source_event_id", closure.source_event_id, SourceEventId)
         if closure.broker_terminal_state is not None:
             _require(
                 "closure.broker_terminal_state",
@@ -1032,8 +1033,7 @@ class VenueRecoveryBook:
             if (
                 closure.source_event_id is None
                 or closure.observation_id is not None
-                or closure.broker_terminal_state
-                not in _BROKER_TERMINAL_ATTEMPT_STATES
+                or closure.broker_terminal_state not in _BROKER_TERMINAL_ATTEMPT_STATES
                 or closure.actor is not None
                 or closure.reason is not None
                 or closure.evidence_digest is None
@@ -1161,21 +1161,33 @@ class VenueRecoveryBook:
                     raise ValueError("effect lifecycle cannot contain two requests")
                 lifecycle_states[item.effect_id] = BrokerEffectState.REQUESTED
             elif isinstance(item, CancelBeforeDispatch):
-                if lifecycle_states.get(item.effect_id) is not BrokerEffectState.REQUESTED:
-                    raise ValueError("cancel lifecycle input has no requested predecessor")
+                if (
+                    lifecycle_states.get(item.effect_id)
+                    is not BrokerEffectState.REQUESTED
+                ):
+                    raise ValueError(
+                        "cancel lifecycle input has no requested predecessor"
+                    )
                 lifecycle_states[item.effect_id] = (
                     BrokerEffectState.CANCELED_BEFORE_DISPATCH
                 )
             elif isinstance(item, RecordDispatchClaim):
-                if lifecycle_states.get(item.effect_id) is not BrokerEffectState.REQUESTED:
-                    raise ValueError("claim lifecycle input has no requested predecessor")
+                if (
+                    lifecycle_states.get(item.effect_id)
+                    is not BrokerEffectState.REQUESTED
+                ):
+                    raise ValueError(
+                        "claim lifecycle input has no requested predecessor"
+                    )
                 lifecycle_states[item.effect_id] = BrokerEffectState.DISPATCH_CLAIMED
             elif isinstance(item, RecoverClaimedEffect):
                 if (
                     lifecycle_states.get(item.effect_id)
                     is not BrokerEffectState.DISPATCH_CLAIMED
                 ):
-                    raise ValueError("recovery lifecycle input has no claimed predecessor")
+                    raise ValueError(
+                        "recovery lifecycle input has no claimed predecessor"
+                    )
                 lifecycle_states[item.effect_id] = BrokerEffectState.OUTCOME_UNKNOWN
             elif isinstance(item, RecordTransportOutcome):
                 current = lifecycle_states.get(item.effect_id)
@@ -1192,7 +1204,9 @@ class VenueRecoveryBook:
                     },
                 }
                 if current is None or item.state not in allowed.get(current, set()):
-                    raise ValueError("transport lifecycle input has no valid predecessor")
+                    raise ValueError(
+                        "transport lifecycle input has no valid predecessor"
+                    )
                 lifecycle_states[item.effect_id] = item.state
         for effect in effects.values():
             expected_state = (
@@ -1249,7 +1263,9 @@ class VenueRecoveryBook:
                     BrokerEffectState.DISPATCH_CLAIMED
                 )
             elif isinstance(item, RecoverClaimedEffect):
-                ordered_effect_states[item.effect_id] = BrokerEffectState.OUTCOME_UNKNOWN
+                ordered_effect_states[item.effect_id] = (
+                    BrokerEffectState.OUTCOME_UNKNOWN
+                )
             elif isinstance(item, RecordTransportOutcome):
                 ordered_effect_states[item.effect_id] = item.state
             elif isinstance(item, DiscoverVenueLeg):
@@ -1307,9 +1323,7 @@ class VenueRecoveryBook:
                         "operator release requires prior ordered review authority"
                     )
                 ordered_closed_legs.add(item.leg_key)
-                ordered_leg_states[item.leg_key] = (
-                    VenueAttemptState.OPERATOR_RECONCILED
-                )
+                ordered_leg_states[item.leg_key] = VenueAttemptState.OPERATOR_RECONCILED
 
         active_by_leg = {attempt.leg_key: attempt for attempt in self.active_attempts}
         for owner in owners.values():
@@ -1424,8 +1438,7 @@ class VenueRecoveryBook:
                     item.leg_key == closure.leg_key
                     and item.status is closure.status
                     and item.observation_id == closure.observation_id
-                    and item.cumulative_quantity
-                    == closure.observed_cumulative_quantity
+                    and item.cumulative_quantity == closure.observed_cumulative_quantity
                     and item.closure_id == closure.closure_id
                     and item.evidence_reference == closure.evidence_reference
                     and item.input_id == closure.source_input_id
@@ -1530,8 +1543,7 @@ class VenueRecoveryBook:
                 != registry_record.resulting_position_commitment
                 or execution.root_heads.commitment
                 != registry_record.resulting_root_heads_commitment
-                or execution.integrity.value
-                != registry_record.resulting_integrity_bits
+                or execution.integrity.value != registry_record.resulting_integrity_bits
                 or not execution.seen_facts.has_prefix(
                     registry_record.prior_registry_count,
                     registry_record.prior_registry_commitment,
@@ -1615,7 +1627,9 @@ class VenueRecoveryBook:
                 human_coverage.fact.resulting_cumulative_quantity.value
                 > effects[human_coverage.effect_id].scope.quantity.value
             ):
-                raise ValueError("human coverage cannot exceed immutable effect capacity")
+                raise ValueError(
+                    "human coverage cannot exceed immutable effect capacity"
+                )
         for broker_coverage in self.broker_coverages:
             validate_coverage_binding(broker_coverage)
         for human_coverage in self.human_coverages:
@@ -1647,9 +1661,7 @@ class VenueRecoveryBook:
                     raise ValueError(
                         "broker corroboration must match committed human economics"
                     )
-                broker_source = input_by_id.get(
-                    human_coverage.broker_source_input_id
-                )
+                broker_source = input_by_id.get(human_coverage.broker_source_input_id)
                 if not (
                     isinstance(broker_source, RecordBrokerFillEvidence)
                     and broker_source.effect_id == human_coverage.effect_id
@@ -1672,12 +1684,12 @@ class VenueRecoveryBook:
                 and root_source.effect_id == broker_coverage.effect_id
                 and root_source.leg_key == broker_coverage.leg_key
                 and root_source.prior_cumulative_quantity
-                    == broker_coverage.prior_cumulative_quantity
+                == broker_coverage.prior_cumulative_quantity
                 and root_source.resulting_cumulative_quantity.value
-                    == (
-                        broker_coverage.prior_cumulative_quantity.value
-                        + broker_coverage.fact.quantity.value
-                    )
+                == (
+                    broker_coverage.prior_cumulative_quantity.value
+                    + broker_coverage.fact.quantity.value
+                )
                 and root_source.fact == broker_coverage.fact
                 and root_source.evidence_digest == broker_coverage.evidence_digest
             ):
@@ -1708,17 +1720,14 @@ class VenueRecoveryBook:
                     isinstance(revision_source, RecordBrokerRevisionEvidence)
                     and revision_source.effect_id == broker_coverage.effect_id
                     and revision_source.leg_key == broker_coverage.leg_key
-                    and revision_source.fact.root_key
-                    == broker_coverage.fact.root_key
+                    and revision_source.fact.root_key == broker_coverage.fact.root_key
                     and revision_source.fact.predecessor_source_event_id
                     == predecessor_source_event_id
                 ):
                     raise ValueError(
                         "broker revision history requires exact lineage provenance"
                     )
-                predecessor_source_event_id = (
-                    revision_source.fact.key.source_event_id
-                )
+                predecessor_source_event_id = revision_source.fact.key.source_event_id
             if broker_coverage.head_fact == broker_coverage.fact:
                 if (
                     broker_coverage.head_evidence_digest
@@ -1732,9 +1741,7 @@ class VenueRecoveryBook:
                         "unrevised broker coverage must retain exact root evidence"
                     )
             else:
-                head_source = input_by_id.get(
-                    broker_coverage.head_source_input_id
-                )
+                head_source = input_by_id.get(broker_coverage.head_source_input_id)
                 if not (
                     isinstance(head_source, RecordBrokerRevisionEvidence)
                     and head_source.effect_id == broker_coverage.effect_id
@@ -1766,9 +1773,7 @@ class VenueRecoveryBook:
                         "broker coverage mapping flag must match revision reconciliation"
                     )
 
-        intervals: dict[
-            VenueLegKey, list[tuple[int, int, EffectId, bool]]
-        ] = {}
+        intervals: dict[VenueLegKey, list[tuple[int, int, EffectId, bool]]] = {}
         for human_coverage in self.human_coverages:
             intervals.setdefault(human_coverage.leg_key, []).append(
                 (
@@ -1977,7 +1982,10 @@ class VenueRecoveryBook:
                     raise ValueError(
                         "operator-reconciled effect requires closed acceptance"
                     )
-                if binding is None or binding.integrity_bits & unresolved_execution.value:
+                if (
+                    binding is None
+                    or binding.integrity_bits & unresolved_execution.value
+                ):
                     raise ValueError(
                         "operator-reconciled effect requires clean execution integrity"
                     )
@@ -2053,8 +2061,7 @@ class VenueRecoveryBook:
         """Return whether execution is the exact bound account/symbol high-water."""
 
         if (
-            self.execution_registry_commitment
-            != execution.seen_facts.commitment
+            self.execution_registry_commitment != execution.seen_facts.commitment
             or not self._execution_symbol_matches(execution, position_scope)
         ):
             return False
@@ -2126,6 +2133,7 @@ class VenueRecoveryBook:
         return next(
             (item for item in self.input_records if item.input_id == input_id), None
         )
+
 
 def _rebuild_book(book: VenueRecoveryBook, **changes: Any) -> VenueRecoveryBook:
     """Rebuild one verified checkpoint; never exposed on the public book object."""
@@ -2314,9 +2322,7 @@ def _book_close_attempt(
         reason=reason,
         evidence_digest=evidence_digest,
     )
-    attempts = tuple(
-        item for item in book.active_attempts if item.leg_key != leg_key
-    )
+    attempts = tuple(item for item in book.active_attempts if item.leg_key != leg_key)
     heads = tuple(item for item in book.closure_heads if item.leg_key != leg_key)
     changes: dict[str, Any] = {
         "active_attempts": attempts,
@@ -2569,9 +2575,7 @@ def _observe_status(
                 leg_key=item.leg_key,
                 closure_id=item.closure_id,
                 status=item.status,
-                cumulative_quantity=Quantity(
-                    _covered_cumulative(book, item.leg_key)
-                ),
+                cumulative_quantity=Quantity(_covered_cumulative(book, item.leg_key)),
                 observed_cumulative_quantity=item.cumulative_quantity,
                 evidence_reference=item.evidence_reference,
                 kind=VenueClosureKind.BROKER_TERMINAL,
@@ -2600,10 +2604,7 @@ def _observe_status(
 
     if head is None or not is_terminal:
         return None
-    if (
-        item.cumulative_quantity.value
-        <= head.observed_cumulative_quantity.value
-    ):
+    if item.cumulative_quantity.value <= head.observed_cumulative_quantity.value:
         return None
     assert item.closure_id is not None
     assert item.evidence_reference is not None
@@ -2670,8 +2671,7 @@ def _maybe_finalize_effect(
         ) and covered_cumulative != effect.scope.quantity.value:
             return book
     return _book_replace_effect(
-        book,
-        replace(effect, state=BrokerEffectState.OPERATOR_RECONCILED)
+        book, replace(effect, state=BrokerEffectState.OPERATOR_RECONCILED)
     )
 
 

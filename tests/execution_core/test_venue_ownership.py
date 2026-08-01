@@ -353,9 +353,7 @@ def test_late_acceptance_invalidates_closed_never_dispatched_proof() -> None:
     assert late.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert effect.acceptance_set_state is AcceptanceSetState.INVALIDATED
     assert effect.acceptance_proof == original_proof
-    assert effect.contradiction_evidence[-1].leg_key == _leg(
-        "late-never-dispatched"
-    )
+    assert effect.contradiction_evidence[-1].leg_key == _leg("late-never-dispatched")
     assert effect.contradiction_evidence[-1].observation_id == VenueObservationId(
         "acceptance-late-never-dispatched"
     )
@@ -746,9 +744,7 @@ def test_terminal_leg_compacts_to_single_ordinal_one_closure_root() -> None:
     )
 
 
-def test_later_terminal_status_appends_immediate_same_owner_closure_successor() -> (
-    None
-):
+def test_later_terminal_status_appends_immediate_same_owner_closure_successor() -> None:
     book, request = _acknowledged()
     root = _apply(
         _discover(book, request, "chain").book, _terminal_observation("chain")

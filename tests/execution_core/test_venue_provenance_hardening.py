@@ -116,10 +116,7 @@ def _post_final_fill_conflict():
         finalized.execution,
         conflict,
     )
-    assert (
-        reconciled.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
-    )
+    assert reconciled.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert reconciled.book.reconciliations
     return reconciled
 
@@ -142,10 +139,7 @@ def _post_final_registry_reconciliation():
             source_execution=ahead,
         ),
     )
-    assert (
-        caught_up.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
-    )
+    assert caught_up.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert any(
         not record.attribution_resolved
         for record in caught_up.book.execution_reconciliations
@@ -257,13 +251,9 @@ def _post_final_unresolved_mapping():
             ),
         ),
     )
-    assert (
-        unresolved.disposition
-        is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
-    )
+    assert unresolved.disposition is VenueRecoveryDisposition.RECONCILIATION_REQUIRED
     assert any(
-        not coverage.mapping_exact
-        for coverage in unresolved.book.broker_coverages
+        not coverage.mapping_exact for coverage in unresolved.book.broker_coverages
     )
     return unresolved
 
@@ -293,9 +283,7 @@ def test_checkpoint_rejects_human_input_after_coverage_is_stripped() -> None:
         _rebuild_book(
             attested.book,
             human_coverages=(),
-            active_attempts=(
-                replace(attempt, cumulative_quantity=Quantity(0)),
-            ),
+            active_attempts=(replace(attempt, cumulative_quantity=Quantity(0)),),
         )
 
 
@@ -327,10 +315,7 @@ def test_direct_source_plus_semantic_alias_remains_a_valid_checkpoint() -> None:
     rebuilt = _rebuild_book(aliased.book)
 
     assert rebuilt == aliased.book
-    assert (
-        rebuilt.broker_coverages[0].root_source_input_id
-        == direct_command.input_id
-    )
+    assert rebuilt.broker_coverages[0].root_source_input_id == direct_command.input_id
 
 
 def test_checkpoint_rejects_changed_fill_input_after_reconciliation_is_stripped() -> (
@@ -367,9 +352,7 @@ def test_checkpoint_rejects_changed_fill_input_after_reconciliation_is_stripped(
         _rebuild_book(changed.book, reconciliations=())
 
 
-def test_checkpoint_rejects_catch_up_input_after_registry_outcome_is_stripped() -> (
-    None
-):
+def test_checkpoint_rejects_catch_up_input_after_registry_outcome_is_stripped() -> None:
     caught_up = _post_final_registry_reconciliation()
 
     with pytest.raises(ValueError, match="outcome|provenance|recovery input"):

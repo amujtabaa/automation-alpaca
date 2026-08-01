@@ -195,9 +195,7 @@ class RecordBrokerRevisionEvidence:
         _require_exact_type("input_id", self.input_id, VenueInputId)
         _require_exact_type("effect_id", self.effect_id, EffectId)
         _require_exact_type("leg_key", self.leg_key, VenueLegKey)
-        _require_exact_type(
-            "prior_root_quantity", self.prior_root_quantity, Quantity
-        )
+        _require_exact_type("prior_root_quantity", self.prior_root_quantity, Quantity)
         _require_exact_type(
             "prior_venue_cumulative_quantity",
             self.prior_venue_cumulative_quantity,
@@ -209,7 +207,9 @@ class RecordBrokerRevisionEvidence:
             Quantity,
         )
         if not isinstance(self.fact, (BrokerTradeCorrectFact, BrokerTradeBustFact)):
-            raise TypeError("fact must be BrokerTradeCorrectFact or BrokerTradeBustFact")
+            raise TypeError(
+                "fact must be BrokerTradeCorrectFact or BrokerTradeBustFact"
+            )
         _require_digest(self.evidence_digest)
         if (self.closure_id is None) != (self.evidence_reference is None):
             raise ValueError(
@@ -379,9 +379,7 @@ class RevisionReconciliationRecord:
         _require_exact_type("input_id", self.input_id, VenueInputId)
         _require_exact_type("effect_id", self.effect_id, EffectId)
         _require_exact_type("leg_key", self.leg_key, VenueLegKey)
-        _require_exact_type(
-            "prior_root_quantity", self.prior_root_quantity, Quantity
-        )
+        _require_exact_type("prior_root_quantity", self.prior_root_quantity, Quantity)
         _require_exact_type(
             "prior_venue_cumulative_quantity",
             self.prior_venue_cumulative_quantity,
@@ -393,7 +391,9 @@ class RevisionReconciliationRecord:
             Quantity,
         )
         if not isinstance(self.fact, (BrokerTradeCorrectFact, BrokerTradeBustFact)):
-            raise TypeError("fact must be BrokerTradeCorrectFact or BrokerTradeBustFact")
+            raise TypeError(
+                "fact must be BrokerTradeCorrectFact or BrokerTradeBustFact"
+            )
         _require_digest(self.evidence_digest)
         if type(self.canonical_applied) is not bool:
             raise TypeError("canonical_applied must be bool")
@@ -499,8 +499,7 @@ def _leg_economic_high_water(
                 if coverage.leg_key == leg_key
             ),
             *(
-                coverage.prior_cumulative_quantity.value
-                + coverage.fact.quantity.value
+                coverage.prior_cumulative_quantity.value + coverage.fact.quantity.value
                 for coverage in book.broker_coverages
                 if coverage.leg_key == leg_key
             ),
@@ -592,9 +591,8 @@ def _has_unattributed_broker_root(
         for coverage in book.broker_coverages
         if coverage.fact.scope == fact.scope
     }
-    return (
-        execution.root_heads.broker_root_count(fact.scope)
-        > len(represented_broker_roots)
+    return execution.root_heads.broker_root_count(fact.scope) > len(
+        represented_broker_roots
     )
 
 
@@ -1074,9 +1072,7 @@ def _apply_broker_evidence(
             closure_id=item.closure_id,
             status=closure_head.status,
             cumulative_quantity=item.resulting_cumulative_quantity,
-            observed_cumulative_quantity=(
-                closure_head.observed_cumulative_quantity
-            ),
+            observed_cumulative_quantity=(closure_head.observed_cumulative_quantity),
             evidence_reference=item.evidence_reference,
             kind=VenueClosureKind.BROKER_ECONOMIC,
             source_event_id=item.fact.key.source_event_id,
@@ -1084,9 +1080,7 @@ def _apply_broker_evidence(
             source_input=item,
             execution=next_execution,
             evidence_digest=item.evidence_digest,
-            evolution_changes={
-                "broker_coverages": book.broker_coverages + (coverage,)
-            },
+            evolution_changes={"broker_coverages": book.broker_coverages + (coverage,)},
         )
     return _transition(
         next_book,
@@ -1149,9 +1143,7 @@ def _revision_reconciliation(
         leg_key=item.leg_key,
         prior_root_quantity=item.prior_root_quantity,
         prior_venue_cumulative_quantity=item.prior_venue_cumulative_quantity,
-        resulting_venue_cumulative_quantity=(
-            item.resulting_venue_cumulative_quantity
-        ),
+        resulting_venue_cumulative_quantity=(item.resulting_venue_cumulative_quantity),
         fact=item.fact,
         evidence_digest=item.evidence_digest,
         canonical_applied=canonical_applied,
@@ -1285,8 +1277,7 @@ def _apply_broker_revision_evidence(
         + item.resulting_venue_cumulative_quantity.value
     )
     if (
-        item.resulting_venue_cumulative_quantity.value
-        > effect.scope.quantity.value
+        item.resulting_venue_cumulative_quantity.value > effect.scope.quantity.value
         or prospective_effect_total > effect.scope.quantity.value
     ):
         next_execution = _latch_execution_integrity(
@@ -1309,8 +1300,7 @@ def _apply_broker_revision_evidence(
     exact_mapping = (
         prior_head is not None
         and prior_head.authority is ExecutionAuthority.BROKER_AUTHORITATIVE
-        and prior_head.current_source_event_id
-        == item.fact.predecessor_source_event_id
+        and prior_head.current_source_event_id == item.fact.predecessor_source_event_id
         and prior_head.quantity == item.prior_root_quantity
         and item.prior_venue_cumulative_quantity.value == current_total
         and coverage is not None
@@ -1413,9 +1403,7 @@ def _apply_broker_revision_evidence(
             closure_id=item.closure_id,
             status=closure_head.status,
             cumulative_quantity=item.resulting_venue_cumulative_quantity,
-            observed_cumulative_quantity=(
-                closure_head.observed_cumulative_quantity
-            ),
+            observed_cumulative_quantity=(closure_head.observed_cumulative_quantity),
             evidence_reference=item.evidence_reference,
             kind=VenueClosureKind.BROKER_ECONOMIC,
             source_event_id=item.fact.key.source_event_id,
@@ -1565,14 +1553,11 @@ def bind_venue_execution_snapshot(
     if position.effective_head_ids != root_heads._head_sequence.to_tuple():
         raise ValueError("position head IDs and root index disagree")
 
-    authorized_human_facts = tuple(
-        coverage.fact for coverage in book.human_coverages
-    )
+    authorized_human_facts = tuple(coverage.fact for coverage in book.human_coverages)
     authorized_corroborations = tuple(
         cast(BrokerFillFact, coverage.broker_fact)
         for coverage in book.human_coverages
-        if coverage.broker_corroborated
-        and coverage.broker_fact is not None
+        if coverage.broker_corroborated and coverage.broker_fact is not None
     )
     replayed = _replay_venue_hydration_snapshot(
         position.scope,
