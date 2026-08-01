@@ -80,6 +80,31 @@ fable_gate:
   rollback: "Revert only WO-0146 commits while preserving WO-0145, the retirement manifest, all worktrees, and preserved artifacts."
 ```
 
+## Split-review stop and bounded re-gate (2026-08-01)
+
+The first-pass green result is superseded. Because `venue.py` crossed the roadmap's approximate
+800-line split-review threshold, hostile Saboteur, New-Hire, and Safety/Security passes re-derived
+the slice and reproduced four P0 classes plus multiple P1s. Commit `865ebc2` freezes 20 failing
+counterexamples; its tests pass Ruff/diff checks but are intentionally RED. Work stopped before any
+WO-03 activation, closeout, PR, merge, runtime, database, broker, or retirement action.
+
+The P0s were: unreserved matching broker evidence could later apply a second delta; a forged public
+checkpoint could omit claim/provenance and admit human authority; a released leg could accept later
+human economics; and an `INVALIDATED` parent did not permanently refuse release.
+
+The user's standing authorization for in-flight findings and options 1-4 re-gates only bounded
+WO-0146 remediation; it does not waive the stop, broaden paths, activate WO-03, or authorize any
+runtime/schema/broker/credential/merge/deletion action. Remediation must reserve corroborating facts
+at zero delta; deeply validate claim/scope/owner/closure/input/coverage checkpoint coherence; require
+an active `NEEDS_REVIEW` leg for human fills; block invalidated/released paths; remove forged operator
+status ingestion; enforce release cumulative/capacity/terminal parity; finalize only after all legs
+and the parent close; preserve replay/conflict integrity and occurrence uniqueness; use one pending
+absence representation and valid closure successors; and bind acceptance proof to exact scope,
+occurrence, claim, and immutable evidence. Adapter certification remains a later typed input.
+
+No prior green output is admissible. Fresh focused/static/mutation evidence and a new independent
+exact-head `REV-0048` result are mandatory.
+
 ## Frozen semantic contract
 
 - Add exact generation/effect/occurrence/client/claim/closure/evidence identities and immutable full
