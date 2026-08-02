@@ -625,7 +625,7 @@ as recorded below. The first repository-coverage attempt failed the unchanged fl
 diagnostic only. Independent exact-head review and dual-version CI remain mandatory; no earlier
 artifact satisfies this fourteenth gate.
 
-## Fourteenth-gate mutation completion and coverage remediation (2026-08-01)
+## Fourteenth-gate mutation completion and coverage remediation (2026-08-01--2026-08-02)
 
 Exact production checkpoint `bd5943768ab41592c6445892248ade86f1a79bbf` survived nine
 coordinated live mutation groups. Every mutation was restored before proceeding:
@@ -698,6 +698,76 @@ design, validation, coverage, or acceptance evidence.
 The exact final checkpoint still requires reviewer-owned
 `REV-0048/result-addendum-02.md` with no unresolved P0/P1 and unchanged Python 3.11/3.12 exact-head
 CI. Until both gates pass, WO-0146 remains active and WO-0147 remains inactive.
+
+## Public-command boundary P1 stop and fifteenth bounded re-gate (2026-08-02)
+
+Independent exact-head review of `1de7173bd01dfa35a39da4c8683eaff338c5f2e0` reproduced one
+additional P1 exact-boundary/read-order defect before writing an acceptance artifact. The public
+`apply_venue_recovery_input` entrypoint read `item.input_id` and dispatched through `isinstance`
+before proving that the outer command was one exact admitted venue/recovery input type. A
+`RequestedEffect` subclass with an armed `input_id` getter therefore executed subclass behavior
+before rejection. Unique mutating paths eventually failed closed in input-proof construction and no
+unsafe state acceptance or quantity change was reproduced, but early refusal/reconciliation paths
+could return a transition for a subclass instead of rejecting the noncanonical command.
+
+A failure-first public-boundary pin reproduced the premature property read with
+`AssertionError: input_id read before exact command type check`. The bounded fix centralizes the
+exact admitted-command set already used by canonical identity and applies that guard immediately
+after exact book/execution validation, before any command property, dispatch, replay, equality,
+commitment, or economic access. The new pin then passes with `TypeError` before the armed getter.
+
+A separate evidence-integrity pass found no numerical, hash, scope, artifact, or restoration
+contradiction, but identified one P1 provenance gap and one P2 date error. The date above now spans
+both local execution days. Before the next exact review, the implementation seat must preserve a
+hash-addressed transcript containing exact HEADs, commands, environments, exit codes, summaries,
+mutation outcomes, and artifact identities. Causal no-network/no-credential/non-reliance statements
+must be labeled as implementation-seat attestations unless independently reproduced or externally
+verified.
+
+Checkpoint `1de7173`, its 5,108-test behavior result, and
+`.coverage_wo0146_full_authorized_15` are diagnostic only after this production change. Ameen's
+standing authorization for in-flight remediation re-gates only this directly necessary correction.
+Fresh failure pin, pure/static, mutation, R2, full repository coverage, durable transcript,
+independent exact-head review, and unchanged Python 3.11/3.12 CI evidence are mandatory. This does
+not activate WO-0147 or authorize runtime/schema/persistence work, broker or credential use,
+PR/merge, branch/worktree retirement, deletion, or cleanup.
+
+## Fifteenth-gate implementation evidence freeze (2026-08-02)
+
+The public-command pin failed before the fix with the armed `input_id` getter, passed after the fix,
+failed again when only the early entry guard was removed, and passed after restoration. The restored
+`venue.py` SHA-256 is `eb16bb8a24ff47c0de66af884ba778a63bae60fd3fbdedd1bfbb2236c1a671db`;
+the other four production hashes remain exactly those recorded by the fourteenth gate.
+
+The restored tree passes all 521 collected execution-core cases in 130.0 seconds, Ruff check and
+format over all 17 execution-core source/test files, mypy over seven source files, all six import
+contracts, and diff check. The 61-case R2 suite passes with `BROKER_ADAPTER=mock` and a unique
+workspace-local base-temp path.
+
+The fresh authoritative repository run collected 5,109 tests and completed in 1,179.9 seconds:
+5,097 passed, 11 skipped, and one expected failure. The unchanged combined line/branch coverage
+floor passes at exactly `93.00594652069468%`: 17,537 of 18,503 lines and 6,080 of 6,890 branches.
+The preserved `.coverage_wo0146_full_authorized_16` artifact is 1,765,376 bytes with SHA-256
+`a46d40e58612413aa42c10add6a79f96c918313d385fe15a41feb068b574f798`; its JSON report is
+1,739,738 bytes with SHA-256
+`9f9b9cbdc78af92a134658299ef125303ee1418137bd61ee3aa1bfc3e5104b9e`.
+
+The exact command, environment, exit, mutation, restoration, invalidation, source-hash, and artifact
+ledger is preserved as implementation-seat evidence in
+`work/review/REV-0048/implementation-evidence-fifteenth-gate.md`, 15,783 bytes, SHA-256
+`fb119bd3d6919e5b9cbe6a6f5a7e0bcd2cb8686d0f26c05d0cd574d252a9a51e`. That transcript explicitly
+distinguishes implementation execution, independent reproduction, external pending evidence, and
+invalidated results. Its safety/non-reliance statements remain implementation-seat attestations;
+they are not silently elevated to independent proof.
+
+Existing database-bearing repository/R2 cases used only the previously authorized disposable
+test-only SQLite fixtures, including fixture SQL/DDL. No persistent application database,
+credentials, broker activity, intentional network I/O, runtime wiring, PR/merge, deletion, or
+cleanup occurred, and the prohibited R1 DDL result was not relied upon. These causal absence and
+non-reliance statements are implementation-seat attestations pending independent/external evidence.
+
+Independent exact-head addendum-02 and unchanged Python 3.11/3.12 CI remain mandatory. WO-0146 is
+still active and WO-0147 remains inactive.
 
 ## Frozen semantic contract
 

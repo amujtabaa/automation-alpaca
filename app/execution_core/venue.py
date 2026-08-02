@@ -206,13 +206,7 @@ def _canonical_value_commitment(value: object) -> bytes:
     raise TypeError(f"unsupported canonical audit value: {value_type.__qualname__}")
 
 
-def _input_command_identity(
-    item: object,
-    *,
-    include_input_id: bool,
-) -> tuple[bytes, ...]:
-    """Return one bounded, type-exact command identity."""
-
+def _require_exact_venue_recovery_input(item: object) -> None:
     from .recovery import (
         IngestHumanAttestedFill,
         RecordBrokerFillEvidence,
@@ -238,6 +232,16 @@ def _input_command_identity(
     }
     if type(item) not in admitted_types:
         raise TypeError("item must be an exact venue-recovery command type")
+
+
+def _input_command_identity(
+    item: object,
+    *,
+    include_input_id: bool,
+) -> tuple[bytes, ...]:
+    """Return one bounded, type-exact command identity."""
+
+    _require_exact_venue_recovery_input(item)
     identity: list[bytes] = [
         _encode_text(f"{type(item).__module__}.{type(item).__qualname__}")
     ]
@@ -6650,6 +6654,7 @@ def apply_venue_recovery_input(
         execution.root_heads,
         execution.seen_facts,
     )
+    _require_exact_venue_recovery_input(item)
 
     def evolve(
         current: VenueRecoveryBook,

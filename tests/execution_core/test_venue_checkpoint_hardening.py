@@ -375,6 +375,41 @@ def test_checkpoint_exposes_no_bound_mutation_helpers(helper_name: str) -> None:
     assert not hasattr(book, helper_name)
 
 
+def test_public_reducer_rejects_command_subclasses_before_property_access() -> None:
+    request = RequestedEffect(
+        input_id=VenueInputId("delayed-command-request"),
+        effect_id=EffectId("delayed-command-effect"),
+        request_occurrence_id=RequestOccurrenceId("delayed-command-occurrence"),
+        mandate_id=MandateId("delayed-command-mandate"),
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("delayed-command-client"),
+        symbol_id=SYMBOL,
+        side=ExecutionSide.BUY,
+        quantity=Quantity(1),
+        economic_scope=b"AAPL|BUY|delayed-command",
+    )
+
+    class DelayedRequestedEffect(RequestedEffect):
+        trap_reads = False
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "input_id" and type(self).trap_reads:
+                raise AssertionError("input_id read before exact command type check")
+            return super().__getattribute__(name)
+
+    delayed = DelayedRequestedEffect(
+        **{name: getattr(request, name) for name in request.__dataclass_fields__}
+    )
+    DelayedRequestedEffect.trap_reads = True
+
+    with pytest.raises(TypeError, match="exact venue-recovery command type"):
+        apply_venue_recovery_input(
+            VenueRecoveryBook.empty(VENUE_SCOPE),
+            ExecutionSnapshot.flat(POSITION_SCOPE),
+            delayed,
+        )
+
+
 def test_audit_hydration_rejects_a_delayed_broker_effect_subclass() -> None:
     book, execution = _seed_needs_review(effect_gate_first=False)
     [effect] = book.effects
