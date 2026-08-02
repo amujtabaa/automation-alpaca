@@ -1030,3 +1030,27 @@ persistent database, runtime wiring, PR/merge, retirement, deletion, or cleanup 
   killed all three with the input-mutation assertion.
 - **Still required:** authorized full repository coverage, independent exact-diff review, restored
   source/test hashing, and an immutable successor passing exact-head Python 3.11 and 3.12 CI.
+
+### REV-0048 addendum-03 BLOCK and second bounded compatibility re-gate
+
+Reviewer-owned `result-addendum-03.md` preserved a fresh P1 against exact repair freeze
+`ba70c46b05f3ec3d653159f00193c03711ba82e7`: cached persistent-map commitments do not re-read an
+illicitly mutated retained value. A reversible hostile reducer changed a stored `RootHead.quantity`
+from 3 to 10 after the second call; the root commitment and binding representation remained
+unchanged, so the first repair's guard returned normally. That weakens the old structural snapshot
+and is an explicit WO stop. The result is retained unchanged at commit `f133da3` with verdict
+`BLOCK`; the full/R2 green evidence cannot override it.
+
+Ameen's standing authorization for in-flight findings re-gates only this same test-harness repair.
+The RED evidence is the reviewer-owned retained-leaf survivor. Replace cached-commitment-only
+comparison with a recursion-safe semantic fingerprint independently materialized from actual
+position sequences, root-head leaves, and seen-fact leaves, while retaining bounded bindings and
+fact payload. Add permanent hostile pins for nested retained values. The fingerprint is test-only
+and may use the explicit slow/audit views; production constant-work requirements do not require a
+test oracle to trust cached values. No production change is authorized or justified.
+
+The new guard must kill root-head, seen-fact, position-sequence, binding, top-level component, and
+fact-payload mutations; pass the exact Python 3.11 failure nodes at lowered recursion; and repeat
+the focused/static/R2/full/review/exact-head-CI chain. WO-0147 remains inactive. All broker,
+credential, Paper, persistent-database, runtime, merge, retirement, deletion, and cleanup
+exclusions remain unchanged.
