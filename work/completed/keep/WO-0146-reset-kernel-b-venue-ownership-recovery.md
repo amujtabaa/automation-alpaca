@@ -1054,3 +1054,23 @@ fact-payload mutations; pass the exact Python 3.11 failure nodes at lowered recu
 the focused/static/R2/full/review/exact-head-CI chain. WO-0147 remains inactive. All broker,
 credential, Paper, persistent-database, runtime, merge, retirement, deletion, and cleanup
 exclusions remain unchanged.
+
+#### FIX — independently re-derived retained-leaf fingerprint
+
+- **Root cause correction:** cached commitments remain in the snapshot, but are no longer trusted
+  alone. The test-only fingerprint also materializes and renders each actual position-sequence,
+  root-head, and seen-fact leaf through the public explicit slow/audit views, plus the bounded
+  bindings and current fact. It never renders the private radix tree and changes no production
+  path or constant-work live transition.
+- **Permanent RED-to-GREEN pins:** nested `RootHead.quantity` and retained `SeenFact.fact.quantity`
+  mutations are injected after the second reducer call and must raise the immutable-input
+  assertion. A separate position-sequence pin proves a changed retained leaf changes the
+  fingerprint while the cached position commitment remains unchanged.
+- **Fresh focused evidence:** all ten stateful cases pass with the recursion limit reduced to 700;
+  all 524 execution-core cases pass. Transient position-component, root-binding, and fact-payload
+  mutants are also killed. Ruff check/format, mypy over seven source files, six import contracts,
+  AI-OS install/version/ledger/PKL/disposition checks, and all 61 R2 cases pass under the mock broker
+  with a fresh disposable workspace-local test directory.
+- **Still required:** a fresh full repository coverage run, new exact-diff independent review, and
+  unchanged exact-head Python 3.11/3.12 CI. Addendum-03 remains a preserved blocking artifact; only
+  a reviewer-owned successor addendum may close its P1.

@@ -13,6 +13,7 @@ from fractions import Fraction
 
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
+import pytest
 
 import app.execution_core.position as position_module
 from app.execution_core.fills import (
@@ -228,15 +229,12 @@ def _apply(
 ):
     """Call twice from identical inputs: every complete transition is deterministic."""
 
-    before = (
-        position.commitment,
-        repr(position.binding),
+    before = _input_semantic_fingerprint(
+        position,
         integrity,
-        root_heads.commitment,
-        repr(root_heads.binding),
-        seen_facts.commitment,
-        repr(seen_facts.binding),
-        repr(fact),
+        root_heads,
+        seen_facts,
+        fact,
     )
     first = apply_broker_execution_fact(
         position, integrity, root_heads, seen_facts, fact
@@ -245,17 +243,145 @@ def _apply(
         position, integrity, root_heads, seen_facts, fact
     )
     assert first == second
-    assert before == (
+    assert before == _input_semantic_fingerprint(
+        position,
+        integrity,
+        root_heads,
+        seen_facts,
+        fact,
+    ), "the reducer mutated an input or immutable predecessor"
+    return first
+
+
+def _input_semantic_fingerprint(
+    position: PositionState,
+    integrity: PositionIntegrity,
+    root_heads: RootHeadIndex,
+    seen_facts: SeenFactIndex,
+    fact: ExecutionFact,
+) -> tuple[object, ...]:
+    """Re-derive test-only input semantics without rendering private radix trees."""
+
+    return (
         position.commitment,
+        tuple(repr(root_key) for root_key in position.root_fill_sequence),
+        tuple(repr(head_id) for head_id in position.effective_head_ids),
         repr(position.binding),
         integrity,
         root_heads.commitment,
+        tuple(repr(head) for head in root_heads.entries),
         repr(root_heads.binding),
         seen_facts.commitment,
+        tuple(repr(observation) for observation in seen_facts.entries),
         repr(seen_facts.binding),
         repr(fact),
-    ), "the reducer mutated an input or immutable predecessor"
-    return first
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    ("root-head", "seen-fact"),
+)
+def test_apply_guard_detects_retained_leaf_mutation(monkeypatch, target: str) -> None:
+    snapshot = _flat_snapshot()
+    seed = BrokerFillFact(
+        key=_fact_key(1),
+        scope=_scope(ExecutionSide.BUY, 1),
+        root_fill_id=RootFillId("guard-seed"),
+        quantity=Quantity(3),
+        price=_price(100),
+    )
+    seeded = apply_broker_execution_fact(
+        snapshot.position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+        seed,
+    )
+    next_fact = BrokerFillFact(
+        key=_fact_key(2),
+        scope=_scope(ExecutionSide.BUY, 2),
+        root_fill_id=RootFillId("guard-next"),
+        quantity=Quantity(1),
+        price=_price(101),
+    )
+    original = apply_broker_execution_fact
+    call_count = 0
+
+    def mutate_after_second_call(
+        position: PositionState,
+        integrity: PositionIntegrity,
+        root_heads: RootHeadIndex,
+        seen_facts: SeenFactIndex,
+        fact: ExecutionFact,
+    ):
+        nonlocal call_count
+        transition = original(position, integrity, root_heads, seen_facts, fact)
+        call_count += 1
+        if call_count == 2:
+            if target == "root-head":
+                object.__setattr__(root_heads.entries[0], "quantity", Quantity(10))
+            else:
+                object.__setattr__(seen_facts.entries[0].fact, "quantity", Quantity(10))
+        return transition
+
+    monkeypatch.setitem(
+        _apply.__globals__,
+        "apply_broker_execution_fact",
+        mutate_after_second_call,
+    )
+    with pytest.raises(AssertionError, match="mutated an input"):
+        _apply(
+            seeded.position,
+            seeded.integrity,
+            seeded.root_heads,
+            seeded.seen_facts,
+            next_fact,
+        )
+
+
+def test_input_semantic_fingerprint_reads_position_sequence_leaves() -> None:
+    snapshot = _flat_snapshot()
+    position = PositionState.from_materialized(
+        scope=_POSITION_SCOPE,
+        raw_quantity=0,
+        basis_authority=BasisAuthority.AVAILABLE,
+        cost_basis=ExactBasis(Fraction(0)),
+        root_fill_sequence=(_root_key(RootFillId("position-leaf")),),
+        effective_head_ids=(SourceEventId("position-head"),),
+        basis_price_metadata=None,
+        tail_fold_input=None,
+    )
+    fact = BrokerFillFact(
+        key=_fact_key(1),
+        scope=_scope(ExecutionSide.BUY, 1),
+        root_fill_id=RootFillId("fingerprint-fact"),
+        quantity=Quantity(1),
+        price=_price(100),
+    )
+    before_commitment = position.commitment
+    before = _input_semantic_fingerprint(
+        position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+        fact,
+    )
+
+    object.__setattr__(
+        position.root_fill_sequence[0],
+        "root_fill_id",
+        RootFillId("mutated-position-leaf"),
+    )
+
+    assert position.commitment == before_commitment
+    assert before != _input_semantic_fingerprint(
+        position,
+        snapshot.integrity,
+        snapshot.root_heads,
+        snapshot.seen_facts,
+        fact,
+    )
 
 
 class FillPositionMachine(RuleBasedStateMachine):
