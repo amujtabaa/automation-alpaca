@@ -2195,6 +2195,47 @@ def test_reported_price_rejects_a_delayed_price_component_subclass() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("component_path", "replacement", "message"),
+    (
+        ("units", True, r"price\.units\.value"),
+        ("scale", 1, r"price\.scale\.value"),
+        ("tick_units", True, r"price\.tick\.tick_units\.value"),
+        ("tick_scale", 1, r"price\.tick\.scale\.value"),
+    ),
+    ids=("units-bool", "scale-int", "tick-units-bool", "tick-scale-int"),
+)
+def test_broker_fill_rejects_noncanonical_reported_price_scalar_payloads(
+    component_path: str,
+    replacement: object,
+    message: str,
+) -> None:
+    price = ReportedPrice(
+        units=PriceUnits(100),
+        scale=PriceScale(Decimal("1")),
+        tick=TickMetadata(
+            tick_units=PriceUnits(1),
+            scale=PriceScale(Decimal("1")),
+        ),
+    )
+    component = {
+        "units": price.units,
+        "scale": price.scale,
+        "tick_units": price.tick.tick_units,
+        "tick_scale": price.tick.scale,
+    }[component_path]
+    object.__setattr__(component, "value", replacement)
+
+    with pytest.raises(TypeError, match=message):
+        BrokerFillFact(
+            key=_key(f"noncanonical-price-{component_path}"),
+            scope=_scope(order_id=BUY_ORDER, side=ExecutionSide.BUY),
+            root_fill_id=RootFillId(f"noncanonical-price-{component_path}"),
+            quantity=Quantity(1),
+            price=price,
+        )
+
+
 @pytest.mark.parametrize("binding_source", ["position", "root_heads", "seen_facts"])
 def test_incoherent_snapshot_recovers_integrity_from_each_component_binding(
     binding_source: str,
@@ -4380,6 +4421,49 @@ def test_snapshot_binding_rejects_digest_subclasses() -> None:
             reconciliation_transition_head=binding.reconciliation_transition_head,
             snapshot_commitment=binding.snapshot_commitment,
         )
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "message"),
+    (
+        (
+            {"position_commitment": b"\x00" * 31},
+            ValueError,
+            r"position_commitment.*32 bytes",
+        ),
+        (
+            {"integrity_bits": True},
+            ValueError,
+            "integrity_bits must be a non-negative exact integer",
+        ),
+        (
+            {"account_reconciliation_required": 0},
+            TypeError,
+            "account_reconciliation_required must be bool",
+        ),
+        (
+            {"reconciliation_transition_count": True},
+            ValueError,
+            "reconciliation_transition_count must be a non-negative exact integer",
+        ),
+    ),
+    ids=("short-digest", "bool-integrity", "integer-flag", "bool-count"),
+)
+def test_snapshot_binding_rejects_noncanonical_retained_metadata(
+    changes: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    binding = ExecutionSnapshot.flat(POSITION_SCOPE).position.binding
+    assert binding is not None
+
+    with pytest.raises(error, match=message):
+        replace(binding, **changes)
+
+
+def test_materialized_position_rejects_a_noncanonical_snapshot_binding() -> None:
+    with pytest.raises(TypeError, match="_binding must be the exact"):
+        replace(PositionState.flat(POSITION_SCOPE), _binding=object())
 
 
 def test_materialized_position_rejects_malformed_hydration_state() -> None:

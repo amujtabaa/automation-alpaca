@@ -620,8 +620,84 @@ R2 gate first failed only because Windows denied pytest's shared user-temp direc
 61-case suite passed with `BROKER_ADAPTER=mock` and a new preserved workspace-local base-temp path.
 Its existing SQLite cases used only their authorized disposable test fixtures. No credential,
 Alpaca activity, persistent application database, runtime wiring, PR/merge, deletion, or cleanup was
-used. Fresh mutation, repository coverage, independent exact-head review, and dual-version CI still
-remain mandatory; no earlier artifact satisfies this fourteenth gate.
+used. The fresh mutation, current pure/static gates, and authoritative repository coverage now pass
+as recorded below. The first repository-coverage attempt failed the unchanged floor and is
+diagnostic only. Independent exact-head review and dual-version CI remain mandatory; no earlier
+artifact satisfies this fourteenth gate.
+
+## Fourteenth-gate mutation completion and coverage remediation (2026-08-01)
+
+Exact production checkpoint `bd5943768ab41592c6445892248ade86f1a79bbf` survived nine
+coordinated live mutation groups. Every mutation was restored before proceeding:
+
+1. Removing the complete unresolved-reconciliation release policy was killed by the release and
+   parent-finalization pin. A narrower leg-only removal survived safely because the independent
+   execution/scope guards still blocked release.
+2. Removing the ordered human effect-and-leg review gates killed both ordering pins; removing only
+   the effect gate killed its dedicated pin.
+3. Coordinated removal of missing-source, direct-source, and backward-alias provenance checks was
+   killed by the semantic-alias retargeting pin. Partial removals survived safely because the
+   remaining independent checks still rejected the forged checkpoint.
+4. Removing the sibling effect-wide overfill latch was killed by the aggregate broker-fill pin.
+5. Allowing operator-final state with unresolved execution-integrity bits killed both parameter
+   rows; the later stale-binding failure confirmed that the intended earlier guard was absent.
+6. Weakening the common fill-component exact-type guard to `isinstance` was killed by delayed
+   quantity, execution-scope, and price-component pins. Compound identity remained independently
+   protected.
+7. Removing the pre-read exact `VenueExecutionBinding` guard was killed by its property-access trap.
+8. Removing the pre-index exact `VenueInputRecord` shape guard was killed by its identity-access
+   trap.
+9. Coordinated removal of the four exact price-scalar guards, four `_SnapshotBinding` metadata
+   guards, and the `PositionState` binding guard killed all nine new coverage-remediation rows.
+
+The restored production SHA-256 values are:
+
+- `fills.py`: `50832e3849aa3d3be888dd400a646dca04180dcf885aecabdecac0b3dbab6666`
+- `identity.py`: `b7fbf9556031e00ca93fcd49c54deeaec2d0f56f614d6c396d92108c4960fcc2`
+- `position.py`: `b59971afddcc52c725a8ed5de3ab84c5e49ab58b8621250e39fcd169e8a2e767`
+- `recovery.py`: `684003e1ca480e1c6cd7bf2e2e8c864732bb2e0f67809acb3a550a814fddd40c`
+- `venue.py`: `b6f288a5b36878b017268934ae170f577c8c85faf63a84fc71c89809151edc98`
+
+The first fourteenth-gate repository run collected 5,099 tests and completed in 1,127.6 seconds:
+5,087 passed, 11 skipped, and one expected failure. Its behavior result is diagnostic only because
+the unchanged combined line/branch coverage floor failed at `92.93816463174478%`: 17,525 of
+18,500 lines and 6,072 of 6,890 branches, or 23,597 of 25,390 combined obligations. Passing 93%
+required 16 additional covered obligations.
+
+The failed diagnostic artifacts are preserved unchanged:
+
+- `.coverage_wo0146_full_authorized_14`: 1,765,376 bytes; SHA-256
+  `8392639ffa087fb767c690599fcaa52bd299c5c6819d06ff6be632b7ac8d510b`
+- `.coverage_wo0146_full_authorized_14.json`: 1,739,156 bytes; SHA-256
+  `77e5759b023161e263c746d4fb4eac16c503ce106447045c037aa07d5f918b63`
+
+Coverage remediation changed tests only. Nine failure-capable cases now exercise four
+noncanonical reported-price scalar payloads, four malformed retained snapshot-binding metadata
+variants, and one noncanonical retained position binding. Coordinated removal of their corresponding
+production guards made all nine rows fail; the restored source makes all nine pass. The resulting
+pure execution-core suite passes all 520 collected cases. Ruff check passes, all 17 inspected files
+are format-clean, mypy passes all seven execution-core source modules, Import Linter keeps all six
+contracts with none broken, and the diff check passes. The unchanged exact production object had
+already passed all 61 R2 cases with `BROKER_ADAPTER=mock` and a preserved workspace-local base-temp
+path; the coverage remediation changes no R2-tested production code.
+
+The fresh authoritative repository rerun collected 5,108 tests and completed in 1,165.0 seconds:
+5,096 passed, 11 skipped, and one expected failure. The unchanged 93% combined line/branch gate
+passes at exactly `93.00512012603387%`: 17,534 of 18,500 lines and 6,080 of 6,890 branches. The
+preserved `.coverage_wo0146_full_authorized_15` artifact is 1,765,376 bytes with SHA-256
+`aba5362c36543ac73a6bac620afbcc7c4574d6edfbfc8c83effc408843a70fe8`; its JSON report is
+1,739,084 bytes with SHA-256
+`a97237e1ae1ed4daa7ef1cbb92ef59f1752a118cebf3dddacf2eedba7b5c248a`.
+
+Both repository runs forced `BROKER_ADAPTER=mock`. Existing database-bearing cases used only the
+previously authorized disposable test-only SQLite fixtures, including their fixture SQL/DDL. No
+persistent application database, credentials, Alpaca activity, broker/network I/O, runtime wiring,
+PR/merge, deletion, or cleanup occurred. The prohibited R1 DDL execution result was not used for
+design, validation, coverage, or acceptance evidence.
+
+The exact final checkpoint still requires reviewer-owned
+`REV-0048/result-addendum-02.md` with no unresolved P0/P1 and unchanged Python 3.11/3.12 exact-head
+CI. Until both gates pass, WO-0146 remains active and WO-0147 remains inactive.
 
 ## Frozen semantic contract
 
