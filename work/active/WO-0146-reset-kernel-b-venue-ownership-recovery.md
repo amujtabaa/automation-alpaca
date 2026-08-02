@@ -179,7 +179,8 @@ returned `BLOCK`. That result is preserved unchanged at commit `007c757`. Its fr
 
 A separately authorized full repository baseline on that blocked object forced
 `BROKER_ADAPTER=mock`. R2 passed all 61 cases. The full behavior suite passed 4,944 tests with 11
-skips and one expected failure, but the unchanged 93% branch-coverage gate failed at 92.13%. Its
+skips and one expected failure, but the unchanged 93% combined line/branch coverage gate failed at
+92.13%. Its
 coverage artifact is preserved as `.coverage_wo0146_full_authorized_1`, SHA-256
 `a2dd3f14eadcc24af643d503acb214076cafe1e88cf8bd569d5e9a4313310256`. Existing fixtures used only
 authorized disposable test SQLite; no persistent database, broker, credential, Alpaca activity,
@@ -752,13 +753,26 @@ The preserved `.coverage_wo0146_full_authorized_16` artifact is 1,765,376 bytes 
 1,739,738 bytes with SHA-256
 `9f9b9cbdc78af92a134658299ef125303ee1418137bd61ee3aa1bfc3e5104b9e`.
 
-The exact command, environment, exit, mutation, restoration, invalidation, source-hash, and artifact
-ledger is preserved as implementation-seat evidence in
-`work/review/REV-0048/implementation-evidence-fifteenth-gate.md`, 15,783 bytes, SHA-256
-`fb119bd3d6919e5b9cbe6a6f5a7e0bcd2cb8686d0f26c05d0cd574d252a9a51e`. That transcript explicitly
-distinguishes implementation execution, independent reproduction, external pending evidence, and
-invalidated results. Its safety/non-reliance statements remain implementation-seat attestations;
-they are not silently elevated to independent proof.
+The initial transcript frozen at implementation commit
+`cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e` was 15,783 bytes with SHA-256
+`fb119bd3d6919e5b9cbe6a6f5a7e0bcd2cb8686d0f26c05d0cd574d252a9a51e`. A final read-only evidence
+audit blocked that version because it summarized some historical mutation commands with
+placeholders and omitted the JSON-export and exact-scope commands. The production and test bytes at
+`cd4295c` remained the unchanged implementation freeze; the evidence defect did not require a
+production/test rerun.
+
+The amended exact command, environment, exit, mutation, restoration, invalidation, source-hash,
+scope, and artifact ledger is preserved as implementation-seat evidence in
+`work/review/REV-0048/implementation-evidence-fifteenth-gate.md`, 24,556 bytes, SHA-256
+`d11bcd322c3c8f0bfe45d73bdafab1093c64f76cfc13df24896ef627bb67721e`. It explicitly names
+`cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e` as the implementation freeze, expands every mutation
+node/base-temp command, records the `_16` JSON export, distinguishes the eight-decimal terminal
+coverage report from the exact JSON-derived ratio, and includes the exact 25-path scope inventory
+and passing scope-check command. The evidence-only successor changes no production or test byte;
+the independent addendum must name that successor's exact SHA. The transcript distinguishes
+implementation execution, independent reproduction, external pending evidence, and invalidated
+results. Its safety/non-reliance statements remain implementation-seat attestations; they are not
+silently elevated to independent proof.
 
 Existing database-bearing repository/R2 cases used only the previously authorized disposable
 test-only SQLite fixtures, including fixture SQL/DDL. No persistent application database,
@@ -768,6 +782,32 @@ non-reliance statements are implementation-seat attestations pending independent
 
 Independent exact-head addendum-02 and unchanged Python 3.11/3.12 CI remain mandatory. WO-0146 is
 still active and WO-0147 remains inactive.
+
+## Evidence-provenance P1 stop and evidence-only re-gate (2026-08-02)
+
+The final read-only evidence audit of `cd4295c` found no P0, no numerical/hash/scope/source-restoration
+contradiction, and no unexplained changed path. It did find one P1: the first transcript did not
+fully reproduce its own exact-command claim. The mutation section used a `<BaseTemp>/<Nodes>`
+template, M6/M9 named test groups rather than concrete node IDs, the `_16` JSON generation command
+was absent, and the scope result was promised rather than pasted. It also found two P2 labels: the
+eight-decimal terminal coverage report was labeled with the more precise JSON-derived ratio, and an
+early diagnostic called the combined line/branch floor a branch-only gate.
+
+This evidence-only re-gate resolves those documentation defects without changing source or tests.
+The exact implementation freeze is
+`cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e`; its parent is
+`1de7173bd01dfa35a39da4c8683eaff338c5f2e0`. The post-activation scope command against
+`d03e8eb6b83c397691c1028e4781b585b15de04b..cd4295c` exited `0` with
+`SCOPE CHECK PASSED`, and cumulative base-to-freeze inventory contains exactly 25 allowed or
+activation-only paths. The amended transcript contains the exact commands and outcomes. Because a
+commit cannot record its own SHA without another successor, reviewer-owned addendum-02 must bind
+the exact evidence-successor SHA and verify that its delta from `cd4295c` contains only this active
+work order and the transcript. No implementation, mutation, R2, or full-suite result is silently
+re-executed or relabeled.
+
+Until that independent review passes, WO-0146 remains active and WO-0147 remains inactive. This
+re-gate authorizes no source/test change, runtime/schema/database/broker work, credential use,
+PR/merge, branch/worktree retirement, deletion, or cleanup.
 
 ## Frozen semantic contract
 

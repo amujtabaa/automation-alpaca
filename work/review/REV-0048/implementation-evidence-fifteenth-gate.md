@@ -6,6 +6,7 @@ gate: fifteenth
 evidence_owner: Codex implementation seat
 base_sha: dfb8ed30ebed788f1158d7f8be49b44d505c355b
 invalidated_checkpoint: 1de7173bd01dfa35a39da4c8683eaff338c5f2e0
+implementation_freeze_sha: cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e
 status: READY_FOR_INDEPENDENT_REVIEW
 date: 2026-08-02
 ---
@@ -15,8 +16,12 @@ date: 2026-08-02
 This is an implementation-seat evidence record, not a reviewer verdict. It preserves exact
 commands, outcomes, hashes, mutation results, and invalidated artifact identities needed for
 independent review. Reviewer-owned `result.md` and `result-addendum-01.md` remain unchanged. The
-containing Git commit and this file's detached SHA-256 are recorded by the active work order and
-must be rechecked by the independent reviewer.
+production/test implementation freeze is exact commit
+`cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e`. This provenance amendment changes only this
+transcript and the active work order; it changes no production or test byte. Its containing
+evidence-successor commit cannot name its own hash without creating another successor, so the
+independent addendum must bind and report the exact reviewed Git target and recheck this file's
+detached SHA-256 from that target.
 
 ## Evidence classes
 
@@ -39,7 +44,8 @@ attestations unless an independent artifact expressly says otherwise.
 | `dfb8ed30ebed788f1158d7f8be49b44d505c355b` | Base | Accepted WO-0145 closeout and WO-0146 diff base. |
 | `bd5943768ab41592c6445892248ade86f1a79bbf` | Superseded checkpoint | Fourteenth-gate retained-state production correction; production object exercised by mutation groups M1-M8. |
 | `1de7173bd01dfa35a39da4c8683eaff338c5f2e0` | **INVALIDATED** | Test-only coverage remediation over unchanged `bd594376` production. `_15` passed 93%, but the later public-command production fix invalidated it for acceptance. |
-| Containing commit | Fifteenth-gate freeze | Must contain the exact public-command fix, its pin, this transcript, and no unexplained source change. |
+| `cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e` | Fifteenth-gate implementation freeze | Contains the exact public-command fix, its failure-capable pin, the restored production source, and the `_16` implementation evidence. |
+| Evidence-only successor | Provenance amendment | Changes only this transcript and the active work order to make the `cd4295c` evidence exactly reproducible. The reviewer records its exact Git SHA; no production/test rerun is implied or required because those bytes are unchanged. |
 | `result-addendum-01.md` SHA-256 `f7cff72992ab831b8be2839d3741c6a02cd1ff9a5a32b0ae32f6124a097a012a` | Preserved independent BLOCK | Result against `9ce0f442db4b9a261fbed4003da377bfb497ec9e`; not acceptance evidence for the current object. |
 
 A separate read-only evidence-integrity pass found no numerical, hash, scope, artifact-identity, or
@@ -137,7 +143,56 @@ git diff --check
 - Ruff: all checks passed; all 17 inspected files format-clean.
 - Mypy: no issues in seven execution-core source files.
 - Import Linter: six contracts kept, zero broken.
-- Final exact-scope reconciliation is recorded after the containing commit is frozen.
+
+### Exact scope reconciliation
+
+**IMPLEMENTATION-SEAT EXECUTED** against implementation freeze
+`cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e`:
+
+```powershell
+git diff --name-only d03e8eb6b83c397691c1028e4781b585b15de04b..cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e | .\.venv\Scripts\python.exe .ai-os/scripts/check_work_order_scope.py work/active/WO-0146-reset-kernel-b-venue-ownership-recovery.md
+```
+
+- Exit: `0`
+- Result: `SCOPE CHECK PASSED`.
+- `d03e8eb6b83c397691c1028e4781b585b15de04b` is the activation commit. Its seven paths were
+  `README.md`, `docs/04_IMPLEMENTATION_PLAN.md`,
+  `docs/adr/ARCH-RESET-2026-07-RATIFICATION.md`, `pkl/log.md`, `pkl/project/goals.md`, the active
+  WO, and `work/queue/ARCH-RESET-2026-07-M1-BRANCH-RETIREMENT-MANIFEST.yaml`. The first three and
+  retirement manifest are the WO's four `activation_only_paths`; the remaining three are ordinary
+  allowed paths.
+- The exact cumulative base-to-freeze changed-path output was:
+
+```text
+README.md
+app/execution_core/__init__.py
+app/execution_core/fills.py
+app/execution_core/identity.py
+app/execution_core/position.py
+app/execution_core/recovery.py
+app/execution_core/venue.py
+docs/04_IMPLEMENTATION_PLAN.md
+docs/adr/ARCH-RESET-2026-07-RATIFICATION.md
+pkl/log.md
+pkl/project/goals.md
+tests/execution_core/test_fill_position.py
+tests/execution_core/test_import_boundary.py
+tests/execution_core/test_venue_binding_recovery.py
+tests/execution_core/test_venue_checkpoint_hardening.py
+tests/execution_core/test_venue_ownership.py
+tests/execution_core/test_venue_provenance_hardening.py
+tests/execution_core/test_venue_recovery.py
+tests/execution_core/test_venue_stateful.py
+work/active/WO-0146-reset-kernel-b-venue-ownership-recovery.md
+work/queue/ARCH-RESET-2026-07-M1-BRANCH-RETIREMENT-MANIFEST.yaml
+work/review/REV-0048/implementation-evidence-fifteenth-gate.md
+work/review/REV-0048/request.md
+work/review/REV-0048/result-addendum-01.md
+work/review/REV-0048/result.md
+```
+
+All 25 paths are either ordinary allowed paths or the four activation-only paths above. The
+evidence-only successor adds no new path.
 
 ## R2 conformance
 
@@ -155,30 +210,117 @@ $env:BROKER_ADAPTER='mock'
 
 ## Live mutation ledger
 
-For M1-M8, each listed invocation expands exactly to:
+Every command below targeted pure in-memory execution-core tests; it required no database, broker,
+network, or credential environment. Each killed mutant was restored before the next mutation. A
+passing survivor is classified as safe only where an independent remaining guard still enforced
+the property. These are the concrete invocations, not command templates.
+
+### M1 -- unresolved-reconciliation release policy
+
+Each of the narrow survivor, complete mutant, and restored source used this exact node:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q --basetemp <BaseTemp> <Nodes>
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m1 tests/execution_core/test_venue_recovery.py::test_unresolved_broker_contradiction_blocks_release_and_parent_finalization
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m1b tests/execution_core/test_venue_recovery.py::test_unresolved_broker_contradiction_blocks_release_and_parent_finalization
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m1b_restore tests/execution_core/test_venue_recovery.py::test_unresolved_broker_contradiction_blocks_release_and_parent_finalization
 ```
 
-Every killed mutant was restored before the next mutation. A passing survivor is classified as safe
-only where an independent remaining guard still enforced the property.
+- Narrow exit `0`: safe survivor because execution/scope guards still blocked release.
+- Complete mutant exit `1`: observed `APPLIED` instead of `RECONCILIATION_REQUIRED`.
+- Restore exit `0`.
 
-| ID | Mutation and focused nodes | Base-temp / exit / result |
-|---|---|---|
-| M1 | Narrow removal of leg-local unresolved reconciliation, then complete removal of the unresolved-release policy. Node: `test_venue_recovery.py::test_unresolved_broker_contradiction_blocks_release_and_parent_finalization`. | Narrow `_m1`: exit `0`, safe survivor because execution/scope guards still blocked release. Complete `_m1b`: exit `1`, observed `APPLIED` instead of `RECONCILIATION_REQUIRED`; restore exit `0`. |
-| M2 | Remove ordered effect review alone, then both effect and leg review gates. Nodes: checkpoint-hardening `::test_rebuild_rejects_first_human_source_before_effect_needs_review` and `::test_rebuild_rejects_first_human_source_before_leg_needs_review`. | Effect-only `_m2`: exit `1`, `F.`; restore `0`. Combined `_m2b`: exit `1`, `FF`; restore `0`. |
-| M3 | Remove provenance checks individually, then coordinate missing-source, direct-source, and backward-alias removals. Node: provenance-hardening `::test_checkpoint_rejects_semantic_alias_retargeted_as_direct_provenance`. | Partial `_m3`/`_m3b`: exit `0`, safe survivors. Coordinated `_m3c`: exit `1`, `DID NOT RAISE`; restore `0`. |
-| M4 | Remove effect-wide sibling overfill latch. Node: recovery `::test_wo0146_red_sibling_broker_fills_latch_effect_wide_overfill`. | `_m4`: exit `1`, missing `OVERFILL_QUARANTINE`; restore `0`. |
-| M5 | Permit operator-final state with unresolved execution-integrity bits. Node: provenance-hardening `::test_constructor_rejects_operator_state_with_unresolved_binding_bits`. | `_m5`: exit `1`; both rows reached the later stale-binding failure, proving the intended earlier guard absent. Restore `0`. |
-| M6 | Weaken common exact fill-component guard to `isinstance`. Nodes: four delayed quantity/scope/identity/price tests in `test_fill_position.py`. | `_m6`: exit `1`, `FF.F`; identity remained protected by a separate exact guard. Restore `0`. |
-| M7 | Remove pre-read exact `VenueExecutionBinding` guard. Node: checkpoint-hardening `::test_hydration_rejects_binding_subclasses_before_property_access`. | `_m7`: exit `1`, armed getter reached; restore `0`. |
-| M8 | Remove pre-index exact `VenueInputRecord` shape guard. Node: checkpoint-hardening `::test_hydration_validates_input_identity_before_hashing_or_value_access`. | `_m8`: exit `1`, armed getter reached; restore `0`. |
-| M9 | Remove four price-scalar, four `_SnapshotBinding` metadata, and retained `PositionState` binding guards. Nodes: the three new test groups in `test_fill_position.py`. | `.pytest_tmp_wo0146_coverage_remediation_14_mutant`: exit `1`, `FFFFFFFFF`; restored path `_restored`: exit `0`, nine passes. |
-| M10 | Remove only the early public-command exact-type guard. Node: checkpoint-hardening `::test_public_reducer_rejects_command_subclasses_before_property_access`. | `_mutant_16`: exit `1`, armed getter reached; restored `_restore_16`: exit `0`. |
+### M2 -- ordered human-source review gates
 
-The pre-mutation M1-M8 aggregate pin group used
-`.pytest_tmp_wo0146_mutation_14_baseline`, exited `0`, and produced 11 passes.
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m2 tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_effect_needs_review tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_leg_needs_review
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m2_restore tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_effect_needs_review tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_leg_needs_review
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m2b tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_effect_needs_review tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_leg_needs_review
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m2b_restore tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_effect_needs_review tests/execution_core/test_venue_checkpoint_hardening.py::test_rebuild_rejects_first_human_source_before_leg_needs_review
+```
+
+- Effect-only mutant exit `1`, `F.`; restore exit `0`.
+- Combined effect/leg mutant exit `1`, `FF`; restore exit `0`.
+
+### M3 -- direct semantic provenance
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m3 tests/execution_core/test_venue_provenance_hardening.py::test_checkpoint_rejects_semantic_alias_retargeted_as_direct_provenance
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m3b tests/execution_core/test_venue_provenance_hardening.py::test_checkpoint_rejects_semantic_alias_retargeted_as_direct_provenance
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m3c tests/execution_core/test_venue_provenance_hardening.py::test_checkpoint_rejects_semantic_alias_retargeted_as_direct_provenance
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m3c_restore tests/execution_core/test_venue_provenance_hardening.py::test_checkpoint_rejects_semantic_alias_retargeted_as_direct_provenance
+```
+
+- Partial mutants `m3` and `m3b` exited `0`; both were safe survivors because remaining guards
+  still rejected the forgery.
+- Coordinated missing-source/direct-source/backward-alias mutant exited `1` with
+  `DID NOT RAISE`; restore exited `0`.
+
+### M4 -- effect-wide sibling overfill latch
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m4 tests/execution_core/test_venue_recovery.py::test_wo0146_red_sibling_broker_fills_latch_effect_wide_overfill
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m4_restore tests/execution_core/test_venue_recovery.py::test_wo0146_red_sibling_broker_fills_latch_effect_wide_overfill
+```
+
+- Mutant exit `1`: `OVERFILL_QUARANTINE` was missing; restore exit `0`.
+
+### M5 -- operator-final unresolved-integrity guard
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m5 tests/execution_core/test_venue_provenance_hardening.py::test_constructor_rejects_operator_state_with_unresolved_binding_bits
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m5_restore tests/execution_core/test_venue_provenance_hardening.py::test_constructor_rejects_operator_state_with_unresolved_binding_bits
+```
+
+- Mutant exit `1`: both parameter rows reached the later stale-binding failure, proving the
+  intended earlier integrity guard absent; restore exit `0`.
+
+### M6 -- exact nested fill components
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m6 tests/execution_core/test_fill_position.py::test_broker_fill_fact_rejects_a_delayed_quantity_subclass tests/execution_core/test_fill_position.py::test_broker_fill_fact_rejects_a_delayed_execution_scope_subclass tests/execution_core/test_fill_position.py::test_execution_fact_key_rejects_a_delayed_identity_subclass tests/execution_core/test_fill_position.py::test_reported_price_rejects_a_delayed_price_component_subclass
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m6_restore tests/execution_core/test_fill_position.py::test_broker_fill_fact_rejects_a_delayed_quantity_subclass tests/execution_core/test_fill_position.py::test_broker_fill_fact_rejects_a_delayed_execution_scope_subclass tests/execution_core/test_fill_position.py::test_execution_fact_key_rejects_a_delayed_identity_subclass tests/execution_core/test_fill_position.py::test_reported_price_rejects_a_delayed_price_component_subclass
+```
+
+- Mutant exit `1`, `FF.F`; the identity row remained protected by its separate exact identity
+  guard. Restore exit `0`.
+
+### M7 -- pre-read execution-binding type guard
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m7 tests/execution_core/test_venue_checkpoint_hardening.py::test_hydration_rejects_binding_subclasses_before_property_access
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m7_restore tests/execution_core/test_venue_checkpoint_hardening.py::test_hydration_rejects_binding_subclasses_before_property_access
+```
+
+- Mutant exit `1`: armed getter reached; restore exit `0`.
+
+### M8 -- pre-index input-record shape guard
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m8 tests/execution_core/test_venue_checkpoint_hardening.py::test_hydration_validates_input_identity_before_hashing_or_value_access
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_mutation_14_m8_restore tests/execution_core/test_venue_checkpoint_hardening.py::test_hydration_validates_input_identity_before_hashing_or_value_access
+```
+
+- Mutant exit `1`: armed getter reached; restore exit `0`.
+
+### M9 -- retained scalar/metadata/binding guards
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_coverage_remediation_14_mutant tests/execution_core/test_fill_position.py::test_broker_fill_rejects_noncanonical_reported_price_scalar_payloads tests/execution_core/test_fill_position.py::test_snapshot_binding_rejects_noncanonical_retained_metadata tests/execution_core/test_fill_position.py::test_materialized_position_rejects_a_noncanonical_snapshot_binding
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp_wo0146_coverage_remediation_14_restored tests/execution_core/test_fill_position.py::test_broker_fill_rejects_noncanonical_reported_price_scalar_payloads tests/execution_core/test_fill_position.py::test_snapshot_binding_rejects_noncanonical_retained_metadata tests/execution_core/test_fill_position.py::test_materialized_position_rejects_a_noncanonical_snapshot_binding
+```
+
+- Mutant exit `1`, `FFFFFFFFF`; restore exit `0`, nine passes.
+
+### M10 -- early public-command type guard
+
+The exact mutant and restoration commands, nodes, base-temp paths, exits, and outcomes are recorded
+above under **Public-command guard mutant**. The mutant exited `1` after reaching the armed getter;
+the restored source exited `0`.
+
+The pre-mutation aggregate safety-pin invocation used
+`.pytest_tmp_wo0146_mutation_14_baseline`, exited `0`, and produced 11 passes. The individual
+commands above are the authoritative mutation provenance; the aggregate was a convenience
+baseline, not a failure-capability result.
 
 ## Restored source identities
 
@@ -242,12 +384,14 @@ $env:BROKER_ADAPTER='mock'
 $env:COVERAGE_FILE='C:\Users\amujt\dev\automation-alpaca\.coverage_wo0146_full_authorized_16'
 .\.venv\Scripts\python.exe -m pytest -q --cov=app --cov-branch --cov-report=term-missing -p no:cacheprovider --basetemp C:\Users\amujt\dev\automation-alpaca\.pytest_tmp_wo0146_full_16 --tb=line
 .\.venv\Scripts\python.exe -m coverage report --precision=8 --fail-under=93
+.\.venv\Scripts\python.exe -m coverage json -o C:\Users\amujt\dev\automation-alpaca\.coverage_wo0146_full_authorized_16.json
 ```
 
 - Pytest exit: `0`
 - Duration: 1,179.9 seconds.
 - Result: 5,109 collected; 5,097 passed; 11 skipped; one expected failure.
-- Explicit report: `93.00594652069468%`, exit `0`.
+- Explicit `--precision=8` terminal report: `93.00594652%`, exit `0`.
+- Exact combined ratio calculated from the JSON obligations: `93.00594652069468%`.
 - Coverage obligations: 17,537/18,503 lines and 6,080/6,890 branches.
 - `.coverage_wo0146_full_authorized_16`: 1,765,376 bytes; SHA-256
   `a46d40e58612413aa42c10add6a79f96c918313d385fe15a41feb068b574f798`.
@@ -273,12 +417,13 @@ reproduced unless it performs and records an independent verification.
 
 ## Remaining acceptance gates
 
-1. Freeze and commit the exact source, test, work-order, and transcript object.
-2. Reconcile exact changed paths against WO-0146 scope.
-3. Obtain reviewer-owned `result-addendum-02.md` against the exact final commit with no unresolved
+1. Commit the provenance-only amendment over implementation freeze `cd4295c`; do not change
+   production or test bytes.
+2. Obtain reviewer-owned `result-addendum-02.md` against that exact evidence successor with no unresolved
    P0/P1.
-4. Push only the exact reviewed/closeout head and obtain unchanged Python 3.11/3.12 exact-head CI.
-5. Re-run any gate invalidated by a subsequent source/test byte change.
+3. Freeze the documentation-only closeout head and obtain unchanged Python 3.11/3.12 exact-head CI.
+4. Re-run only a gate invalidated by a subsequent source/test byte change; provenance-only changes
+   require hash/scope/review reconciliation, not a production/test rerun.
 
 Until all gates complete, WO-0146 remains active, WO-0147 remains inactive, and no merge or
 retirement action is authorized.
