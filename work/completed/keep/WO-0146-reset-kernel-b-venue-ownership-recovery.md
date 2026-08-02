@@ -1074,3 +1074,24 @@ exclusions remain unchanged.
 - **Still required:** a fresh full repository coverage run, new exact-diff independent review, and
   unchanged exact-head Python 3.11/3.12 CI. Addendum-03 remains a preserved blocking artifact; only
   a reviewer-owned successor addendum may close its P1.
+
+#### Re-gate — auxiliary persistent-map mutation bypass
+
+- **Failed implementation freeze:** `1189d88` narrowed but did not close addendum-03's retained-leaf
+  mutation class. Two independent read-only audits changed an existing
+  `RootHeadIndex._broker_scope_counts` leaf and an existing
+  `SeenFactIndex._prefix_commitments` leaf after the reducer's second call. In both cases the cached
+  index commitment and the incomplete semantic fingerprint remained unchanged, the corresponding
+  public query changed, and `_apply` returned normally. The freeze is therefore blocked and is not
+  acceptance evidence.
+- **Bounded corrective scope:** retain the production tree byte-for-byte; replace the incomplete
+  test-only view with an iterative, non-recursive audit of every field and persistent-map node that
+  can influence `PositionState`, `RootHeadIndex`, or `SeenFactIndex` behavior. Add permanent RED pins
+  for broker-scope counts and prefix commitments before restoring them to GREEN. Preserve the
+  existing root-head, seen-fact, position-sequence, top-level-component, binding, and fact-payload
+  mutation controls.
+- **Evidence treatment:** the repository-wide diagnostic run started at `1189d88` was stopped after
+  the independent blocks made it obsolete; its partial disposable test directory remains preserved
+  and is inadmissible for closeout. A new exact implementation freeze must pass focused lowered-
+  recursion tests, the full static/R2/repository gates, hostile mutation probes, independent review,
+  and exact-head Python 3.11/3.12 CI. WO-0147 remains inactive.
