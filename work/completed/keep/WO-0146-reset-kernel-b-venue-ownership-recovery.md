@@ -1,12 +1,12 @@
 ---
 type: Work Order
 title: "Reset kernel B: venue ownership and recovery lifecycle"
-status: ACTIVE
+status: CLOSED
 work_order_id: WO-0146
 wave: RESET-M1B
 model_tier: strong
 risk: high
-disposition: []
+disposition: [PKL_UPDATED, RESULT_SUMMARY_KEPT]
 owner: Codex implementation seat
 created: 2026-08-01
 branch: codex/arch-reset-2026-07-r1
@@ -920,3 +920,65 @@ WO-03 policy is needed; if PA-03 needs endpoint/credential/legacy rollback work;
 overfill or revision guards weaken; if runtime/schema/broker/ADR changes become necessary; or if two
 P0s or three same-root P1s emerge. Close only after focused/full/static/dual-version gates and blind
 review pass, then append one ledger row and reconcile PKL. Do not activate RESET-WO-03 here.
+
+## Review disposition and closeout (2026-08-02)
+
+Reviewer-owned `REV-0048/result.md` first returned `BLOCK` on retained-history live scans and an
+importable checkpoint-construction capability. `result-addendum-01.md` confirmed those were closed
+but returned `BLOCK` on delayed nested broker-fact component subclasses. Subsequent bounded
+re-gates closed that P0 and the later checkpoint, provenance, retained-value, public-command, and
+evidence-provenance findings without widening into persistence or runtime work.
+
+The final independent addendum reviewed exact evidence target
+`883c0b664708c3b1fba09f7f69b63e8c9b6f9d75`, whose production/test implementation freeze is
+`cd4295c29bc72bd7b16d9b6f7a6fb09f99ba1c4e`. It verified byte-identical source/test trees across
+that evidence-only successor, independently passed all 521 pure execution-core tests and focused
+static gates, performed fresh construction/provenance, late-acceptance, sibling-capacity, and
+public-command-boundary attacks, rehashed the `_16` evidence, and returned `ACCEPT` with no
+unresolved P0/P1. The reviewer artifact is
+`work/review/REV-0048/result-addendum-02.md`, 8,894 bytes, SHA-256
+`79ec258b580c91b0bc78cb15b7cae2a1ccd99154ae99bd96e9e51b7e7769769d`; its containing review-artifact
+commit is `c6b8481a206a6b116adfbe700e1e93fefe13b3ab`.
+
+This closeout changes documentation/governance only. The final closeout commit cannot name its own
+SHA or later workflow run. It must be pushed once, left unchanged, and accepted only by an external
+record binding that exact SHA to the repository's unchanged successful Python 3.11 and Python 3.12
+jobs. Until that succeeds, this `CLOSED` disposition is a non-activating closeout candidate:
+the effective lifecycle remains `REVIEW`, `WO-0147` remains inactive, and no later work may rely on
+closure. A red, canceled, mismatched-head, or incomplete job requires the candidate to be amended
+and re-run; no post-success evidence-only successor is permitted.
+
+```yaml
+fable_done:
+  task: "WO-0146 reset kernel B: venue ownership and recovery lifecycle"
+  done_when_results:
+    - item: "Pure venue ownership, ambiguity, closure, and ADR-012 recovery behavior is exact and deterministic."
+      status: MET
+      evidence: "The restored implementation freeze passed all 521 execution-core tests; named examples and stateful histories cover effect/attempt separation, one-to-many acceptances, immutable closure, unknown outcomes, human-attested fill/release, and later broker evidence."
+    - item: "Every capital/authority guard is failure-capable and restored green."
+      status: MET
+      evidence: "The M1-M10 ledger records concrete commands, nodes, base-temp paths, decisive failures or disclosed safe survivors, and restoration. The final reviewer independently repeated stronger sibling-capacity and public-command mutants."
+    - item: "Focused, static, R2, and repository coverage gates pass without a production dependency on persistence or broker code."
+      status: MET
+      evidence: "521 pure tests, Ruff check/format, mypy over seven files, six import contracts, 61 R2 cases under BROKER_ADAPTER=mock, and 5,109 repository cases passed. The unchanged combined line/branch floor passed at 93.00594652069468%."
+    - item: "Independent review has no unresolved P0/P1."
+      status: MET
+      evidence: "REV-0048 result-addendum-02 returned ACCEPT at exact target 883c0b664708c3b1fba09f7f69b63e8c9b6f9d75 after fresh probes and source/test tree-identity verification."
+    - item: "Allowed paths and broker, credential, persistence, runtime, merge, deletion, and cleanup exclusions remain respected."
+      status: MET
+      evidence: "The cumulative 25-path inventory is entirely allowed or activation-only. Existing R2/full fixtures used only authorized disposable test SQLite; no persistent application database, credential, broker/Paper activity, runtime wiring, merge, deletion, or cleanup occurred."
+  scope_check:
+    allowed_paths_respected: true
+    drive_by_edits: false
+  debt_check: "No in-scope P0/P1 remains. Runtime persistence, adapters, supervisor policy, protection, acquisition, and cutover remain explicitly deferred to later gated slices."
+  deferred:
+    - "External exact-head Python 3.11/3.12 CI is the effectiveness gate for this immutable closeout candidate; effective lifecycle remains REVIEW until it succeeds."
+  status: VERIFIED
+  verification_scope: "Implementation, static, scope, evidence, and independent-review gates only; no in-commit claim that later CI has passed."
+  acceptance_condition: "EXTERNAL_EXACT_HEAD_CI_REQUIRED_BEFORE_WO_0147"
+```
+
+WO-0146 is retained with `[PKL_UPDATED, RESULT_SUMMARY_KEPT]`. No ADR changed. No packet, accepted
+ADR, runtime, persistence, broker, credential, branch/worktree, or preserved artifact was mutated or
+removed. The prohibited R1 DDL result was not used for any design, test, review, or acceptance
+conclusion.

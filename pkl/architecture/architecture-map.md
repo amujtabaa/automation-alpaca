@@ -4,7 +4,7 @@ title: Architecture Map (reset target and frozen Spine v2 evidence)
 status: active
 authority: high
 owner: Ameen
-last_verified: 2026-07-31
+last_verified: 2026-08-02
 tags: [architecture, boundaries, layers]
 source_refs: [docs/adr/ADR-020-current-state-execution-kernel.md, docs/adr/ADR-021-position-protection-liquidity-execution.md, docs/adr/ADR-022-reset-beta-scope-cutover-governance.md, docs/adr/ARCH-RESET-2026-07-RATIFICATION.md, docs/01_ARCHITECTURE.md]
 supersedes: []
@@ -21,9 +21,12 @@ production store. Immutable execution facts, claims, acceptance/closure evidence
 and terminal closures carry narrow durable authority; audit/replay explains and tests decisions but
 does not replace current state on the live path.
 
-The checked-in Spine v2 application remains the as-built legacy generation and read-only evidence
-until separately activated reset work replaces bounded semantic centers. M0 changes no runtime
-behavior and activates neither generation.
+The checked-in Spine v2 application remains the as-built legacy generation and read-only evidence.
+The first two reset M1 semantic centers are implemented and unwired: closed `WO-0145` owns immutable
+execution facts and position truth; reviewed `WO-0146` owns venue effects, concrete acceptances,
+closure, ambiguity, and ADR-012 recovery. WO-0146 is a proposed closeout whose effective lifecycle
+remains `REVIEW` until immutable exact-head CI succeeds. Neither slice changes runtime behavior or
+persistence. Later M1 policy slices remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -38,6 +41,11 @@ behavior and activates neither generation.
 - Single writer: only the sequenced engine commits capital-relevant state. Position quantity changes
   only through first-occurrence canonical `FILL` facts and predecessor-linked broker-authoritative
   `TRADE_CORRECT`/`TRADE_BUST` revisions. `SUBMITTED`/`ACCEPTED` never change quantity.
+- Pure reset kernel boundary: `app/execution_core` contains no store, broker adapter, event, API,
+  UI, or runtime dependency. Its current venue model retains one-to-many immutable acceptance
+  ownership, bounded live indexes, explicit `OPEN -> CLOSED -> INVALIDATED` parent authority, and a
+  separate capacity-capped human-fill/non-economic release boundary. It remains an unwired M1
+  reference center until later persistence and composition work orders.
 - Boundary enforcement: import-linter contracts in CI; a PR crossing a protected seam fails.
 - Runtime pins: Python 3.11 and 3.12 supported, 3.12 development default, no 3.12-only production
   syntax; FastAPI; Streamlit; `alpaca-py` in the adapter only; SQLite as the sole reset-beta
@@ -66,3 +74,8 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
 - 2026-07-07: Created from CLAUDE.md §5/§2 decomposition. `last_verified` date reflects decomposition, not code audit; WO-0002…WO-0005 will verify against code.
 - 2026-07-31: M0 recorded the accepted reset target, runtime contract, and frozen-legacy boundary;
   no production behavior changed.
+- 2026-08-02: Closed pure M1A and filed the independently accepted M1B implementation as a proposed
+  `WO-0146` closeout. Venue ownership, ambiguity, immutable acceptance closure, and ADR-012 recovery
+  remain I/O-free and unwired. Trading-mode/final-claim authority and later M1 slices remain
+  inactive; WO-0146's effective lifecycle remains `REVIEW` until external exact-head Python
+  3.11/3.12 CI succeeds.

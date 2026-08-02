@@ -69,3 +69,17 @@
   immutable closure, and ADR-012 human recovery semantics. The companion branch/worktree manifest
   is read-only; no ref, worktree, or artifact deletion is eligible until complete M1 independent
   acceptance, a normal master merge, and exact merged-master Python 3.11/3.12 CI.
+
+- 2026-08-02: Filed the WO-0146 pure venue-ownership/recovery closeout candidate without runtime or
+  persistence wiring. The kernel now retains deterministic effect/attempt separation, one-to-many immutable
+  concrete acceptances, bounded live ownership/closure indexes, `OPEN -> CLOSED -> INVALIDATED`
+  parent authority, unknown-outcome quarantine, capacity-capped ADR-012 human fills, non-economic
+  per-leg release, and exact later-broker corroboration/reconciliation. The implementation freeze
+  passed 521 pure cases; R2 passed 61; the repository run collected 5,109 tests and passed the
+  unchanged combined coverage floor at `93.00594652069468%`. Ten mutation groups and fresh reviewer
+  attacks were failure-capable. Reviewer-owned REV-0048 addendum-02 accepted exact evidence target
+  `883c0b6` with no unresolved P0/P1. The candidate's effective lifecycle remains `REVIEW` and it
+  becomes closed only after external exact-head Python 3.11/3.12 CI; until then
+  RESET-WO-03/WO-0147 remains inactive. Existing fixtures used only authorized disposable test SQLite with
+  `BROKER_ADAPTER=mock`; no credential, broker/Paper activity, persistent database, runtime wiring,
+  PR/merge, deletion, cleanup, or prohibited-R1-DDL reliance occurred.
