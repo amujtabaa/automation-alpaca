@@ -93,3 +93,10 @@
   exact evidence target `982d213` with no unresolved P0/P1. The repaired documentation closeout is
   still only a candidate: effective lifecycle remains `REVIEW`, WO-0147 remains inactive, and one
   immutable exact-head Python 3.11/3.12 run is mandatory.
+
+- 2026-08-02: Immutable repaired WO-0146 closeout `7d1c9e5` passed GitHub Actions run #685 on
+  Python 3.11 job `91510146946` and Python 3.12 job `91510146979`. Closed the external predecessor
+  gate and separately activated pure `WO-0147` for deny-by-default execution authority, manual
+  controls, shared request budgets, symbol-wide blockers, and atomic final claim. No broker,
+  credential, database/persistence, runtime, protection/acquisition, merge, deletion, cleanup, or
+  prohibited-R1-DDL authority was added.

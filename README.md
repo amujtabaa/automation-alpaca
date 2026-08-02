@@ -6,9 +6,9 @@
 > [`ADR-021`](docs/adr/ADR-021-position-protection-liquidity-execution.md), and
 > [`ADR-022`](docs/adr/ADR-022-reset-beta-scope-cutover-governance.md), with acceptance recorded in
 > the [ratification index](docs/adr/ARCH-RESET-2026-07-RATIFICATION.md). M0 changes no runtime
-> behavior. The first pure reset slice closed as `WO-0145`; after its exact-head review and
-> dual-version CI passed, Ameen separately activated pure venue-recovery slice `WO-0146`. Neither
-> slice wires or runs the frozen application.
+> behavior. The first two pure reset slices, `WO-0145` and `WO-0146`, are closed after independent
+> review and exact-head dual-version CI. Pure execution-authority slice `WO-0147` is active; it is
+> deny-by-default, I/O-free, and unwired. None of these slices runs the frozen application.
 
 A browser-operated, **paper-first** automated trading cockpit: a FastAPI backend
 (the durable engine that owns and persists all truth) + a thin Streamlit cockpit

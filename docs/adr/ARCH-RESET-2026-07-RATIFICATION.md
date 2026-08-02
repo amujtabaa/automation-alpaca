@@ -80,5 +80,11 @@ schema execution remains a separately authorized future M2 gate.
    Paper/live-shadow is authorized.
 5. After exact closeout `dfb8ed30ebed788f1158d7f8be49b44d505c355b` passed independent
    review and unchanged Python 3.11/3.12 CI, Ameen authorized options 1–4 on 2026-08-01. Only
-   RESET-WO-02 is presently active, as pure I/O-free `WO-0146`; the companion retirement manifest
+   RESET-WO-02 was then activated as pure I/O-free `WO-0146`; the companion retirement manifest
    is inventory-only, and no deletion begins before the complete M1 merge and exact-master CI gates.
+6. Repaired immutable `WO-0146` closeout `7d1c9e5babe5f60bcbbe9e54c6d6dd0bfecf5551`
+   passed GitHub Actions run `30752961917` (#685): Python 3.11 job `91510146946` and Python 3.12
+   job `91510146979` both succeeded. The separately authorized pure, deny-by-default execution-
+   authority slice is active as `WO-0147`; RESET-WO-04 and later slices remain inactive. This
+   activation grants no broker, credential, database, persistence, runtime, merge, or cleanup
+   authority.

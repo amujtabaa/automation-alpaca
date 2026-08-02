@@ -22,12 +22,13 @@ and terminal closures carry narrow durable authority; audit/replay explains and 
 does not replace current state on the live path.
 
 The checked-in Spine v2 application remains the as-built legacy generation and read-only evidence.
-The first two reset M1 semantic centers are implemented and unwired: closed `WO-0145` owns immutable
-execution facts and position truth; independently reviewed `WO-0146` owns venue effects, concrete
-acceptances, closure, ambiguity, and ADR-012 recovery. Its repaired Python-compatible test oracle
-changes no production byte. WO-0146 is a proposed closeout whose effective lifecycle remains
-`REVIEW` until immutable exact-head CI succeeds. Neither slice changes runtime behavior or
-persistence. Later M1 policy slices remain inactive until separately gated.
+The first two reset M1 semantic centers are implemented, independently accepted, exact-head CI
+green, and unwired: closed `WO-0145` owns immutable execution facts and position truth; closed
+`WO-0146` owns venue effects, concrete acceptances, closure, ambiguity, and ADR-012 recovery. Pure
+`WO-0147` is active to add deny-by-default trading mode, manual controls, shared request budgets,
+symbol-wide execution authority, and atomic final claim. It cannot authenticate an operational
+supervisor fence. No reset slice changes runtime behavior or persistence; protection and later M1
+policy slices remain inactive until separately gated.
 
 ## Rules / facts
 
@@ -85,3 +86,7 @@ Seam discipline is what makes the safety invariants structurally enforceable rat
   cycle, and output-determinism bypasses; REV-0048 addendum-04 returned `ACCEPT` with no P0/P1.
   The effective lifecycle and later-slice activation boundary remain unchanged pending exact-head
   Python 3.11/3.12 CI.
+- 2026-08-02: Exact repaired closeout `7d1c9e5` passed GitHub Actions run #685 on Python 3.11 and
+  3.12. Closed WO-0146's external gate and activated only pure `WO-0147`; M2 fence persistence/
+  hydration, later M4/cutover authentication, runtime wiring, protection, and acquisition remain
+  outside it.

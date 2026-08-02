@@ -19,12 +19,12 @@ Build a narrow, reliable, browser-operated protection/acquisition engine for Alp
 accepted reset target is a modular monolith with one sequenced writer, one pure transition kernel,
 one SQLite production store, transactional current state/outbox, and broker-neutral protection and
 side-symmetric liquidity execution. The integrated Spine v2 application and R6 branch are frozen
-evidence, not the reset foundation. M0 and pure M1A `WO-0145` are closed. Pure M1B `WO-0146` owns
-venue effects, one-to-many concrete acceptances, immutable closure, ambiguity, and ADR-012 recovery
-semantics; its repaired implementation and complete Python-compatibility oracle have independent
-`ACCEPT`, and it is filed as a proposed `CLOSED` closeout whose effective lifecycle remains
-`REVIEW` until its immutable exact SHA passes unchanged Python 3.11/3.12 CI. RESET-WO-03 and later
-slices remain inactive.
+evidence, not the reset foundation. M0 and pure M1A/M1B `WO-0145`/`WO-0146` are closed. Their
+immutable execution-truth and venue/recovery centers remain I/O-free and unwired. After repaired
+`WO-0146` closeout `7d1c9e5` passed independent review and exact-head Python 3.11/3.12 CI, pure
+M1C `WO-0147` was activated to own deny-by-default trading mode, manual controls, request budgets,
+symbol-wide execution authority, and atomic final claim. RESET-WO-04 and later slices remain
+inactive.
 
 ## Rules / facts
 
@@ -37,10 +37,10 @@ slices remain inactive.
   use transactional current state under ADR-020.
 - The permanent safety core lives verbatim in `CLAUDE.md` and is never overridden by tooling or convenience defaults.
 - Reset implementation advances only through independently reviewed work orders explicitly activated
-  after their predecessor gates. `WO-0145` is `CLOSED`; `WO-0146` is a non-activating closeout
-  candidate with effective lifecycle `REVIEW`; no reset implementation work order is active.
-  RESET-WO-03 inherits no implementation authority until WO-0146's immutable final closeout SHA
-  passes unchanged Python 3.11/3.12 CI and a separate activation commit makes it canonical.
+  after their predecessor gates. `WO-0145` and `WO-0146` are `CLOSED`; `WO-0147` is the only active
+  reset implementation work order. It remains pure, credential-free, deny-by-default, and unwired.
+  RESET-WO-04 inherits no implementation authority until WO-0147 closes by independent review and
+  unchanged exact-head Python 3.11/3.12 CI.
 
 ## Rationale
 
@@ -79,3 +79,9 @@ Roadmapping against an unverified codebase state repeats the failure mode Fable 
   `982d213` with no unresolved P0/P1. The repaired candidate remains effectively `REVIEW` and
   non-activating until its immutable exact SHA passes Python 3.11/3.12 CI; RESET-WO-03 and every
   later slice remain inactive.
+- 2026-08-02: Repaired immutable closeout `7d1c9e5` passed GitHub Actions run #685 on Python 3.11
+  and 3.12, satisfying WO-0146's final external gate. Activated only `WO-0147`, the pure execution-
+  authority/manual-control/request-budget slice. It cannot authenticate the later M4/cutover
+  supervisor fence or perform broker, database, persistence, runtime, merge, deletion, or cleanup
+  work. M2 may persist and hydrate the deny-only fence but cannot promote it without those later
+  adapter/cutover gates.
