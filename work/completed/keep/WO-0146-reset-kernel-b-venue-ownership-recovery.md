@@ -982,3 +982,30 @@ WO-0146 is retained with `[PKL_UPDATED, RESULT_SUMMARY_KEPT]`. No ADR changed. N
 ADR, runtime, persistence, broker, credential, branch/worktree, or preserved artifact was mutated or
 removed. The prohibited R1 DDL result was not used for any design, test, review, or acceptance
 conclusion.
+
+## Exact-head Python 3.11 CI failure and bounded re-gate (2026-08-02)
+
+The external effectiveness condition did not pass. GitHub Actions run `30746436486` (#682) targeted
+the exact closeout candidate `4b9b47de1936a179478f1c638c4872a4b0935719`. Python 3.12 job
+`91492722638` passed every step. Python 3.11 job `91492722592` passed checkout, dependency,
+Ruff, mypy, import-boundary, contamination, AI-OS, and R2 gates, then failed the repository coverage
+step with three `RecursionError` cases in
+`tests/execution_core/test_fill_position_stateful.py`. The exact traceback enters the test helper
+at line 234 while computing `repr(root_heads)` before the reducer call; Python 3.11 recursively
+renders the private persistent radix tree until its recursion limit. The secondary coverage failure
+reflects those three aborted tests, not a separately established coverage regression.
+
+This invalidates the prior closeout candidate and keeps the effective lifecycle at `REVIEW`.
+`WO-0147` remains inactive. Ameen's standing authorization for in-flight findings re-gates only the
+directly necessary WO-0146 correction under the existing allowed path
+`tests/execution_core/test_fill_position_stateful.py`, plus exact evidence/review/PKL reconciliation.
+The failure is already RED evidence. Replace the test-only recursive structural rendering with the
+kernel's public immutable commitments so the mutation/determinism assertion stays failure-capable
+and constant-work; do not weaken the assertion or touch production unless a fresh counterexample
+proves the diagnosis incomplete.
+
+The successor candidate requires the three exact failed nodes, the complete execution-core suite,
+static/scope/AI-OS gates, the authorized R2 and repository suites, independent exact-diff review,
+and unchanged exact-head Python 3.11/3.12 CI. Any production change, assertion weakening, mismatched
+head, or remaining version-specific failure stops the closeout. No broker, credential, Paper,
+persistent database, runtime wiring, PR/merge, retirement, deletion, or cleanup authority is added.
