@@ -158,6 +158,22 @@ inside the implementation range.
   budget reserve, grant/session mismatch, safely-local BUY, claimed-no-leg BUY, cancellable leg,
   cancel acknowledgement, terminal leg with `OPEN` parent, exact closure, and late fill.
 
+## Pre-implementation static finding and bounded correction
+
+Static clause comparison found one inherited M1B mismatch before any WO-0147 production edit.
+`VenueEffectScope` currently requires `client_order_id` for every effect kind and carries no exact
+cancel target. The accepted reset persistence contract requires nonempty creating identities only
+for `SUBMIT`/`REPLACE`; `CANCEL` must retain `client_order_id=NULL`, target an existing identity
+through immutable payload, and create no new venue owner. Treating a cancel as a creating effect
+would make the new final-claim authority inconsistent with the accepted M2 representation.
+
+The user's standing in-flight-remediation authority re-gates only the directly necessary correction
+inside the already allowed `venue.py`, authority source, and execution-core tests: make creating
+identity kind-aware; bind `CANCEL`/`REPLACE` to an exact existing target; prevent cancel effects from
+creating owners; and add failure-first kind/target/identity/claim/replay tests. Do not edit or execute
+the proposed DDL, persistence, adapters, runtime, or accepted ADRs. If the pure model cannot express
+that contract without widening those paths, stop instead of inventing a second cancel authority.
+
 ## Required live mutation controls
 
 At minimum kill and restore mutants that remove or invert: public-capability sealing; fence, mode,
@@ -197,3 +213,78 @@ This work order, its RED/FIX/evidence sections, reviewer packet, PKL updates, an
 are the continuity mechanism across context compactions. After every freeze or review stop, record
 the exact SHA, admissible/invalidated evidence, remaining gates, and successor boundary here before
 continuing. Conversation memory is never treated as authority.
+
+## RED checkpoint 1 - public authority boundary (2026-08-02)
+
+Before any production edit, the two new pure authority suites were frozen against activation SHA
+`632c907`. Ruff check and format-check passed. The exact isolated run under
+`BROKER_ADAPTER=mock` failed 17 tests: package-root raw capability export, two direct raw venue
+admission bypasses, thirteen missing authority API/reducer contracts, and the generated public-
+genesis machine. The tests now exercise positive create/final-claim/query mechanics through the
+real reducer from a test-local forged environmental predecessor; they do not ship or require a
+production hydrate/promote/refill/grant/test-state mint. No database, SQL/DDL, broker, credential,
+network, runtime, artifact cleanup, or prohibited R1 result was used. This RED output is admissible
+only as failure-first evidence; it makes no implementation claim.
+
+## RED checkpoint 2 - complete authority contract (2026-08-02)
+
+Independent review of checkpoint 1 found three P1 test gaps: the symbol and manual-flatten machines
+and independent slow oracle were absent; final claims were not changed between creation and claim;
+and the reconciliation-only fence was not distinguished from mutation authority. Production stayed
+untouched while the RED contract was rebuilt to close those gaps and the remaining named work-order
+obligations.
+
+The candidate now contains exactly three bounded state machines (`ClaimAuthorityMachine`,
+`SymbolGateMachine`, and `ManualFlattenMachine`), a materialized canonical symbol oracle, scalar and
+same-scope execution-binding drift between effect creation and final claim, full target-bound
+`CANCEL` identity/no-owner/acknowledgement semantics, BUY/SELL and exact residual boundaries,
+query-only versus mutation fences, reserved budget use, one-shot emergency-grant scope and
+consumption, manual-flatten stand-down/cancel/parent-closure progression, replay/conflict atomicity,
+and audit-materialization traps on hot authority paths.
+
+Two independent static re-reviews then found additional failure-capability gaps while production
+remained untouched. The RED contract was corrected so `BeginManualFlatten` atomically creates the
+exact target-bound cancel, kill-before-claim atomically stands down unclaimed requested work while
+kill-after-claim preserves the claim, a final SELL claim re-reads a canonically reduced residual,
+different-symbol execution drift advances an account-wide reconciliation epoch, the exact target
+exemption cannot hide a safely-local sibling, and `RECONCILIATION_ONLY` cannot admit `CANCEL`.
+Every reducer input is also applied twice from the same predecessor, and invalid effect-shape
+examples now require the exact semantic `ValueError` instead of accepting a missing API as success.
+
+The next two independent mutation reviews still found surviving simple wrong implementations, so
+production remained frozen for a third RED repair. The exact candidate now also isolates the
+book-owned account epoch from the execution flag; traps every audit materializer and persistent
+sequence traversal on hot paths; rejects missing, terminal, cross-account, cross-symbol, and
+economically mismatched cancel targets; distinguishes requested, claimed, acknowledged, rejected,
+and outcome-unknown cancel effects; re-gates a cancel claim after a fence downgrade; proves the
+normal `reserve + 1` boundary and reserved query exhaustion; proves query venue non-mutation and
+identity conflicts; rejects every authority-command subclass; and persists replay/conflict
+semantics across kill, begin-flatten, advance-flatten, effect-claim, and query-claim successors.
+Manual-flatten histories now combine a safely-local BUY with multiple known cancellable legs,
+refuse mixed safely-local/unknown work all-or-none, enforce session/mode/kill and one-final-SELL
+boundaries, and re-gate the final manual SELL after both residual and supervisor-fence drift.
+
+A subsequent exact re-review caught two permanent-test risks and three remaining edge gaps. The
+account-epoch case now builds an independently clean snapshot rather than attempting to clear a
+sticky reconciliation latch; the history guard permits bounded indexed reads while rejecting
+materialization and more than a fixed small read count over 32-entry histories; and sealed command
+classes may reject subclass creation before reducer entry. The contract additionally requires
+account-wide kill to stand down all unclaimed requests across symbols while preserving claims,
+one multi-acceptance BUY to emit one cancel per owned leg, mixed local/known/unknown flatten work to
+refuse without partial mutation, a cancel target to remain cancellable at final claim, and an
+emergency SELL to re-check late venue uncertainty and canonical residual shrink without consuming
+its grant or budget.
+
+Ruff check and format-check passed for both authority suites. The isolated pure run with
+`BROKER_ADAPTER=mock` collected 99 tests and produced the intended `99 failed, 0 passed`. Every
+deterministic example and each of the three bounded state machines is implementation-sensitive;
+there is no inherited or accidental green case. No SQL/DDL, database, fixture that initializes a
+database, broker, credential, network, persistence, runtime wiring, or prohibited R1 result was
+used. This checkpoint remains failure-first evidence only and must pass an independent
+test-contract re-review before production implementation starts.
+
+Two independent final static re-reviews of these exact staged obligations returned `ACCEPT` with
+no P0/P1 finding. One re-derived clause completeness and false-RED risk; the other re-derived the
+named mutation controls, bounded-read proof, exact-type sealing, and account-wide kill behavior.
+Neither reviewer ran tests or changed state. Production implementation may begin only from the
+immutable commit containing this 99/99 RED checkpoint.
