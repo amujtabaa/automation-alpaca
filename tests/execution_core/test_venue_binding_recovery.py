@@ -36,10 +36,8 @@ from app.execution_core import (
     PositionState,
     Quantity,
     RecordBrokerFillEvidence,
-    RecordDispatchClaim,
     ReleaseVenueLeg,
     RequestOccurrenceId,
-    RequestedEffect,
     RootHeadIndex,
     SeenFactIndex,
     SymbolId,
@@ -47,10 +45,28 @@ from app.execution_core import (
     VenueInputId,
     VenueRecoveryBook,
     VenueRecoveryDisposition,
-    apply_venue_recovery_input,
+    apply_venue_recovery_input as _public_apply_venue_recovery_input,
 )
 from tests.execution_core import test_venue_recovery as recovery_fixtures
-from app.execution_core.venue import _audit_hydrate_book
+from app.execution_core.venue import (
+    RecordDispatchClaim,
+    RequestedEffect,
+    _apply_venue_input,
+    _audit_hydrate_book,
+)
+
+
+def apply_venue_recovery_input(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+):
+    reducer = (
+        _apply_venue_input
+        if type(item) in {RequestedEffect, RecordDispatchClaim}
+        else _public_apply_venue_recovery_input
+    )
+    return reducer(book, execution, item)
 
 
 def _required_api(name: str) -> object:
@@ -1210,7 +1226,7 @@ def test_unresolved_execution_cursor_cannot_bootstrap_a_fresh_book() -> None:
     assert fresh_book.effect(EffectId("fresh-book-rollback-effect")) is None
 
 
-def test_nonempty_genesis_cursor_snapshot_cannot_bootstrap_a_fresh_book() -> None:
+def test_coherent_nonempty_execution_can_bind_a_fresh_private_book() -> None:
     book, execution = recovery_fixtures._seed_needs_review(capacity=4)
     ahead = recovery_fixtures._apply_broker(
         execution,
@@ -1225,7 +1241,7 @@ def test_nonempty_genesis_cursor_snapshot_cannot_bootstrap_a_fresh_book() -> Non
     assert ahead.account_reconciliation_required is False
 
     fresh_book = VenueRecoveryBook.empty(recovery_fixtures.VENUE_SCOPE)
-    refused = apply_venue_recovery_input(
+    registered = apply_venue_recovery_input(
         fresh_book,
         ahead,
         RequestedEffect(
@@ -1242,10 +1258,11 @@ def test_nonempty_genesis_cursor_snapshot_cannot_bootstrap_a_fresh_book() -> Non
         ),
     )
 
-    assert refused.disposition is VenueRecoveryDisposition.REFUSED
-    assert refused.book is fresh_book
-    assert refused.execution is ahead
-    assert fresh_book.effect(EffectId("fresh-book-genesis-effect")) is None
+    assert registered.disposition is VenueRecoveryDisposition.APPLIED
+    effect = registered.book.effect(EffectId("fresh-book-genesis-effect"))
+    assert effect is not None
+    assert registered.execution == ahead
+    assert registered.book.execution_binding(ahead.position.scope) is not None
 
 
 def test_catch_up_rejects_an_inner_registry_subclass_before_using_its_proofs() -> None:

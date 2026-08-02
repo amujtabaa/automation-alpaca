@@ -15,7 +15,7 @@ import importlib
 from types import ModuleType
 
 import pytest
-from hypothesis import settings, strategies as st
+from hypothesis import HealthCheck, settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 
 from app.execution_core.fills import (
@@ -1666,18 +1666,31 @@ class ManualFlattenMachine(RuleBasedStateMachine):
                     side=ExecutionSide.SELL,
                 ),
                 evidence_digest=b"\x92" * 32,
+                closure_id=None,
+                evidence_reference=None,
+            ),
+        )
+        terminal = _venue_apply_twice(
+            shrunk.book,
+            shrunk.execution,
+            ObserveVenueStatus(
+                input_id=VenueInputId("manual-shrink-terminal-input"),
+                leg_key=SHRINK_LEG,
+                status=VenueAttemptState.FILLED,
+                observation_id=VenueObservationId("manual-shrink-terminal"),
+                cumulative_quantity=Quantity(1),
                 closure_id=ClosureId("manual-shrink-fill-closure"),
                 evidence_reference=EvidenceReference("manual-shrink-fill-evidence"),
             ),
         )
         closed = _venue_apply_twice(
-            shrunk.book,
-            shrunk.execution,
+            terminal.book,
+            terminal.execution,
             CloseAcceptanceSet(
                 input_id=VenueInputId("manual-shrink-close-input"),
                 effect_id=shrink_effect_id,
                 proof=_proof(
-                    shrunk.book,
+                    terminal.book,
                     shrink_effect_id,
                     "manual-shrink-close",
                 ),
@@ -1819,6 +1832,49 @@ def test_engage_kill_stands_down_all_unclaimed_account_effects_atomically() -> N
     assert replay.fresh_claim is None
 
 
+def test_engage_kill_latches_when_atomic_stand_down_cannot_be_reconciled() -> None:
+    module = _authority_module()
+    disposition_type, authority_input_type, engage_kill_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "EngageKill",
+    )
+    predecessor = _forge_authority(module, remaining=5, reserve=2)
+    created = _create_effect(
+        module,
+        predecessor,
+        EXECUTION,
+        "kill-stale-binding",
+        side=ExecutionSide.BUY,
+        quantity=1,
+    )
+    assert created.disposition is disposition_type.APPLIED
+    stale_execution = _apply_fact(
+        EXECUTION,
+        _broker_fill("kill-stale-binding", leg_key=LEG, quantity=1),
+    )
+    command = engage_kill_type(
+        input_id=authority_input_type("kill-stale-binding-input"),
+        actor=ActorId("kill-stale-binding-operator"),
+        reason="kill must latch despite stale cleanup binding",
+        evidence_reference=EvidenceReference("kill-stale-binding-evidence"),
+    )
+
+    applied = _authority_apply_twice(
+        module,
+        created.state,
+        stale_execution,
+        command,
+    )
+    assert applied.disposition is disposition_type.APPLIED
+    assert applied.state.kill_engaged is True
+    assert applied.state.venue == created.state.venue
+    assert applied.state.budget == created.state.budget
+    assert applied.created_effect_ids == ()
+    assert applied.fresh_claim is None
+
+
 def test_begin_manual_flatten_successor_replay_and_conflict_are_atomic() -> None:
     module = _authority_module()
     disposition_type, flatten_id_type = _required(
@@ -1915,6 +1971,81 @@ def test_advance_manual_flatten_successor_replay_and_conflict_are_atomic() -> No
     assert conflict.fresh_claim is None
 
 
+def test_manual_flatten_waits_for_its_cancel_acceptance_parent_to_close() -> None:
+    module = _authority_module()
+    disposition_type, reason_type, authority_input_type, claim_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "AuthorityInputId",
+        "ClaimEffect",
+    )
+    state, execution, flatten_id, buy_effect_id, cancel_effect_id = (
+        _begin_waiting_manual_flatten(module, "cancel-parent-open")
+    )
+    claimed = _authority_apply_twice(
+        module,
+        state,
+        execution,
+        claim_type(
+            input_id=authority_input_type("cancel-parent-open-claim-input"),
+            effect_id=cancel_effect_id,
+            claim_occurrence_id=ClaimOccurrenceId("cancel-parent-open-claim"),
+        ),
+    )
+    acknowledged = _venue_apply_twice(
+        claimed.state.venue,
+        execution,
+        RecordTransportOutcome(
+            input_id=VenueInputId("cancel-parent-open-ack-input"),
+            effect_id=cancel_effect_id,
+            state=BrokerEffectState.ACKNOWLEDGED,
+        ),
+    )
+    terminal = _venue_apply_twice(
+        acknowledged.book,
+        execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId("cancel-parent-open-terminal-input"),
+            leg_key=LEG,
+            status=VenueAttemptState.CANCELED,
+            observation_id=VenueObservationId("cancel-parent-open-terminal"),
+            cumulative_quantity=Quantity(0),
+            closure_id=ClosureId("cancel-parent-open-terminal-closure"),
+            evidence_reference=EvidenceReference(
+                "cancel-parent-open-terminal-evidence"
+            ),
+        ),
+    )
+    buy_closed = _venue_apply_twice(
+        terminal.book,
+        terminal.execution,
+        CloseAcceptanceSet(
+            input_id=VenueInputId("cancel-parent-open-buy-close-input"),
+            effect_id=buy_effect_id,
+            proof=_proof(
+                terminal.book,
+                buy_effect_id,
+                "cancel-parent-open-buy-close",
+            ),
+        ),
+    )
+    predecessor = _forge_venue(claimed.state, buy_closed.book)
+
+    refused = _authority_apply_twice(
+        module,
+        predecessor,
+        buy_closed.execution,
+        _manual_advance(module, flatten_id, "cancel-parent-open"),
+    )
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.reason is reason_type.VENUE_UNCERTAIN
+    assert refused.state == predecessor
+    cancel = refused.state.venue.effect(cancel_effect_id)
+    assert cancel is not None
+    assert cancel.acceptance_set_state is AcceptanceSetState.OPEN
+
+
 def test_manual_flatten_atomically_cancels_every_known_buy_leg() -> None:
     module = _authority_module()
     disposition_type, flatten_id_type = _required(
@@ -1988,6 +2119,62 @@ def test_manual_flatten_atomically_cancels_every_known_buy_leg() -> None:
     assert applied.state.venue.owners == owners_before
     assert applied.state.budget == predecessor.budget
     assert applied.fresh_claim is None
+
+
+def test_two_manual_flattens_cannot_reserve_the_same_buy_leg() -> None:
+    module = _authority_module()
+    disposition_type, reason_type, flatten_id_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "ManualFlattenId",
+    )
+    book, execution, _ = _seed_raw_effect(
+        VenueRecoveryBook.empty(VENUE_SCOPE),
+        LONG_EXECUTION,
+        "duplicate-flatten-target",
+        claim=True,
+        leg_key=LEG,
+    )
+    predecessor = _forge_venue(
+        _forge_authority(
+            module,
+            mode="REDUCING",
+            remaining=8,
+            reserve=2,
+        ),
+        book,
+    )
+    first = _authority_apply_twice(
+        module,
+        predecessor,
+        execution,
+        _manual_begin(
+            module,
+            predecessor,
+            flatten_id_type("duplicate-flatten-first"),
+            "duplicate-flatten-first",
+        ),
+    )
+    assert first.disposition is disposition_type.APPLIED
+    assert len(first.created_effect_ids) == 1
+
+    second = _authority_apply_twice(
+        module,
+        first.state,
+        execution,
+        _manual_begin(
+            module,
+            first.state,
+            flatten_id_type("duplicate-flatten-second"),
+            "duplicate-flatten-second",
+        ),
+    )
+    assert second.disposition is disposition_type.REFUSED
+    assert second.reason is reason_type.VENUE_UNCERTAIN
+    assert second.state == first.state
+    assert second.created_effect_ids == ()
+    assert second.fresh_claim is None
 
 
 def test_manual_flatten_mixed_local_and_unknown_buy_refuses_all_or_none() -> None:
@@ -2297,6 +2484,7 @@ TestSymbolGateMachine.settings = settings(
     max_examples=18,
     stateful_step_count=12,
     deadline=None,
+    suppress_health_check=[HealthCheck.filter_too_much],
 )
 
 TestManualFlattenMachine = ManualFlattenMachine.TestCase

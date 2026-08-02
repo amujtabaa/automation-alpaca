@@ -39,6 +39,7 @@ from app.execution_core.venue import (
     VenueRecoveryDisposition,
     VenueRecoveryTransition,
     VenueScope,
+    _apply_venue_input,
     _audit_hydrate_book,
     apply_venue_recovery_input,
 )
@@ -375,7 +376,7 @@ def test_public_transition_cannot_mint_or_replace_quantity_delta() -> None:
     """Only the reducer may construct an exact transition and its economic delta."""
 
     book, execution = recovery_fixtures._seed_needs_review(capacity=4)
-    replayed = apply_venue_recovery_input(
+    replayed = _apply_venue_input(
         book,
         execution,
         book.input_records[0].item,

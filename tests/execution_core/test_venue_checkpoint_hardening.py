@@ -79,8 +79,9 @@ from app.execution_core.venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
+    _apply_venue_input,
     _audit_hydrate_book,
-    apply_venue_recovery_input,
+    apply_venue_recovery_input as _public_apply_venue_recovery_input,
 )
 
 
@@ -121,6 +122,19 @@ LEG_B = VenueLegKey(
 ACTOR = ActorId("checkpoint-operator")
 SCALE = PriceScale(Decimal("1"))
 TICK = TickMetadata(tick_units=PriceUnits(1), scale=SCALE)
+
+
+def apply_venue_recovery_input(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+):
+    reducer = (
+        _apply_venue_input
+        if type(item) in {RequestedEffect, RecordDispatchClaim, CancelBeforeDispatch}
+        else _public_apply_venue_recovery_input
+    )
+    return reducer(book, execution, item)
 
 
 _BOUND_MUTATION_HELPERS = (

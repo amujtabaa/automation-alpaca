@@ -90,8 +90,9 @@ from app.execution_core.venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
+    _apply_venue_input,
     _audit_hydrate_book,
-    apply_venue_recovery_input,
+    apply_venue_recovery_input as _public_apply_venue_recovery_input,
 )
 
 
@@ -112,6 +113,21 @@ POSITION_SCOPE = PositionScope(
     account=ACCOUNT,
     symbol_id=SYMBOL,
 )
+
+
+def apply_venue_recovery_input(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+):
+    reducer = (
+        _apply_venue_input
+        if type(item)
+        in {RequestedEffect, RecordDispatchClaim, RecordPendingVenueOperation}
+        else _public_apply_venue_recovery_input
+    )
+    return reducer(book, execution, item)
+
 
 EFFECT = EffectId("effect-submit-1")
 REQUEST = RequestOccurrenceId("request-occurrence-1")

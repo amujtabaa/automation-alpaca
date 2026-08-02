@@ -160,6 +160,14 @@ def _canonical_value_commitment(value: object) -> bytes:
             b"execution-core/canonical-bytes/v1",
             cast(bytes, value),
         )
+    if value_type is tuple:
+        return _commit_parts(
+            b"execution-core/canonical-tuple/v1",
+            *(
+                _canonical_value_commitment(item)
+                for item in cast(tuple[object, ...], value)
+            ),
+        )
     if value_type is Decimal:
         decimal_value = cast(Decimal, value)
         numerator, denominator = decimal_value.as_integer_ratio()
@@ -521,6 +529,35 @@ class ClientIdentityBinding:
     client_order_id: ClientOrderId
 
 
+def _validate_effect_identity_shape(
+    kind: EffectKind,
+    client_order_id: ClientOrderId | None,
+    target_leg_key: VenueLegKey | None,
+) -> None:
+    """Validate the creating identity and exact target carried by one effect."""
+
+    _require("kind", kind, EffectKind)
+    if client_order_id is not None:
+        _require("client_order_id", client_order_id, ClientOrderId)
+    if target_leg_key is not None:
+        _require("target_leg_key", target_leg_key, VenueLegKey)
+    if kind is EffectKind.SUBMIT:
+        if client_order_id is None:
+            raise ValueError("SUBMIT requires a client_order_id")
+        if target_leg_key is not None:
+            raise ValueError("SUBMIT cannot target a venue leg")
+    elif kind is EffectKind.CANCEL:
+        if client_order_id is not None:
+            raise ValueError("CANCEL cannot carry a client_order_id")
+        if target_leg_key is None:
+            raise ValueError("CANCEL requires a target_leg_key")
+    else:
+        if client_order_id is None:
+            raise ValueError("REPLACE requires a client_order_id")
+        if target_leg_key is None:
+            raise ValueError("REPLACE requires a target_leg_key")
+
+
 @dataclass(frozen=True, slots=True)
 class VenueEffectScope:
     """Immutable complete economic and identity scope of one effect."""
@@ -533,11 +570,12 @@ class VenueEffectScope:
     request_occurrence_id: RequestOccurrenceId
     mandate_id: MandateId
     kind: EffectKind
-    client_order_id: ClientOrderId
+    client_order_id: ClientOrderId | None
     symbol_id: SymbolId
     side: ExecutionSide
     quantity: Quantity
     economic_scope: bytes
+    target_leg_key: VenueLegKey | None = None
 
     def __post_init__(self) -> None:
         for name, value, expected in (
@@ -549,15 +587,21 @@ class VenueEffectScope:
             ("request_occurrence_id", self.request_occurrence_id, RequestOccurrenceId),
             ("mandate_id", self.mandate_id, MandateId),
             ("kind", self.kind, EffectKind),
-            ("client_order_id", self.client_order_id, ClientOrderId),
             ("symbol_id", self.symbol_id, SymbolId),
             ("side", self.side, ExecutionSide),
             ("quantity", self.quantity, Quantity),
         ):
             _require(name, value, expected)
+        _validate_effect_identity_shape(
+            self.kind,
+            self.client_order_id,
+            self.target_leg_key,
+        )
 
     @property
-    def client_identity(self) -> ClientIdentityBinding:
+    def client_identity(self) -> ClientIdentityBinding | None:
+        if self.client_order_id is None:
+            return None
         return ClientIdentityBinding(
             generation=self.generation,
             broker=self.broker,
@@ -584,11 +628,12 @@ class RequestedEffect:
     request_occurrence_id: RequestOccurrenceId
     mandate_id: MandateId
     kind: EffectKind
-    client_order_id: ClientOrderId
+    client_order_id: ClientOrderId | None
     symbol_id: SymbolId
     side: ExecutionSide
     quantity: Quantity
     economic_scope: bytes
+    target_leg_key: VenueLegKey | None = None
 
     def __post_init__(self) -> None:
         _require("input_id", self.input_id, VenueInputId)
@@ -598,7 +643,6 @@ class RequestedEffect:
         )
         _require("mandate_id", self.mandate_id, MandateId)
         _require("kind", self.kind, EffectKind)
-        _require("client_order_id", self.client_order_id, ClientOrderId)
         _require("symbol_id", self.symbol_id, SymbolId)
         _require("side", self.side, ExecutionSide)
         _require("quantity", self.quantity, Quantity)
@@ -608,6 +652,11 @@ class RequestedEffect:
             raise TypeError("economic_scope must be bytes")
         if not self.economic_scope:
             raise ValueError("economic_scope must be nonempty")
+        _validate_effect_identity_shape(
+            self.kind,
+            self.client_order_id,
+            self.target_leg_key,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1578,15 +1627,94 @@ class _EffectLegSummary:
     owner_count: int = 0
     active_count: int = 0
     finalization_ready_count: int = 0
+    active_leg_keys: tuple[VenueLegKey, ...] = ()
+    known_cancellable_leg_keys: tuple[VenueLegKey, ...] = ()
+    known_cancel_pending_leg_keys: tuple[VenueLegKey, ...] = ()
 
     @property
     def commitment(self) -> bytes:
         return _commit_parts(
-            b"execution-core/venue-effect-leg-summary/v1",
+            b"execution-core/venue-effect-leg-summary/v2",
             _encode_text(str(self.owner_count)),
             _encode_text(str(self.active_count)),
             _encode_text(str(self.finalization_ready_count)),
+            _canonical_value_commitment(self.active_leg_keys),
+            _canonical_value_commitment(self.known_cancellable_leg_keys),
+            _canonical_value_commitment(self.known_cancel_pending_leg_keys),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _CancelTargetReservation:
+    effect_id: EffectId | None
+
+    def __post_init__(self) -> None:
+        if self.effect_id is not None and type(self.effect_id) is not EffectId:
+            raise TypeError("cancel target reservation effect_id must be EffectId")
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-cancel-target-reservation/v1",
+            _canonical_value_commitment(self.effect_id),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _EffectAuthorityContribution:
+    effect_id: EffectId
+    position_scope: PositionScope
+    unclaimed_requested: bool
+    target_exemptible: bool
+    blocking_effect_count: int
+    blocking_buy_effect_count: int
+    stand_downable_buy_count: int
+    stand_downable_buy_effect_ids: tuple[EffectId, ...]
+    known_cancellable_buy_leg_keys: tuple[VenueLegKey, ...]
+    known_cancel_pending_buy_leg_keys: tuple[VenueLegKey, ...]
+    waiting_buy_parent_count: int
+    unknown_buy_effect_count: int
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-effect-authority-contribution/v1",
+            _canonical_value_commitment(self),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _SymbolAuthoritySummary:
+    effect_count: int = 0
+    blocking_effect_count: int = 0
+    blocking_buy_effect_count: int = 0
+    stand_downable_buy_count: int = 0
+    stand_downable_buy_effect_ids: tuple[EffectId, ...] = ()
+    known_cancellable_buy_leg_keys: tuple[VenueLegKey, ...] = ()
+    known_cancel_pending_buy_leg_keys: tuple[VenueLegKey, ...] = ()
+    waiting_buy_parent_count: int = 0
+    unknown_buy_effect_count: int = 0
+
+    @property
+    def commitment(self) -> bytes:
+        return _commit_parts(
+            b"execution-core/venue-symbol-authority-summary/v1",
+            _canonical_value_commitment(self),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _VenueAuthorityView:
+    execution_binding_matches: bool
+    account_reconciliation_clear: bool
+    blocking_effect_count: int
+    blocking_buy_effect_count: int
+    target_exemptible_count: int
+    stand_downable_buy_count: int
+    known_cancellable_buy_leg_count: int
+    known_cancel_pending_buy_leg_count: int
+    waiting_buy_parent_count: int
+    unknown_buy_effect_count: int
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -1634,6 +1762,16 @@ class VenueRecoveryBook:
     _leg_summary_by_effect: _PersistentKeyMap[_EffectLegSummary] = field(
         default_factory=_PersistentKeyMap.empty
     )
+    _cancel_target_reservation_by_leg: _PersistentKeyMap[_CancelTargetReservation] = (
+        field(default_factory=_PersistentKeyMap.empty)
+    )
+    _authority_contribution_by_effect: _PersistentKeyMap[
+        _EffectAuthorityContribution
+    ] = field(default_factory=_PersistentKeyMap.empty)
+    _authority_summary_by_scope: _PersistentKeyMap[_SymbolAuthoritySummary] = field(
+        default_factory=_PersistentKeyMap.empty
+    )
+    _account_unclaimed_requested_effect_ids: tuple[EffectId, ...] = ()
     _reconciliation_count_by_effect: _PersistentKeyMap[int] = field(
         default_factory=_PersistentKeyMap.empty
     )
@@ -1938,6 +2076,32 @@ class VenueRecoveryBook:
         if set(active) & set(heads) or set(active) | set(heads) != set(owners):
             raise ValueError("each owner must have one active attempt or closure head")
         self._validate_effect_edges(effects, claims, owners, heads)
+        self._validate_cancel_target_reservations()
+        self._validate_authority_indexes()
+
+    def _validate_cancel_target_reservations(self) -> None:
+        expected = _rebuild_cancel_target_reservations(self)
+        if self._cancel_target_reservation_by_leg.commitment != expected.commitment:
+            raise ValueError(
+                "cancel target reservation index contradicts canonical current state"
+            )
+
+    def _validate_authority_indexes(self) -> None:
+        (
+            expected_contributions,
+            expected_summaries,
+            expected_unclaimed,
+        ) = _rebuild_authority_indexes(self)
+        if (
+            self._authority_contribution_by_effect.commitment
+            != expected_contributions.commitment
+            or self._authority_summary_by_scope.commitment
+            != expected_summaries.commitment
+            or self._account_unclaimed_requested_effect_ids != expected_unclaimed
+        ):
+            raise ValueError(
+                "venue authority indexes contradict canonical current state"
+            )
 
     def _require_recovery_entry_types(self) -> None:
         """Keep the checkpoint concrete even though recovery types import venue."""
@@ -2003,7 +2167,12 @@ class VenueRecoveryBook:
             (entry.scope.request_occurrence_id for entry in self.effects),
         )
         self._require_unique(
-            "client identity", (entry.scope.client_identity for entry in self.effects)
+            "client identity",
+            (
+                entry.scope.client_identity
+                for entry in self.effects
+                if entry.scope.client_identity is not None
+            ),
         )
         effects: dict[EffectId, BrokerEffect] = {}
         for effect in self.effects:
@@ -2077,12 +2246,16 @@ class VenueRecoveryBook:
             ),
             ("effect scope.mandate_id", scope.mandate_id, MandateId),
             ("effect scope.kind", scope.kind, EffectKind),
-            ("effect scope.client_order_id", scope.client_order_id, ClientOrderId),
             ("effect scope.symbol_id", scope.symbol_id, SymbolId),
             ("effect scope.side", scope.side, ExecutionSide),
             ("effect scope.quantity", scope.quantity, Quantity),
         ):
             _require(name, value, expected)
+        _validate_effect_identity_shape(
+            scope.kind,
+            scope.client_order_id,
+            scope.target_leg_key,
+        )
         if (
             scope.generation != self.scope.generation
             or scope.broker != self.scope.broker
@@ -2159,6 +2332,8 @@ class VenueRecoveryBook:
                 raise ValueError(
                     "owner must bind the canonical registered effect scope"
                 )
+            if owner.effect_scope.kind is EffectKind.CANCEL:
+                raise ValueError("cancel effects cannot own venue legs")
             owners[owner.leg_key] = owner
         return owners
 
@@ -2551,9 +2726,58 @@ class VenueRecoveryBook:
                 raise ValueError("owner edge requires leg-discovery input provenance")
 
         ordered_effect_states: dict[EffectId, BrokerEffectState] = {}
+        ordered_effect_scopes: dict[EffectId, VenueEffectScope] = {}
+        ordered_claim_occurrences: dict[EffectId, ClaimOccurrenceId] = {}
+        ordered_acceptance_states: dict[EffectId, AcceptanceSetState] = {}
         ordered_leg_effects: dict[VenueLegKey, EffectId] = {}
         ordered_leg_states: dict[VenueLegKey, VenueAttemptState] = {}
+        ordered_leg_pending: dict[VenueLegKey, PendingVenueOperation | None] = {}
         ordered_closed_legs: set[VenueLegKey] = set()
+        ordered_cancel_reservations: dict[VenueLegKey, EffectId] = {}
+
+        def ordered_target_is_exact_active(
+            scope: VenueEffectScope,
+            *,
+            expected_cancel_effect_id: EffectId | None = None,
+        ) -> bool:
+            target_leg_key = scope.target_leg_key
+            if target_leg_key is None or not _same_leg_scope(
+                self.scope, target_leg_key
+            ):
+                return False
+            owner_effect_id = ordered_leg_effects.get(target_leg_key)
+            owner_scope = (
+                None
+                if owner_effect_id is None
+                else ordered_effect_scopes.get(owner_effect_id)
+            )
+            reservation = ordered_cancel_reservations.get(target_leg_key)
+            if scope.kind is EffectKind.CANCEL:
+                reservation_matches = (
+                    reservation is None
+                    if expected_cancel_effect_id is None
+                    else reservation == expected_cancel_effect_id
+                )
+            else:
+                reservation_matches = reservation is None
+            return bool(
+                owner_effect_id is not None
+                and owner_scope is not None
+                and ordered_effect_states.get(owner_effect_id)
+                is BrokerEffectState.ACKNOWLEDGED
+                and target_leg_key not in ordered_closed_legs
+                and ordered_leg_states.get(target_leg_key)
+                in {
+                    VenueAttemptState.WORKING,
+                    VenueAttemptState.PARTIALLY_FILLED,
+                }
+                and ordered_leg_pending.get(target_leg_key) is None
+                and reservation_matches
+                and owner_scope.symbol_id == scope.symbol_id
+                and owner_scope.side is scope.side
+                and owner_scope.quantity == scope.quantity
+            )
+
         admitted_human_sources: set[VenueInputId] = set()
         direct_human_sources = {
             coverage.source_input_id for coverage in self.human_coverages
@@ -2567,26 +2791,125 @@ class VenueRecoveryBook:
         for record in self.input_records:
             item = record.item
             if isinstance(item, RequestedEffect):
+                requested_scope = _effect_scope(self, item)
+                ordered_effect_scopes[item.effect_id] = requested_scope
+                ordered_acceptance_states[item.effect_id] = AcceptanceSetState.OPEN
+                if requested_scope.kind in {EffectKind.CANCEL, EffectKind.REPLACE}:
+                    if not ordered_target_is_exact_active(requested_scope):
+                        raise ValueError(
+                            "target-bound effect requires one exact prior active owner "
+                            "without another cancel reservation"
+                        )
+                    if requested_scope.kind is EffectKind.CANCEL:
+                        target_leg_key = requested_scope.target_leg_key
+                        assert target_leg_key is not None
+                        ordered_cancel_reservations[target_leg_key] = item.effect_id
                 ordered_effect_states[item.effect_id] = BrokerEffectState.REQUESTED
             elif isinstance(item, CancelBeforeDispatch):
                 ordered_effect_states[item.effect_id] = (
                     BrokerEffectState.CANCELED_BEFORE_DISPATCH
                 )
+                scope = ordered_effect_scopes.get(item.effect_id)
+                if scope is not None and scope.kind is EffectKind.CANCEL:
+                    target_leg_key = scope.target_leg_key
+                    if (
+                        target_leg_key is not None
+                        and ordered_cancel_reservations.get(target_leg_key)
+                        == item.effect_id
+                    ):
+                        del ordered_cancel_reservations[target_leg_key]
             elif isinstance(item, RecordDispatchClaim):
+                scope = ordered_effect_scopes.get(item.effect_id)
+                if (
+                    scope is not None
+                    and scope.kind in {EffectKind.CANCEL, EffectKind.REPLACE}
+                    and not ordered_target_is_exact_active(
+                        scope,
+                        expected_cancel_effect_id=(
+                            item.effect_id if scope.kind is EffectKind.CANCEL else None
+                        ),
+                    )
+                ):
+                    raise ValueError(
+                        "target-bound claim requires its exact active owner and "
+                        "reservation"
+                    )
                 ordered_effect_states[item.effect_id] = (
                     BrokerEffectState.DISPATCH_CLAIMED
                 )
+                ordered_claim_occurrences[item.effect_id] = item.claim_occurrence_id
             elif isinstance(item, RecoverClaimedEffect):
                 ordered_effect_states[item.effect_id] = (
                     BrokerEffectState.OUTCOME_UNKNOWN
                 )
+                scope = ordered_effect_scopes.get(item.effect_id)
+                if (
+                    scope is not None
+                    and scope.kind is EffectKind.CANCEL
+                    and scope.target_leg_key is not None
+                ):
+                    ordered_leg_pending[scope.target_leg_key] = (
+                        PendingVenueOperation.CANCEL
+                    )
             elif isinstance(item, RecordTransportOutcome):
                 ordered_effect_states[item.effect_id] = item.state
+                scope = ordered_effect_scopes.get(item.effect_id)
+                if (
+                    scope is not None
+                    and scope.kind is EffectKind.CANCEL
+                    and scope.target_leg_key is not None
+                ):
+                    target_leg_key = scope.target_leg_key
+                    ordered_leg_pending[target_leg_key] = (
+                        PendingVenueOperation.CANCEL
+                        if item.state
+                        in {
+                            BrokerEffectState.ACKNOWLEDGED,
+                            BrokerEffectState.OUTCOME_UNKNOWN,
+                        }
+                        else None
+                    )
+                    if (
+                        item.state is BrokerEffectState.REJECTED
+                        and ordered_cancel_reservations.get(target_leg_key)
+                        == item.effect_id
+                    ):
+                        del ordered_cancel_reservations[target_leg_key]
             elif isinstance(item, DiscoverVenueLeg):
+                discovery_scope = ordered_effect_scopes.get(item.effect_id)
+                if (
+                    discovery_scope is None
+                    or discovery_scope.kind is EffectKind.CANCEL
+                    or not _same_leg_scope(self.scope, item.leg_key)
+                ):
+                    raise ValueError(
+                        "venue discovery requires a non-cancel effect in exact scope"
+                    )
                 prior_effect_id = ordered_leg_effects.get(item.leg_key)
                 if prior_effect_id is None:
+                    if ordered_effect_states.get(item.effect_id) not in {
+                        BrokerEffectState.DISPATCH_CLAIMED,
+                        BrokerEffectState.ACKNOWLEDGED,
+                        BrokerEffectState.OUTCOME_UNKNOWN,
+                        BrokerEffectState.NEEDS_REVIEW,
+                    } and ordered_acceptance_states.get(item.effect_id) not in {
+                        AcceptanceSetState.CLOSED,
+                        AcceptanceSetState.INVALIDATED,
+                    }:
+                        raise ValueError(
+                            "first venue discovery requires dispatch progress or a "
+                            "closed acceptance set"
+                        )
                     ordered_leg_effects[item.leg_key] = item.effect_id
                     ordered_leg_states[item.leg_key] = VenueAttemptState.WORKING
+                    ordered_leg_pending[item.leg_key] = None
+                    if (
+                        ordered_acceptance_states.get(item.effect_id)
+                        is AcceptanceSetState.CLOSED
+                    ):
+                        ordered_acceptance_states[item.effect_id] = (
+                            AcceptanceSetState.INVALIDATED
+                        )
                 elif prior_effect_id != item.effect_id:
                     raise ValueError("venue leg cannot change its owning effect")
             elif isinstance(item, ObserveVenueStatus):
@@ -2606,6 +2929,46 @@ class VenueRecoveryBook:
                     ):
                         raise ValueError("venue status history cannot regress")
                     ordered_leg_states[item.leg_key] = item.status
+            elif isinstance(item, RecordPendingVenueOperation):
+                if (
+                    item.operation is PendingVenueOperation.NONE
+                    or item.leg_key not in ordered_leg_effects
+                    or item.leg_key in ordered_closed_legs
+                ):
+                    raise ValueError(
+                        "pending venue operation requires a previously discovered "
+                        "active leg"
+                    )
+                ordered_leg_pending[item.leg_key] = item.operation
+            elif isinstance(item, CloseAcceptanceSet):
+                effect_scope = ordered_effect_scopes.get(item.effect_id)
+                claim_occurrence_id = ordered_claim_occurrences.get(item.effect_id)
+                proof = item.proof
+                if (
+                    ordered_acceptance_states.get(item.effect_id)
+                    is not AcceptanceSetState.OPEN
+                    or effect_scope is None
+                    or proof.effect_scope != effect_scope
+                    or proof.claim_occurrence_id != claim_occurrence_id
+                    or (
+                        proof.kind is AcceptanceProofKind.NEVER_DISPATCHED
+                        and (
+                            ordered_effect_states.get(item.effect_id)
+                            is not BrokerEffectState.CANCELED_BEFORE_DISPATCH
+                            or claim_occurrence_id is not None
+                        )
+                    )
+                    or any(
+                        effect_id == item.effect_id
+                        and leg_key not in ordered_closed_legs
+                        for leg_key, effect_id in ordered_leg_effects.items()
+                    )
+                ):
+                    raise ValueError(
+                        "acceptance closure requires its exact claim, proof, and no "
+                        "active legs"
+                    )
+                ordered_acceptance_states[item.effect_id] = AcceptanceSetState.CLOSED
             elif isinstance(item, IngestHumanAttestedFill):
                 if item.input_id not in direct_human_sources:
                     continue
@@ -2639,6 +3002,16 @@ class VenueRecoveryBook:
                 ordered_closed_legs.add(item.leg_key)
                 ordered_leg_states[item.leg_key] = VenueAttemptState.OPERATOR_RECONCILED
 
+        for effect_id, effect in effects.items():
+            if (
+                ordered_acceptance_states.get(effect_id)
+                is not effect.acceptance_set_state
+            ):
+                raise ValueError(
+                    "effect acceptance state, proof, and contradiction must equal "
+                    "its ordered input history"
+                )
+
         active_by_leg = {attempt.leg_key: attempt for attempt in self.active_attempts}
         for owner in owners.values():
             attempt = active_by_leg.get(owner.leg_key)
@@ -2655,6 +3028,30 @@ class VenueRecoveryBook:
                     and item.leg_key == owner.leg_key
                 ):
                     derived_pending = item.operation
+                elif isinstance(item, RecoverClaimedEffect):
+                    scope = ordered_effect_scopes.get(item.effect_id)
+                    if (
+                        scope is not None
+                        and scope.kind is EffectKind.CANCEL
+                        and scope.target_leg_key == owner.leg_key
+                    ):
+                        derived_pending = PendingVenueOperation.CANCEL
+                elif isinstance(item, RecordTransportOutcome):
+                    scope = ordered_effect_scopes.get(item.effect_id)
+                    if (
+                        scope is not None
+                        and scope.kind is EffectKind.CANCEL
+                        and scope.target_leg_key == owner.leg_key
+                    ):
+                        derived_pending = (
+                            PendingVenueOperation.CANCEL
+                            if item.state
+                            in {
+                                BrokerEffectState.ACKNOWLEDGED,
+                                BrokerEffectState.OUTCOME_UNKNOWN,
+                            }
+                            else None
+                        )
                 elif (
                     isinstance(item, ObserveVenueStatus)
                     and item.leg_key == owner.leg_key
@@ -3491,6 +3888,10 @@ class VenueRecoveryBook:
             ("_owner_by_leg", _PersistentKeyMap.empty()),
             ("_leg_current_by_leg", _PersistentKeyMap.empty()),
             ("_leg_summary_by_effect", _PersistentKeyMap.empty()),
+            ("_cancel_target_reservation_by_leg", _PersistentKeyMap.empty()),
+            ("_authority_contribution_by_effect", _PersistentKeyMap.empty()),
+            ("_authority_summary_by_scope", _PersistentKeyMap.empty()),
+            ("_account_unclaimed_requested_effect_ids", ()),
             ("_reconciliation_count_by_effect", _PersistentKeyMap.empty()),
             ("_closure_ledger", _PersistentSequence.empty()),
             ("_closure_by_id", _PersistentKeyMap.empty()),
@@ -3747,6 +4148,13 @@ class VenueRecoveryBook:
         retained = self._leg_summary_by_effect.get(_effect_index_key(effect_id))
         return _EffectLegSummary() if retained is None else retained
 
+    def _active_cancel_effect_for_target(
+        self,
+        leg_key: VenueLegKey,
+    ) -> EffectId | None:
+        retained = self._cancel_target_reservation_by_leg.get(_leg_index_key(leg_key))
+        return None if retained is None else retained.effect_id
+
     def _has_effect_reconciliation(self, effect_id: EffectId) -> bool:
         retained = self._reconciliation_count_by_effect.get(
             _effect_index_key(effect_id)
@@ -3820,6 +4228,421 @@ _EVOLVABLE_BOOK_FIELDS = frozenset(
         "execution_registry_commitment",
     }
 )
+
+
+_CANCEL_RESERVATION_RELEASE_STATES = frozenset(
+    {
+        BrokerEffectState.CANCELED_BEFORE_DISPATCH,
+        BrokerEffectState.REJECTED,
+    }
+)
+
+
+def _cancel_effect_reserves_target(effect: BrokerEffect) -> bool:
+    return bool(
+        effect.scope.kind is EffectKind.CANCEL
+        and effect.state not in _CANCEL_RESERVATION_RELEASE_STATES
+    )
+
+
+def _set_cancel_target_reservation(
+    retained: _PersistentKeyMap[_CancelTargetReservation],
+    effect: BrokerEffect,
+) -> _PersistentKeyMap[_CancelTargetReservation]:
+    if effect.scope.kind is not EffectKind.CANCEL:
+        return retained
+    target_leg_key = effect.scope.target_leg_key
+    if target_leg_key is None:
+        raise ValueError("cancel effect requires its exact target reservation")
+    key = _leg_index_key(target_leg_key)
+    current = retained.get(key)
+    resulting_effect_id = (
+        effect.effect_id if _cancel_effect_reserves_target(effect) else None
+    )
+    if (
+        current is not None
+        and current.effect_id is not None
+        and current.effect_id != effect.effect_id
+    ):
+        raise ValueError("cancel target already has another active reservation")
+    resulting = _CancelTargetReservation(resulting_effect_id)
+    if current is None:
+        return retained.insert_new(key, resulting, resulting.commitment)
+    return retained.replace_existing(key, resulting, resulting.commitment)
+
+
+def _evolve_cancel_target_reservations(
+    retained: _PersistentKeyMap[_CancelTargetReservation],
+    prior: BrokerEffect | None,
+    resulting: BrokerEffect,
+) -> _PersistentKeyMap[_CancelTargetReservation]:
+    if resulting.scope.kind is not EffectKind.CANCEL:
+        return retained
+    if prior is not None:
+        if prior.scope != resulting.scope:
+            raise ValueError("cancel target reservation scope cannot change")
+        prior_reserves = _cancel_effect_reserves_target(prior)
+        resulting_reserves = _cancel_effect_reserves_target(resulting)
+        if not prior_reserves and not resulting_reserves:
+            return retained
+        if not prior_reserves and resulting_reserves:
+            raise ValueError("released cancel target reservation cannot reactivate")
+    return _set_cancel_target_reservation(retained, resulting)
+
+
+def _rebuild_cancel_target_reservations(
+    book: VenueRecoveryBook,
+) -> _PersistentKeyMap[_CancelTargetReservation]:
+    retained: _PersistentKeyMap[_CancelTargetReservation] = _PersistentKeyMap.empty()
+    for index in range(book._effect_order.length):
+        effect_id = book._effect_order.get(index)
+        effect = book._current_effect(effect_id)
+        if effect is None:
+            raise ValueError("cancel target reservation requires retained effect")
+        retained = _set_cancel_target_reservation(retained, effect)
+    return retained
+
+
+def _set_authority_contribution(
+    retained: _PersistentKeyMap[_EffectAuthorityContribution],
+    contribution: _EffectAuthorityContribution,
+) -> _PersistentKeyMap[_EffectAuthorityContribution]:
+    key = _effect_index_key(contribution.effect_id)
+    if retained.get(key) is None:
+        return retained.insert_new(key, contribution, contribution.commitment)
+    return retained.replace_existing(key, contribution, contribution.commitment)
+
+
+def _set_symbol_authority_summary(
+    retained: _PersistentKeyMap[_SymbolAuthoritySummary],
+    position_scope: PositionScope,
+    summary: _SymbolAuthoritySummary,
+) -> _PersistentKeyMap[_SymbolAuthoritySummary]:
+    key = _position_scope_index_key(position_scope)
+    if retained.get(key) is None:
+        return retained.insert_new(key, summary, summary.commitment)
+    return retained.replace_existing(key, summary, summary.commitment)
+
+
+def _derive_effect_authority_contribution(
+    book: VenueRecoveryBook,
+    effect_id: EffectId,
+) -> _EffectAuthorityContribution:
+    effect = book._current_effect(effect_id)
+    if effect is None:
+        raise KeyError("authority contribution requires one retained effect")
+    legs = book._leg_summary(effect_id)
+    reconciliation_clean = not book._has_effect_reconciliation(effect_id)
+    fully_resolved = bool(
+        effect.acceptance_set_state is AcceptanceSetState.CLOSED
+        and legs.active_count == 0
+        and reconciliation_clean
+    )
+    safely_local = bool(
+        effect.state is BrokerEffectState.REQUESTED
+        and effect.claim_occurrence_id is None
+        and legs.owner_count == 0
+        and reconciliation_clean
+    )
+    exposure_buy = bool(
+        effect.scope.kind in {EffectKind.SUBMIT, EffectKind.REPLACE}
+        and effect.scope.side is ExecutionSide.BUY
+    )
+    blocking_buy = exposure_buy and not fully_resolved
+    known_cancellable = (
+        legs.known_cancellable_leg_keys
+        if blocking_buy and effect.state is BrokerEffectState.ACKNOWLEDGED
+        else ()
+    )
+    known_cancel_pending = (
+        legs.known_cancel_pending_leg_keys
+        if blocking_buy and effect.state is BrokerEffectState.ACKNOWLEDGED
+        else ()
+    )
+    return _EffectAuthorityContribution(
+        effect_id=effect.effect_id,
+        position_scope=effect.scope.position_scope,
+        unclaimed_requested=bool(
+            effect.state is BrokerEffectState.REQUESTED
+            and effect.claim_occurrence_id is None
+        ),
+        target_exemptible=safely_local,
+        blocking_effect_count=0 if fully_resolved else 1,
+        blocking_buy_effect_count=1 if blocking_buy else 0,
+        stand_downable_buy_count=1 if blocking_buy and safely_local else 0,
+        stand_downable_buy_effect_ids=(
+            (effect.effect_id,) if blocking_buy and safely_local else ()
+        ),
+        known_cancellable_buy_leg_keys=known_cancellable,
+        known_cancel_pending_buy_leg_keys=known_cancel_pending,
+        waiting_buy_parent_count=(
+            1
+            if blocking_buy
+            and effect.acceptance_set_state
+            in {AcceptanceSetState.OPEN, AcceptanceSetState.INVALIDATED}
+            and not safely_local
+            else 0
+        ),
+        unknown_buy_effect_count=(
+            1
+            if blocking_buy
+            and not safely_local
+            and not known_cancellable
+            and not known_cancel_pending
+            else 0
+        ),
+    )
+
+
+def _without_tuple_items(
+    retained: tuple[Any, ...],
+    removed: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    return tuple(item for item in retained if item not in removed)
+
+
+def _update_authority_indexes(
+    contribution_by_effect: _PersistentKeyMap[_EffectAuthorityContribution],
+    summary_by_scope: _PersistentKeyMap[_SymbolAuthoritySummary],
+    account_unclaimed: tuple[EffectId, ...],
+    *,
+    prior: _EffectAuthorityContribution | None,
+    resulting: _EffectAuthorityContribution,
+) -> tuple[
+    _PersistentKeyMap[_EffectAuthorityContribution],
+    _PersistentKeyMap[_SymbolAuthoritySummary],
+    tuple[EffectId, ...],
+]:
+    if prior is not None and prior.position_scope != resulting.position_scope:
+        raise ValueError("effect authority scope cannot change")
+    position_scope = resulting.position_scope
+    summary = summary_by_scope.get(_position_scope_index_key(position_scope))
+    if summary is None:
+        summary = _SymbolAuthoritySummary()
+    if prior is not None:
+        summary = replace(
+            summary,
+            blocking_effect_count=(
+                summary.blocking_effect_count - prior.blocking_effect_count
+            ),
+            blocking_buy_effect_count=(
+                summary.blocking_buy_effect_count - prior.blocking_buy_effect_count
+            ),
+            stand_downable_buy_count=(
+                summary.stand_downable_buy_count - prior.stand_downable_buy_count
+            ),
+            stand_downable_buy_effect_ids=cast(
+                tuple[EffectId, ...],
+                _without_tuple_items(
+                    summary.stand_downable_buy_effect_ids,
+                    prior.stand_downable_buy_effect_ids,
+                ),
+            ),
+            known_cancellable_buy_leg_keys=cast(
+                tuple[VenueLegKey, ...],
+                _without_tuple_items(
+                    summary.known_cancellable_buy_leg_keys,
+                    prior.known_cancellable_buy_leg_keys,
+                ),
+            ),
+            known_cancel_pending_buy_leg_keys=cast(
+                tuple[VenueLegKey, ...],
+                _without_tuple_items(
+                    summary.known_cancel_pending_buy_leg_keys,
+                    prior.known_cancel_pending_buy_leg_keys,
+                ),
+            ),
+            waiting_buy_parent_count=(
+                summary.waiting_buy_parent_count - prior.waiting_buy_parent_count
+            ),
+            unknown_buy_effect_count=(
+                summary.unknown_buy_effect_count - prior.unknown_buy_effect_count
+            ),
+        )
+        if prior.unclaimed_requested:
+            account_unclaimed = tuple(
+                effect_id
+                for effect_id in account_unclaimed
+                if effect_id != prior.effect_id
+            )
+    else:
+        summary = replace(summary, effect_count=summary.effect_count + 1)
+    summary = replace(
+        summary,
+        blocking_effect_count=(
+            summary.blocking_effect_count + resulting.blocking_effect_count
+        ),
+        blocking_buy_effect_count=(
+            summary.blocking_buy_effect_count + resulting.blocking_buy_effect_count
+        ),
+        stand_downable_buy_count=(
+            summary.stand_downable_buy_count + resulting.stand_downable_buy_count
+        ),
+        stand_downable_buy_effect_ids=(
+            summary.stand_downable_buy_effect_ids
+            + resulting.stand_downable_buy_effect_ids
+        ),
+        known_cancellable_buy_leg_keys=(
+            summary.known_cancellable_buy_leg_keys
+            + resulting.known_cancellable_buy_leg_keys
+        ),
+        known_cancel_pending_buy_leg_keys=(
+            summary.known_cancel_pending_buy_leg_keys
+            + resulting.known_cancel_pending_buy_leg_keys
+        ),
+        waiting_buy_parent_count=(
+            summary.waiting_buy_parent_count + resulting.waiting_buy_parent_count
+        ),
+        unknown_buy_effect_count=(
+            summary.unknown_buy_effect_count + resulting.unknown_buy_effect_count
+        ),
+    )
+    if (
+        min(
+            summary.blocking_effect_count,
+            summary.blocking_buy_effect_count,
+            summary.stand_downable_buy_count,
+            summary.waiting_buy_parent_count,
+            summary.unknown_buy_effect_count,
+        )
+        < 0
+    ):
+        raise ValueError("symbol authority aggregate cannot become negative")
+    if resulting.unclaimed_requested:
+        account_unclaimed = account_unclaimed + (resulting.effect_id,)
+    return (
+        _set_authority_contribution(contribution_by_effect, resulting),
+        _set_symbol_authority_summary(summary_by_scope, position_scope, summary),
+        account_unclaimed,
+    )
+
+
+def _rebuild_authority_indexes(
+    book: VenueRecoveryBook,
+) -> tuple[
+    _PersistentKeyMap[_EffectAuthorityContribution],
+    _PersistentKeyMap[_SymbolAuthoritySummary],
+    tuple[EffectId, ...],
+]:
+    contribution_by_effect: _PersistentKeyMap[_EffectAuthorityContribution] = (
+        _PersistentKeyMap.empty()
+    )
+    summary_by_scope: _PersistentKeyMap[_SymbolAuthoritySummary] = (
+        _PersistentKeyMap.empty()
+    )
+    account_unclaimed: tuple[EffectId, ...] = ()
+    for index in range(book._effect_order.length):
+        effect_id = book._effect_order.get(index)
+        contribution = _derive_effect_authority_contribution(book, effect_id)
+        (
+            contribution_by_effect,
+            summary_by_scope,
+            account_unclaimed,
+        ) = _update_authority_indexes(
+            contribution_by_effect,
+            summary_by_scope,
+            account_unclaimed,
+            prior=None,
+            resulting=contribution,
+        )
+    return contribution_by_effect, summary_by_scope, account_unclaimed
+
+
+def _authority_effect_identity_conflicts(
+    book: VenueRecoveryBook,
+    effect_id: EffectId,
+    request_occurrence_id: RequestOccurrenceId,
+    client_order_id: ClientOrderId | None,
+) -> bool:
+    """Check permanent effect identities through bounded canonical indexes."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be the exact opaque VenueRecoveryBook type")
+    _require("effect_id", effect_id, EffectId)
+    _require("request_occurrence_id", request_occurrence_id, RequestOccurrenceId)
+    if client_order_id is not None:
+        _require("client_order_id", client_order_id, ClientOrderId)
+    return bool(
+        book._current_effect(effect_id) is not None
+        or book._has_request_occurrence(request_occurrence_id)
+        or (client_order_id is not None and book._has_client_order(client_order_id))
+    )
+
+
+def _venue_authority_view(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+    target_effect_id: EffectId | None,
+) -> _VenueAuthorityView:
+    """Return the bounded current authority view without materializing audit history."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be the exact opaque VenueRecoveryBook type")
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    if type(position_scope) is not PositionScope:
+        raise TypeError("position_scope must be the exact PositionScope type")
+    if target_effect_id is not None and type(target_effect_id) is not EffectId:
+        raise TypeError("target_effect_id must be EffectId or None")
+    summary = (
+        book._authority_summary_by_scope.get(_position_scope_index_key(position_scope))
+        or _SymbolAuthoritySummary()
+    )
+    binding = book.execution_binding(position_scope)
+    if summary.effect_count == 0:
+        execution_binding_matches = bool(
+            binding is None
+            and (
+                (
+                    book.execution_registry_count is None
+                    and book.execution_registry_commitment is None
+                )
+                or (
+                    book.execution_registry_count == execution.seen_facts.count
+                    and book.execution_registry_commitment
+                    == execution.seen_facts.commitment
+                )
+            )
+        )
+    else:
+        execution_binding_matches = bool(
+            binding is not None
+            and binding.position_commitment == execution.position.commitment
+            and binding.root_heads_commitment == execution.root_heads.commitment
+            and binding.integrity_bits == execution.integrity.value
+            and book.execution_registry_count == execution.seen_facts.count
+            and book.execution_registry_commitment == execution.seen_facts.commitment
+        )
+    target = (
+        None
+        if target_effect_id is None
+        else book._authority_contribution_by_effect.get(
+            _effect_index_key(target_effect_id)
+        )
+    )
+    return _VenueAuthorityView(
+        execution_binding_matches=execution_binding_matches,
+        account_reconciliation_clear=(
+            book._unresolved_account_execution_reconciliation_count == 0
+        ),
+        blocking_effect_count=summary.blocking_effect_count,
+        blocking_buy_effect_count=summary.blocking_buy_effect_count,
+        target_exemptible_count=(
+            1
+            if target is not None
+            and target.position_scope == position_scope
+            and target.target_exemptible
+            else 0
+        ),
+        stand_downable_buy_count=summary.stand_downable_buy_count,
+        known_cancellable_buy_leg_count=len(summary.known_cancellable_buy_leg_keys),
+        known_cancel_pending_buy_leg_count=len(
+            summary.known_cancel_pending_buy_leg_keys
+        ),
+        waiting_buy_parent_count=summary.waiting_buy_parent_count,
+        unknown_buy_effect_count=summary.unknown_buy_effect_count,
+    )
 
 
 def _coverage_value_commitment(coverage: object) -> bytes:
@@ -4041,6 +4864,21 @@ def _set_effect_leg_summary(
     return retained.replace_existing(key, summary, summary.commitment)
 
 
+def _attempt_authority_membership(
+    attempt: VenueAttempt,
+) -> tuple[tuple[VenueLegKey, ...], tuple[VenueLegKey, ...]]:
+    if attempt.status not in {
+        VenueAttemptState.WORKING,
+        VenueAttemptState.PARTIALLY_FILLED,
+    }:
+        return (), ()
+    if attempt.pending_operation is None:
+        return (attempt.leg_key,), ()
+    if attempt.pending_operation is PendingVenueOperation.CANCEL:
+        return (), (attempt.leg_key,)
+    return (), ()
+
+
 def _stored_effect_current(
     effect: BrokerEffect,
     authority_epochs: _PersistentKeyMap[int],
@@ -4081,11 +4919,15 @@ def _append_effect_value(
     effect = _require_effect_shape(effect)
     effect_key = _effect_index_key(effect.effect_id)
     request_key = _request_occurrence_index_key(effect.scope.request_occurrence_id)
-    client_key = _client_order_index_key(effect.scope.client_order_id)
+    client_key = (
+        None
+        if effect.scope.client_order_id is None
+        else _client_order_index_key(effect.scope.client_order_id)
+    )
     if (
         by_id.get(effect_key) is not None
         or by_request.get(request_key) is not None
-        or by_client_order.get(client_key) is not None
+        or (client_key is not None and by_client_order.get(client_key) is not None)
     ):
         raise ValueError(
             "effect identity, request occurrence, and client ID are unique"
@@ -4100,7 +4942,15 @@ def _append_effect_value(
         order.append(effect.effect_id, id_commitment),
         by_id.insert_new(effect_key, current, current.commitment),
         by_request.insert_new(request_key, effect.effect_id, id_commitment),
-        by_client_order.insert_new(client_key, effect.effect_id, id_commitment),
+        (
+            by_client_order
+            if client_key is None
+            else by_client_order.insert_new(
+                client_key,
+                effect.effect_id,
+                id_commitment,
+            )
+        ),
     )
 
 
@@ -4207,10 +5057,16 @@ def _append_owner_value(
         raise ValueError("venue leg already has an owner")
     current = _LegCurrent(attempt)
     summary = summaries.get(_effect_index_key(owner.effect_id)) or _EffectLegSummary()
+    cancellable, cancel_pending = _attempt_authority_membership(attempt)
     summary = replace(
         summary,
         owner_count=summary.owner_count + 1,
         active_count=summary.active_count + 1,
+        active_leg_keys=summary.active_leg_keys + (owner.leg_key,),
+        known_cancellable_leg_keys=(summary.known_cancellable_leg_keys + cancellable),
+        known_cancel_pending_leg_keys=(
+            summary.known_cancel_pending_leg_keys + cancel_pending
+        ),
     )
     return (
         order.append(owner.leg_key, _leg_value_commitment(owner.leg_key)),
@@ -4222,8 +5078,10 @@ def _append_owner_value(
 
 def _replace_attempt_value(
     retained: _PersistentKeyMap[_LegCurrent],
+    owners: _PersistentKeyMap[VenueIdentityOwner],
+    summaries: _PersistentKeyMap[_EffectLegSummary],
     attempt: object,
-) -> _PersistentKeyMap[_LegCurrent]:
+) -> tuple[_PersistentKeyMap[_LegCurrent], _PersistentKeyMap[_EffectLegSummary]]:
     if type(attempt) is not VenueAttempt:
         raise TypeError("attempt replacement must be the exact VenueAttempt type")
     attempt = _require_attempt_shape(attempt)
@@ -4231,8 +5089,34 @@ def _replace_attempt_value(
     prior = retained.get(key)
     if prior is None or prior.attempt is None:
         raise ValueError("attempt replacement requires one active leg")
+    owner = owners.get(key)
+    if owner is None:
+        raise ValueError("attempt replacement requires one retained owner")
+    prior_cancellable, prior_cancel_pending = _attempt_authority_membership(
+        prior.attempt
+    )
+    next_cancellable, next_cancel_pending = _attempt_authority_membership(attempt)
+    summary = summaries.get(_effect_index_key(owner.effect_id)) or _EffectLegSummary()
+    summary = replace(
+        summary,
+        known_cancellable_leg_keys=tuple(
+            leg
+            for leg in summary.known_cancellable_leg_keys
+            if leg not in prior_cancellable
+        )
+        + next_cancellable,
+        known_cancel_pending_leg_keys=tuple(
+            leg
+            for leg in summary.known_cancel_pending_leg_keys
+            if leg not in prior_cancel_pending
+        )
+        + next_cancel_pending,
+    )
     current = _LegCurrent(attempt)
-    return retained.replace_existing(key, current, current.commitment)
+    return (
+        retained.replace_existing(key, current, current.commitment),
+        _set_effect_leg_summary(summaries, owner.effect_id, summary),
+    )
 
 
 def _upsert_binding_value(
@@ -5067,7 +5951,8 @@ def _audit_hydrate_book(
             owner,
             _owner_value_commitment(owner),
         )
-        leg_current = _LegCurrent(active_by_leg.get(owner.leg_key))
+        active_attempt = active_by_leg.get(owner.leg_key)
+        leg_current = _LegCurrent(active_attempt)
         leg_current_by_leg = leg_current_by_leg.insert_new(
             encoded_leg,
             leg_current,
@@ -5077,6 +5962,11 @@ def _audit_hydrate_book(
             leg_summary_by_effect.get(_effect_index_key(owner.effect_id))
             or _EffectLegSummary()
         )
+        cancellable, cancel_pending = (
+            ((), ())
+            if active_attempt is None
+            else _attempt_authority_membership(active_attempt)
+        )
         leg_summary_by_effect = _set_effect_leg_summary(
             leg_summary_by_effect,
             owner.effect_id,
@@ -5085,6 +5975,16 @@ def _audit_hydrate_book(
                 owner_count=summary.owner_count + 1,
                 active_count=(
                     summary.active_count + (1 if owner.leg_key in active_by_leg else 0)
+                ),
+                active_leg_keys=(
+                    summary.active_leg_keys
+                    + ((owner.leg_key,) if active_attempt is not None else ())
+                ),
+                known_cancellable_leg_keys=(
+                    summary.known_cancellable_leg_keys + cancellable
+                ),
+                known_cancel_pending_leg_keys=(
+                    summary.known_cancel_pending_leg_keys + cancel_pending
                 ),
             ),
         )
@@ -5310,6 +6210,11 @@ def _audit_hydrate_book(
     object.__setattr__(result, "_owner_by_leg", owner_by_leg)
     object.__setattr__(result, "_leg_current_by_leg", leg_current_by_leg)
     object.__setattr__(result, "_leg_summary_by_effect", leg_summary_by_effect)
+    object.__setattr__(
+        result,
+        "_cancel_target_reservation_by_leg",
+        _rebuild_cancel_target_reservations(result),
+    )
     object.__setattr__(result, "_binding_order", binding_order)
     object.__setattr__(result, "_binding_by_scope", binding_by_scope)
     object.__setattr__(result, "_closure_ledger", closure_ledger)
@@ -5412,6 +6317,26 @@ def _audit_hydrate_book(
         result,
         "_unresolved_account_execution_reconciliation_count",
         unresolved_account_execution_reconciliation_count,
+    )
+    (
+        authority_contribution_by_effect,
+        authority_summary_by_scope,
+        account_unclaimed_requested_effect_ids,
+    ) = _rebuild_authority_indexes(result)
+    object.__setattr__(
+        result,
+        "_authority_contribution_by_effect",
+        authority_contribution_by_effect,
+    )
+    object.__setattr__(
+        result,
+        "_authority_summary_by_scope",
+        authority_summary_by_scope,
+    )
+    object.__setattr__(
+        result,
+        "_account_unclaimed_requested_effect_ids",
+        account_unclaimed_requested_effect_ids,
     )
     result._validate_full()
     if not result._execution_reconciliation_cursor_matches(execution):
@@ -5937,6 +6862,43 @@ def _effect_scope(book: VenueRecoveryBook, item: RequestedEffect) -> VenueEffect
         side=item.side,
         quantity=item.quantity,
         economic_scope=item.economic_scope,
+        target_leg_key=item.target_leg_key,
+    )
+
+
+def _target_is_exact_active(
+    book: VenueRecoveryBook,
+    scope: VenueEffectScope,
+    *,
+    expected_cancel_effect_id: EffectId | None = None,
+) -> bool:
+    """Return whether a target-bound effect names one exact cancellable owner."""
+
+    target_leg_key = scope.target_leg_key
+    if target_leg_key is None or not _same_leg_scope(book.scope, target_leg_key):
+        return False
+    owner = book.owner(target_leg_key)
+    attempt = book.active_attempt(target_leg_key)
+    if owner is None or attempt is None or attempt.pending_operation is not None:
+        return False
+    active_cancel_effect_id = book._active_cancel_effect_for_target(target_leg_key)
+    if scope.kind is EffectKind.CANCEL:
+        if expected_cancel_effect_id is None:
+            if active_cancel_effect_id is not None:
+                return False
+        elif active_cancel_effect_id != expected_cancel_effect_id:
+            return False
+    elif active_cancel_effect_id is not None:
+        return False
+    target = book._current_effect(owner.effect_id)
+    return bool(
+        target is not None
+        and target.state is BrokerEffectState.ACKNOWLEDGED
+        and attempt.status
+        in {VenueAttemptState.WORKING, VenueAttemptState.PARTIALLY_FILLED}
+        and target.scope.symbol_id == scope.symbol_id
+        and target.scope.side is scope.side
+        and target.scope.quantity == scope.quantity
     )
 
 
@@ -5948,11 +6910,17 @@ def _register_effect(
 ) -> VenueRecoveryBook | None:
     if book._current_effect(item.effect_id) is not None:
         return None
-    if book._has_client_order(item.client_order_id) or book._has_request_occurrence(
-        item.request_occurrence_id
+    if (
+        item.client_order_id is not None
+        and book._has_client_order(item.client_order_id)
+    ) or book._has_request_occurrence(item.request_occurrence_id):
+        return None
+    scope = _effect_scope(book, item)
+    if scope.kind in {EffectKind.CANCEL, EffectKind.REPLACE} and not (
+        _target_is_exact_active(book, scope)
     ):
         return None
-    effect = BrokerEffect(scope=_effect_scope(book, item))
+    effect = BrokerEffect(scope=scope)
     return _book_with_input_and_execution(
         evolve,
         book,
@@ -5983,6 +6951,17 @@ def _record_claim(
         or effect.state is not BrokerEffectState.REQUESTED
         or effect.claim_occurrence_id is not None
         or book._has_claim_occurrence(item.claim_occurrence_id)
+        or (
+            effect is not None
+            and effect.scope.kind in {EffectKind.CANCEL, EffectKind.REPLACE}
+            and not _target_is_exact_active(
+                book,
+                effect.scope,
+                expected_cancel_effect_id=(
+                    effect.effect_id if effect.scope.kind is EffectKind.CANCEL else None
+                ),
+            )
+        )
     ):
         return None
     claimed = replace(
@@ -6008,6 +6987,8 @@ def _replace_effect_state(
     effect: BrokerEffect,
     state: BrokerEffectState,
     item: object,
+    *,
+    attempt_replace: VenueAttempt | None = None,
 ) -> VenueRecoveryBook:
     updated = replace(effect, state=state)
     return _book_with_input(
@@ -6016,7 +6997,33 @@ def _replace_effect_state(
         execution,
         item,
         _effect_replace=updated,
+        _attempt_replace=attempt_replace,
     )
+
+
+def _cancel_target_attempt_for_outcome(
+    book: VenueRecoveryBook,
+    effect: BrokerEffect,
+    state: BrokerEffectState,
+) -> VenueAttempt | None:
+    """Derive the target-leg ambiguity caused by one correlated cancel outcome."""
+
+    if effect.scope.kind is not EffectKind.CANCEL:
+        return None
+    target_leg_key = effect.scope.target_leg_key
+    if target_leg_key is None:
+        return None
+    attempt = book.active_attempt(target_leg_key)
+    if attempt is None:
+        return None
+    pending = (
+        PendingVenueOperation.CANCEL
+        if state in {BrokerEffectState.ACKNOWLEDGED, BrokerEffectState.OUTCOME_UNKNOWN}
+        else None
+    )
+    if attempt.pending_operation is pending:
+        return None
+    return replace(attempt, pending_operation=pending)
 
 
 def _discover_leg(
@@ -6026,7 +7033,11 @@ def _discover_leg(
     item: DiscoverVenueLeg,
 ) -> tuple[VenueRecoveryBook | None, VenueRecoveryDisposition]:
     effect = book._current_effect(item.effect_id)
-    if effect is None or not _same_leg_scope(book.scope, item.leg_key):
+    if (
+        effect is None
+        or effect.scope.kind is EffectKind.CANCEL
+        or not _same_leg_scope(book.scope, item.leg_key)
+    ):
         return None, VenueRecoveryDisposition.REFUSED
     current_owner = book.owner(item.leg_key)
     if current_owner is not None:
@@ -6637,12 +7648,12 @@ def _apply_execution_registry_catch_up(
     )
 
 
-def apply_venue_recovery_input(
+def _apply_venue_input(
     book: VenueRecoveryBook,
     execution: ExecutionSnapshot,
     item: object,
 ) -> VenueRecoveryTransition:
-    """Apply one exact immutable venue or recovery input without I/O."""
+    """Apply one exact immutable input through the complete private reducer."""
 
     if type(book) is not VenueRecoveryBook:
         raise TypeError("book must be the exact opaque VenueRecoveryBook type")
@@ -6923,6 +7934,19 @@ def apply_venue_recovery_input(
                 account_authority_epoch,
                 effect_replace,
             )
+        cancel_target_reservation_by_leg = current._cancel_target_reservation_by_leg
+        if isinstance(effect_append, BrokerEffect):
+            cancel_target_reservation_by_leg = _evolve_cancel_target_reservations(
+                cancel_target_reservation_by_leg,
+                None,
+                effect_append,
+            )
+        elif isinstance(effect_replace, BrokerEffect):
+            cancel_target_reservation_by_leg = _evolve_cancel_target_reservations(
+                cancel_target_reservation_by_leg,
+                current._current_effect(effect_replace.effect_id),
+                effect_replace,
+            )
         contradiction_order_by_effect = current._contradiction_order_by_effect
         if contradiction_append is not None:
             if (
@@ -6968,8 +7992,10 @@ def apply_venue_recovery_input(
                 owner_and_attempt_append,
             )
         if attempt_replace is not None:
-            leg_current_by_leg = _replace_attempt_value(
+            leg_current_by_leg, leg_summary_by_effect = _replace_attempt_value(
                 leg_current_by_leg,
+                owner_by_leg,
+                leg_summary_by_effect,
                 attempt_replace,
             )
         if closure is not None:
@@ -7031,6 +8057,19 @@ def apply_venue_recovery_input(
                     summary.finalization_ready_count
                     - (1 if prior_ready else 0)
                     + (1 if next_ready else 0)
+                ),
+                active_leg_keys=tuple(
+                    leg for leg in summary.active_leg_keys if leg != closure.leg_key
+                ),
+                known_cancellable_leg_keys=tuple(
+                    leg
+                    for leg in summary.known_cancellable_leg_keys
+                    if leg != closure.leg_key
+                ),
+                known_cancel_pending_leg_keys=tuple(
+                    leg
+                    for leg in summary.known_cancel_pending_leg_keys
+                    if leg != closure.leg_key
                 ),
             )
             if summary.active_count < 0 or summary.finalization_ready_count < 0:
@@ -7111,6 +8150,11 @@ def apply_venue_recovery_input(
         object.__setattr__(result, "_owner_order", owner_order)
         object.__setattr__(result, "_owner_by_leg", owner_by_leg)
         object.__setattr__(result, "_leg_current_by_leg", leg_current_by_leg)
+        object.__setattr__(
+            result,
+            "_cancel_target_reservation_by_leg",
+            cancel_target_reservation_by_leg,
+        )
         object.__setattr__(
             result,
             "_leg_summary_by_effect",
@@ -7224,6 +8268,75 @@ def apply_venue_recovery_input(
             unresolved_account_execution_reconciliation_count,
         )
 
+        affected_authority_effect_ids: list[EffectId] = []
+
+        def retain_affected(effect_id: EffectId | None) -> None:
+            if effect_id is not None and effect_id not in affected_authority_effect_ids:
+                affected_authority_effect_ids.append(effect_id)
+
+        if isinstance(effect_append, BrokerEffect):
+            retain_affected(effect_append.effect_id)
+        if isinstance(effect_replace, BrokerEffect):
+            retain_affected(effect_replace.effect_id)
+        if (
+            type(owner_and_attempt_append) is tuple
+            and owner_and_attempt_append
+            and isinstance(owner_and_attempt_append[0], VenueIdentityOwner)
+        ):
+            retain_affected(owner_and_attempt_append[0].effect_id)
+        if isinstance(attempt_replace, VenueAttempt):
+            attempt_owner = owner_by_leg.get(_leg_index_key(attempt_replace.leg_key))
+            retain_affected(None if attempt_owner is None else attempt_owner.effect_id)
+        if closure is not None:
+            closure_owner = owner_by_leg.get(_leg_index_key(closure.leg_key))
+            retain_affected(None if closure_owner is None else closure_owner.effect_id)
+        reconciliation_effect_id = getattr(reconciliation_append, "effect_id", None)
+        retain_affected(
+            reconciliation_effect_id
+            if isinstance(reconciliation_effect_id, EffectId)
+            else None
+        )
+
+        authority_contribution_by_effect = current._authority_contribution_by_effect
+        authority_summary_by_scope = current._authority_summary_by_scope
+        account_unclaimed_requested_effect_ids = (
+            current._account_unclaimed_requested_effect_ids
+        )
+        for affected_effect_id in affected_authority_effect_ids:
+            prior_contribution = current._authority_contribution_by_effect.get(
+                _effect_index_key(affected_effect_id)
+            )
+            resulting_contribution = _derive_effect_authority_contribution(
+                result,
+                affected_effect_id,
+            )
+            (
+                authority_contribution_by_effect,
+                authority_summary_by_scope,
+                account_unclaimed_requested_effect_ids,
+            ) = _update_authority_indexes(
+                authority_contribution_by_effect,
+                authority_summary_by_scope,
+                account_unclaimed_requested_effect_ids,
+                prior=prior_contribution,
+                resulting=resulting_contribution,
+            )
+        object.__setattr__(
+            result,
+            "_authority_contribution_by_effect",
+            authority_contribution_by_effect,
+        )
+        object.__setattr__(
+            result,
+            "_authority_summary_by_scope",
+            authority_summary_by_scope,
+        )
+        object.__setattr__(
+            result,
+            "_account_unclaimed_requested_effect_ids",
+            account_unclaimed_requested_effect_ids,
+        )
+
         if result._effect_order.length and not result._execution_pair_matches_fast(
             resulting_execution
         ):
@@ -7304,19 +8417,6 @@ def apply_venue_recovery_input(
             evolve,
             transition,
         )
-    if (
-        isinstance(item, RequestedEffect)
-        and not book._effect_order.length
-        and not _execution_is_exact_genesis(execution)
-    ):
-        return transition(
-            book,
-            execution,
-            execution,
-            VenueRecoveryDisposition.REFUSED,
-            item=item,
-            quantity_delta=0,
-        )
     if book._execution_reconciliation_cursor_is_prefix(execution):
         transition_count, transition_head = book._reconciliation_cursor()
         execution = _bind_execution_reconciliation_cursor(
@@ -7341,10 +8441,17 @@ def apply_venue_recovery_input(
     ):
         target_effect = book._current_effect(target_effect_id)
         assert target_effect is not None
+        cross_symbol_local_authority = bool(
+            type(item) is CancelBeforeDispatch
+            or (
+                type(item) is CloseAcceptanceSet
+                and item.proof.kind is AcceptanceProofKind.NEVER_DISPATCHED
+            )
+        )
         if (
             execution.position.scope != target_effect.scope.position_scope
-            or not book._execution_pair_matches_fast(execution)
-        ):
+            and not cross_symbol_local_authority
+        ) or not book._execution_pair_matches_fast(execution):
             return transition(
                 book,
                 execution,
@@ -7424,12 +8531,20 @@ def apply_venue_recovery_input(
         )
 
     if isinstance(item, RequestedEffect):
-        next_book = _register_effect(evolve, book, execution, item)
-        disposition = (
-            VenueRecoveryDisposition.APPLIED
-            if next_book is not None
-            else VenueRecoveryDisposition.CONFLICT
+        target_refused = bool(
+            item.kind in {EffectKind.CANCEL, EffectKind.REPLACE}
+            and not _target_is_exact_active(book, _effect_scope(book, item))
         )
+        if target_refused:
+            next_book = None
+            disposition = VenueRecoveryDisposition.REFUSED
+        else:
+            next_book = _register_effect(evolve, book, execution, item)
+            disposition = (
+                VenueRecoveryDisposition.APPLIED
+                if next_book is not None
+                else VenueRecoveryDisposition.CONFLICT
+            )
     elif isinstance(item, RecordDispatchClaim):
         effect = book._current_effect(item.effect_id)
         duplicate_claim_occurrence = book._has_claim_occurrence(
@@ -7484,6 +8599,11 @@ def apply_venue_recovery_input(
             },
         }
         if effect is not None and item.state in allowed.get(effect.state, set()):
+            target_attempt = _cancel_target_attempt_for_outcome(
+                book,
+                effect,
+                item.state,
+            )
             next_book = _maybe_finalize_effect(
                 evolve,
                 _replace_effect_state(
@@ -7493,6 +8613,7 @@ def apply_venue_recovery_input(
                     effect,
                     item.state,
                     item,
+                    attempt_replace=target_attempt,
                 ),
                 item.effect_id,
                 execution,
@@ -7504,6 +8625,11 @@ def apply_venue_recovery_input(
     elif isinstance(item, RecoverClaimedEffect):
         effect = book._current_effect(item.effect_id)
         if effect is not None and effect.state is BrokerEffectState.DISPATCH_CLAIMED:
+            target_attempt = _cancel_target_attempt_for_outcome(
+                book,
+                effect,
+                BrokerEffectState.OUTCOME_UNKNOWN,
+            )
             next_book = _replace_effect_state(
                 evolve,
                 book,
@@ -7511,6 +8637,7 @@ def apply_venue_recovery_input(
                 effect,
                 BrokerEffectState.OUTCOME_UNKNOWN,
                 item,
+                attempt_replace=target_attempt,
             )
             disposition = VenueRecoveryDisposition.APPLIED
         else:
@@ -7572,13 +8699,299 @@ def apply_venue_recovery_input(
     )
 
 
+def apply_venue_recovery_input(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+) -> VenueRecoveryTransition:
+    """Apply one public broker observation or recovery input without I/O."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be the exact opaque VenueRecoveryBook type")
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    _require_exact_venue_recovery_input(item)
+    if type(item) in {
+        RequestedEffect,
+        RecordDispatchClaim,
+        CancelBeforeDispatch,
+        RecordPendingVenueOperation,
+    }:
+        raise TypeError(
+            "raw authority capability is internal and not admitted publicly"
+        )
+    return _apply_venue_input(book, execution, item)
+
+
+def _authority_request_effect(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: RequestedEffect,
+) -> VenueRecoveryTransition:
+    if type(item) is not RequestedEffect:
+        raise TypeError("item must be the exact RequestedEffect type")
+    return _apply_venue_input(book, execution, item)
+
+
+def _authority_claim_effect(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: RecordDispatchClaim,
+) -> VenueRecoveryTransition:
+    if type(item) is not RecordDispatchClaim:
+        raise TypeError("item must be the exact RecordDispatchClaim type")
+    return _apply_venue_input(book, execution, item)
+
+
+def _require_authority_namespace(namespace: object) -> str:
+    if type(namespace) is not str:
+        raise TypeError("namespace must be str")
+    if not namespace:
+        raise ValueError("namespace must be nonempty")
+    return cast(str, namespace)
+
+
+def _authority_stand_down_requested_effect(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    effect_id: EffectId,
+    namespace: str,
+) -> VenueRecoveryBook | None:
+    """Atomically stand down and close one exact never-dispatched request."""
+
+    if type(book) is not VenueRecoveryBook:
+        raise TypeError("book must be the exact opaque VenueRecoveryBook type")
+    if type(execution) is not ExecutionSnapshot:
+        raise TypeError("execution must be the exact ExecutionSnapshot type")
+    if type(effect_id) is not EffectId:
+        raise TypeError("effect_id must be EffectId")
+    namespace = _require_authority_namespace(namespace)
+    effect = book._current_effect(effect_id)
+    if (
+        effect is None
+        or effect.state is not BrokerEffectState.REQUESTED
+        or effect.claim_occurrence_id is not None
+        or effect.acceptance_set_state is not AcceptanceSetState.OPEN
+        or book._leg_summary(effect_id).owner_count != 0
+        or book._has_effect_reconciliation(effect_id)
+    ):
+        return None
+    stand_down = CancelBeforeDispatch(
+        input_id=VenueInputId(f"{namespace}:stand-down:{effect_id.value}"),
+        effect_id=effect_id,
+    )
+    close = CloseAcceptanceSet(
+        input_id=VenueInputId(f"{namespace}:close:{effect_id.value}"),
+        effect_id=effect_id,
+        proof=AcceptanceProof(
+            kind=AcceptanceProofKind.NEVER_DISPATCHED,
+            effect_scope=effect.scope,
+            claim_occurrence_id=None,
+            evidence_reference=EvidenceReference(
+                f"{namespace}:never-dispatched:{effect_id.value}"
+            ),
+            evidence_digest=_commit_parts(
+                b"execution-core/authority-never-dispatched/v1",
+                _encode_text(namespace),
+                _encode_text(effect_id.value),
+            ),
+        ),
+    )
+    if (
+        book._input_record(stand_down.input_id) is not None
+        or book._input_record(close.input_id) is not None
+    ):
+        return None
+    stood_down = _apply_venue_input(book, execution, stand_down)
+    if stood_down.disposition is not VenueRecoveryDisposition.APPLIED:
+        return None
+    closed = _apply_venue_input(stood_down.book, execution, close)
+    if closed.disposition is not VenueRecoveryDisposition.APPLIED:
+        return None
+    return closed.book
+
+
+def _authority_stand_down_account_requested_effects(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    namespace: str,
+) -> VenueRecoveryBook | None:
+    """Atomically stand down every account request that never gained a claim."""
+
+    namespace = _require_authority_namespace(namespace)
+    candidates = book._account_unclaimed_requested_effect_ids
+    for effect_id in candidates:
+        effect = book._current_effect(effect_id)
+        if (
+            effect is None
+            or effect.state is not BrokerEffectState.REQUESTED
+            or effect.claim_occurrence_id is not None
+            or effect.acceptance_set_state is not AcceptanceSetState.OPEN
+            or book._leg_summary(effect_id).owner_count != 0
+            or book._has_effect_reconciliation(effect_id)
+        ):
+            return None
+        for input_id in (
+            VenueInputId(f"{namespace}:stand-down:{effect_id.value}"),
+            VenueInputId(f"{namespace}:close:{effect_id.value}"),
+        ):
+            if book._input_record(input_id) is not None:
+                return None
+    current = book
+    for effect_id in candidates:
+        updated = _authority_stand_down_requested_effect(
+            current,
+            execution,
+            effect_id,
+            namespace,
+        )
+        if updated is None:
+            return None
+        current = updated
+    return current
+
+
+def _authority_cancel_request_for_leg(
+    book: VenueRecoveryBook,
+    position_scope: PositionScope,
+    mandate_id: MandateId,
+    namespace: str,
+    ordinal: int,
+    leg_key: VenueLegKey,
+) -> RequestedEffect | None:
+    owner = book.owner(leg_key)
+    if owner is None:
+        return None
+    target = book._current_effect(owner.effect_id)
+    if target is None or target.scope.position_scope != position_scope:
+        return None
+    suffix = f"{ordinal}:{leg_key.order_id.value}"
+    return RequestedEffect(
+        input_id=VenueInputId(f"{namespace}:cancel-request:{suffix}"),
+        effect_id=EffectId(f"{namespace}:cancel-effect:{suffix}"),
+        request_occurrence_id=RequestOccurrenceId(
+            f"{namespace}:cancel-occurrence:{suffix}"
+        ),
+        mandate_id=mandate_id,
+        kind=EffectKind.CANCEL,
+        client_order_id=None,
+        symbol_id=position_scope.symbol_id,
+        side=target.scope.side,
+        quantity=target.scope.quantity,
+        economic_scope=_commit_parts(
+            b"execution-core/authority-cancel-scope/v1",
+            _encode_text(namespace),
+            _leg_index_key(leg_key),
+        ),
+        target_leg_key=leg_key,
+    )
+
+
+def _authority_begin_symbol_flatten(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+    mandate_id: MandateId,
+    namespace: str,
+) -> tuple[VenueRecoveryBook, tuple[EffectId, ...]] | None:
+    """Apply one all-or-none safely-local stand-down and known-leg cancel set."""
+
+    if type(position_scope) is not PositionScope:
+        raise TypeError("position_scope must be the exact PositionScope type")
+    if type(mandate_id) is not MandateId:
+        raise TypeError("mandate_id must be MandateId")
+    namespace = _require_authority_namespace(namespace)
+    view = _venue_authority_view(book, execution, position_scope, None)
+    summary = (
+        book._authority_summary_by_scope.get(_position_scope_index_key(position_scope))
+        or _SymbolAuthoritySummary()
+    )
+    if (
+        not view.execution_binding_matches
+        or not view.account_reconciliation_clear
+        or view.unknown_buy_effect_count
+    ):
+        return None
+    cancel_requests: list[RequestedEffect] = []
+    for ordinal, leg_key in enumerate(
+        summary.known_cancellable_buy_leg_keys,
+        start=1,
+    ):
+        request = _authority_cancel_request_for_leg(
+            book,
+            position_scope,
+            mandate_id,
+            namespace,
+            ordinal,
+            leg_key,
+        )
+        if request is None or not _target_is_exact_active(
+            book,
+            _effect_scope(book, request),
+        ):
+            return None
+        if (
+            book._current_effect(request.effect_id) is not None
+            or book._has_request_occurrence(request.request_occurrence_id)
+            or book._input_record(request.input_id) is not None
+        ):
+            return None
+        cancel_requests.append(request)
+    for effect_id in summary.stand_downable_buy_effect_ids:
+        if book._current_effect(effect_id) is None:
+            return None
+        for input_id in (
+            VenueInputId(f"{namespace}:stand-down:{effect_id.value}"),
+            VenueInputId(f"{namespace}:close:{effect_id.value}"),
+        ):
+            if book._input_record(input_id) is not None:
+                return None
+
+    current = book
+    for effect_id in summary.stand_downable_buy_effect_ids:
+        updated = _authority_stand_down_requested_effect(
+            current,
+            execution,
+            effect_id,
+            namespace,
+        )
+        if updated is None:
+            return None
+        current = updated
+    created: list[EffectId] = []
+    for request in cancel_requests:
+        transition = _authority_request_effect(current, execution, request)
+        if transition.disposition is not VenueRecoveryDisposition.APPLIED:
+            return None
+        current = transition.book
+        created.append(request.effect_id)
+    return current, tuple(created)
+
+
+def _authority_symbol_flatten_ready(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    position_scope: PositionScope,
+) -> bool:
+    view = _venue_authority_view(book, execution, position_scope, None)
+    return bool(
+        view.execution_binding_matches
+        and view.account_reconciliation_clear
+        and view.blocking_buy_effect_count == 0
+        and view.stand_downable_buy_count == 0
+        and view.known_cancellable_buy_leg_count == 0
+        and view.known_cancel_pending_buy_leg_count == 0
+        and view.waiting_buy_parent_count == 0
+        and view.unknown_buy_effect_count == 0
+    )
+
+
 __all__ = [
     "AcceptanceProof",
     "AcceptanceProofKind",
     "AcceptanceSetState",
     "BrokerEffectState",
     "CatchUpExecutionRegistry",
-    "CancelBeforeDispatch",
     "ClientIdentityBinding",
     "CloseAcceptanceSet",
     "DiscoverVenueLeg",
@@ -7586,11 +8999,8 @@ __all__ = [
     "ExecutionRegistryReconciliationRecord",
     "ObserveVenueStatus",
     "PendingVenueOperation",
-    "RecordDispatchClaim",
-    "RecordPendingVenueOperation",
     "RecordTransportOutcome",
     "RecoverClaimedEffect",
-    "RequestedEffect",
     "VenueAttemptState",
     "VenueClosureKind",
     "VenueEffectScope",

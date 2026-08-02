@@ -107,6 +107,31 @@ class MandateId(_ExactIdentity):
 
 
 @dataclass(frozen=True, slots=True)
+class AuthorityInputId(_ExactIdentity):
+    """Exact technical-deduplication identity for one authority input."""
+
+
+@dataclass(frozen=True, slots=True)
+class QueryClaimId(_ExactIdentity):
+    """Exact one-shot broker query or reconciliation claim identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionId(_ExactIdentity):
+    """Exact immutable trading-session identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class EmergencyGrantId(_ExactIdentity):
+    """Exact immutable emergency-reduction grant identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class ManualFlattenId(_ExactIdentity):
+    """Exact immutable manual-flatten workflow identity."""
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionFactKey:
     """The complete four-part deduplication key for one execution fact."""
 

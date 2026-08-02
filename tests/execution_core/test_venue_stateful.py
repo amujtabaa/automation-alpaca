@@ -54,7 +54,8 @@ from app.execution_core.venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
-    apply_venue_recovery_input,
+    _apply_venue_input,
+    apply_venue_recovery_input as _public_apply_venue_recovery_input,
 )
 
 
@@ -75,6 +76,25 @@ _POSITION_SCOPE = PositionScope(
     account=_ACCOUNT,
     symbol_id=_SYMBOL,
 )
+
+
+def apply_venue_recovery_input(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    item: object,
+):
+    reducer = (
+        _apply_venue_input
+        if type(item)
+        in {
+            RequestedEffect,
+            RecordDispatchClaim,
+            CancelBeforeDispatch,
+            RecordPendingVenueOperation,
+        }
+        else _public_apply_venue_recovery_input
+    )
+    return reducer(book, execution, item)
 
 
 @dataclass

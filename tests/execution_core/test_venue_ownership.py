@@ -7,6 +7,7 @@ inputs or later gates; no test infers them from a terminal order.
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import replace
 
 import pytest
@@ -48,10 +49,14 @@ from app.execution_core.venue import (
     RecordTransportOutcome,
     RecoverClaimedEffect,
     RequestedEffect,
+    VenueAttempt,
     VenueAttemptState,
+    VenueIdentityOwner,
+    VenueInputRecord,
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueScope,
+    _apply_venue_input,
     _audit_hydrate_book,
     apply_venue_recovery_input,
 )
@@ -111,7 +116,18 @@ def _apply(
     item: object,
     execution: ExecutionSnapshot = EXECUTION,
 ):
-    return apply_venue_recovery_input(book, execution, item)
+    reducer = (
+        _apply_venue_input
+        if type(item)
+        in {
+            RequestedEffect,
+            RecordDispatchClaim,
+            CancelBeforeDispatch,
+            RecordPendingVenueOperation,
+        }
+        else apply_venue_recovery_input
+    )
+    return reducer(book, execution, item)
 
 
 def _requested(tag: str = "submit-1") -> tuple[VenueRecoveryBook, RequestedEffect]:
@@ -181,6 +197,35 @@ def _terminal_observation(
         closure_id=ClosureId(f"closure-{tag}-{suffix}"),
         evidence_reference=EvidenceReference(f"evidence-{tag}-{suffix}"),
     )
+
+
+def _cancel_request(
+    tag: str,
+    target: RequestedEffect,
+    target_leg_key: VenueLegKey,
+) -> RequestedEffect:
+    return RequestedEffect(
+        input_id=VenueInputId(f"cancel-request-{tag}"),
+        effect_id=EffectId(f"cancel-effect-{tag}"),
+        request_occurrence_id=RequestOccurrenceId(f"cancel-occurrence-{tag}"),
+        mandate_id=MandateId(f"cancel-mandate-{tag}"),
+        kind=EffectKind.CANCEL,
+        client_order_id=None,
+        symbol_id=target.symbol_id,
+        side=target.side,
+        quantity=target.quantity,
+        economic_scope=f"cancel-economic-{tag}".encode(),
+        target_leg_key=target_leg_key,
+    )
+
+
+def _cancellable_target(
+    tag: str,
+) -> tuple[VenueRecoveryBook, RequestedEffect, VenueLegKey]:
+    acknowledged, target = _acknowledged(tag)
+    discovered = _discover(acknowledged, target, tag)
+    assert discovered.disposition is VenueRecoveryDisposition.APPLIED
+    return discovered.book, target, _leg(tag)
 
 
 def _acceptance_proof(
@@ -272,6 +317,504 @@ def test_dispatch_claim_is_immutable_and_prevents_cancel_or_second_claim() -> No
     assert second_claim.disposition is VenueRecoveryDisposition.CONFLICT
     assert canceled.disposition is VenueRecoveryDisposition.REFUSED
     assert second_claim.book == canceled.book == claimed.book
+
+
+def test_one_active_cancel_reservation_blocks_distinct_requests_and_claim_bypass() -> (
+    None
+):
+    book, target, target_leg_key = _cancellable_target("cancel-reservation")
+    first = _cancel_request("reservation-first", target, target_leg_key)
+    second = _cancel_request("reservation-second", target, target_leg_key)
+
+    reserved = _apply(book, first)
+    duplicate_before_claim = _apply(reserved.book, second)
+    claimed = _apply(
+        reserved.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId("cancel-reservation-first-claim"),
+            effect_id=first.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId(
+                "cancel-reservation-first-claim-occurrence"
+            ),
+        ),
+    )
+    duplicate_after_claim = _apply(claimed.book, second)
+
+    assert reserved.disposition is VenueRecoveryDisposition.APPLIED
+    assert claimed.disposition is VenueRecoveryDisposition.APPLIED
+    assert duplicate_before_claim.disposition is VenueRecoveryDisposition.REFUSED
+    assert duplicate_before_claim.book == reserved.book
+    assert duplicate_after_claim.disposition is VenueRecoveryDisposition.REFUSED
+    assert duplicate_after_claim.book == claimed.book
+    assert claimed.book.active_attempt(target_leg_key).pending_operation is None
+
+
+def test_definitive_cancel_rejection_releases_reservation_for_exact_retry() -> None:
+    book, target, target_leg_key = _cancellable_target("cancel-retry")
+    first = _cancel_request("retry-first", target, target_leg_key)
+    retry = _cancel_request("retry-second", target, target_leg_key)
+    reserved = _apply(book, first)
+    claimed = _apply(
+        reserved.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId("cancel-retry-first-claim"),
+            effect_id=first.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId(
+                "cancel-retry-first-claim-occurrence"
+            ),
+        ),
+    )
+    rejected = _apply(
+        claimed.book,
+        RecordTransportOutcome(
+            input_id=VenueInputId("cancel-retry-first-rejected"),
+            effect_id=first.effect_id,
+            state=BrokerEffectState.REJECTED,
+        ),
+    )
+    retried = _apply(rejected.book, retry)
+
+    assert rejected.disposition is VenueRecoveryDisposition.APPLIED
+    assert rejected.book.active_attempt(target_leg_key).pending_operation is None
+    assert retried.disposition is VenueRecoveryDisposition.APPLIED
+    assert _audit_hydrate_book(retried.book, EXECUTION) == retried.book
+
+
+def test_cancel_stand_down_releases_reservation_for_exact_retry() -> None:
+    book, target, target_leg_key = _cancellable_target("cancel-stand-down")
+    first = _cancel_request("stand-down-first", target, target_leg_key)
+    retry = _cancel_request("stand-down-second", target, target_leg_key)
+    reserved = _apply(book, first)
+    stood_down = _apply(
+        reserved.book,
+        CancelBeforeDispatch(
+            input_id=VenueInputId("cancel-reservation-stand-down"),
+            effect_id=first.effect_id,
+        ),
+    )
+    retried = _apply(stood_down.book, retry)
+
+    assert stood_down.disposition is VenueRecoveryDisposition.APPLIED
+    assert retried.disposition is VenueRecoveryDisposition.APPLIED
+    assert _audit_hydrate_book(retried.book, EXECUTION) == retried.book
+
+
+def test_cancel_reservation_is_rebuilt_on_hydration_and_validated_as_canonical() -> (
+    None
+):
+    book, target, target_leg_key = _cancellable_target("cancel-hydration")
+    first = _cancel_request("hydration-first", target, target_leg_key)
+    second = _cancel_request("hydration-second", target, target_leg_key)
+    reserved = _apply(book, first)
+
+    hydrated = _audit_hydrate_book(reserved.book, EXECUTION)
+    duplicate = _apply(hydrated, second)
+    assert hydrated == reserved.book
+    assert duplicate.disposition is VenueRecoveryDisposition.REFUSED
+
+    forged = copy(hydrated)
+    object.__setattr__(
+        forged,
+        "_cancel_target_reservation_by_leg",
+        VenueRecoveryBook.empty(VENUE_SCOPE)._cancel_target_reservation_by_leg,
+    )
+    with pytest.raises(ValueError, match="cancel target reservation index"):
+        forged._validate_full()
+
+
+def test_authority_indexes_are_rebuilt_and_reject_forged_current_state() -> None:
+    book, target, target_leg_key = _cancellable_target("authority-index-hydration")
+    reserved = _apply(
+        book,
+        _cancel_request("authority-index-cancel", target, target_leg_key),
+    )
+    assert reserved.disposition is VenueRecoveryDisposition.APPLIED
+    hydrated = _audit_hydrate_book(reserved.book, EXECUTION)
+    assert hydrated == reserved.book
+
+    empty = VenueRecoveryBook.empty(VENUE_SCOPE)
+    for field_name in (
+        "_authority_contribution_by_effect",
+        "_authority_summary_by_scope",
+        "_account_unclaimed_requested_effect_ids",
+    ):
+        forged = copy(hydrated)
+        object.__setattr__(forged, field_name, getattr(empty, field_name))
+        with pytest.raises(ValueError, match="venue authority indexes"):
+            forged._validate_full()
+
+
+@pytest.mark.parametrize(
+    "transport_state",
+    [BrokerEffectState.ACKNOWLEDGED, BrokerEffectState.OUTCOME_UNKNOWN],
+)
+def test_transport_cancel_pending_state_round_trips_through_hydration(
+    transport_state: BrokerEffectState,
+) -> None:
+    suffix = transport_state.value.lower()
+    book, target, target_leg_key = _cancellable_target(
+        f"cancel-transport-{suffix}-hydration"
+    )
+    cancel = _cancel_request(
+        f"cancel-transport-{suffix}-hydration", target, target_leg_key
+    )
+    reserved = _apply(book, cancel)
+    claimed = _apply(
+        reserved.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId(f"cancel-transport-{suffix}-hydration-claim"),
+            effect_id=cancel.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId(
+                f"cancel-transport-{suffix}-hydration-claim-occurrence"
+            ),
+        ),
+    )
+    transitioned = _apply(
+        claimed.book,
+        RecordTransportOutcome(
+            input_id=VenueInputId(f"cancel-transport-{suffix}-hydration-outcome"),
+            effect_id=cancel.effect_id,
+            state=transport_state,
+        ),
+    )
+    attempt = transitioned.book.active_attempt(target_leg_key)
+    assert attempt is not None
+    assert attempt.pending_operation is PendingVenueOperation.CANCEL
+
+    hydrated = _audit_hydrate_book(transitioned.book, EXECUTION)
+    assert hydrated == transitioned.book
+    hydrated_attempt = hydrated.active_attempt(target_leg_key)
+    assert hydrated_attempt is not None
+    assert hydrated_attempt.pending_operation is PendingVenueOperation.CANCEL
+
+
+def test_outcome_unknown_cancel_pending_state_round_trips_through_hydration() -> None:
+    book, target, target_leg_key = _cancellable_target("cancel-unknown-hydration")
+    cancel = _cancel_request("cancel-unknown-hydration", target, target_leg_key)
+    reserved = _apply(book, cancel)
+    claimed = _apply(
+        reserved.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId("cancel-unknown-hydration-claim"),
+            effect_id=cancel.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId(
+                "cancel-unknown-hydration-claim-occurrence"
+            ),
+        ),
+    )
+    unknown = _apply(
+        claimed.book,
+        RecoverClaimedEffect(
+            input_id=VenueInputId("cancel-unknown-hydration-recovery"),
+            effect_id=cancel.effect_id,
+        ),
+    )
+    attempt = unknown.book.active_attempt(target_leg_key)
+    assert attempt is not None
+    assert attempt.pending_operation is PendingVenueOperation.CANCEL
+
+    hydrated = _audit_hydrate_book(unknown.book, EXECUTION)
+    assert hydrated == unknown.book
+
+
+def test_hydration_rejects_cancel_scope_whose_target_never_had_an_owner() -> None:
+    book, target, target_leg_key = _cancellable_target("cancel-forged-target")
+    cancel = _cancel_request("cancel-forged-target", target, target_leg_key)
+    reserved = _apply(book, cancel)
+    missing_target = VenueLegKey(
+        broker=BROKER,
+        environment=ENVIRONMENT,
+        account=ACCOUNT,
+        order_id=OrderId("cancel-forged-missing-target"),
+    )
+    forged_effects = tuple(
+        replace(
+            effect,
+            scope=replace(effect.scope, target_leg_key=missing_target),
+        )
+        if effect.effect_id == cancel.effect_id
+        else effect
+        for effect in reserved.book.effects
+    )
+    forged_inputs = tuple(
+        replace(
+            record,
+            item=replace(record.item, target_leg_key=missing_target),
+        )
+        if isinstance(record.item, RequestedEffect)
+        and record.item.effect_id == cancel.effect_id
+        else record
+        for record in reserved.book.input_records
+    )
+
+    with pytest.raises(ValueError, match="cancel|target|owner"):
+        _audit_hydrate_book(
+            reserved.book,
+            EXECUTION,
+            effects=forged_effects,
+            input_records=forged_inputs,
+        )
+
+
+def test_hydration_rejects_cancel_effect_as_a_venue_leg_owner() -> None:
+    book, target, target_leg_key = _cancellable_target("cancel-owner-forgery")
+    cancel = _cancel_request("cancel-owner-forgery", target, target_leg_key)
+    reserved = _apply(book, cancel)
+    cancel_effect = reserved.book.effect(cancel.effect_id)
+    assert cancel_effect is not None
+    forged_leg = _leg("cancel-owner-forgery-new-leg")
+    observation_id = VenueObservationId("cancel-owner-forgery-observation")
+    discovery = DiscoverVenueLeg(
+        input_id=VenueInputId("cancel-owner-forgery-discovery"),
+        effect_id=cancel.effect_id,
+        leg_key=forged_leg,
+        observation_id=observation_id,
+    )
+    forged_owner = VenueIdentityOwner(
+        leg_key=forged_leg,
+        effect_scope=cancel_effect.scope,
+        observation_id=observation_id,
+    )
+    forged_attempt = VenueAttempt(
+        leg_key=forged_leg,
+        status=VenueAttemptState.WORKING,
+        pending_operation=None,
+        cumulative_quantity=Quantity(0),
+        last_observation_id=observation_id,
+    )
+
+    with pytest.raises(ValueError, match="cancel|owner|leg|discover"):
+        _audit_hydrate_book(
+            reserved.book,
+            EXECUTION,
+            owners=reserved.book.owners + (forged_owner,),
+            active_attempts=reserved.book.active_attempts + (forged_attempt,),
+            input_records=reserved.book.input_records
+            + (VenueInputRecord(discovery.input_id, discovery),),
+        )
+
+
+def test_hydration_rejects_historically_overlapping_cancel_reservations() -> None:
+    book, target, target_leg_key = _cancellable_target("cancel-overlap-history")
+    first = _cancel_request("cancel-overlap-first", target, target_leg_key)
+    second = _cancel_request("cancel-overlap-second", target, target_leg_key)
+    reserved = _apply(book, first)
+    claimed = _apply(
+        reserved.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId("cancel-overlap-first-claim"),
+            effect_id=first.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId(
+                "cancel-overlap-first-claim-occurrence"
+            ),
+        ),
+    )
+    rejected = _apply(
+        claimed.book,
+        RecordTransportOutcome(
+            input_id=VenueInputId("cancel-overlap-first-rejected"),
+            effect_id=first.effect_id,
+            state=BrokerEffectState.REJECTED,
+        ),
+    )
+    retried = _apply(rejected.book, second)
+    assert retried.disposition is VenueRecoveryDisposition.APPLIED
+
+    records = list(retried.book.input_records)
+    second_index = next(
+        index
+        for index, record in enumerate(records)
+        if isinstance(record.item, RequestedEffect)
+        and record.item.effect_id == second.effect_id
+    )
+    second_record = records.pop(second_index)
+    rejection_index = next(
+        index
+        for index, record in enumerate(records)
+        if isinstance(record.item, RecordTransportOutcome)
+        and record.item.effect_id == first.effect_id
+        and record.item.state is BrokerEffectState.REJECTED
+    )
+    records.insert(rejection_index, second_record)
+
+    with pytest.raises(ValueError, match="cancel|target|reservation"):
+        _audit_hydrate_book(
+            retried.book,
+            EXECUTION,
+            input_records=tuple(records),
+        )
+
+
+def test_hydration_rejects_cancel_claim_after_target_became_pending() -> None:
+    book, target, target_leg_key = _cancellable_target("cancel-claim-recheck")
+    cancel = _cancel_request("cancel-claim-recheck", target, target_leg_key)
+    reserved = _apply(book, cancel)
+    claim = RecordDispatchClaim(
+        input_id=VenueInputId("cancel-claim-recheck-claim"),
+        effect_id=cancel.effect_id,
+        claim_occurrence_id=ClaimOccurrenceId("cancel-claim-recheck-claim-occurrence"),
+    )
+    claimed = _apply(reserved.book, claim)
+    pending_command = RecordPendingVenueOperation(
+        input_id=VenueInputId("cancel-claim-recheck-pending"),
+        leg_key=target_leg_key,
+        operation=PendingVenueOperation.REPLACE,
+    )
+    pending = _apply(claimed.book, pending_command)
+    assert pending.disposition is VenueRecoveryDisposition.APPLIED
+
+    records = list(pending.book.input_records)
+    pending_index = next(
+        index
+        for index, record in enumerate(records)
+        if record.input_id == pending_command.input_id
+    )
+    pending_record = records.pop(pending_index)
+    claim_index = next(
+        index
+        for index, record in enumerate(records)
+        if record.input_id == claim.input_id
+    )
+    records.insert(claim_index, pending_record)
+
+    with pytest.raises(ValueError, match="cancel|target|claim|active"):
+        _audit_hydrate_book(
+            pending.book,
+            EXECUTION,
+            input_records=tuple(records),
+        )
+
+
+def test_hydration_rejects_pending_operation_before_leg_discovery() -> None:
+    book, _, target_leg_key = _cancellable_target("pending-before-discovery")
+    pending_command = RecordPendingVenueOperation(
+        input_id=VenueInputId("pending-before-discovery-input"),
+        leg_key=target_leg_key,
+        operation=PendingVenueOperation.REPLACE,
+    )
+    pending = _apply(book, pending_command)
+    assert pending.disposition is VenueRecoveryDisposition.APPLIED
+
+    records = list(pending.book.input_records)
+    pending_index = next(
+        index
+        for index, record in enumerate(records)
+        if record.input_id == pending_command.input_id
+    )
+    pending_record = records.pop(pending_index)
+    discovery_index = next(
+        index
+        for index, record in enumerate(records)
+        if isinstance(record.item, DiscoverVenueLeg)
+        and record.item.leg_key == target_leg_key
+    )
+    records.insert(discovery_index, pending_record)
+
+    with pytest.raises(ValueError, match="pending|discovery|active"):
+        _audit_hydrate_book(
+            pending.book,
+            EXECUTION,
+            input_records=tuple(records),
+        )
+
+
+def test_hydration_rejects_first_discovery_before_dispatch_progress() -> None:
+    book, target, target_leg_key = _cancellable_target("early-first-discovery")
+    records = list(book.input_records)
+    discovery_index = next(
+        index
+        for index, record in enumerate(records)
+        if isinstance(record.item, DiscoverVenueLeg)
+        and record.item.effect_id == target.effect_id
+        and record.item.leg_key == target_leg_key
+    )
+    discovery_record = records.pop(discovery_index)
+    request_index = next(
+        index
+        for index, record in enumerate(records)
+        if isinstance(record.item, RequestedEffect)
+        and record.item.effect_id == target.effect_id
+    )
+    records.insert(request_index + 1, discovery_record)
+
+    with pytest.raises(ValueError, match="discover|owner|dispatch|state"):
+        _audit_hydrate_book(
+            book,
+            EXECUTION,
+            input_records=tuple(records),
+        )
+
+
+def test_hydration_folds_semantic_pending_alias_before_cancel_retry() -> None:
+    book, target, target_leg_key = _cancellable_target("pending-alias-order")
+    first = _cancel_request("pending-alias-first", target, target_leg_key)
+    second = _cancel_request("pending-alias-second", target, target_leg_key)
+    reserved = _apply(book, first)
+    claimed = _apply(
+        reserved.book,
+        RecordDispatchClaim(
+            input_id=VenueInputId("pending-alias-first-claim"),
+            effect_id=first.effect_id,
+            claim_occurrence_id=ClaimOccurrenceId(
+                "pending-alias-first-claim-occurrence"
+            ),
+        ),
+    )
+    unknown = _apply(
+        claimed.book,
+        RecoverClaimedEffect(
+            input_id=VenueInputId("pending-alias-first-unknown"),
+            effect_id=first.effect_id,
+        ),
+    )
+    direct_pending = RecordPendingVenueOperation(
+        input_id=VenueInputId("pending-alias-direct"),
+        leg_key=target_leg_key,
+        operation=PendingVenueOperation.REPLACE,
+    )
+    pending = _apply(unknown.book, direct_pending)
+    rejected = _apply(
+        pending.book,
+        RecordTransportOutcome(
+            input_id=VenueInputId("pending-alias-first-rejected"),
+            effect_id=first.effect_id,
+            state=BrokerEffectState.REJECTED,
+        ),
+    )
+    retried = _apply(rejected.book, second)
+    alias_pending = replace(
+        direct_pending,
+        input_id=VenueInputId("pending-alias-reasserted"),
+    )
+    aliased = _apply(retried.book, alias_pending)
+    alias_record = next(
+        record
+        for record in aliased.book.input_records
+        if record.input_id == alias_pending.input_id
+    )
+    assert alias_record.semantic_alias_of == direct_pending.input_id
+
+    records = list(aliased.book.input_records)
+    alias_index = next(
+        index
+        for index, record in enumerate(records)
+        if record.input_id == alias_pending.input_id
+    )
+    moved_alias = records.pop(alias_index)
+    retry_index = next(
+        index
+        for index, record in enumerate(records)
+        if isinstance(record.item, RequestedEffect)
+        and record.item.effect_id == second.effect_id
+    )
+    records.insert(retry_index, moved_alias)
+
+    with pytest.raises(ValueError, match="target|active|reservation"):
+        _audit_hydrate_book(
+            aliased.book,
+            EXECUTION,
+            input_records=tuple(records),
+        )
 
 
 def test_never_dispatched_requires_local_cancel_and_absent_claim() -> None:
@@ -925,6 +1468,91 @@ def test_late_acceptance_invalidates_closed_rejected_effect_proof() -> None:
         "acceptance-late-rejected"
     )
     assert late.book.owner(_leg("late-rejected")).effect_id == request.effect_id
+
+
+def test_hydration_rejects_contract_close_before_its_dispatch_claim() -> None:
+    claimed, request = _claimed("early-contract-close")
+    rejected = _apply(
+        claimed,
+        RecordTransportOutcome(
+            input_id=VenueInputId("early-contract-close-rejected"),
+            effect_id=request.effect_id,
+            state=BrokerEffectState.REJECTED,
+        ),
+    )
+    close_input = CloseAcceptanceSet(
+        input_id=VenueInputId("early-contract-close-input"),
+        effect_id=request.effect_id,
+        proof=_acceptance_proof(
+            rejected.book,
+            request.effect_id,
+            AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+            "early-contract-close-evidence",
+        ),
+    )
+    closed = _apply(rejected.book, close_input)
+    late = _discover(closed.book, request, "early-contract-close-late-leg")
+    records = list(late.book.input_records)
+    close_index = next(
+        index
+        for index, record in enumerate(records)
+        if record.input_id == close_input.input_id
+    )
+    close_record = records.pop(close_index)
+    claim_index = next(
+        index
+        for index, record in enumerate(records)
+        if isinstance(record.item, RecordDispatchClaim)
+        and record.item.effect_id == request.effect_id
+    )
+    records.insert(claim_index, close_record)
+
+    with pytest.raises(
+        ValueError,
+        match="acceptance closure requires its exact claim, proof, and no active legs",
+    ):
+        _audit_hydrate_book(
+            late.book,
+            EXECUTION,
+            input_records=tuple(records),
+        )
+
+
+def test_hydration_rejects_closed_effect_with_late_discovery_contradiction() -> None:
+    claimed, request = _claimed("closed-late-contradiction")
+    rejected = _apply(
+        claimed,
+        RecordTransportOutcome(
+            input_id=VenueInputId("closed-late-contradiction-rejected"),
+            effect_id=request.effect_id,
+            state=BrokerEffectState.REJECTED,
+        ),
+    )
+    close_input = CloseAcceptanceSet(
+        input_id=VenueInputId("closed-late-contradiction-close"),
+        effect_id=request.effect_id,
+        proof=_acceptance_proof(
+            rejected.book,
+            request.effect_id,
+            AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+            "closed-late-contradiction-evidence",
+        ),
+    )
+    closed = _apply(rejected.book, close_input)
+    late = _discover(closed.book, request, "closed-late-contradiction-leg")
+    forged_effects = tuple(
+        replace(effect, acceptance_set_state=AcceptanceSetState.CLOSED)
+        if effect.effect_id == request.effect_id
+        else effect
+        for effect in late.book.effects
+    )
+
+    with pytest.raises(ValueError, match="acceptance|contradiction|invalidated"):
+        _audit_hydrate_book(
+            late.book,
+            EXECUTION,
+            effects=forged_effects,
+        )
 
 
 def test_closure_proof_refuses_while_a_known_leg_is_active() -> None:

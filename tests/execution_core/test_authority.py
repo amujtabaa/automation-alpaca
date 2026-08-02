@@ -21,6 +21,7 @@ from app.execution_core.fills import (
     ExecutionScope,
     ExecutionSide,
     PositionScope,
+    _PersistentKeyMap,
     _PersistentSequence,
 )
 from app.execution_core.identity import (
@@ -61,6 +62,7 @@ from app.execution_core.values import (
 from app.execution_core.venue import (
     AcceptanceProof,
     AcceptanceProofKind,
+    AcceptanceSetState,
     BrokerEffectState,
     CatchUpExecutionRegistry,
     CancelBeforeDispatch,
@@ -588,15 +590,28 @@ def _apply_closed_sell_fill(
             resulting_cumulative_quantity=Quantity(1),
             fact=fact,
             evidence_digest=b"\x95" * 32,
+            closure_id=None,
+            evidence_reference=None,
+        ),
+    )
+    terminal = _public_venue_apply_twice(
+        filled.book,
+        filled.execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId(f"{label}-terminal-input"),
+            leg_key=leg_key,
+            status=VenueAttemptState.FILLED,
+            observation_id=VenueObservationId(f"{label}-terminal-observation"),
+            cumulative_quantity=Quantity(1),
             closure_id=ClosureId(f"{label}-fill-closure"),
             evidence_reference=EvidenceReference(f"{label}-fill-evidence"),
         ),
     )
-    effect = filled.book.effect(effect_id)
+    effect = terminal.book.effect(effect_id)
     assert effect is not None
     closed = _public_venue_apply_twice(
-        filled.book,
-        filled.execution,
+        terminal.book,
+        terminal.execution,
         CloseAcceptanceSet(
             input_id=VenueInputId(f"{label}-close-input"),
             effect_id=effect_id,
@@ -1448,6 +1463,210 @@ def test_create_and_final_claim_are_one_real_reducer_path() -> None:
     assert reused_claim_conflict.state.budget.remaining == 2
     assert reused_claim_conflict.fresh_claim is None
 
+    second_claim_for_effect = replace(
+        claim,
+        input_id=authority_input_type("buy-second-effect-claim-input"),
+        claim_occurrence_id=ClaimOccurrenceId("buy-second-effect-claim"),
+    )
+    effect_conflict = _authority_apply_twice(
+        module,
+        claimed.state,
+        EXECUTION,
+        second_claim_for_effect,
+    )
+    assert effect_conflict.disposition is disposition_type.CONFLICT
+    assert effect_conflict.state == claimed.state
+    assert effect_conflict.state.budget.remaining == 2
+    assert effect_conflict.fresh_claim is None
+
+    acknowledged = _public_venue_apply_twice(
+        claimed.state.venue,
+        EXECUTION,
+        RecordTransportOutcome(
+            input_id=VenueInputId("buy-claim-ack-input"),
+            effect_id=EffectId("buy-effect"),
+            state=BrokerEffectState.ACKNOWLEDGED,
+        ),
+    )
+    blocked_successor = _forge_positive_predecessor(
+        module,
+        predecessor=_forge_venue_predecessor(claimed.state, acknowledged.book),
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=0,
+        reserve=0,
+    )
+    late_duplicate = replace(
+        claim,
+        input_id=authority_input_type("buy-late-duplicate-claim-input"),
+        claim_occurrence_id=ClaimOccurrenceId("buy-late-duplicate-claim"),
+    )
+    late_conflict = _authority_apply_twice(
+        module,
+        blocked_successor,
+        EXECUTION,
+        late_duplicate,
+    )
+    assert late_conflict.disposition is disposition_type.CONFLICT
+    assert late_conflict.state == blocked_successor
+    assert late_conflict.fresh_claim is None
+
+
+@pytest.mark.parametrize("reused_identity", ["request_occurrence", "client_order"])
+def test_permanent_effect_identity_conflicts_precede_mutable_gate_drift(
+    reused_identity: str,
+) -> None:
+    module = _authority_module()
+    disposition_type, authority_input_type, create_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "CreateBrokerEffect",
+    )
+    initial = _forge_positive_predecessor(module, remaining=4, reserve=1)
+    created = _create_buy(module, initial, label="permanent-identity-source")
+    assert created.disposition is disposition_type.APPLIED
+    request = _effect_request(
+        module,
+        f"permanent-{reused_identity}",
+        side=ExecutionSide.BUY,
+        quantity=1,
+    )
+    if reused_identity == "request_occurrence":
+        request = replace(
+            request,
+            request_occurrence_id=RequestOccurrenceId(
+                "permanent-identity-source-occurrence"
+            ),
+        )
+    else:
+        request = replace(
+            request,
+            client_order_id=ClientOrderId("permanent-identity-source-client"),
+        )
+    drifted = _forge_positive_predecessor(
+        module,
+        predecessor=created.state,
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=0,
+        reserve=0,
+    )
+    command = create_type(
+        input_id=authority_input_type(f"permanent-{reused_identity}-input"),
+        session_id=drifted.session_id,
+        request=request,
+        manual_flatten_id=None,
+        emergency_grant_id=None,
+    )
+
+    conflict = _authority_apply_twice(module, drifted, EXECUTION, command)
+    assert conflict.disposition is disposition_type.CONFLICT
+    assert conflict.state == drifted
+    assert conflict.state.budget == drifted.budget
+    assert conflict.created_effect_ids == ()
+    assert conflict.fresh_claim is None
+
+
+def test_first_authority_effect_for_a_later_account_symbol_is_admitted() -> None:
+    module = _authority_module()
+    disposition_type, authority_input_type, request_type, create_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "BrokerEffectRequest",
+        "CreateBrokerEffect",
+    )
+    initial = _forge_positive_predecessor(module, remaining=5, reserve=1)
+    aapl = _create_buy(module, initial, label="first-account-symbol")
+    assert aapl.disposition is disposition_type.APPLIED
+    msft_execution = ExecutionSnapshot.flat(
+        PositionScope(
+            broker=BROKER,
+            environment=ENVIRONMENT,
+            account=ACCOUNT,
+            symbol_id=OTHER_SYMBOL,
+        )
+    )
+    request = request_type(
+        effect_id=EffectId("later-symbol-effect"),
+        request_occurrence_id=RequestOccurrenceId("later-symbol-occurrence"),
+        mandate_id=MandateId("later-symbol-mandate"),
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("later-symbol-client"),
+        symbol_id=OTHER_SYMBOL,
+        side=ExecutionSide.BUY,
+        quantity=Quantity(1),
+        economic_scope=b"later-symbol|MSFT|BUY|1",
+        target_leg_key=None,
+    )
+    command = create_type(
+        input_id=authority_input_type("later-symbol-create-input"),
+        session_id=aapl.state.session_id,
+        request=request,
+        manual_flatten_id=None,
+        emergency_grant_id=None,
+    )
+
+    admitted = _authority_apply_twice(
+        module,
+        aapl.state,
+        msft_execution,
+        command,
+    )
+    assert admitted.disposition is disposition_type.APPLIED
+    assert admitted.created_effect_ids == (EffectId("later-symbol-effect"),)
+    assert admitted.state.budget == aapl.state.budget
+
+
+def test_later_account_symbol_still_requires_exact_account_registry() -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        reason_type,
+        authority_input_type,
+        request_type,
+        create_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "AuthorityInputId",
+        "BrokerEffectRequest",
+        "CreateBrokerEffect",
+    )
+    initial = _forge_positive_predecessor(module, remaining=5, reserve=1)
+    aapl = _create_buy(module, initial, label="registry-source-symbol")
+    assert aapl.disposition is disposition_type.APPLIED
+    msft_ahead = _advanced_same_scope_execution(
+        label="later-symbol-registry-ahead",
+        symbol_id=OTHER_SYMBOL,
+    )
+    request = request_type(
+        effect_id=EffectId("later-symbol-registry-effect"),
+        request_occurrence_id=RequestOccurrenceId("later-symbol-registry-occurrence"),
+        mandate_id=MandateId("later-symbol-registry-mandate"),
+        kind=EffectKind.SUBMIT,
+        client_order_id=ClientOrderId("later-symbol-registry-client"),
+        symbol_id=OTHER_SYMBOL,
+        side=ExecutionSide.BUY,
+        quantity=Quantity(1),
+        economic_scope=b"later-symbol-registry|MSFT|BUY|1",
+        target_leg_key=None,
+    )
+    command = create_type(
+        input_id=authority_input_type("later-symbol-registry-create-input"),
+        session_id=aapl.state.session_id,
+        request=request,
+        manual_flatten_id=None,
+        emergency_grant_id=None,
+    )
+
+    refused = _authority_apply_twice(module, aapl.state, msft_ahead, command)
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.reason is reason_type.EXECUTION_BINDING_MISMATCH
+    assert refused.state == aapl.state
+
 
 def test_normal_claim_succeeds_exactly_above_reserve_and_refuses_at_reserve() -> None:
     module = _authority_module()
@@ -2182,17 +2401,30 @@ def test_final_sell_claim_rereads_a_legally_shrunk_canonical_residual() -> None:
             resulting_cumulative_quantity=Quantity(1),
             fact=fill_fact,
             evidence_digest=b"\x93" * 32,
-            closure_id=ClosureId("residual-sibling-fill-closure"),
-            evidence_reference=EvidenceReference("residual-sibling-fill-evidence"),
+            closure_id=None,
+            evidence_reference=None,
         ),
     )
     assert filled.disposition is VenueRecoveryDisposition.APPLIED
     assert filled.execution.position.raw_quantity == 4
-    sibling_effect = filled.book.effect(sibling.effect_id)
-    assert sibling_effect is not None
-    closed = _public_venue_apply_twice(
+    terminal = _public_venue_apply_twice(
         filled.book,
         filled.execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId("residual-sibling-terminal-input"),
+            leg_key=RESIDUAL_LEG,
+            status=VenueAttemptState.FILLED,
+            observation_id=VenueObservationId("residual-sibling-terminal"),
+            cumulative_quantity=Quantity(1),
+            closure_id=ClosureId("residual-sibling-fill-closure"),
+            evidence_reference=EvidenceReference("residual-sibling-fill-evidence"),
+        ),
+    )
+    sibling_effect = terminal.book.effect(sibling.effect_id)
+    assert sibling_effect is not None
+    closed = _public_venue_apply_twice(
+        terminal.book,
+        terminal.execution,
         CloseAcceptanceSet(
             input_id=VenueInputId("residual-sibling-close-input"),
             effect_id=sibling.effect_id,
@@ -2440,6 +2672,127 @@ def test_cancel_request_conflict_and_exhaustion_are_atomic() -> None:
     assert refused.fresh_claim is None
 
 
+def test_one_live_target_accepts_only_one_cancel_intent_before_outcome() -> None:
+    module = _authority_module()
+    disposition_type, reason_type, claim_type, authority_input_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "ClaimEffect",
+        "AuthorityInputId",
+    )
+    state = _seed_cancellable_buy(
+        module,
+        remaining=4,
+        reserve=1,
+        label="single-cancel-target",
+    )
+    first = _create_effect(
+        module,
+        state,
+        EXECUTION,
+        label="single-cancel-first",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+    )
+    assert first.disposition is disposition_type.APPLIED
+
+    second_before_claim = _create_effect(
+        module,
+        first.state,
+        EXECUTION,
+        label="single-cancel-second-before-claim",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+    )
+    assert second_before_claim.disposition is disposition_type.REFUSED
+    assert second_before_claim.reason is reason_type.VENUE_UNCERTAIN
+    assert second_before_claim.state == first.state
+
+    claimed = _authority_apply_twice(
+        module,
+        first.state,
+        EXECUTION,
+        claim_type(
+            input_id=authority_input_type("single-cancel-first-claim-input"),
+            effect_id=EffectId("single-cancel-first-effect"),
+            claim_occurrence_id=ClaimOccurrenceId("single-cancel-first-claim"),
+        ),
+    )
+    assert claimed.disposition is disposition_type.APPLIED
+    second_after_claim = _create_effect(
+        module,
+        claimed.state,
+        EXECUTION,
+        label="single-cancel-second-after-claim",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+    )
+    assert second_after_claim.disposition is disposition_type.REFUSED
+    assert second_after_claim.reason is reason_type.VENUE_UNCERTAIN
+    assert second_after_claim.state == claimed.state
+
+
+def test_definitively_rejected_cancel_releases_its_exact_target() -> None:
+    module = _authority_module()
+    disposition_type, claim_type, authority_input_type = _required(
+        module,
+        "AuthorityDisposition",
+        "ClaimEffect",
+        "AuthorityInputId",
+    )
+    state = _seed_cancellable_buy(
+        module,
+        remaining=4,
+        reserve=1,
+        label="rejected-cancel-target",
+    )
+    first = _create_effect(
+        module,
+        state,
+        EXECUTION,
+        label="rejected-cancel-first",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+    )
+    claimed = _authority_apply_twice(
+        module,
+        first.state,
+        EXECUTION,
+        claim_type(
+            input_id=authority_input_type("rejected-cancel-first-claim-input"),
+            effect_id=EffectId("rejected-cancel-first-effect"),
+            claim_occurrence_id=ClaimOccurrenceId("rejected-cancel-first-claim"),
+        ),
+    )
+    rejected = _public_venue_apply_twice(
+        claimed.state.venue,
+        EXECUTION,
+        RecordTransportOutcome(
+            input_id=VenueInputId("rejected-cancel-first-outcome-input"),
+            effect_id=EffectId("rejected-cancel-first-effect"),
+            state=BrokerEffectState.REJECTED,
+        ),
+    )
+    current = _forge_venue_predecessor(claimed.state, rejected.book)
+
+    retry = _create_effect(
+        module,
+        current,
+        EXECUTION,
+        label="rejected-cancel-retry",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+    )
+    assert retry.disposition is disposition_type.APPLIED
+    assert retry.created_effect_ids == (EffectId("rejected-cancel-retry-effect"),)
+
+
 def test_native_replace_remains_disabled_after_valid_target_binding() -> None:
     module = _authority_module()
     disposition_type, reason_type = _required(
@@ -2523,6 +2876,44 @@ def test_exact_emergency_sell_consumes_one_grant_and_reserved_request_once() -> 
     assert replay.state.budget.remaining == 0
     assert replay.state._grant_consumed(grant_id)
     assert replay.fresh_claim is None
+
+
+def test_cancel_cannot_carry_or_consume_an_emergency_sell_grant() -> None:
+    module = _authority_module()
+    disposition_type, reason_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+    )
+    base = _seed_cancellable_buy(
+        module,
+        remaining=2,
+        reserve=1,
+        label="cancel-grant-target",
+    )
+    state, grant_id = _forge_emergency_grant(
+        module,
+        base,
+        label="cancel-grant",
+    )
+    refused = _create_effect(
+        module,
+        state,
+        EXECUTION,
+        label="cancel-with-grant",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+        emergency_grant_id=grant_id,
+    )
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.reason is reason_type.EMERGENCY_GRANT_REDUCE_ONLY
+    assert refused.state == state
+    assert refused.state._emergency_grant == state._emergency_grant
+    assert not refused.state._grant_consumed(grant_id)
+    assert refused.state.budget == state.budget
+    assert refused.created_effect_ids == ()
+    assert refused.fresh_claim is None
 
 
 @pytest.mark.parametrize(
@@ -3224,6 +3615,494 @@ def test_manual_control_commands_have_exact_attribution_shape() -> None:
     assert advance.flatten_id == begin.flatten_id
 
 
+def test_authority_safety_enums_are_explicitly_total() -> None:
+    module = _authority_module()
+    (
+        engine_phase_type,
+        trading_mode_type,
+        supervisor_fence_type,
+        query_kind_type,
+        disposition_type,
+        reason_type,
+        flatten_phase_type,
+    ) = _required(
+        module,
+        "EnginePhase",
+        "TradingMode",
+        "SupervisorFence",
+        "AuthorityQueryKind",
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "_FlattenPhase",
+    )
+    contracts = (
+        (engine_phase_type, {"BOOTSTRAPPING", "RECONCILING", "SERVING"}),
+        (trading_mode_type, {"ACTIVE", "REDUCING", "HALTED"}),
+        (
+            supervisor_fence_type,
+            {
+                "UNAUTHENTICATED",
+                "RECONCILIATION_ONLY",
+                "PAPER_MUTATION_ELIGIBLE",
+            },
+        ),
+        (query_kind_type, {"QUERY", "RECONCILE"}),
+        (disposition_type, {"APPLIED", "REFUSED", "EXACT_REPLAY", "CONFLICT"}),
+        (
+            reason_type,
+            {
+                "PHASE_BLOCKED",
+                "MODE_BLOCKED",
+                "SUPERVISOR_FENCE_BLOCKED",
+                "KILL_ENGAGED",
+                "SAFETY_RESERVE_PROTECTED",
+                "REQUEST_BUDGET_EXHAUSTED",
+                "SESSION_MISMATCH",
+                "EXECUTION_BINDING_MISMATCH",
+                "ACCOUNT_RECONCILIATION_REQUIRED",
+                "VENUE_UNCERTAIN",
+                "RESIDUAL_EXCEEDED",
+                "NATIVE_REPLACE_DISABLED",
+                "EMERGENCY_GRANT_REQUIRED",
+                "EMERGENCY_GRANT_MISMATCH",
+                "EMERGENCY_GRANT_REDUCE_ONLY",
+                "EFFECT_UNKNOWN",
+                "MANUAL_FLATTEN_INVALID",
+            },
+        ),
+        (flatten_phase_type, {"WAITING", "READY", "SELL_CREATED"}),
+        (ExecutionSide, {"BUY", "SELL"}),
+        (EffectKind, {"SUBMIT", "CANCEL", "REPLACE"}),
+        (AcceptanceSetState, {"OPEN", "CLOSED", "INVALIDATED"}),
+        (
+            VenueRecoveryDisposition,
+            {
+                "APPLIED",
+                "EXACT_REPLAY",
+                "CONFLICT",
+                "RECONCILIATION_REQUIRED",
+                "REFUSED",
+            },
+        ),
+    )
+
+    for enum_type, expected_names in contracts:
+        assert set(enum_type.__members__) == expected_names
+
+
+def test_authority_value_objects_reject_invalid_exact_fields() -> None:
+    module = _authority_module()
+    authority_input_type, create_type, kill_type = _required(
+        module,
+        "AuthorityInputId",
+        "CreateBrokerEffect",
+        "EngageKill",
+    )
+    state = _forge_positive_predecessor(module)
+    request = _effect_request(
+        module,
+        "invalid-exact-fields",
+        side=ExecutionSide.BUY,
+        quantity=1,
+    )
+    kill_kwargs = {
+        "actor": ActorId("invalid-exact-fields-operator"),
+        "reason": "exact validation",
+        "evidence_reference": EvidenceReference("invalid-exact-fields-evidence"),
+    }
+
+    with pytest.raises(
+        TypeError,
+        match="input_id must be the exact AuthorityInputId type",
+    ):
+        kill_type(input_id="wrong-input-type", **kill_kwargs)  # type: ignore[operator]
+
+    with pytest.raises(
+        TypeError,
+        match="manual_flatten_id must be ManualFlattenId or None",
+    ):
+        create_type(  # type: ignore[operator]
+            input_id=authority_input_type("invalid-optional-type-input"),
+            session_id=state.session_id,
+            request=request,
+            manual_flatten_id="wrong-flatten-type",
+            emergency_grant_id=None,
+        )
+
+    with pytest.raises(TypeError, match="reason must be a string"):
+        kill_type(  # type: ignore[operator]
+            input_id=authority_input_type("invalid-reason-type-input"),
+            **{**kill_kwargs, "reason": 7},
+        )
+
+    with pytest.raises(ValueError, match="reason must be nonblank"):
+        kill_type(  # type: ignore[operator]
+            input_id=authority_input_type("invalid-blank-reason-input"),
+            **{**kill_kwargs, "reason": "   "},
+        )
+
+    with pytest.raises(ValueError, match="quantity must be positive"):
+        replace(request, quantity=Quantity(0))
+
+    with pytest.raises(TypeError, match="economic_scope must be bytes"):
+        replace(request, economic_scope=bytearray(b"wrong-type"))
+
+    with pytest.raises(ValueError, match="economic_scope must be nonempty"):
+        replace(request, economic_scope=b"")
+
+
+def test_create_and_query_refuse_scope_or_session_mismatch() -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        reason_type,
+        authority_input_type,
+        session_type,
+        create_type,
+        query_claim_id_type,
+        query_kind_type,
+        query_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "AuthorityInputId",
+        "SessionId",
+        "CreateBrokerEffect",
+        "QueryClaimId",
+        "AuthorityQueryKind",
+        "ClaimBrokerQuery",
+    )
+    state = _forge_positive_predecessor(module, remaining=4, reserve=1)
+
+    other_symbol_request = replace(
+        _effect_request(
+            module,
+            "scope-mismatch-create",
+            side=ExecutionSide.BUY,
+            quantity=1,
+        ),
+        symbol_id=OTHER_SYMBOL,
+    )
+    scope_command = create_type(  # type: ignore[operator]
+        input_id=authority_input_type("scope-mismatch-create-input"),
+        session_id=state.session_id,
+        request=other_symbol_request,
+        manual_flatten_id=None,
+        emergency_grant_id=None,
+    )
+    scope_refused = _authority_apply_twice(module, state, EXECUTION, scope_command)
+    assert scope_refused.disposition is disposition_type.REFUSED
+    assert scope_refused.reason is reason_type.EXECUTION_BINDING_MISMATCH
+    assert scope_refused.state == state
+    assert scope_refused.created_effect_ids == ()
+
+    session_command = replace(
+        _create_command(
+            module,
+            state,
+            label="session-mismatch-create",
+            side=ExecutionSide.BUY,
+        ),
+        session_id=session_type("other-session"),
+    )
+    session_refused = _authority_apply_twice(module, state, EXECUTION, session_command)
+    assert session_refused.disposition is disposition_type.REFUSED
+    assert session_refused.reason is reason_type.SESSION_MISMATCH
+    assert session_refused.state == state
+    assert session_refused.created_effect_ids == ()
+
+    query = query_type(  # type: ignore[operator]
+        input_id=authority_input_type("scope-mismatch-query-input"),
+        query_claim_id=query_claim_id_type("scope-mismatch-query"),
+        symbol_id=OTHER_SYMBOL,
+        kind=query_kind_type.QUERY,
+    )
+    query_refused = _authority_apply_twice(module, state, EXECUTION, query)
+    assert query_refused.disposition is disposition_type.REFUSED
+    assert query_refused.reason is reason_type.EXECUTION_BINDING_MISMATCH
+    assert query_refused.state == state
+    assert query_refused.fresh_claim is None
+
+
+def test_consumed_emergency_grant_cannot_be_reintroduced() -> None:
+    module = _authority_module()
+    disposition_type, reason_type, claim_type, authority_input_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "ClaimEffect",
+        "AuthorityInputId",
+    )
+    execution = _advanced_same_scope_execution(label="consumed-grant")
+    halted = _forge_positive_predecessor(
+        module,
+        mode="HALTED",
+        kill_engaged=True,
+        remaining=2,
+        reserve=1,
+    )
+    granted, grant_id = _forge_emergency_grant(
+        module,
+        halted,
+        label="consumed-grant",
+    )
+    retained_grant = granted._emergency_grant
+    created = _create_effect(
+        module,
+        granted,
+        execution,
+        label="consumed-grant-first",
+        side=ExecutionSide.SELL,
+        emergency_grant_id=grant_id,
+    )
+    claimed = _authority_apply_twice(
+        module,
+        created.state,
+        execution,
+        claim_type(  # type: ignore[operator]
+            input_id=authority_input_type("consumed-grant-claim-input"),
+            effect_id=EffectId("consumed-grant-first-effect"),
+            claim_occurrence_id=ClaimOccurrenceId("consumed-grant-claim"),
+        ),
+    )
+    assert claimed.disposition is disposition_type.APPLIED
+    assert claimed.state._grant_consumed(grant_id)
+
+    reintroduced = copy(claimed.state)
+    object.__setattr__(reintroduced, "_emergency_grant", retained_grant)
+    refused = _create_effect(
+        module,
+        reintroduced,
+        execution,
+        label="consumed-grant-second",
+        side=ExecutionSide.SELL,
+        emergency_grant_id=grant_id,
+    )
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.reason is reason_type.EMERGENCY_GRANT_MISMATCH
+    assert refused.state == reintroduced
+    assert refused.created_effect_ids == ()
+
+
+@pytest.mark.parametrize(
+    ("mode", "kill_engaged", "expected_reason"),
+    [
+        ("HALTED", False, "MODE_BLOCKED"),
+        ("ACTIVE", True, "KILL_ENGAGED"),
+    ],
+)
+def test_final_ordinary_sell_rechecks_mode_and_kill(
+    mode: str,
+    kill_engaged: bool,
+    expected_reason: str,
+) -> None:
+    module = _authority_module()
+    disposition_type, reason_type, claim_type, authority_input_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "ClaimEffect",
+        "AuthorityInputId",
+    )
+    label = f"ordinary-sell-{mode.lower()}-{kill_engaged}"
+    execution = _advanced_same_scope_execution(label=label)
+    initial = _forge_positive_predecessor(module, remaining=3, reserve=1)
+    created = _create_effect(
+        module,
+        initial,
+        execution,
+        label=label,
+        side=ExecutionSide.SELL,
+    )
+    assert created.disposition is disposition_type.APPLIED
+    drifted = _forge_positive_predecessor(
+        module,
+        predecessor=created.state,
+        mode=mode,
+        kill_engaged=kill_engaged,
+        remaining=3,
+        reserve=1,
+    )
+    refused = _authority_apply_twice(
+        module,
+        drifted,
+        execution,
+        claim_type(  # type: ignore[operator]
+            input_id=authority_input_type(f"{label}-claim-input"),
+            effect_id=EffectId(f"{label}-effect"),
+            claim_occurrence_id=ClaimOccurrenceId(f"{label}-claim"),
+        ),
+    )
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.reason is getattr(reason_type, expected_reason)
+    assert refused.state == drifted
+    assert refused.state.budget.remaining == 3
+    retained = refused.state.venue.effect(EffectId(f"{label}-effect"))
+    assert retained is not None
+    assert retained.state is BrokerEffectState.REQUESTED
+    assert retained.claim_occurrence_id is None
+
+
+def test_manual_flatten_identity_grant_and_phase_guards() -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        reason_type,
+        authority_input_type,
+        flatten_id_type,
+        emergency_grant_id_type,
+        begin_type,
+        advance_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "AuthorityInputId",
+        "ManualFlattenId",
+        "EmergencyGrantId",
+        "BeginManualFlatten",
+        "AdvanceManualFlatten",
+    )
+    state = _forge_positive_predecessor(
+        module,
+        mode="REDUCING",
+        remaining=4,
+        reserve=1,
+    )
+    flatten_id = flatten_id_type("guarded-flatten")
+    begin = begin_type(  # type: ignore[operator]
+        input_id=authority_input_type("guarded-flatten-begin-input"),
+        flatten_id=flatten_id,
+        session_id=state.session_id,
+        symbol_id=SYMBOL,
+        actor=ActorId("guarded-flatten-operator"),
+        reason="guarded manual flatten",
+        evidence_reference=EvidenceReference("guarded-flatten-evidence"),
+        emergency_grant_id=None,
+    )
+    applied = _authority_apply_twice(module, state, EXECUTION, begin)
+    assert applied.disposition is disposition_type.APPLIED
+
+    duplicate = _authority_apply_twice(
+        module,
+        applied.state,
+        EXECUTION,
+        replace(
+            begin,
+            input_id=authority_input_type("guarded-flatten-duplicate-input"),
+        ),
+    )
+    assert duplicate.disposition is disposition_type.CONFLICT
+    assert duplicate.state == applied.state
+
+    grant_refused = _authority_apply_twice(
+        module,
+        state,
+        EXECUTION,
+        replace(
+            begin,
+            input_id=authority_input_type("guarded-flatten-grant-input"),
+            flatten_id=flatten_id_type("guarded-flatten-with-grant"),
+            emergency_grant_id=emergency_grant_id_type("ordinary-flatten-grant"),
+        ),
+    )
+    assert grant_refused.disposition is disposition_type.REFUSED
+    assert grant_refused.reason is reason_type.MANUAL_FLATTEN_INVALID
+    assert grant_refused.state == state
+    assert grant_refused.created_effect_ids == ()
+
+    unknown_advance = advance_type(  # type: ignore[operator]
+        input_id=authority_input_type("unknown-flatten-advance-input"),
+        flatten_id=flatten_id_type("unknown-flatten"),
+    )
+    advance_refused = _authority_apply_twice(
+        module,
+        state,
+        EXECUTION,
+        unknown_advance,
+    )
+    assert advance_refused.disposition is disposition_type.REFUSED
+    assert advance_refused.reason is reason_type.MANUAL_FLATTEN_INVALID
+    assert advance_refused.state == state
+    assert advance_refused.created_effect_ids == ()
+
+
+def test_kill_releases_unclaimed_cancel_reservation_and_allows_retry() -> None:
+    module = _authority_module()
+    disposition_type, authority_input_type, kill_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "EngageKill",
+    )
+    state = _seed_cancellable_buy(
+        module,
+        mode="REDUCING",
+        remaining=3,
+        reserve=1,
+        label="kill-cancel-target",
+    )
+    first = _create_effect(
+        module,
+        state,
+        EXECUTION,
+        label="kill-cancel-first",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+    )
+    assert first.disposition is disposition_type.APPLIED
+    assert first.state.budget == state.budget
+
+    kill = kill_type(  # type: ignore[operator]
+        input_id=authority_input_type("kill-cancel-input"),
+        actor=ActorId("kill-cancel-operator"),
+        reason="stand down the unclaimed cancel and release its target",
+        evidence_reference=EvidenceReference("kill-cancel-evidence"),
+    )
+    killed = _authority_apply_twice(module, first.state, EXECUTION, kill)
+    assert killed.disposition is disposition_type.APPLIED
+    assert killed.state.kill_engaged is True
+    assert killed.state.budget == first.state.budget
+    stood_down = killed.state.venue.effect(EffectId("kill-cancel-first-effect"))
+    assert stood_down is not None
+    assert stood_down.state is BrokerEffectState.CANCELED_BEFORE_DISPATCH
+    assert stood_down.acceptance_set_state is AcceptanceSetState.CLOSED
+    assert stood_down.claim_occurrence_id is None
+
+    replay = _authority_apply_twice(module, killed.state, EXECUTION, kill)
+    assert replay.disposition is disposition_type.EXACT_REPLAY
+    assert replay.state == killed.state
+    conflict = _authority_apply_twice(
+        module,
+        killed.state,
+        EXECUTION,
+        replace(kill, reason="changed kill payload"),
+    )
+    assert conflict.disposition is disposition_type.CONFLICT
+    assert conflict.state == killed.state
+
+    retry = _create_effect(
+        module,
+        killed.state,
+        EXECUTION,
+        label="kill-cancel-retry",
+        side=ExecutionSide.BUY,
+        kind=EffectKind.CANCEL,
+        target_leg_key=LEG,
+    )
+    assert retry.disposition is disposition_type.APPLIED
+    assert retry.state.kill_engaged is True
+    assert retry.state.budget == killed.state.budget
+    assert retry.created_effect_ids == (EffectId("kill-cancel-retry-effect"),)
+    retained = retry.state.venue.effect(EffectId("kill-cancel-retry-effect"))
+    assert retained is not None
+    assert retained.state is BrokerEffectState.REQUESTED
+    assert retained.acceptance_set_state is AcceptanceSetState.OPEN
+    assert retained.claim_occurrence_id is None
+
+
 def test_caller_boolean_or_diagnostic_object_is_never_an_input() -> None:
     module = _authority_module()
     state = _genesis(module)
@@ -3526,3 +4405,104 @@ def test_hot_authority_paths_never_materialize_audit_history(monkeypatch) -> Non
     assert cancel.disposition is disposition_type.APPLIED
     assert query_claimed.disposition is disposition_type.APPLIED
     assert flattened.disposition is disposition_type.APPLIED
+
+
+def test_authority_identity_indexes_are_structurally_shared_and_bounded(
+    monkeypatch,
+) -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        authority_input_type,
+        query_id_type,
+        query_kind_type,
+        query_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "QueryClaimId",
+        "AuthorityQueryKind",
+        "ClaimBrokerQuery",
+    )
+    state = _forge_positive_predecessor(
+        module,
+        phase="RECONCILING",
+        mode="HALTED",
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=40,
+        reserve=1,
+    )
+    for ordinal in range(32):
+        transition = _authority_apply_twice(
+            module,
+            state,
+            EXECUTION,
+            query_type(
+                input_id=authority_input_type(f"persistent-query-input-{ordinal}"),
+                query_claim_id=query_id_type(f"persistent-query-{ordinal}"),
+                symbol_id=SYMBOL,
+                kind=query_kind_type.QUERY,
+            ),
+        )
+        assert transition.disposition is disposition_type.APPLIED
+        state = transition.state
+
+    index_names = (
+        "_input_by_id",
+        "_effect_authority_by_id",
+        "_claim_by_effect",
+        "_claim_by_occurrence",
+        "_query_by_id",
+        "_manual_by_id",
+        "_consumed_grant_ids",
+    )
+    assert all(type(getattr(state, name)) is _PersistentKeyMap for name in index_names)
+    assert state._input_by_id.size == 32
+    assert state._query_by_id.size == 32
+
+    original_get = _PersistentKeyMap.get
+    original_insert = _PersistentKeyMap.insert_new
+    operations = 0
+
+    def counted_get(self: object, key: bytes) -> object:
+        nonlocal operations
+        operations += 1
+        return original_get(self, key)  # type: ignore[arg-type]
+
+    def counted_insert(
+        self: object,
+        key: bytes,
+        value: object,
+        value_commitment: bytes,
+    ) -> object:
+        nonlocal operations
+        operations += 1
+        return original_insert(  # type: ignore[arg-type]
+            self,
+            key,
+            value,
+            value_commitment,
+        )
+
+    monkeypatch.setattr(_PersistentKeyMap, "get", counted_get)
+    monkeypatch.setattr(_PersistentKeyMap, "insert_new", counted_insert)
+    predecessor = state
+    next_transition = _authority_apply_twice(
+        module,
+        predecessor,
+        EXECUTION,
+        query_type(
+            input_id=authority_input_type("persistent-query-input-final"),
+            query_claim_id=query_id_type("persistent-query-final"),
+            symbol_id=SYMBOL,
+            kind=query_kind_type.RECONCILE,
+        ),
+    )
+    assert next_transition.disposition is disposition_type.APPLIED
+    assert operations <= 16
+    assert predecessor._input_by_id.size == 32
+    assert predecessor._query_by_id.size == 32
+    assert next_transition.state._input_by_id.size == 33
+    assert next_transition.state._query_by_id.size == 33

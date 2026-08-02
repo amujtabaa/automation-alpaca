@@ -288,3 +288,149 @@ no P0/P1 finding. One re-derived clause completeness and false-RED risk; the oth
 named mutation controls, bounded-read proof, exact-type sealing, and account-wide kill behavior.
 Neither reviewer ran tests or changed state. Production implementation may begin only from the
 immutable commit containing this 99/99 RED checkpoint.
+
+## In-flight implementation re-gate 1 - kill, cancel, and grant hardening
+
+The implementation crossed the work order's same-lifecycle finding threshold during live review,
+so work stopped at the failing focused gate and this section re-gates only the disclosed repairs
+under Ameen's standing explicit authority to resolve all in-flight M1 findings. Paths and all
+operational exclusions remain unchanged; this does not activate WO-0148 or any later work.
+
+Fresh failure-capable review found that: a failed best-effort venue stand-down could prevent the
+kill latch itself; manual-flatten readiness did not require its own generated cancel acceptance
+parents to be `CLOSED`; two distinct cancel effects or flatten workflows could reserve the same
+active target before any transport outcome; and a cancel command could carry an emergency SELL
+grant, then consume an unchecked grant during claim. The first kill regression failed before its
+fix and now passes. Three new cancel/grant negatives failed exactly while a definitive `REJECTED`
+cancel correctly allowed one retry (`1 passed, 3 failed`), proving the added controls are live.
+The same review also proved the first immutable authority indexes copied all accumulated applied
+identity records on each transition. A 32-entry bounded-operation regression failed against that
+implementation before replacement with the kernel's structurally shared persistent current map.
+
+Authorized bounded repair: always latch kill while preserving the prior venue book if atomic local
+cleanup cannot be established; require every retained flatten cancel parent to be closed before
+`READY`; maintain one canonical active cancel-target reservation in the venue checkpoint and its
+hydration/validation path; reject grants on every action except an exact reduce-only `SUBMIT SELL`;
+and consume a grant only on that validated final claim. Add exact replay/rejection/release tests,
+replace any history-copying authority index with bounded structurally shared current state, rerun
+the full pure authority and affected venue suites, and submit the repaired candidate to a new
+independent static and mutation pass. No persistence, SQL/DDL, adapter, runtime, broker, credential,
+network, merge, deletion, cleanup, or later-slice work is authorized by this re-gate.
+
+## In-flight implementation re-gate 2 - hydration and permanent identity hardening
+
+Independent review reproduced a second cluster in the cancel lifecycle, triggering the work
+order's explicit same-lifecycle stop condition again. The candidate was invalidated, the broad
+execution-core run was stopped, and no later slice was activated. Ameen's standing explicit
+authority to resolve in-flight M1 findings re-gates only these directly necessary repairs inside
+the existing allowed paths and exclusions.
+
+Fresh failure-first tests establish four boundaries. First, a canonically acknowledged cancel
+places its target in pending `CANCEL`, but audit hydration rejects that reachable state because its
+fold derives pending state only from explicit pending-operation inputs. Second, a forged cancel
+whose target never had an owner hydrates successfully because ordered hydration does not validate
+target history and reservation acquisition. The exact two-test run failed twice, once with
+`active attempt requires exact observation and pending provenance` and once because the required
+`ValueError` was not raised. Third, after registering one account symbol, an exact flat snapshot
+for a second symbol is incorrectly rejected even though the venue reducer has a bounded new-symbol
+registration path. Fourth, reused permanent request-occurrence and client-order identities are
+classified only after mutable authority gates; under fence/kill/budget drift they return transient
+`REFUSED` rather than stable `CONFLICT`. The exact three-case authority run failed three times with
+those dispositions.
+
+Authorized bounded repair: make ordered hydration derive target pending state from correlated
+cancel acknowledgement and outcome-unknown inputs; validate each cancel/replace target's prior
+owner, active state, economics, and exclusive reservation in input order, including release only
+after a definitive non-dispatch/rejection outcome; admit a first effect for a later account symbol
+only when the supplied registry state exactly matches the book-owned account registry; and expose
+one private bounded venue-identity preflight so all permanent effect, request-occurrence, and
+client-order conflicts precede mutable authority gates. Add exact reachable-state, forged-target,
+temporal-overlap, later-symbol, and drifted-identity regressions. No persistence, SQL/DDL, adapter,
+runtime, broker, credential, network, merge, deletion, cleanup, or later-slice work is authorized
+by this re-gate.
+
+### Re-gate 2 failure-capable repair checkpoint
+
+Follow-up parity review widened the same authorized chronology repair without changing paths or
+scope. Two exact tests proved that hydration admitted a target-bound claim after its target became
+pending and admitted a pending-operation record before leg discovery (`2 failed`). Further ordered
+counterexamples proved that a retry could be moved before the first cancel's definitive rejection,
+a state-changing semantic pending alias could be ignored, a `CANCEL` effect could be forged as a
+new venue-leg owner, and a first `SUBMIT` leg discovery could be moved before dispatch progress.
+Each counterexample was reproduced against the candidate before its repair; none used operational
+I/O, SQL/DDL, a database, broker access, or runtime wiring.
+
+The bounded repair now folds every applied input in exact ledger order; acquires, retains, and
+releases the one cancel reservation under the same states as the live reducer; rechecks the exact
+target at both request and claim; derives cancel pending state from acknowledgement and recovery;
+requires pending operations to follow discovery; refuses cancel-owned legs; and requires first
+discovery to have live dispatch progress or a previously closed acceptance set. Exact semantic
+rediscovery remains valid. On the exact current candidate, the focused ownership suite passes
+47/47, authority plus the six affected venue files pass 407/407, all `tests/execution_core` pass
+671/671, and the R2 conformance oracle passes 61/61 from a fresh workspace-local disposable test
+directory.
+
+`authority.py` crossed the work order's approximate 800-line review trigger. An independent split
+review treated effect authority, manual controls, query authority, grants, and reducer state as
+separate responsibilities and found no independently safe public or capability boundary to split.
+Keeping one cohesive private semantic center avoids an additional importable grant/control seam;
+the review therefore accepted the single module, subject to the same bounded-index and public-
+surface tests. The latest authority-specific re-review returned `ACCEPT` with no P0/P1.
+
+## In-flight implementation re-gate 3 - failure-capability and literal coverage closure
+
+The first complete full-repository coverage run passed its configured whole-percent gate but
+reported a raw combined result of only `25037 / 26951 = 92.89822270045639%`. That result was kept
+as diagnostic evidence but rejected for the work order's literal 93% obligation. Seven focused
+refusal/corruption cases then covered 32 previously missing authority line/branch outcomes and all
+three venue authority-index validator limbs without changing intended production behavior.
+
+A read-only false-green pass subsequently found that the close-before-claim hydration case made
+two claim guards true at once. The candidate was invalidated. The second guard was redundant for
+constructor-valid non-`NEVER_DISPATCHED` proofs, so it was removed; the retained exact-claim guard
+remains the sole authority. The repaired test passes, while temporarily removing only that guard
+fails with `DID NOT RAISE`. Further hardening added an explicit complete-enum pin, independent
+forgery of each cached authority-index limb, and the missing composition in which `EngageKill`
+must close an unclaimed `CANCEL`, release its target reservation, and permit a distinct cancel
+retry while kill remains engaged.
+
+The original mutation matrix killed 22/22 isolated mutants. `authority.py` remains at the exact
+hash reviewed by that matrix. Both original venue-owned mutants were rerun against the current
+venue hash and failed: raw `RequestedEffect` export and unknown-BUY flatten bypass. Six additional
+exact-current mutants also failed independently: removal of the exact closure-claim guard; adding
+an unclassified trading mode; removal of each of the three authority-index validation limbs; and
+filtering `CANCEL` out of account-wide kill cleanup. Each temporary edit was restored in `finally`.
+The reconciled mutation result is therefore 28/28 killed with zero survivor.
+
+## Pre-review freeze checkpoint
+
+The exact current production hashes are:
+
+- `authority.py`: `751930a15922e0339e8383747b635bae5782d44f21e61069393c73bf4c7fb968`
+- `venue.py`: `d465b85ff2113b49b6367c6244b327a25a68fbb5e6673b16c57969317cab7fe4`
+- `identity.py`: `029beb0bf22af76c262aa707e90357633fb65336784e53ac5979518908ef9338`
+- `__init__.py`: `6a2c4ab3e54754aab78025ada0163f41140e54a4ca4f01c1f2f85b6efa9acd65`
+
+The definitive full-repository run collected 5,259 tests across 216 files and completed with
+5,247 passed, 11 skipped, 1 expected xfail, and zero failures in 1,362.1 seconds. Raw combined
+coverage is `93.02808801157657%` (`18,576/19,591` statements and `6,496/7,360` branches covered).
+The retained exact evidence artifacts are:
+
+- `.coverage_wo0147_full_authorized_6` SHA-256
+  `ee68691cf8ad22b7d898ae1eb6cc2abd3981ad0e4b8bab23c5d4f32fecc09eca`
+- `.coverage_wo0147_full_authorized_6.json` SHA-256
+  `2a5dd6337cfe5b7e22f0d9fa8d21c478f54fb551776de5775fc95e7dc51f9698`
+
+Ruff check and format-check pass over 20 execution-core source/test files, mypy reports no issue
+across 8 execution-core modules, all 6 import contracts are kept, and `git diff --check` passes.
+AI-OS install, version (`v0.9.1`), ledger, PKL, disposition, and exact-scope checks pass. The exact
+scope inventory is 4 implementation files, 9 tests, and this active work order; no accepted ADR,
+reset-queue record, legacy/runtime source, or CI workflow changed. Retained coverage artifacts are
+evidence, not implementation scope, and were neither overwritten nor cleaned.
+
+No `INV-*` identifier was added or amended since `REV-0048`; `INV-1` through `INV-9` remain
+preserved rather than redefined. T1.1, T1.2, T1.3, T1.5, and T1.7 apply and now have enum,
+mutation, cached-projection, choke-point, and consumable-lifecycle evidence. T1.4, T1.6, and T1.8
+are narrowly not applicable because this slice is deterministic, pure, unwired, and has no clock,
+store, persistence, or broker-write boundary. `REV-0049`, final disposition/Fable closeout, and
+exact-head Python 3.11/3.12 CI remain mandatory; no review or completion verdict is claimed here.
