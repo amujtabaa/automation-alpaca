@@ -1009,3 +1009,24 @@ static/scope/AI-OS gates, the authorized R2 and repository suites, independent e
 and unchanged exact-head Python 3.11/3.12 CI. Any production change, assertion weakening, mismatched
 head, or remaining version-specific failure stops the closeout. No broker, credential, Paper,
 persistent database, runtime wiring, PR/merge, retirement, deletion, or cleanup authority is added.
+
+### FIX — recursion-safe immutable-input guard
+
+- **Root cause:** the stateful test helper recursively rendered auto-generated representations of
+  `RootHeadIndex` and `SeenFactIndex`. Those representations descend through immutable persistent
+  radix-node children and can exceed CPython 3.11's recursion limit before the reducer is called.
+  No production call site relies on these representations.
+- **Correction:** snapshot the public constant-work component commitments and bounded snapshot-
+  binding/fact representations before and after both reducer calls. This preserves determinism and
+  illicit-input-mutation detection without traversing private tree structure. No production file
+  changed.
+- **Fresh focused evidence:** the three exact failed nodes pass normally and with the local Python
+  3.12 recursion limit reduced to 700; the full stateful file and all 521 execution-core tests pass.
+  Ruff check/format, mypy over all seven execution-core source files, six import contracts, AI-OS
+  install/version/ledger/PKL/disposition checks, and all 61 R2 cases pass with
+  `BROKER_ADAPTER=mock` and a fresh disposable workspace-local test directory.
+- **Failure capability:** three transient hostile reducers mutated a position component, an exact
+  root-index binding, and the fact payload after the second deterministic call. The restored guard
+  killed all three with the input-mutation assertion.
+- **Still required:** authorized full repository coverage, independent exact-diff review, restored
+  source/test hashing, and an immutable successor passing exact-head Python 3.11 and 3.12 CI.

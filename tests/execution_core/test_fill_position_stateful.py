@@ -229,10 +229,13 @@ def _apply(
     """Call twice from identical inputs: every complete transition is deterministic."""
 
     before = (
-        repr(position),
-        repr(integrity),
-        repr(root_heads),
-        repr(seen_facts),
+        position.commitment,
+        repr(position.binding),
+        integrity,
+        root_heads.commitment,
+        repr(root_heads.binding),
+        seen_facts.commitment,
+        repr(seen_facts.binding),
         repr(fact),
     )
     first = apply_broker_execution_fact(
@@ -243,10 +246,13 @@ def _apply(
     )
     assert first == second
     assert before == (
-        repr(position),
-        repr(integrity),
-        repr(root_heads),
-        repr(seen_facts),
+        position.commitment,
+        repr(position.binding),
+        integrity,
+        root_heads.commitment,
+        repr(root_heads.binding),
+        seen_facts.commitment,
+        repr(seen_facts.binding),
         repr(fact),
     ), "the reducer mutated an input or immutable predecessor"
     return first
