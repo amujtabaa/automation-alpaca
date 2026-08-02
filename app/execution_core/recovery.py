@@ -209,9 +209,12 @@ class RecordBrokerRevisionEvidence:
             self.resulting_venue_cumulative_quantity,
             Quantity,
         )
-        if not isinstance(self.fact, (BrokerTradeCorrectFact, BrokerTradeBustFact)):
+        if type(self.fact) not in {
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
             raise TypeError(
-                "fact must be BrokerTradeCorrectFact or BrokerTradeBustFact"
+                "fact must be the exact BrokerTradeCorrectFact or BrokerTradeBustFact type"
             )
         _require_digest(self.evidence_digest)
         if (self.closure_id is None) != (self.evidence_reference is None):
@@ -225,7 +228,7 @@ class RecordBrokerRevisionEvidence:
             )
         revised_root_quantity = (
             self.fact.revised_quantity.value
-            if isinstance(self.fact, BrokerTradeCorrectFact)
+            if type(self.fact) is BrokerTradeCorrectFact
             else 0
         )
         expected_resulting = (
@@ -277,9 +280,10 @@ class HumanCoverage:
             self.broker_source_input_id is not None,
         )
         has_evidence = all(evidence_presence)
-        if self.broker_corroborated != has_evidence or any(
-            evidence_presence
-        ) != has_evidence:
+        if (
+            self.broker_corroborated != has_evidence
+            or any(evidence_presence) != has_evidence
+        ):
             raise ValueError("broker corroboration requires fact and evidence digest")
 
 
@@ -315,11 +319,14 @@ class _BrokerCoverage:
         _require_exact_type(
             "root_source_input_id", self.root_source_input_id, VenueInputId
         )
-        if not isinstance(
-            self.head_fact,
-            (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
-        ):
-            raise TypeError("head_fact must be a canonical broker execution fact")
+        if type(self.head_fact) not in {
+            BrokerFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
+            raise TypeError(
+                "head_fact must be an exact canonical broker execution fact"
+            )
         _require_digest(self.head_evidence_digest)
         _require_exact_type(
             "head_source_input_id", self.head_source_input_id, VenueInputId
@@ -390,9 +397,12 @@ class RevisionReconciliationRecord:
             self.resulting_venue_cumulative_quantity,
             Quantity,
         )
-        if not isinstance(self.fact, (BrokerTradeCorrectFact, BrokerTradeBustFact)):
+        if type(self.fact) not in {
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
             raise TypeError(
-                "fact must be BrokerTradeCorrectFact or BrokerTradeBustFact"
+                "fact must be the exact BrokerTradeCorrectFact or BrokerTradeBustFact type"
             )
         _require_digest(self.evidence_digest)
         if type(self.canonical_applied) is not bool:
@@ -1476,9 +1486,7 @@ def bind_venue_execution_snapshot(
         reconciliation_transition_count=(
             expected_reconciliation_cursor.transition_count
         ),
-        reconciliation_transition_head=(
-            expected_reconciliation_cursor.transition_head
-        ),
+        reconciliation_transition_head=(expected_reconciliation_cursor.transition_head),
     )
     if snapshot.commitment != expected_reconciliation_cursor.snapshot_commitment:
         raise ValueError(

@@ -792,7 +792,7 @@ CanonicalRootFillFact: TypeAlias = BrokerFillFact | HumanAttestedFillFact
 
 
 def _encode_execution_fact(fact: CanonicalExecutionFact) -> bytes:
-    if isinstance(fact, BrokerFillFact):
+    if type(fact) is BrokerFillFact:
         return _commit_parts(
             b"execution-core/broker-fill-fact/v1",
             _encode_execution_fact_key(fact.key),
@@ -801,7 +801,7 @@ def _encode_execution_fact(fact: CanonicalExecutionFact) -> bytes:
             _encode_int(fact.quantity.value),
             _encode_reported_price(fact.price),
         )
-    if isinstance(fact, HumanAttestedFillFact):
+    if type(fact) is HumanAttestedFillFact:
         return _commit_parts(
             b"execution-core/human-attested-fill-fact/v1",
             _encode_execution_fact_key(fact.key),
@@ -821,7 +821,7 @@ def _encode_execution_fact(fact: CanonicalExecutionFact) -> bytes:
             _encode_text(fact.reason),
             _encode_text(fact.evidence_reference.value),
         )
-    if isinstance(fact, BrokerTradeCorrectFact):
+    if type(fact) is BrokerTradeCorrectFact:
         return _commit_parts(
             b"execution-core/broker-correct-fact/v1",
             _encode_execution_fact_key(fact.key),
@@ -831,7 +831,7 @@ def _encode_execution_fact(fact: CanonicalExecutionFact) -> bytes:
             _encode_int(fact.revised_quantity.value),
             _encode_reported_price(fact.revised_price),
         )
-    if isinstance(fact, BrokerTradeBustFact):
+    if type(fact) is BrokerTradeBustFact:
         return _commit_parts(
             b"execution-core/broker-bust-fact/v1",
             _encode_execution_fact_key(fact.key),
@@ -1175,15 +1175,12 @@ class SeenFact:
     position_scope: PositionScope | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(
-            self.fact,
-            (
-                BrokerFillFact,
-                HumanAttestedFillFact,
-                BrokerTradeCorrectFact,
-                BrokerTradeBustFact,
-            ),
-        ):
+        if type(self.fact) not in {
+            BrokerFillFact,
+            HumanAttestedFillFact,
+            BrokerTradeCorrectFact,
+            BrokerTradeBustFact,
+        }:
             raise TypeError(
                 "fact must be a canonical broker execution fact "
                 "or HumanAttestedFillFact"
@@ -1208,7 +1205,7 @@ class SeenFact:
         if (
             self.classification
             is FirstObservationClassification.CORROBORATED_ZERO_ECONOMIC
-            and not isinstance(self.fact, BrokerFillFact)
+            and type(self.fact) is not BrokerFillFact
         ):
             raise ValueError("zero-economic corroboration requires a BrokerFillFact")
 

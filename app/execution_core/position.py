@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum, Flag, auto
 from fractions import Fraction
+from typing import cast
 
 from .fills import (
     BrokerExecutionFact,
@@ -433,9 +434,7 @@ class ExecutionSnapshot:
         return ExecutionReconciliationCursor(
             transition_count=self.reconciliation_transition_count,
             transition_head=self.reconciliation_transition_head,
-            account_reconciliation_required=(
-                self.account_reconciliation_required
-            ),
+            account_reconciliation_required=(self.account_reconciliation_required),
             snapshot_commitment=self.commitment,
         )
 
@@ -710,16 +709,13 @@ def _bind_components(
         and type(account_reconciliation_required) is not bool
     ):
         raise TypeError("account_reconciliation_required must be bool or None")
-    inherited_account_reconciliation = (
-        _inherited_account_reconciliation_required(
-            position,
-            root_heads,
-            seen_facts,
-        )
+    inherited_account_reconciliation = _inherited_account_reconciliation_required(
+        position,
+        root_heads,
+        seen_facts,
     )
     account_reconciliation_required = bool(
-        inherited_account_reconciliation
-        or account_reconciliation_required
+        inherited_account_reconciliation or account_reconciliation_required
     )
     if (reconciliation_transition_count is None) != (
         reconciliation_transition_head is None
@@ -732,7 +728,9 @@ def _bind_components(
     )
     if reconciliation_transition_count is None:
         if len(inherited_cursors) > 1:
-            raise ValueError("execution components carry divergent reconciliation cursors")
+            raise ValueError(
+                "execution components carry divergent reconciliation cursors"
+            )
         if inherited_cursors:
             (
                 reconciliation_transition_count,
@@ -752,9 +750,7 @@ def _bind_components(
         type(reconciliation_transition_head) is not bytes
         or len(reconciliation_transition_head) != 32
     ):
-        raise ValueError(
-            "reconciliation_transition_head must contain exactly 32 bytes"
-        )
+        raise ValueError("reconciliation_transition_head must contain exactly 32 bytes")
     for inherited_count, inherited_head in inherited_cursors:
         if reconciliation_transition_count < inherited_count or (
             reconciliation_transition_count == inherited_count
@@ -943,13 +939,17 @@ def _observation_matches_head(observation: SeenFact, head: RootHead) -> bool:
         or fact.kind is not head.kind
     ):
         return False
-    if isinstance(fact, (BrokerFillFact, HumanAttestedFillFact)):
-        return fact.quantity == head.quantity and fact.price == head.price
-    if isinstance(fact, BrokerTradeCorrectFact):
+    if type(fact) in {BrokerFillFact, HumanAttestedFillFact}:
+        root_fact = cast(CanonicalRootFillFact, fact)
+        return root_fact.quantity == head.quantity and root_fact.price == head.price
+    if type(fact) is BrokerTradeCorrectFact:
+        correction = cast(BrokerTradeCorrectFact, fact)
         return (
-            fact.revised_quantity == head.quantity and fact.revised_price == head.price
+            correction.revised_quantity == head.quantity
+            and correction.revised_price == head.price
         )
-    return head.quantity.value == 0 and fact.reported_price == head.price
+    bust = cast(BrokerTradeBustFact, fact)
+    return head.quantity.value == 0 and bust.reported_price == head.price
 
 
 def _fold_ordered_heads(
@@ -1254,15 +1254,9 @@ def _apply_root_fill(
         next_integrity,
         next_roots,
         next_seen,
-        account_reconciliation_required=(
-            prior_binding.account_reconciliation_required
-        ),
-        reconciliation_transition_count=(
-            prior_binding.reconciliation_transition_count
-        ),
-        reconciliation_transition_head=(
-            prior_binding.reconciliation_transition_head
-        ),
+        account_reconciliation_required=(prior_binding.account_reconciliation_required),
+        reconciliation_transition_count=(prior_binding.reconciliation_transition_count),
+        reconciliation_transition_head=(prior_binding.reconciliation_transition_head),
     )
     return ExecutionTransition(
         position=snapshot.position,
@@ -1279,9 +1273,11 @@ def _apply_root_fill(
 def _revision_economics(
     fact: BrokerTradeCorrectFact | BrokerTradeBustFact,
 ) -> tuple[Quantity, ReportedPrice | None]:
-    if isinstance(fact, BrokerTradeCorrectFact):
-        return fact.revised_quantity, fact.revised_price
-    return Quantity(0), fact.reported_price
+    if type(fact) is BrokerTradeCorrectFact:
+        correction = cast(BrokerTradeCorrectFact, fact)
+        return correction.revised_quantity, correction.revised_price
+    bust = cast(BrokerTradeBustFact, fact)
+    return Quantity(0), bust.reported_price
 
 
 def _current_predecessor_is_proven(
@@ -1447,15 +1443,9 @@ def _apply_revision(
         next_integrity,
         next_roots,
         next_seen,
-        account_reconciliation_required=(
-            prior_binding.account_reconciliation_required
-        ),
-        reconciliation_transition_count=(
-            prior_binding.reconciliation_transition_count
-        ),
-        reconciliation_transition_head=(
-            prior_binding.reconciliation_transition_head
-        ),
+        account_reconciliation_required=(prior_binding.account_reconciliation_required),
+        reconciliation_transition_count=(prior_binding.reconciliation_transition_count),
+        reconciliation_transition_head=(prior_binding.reconciliation_transition_head),
     )
     return ExecutionTransition(
         position=snapshot.position,
@@ -1544,9 +1534,21 @@ def _apply_canonical_execution_fact(
             original_classification=first_observation.classification,
         )
 
-    if isinstance(fact, (BrokerFillFact, HumanAttestedFillFact)):
-        return _apply_root_fill(position, integrity, root_heads, seen_facts, fact)
-    return _apply_revision(position, integrity, root_heads, seen_facts, fact)
+    if type(fact) in {BrokerFillFact, HumanAttestedFillFact}:
+        return _apply_root_fill(
+            position,
+            integrity,
+            root_heads,
+            seen_facts,
+            cast(CanonicalRootFillFact, fact),
+        )
+    return _apply_revision(
+        position,
+        integrity,
+        root_heads,
+        seen_facts,
+        cast(BrokerTradeCorrectFact | BrokerTradeBustFact, fact),
+    )
 
 
 def apply_broker_execution_fact(
@@ -1559,11 +1561,12 @@ def apply_broker_execution_fact(
     """Apply one canonical broker fact without I/O or an ordered history fold."""
 
     _require_execution_components(position, integrity, root_heads, seen_facts)
-    if not isinstance(
-        fact,
-        (BrokerFillFact, BrokerTradeCorrectFact, BrokerTradeBustFact),
-    ):
-        raise TypeError("fact must be a canonical broker execution fact")
+    if type(fact) not in {
+        BrokerFillFact,
+        BrokerTradeCorrectFact,
+        BrokerTradeBustFact,
+    }:
+        raise TypeError("fact must be an exact canonical broker execution fact")
     return _apply_canonical_execution_fact(
         position,
         integrity,
@@ -1583,8 +1586,8 @@ def _apply_human_attested_fill_fact(
     """Apply one already venue-authorized human root through the canonical fold."""
 
     _require_execution_components(position, integrity, root_heads, seen_facts)
-    if not isinstance(fact, HumanAttestedFillFact):
-        raise TypeError("fact must be HumanAttestedFillFact")
+    if type(fact) is not HumanAttestedFillFact:
+        raise TypeError("fact must be the exact HumanAttestedFillFact type")
     return _apply_canonical_execution_fact(
         position,
         integrity,
@@ -1604,8 +1607,8 @@ def _record_execution_reconciliation(
     """Record broker evidence that recovery proved unsafe to apply economically."""
 
     _require_execution_components(position, integrity, root_heads, seen_facts)
-    if not isinstance(fact, BrokerFillFact):
-        raise TypeError("fact must be BrokerFillFact")
+    if type(fact) is not BrokerFillFact:
+        raise TypeError("fact must be the exact BrokerFillFact type")
     if not _snapshot_is_coherent(position, integrity, root_heads, seen_facts):
         return _incoherent_snapshot_transition(
             position,
@@ -1660,8 +1663,8 @@ def _record_broker_corroboration(
     """
 
     _require_execution_components(position, integrity, root_heads, seen_facts)
-    if not isinstance(fact, BrokerFillFact):
-        raise TypeError("fact must be BrokerFillFact")
+    if type(fact) is not BrokerFillFact:
+        raise TypeError("fact must be the exact BrokerFillFact type")
     if not _snapshot_is_coherent(position, integrity, root_heads, seen_facts):
         return _incoherent_snapshot_transition(
             position,

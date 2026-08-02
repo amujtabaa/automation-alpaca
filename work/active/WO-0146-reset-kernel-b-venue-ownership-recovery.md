@@ -491,6 +491,39 @@ for acceptance. This eleventh re-gate does not activate WO-0147 or authorize per
 schema/DDL/SQL, broker or credential use, runtime wiring, PR/merge, branch/worktree retirement,
 deletion, or cleanup.
 
+## Exact-subclass review stop and twelfth bounded re-gate (2026-08-01)
+
+Implementation checkpoint `320afbb` and its pre-checkpoint full-suite artifact
+`.coverage_wo0146_full_authorized_12` are invalidated for acceptance. The behavioral run remains
+diagnostic evidence that 5,067 tests passed with 11 skips and one expected failure at 93.018072%
+coverage, but two independent final-review probes found exact-type gaps after that run.
+
+First, `VenueRecoveryBook.empty()` and audit hydration accepted a `VenueScope` subclass. A delayed
+attribute override could make a retained book report a different generation/account scope after
+effects and execution bindings were established. Second, the canonical broker reducer, retained
+`SeenFact`, and revision/coverage evidence records accepted subclasses of broker fill, correction,
+or bust facts. Those are capital/provenance inputs whose computed root and economics must not be
+overridable after base-dataclass validation. Both are P1 exact identity-boundary violations; no
+quantity defect was relied upon or accepted.
+
+Ameen's standing authorization for in-flight WO-0146 findings and refinements re-gates only the
+directly necessary correction:
+
+- require the exact `VenueScope` type at empty-book construction and audit validation before any
+  scope property is retained or read;
+- require exact canonical broker fact types at the public position reducer, retained first-fact
+  observation, canonical commitment, revision evidence/reconciliation, and broker coverage head;
+- retain six failure-first cases covering all three broker fact kinds, both revision record paths,
+  coverage heads, initial scope construction, and audit hydration; and
+- repeat every focused, stateful, static, mutation, R2, repository-coverage, and independent-review
+  gate on the new exact freeze.
+
+The six cases failed on `320afbb` with `DID NOT RAISE TypeError` and passed after exact-type
+enforcement. Ruff and mypy pass on the corrected source. No earlier full-suite, coverage, or review
+result satisfies this twelfth gate. It does not activate WO-0147 or authorize persistence,
+schema/DDL/SQL, broker or credential use, runtime wiring, PR/merge, branch/worktree retirement,
+deletion, or cleanup.
+
 ## Frozen semantic contract
 
 - Add exact generation/effect/occurrence/client/claim/closure/evidence identities and immutable full

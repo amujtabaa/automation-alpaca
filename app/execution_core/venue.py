@@ -866,15 +866,9 @@ class VenueExecutionCheckpoint:
             position_commitment=execution.position.commitment,
             root_heads_commitment=execution.root_heads.commitment,
             integrity_bits=execution.integrity.value,
-            account_reconciliation_required=(
-                execution.account_reconciliation_required
-            ),
-            reconciliation_transition_count=(
-                execution.reconciliation_transition_count
-            ),
-            reconciliation_transition_head=(
-                execution.reconciliation_transition_head
-            ),
+            account_reconciliation_required=(execution.account_reconciliation_required),
+            reconciliation_transition_count=(execution.reconciliation_transition_count),
+            reconciliation_transition_head=(execution.reconciliation_transition_head),
         )
 
     @property
@@ -988,7 +982,9 @@ class _ResolvedRegistryProjectionOutcome:
             reason=self.reason,
         )
         if type(self.source_binding) is not VenueExecutionBinding:
-            raise TypeError("source_binding must be the exact VenueExecutionBinding type")
+            raise TypeError(
+                "source_binding must be the exact VenueExecutionBinding type"
+            )
 
     @property
     def canonical_applied(self) -> bool:
@@ -1197,8 +1193,7 @@ def _registry_transition_proof_for(
         kind = _RegistryTransitionKind.UNRESOLVED_SOURCE_ADVANCE
         resulting_source_binding = outcome.resulting_source_binding
         if (
-            item.prior_account_registry_count
-            != outcome.prior_account_registry_count
+            item.prior_account_registry_count != outcome.prior_account_registry_count
             or item.prior_account_registry_commitment
             != outcome.prior_account_registry_commitment
             or item.prior_source_binding != outcome.prior_source_binding
@@ -1513,9 +1508,9 @@ class VenueRecoveryBook:
     _execution_reconciliation_by_input: _PersistentKeyMap[
         ExecutionRegistryReconciliationRecord
     ] = field(default_factory=_PersistentKeyMap.empty)
-    _registry_transition_ledger: _PersistentSequence[
-        _RegistryTransitionProof
-    ] = field(default_factory=_PersistentSequence.empty)
+    _registry_transition_ledger: _PersistentSequence[_RegistryTransitionProof] = field(
+        default_factory=_PersistentSequence.empty
+    )
     _registry_transition_head_commitment: bytes | None = None
     _unresolved_execution_reconciliation_count_by_scope: _PersistentKeyMap[int] = field(
         default_factory=_PersistentKeyMap.empty
@@ -1548,13 +1543,9 @@ class VenueRecoveryBook:
 
     def _effective_effect(self, current: _EffectCurrent) -> BrokerEffect:
         effect = current.effect
-        if (
-            effect.state is BrokerEffectState.OPERATOR_RECONCILED
-            and (
-                current.operator_epoch
-                != self._authority_epoch(effect.scope.position_scope)
-                or current.account_epoch != self._account_authority_epoch
-            )
+        if effect.state is BrokerEffectState.OPERATOR_RECONCILED and (
+            current.operator_epoch != self._authority_epoch(effect.scope.position_scope)
+            or current.account_epoch != self._account_authority_epoch
         ):
             return replace(effect, state=BrokerEffectState.NEEDS_REVIEW)
         return effect
@@ -1698,7 +1689,8 @@ class VenueRecoveryBook:
     def _validate_full(self) -> None:
         """Perform the explicit slow fold used only by verified hydration/audit."""
 
-        _require("scope", self.scope, VenueScope)
+        if type(self.scope) is not VenueScope:
+            raise TypeError("scope must be the exact VenueScope type")
         for name in (
             "effects",
             "claims",
@@ -2720,8 +2712,7 @@ class VenueRecoveryBook:
             )
             if (
                 not self._execution_reconciliation_cursor_is_prefix(target_prior)
-                or
-                VenueExecutionCheckpoint.from_execution(target_prior)
+                or VenueExecutionCheckpoint.from_execution(target_prior)
                 != source.target_checkpoint
             ):
                 raise ValueError(
@@ -2736,8 +2727,7 @@ class VenueRecoveryBook:
             resulting_source_binding = _execution_binding_for_snapshot(execution)
             if type(registry_record) is _ResolvedRegistryProjectionOutcome:
                 if (
-                    source.prior_account_registry_count
-                    != execution.seen_facts.count
+                    source.prior_account_registry_count != execution.seen_facts.count
                     or source.prior_account_registry_commitment
                     != execution.seen_facts.commitment
                     or source.prior_source_binding is None
@@ -2771,11 +2761,9 @@ class VenueRecoveryBook:
                 or source.prior_account_registry_commitment
                 != registry_record.prior_account_registry_commitment
                 or source.prior_source_binding is None
-                or source.prior_source_binding
-                != registry_record.prior_source_binding
+                or source.prior_source_binding != registry_record.prior_source_binding
                 or registry_record.prior_source_binding != prior_source_binding
-                or registry_record.resulting_source_binding
-                != resulting_source_binding
+                or registry_record.resulting_source_binding != resulting_source_binding
                 or prior_source_binding == resulting_source_binding
                 or _execution_binding_for_snapshot(target_result)
                 != expected_target_result_binding
@@ -3242,7 +3230,8 @@ class VenueRecoveryBook:
 
     @classmethod
     def empty(cls, scope: VenueScope) -> VenueRecoveryBook:
-        _require("scope", scope, VenueScope)
+        if type(scope) is not VenueScope:
+            raise TypeError("scope must be the exact VenueScope type")
         result = object.__new__(cls)
         for name, value in (
             ("scope", scope),
@@ -3319,8 +3308,7 @@ class VenueRecoveryBook:
     def _reconciliation_cursor(self) -> tuple[int, bytes]:
         return (
             self._registry_transition_ledger.length,
-            self._registry_transition_head_commitment
-            or _RECONCILIATION_GENESIS_HEAD,
+            self._registry_transition_head_commitment or _RECONCILIATION_GENESIS_HEAD,
         )
 
     def _execution_reconciliation_cursor_matches(
@@ -4714,9 +4702,7 @@ def _audit_hydrate_book(
         }
         for entry in execution_reconciliations
     ):
-        raise TypeError(
-            "execution reconciliation entries must be exact outcome types"
-        )
+        raise TypeError("execution reconciliation entries must be exact outcome types")
 
     closure_ledger: _PersistentSequence[VenueTerminalClosure] = (
         _PersistentSequence.empty()
@@ -6135,10 +6121,9 @@ def _apply_execution_registry_catch_up(
             item=item,
             quantity_delta=0,
         )
-    if (
-        not book._execution_reconciliation_cursor_is_prefix(target)
-        or not book._execution_reconciliation_cursor_is_prefix(source)
-    ):
+    if not book._execution_reconciliation_cursor_is_prefix(
+        target
+    ) or not book._execution_reconciliation_cursor_is_prefix(source):
         return transition(
             book,
             target,
@@ -6150,8 +6135,7 @@ def _apply_execution_registry_catch_up(
     if (
         item.target_checkpoint != VenueExecutionCheckpoint.from_execution(target)
         or item.prior_account_registry_count != book.execution_registry_count
-        or item.prior_account_registry_commitment
-        != book.execution_registry_commitment
+        or item.prior_account_registry_commitment != book.execution_registry_commitment
     ):
         return transition(
             book,
@@ -6760,8 +6744,7 @@ def apply_venue_recovery_input(
             if (
                 prior_ready
                 and not next_ready
-                and effect_current.effect.state
-                is BrokerEffectState.OPERATOR_RECONCILED
+                and effect_current.effect.state is BrokerEffectState.OPERATOR_RECONCILED
             ):
                 scope_key = _position_scope_index_key(
                     effect_current.effect.scope.position_scope

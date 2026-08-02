@@ -1997,9 +1997,7 @@ def test_registry_projection_rejects_inner_subclass_before_prefix_proof() -> Non
         position_module._project_execution_registry(
             target,
             source,
-            reconciliation_transition_count=(
-                target.reconciliation_transition_count
-            ),
+            reconciliation_transition_count=(target.reconciliation_transition_count),
             reconciliation_transition_head=target.reconciliation_transition_head,
         )
 
@@ -2046,6 +2044,64 @@ def test_fact_reducer_rejects_execution_component_subclasses(
                 quantity=1,
                 units=100,
             ),
+        )
+
+
+@pytest.mark.parametrize(
+    "fact",
+    [
+        pytest.param(
+            _fill(
+                "subclass-broker-fill",
+                "subclass-broker-fill-root",
+                side=ExecutionSide.BUY,
+                quantity=1,
+                units=100,
+            ),
+            id="fill",
+        ),
+        pytest.param(
+            _correct(
+                "subclass-broker-correct",
+                "subclass-broker-correct-root",
+                "subclass-broker-correct-predecessor",
+                side=ExecutionSide.BUY,
+                quantity=1,
+                units=100,
+            ),
+            id="correct",
+        ),
+        pytest.param(
+            _bust(
+                "subclass-broker-bust",
+                "subclass-broker-bust-root",
+                "subclass-broker-bust-predecessor",
+                side=ExecutionSide.BUY,
+            ),
+            id="bust",
+        ),
+    ],
+)
+def test_fact_reducer_and_seen_fact_reject_fact_subclasses(
+    fact: BrokerFact,
+) -> None:
+    subclass_type = type(f"{type(fact).__name__}Subclass", (type(fact),), {})
+    subclass_fact = subclass_type(
+        **{name: getattr(fact, name) for name in fact.__dataclass_fields__}
+    )
+
+    with pytest.raises(TypeError, match="exact|canonical broker execution fact"):
+        apply_broker_execution_fact(
+            PositionState.flat(POSITION_SCOPE),
+            PositionIntegrity.CONSISTENT,
+            RootHeadIndex.empty(POSITION_SCOPE),
+            SeenFactIndex.empty(POSITION_SCOPE),
+            subclass_fact,
+        )
+    with pytest.raises(TypeError, match="exact|canonical broker execution fact"):
+        SeenFact(
+            fact=subclass_fact,
+            classification=(FirstObservationClassification.RECONCILIATION_REQUIRED),
         )
 
 
@@ -4649,7 +4705,10 @@ def test_projection_and_latch_guards_fail_closed() -> None:
         position_module._latch_account_execution_reconciliation(object())
     restricted = position_module._latch_account_execution_reconciliation(flat)
     assert restricted.account_reconciliation_required is True
-    assert position_module._latch_account_execution_reconciliation(restricted) is restricted
+    assert (
+        position_module._latch_account_execution_reconciliation(restricted)
+        is restricted
+    )
     with pytest.raises(TypeError, match="execution must be the exact"):
         position_module._bind_execution_reconciliation_cursor(
             object(),  # type: ignore[arg-type]
@@ -4722,8 +4781,14 @@ def test_fold_quantity_mismatch_fails_closed_to_pending(
 
     assert root_transition.disposition is TransitionDisposition.APPLIED
     assert revision_transition.disposition is TransitionDisposition.APPLIED
-    assert root_after.position.basis_authority is BasisAuthority.BASIS_RECONCILIATION_PENDING
-    assert revision_after.position.basis_authority is BasisAuthority.BASIS_RECONCILIATION_PENDING
+    assert (
+        root_after.position.basis_authority
+        is BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
+    assert (
+        revision_after.position.basis_authority
+        is BasisAuthority.BASIS_RECONCILIATION_PENDING
+    )
 
 
 def test_basis_candidate_rejects_three_independent_corruptions() -> None:

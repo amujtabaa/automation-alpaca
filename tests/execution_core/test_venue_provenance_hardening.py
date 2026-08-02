@@ -14,6 +14,7 @@ import pytest
 import app.execution_core.venue as venue_module
 from app.execution_core.fills import BrokerTradeCorrectFact
 from app.execution_core.identity import (
+    AccountId,
     ClosureId,
     EvidenceReference,
     ExecutionFactKey,
@@ -37,6 +38,7 @@ from app.execution_core.venue import (
     VenueRecoveryBook,
     VenueRecoveryDisposition,
     VenueRecoveryTransition,
+    VenueScope,
     _audit_hydrate_book,
     apply_venue_recovery_input,
 )
@@ -143,15 +145,11 @@ def _post_final_registry_reconciliation():
             target_checkpoint=VenueExecutionCheckpoint.from_execution(
                 finalized.execution
             ),
-            prior_account_registry_count=(
-                finalized.book.execution_registry_count
-            ),
+            prior_account_registry_count=(finalized.book.execution_registry_count),
             prior_account_registry_commitment=(
                 finalized.book.execution_registry_commitment
             ),
-            prior_source_binding=finalized.book.execution_binding(
-                ahead.position.scope
-            ),
+            prior_source_binding=finalized.book.execution_binding(ahead.position.scope),
             source_execution=ahead,
         ),
     )
@@ -305,6 +303,31 @@ def test_public_checkpoint_has_no_importable_construction_capability() -> None:
 
         class ForgedTransition(VenueRecoveryTransition):
             pass
+
+
+def test_empty_and_audit_hydration_reject_venue_scope_subclasses() -> None:
+    class DelayedVenueScope(VenueScope):
+        report_other_account = False
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "account" and type(self).report_other_account:
+                return AccountId("other-paper-account")
+            return super().__getattribute__(name)
+
+    exact_scope = recovery_fixtures.VENUE_SCOPE
+    delayed_scope = DelayedVenueScope(
+        generation=exact_scope.generation,
+        broker=exact_scope.broker,
+        environment=exact_scope.environment,
+        account=exact_scope.account,
+    )
+
+    with pytest.raises(TypeError, match="exact VenueScope"):
+        VenueRecoveryBook.empty(delayed_scope)
+
+    book, execution = recovery_fixtures._seed_needs_review()
+    with pytest.raises(TypeError, match="exact VenueScope"):
+        _audit_hydrate_book(book, execution, scope=delayed_scope)
 
 
 def test_public_transition_rejects_execution_snapshot_subclasses() -> None:

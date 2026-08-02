@@ -1110,10 +1110,7 @@ def test_release_preserves_a_preexisting_overfill_quarantine_latch() -> None:
         released.execution.position.integrity_floor
         & PositionIntegrity.OVERFILL_QUARANTINE
     )
-    assert (
-        released.book.effect(EFFECT).acceptance_set_state
-        is AcceptanceSetState.OPEN
-    )
+    assert released.book.effect(EFFECT).acceptance_set_state is AcceptanceSetState.OPEN
 
 
 def test_human_fill_cannot_be_appended_after_the_leg_was_released() -> None:
@@ -2473,9 +2470,7 @@ def test_broker_bust_after_finalization_demotes_stale_operator_authority() -> No
                 ),
                 scope=_execution_scope(),
                 root_fill_id=RootFillId("finalized-bust-root"),
-                predecessor_source_event_id=SourceEventId(
-                    "finalized-bust-root-source"
-                ),
+                predecessor_source_event_id=SourceEventId("finalized-bust-root-source"),
                 reported_price=_price(100),
             ),
             evidence_digest=b"\xa5" * 32,
@@ -3452,9 +3447,60 @@ def test_recovery_commands_reject_incomplete_evidence_and_invalid_equations() ->
         )
 
 
-def test_recovery_coverage_records_reject_incomplete_or_cross_root_provenance() -> (
-    None
-):
+@pytest.mark.parametrize("revision_kind", ["correct", "bust"])
+def test_revision_records_reject_fact_subclasses(revision_kind: str) -> None:
+    fill, correction, bust = _recovery_value_object_facts()
+    fact = correction if revision_kind == "correct" else bust
+    subclass_type = type(f"{type(fact).__name__}Subclass", (type(fact),), {})
+    subclass_fact = subclass_type(
+        **{name: getattr(fact, name) for name in fact.__dataclass_fields__}
+    )
+    resulting_quantity = Quantity(3 if revision_kind == "correct" else 0)
+
+    with pytest.raises(TypeError, match="exact|BrokerTradeCorrectFact"):
+        RecordBrokerRevisionEvidence(
+            input_id=VenueInputId(f"subclass-{revision_kind}-revision"),
+            effect_id=EFFECT,
+            leg_key=LEG_A,
+            prior_root_quantity=Quantity(4),
+            prior_venue_cumulative_quantity=Quantity(4),
+            resulting_venue_cumulative_quantity=resulting_quantity,
+            fact=subclass_fact,
+            evidence_digest=b"\xdc" * 32,
+        )
+
+    reconciliation = recovery_module.RevisionReconciliationRecord(
+        input_id=VenueInputId(f"exact-{revision_kind}-reconciliation"),
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_root_quantity=Quantity(4),
+        prior_venue_cumulative_quantity=Quantity(4),
+        resulting_venue_cumulative_quantity=resulting_quantity,
+        fact=fact,
+        evidence_digest=b"\xdd" * 32,
+        canonical_applied=False,
+        reason="exact revision evidence remains quarantined",
+    )
+    with pytest.raises(TypeError, match="exact|BrokerTradeCorrectFact"):
+        replace(reconciliation, fact=subclass_fact)
+
+    coverage = recovery_module._BrokerCoverage(
+        effect_id=EFFECT,
+        leg_key=LEG_A,
+        prior_cumulative_quantity=Quantity(0),
+        resulting_cumulative_quantity=Quantity(4),
+        fact=fill,
+        evidence_digest=b"\xde" * 32,
+        root_source_input_id=VenueInputId("exact-revision-root-input"),
+        head_fact=fill,
+        head_evidence_digest=b"\xdf" * 32,
+        head_source_input_id=VenueInputId("exact-revision-head-input"),
+    )
+    with pytest.raises(TypeError, match="exact|canonical broker execution fact"):
+        replace(coverage, head_fact=subclass_fact)
+
+
+def test_recovery_coverage_records_reject_incomplete_or_cross_root_provenance() -> None:
     fill, correction, bust = _recovery_value_object_facts()
     human = recovery_module.HumanCoverage(
         effect_id=EFFECT,
