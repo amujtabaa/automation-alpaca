@@ -589,6 +589,67 @@ def _manual_advance_predecessor(
     return _forge_venue(claimed.state, book), execution, flatten_id
 
 
+def _apply_closed_sell_fill(
+    book: VenueRecoveryBook,
+    execution: ExecutionSnapshot,
+    label: str,
+    leg_key: VenueLegKey,
+) -> tuple[VenueRecoveryBook, ExecutionSnapshot]:
+    book, execution, effect_id = _seed_raw_effect(
+        book,
+        execution,
+        label,
+        claim=True,
+        leg_key=leg_key,
+        side=ExecutionSide.SELL,
+        quantity=1,
+    )
+    filled = _venue_apply_twice(
+        book,
+        execution,
+        RecordBrokerFillEvidence(
+            input_id=VenueInputId(f"{label}-fill-input"),
+            effect_id=effect_id,
+            leg_key=leg_key,
+            prior_cumulative_quantity=Quantity(0),
+            resulting_cumulative_quantity=Quantity(1),
+            fact=_broker_fill(
+                f"{label}-fill",
+                leg_key=leg_key,
+                quantity=1,
+                side=ExecutionSide.SELL,
+            ),
+            evidence_digest=bytes([len(label) % 251 + 1]) * 32,
+            closure_id=None,
+            evidence_reference=None,
+        ),
+    )
+    terminal = _venue_apply_twice(
+        filled.book,
+        filled.execution,
+        ObserveVenueStatus(
+            input_id=VenueInputId(f"{label}-terminal-input"),
+            leg_key=leg_key,
+            status=VenueAttemptState.FILLED,
+            observation_id=VenueObservationId(f"{label}-terminal"),
+            cumulative_quantity=Quantity(1),
+            closure_id=ClosureId(f"{label}-terminal-closure"),
+            evidence_reference=EvidenceReference(f"{label}-terminal-evidence"),
+        ),
+    )
+    closed = _venue_apply_twice(
+        terminal.book,
+        terminal.execution,
+        CloseAcceptanceSet(
+            input_id=VenueInputId(f"{label}-close-input"),
+            effect_id=effect_id,
+            proof=_proof(terminal.book, effect_id, f"{label}-close"),
+        ),
+    )
+    assert closed.disposition is VenueRecoveryDisposition.APPLIED
+    return closed.book, closed.execution
+
+
 def _proof(
     book: VenueRecoveryBook,
     effect_id: EffectId,
@@ -2469,6 +2530,251 @@ def test_manual_sell_final_claim_rechecks_a_changed_supervisor_fence() -> None:
     assert refused.reason is reason_type.SUPERVISOR_FENCE_BLOCKED
     assert refused.state == regated
     assert refused.state.budget == regated.budget
+    assert refused.fresh_claim is None
+
+
+def test_manual_flatten_late_residual_retry_retires_and_replaces_exactly_once() -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        reason_type,
+        authority_input_type,
+        claim_type,
+        manual_key,
+        flatten_phase_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "AuthorityInputId",
+        "ClaimEffect",
+        "_manual_key",
+        "_FlattenPhase",
+    )
+    predecessor, execution, flatten_id = _manual_advance_predecessor(
+        module,
+        "manual-residual-retry",
+    )
+    ready = _authority_apply_twice(
+        module,
+        predecessor,
+        execution,
+        _manual_advance(module, flatten_id, "manual-residual-retry-ready"),
+    )
+    assert ready.disposition is disposition_type.APPLIED
+    stale = _create_effect(
+        module,
+        ready.state,
+        execution,
+        "manual-residual-retry-stale",
+        side=ExecutionSide.SELL,
+        quantity=execution.position.authorized_residual_sell.value,
+        manual_flatten_id=flatten_id,
+    )
+    assert stale.disposition is disposition_type.APPLIED
+    stale_effect_id = EffectId("manual-residual-retry-stale-effect")
+
+    unchanged = _authority_apply_twice(
+        module,
+        stale.state,
+        execution,
+        _manual_advance(module, flatten_id, "manual-residual-retry-unchanged"),
+    )
+    assert unchanged.disposition is disposition_type.REFUSED
+    assert unchanged.reason is reason_type.MANUAL_FLATTEN_INVALID
+    assert unchanged.state == stale.state
+    assert unchanged.state.budget == stale.state.budget
+    assert unchanged.fresh_claim is None
+
+    drifted_book, drifted_execution = _apply_closed_sell_fill(
+        stale.state.venue,
+        execution,
+        "manual-residual-retry-shrink",
+        SHRINK_LEG,
+    )
+    assert drifted_execution.position.authorized_residual_sell.value == (
+        execution.position.authorized_residual_sell.value - 1
+    )
+    drifted = _forge_venue(stale.state, drifted_book)
+    budget_before_retry = drifted.budget
+    stale_claim = claim_type(  # type: ignore[operator]
+        input_id=authority_input_type("manual-residual-retry-stale-claim-input"),
+        effect_id=stale_effect_id,
+        claim_occurrence_id=ClaimOccurrenceId("manual-residual-retry-stale-claim"),
+    )
+    refused = _authority_apply_twice(
+        module,
+        drifted,
+        drifted_execution,
+        stale_claim,
+    )
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.reason is reason_type.RESIDUAL_EXCEEDED
+    assert refused.state == drifted
+    assert refused.state.budget == budget_before_retry
+    assert refused.fresh_claim is None
+
+    retry_command = _manual_advance(
+        module,
+        flatten_id,
+        "manual-residual-retry-refresh",
+    )
+    retried = _authority_apply_twice(
+        module,
+        drifted,
+        drifted_execution,
+        retry_command,
+    )
+    assert retried.disposition is disposition_type.APPLIED
+    assert retried.state.budget == budget_before_retry
+    assert retried.created_effect_ids == ()
+    assert retried.fresh_claim is None
+    retired = retried.state.venue.effect(stale_effect_id)
+    assert retired is not None
+    assert retired.state is BrokerEffectState.CANCELED_BEFORE_DISPATCH
+    assert retired.acceptance_set_state is AcceptanceSetState.CLOSED
+    assert retired.claim_occurrence_id is None
+    manual = retried.state._manual_by_id.get(manual_key(flatten_id))
+    assert manual is not None
+    assert manual.phase is flatten_phase_type.READY
+    assert manual.sell_effect_id is None
+
+    retry_replay = _authority_apply_twice(
+        module,
+        retried.state,
+        drifted_execution,
+        retry_command,
+    )
+    assert retry_replay.disposition is disposition_type.EXACT_REPLAY
+    assert retry_replay.state == retried.state
+    assert retry_replay.state.budget == budget_before_retry
+    assert retry_replay.fresh_claim is None
+
+    replacement = _create_effect(
+        module,
+        retried.state,
+        drifted_execution,
+        "manual-residual-retry-replacement",
+        side=ExecutionSide.SELL,
+        quantity=drifted_execution.position.authorized_residual_sell.value,
+        manual_flatten_id=flatten_id,
+    )
+    assert replacement.disposition is disposition_type.APPLIED
+    assert replacement.state.budget == budget_before_retry
+    replacement_effect_id = EffectId("manual-residual-retry-replacement-effect")
+    replacement_claim = claim_type(  # type: ignore[operator]
+        input_id=authority_input_type("manual-residual-retry-replacement-claim-input"),
+        effect_id=replacement_effect_id,
+        claim_occurrence_id=ClaimOccurrenceId(
+            "manual-residual-retry-replacement-claim"
+        ),
+    )
+    claimed = _authority_apply_twice(
+        module,
+        replacement.state,
+        drifted_execution,
+        replacement_claim,
+    )
+    assert claimed.disposition is disposition_type.APPLIED
+    assert claimed.fresh_claim is not None
+    assert claimed.fresh_claim.effect_id == replacement_effect_id
+    assert claimed.fresh_claim.effect_scope.quantity == (
+        drifted_execution.position.authorized_residual_sell
+    )
+    assert claimed.state.budget.remaining == budget_before_retry.remaining - 1
+
+    claim_replay = _authority_apply_twice(
+        module,
+        claimed.state,
+        drifted_execution,
+        replacement_claim,
+    )
+    assert claim_replay.disposition is disposition_type.EXACT_REPLAY
+    assert claim_replay.state == claimed.state
+    assert claim_replay.fresh_claim is None
+    second_claim = claim_type(  # type: ignore[operator]
+        input_id=authority_input_type(
+            "manual-residual-retry-replacement-second-claim-input"
+        ),
+        effect_id=replacement_effect_id,
+        claim_occurrence_id=ClaimOccurrenceId(
+            "manual-residual-retry-replacement-second-claim"
+        ),
+    )
+    conflicted = _authority_apply_twice(
+        module,
+        claimed.state,
+        drifted_execution,
+        second_claim,
+    )
+    assert conflicted.disposition is disposition_type.CONFLICT
+    assert conflicted.state == claimed.state
+    assert conflicted.state.budget == claimed.state.budget
+    assert conflicted.fresh_claim is None
+
+
+def test_manual_flatten_retry_never_retires_a_claimed_sell() -> None:
+    module = _authority_module()
+    disposition_type, authority_input_type, claim_type = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "ClaimEffect",
+    )
+    predecessor, execution, flatten_id = _manual_advance_predecessor(
+        module,
+        "manual-claimed-retry",
+    )
+    ready = _authority_apply_twice(
+        module,
+        predecessor,
+        execution,
+        _manual_advance(module, flatten_id, "manual-claimed-retry-ready"),
+    )
+    assert ready.disposition is disposition_type.APPLIED
+    created = _create_effect(
+        module,
+        ready.state,
+        execution,
+        "manual-claimed-retry-sell",
+        side=ExecutionSide.SELL,
+        quantity=execution.position.authorized_residual_sell.value,
+        manual_flatten_id=flatten_id,
+    )
+    assert created.disposition is disposition_type.APPLIED
+    sell_effect_id = EffectId("manual-claimed-retry-sell-effect")
+    claimed = _authority_apply_twice(
+        module,
+        created.state,
+        execution,
+        claim_type(  # type: ignore[operator]
+            input_id=authority_input_type("manual-claimed-retry-claim-input"),
+            effect_id=sell_effect_id,
+            claim_occurrence_id=ClaimOccurrenceId("manual-claimed-retry-claim"),
+        ),
+    )
+    assert claimed.disposition is disposition_type.APPLIED
+    drifted_book, drifted_execution = _apply_closed_sell_fill(
+        claimed.state.venue,
+        execution,
+        "manual-claimed-retry-shrink",
+        SHRINK_LEG,
+    )
+    drifted = _forge_venue(claimed.state, drifted_book)
+    effect_before = drifted.venue.effect(sell_effect_id)
+    budget_before = drifted.budget
+
+    refused = _authority_apply_twice(
+        module,
+        drifted,
+        drifted_execution,
+        _manual_advance(module, flatten_id, "manual-claimed-retry-refresh"),
+    )
+    assert refused.disposition is disposition_type.REFUSED
+    assert refused.state == drifted
+    assert refused.state.venue.effect(sell_effect_id) == effect_before
+    assert refused.state.budget == budget_before
+    assert refused.created_effect_ids == ()
     assert refused.fresh_claim is None
 
 

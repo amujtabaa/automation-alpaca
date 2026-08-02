@@ -3291,6 +3291,141 @@ def test_query_claim_uses_shared_reserved_budget_without_creating_effect(
     assert replay.state.venue == venue_before
 
 
+@pytest.mark.parametrize(
+    ("phase", "expected_disposition", "expected_reason"),
+    [
+        ("BOOTSTRAPPING", "REFUSED", "PHASE_BLOCKED"),
+        ("RECONCILING", "APPLIED", None),
+        ("SERVING", "APPLIED", None),
+    ],
+)
+def test_query_claim_phase_table_is_fail_closed_and_atomic(
+    phase: str,
+    expected_disposition: str,
+    expected_reason: str | None,
+) -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        reason_type,
+        authority_input_type,
+        query_id_type,
+        query_kind_type,
+        query_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityReason",
+        "AuthorityInputId",
+        "QueryClaimId",
+        "AuthorityQueryKind",
+        "ClaimBrokerQuery",
+    )
+    label = phase.lower()
+    state = _forge_positive_predecessor(
+        module,
+        phase=phase,
+        mode="HALTED",
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=2,
+        reserve=2,
+    )
+    query = query_type(  # type: ignore[operator]
+        input_id=authority_input_type(f"phase-table-{label}-input"),
+        query_claim_id=query_id_type(f"phase-table-{label}-query"),
+        symbol_id=SYMBOL,
+        kind=query_kind_type.RECONCILE,
+    )
+    venue_before = state.venue
+    query_count_before = state._query_by_id.size
+
+    transition = _authority_apply_twice(module, state, EXECUTION, query)
+
+    assert transition.disposition is getattr(disposition_type, expected_disposition)
+    assert transition.reason is (
+        None if expected_reason is None else getattr(reason_type, expected_reason)
+    )
+    assert transition.state.venue == venue_before
+    assert transition.created_effect_ids == ()
+    if phase == "BOOTSTRAPPING":
+        assert transition.state == state
+        assert transition.state.budget == state.budget
+        assert transition.state._query_by_id.size == query_count_before
+        assert transition.fresh_claim is None
+    else:
+        assert transition.state.budget.remaining == state.budget.remaining - 1
+        assert transition.state._query_by_id.size == query_count_before + 1
+        assert transition.fresh_claim is not None
+        assert transition.fresh_claim.query_claim_id == query.query_claim_id
+
+
+def test_query_permanent_identity_precedes_later_phase_refusal() -> None:
+    module = _authority_module()
+    (
+        disposition_type,
+        authority_input_type,
+        query_id_type,
+        query_kind_type,
+        query_type,
+    ) = _required(
+        module,
+        "AuthorityDisposition",
+        "AuthorityInputId",
+        "QueryClaimId",
+        "AuthorityQueryKind",
+        "ClaimBrokerQuery",
+    )
+    eligible = _forge_positive_predecessor(
+        module,
+        phase="RECONCILING",
+        mode="HALTED",
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=2,
+        reserve=2,
+    )
+    query = query_type(  # type: ignore[operator]
+        input_id=authority_input_type("phase-identity-original-input"),
+        query_claim_id=query_id_type("phase-identity-query"),
+        symbol_id=SYMBOL,
+        kind=query_kind_type.QUERY,
+    )
+    applied = _authority_apply_twice(module, eligible, EXECUTION, query)
+    assert applied.disposition is disposition_type.APPLIED
+    bootstrapping = _forge_positive_predecessor(
+        module,
+        predecessor=applied.state,
+        phase="BOOTSTRAPPING",
+        mode="HALTED",
+        fence="RECONCILIATION_ONLY",
+        kill_engaged=True,
+        remaining=1,
+        reserve=1,
+    )
+
+    replay = _authority_apply_twice(module, bootstrapping, EXECUTION, query)
+    assert replay.disposition is disposition_type.EXACT_REPLAY
+    assert replay.state == bootstrapping
+    assert replay.fresh_claim is None
+
+    reused_identity = replace(
+        query,
+        input_id=authority_input_type("phase-identity-reused-input"),
+        kind=query_kind_type.RECONCILE,
+    )
+    conflict = _authority_apply_twice(
+        module,
+        bootstrapping,
+        EXECUTION,
+        reused_identity,
+    )
+    assert conflict.disposition is disposition_type.CONFLICT
+    assert conflict.state == bootstrapping
+    assert conflict.state.budget == bootstrapping.budget
+    assert conflict.fresh_claim is None
+
+
 def test_query_exhaustion_and_identity_conflicts_are_atomic() -> None:
     module = _authority_module()
     (

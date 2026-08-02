@@ -434,3 +434,72 @@ mutation, cached-projection, choke-point, and consumable-lifecycle evidence. T1.
 are narrowly not applicable because this slice is deterministic, pure, unwired, and has no clock,
 store, persistence, or broker-write boundary. `REV-0049`, final disposition/Fable closeout, and
 exact-head Python 3.11/3.12 CI remain mandatory; no review or completion verdict is claimed here.
+
+## Independent-review re-gate 4 - provenance and lifecycle closure
+
+The reviewer-owned `REV-0049/result.md` returned `BLOCK` and is preserved byte-for-byte in
+`90b5bc4ed2e1ffb2c0056192fd85204d700c4b32` (19,168 bytes; SHA-256
+`4ae21045ef136dd07f721400419409c575bedd54bf01bb9a2925fff56490e8ee`). The result reports one
+reproduced P0 and two P1s. No conclusion from the interrupted reviewer turn was accepted; the same
+independent seat completed the result from its already performed review work without expanding
+scope.
+
+The P0 proves that the public venue reducer accepts a caller-constructed
+`CONTRACT_COMPLETE_RESPONSE`, closes an unresolved claimed BUY occurrence, clears canonical venue
+uncertainty, and thereby permits a fresh final dispatch claim. The first P1 proves that a canonical
+late residual change correctly refuses a manual-flatten SELL claim but leaves the stale unclaimed
+SELL and flatten workflow permanently stranded. The second P1 proves that a positive forged/hydrated
+predecessor may claim a broker query while still `BOOTSTRAPPING` because query admission omits the
+engine phase.
+
+Ameen's standing explicit authority to resolve all in-flight M1 findings re-gates only these three
+repairs inside the existing allowed paths and exclusions. Before production changes, add
+failure-capable controls that reproduce the public completeness-proof release, prove the close
+capability is absent from package and module export lists and refused at the public reducer choke
+point, exercise the complete query phase table with permanent identity before mutable phase, and
+prove a late residual mismatch can retire only its exact unclaimed local manual SELL and claim one
+fresh exact-residual replacement exactly once.
+
+Authorized bounded repair:
+
+- M1 fails closed on acceptance-set closure provenance. The public venue reducer admits no
+  `CloseAcceptanceSet` command, and `AcceptanceProof`, `AcceptanceProofKind`, and
+  `CloseAcceptanceSet` are removed from both public export lists. Their private representation and
+  private reducer path remain only for deterministic audit hydration/replay, internal locally
+  proven `NEVER_DISPATCHED` closure, and future M2 adapter-certified coverage integration. A shaped
+  digest, evidence reference, or proof enum never grants public closure authority.
+- Query claims explicitly allow only `RECONCILING` and `SERVING`; `BOOTSTRAPPING` refuses with
+  `PHASE_BLOCKED` before any budget, query index, venue, or claim mutation. Permanent query identity
+  replay/conflict remains earlier than this mutable policy gate.
+- Reuse `AdvanceManualFlatten` rather than add a new public command. From `SELL_CREATED`, it may
+  atomically stand down only the exact residual-stale, unclaimed, ownerless, reconciliation-clean
+  local SELL and return that same workflow to `READY`. It retains all permanent effect,
+  occurrence, client, authorization, and input tombstones; debits no budget and mints no claim.
+  A replacement uses fresh identities and must pass the ordinary create and final-claim gates.
+
+If closing the P0 requires trusting a caller coverage boolean, parsing adapter payloads, adding a
+public certification capability, or pulling persistence/runtime/adapter work into M1, stop. If the
+manual retry cannot use the existing atomic local stand-down proof without weakening final claim,
+stop. No SQL/DDL, database, broker, credential, network, runtime wiring, cleanup, deletion, merge,
+or later work-order activation is authorized by this re-gate. After RED, repair, focused/full
+verification, and mutation controls, freeze a new implementation SHA and submit only the delta to
+`REV-0049/request-addendum-01.md` for a fresh independent result addendum. WO-0148 remains inactive.
+
+### Re-gate 4 RED checkpoint
+
+Production remained byte-identical to implementation freeze `1d294e0`. Four focused test files
+added only the disclosed failure-capable controls. The exact combined pure run under
+`BROKER_ADAPTER=mock` collected 152 tests and produced `146 passed, 6 failed`. All six failures are
+intentional and specific: the exact package surface still contains the three close/proof exports;
+the explicit root/root-`__all__`/venue-`__all__` seal reports those same exposures; each of
+`CONTRACT_COMPLETE_RESPONSE` and `COVERED_RECONCILIATION` is still accepted by the direct public
+venue reducer; a `BOOTSTRAPPING` query incorrectly returns `APPLIED`; and a residual-stale
+`SELL_CREATED` manual workflow incorrectly returns `REFUSED / MANUAL_FLATTEN_INVALID` instead of
+performing safe local retirement.
+
+The positive controls passed: both permitted query phases, permanent query identity before mutable
+phase, claimed-SELL non-retirement, the unresolved BUY's exact `OPEN`/blocking projection, and all
+pre-existing cases in the four files. Each isolated test pass and the combined run used no SQL,
+database, broker, network, credential, runtime, or persistence action. Ruff check/format-check and
+`git diff --check` pass for the RED files. This checkpoint proves missing behavior only; it makes no
+repair or completion claim.

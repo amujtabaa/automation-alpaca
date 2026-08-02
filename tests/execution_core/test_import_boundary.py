@@ -87,8 +87,6 @@ _FORBIDDEN_CALL_ATTRIBUTES = {
 
 _PUBLIC_SURFACE = {
     "AccountId",
-    "AcceptanceProof",
-    "AcceptanceProofKind",
     "AcceptanceSetState",
     "ActorId",
     "AdvanceManualFlatten",
@@ -113,7 +111,6 @@ _PUBLIC_SURFACE = {
     "ClaimEffect",
     "ClaimOccurrenceId",
     "ClientOrderId",
-    "CloseAcceptanceSet",
     "ClosureId",
     "CreateBrokerEffect",
     "DiscoverVenueLeg",
@@ -196,6 +193,12 @@ _PUBLIC_SURFACE = {
     "bind_venue_execution_snapshot",
     "derive_ordered_basis_candidate",
     "initial_execution_authority_state",
+}
+
+_FORBIDDEN_PUBLIC_ACCEPTANCE_CLOSURE_CAPABILITIES = {
+    "AcceptanceProof",
+    "AcceptanceProofKind",
+    "CloseAcceptanceSet",
 }
 
 
@@ -380,3 +383,28 @@ print(json.dumps({{'loaded': loaded, 'missing': missing, 'declared': declared}})
     assert result["loaded"] == []
     assert result["missing"] == []
     assert result["declared"] == sorted(_PUBLIC_SURFACE)
+
+
+def test_caller_authored_acceptance_closure_is_not_a_public_capability() -> None:
+    """Proof metadata and its close command must stay behind the venue reducer."""
+
+    import app.execution_core as kernel
+    import app.execution_core.venue as venue
+
+    exposures = {
+        f"root attribute:{name}"
+        for name in _FORBIDDEN_PUBLIC_ACCEPTANCE_CLOSURE_CAPABILITIES
+        if hasattr(kernel, name)
+    }
+    exposures.update(
+        f"root __all__:{name}"
+        for name in _FORBIDDEN_PUBLIC_ACCEPTANCE_CLOSURE_CAPABILITIES
+        if name in kernel.__all__
+    )
+    exposures.update(
+        f"venue __all__:{name}"
+        for name in _FORBIDDEN_PUBLIC_ACCEPTANCE_CLOSURE_CAPABILITIES
+        if name in venue.__all__
+    )
+
+    assert not exposures, sorted(exposures)

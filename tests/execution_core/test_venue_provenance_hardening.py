@@ -46,6 +46,60 @@ from app.execution_core.venue import (
 from tests.execution_core import test_venue_recovery as recovery_fixtures
 
 
+@pytest.mark.parametrize(
+    "proof_kind",
+    [
+        AcceptanceProofKind.CONTRACT_COMPLETE_RESPONSE,
+        AcceptanceProofKind.COVERED_RECONCILIATION,
+    ],
+    ids=("contract-complete-response", "covered-reconciliation"),
+)
+def test_public_reducer_refuses_caller_authored_acceptance_closure(
+    proof_kind: AcceptanceProofKind,
+) -> None:
+    """Well-shaped caller metadata cannot release one unresolved claimed BUY."""
+
+    book, execution = recovery_fixtures._seed_needs_review(leg_keys=())
+    effect = book.effect(recovery_fixtures.EFFECT)
+    assert effect is not None
+    assert effect.state is BrokerEffectState.NEEDS_REVIEW
+    assert effect.acceptance_set_state is venue_module.AcceptanceSetState.OPEN
+    before_view = venue_module._venue_authority_view(
+        book,
+        execution,
+        recovery_fixtures.POSITION_SCOPE,
+        None,
+    )
+    assert before_view.blocking_effect_count == 1
+    assert before_view.blocking_buy_effect_count == 1
+
+    caller_close = CloseAcceptanceSet(
+        input_id=VenueInputId(f"caller-close-{proof_kind.value.casefold()}"),
+        effect_id=recovery_fixtures.EFFECT,
+        proof=recovery_fixtures._acceptance_proof(
+            book,
+            proof_kind,
+            f"caller-self-attested-{proof_kind.value.casefold()}",
+        ),
+    )
+
+    with pytest.raises(TypeError, match="authority|internal|admitted"):
+        venue_module.apply_venue_recovery_input(book, execution, caller_close)
+
+    retained = book.effect(recovery_fixtures.EFFECT)
+    assert retained == effect
+    assert retained.acceptance_set_state is venue_module.AcceptanceSetState.OPEN
+    after_view = venue_module._venue_authority_view(
+        book,
+        execution,
+        recovery_fixtures.POSITION_SCOPE,
+        None,
+    )
+    assert after_view == before_view
+    assert after_view.blocking_effect_count == 1
+    assert after_view.blocking_buy_effect_count == 1
+
+
 def _finalized_human_effect():
     book, execution, _ = recovery_fixtures._released_state()
     finalized = apply_venue_recovery_input(
